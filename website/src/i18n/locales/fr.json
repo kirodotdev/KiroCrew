@@ -11981,6 +11981,8 @@
       "folder_create_failed": "Impossible de créer le chat.",
       "folder_options_for": "Options du dossier {{name}}",
       "folder_project_dir_missing": "Le répertoire du projet du dossier n'existe plus : {{path}}. Mets-le à jour dans les paramètres du dossier.",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> est revenu dans <parent>{{parent}}</parent>, à la fin. Le dossier à côté duquel il se trouvait a été déplacé ou supprimé.",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> est revenu au niveau supérieur, à la fin. Le dossier à côté duquel il se trouvait a été déplacé ou supprimé.",
       "folders": "Dossiers",
       "goal_loop_cycle": "Boucle d’objectif · cycle {{count}} sur {{total}}",
       "goal_loop_cycle_no_cap": "Boucle d’objectif · cycle {{count}} (sans limite)",

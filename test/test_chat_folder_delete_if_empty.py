@@ -243,11 +243,17 @@ class TestOnlyTheCreatingAgentsUntouchedFolder:
             await self._refused(client, state, folder["id"])
 
     @pytest.mark.asyncio
-    @pytest.mark.parametrize("edit", [{"collapsed": True}, {"order": 7}])
+    @pytest.mark.parametrize("edit", ["collapsed", "position"])
     async def test_a_layout_change_by_the_person_does_not_claim_it(self, state, edit) -> None:
         async with TestClient(TestServer(_make_folder_app(state))) as client:
             folder = await _create(client, state, "work")
-            resp = await client.patch(f"/api/chat/folders/{folder['id']}", json=edit)
+            if edit == "collapsed":
+                body: dict[str, Any] = {"collapsed": True}
+            else:
+                # A position is a rank picked against a sibling anchor.
+                sibling = await _create(client, state, "home", by=None)
+                body = {"after": sibling["id"]}
+            resp = await client.patch(f"/api/chat/folders/{folder['id']}", json=body)
             assert resp.status == 200
             resp = await _agent_delete(client, state, folder["id"])
             assert resp.status == 200, await resp.text()

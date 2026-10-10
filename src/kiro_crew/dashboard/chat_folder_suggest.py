@@ -29,6 +29,7 @@ import time
 from typing import Any
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.folder_rank import custom_sort_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.history import is_incognito_transcript
@@ -83,16 +84,47 @@ def _eligible_folders(state: DashboardState) -> list[dict[str, Any]]:
     suggestion should not resurrect one.) Entries lacking an ``id`` or a name are
     skipped because ``load_folders`` does no validation, so a hand-edited or
     legacy ``folders.json`` can contain either.
+
+    The list is built by a depth-first walk from the top level, ordering each
+    parent's children with ``custom_sort_key``. That key is a SIBLING order —
+    ranked rows first, then unranked by legacy ``order`` — so sorting the flat
+    cross-parent list with it would put every ranked nested folder ahead of
+    every unranked top-level one and could push top-level folders past the
+    cap. A folder whose parent is missing is treated as top level; a
+    ``parent_id`` loop is walked once. A hidden folder is dropped but its
+    descendants are still visited, matching the previous flat filter.
     """
-    out = [
-        f
-        for f in state._folders
-        if isinstance(f, dict)
-        and f.get("id")
-        and str(f.get("name") or "").strip()
-        and not f.get("hidden")
-    ]
-    out.sort(key=lambda f: (int(f.get("order") or 0), str(f.get("name") or "")))
+    rows = [f for f in state._folders if isinstance(f, dict) and f.get("id") and isinstance(f["id"], str)]
+    ids = {f["id"] for f in rows}
+    children: dict[str | None, list[dict[str, Any]]] = {}
+    for f in rows:
+        parent = f.get("parent_id")
+        if not isinstance(parent, str) or parent not in ids or parent == f["id"]:
+            parent = None
+        children.setdefault(parent, []).append(f)
+    for siblings in children.values():
+        siblings.sort(key=custom_sort_key)
+
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def walk(parent: str | None) -> None:
+        for f in children.get(parent, []):
+            fid = f["id"]
+            if fid in seen:
+                continue
+            seen.add(fid)
+            if str(f.get("name") or "").strip() and not f.get("hidden"):
+                out.append(f)
+            walk(fid)
+
+    walk(None)
+    # A ``parent_id`` cycle has no top-level entry point; its rows are
+    # unreachable from the root, so pick them up afterwards in their sibling
+    # order rather than silently dropping the user's folders.
+    for f in rows:
+        if f["id"] not in seen:
+            walk(f.get("parent_id"))
     return out[:_MAX_FOLDERS]
 
 

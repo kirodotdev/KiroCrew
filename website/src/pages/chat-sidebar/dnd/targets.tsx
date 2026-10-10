@@ -241,12 +241,12 @@ export function SortableFolderBlock({ folder, subtree, siblings, reorderable, dr
  * set with `chat_folder_move`'s `before` / `after` and had no way to change it.
  * Registering it here closes that, and it closes it by reusing the root path
  * rather than adding a second one: the gesture, the collision band, the
- * renumber and the endpoint are all the ones root rows already use.
+ * anchor request and the endpoint are all the ones root rows already use.
  *
  * `siblings` is the ring this row may move within, which is what keeps the two
  * levels from bleeding into each other. Every folder row is now a `folder`
  * droppable, so without it a drag's closest-center fallback could resolve to a
- * row in a different container — a reorder gesture that renumbers nothing,
+ * row in a different container — a reorder gesture that moves nothing,
  * which reads as the drag having been ignored.
  *
  * `disabled` while renaming, matching the bare-draggable behaviour it replaces:

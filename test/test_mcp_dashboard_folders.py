@@ -1710,9 +1710,7 @@ class TestAdvertisedSet:
         }
 
 
-#: Four root folders with explicit, contiguous positions — the shape a sidebar
-#: drag leaves behind (``computeReorderedFolders`` renumbers 0..n-1), so these
-#: cases assert the tool writes what a drag would have written.
+#: Four root folders from before ranks existed: integer ``order`` only.
 _ORDERED = [
     {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
     {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 1},
@@ -1725,13 +1723,11 @@ def _positioning(
     folders: list[dict] | None = None,
     slots: list[dict] | None = None,
     patch: Any = None,
-    reorder: Any = None,
 ) -> dict[str, Any]:
-    """Routes for a ``chat_folder_move`` that may PATCH a row and POST a reorder.
+    """Routes for a ``chat_folder_move`` that may PATCH a row.
 
     A PATCH answers with the row it names, merged with what was written, unless
-    ``patch`` says otherwise; the reorder answers ``{"ok": True}`` unless
-    ``reorder`` does.
+    ``patch`` says otherwise.
     """
     rows = _ORDERED if folders is None else folders
 
@@ -1743,31 +1739,14 @@ def _positioning(
     return {
         **_reads(folders=rows, slots=_slots_with_caller() if slots is None else slots),
         "PATCH /api/chat/folders/{folder}": _patch_row if patch is None else patch,
-        "POST /api/chat/folders/reorder": {"ok": True} if reorder is None else reorder,
     }
 
 
-def _patched_orders(dash: InMemoryDashboardClient) -> dict[str, int]:
-    """``{folder_id: order}`` over every PATCH the call issued."""
-    return {
-        r.path.rsplit("/", 1)[-1]: r.body["order"]
-        for r in dash.sent("PATCH /api/chat/folders/{folder}")
-        if "order" in r.body
-    }
-
-
-def _posted_orders(dash: InMemoryDashboardClient) -> dict[str, int]:
-    """``{folder_id: order}`` over every atomic reorder POST the call issued.
-
-    The renumber path sends the whole ``{"orders": [{id, order}, ...]}`` list to
-    ``/api/chat/folders/reorder`` in ONE request, so a renumber is read off that
-    route rather than off per-row PATCHes.
-    """
-    return {
-        str(entry["id"]): entry["order"]
-        for r in dash.sent("POST /api/chat/folders/reorder")
-        for entry in r.body.get("orders", [])
-    }
+def _patch_bodies(dash: InMemoryDashboardClient) -> list[tuple[str, dict]]:
+    """``(folder_id, body)`` for every PATCH the call issued."""
+    return [
+        (r.path.rsplit("/", 1)[-1], r.body) for r in dash.sent("PATCH /api/chat/folders/{folder}")
+    ]
 
 
 class TestTheTwoSidesCompareNamesIdentically:
@@ -1861,52 +1840,26 @@ def _fixture_name(row: dict) -> dict:
 class TestFolderPosition:
     """``before``/``after`` set a folder's place among its siblings.
 
-    The position is written as contiguous 0..n-1 over the destination's
-    siblings, which is exactly what a sidebar drag writes — so a tool call and a
-    drag leave one convention in the store rather than two.
+    The tool sends the anchor to the gateway in the same PATCH as any reparent,
+    and the gateway picks the rank. So a position is always exactly one write,
+    and every ownership rule is the endpoint's.
     """
 
-    def test_after_an_anchor_lands_immediately_behind_it(self) -> None:
+    def test_after_an_anchor_is_one_patch_naming_it(self) -> None:
         out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "Alpha"}, _positioning())
-        assert not out.startswith("Error:")
-        # Alpha 0, Delta 1, Bravo 2, Charlie 3 -- the whole renumber, including the
-        # moved row, lands in ONE atomic reorder request rather than per-row PATCHes.
-        assert _posted_orders(dash) == {
-            "dddddddddddd": 1,
-            "bbbbbbbbbbbb": 2,
-            "cccccccccccc": 3,
-        }
-        # No reparent PATCH: the folder is already at the top level, so nothing
-        # but the atomic reorder is written.
-        assert not dash.sent("PATCH /api/chat/folders/{folder}")
+        assert not out.startswith("Error:"), out
+        # No parent_id: the folder is already at the top level.
+        assert _patch_bodies(dash) == [("dddddddddddd", {"after": "aaaaaaaaaaaa"})]
+        assert len(_writes(dash)) == 1
         assert "after `Alpha`" in out
 
-    def test_before_an_anchor_lands_immediately_ahead_of_it(self) -> None:
+    def test_before_an_anchor_is_one_patch_naming_it(self) -> None:
         out, dash = _call(
             "chat_folder_move", {"folder": "Delta", "before": "Bravo"}, _positioning()
         )
-        assert not out.startswith("Error:")
-        assert _posted_orders(dash) == {
-            "dddddddddddd": 1,
-            "bbbbbbbbbbbb": 2,
-            "cccccccccccc": 3,
-        }
-        assert not dash.sent("PATCH /api/chat/folders/{folder}")
+        assert not out.startswith("Error:"), out
+        assert _patch_bodies(dash) == [("dddddddddddd", {"before": "bbbbbbbbbbbb"})]
         assert "before `Bravo`" in out
-
-    def test_the_renumber_states_its_container_to_the_endpoint(self) -> None:
-        """The reorder POST carries ``expected_parent`` naming the destination.
-
-        The batch is computed from a snapshot of the tree, so the claim is what
-        lets the endpoint refuse the renumber (409) when a concurrent reparent
-        moves a sibling between that read and the write. The destination here is
-        the root lane, and the claim for it is the empty string -- a real value,
-        present in the body, not an omitted key.
-        """
-        out, dash = _call("chat_folder_move", {"folder": "Delta", "after": "Alpha"}, _positioning())
-        assert not out.startswith("Error:")
-        (reorder,) = dash.sent("POST /api/chat/folders/reorder")
-        assert reorder.body["expected_parent"] == ""
 
     def test_an_anchor_alone_reorders_without_moving(self) -> None:
         """The reason an anchor may stand in for ``new_parent``.
@@ -1925,20 +1878,15 @@ class TestFolderPosition:
             {"folder": "Parent/Bravo", "before": "Parent/Alpha"},
             _positioning(folders=nested),
         )
-        assert not out.startswith("Error:")
-        # Stays inside Parent — the anchor chose the destination. Alpha sits at 0
-        # and nothing precedes it, so one write puts Bravo ahead of it; and since
-        # Bravo stays inside Parent, parent_id is omitted and only the position
-        # is written.
-        assert [r.body for r in _writes(dash)] == [{"order": -1}]
+        assert not out.startswith("Error:"), out
+        # Stays inside Parent, so parent_id is omitted and only the anchor is sent.
+        assert _patch_bodies(dash) == [("bbbbbbbbbbbb", {"before": "aaaaaaaaaaaa"})]
 
-    def test_only_folders_whose_position_changes_are_written(self) -> None:
-        """A no-op reposition must not spend a write per sibling."""
-        out, dash = _call("chat_folder_move", {"folder": "Bravo", "after": "Alpha"}, _positioning())
-        assert not out.startswith("Error:")
-        # Bravo already sits right after Alpha, so every sibling keeps its
-        # number -- and with the same parent AND the position it already holds,
-        # there is nothing to write at all.
+    def test_a_same_parent_move_without_anchor_writes_nothing(self) -> None:
+        out, dash = _call(
+            "chat_folder_move", {"folder": "Bravo", "new_parent": "root"}, _positioning()
+        )
+        assert not out.startswith("Error:"), out
         assert _writes(dash) == []
 
     def test_a_same_parent_reposition_is_not_reported_as_a_move(self) -> None:
@@ -1952,205 +1900,38 @@ class TestFolderPosition:
         assert "Moved" not in out
 
     def test_a_reparent_that_also_positions_says_both(self) -> None:
-        out, _ = _call(
+        out, dash = _call(
             "chat_folder_move",
             {"folder": "Travel", "after": "kirocrew/0811"},
             _positioning(folders=_FOLDERS, slots=_SLOTS),
         )
         assert out.startswith("Moved folder")
         assert "kirocrew/Travel" in out and "after `kirocrew/0811`" in out
+        # Reparent and position travel in ONE request, so neither can land alone.
+        (write,) = _writes(dash)
+        assert write.body["parent_id"] == "aaaaaaaaaaaa" and "after" in write.body
 
-    def test_a_free_slot_makes_the_whole_reposition_one_write(self) -> None:
-        """The answer to "several writes cannot be atomic": usually there is one.
+    def test_an_endpoint_refusal_is_surfaced(self) -> None:
+        """Ownership is the endpoint's: the tool forwards and reports its verdict.
 
-        Several writes CAN land half-applied, since the endpoint takes one row at a
-        time. So a position the store already has room for is written as a single
-        PATCH and cannot be partial at all; only adjacent neighbours force the
-        renumber. Alpha is first, so the slot ahead of it is free.
-        """
-        out, dash = _call(
-            "chat_folder_move", {"folder": "Delta", "before": "Alpha"}, _positioning()
-        )
-        assert not out.startswith("Error:")
-        assert len(_writes(dash)) == 1
-        assert _patched_orders(dash) == {"dddddddddddd": -1}
-
-    def test_a_gap_between_neighbours_is_used_instead_of_renumbering(self) -> None:
-        """A deleted folder leaves a gap, and a gap is a free slot."""
-        gapped = [
-            {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
-            {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 10},
-            {"id": "dddddddddddd", "name": "Delta", "parent_id": "", "order": 20},
-        ]
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Delta", "after": "Alpha"},
-            _positioning(folders=gapped),
-        )
-        assert not out.startswith("Error:")
-        assert len(_writes(dash)) == 1
-        # Midpoint of the 0..10 gap, so a later insert on either side still fits.
-        assert _patched_orders(dash) == {"dddddddddddd": 5}
-
-    def test_an_app_cannot_position_a_folder_whose_subtree_holds_a_foreign_one(self) -> None:
-        """Positioning takes the descendants with it, so the blast radius is the subtree.
-
-        The app owns the row it names, so the moved-folder check passes. But the
-        person's folder is nested inside it, and repositioning the parent relocates
-        the child -- the same violation the endpoint refuses on a reparent, reached
-        one level down. Placing AppRoot after AppTwo has a free slot, so it is a
-        single order PATCH on AppRoot's own row; the endpoint refuses that write
-        because AppRoot's subtree holds the person's folder, and the tool surfaces
-        the refusal rather than pre-checking it.
+        An app may position only its own folder. The endpoint decides that under
+        the store lock, on the one row a position writes, so the tool has no
+        ownership pre-check of its own to drift from it.
         """
         rows = [
-            {
-                "id": "aaaaaaaaaaaa",
-                "name": "AppRoot",
-                "parent_id": "",
-                "order": 0,
-                "owner_app": "x",
-            },
-            {"id": "pppppppppppp", "name": "Person", "parent_id": "aaaaaaaaaaaa", "order": 0},
-            {"id": "bbbbbbbbbbbb", "name": "AppTwo", "parent_id": "", "order": 1, "owner_app": "x"},
+            {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 0},
+            {"id": "aaaaaaaaaaaa", "name": "AppOne", "parent_id": "", "order": 1, "owner_app": "x"},
         ]
         refused = {"error": "this app does not own that folder", "code": "folder_not_owned"}
         out, dash = _call(
             "chat_folder_move",
-            {"folder": "AppRoot", "after": "AppTwo"},
+            {"folder": "Person", "after": "AppOne"},
             _positioning(folders=rows, slots=[{"key": "chat-1-1", "app": "x"}], patch=refused),
             Caller.strict("dashboard:chat-1-1"),
         )
         assert out.startswith("Error:"), out
         assert "does not own" in out, out
-        # The order PATCH on AppRoot was attempted and refused by the endpoint's
-        # subtree guard, not pre-empted in the tool.
-        assert dash.sent("PATCH /api/chat/folders/{folder}")
-
-    def test_a_renumber_that_rewrites_a_foreign_row_is_refused_by_the_endpoint(
-        self,
-    ) -> None:
-        """Ownership lives in the endpoint, not a tool-layer pre-check.
-
-        When a renumber's batch includes a row the app does not own, the reorder
-        endpoint re-validates every row under the store lock and refuses the whole
-        batch, leaving the order untouched. The tool does not pre-check this; it
-        sends the batch and surfaces the endpoint's atomic refusal.
-
-        Moving AppTwo just after AppOne renumbers the contiguous 0,1,2 set, so
-        Person's row (the person's, not the app's) is one of the writes -- which is
-        what the endpoint refuses.
-        """
-        rows = [
-            {"id": "aaaaaaaaaaaa", "name": "AppOne", "parent_id": "", "order": 0, "owner_app": "x"},
-            {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 1},
-            {"id": "bbbbbbbbbbbb", "name": "AppTwo", "parent_id": "", "order": 2, "owner_app": "x"},
-        ]
-        refused = {
-            "error": "this app does not own one of those folders",
-            "code": "folder_not_owned",
-        }
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "AppTwo", "after": "AppOne"},
-            _positioning(folders=rows, slots=[{"key": "chat-1-1", "app": "x"}], reorder=refused),
-            Caller.strict("dashboard:chat-1-1"),
-        )
-        # A refused renumber is reported on the reposition line (not an "Error:"
-        # prefix): the reparent, if any, landed and the ordering did not.
-        assert "ordering was refused" in out, out
-        assert "does not own" in out, out
-        assert "stored order is unchanged" in out, out
-        # The batch really did name Person (the foreign row), so the endpoint had
-        # something to refuse -- the renumber is not silently app-only.
-        assert "pppppppppppp" in _posted_orders(dash), out
-
-    def test_an_app_cannot_position_a_folder_it_does_not_own(self) -> None:
-        """The tool refuses the position BEFORE any write -- the pinned no-write case.
-
-        Positioning is relative, so it does not need a write to its own target: a
-        pure reposition sends no `parent_id`, so the endpoint's reparent rule never
-        fires, and renumbering the app's OWN siblings around the person's folder
-        changes where the person's folder renders with no write to it for the
-        endpoint to refuse. The moved-folder ownership refusal therefore lives in
-        the tool, and it fires before any PATCH or reorder is issued -- this test
-        pins that no write is attempted at all.
-        """
-        rows = [
-            {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 0},
-            {"id": "aaaaaaaaaaaa", "name": "AppOne", "parent_id": "", "order": 1, "owner_app": "x"},
-            {"id": "bbbbbbbbbbbb", "name": "AppTwo", "parent_id": "", "order": 2, "owner_app": "x"},
-        ]
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Person", "after": "AppTwo"},
-            _positioning(folders=rows, slots=[{"key": "chat-1-1", "app": "x"}]),
-            Caller.strict("dashboard:chat-1-1"),
-        )
-        assert out.startswith("Error:"), out
-        assert "does not own" in out, out
-        # No write of any kind: not the free-slot PATCH on the moved row, and not a
-        # batched reorder of the app's siblings around it. The refusal is the tool's,
-        # not the endpoint's, because a relative renumber can name only owned rows.
-        assert _writes(dash) == []
-
-    def test_a_relative_renumber_around_a_foreign_folder_is_refused_with_no_write(
-        self,
-    ) -> None:
-        """The exact reachable gap: the moved row keeps its order, only siblings write.
-
-        Person(order 1) sits between AppA(0) and AppB(2). Placing Person after AppA
-        leaves Person at the index it already occupies, so `own_pos is None` and no
-        PATCH names Person; without the moved-folder refusal the only writes would
-        renumber the app's OWN siblings, every one owned, and both endpoints would
-        allow it -- the person's folder relocated by an app with nothing refused.
-        The tool-layer moved-folder check closes this: it refuses before computing
-        or issuing any write.
-        """
-        rows = [
-            {"id": "aaaaaaaaaaaa", "name": "AppA", "parent_id": "", "order": 0, "owner_app": "x"},
-            {"id": "pppppppppppp", "name": "Person", "parent_id": "", "order": 1},
-            {"id": "bbbbbbbbbbbb", "name": "AppB", "parent_id": "", "order": 2, "owner_app": "x"},
-        ]
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Person", "after": "AppA"},
-            _positioning(folders=rows, slots=[{"key": "chat-1-1", "app": "x"}]),
-            Caller.strict("dashboard:chat-1-1"),
-        )
-        assert out.startswith("Error:"), out
-        assert "does not own" in out, out
-        assert _writes(dash) == []
-
-    def test_a_relative_renumber_of_a_folder_with_a_foreign_subtree_is_refused_with_no_write(
-        self,
-    ) -> None:
-        """The subtree half of the same gap: the moved folder is owned, its child is not.
-
-        AppMid(order 1, app-owned) sits between AppA(0) and AppB(2) and holds the
-        person's PersonKid inside it. Placing AppMid after AppA leaves it at index 1,
-        so `own_pos is None` and no write names AppMid; the moved-folder OWNERSHIP
-        check passes (the app owns AppMid), and without the subtree check the only
-        writes would renumber owned siblings, so both endpoints would allow it -- the
-        person's nested folder relocated with nothing refused. The tool-layer
-        moved-folder SUBTREE check closes this: it refuses before any write.
-        """
-        rows = [
-            {"id": "aaaaaaaaaaaa", "name": "AppA", "parent_id": "", "order": 0, "owner_app": "x"},
-            {"id": "mmmmmmmmmmmm", "name": "AppMid", "parent_id": "", "order": 1, "owner_app": "x"},
-            {"id": "pppppppppppp", "name": "PersonKid", "parent_id": "mmmmmmmmmmmm", "order": 0},
-            {"id": "bbbbbbbbbbbb", "name": "AppB", "parent_id": "", "order": 2, "owner_app": "x"},
-        ]
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "AppMid", "after": "AppA"},
-            _positioning(folders=rows, slots=[{"key": "chat-1-1", "app": "x"}]),
-            Caller.strict("dashboard:chat-1-1"),
-        )
-        assert out.startswith("Error:"), out
-        assert "does not own" in out, out
-        # No write of any kind: the subtree refusal fires before the renumber.
-        assert _writes(dash) == []
+        assert len(dash.sent("PATCH /api/chat/folders/{folder}")) == 1
 
     def test_a_row_deeper_than_the_sidebar_draws_is_listed_at_the_cap_depth(self) -> None:
         """Clamp the indentation, keep the row.
@@ -2176,24 +1957,6 @@ class TestFolderPosition:
         assert max(depths) == mcp_dashboard._SIDEBAR_MAX_DRAWN_DEPTH
         assert depths.count(0) == 1, "the deep rows are not relocated to the top level"
         assert depths == list(range(11)) + [10, 10, 10]
-
-    def test_a_saturated_edge_has_no_free_slot(self) -> None:
-        """One past the bound reads back AS the bound, so it is not outside anything.
-
-        `_free_slot_order` earns its single write by naming an order no sibling
-        holds. At the numeric limit that is impossible: the value it would return
-        comes back through the same clamp as the anchor's own order, so the pair
-        ties and the name tie-break — not the requested side — decides where the
-        folder lands. There is no representable slot, so the caller must renumber.
-        """
-        limit = mcp_dashboard._CHAT_FOLDER_ORDER_LIMIT
-        at_top = [{"id": "aaaaaaaaaaaa", "name": "A", "parent_id": "", "order": limit}]
-        at_bottom = [{"id": "bbbbbbbbbbbb", "name": "B", "parent_id": "", "order": -limit}]
-        assert mcp_dashboard._free_slot_order(at_top, 1) is None
-        assert mcp_dashboard._free_slot_order(at_bottom, 0) is None
-        # The other edge of each is still free: only the saturated side is refused.
-        assert mcp_dashboard._free_slot_order(at_top, 0) == limit - 1
-        assert mcp_dashboard._free_slot_order(at_bottom, 1) == -limit + 1
 
     def test_the_shared_golden_fixture_orders_identically_on_this_side(self) -> None:
         """One fixture, both suites — see test/fixtures/chat_folder_sibling_order.json.
@@ -2318,36 +2081,9 @@ class TestFolderPosition:
         assert out.startswith("Error:") and "folder not found" in out
         assert _writes(dash) == []
 
-    def test_a_failed_order_write_says_the_position_itself_landed(self) -> None:
-        """A refused reorder is reported as atomic, not half-applied.
 
-        The renumber is one atomic request now, so a refusal leaves the stored
-        order untouched -- the message says exactly that and tells the caller to
-        re-run. With the parent unchanged there was no move, so it names a
-        reposition, not a reparent that did not occur -- in the one message a
-        caller reads while deciding what to retry.
-        """
-        out, _ = _call(
-            "chat_folder_move",
-            {"folder": "Delta", "after": "Alpha"},
-            _positioning(reorder={"error": "this app does not own one of those folders"}),
-        )
-        assert "ordering was refused" in out, out
-        assert "stored order is unchanged" in out, out
-        assert "Repositioned folder" in out, out
-        assert "Moved folder" not in out, out
-        assert not out.startswith("Error:")
-
-
-class TestPositionRenumberIsAllOrNothingForAnApp:
-    """An app may not half-shuffle the person's sidebar.
-
-    Repositioning several siblings is ONE atomic reorder request, and the
-    endpoint re-validates this app's ownership of every row under the store lock.
-    A batch that names a row the app does not own is refused whole, leaving the
-    order untouched -- so the tool relies on the endpoint rather than pre-checking,
-    and a refusal cannot land midway.
-    """
+class TestAnAppPositionsItsOwnFolder:
+    """Positioning writes only the moved folder, so the person's siblings never block it."""
 
     OWNED = [
         {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
@@ -2363,145 +2099,16 @@ class TestPositionRenumberIsAllOrNothingForAnApp:
     RADAR_ROWS = [
         {"key": "chat-1-100", "title": "Radar run", "folder_id": "", "app": "issue-radar"}
     ]
-    REFUSED = {"error": "this app does not own one of those folders", "code": "folder_not_owned"}
 
-    def test_renumbering_a_folder_the_app_does_not_own_is_refused_by_the_endpoint(
-        self,
-    ) -> None:
-        # Alpha and Bravo hold adjacent integers, so landing BETWEEN them has no
-        # free slot and can only be reached by renumbering the person's two rows --
-        # which the reorder endpoint refuses atomically, leaving the order intact.
+    def test_between_two_of_the_persons_folders_is_one_patch(self) -> None:
         out, dash = _call(
             "chat_folder_move",
             {"folder": "Radar out", "after": "Alpha"},
-            _positioning(folders=self.OWNED, slots=self.RADAR_ROWS, reorder=self.REFUSED),
-        )
-        assert "ordering was refused" in out and "does not own" in out, out
-        # The person's Bravo was named in the atomic batch, so there was a foreign
-        # row for the endpoint to refuse; no per-row PATCH was ever issued.
-        assert "bbbbbbbbbbbb" in _posted_orders(dash), out
-        assert not dash.sent("PATCH /api/chat/folders/{folder}")
-
-    def test_an_app_may_place_its_own_folder_where_a_slot_is_free(self) -> None:
-        """The rule is about renumbering the person's rows, not about positioning.
-
-        Ahead of Alpha the slot is free, so the app writes only its OWN row: none
-        of the person's folders change, and the endpoint judges that single write.
-        """
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Radar out", "before": "Alpha"},
             _positioning(folders=self.OWNED, slots=self.RADAR_ROWS),
         )
-        assert not out.startswith("Error:")
+        assert not out.startswith("Error:"), out
+        assert _patch_bodies(dash) == [("cccccccccccc", {"after": "aaaaaaaaaaaa"})]
         assert len(_writes(dash)) == 1
-        assert _patched_orders(dash) == {"cccccccccccc": -1}
-
-    def test_the_same_move_without_a_position_still_reaches_the_endpoint(self) -> None:
-        """The refusal is about the RENUMBER, not about moving at all."""
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Radar out", "new_parent": "Alpha"},
-            _positioning(folders=self.OWNED, slots=self.RADAR_ROWS),
-        )
-        assert not out.startswith("Error:")
-        assert dash.sent("PATCH /api/chat/folders/{folder}")
-
-    def test_a_lone_FOREIGN_order_write_is_still_refused(self) -> None:
-        """A renumber can change exactly ONE row, and not the moved folder's.
-
-        The endpoint re-validates EVERY row in the batch, so a single foreign row
-        (the person's Bravo) is refused whole -- the count is not the question,
-        whether any row belongs to someone else is. Here the app's folder already
-        holds its target position, so the only row whose order changes is Bravo.
-        """
-        rows = [
-            {"id": "aaaaaaaaaaaa", "name": "Alpha", "parent_id": "", "order": 0},
-            {"id": "bbbbbbbbbbbb", "name": "Bravo", "parent_id": "", "order": 1},
-            {
-                "id": "cccccccccccc",
-                "name": "Radar out",
-                "parent_id": "",
-                "order": 1,
-                "owner_app": "issue-radar",
-            },
-        ]
-        # Alpha(0) and the app's own Radar out(1) are adjacent, so landing
-        # between them renumbers; Radar out keeps position 1 and only the
-        # person's Bravo has to move.
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Radar out", "after": "Alpha"},
-            _positioning(folders=rows, slots=self.RADAR_ROWS, reorder=self.REFUSED),
-        )
-        assert "ordering was refused" in out and "does not own" in out, out
-        # The batch named the person's Bravo, which is what the endpoint refuses.
-        assert "bbbbbbbbbbbb" in _posted_orders(dash), out
-        assert not dash.sent("PATCH /api/chat/folders/{folder}")
-
-    def test_a_person_reordering_their_own_tree_is_not_gated(self) -> None:
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "Delta", "before": "Alpha"},
-            _positioning(
-                slots=[{"key": "chat-1-100", "title": "Raymond", "folder_id": "", "app": ""}]
-            ),
-        )
-        assert not out.startswith("Error:")
-        # Alpha is first, so the slot ahead of it is free -- one write, no renumber.
-        assert _patched_orders(dash) == {"dddddddddddd": -1}
-
-    def test_a_cross_parent_move_needing_a_foreign_renumber_refuses_before_the_reparent(
-        self,
-    ) -> None:
-        """The reparent must NOT commit when the renumber it needs would be refused.
-
-        A cross-parent move sends a reparent PATCH first, then an atomic reorder.
-        When the destination has no free slot, the reorder names sibling rows to
-        renumber; if one of those is the person's, the endpoint refuses the reorder
-        -- but the reparent PATCH has already landed, leaving the folder moved into
-        the new parent yet unpositioned. The tool preflights the batch's ownership
-        for the reparent case, so a batch that would be refused writes NOTHING: no
-        reparent PATCH, no reorder POST. This pins that no write is attempted.
-        """
-        rows = [
-            {
-                "id": "tttttttttttt",
-                "name": "AppTop",
-                "parent_id": "",
-                "order": 0,
-                "owner_app": "issue-radar",
-            },
-            {"id": "pppppppppppp", "name": "PersonTop", "parent_id": "", "order": 1},
-            {
-                "id": "oooooooooooo",
-                "name": "Other",
-                "parent_id": "",
-                "order": 2,
-                "owner_app": "issue-radar",
-            },
-            {
-                "id": "cccccccccccc",
-                "name": "Mover",
-                "parent_id": "oooooooooooo",
-                "order": 0,
-                "owner_app": "issue-radar",
-            },
-        ]
-        # Mover (own, nested under Other) up to the top level after AppTop(0):
-        # AppTop and PersonTop are adjacent, so landing between them renumbers,
-        # and the batch names PersonTop (the person's). The move also reparents
-        # Mover (parent Other -> top level), so without the preflight the
-        # reparent PATCH would commit before the reorder is refused.
-        out, dash = _call(
-            "chat_folder_move",
-            {"folder": "cccccccccccc", "after": "tttttttttttt"},
-            _positioning(folders=rows, slots=self.RADAR_ROWS),
-        )
-        assert out.startswith("Error:"), out
-        assert "does not own" in out, out
-        # No write of any kind: not the reparent PATCH, not the atomic reorder.
-        assert _writes(dash) == []
 
 
 class TestTreeListsInSidebarOrder:
@@ -2704,8 +2311,9 @@ class TestTreeHonoursTheFolderSortMode:
     def test_a_position_is_computed_in_the_stored_order_whatever_the_mode(self) -> None:
         """Choosing a view mode never rewrites the stored positions, and a
         before/after anchor is a stored-position concept: with the sidebar sorted
-        by name, "after 01. Alpha" still lands in the gap after Alpha's STORED
-        position (3, the last), not after its displayed one (first)."""
+        by name, "after 01. Alpha" still names the gap after Alpha's STORED
+        position. The tool sends the anchor as is, and the gateway resolves it in
+        the custom order (``folder_rank.section_siblings``)."""
         _set_folder_sort("name")
         out, dash = _call(
             "chat_folder_move",
@@ -2713,11 +2321,8 @@ class TestTreeHonoursTheFolderSortMode:
             _positioning(folders=_NUMBERED),
         )
         assert not out.startswith("Error"), out
-        assert not dash.sent(
-            "POST /api/chat/folders/reorder"
-        ), "a free slot after the last stored position needs no renumber"
         assert [(r.path, r.body) for r in _writes(dash)] == [
-            ("/api/chat/folders/aaaaaaaaaaaa", {"order": 4})
+            ("/api/chat/folders/aaaaaaaaaaaa", {"after": "dddddddddddd"})
         ]
 
     def test_the_default_sibling_sort_is_the_custom_order(self) -> None:

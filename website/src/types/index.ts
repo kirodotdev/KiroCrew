@@ -1414,6 +1414,10 @@ export interface PullRequestSource {
 
 export interface ChatFolder {
   id: string; name: string; collapsed?: boolean; order: number; parent_id?: string; color?: string; icon?: string; default_agent?: string; project_dir?: string; hidden?: boolean; history_count?: number
+  /** Fractional sibling-order key set by the gateway on every positioning
+   *  (`utils/folderRank.ts`). Absent on a folder nobody has positioned since
+   *  ranks existed; such a folder sorts after its ranked siblings by `order`. */
+  rank?: string
   /** Epoch seconds the folder was created, written by every folder creator since
    *  the sidebar's `created` sort existed. Absent on a row from before that; such
    *  a row sorts as older than every stamped one. Read only through

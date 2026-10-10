@@ -45,7 +45,7 @@ export function useFolderSort({ queryClient, mcCfg, mcCfgStatus, mcCfgError, mcC
   // success write puts the accepted value into the cache at that instant and
   // every reader switches together -- and a refused save never leaves the
   // stored order. The fallback draws fine -- it is the order every earlier
-  // build drew -- but a sibling drag may not write against it: that renumber is
+  // build drew -- but a sibling drag may not write against it: its anchor is
   // computed from the DRAWN order, and only in the custom mode is that the
   // STORED order, so in any other mode it would rewrite the manual arrangement
   // behind a view the person is not looking at, and behind an unknown mode it
@@ -392,14 +392,20 @@ export function useFolderMutations({ queryClient, setFolderActionError, folders 
     onSuccess: () => invalidateFoldersWhenIdle(queryClient),
     onError: (e) => setFolderActionError((errMessage(e) || i18nT('components.errorBoundary.something_went_wrong'))),
   })
+  // `body` is what the PATCH carries; `optimistic` is a cache-only addition to
+  // the optimistic patch, for a field the request must NOT name but the drawn
+  // row must change (a re-parent drops the rank it held in its old section,
+  // which the gateway re-assigns and the client cannot predict). Both are
+  // rolled back field-scoped on failure.
   const updateFolderMutation = useMutation({
     mutationKey: CHAT_FOLDERS_WRITE_KEY,
-    mutationFn: ({ id, body }: { id: string; body: object; onCommitted?: () => void }) => api.updateChatFolder(id, body),
-    onMutate: async ({ id, body }) => {
+    mutationFn: ({ id, body }: { id: string; body: object; optimistic?: Partial<ChatFolder>; onCommitted?: () => void }) => api.updateChatFolder(id, body),
+    onMutate: async ({ id, body, optimistic }) => {
       await queryClient.cancelQueries({ queryKey: ['chat-folders'] })
       const before = queryClient.getQueryData<ChatFolder[]>(['chat-folders'])?.find(f => f.id === id)
-      queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => f.id === id ? { ...f, ...body } : f))
-      return { id, body, before }
+      const patch = { ...body, ...optimistic }
+      queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => f.id === id ? { ...f, ...patch } : f))
+      return { id, patch, before }
     },
     // The ack callback rides the mutation VARIABLES, not a per-call
     // `mutate(..., { onSuccess })`: TanStack Query's observer only invokes the
@@ -420,11 +426,11 @@ export function useFolderMutations({ queryClient, setFolderActionError, folders 
       // rename / collapse / move that just snapped back is not read as a dead click.
       setFolderActionError((errMessage(err) || i18nT('components.errorBoundary.something_went_wrong')))
       if (!ctx?.before) return
-      const { id, body, before } = ctx
+      const { id, patch, before } = ctx
       queryClient.setQueryData<ChatFolder[]>(['chat-folders'], old => (old ?? []).map(f => {
         if (f.id !== id) return f
         const cur = { ...f } as Record<string, unknown>
-        const opt = body as Record<string, unknown>
+        const opt = patch as Record<string, unknown>
         const prev = before as unknown as Record<string, unknown>
         for (const k of Object.keys(opt)) if (cur[k] === opt[k]) cur[k] = prev[k]
         return cur as unknown as ChatFolder

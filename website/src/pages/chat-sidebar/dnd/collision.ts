@@ -110,7 +110,7 @@ export const sidebarCollision: CollisionDetection = (args) => {
     // Every folder row — root and nested — is a `folder` droppable, so without
     // this a closest-center fallback could resolve to a row in a DIFFERENT
     // container; that is a re-parent gesture, and routing it to the reorder path
-    // renumbers nothing, which reads as the drag having been ignored. Absent
+    // moves nothing, which reads as the drag having been ignored. Absent
     // (drag data predating the field), every folder row stays eligible, which is
     // what the root lane did when it was the only sortable level.
     const siblings = activeData?.siblings

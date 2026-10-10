@@ -11813,6 +11813,8 @@
       "folder_create_failed": "Chat konnte nicht erstellt werden.",
       "folder_options_for": "Ordneroptionen für {{name}}",
       "folder_project_dir_missing": "Das Projektverzeichnis des Ordners existiert nicht mehr: {{path}}. Aktualisiere es in den Ordnereinstellungen.",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> ist zurück unter <parent>{{parent}}</parent>, am Ende. Der Ordner, neben dem er stand, wurde verschoben oder gelöscht.",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> ist zurück auf der obersten Ebene, am Ende. Der Ordner, neben dem er stand, wurde verschoben oder gelöscht.",
       "folders": "Ordner",
       "goal_loop_cycle": "Zielschleife · Zyklus {{count}} von {{total}}",
       "goal_loop_cycle_no_cap": "Zielschleife · Zyklus {{count}} (unbegrenzt)",

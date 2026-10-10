@@ -3257,51 +3257,50 @@ conductors call it once in their first turn, then create every worker with
 `folder="<goal>/<agent>"`, giving one heading per goal with the conductor
 directly under it and one subfolder per agent kind.
 
-**Position is the one folder write the tool layer has to compose.** A folder's
-place among its siblings is an `order` int the endpoint stores verbatim and never
-renumbers, so there is no single value a caller could compute — which is why
-`chat_folder_move` takes `before`/`after` naming a SIBLING rather than a number.
-Most placements are still ONE write: when the store already has a free integer
-slot at that position — ahead of the first sibling, past the last, or in a gap a
-delete left behind — only the moved row is written, so the reposition cannot land
-half-applied. Only two neighbours holding adjacent integers, which is what a
-sidebar drag leaves behind, force the siblings to be renumbered; that renumber is
-contiguous from 0, the same values `computeReorderedFolders` writes, so the two
-paths leave one convention in the store instead of two.
+**Position is a rank the gateway picks.** A folder's place among its siblings
+is a short `rank` string (`src/kiro_crew/dashboard/folder_rank.py`), and
+siblings sort by comparing those strings as base-62 fractions — the standard
+fractional-indexing approach. `chat_folder_move` takes `before`/`after` naming a
+SIBLING and sends it in the same `PATCH /api/chat/folders/{id}` as any reparent;
+the endpoint resolves the anchor under the folder-store lock and writes a rank
+strictly between the two neighbours. The REST PATCH also accepts both keys to
+name one exact adjacent gap; a missing or non-adjacent pair returns 409
+`folder_anchor_not_sibling`. The MCP tool keeps its single-anchor interface. A
+move therefore writes the moved folder and nothing else, and the sidebar drag sends the same anchor-shaped request. The
+batch `POST /api/chat/folders/reorder` older bundles dragged through is kept as a
+410 tombstone that tells an old tab to reload.
+
+Folders written before ranks existed carry only the integer `order`. They sort
+after every ranked sibling by that `order`, then name, which is the order older
+builds drew, so no migration runs. A section is re-spread whenever any sibling
+rank is missing or invalid, or any two sibling ranks are duplicated. The spread
+gives every sibling a fresh, evenly spaced rank in the order they already render
+in, then places the moved folder. The person's action may spread the whole
+section. An app's action may spread only when every row it rewrites belongs to
+that app; if a spread would rewrite one of the person's rows, the position is
+refused until the person drags a folder in that section once.
+
+A new folder, or one reparented without an anchor, takes a rank after its last
+sibling when that section is fully ranked, so later moves there stay a single
+rank. When an app reparents without an anchor into a legacy section that would
+need a spread across the person's rows, the gateway instead drops only the moved
+folder's rank and keeps its stored legacy `order`, exactly as a plain reparent
+did before ranks existed. That keeps the plain reparent available while writing
+only the app's row.
 
 An anchor may stand in for `new_parent` because an omitted `new_parent` means the
 top level: without that, ordering a folder inside a folder would be
 inexpressible, since every call would drag it out to the root as the price of
 positioning it.
 
-Composing writes is where an app's confinement needs a rule the endpoint cannot
-state. The endpoint judges each PATCH on its own, so an app whose placement needs
-a renumber would have its first write accepted and a later one refused, leaving
-the person's sidebar in an order nobody chose and nothing to roll it back with.
-So the tool layer checks the WHOLE renumber against the caller's ownership before
-the first write and refuses the call intact — the only folder rule this layer
-decides, and it decides it because atomicity across several endpoint calls is a
-property only the caller can hold. A one-write placement is not gated: it touches
-the app's own row only, and the endpoint judges that write as it judges any other.
-
-The renumber path keeps one accepted residue. Several single-row writes cannot be
-made atomic from here, so a transport failure partway through leaves the
-destination's siblings carrying a mix of old and new numbers until the call is
-re-run — a display sequence, reported to the caller, over a field whose duplicates
-and gaps are already legal and already tie-broken by name. The sidebar's own drag
-has the same shape today, firing one `updateChatFolder` per changed folder with no
-transaction. Closing it for both paths needs a bulk order write that applies under
-the folder-store lock, which is a change to the store's API rather than to this
-layer.
-
-A second accepted residue sits on the read side. `GET /api/chat/folders` returns
+One accepted residue sits on the read side. `GET /api/chat/folders` returns
 stored rows verbatim — the store's loader validates `id` and nothing else — so both
 readers of that response separately coerce `order` to a clamped integer and `name`
 to a string before comparing. That value-cleaning is duplicated in two languages
 because it happens in two consumers rather than once in the producer, and
 normalizing on the way out would delete it from both. Deferred rather than done
 here: this endpoint is shared by more consumers than the two that sort with it, and
-the change belongs with the store's API alongside the bulk write above. What such a
+the change belongs with the store's API. What such a
 normalization would NOT remove is the comparison itself — Python orders strings by
 code point where JavaScript orders by UTF-16 code unit, so the tool encodes
 `utf-16-be` to compare as the sidebar does, and no shape of producer output makes
@@ -3319,14 +3318,16 @@ Unicode version published, so folding it adds no version dependency, and it is w
 folding because the name is not always merely a tie-break: a store written before
 `order` existed carries no `order` on any row, so every sibling ties at 0 and the
 name decides that whole sidebar. Raw code-unit order would render those
-uppercase-first until the first drag renumbered them.
+uppercase-first until the first drag ranked them.
 
 `chat_folder_tree` lists folders in that same stored order rather than by path,
 because it is what an anchor is picked from — an alphabetical listing would show a
 sequence the person never sees and make every `before`/`after` a guess. The
-comparator is `order` then name, and both sides read a missing `order` as 0:
-`folderTree.bySidebarOrder` for every surface that draws siblings, and
-`_chat_folder_order` for the tool. A folder written before the field existed
+comparator is rank then id for ranked rows, then `order` then name for the rest,
+and both sides read a missing `order` as 0: `folderTree.bySidebarOrder` for every
+surface that draws siblings, and `folder_rank.custom_sort_key` for the tool and
+the endpoint. `test/fixtures/chat_folder_rank.json` holds the rank cases both
+suites check. A folder written before the field existed
 carries no `order` at all, so a comparator without that coercion would compare
 `NaN`, fall through to its tie-break, and show the agent a different sequence than
 the person sees.

@@ -11645,6 +11645,8 @@
       "folder_create_failed": "无法创建聊天。",
       "folder_options_for": "{{name}} 的文件夹选项",
       "folder_project_dir_missing": "该文件夹的项目目录已不存在：{{path}}。请在文件夹设置中更新。",
+      "folder_undo_anchor_gone": "<name>{{name}}</name> 已回到 <parent>{{parent}}</parent> 下，位于末尾。它旁边的文件夹已移动或已删除。",
+      "folder_undo_anchor_gone_top": "<name>{{name}}</name> 已回到顶层，位于末尾。它旁边的文件夹已移动或已删除。",
       "folders": "文件夹",
       "goal_loop_cycle": "目标循环 · 第 {{count}} 轮，共 {{total}} 轮",
       "goal_loop_cycle_no_cap": "目标循环 · 第 {{count}} 轮（无上限）",

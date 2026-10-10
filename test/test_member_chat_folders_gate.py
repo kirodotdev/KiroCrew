@@ -102,13 +102,6 @@ class TestAdmittedChatRouteMethods:
     def test_sibling_and_foreign_routes_are_not_admitted(self, path):
         assert _shared._admitted_chat_route_methods(path) is None
 
-    def test_reorder_is_admitted_post_only(self):
-        # The sibling-position leg of a folder move is admitted (POST), fenced
-        # to member-owned folders in the handler.
-        assert _shared._admitted_chat_route_methods("/api/chat/folders/reorder") == frozenset(
-            {"POST"}
-        )
-
     def test_wrong_method_on_an_admitted_path_is_not_matched(self):
         # DELETE on the folders collection route is not admitted.
         assert "DELETE" not in _shared._admitted_chat_route_methods("/api/chat/folders")
@@ -122,8 +115,6 @@ class TestAdmittedChatRouteMethods:
         assert _shared._admitted_chat_route_methods("/api/chat/tag-columns") == frozenset({"GET"})
         # POST on the session list is not admitted (GET only).
         assert "POST" not in _shared._admitted_chat_route_methods("/api/chat/slots")
-        # reorder admits POST only.
-        assert "GET" not in _shared._admitted_chat_route_methods("/api/chat/folders/reorder")
 
 
 # --------------------------------------------------------------------------- #
@@ -260,14 +251,6 @@ class TestChatRouteGate:
         _stub_scope(monkeypatch, scope=MEMBER_STORE)
         monkeypatch.setattr(sc, "member_admitted_to_scoped_surface", lambda k, s: True)
         req = _internal_request("GET", "/api/chat/slots")
-        assert await _shared.private_chat_route_refusal(req) is None
-
-    @pytest.mark.asyncio
-    async def test_member_admitted_to_reorder(self, monkeypatch):
-        # The sibling-position leg of a move is admitted; the handler fences it.
-        _stub_scope(monkeypatch, scope=MEMBER_STORE)
-        monkeypatch.setattr(sc, "member_admitted_to_scoped_surface", lambda k, s: True)
-        req = _internal_request("POST", "/api/chat/folders/reorder")
         assert await _shared.private_chat_route_refusal(req) is None
 
     @pytest.mark.asyncio

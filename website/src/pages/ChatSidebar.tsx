@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, useContext, Fragment } from 'react'
 import { createPortal } from 'react-dom'
+import { Trans } from 'react-i18next'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
 import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
@@ -23,7 +24,7 @@ import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
 import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
-import { switchSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, setCloseRefused, selectSidebarWorkflowActive, selectAutomationForSlot } from '../store/chatSlice'
+import { switchSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, setCloseRefused, requestFolderReveal, selectSidebarWorkflowActive, selectAutomationForSlot } from '../store/chatSlice'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
 import { IS_MAC } from '../hooks/useKeyboardShortcuts'
 import { api, SEARCH_MIN_CHARS } from '../api/client'
@@ -130,6 +131,7 @@ import { useHoverHold, useHoverPinLiveness } from './chat-sidebar/hoverHold'
 import { useLineageAvailable, useConductorLane, citedCreatorOf } from './chat-sidebar/conductor'
 import { useShortcutOrder } from './chat-sidebar/shortcuts'
 import { useFolderDropOps, useSidebarMoveUndo, useSidebarDragHandlers, useNativeSessionDrag } from './chat-sidebar/dnd/useSidebarDrag'
+import type { FolderUndoAnchorGone } from './chat-sidebar/dnd/useSidebarDrag'
 import { useSidebarReveal } from './chat-sidebar/reveal'
 import { useHoldPinnedHeaderOnCollapse } from './chat-sidebar/stickyCollapse'
 import { COLLAPSE_FLOOR_ATTR } from './chat-sidebar/collapseFloor'
@@ -2395,6 +2397,13 @@ function ChatSidebar({
   // update already rolls the cache back, but a rolled-back rename with no message
   // reads as a dead click.
   const [folderActionError, setFolderActionError] = useState('')
+  // The name of a folder whose drag-move Undo LANDED, but at the end of its old
+  // section rather than where it sat: the sibling it was anchored to had moved,
+  // so the gateway refused the anchor and the parent-only retry seated it last.
+  // Status, not error -- the write succeeded -- so it is kept apart from
+  // `folderActionError`, whose surface is titled "Folder update failed". '' when
+  // there is nothing to say.
+  const [folderUndoAnchorGone, setFolderUndoAnchorGone] = useState<FolderUndoAnchorGone>(null)
   // A failed "New chat" (any local variant) used to be a silent no-op: the
   // react-query rejection was swallowed and nothing rendered. Mirrors
   // remoteCrewError below, but lives above the list rather than in the menu,
@@ -3019,9 +3028,12 @@ function ChatSidebar({
     setDerivedHintCol(null)
     startNativeSessionDrag(key)
   }, [startNativeSessionDrag])
+  // The store-held reveal request the Command Bar and the folder chip raise;
+  // `useSidebarReveal` below consumes it against the rendered folder list.
+  const revealFolder = useCallback((folderId: string) => { dispatch(requestFolderReveal(folderId)) }, [dispatch])
   const {
     reorderFolders, moveFolderTo,
-  } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, updateFolderMutation })
+  } = useFolderDropOps({ folderReorderable, queryClient, setFolderActionError, setFolderUndoAnchorGone, revealFolder, updateFolderMutation })
   const { folderSubtrees, expandFolderAncestors } = useFolderTree({ folders, updateFolderMutation, clearBoardCollapse })
 
   const {
@@ -5533,6 +5545,47 @@ function ChatSidebar({
         className="mx-2 mt-2 shrink-0"
         testId="folder-action-error"
       />
+      {/* A drag-move Undo that landed, but not where the folder sat: the sibling
+       *  it was anchored to had moved, so the parent-only retry seated it last in
+       *  its old section. Status, not error -- the write succeeded, so it must not
+       *  sit under "Folder update failed" -- in the same neutral surface as the
+       *  reorder hint below. Names the folder: the line renders detached at the
+       *  top of the sidebar, so "this folder" points at nothing. Dismissable like
+       *  the error line: it describes a moment, and the tree already shows the
+       *  outcome. Custom order only: "at the end" describes the STORED order,
+       *  and under By name or By date created the folder draws at its name or
+       *  date position whatever its rank, so the fallback changes nothing on
+       *  screen and the line would be false. The reveal still runs in every
+       *  mode, so the person sees where the folder is. */}
+      {folderUndoAnchorGone && folderSortMode === 'custom' && (
+        <div
+          role="status"
+          className="mx-2 mt-2 shrink-0 rounded-lg border border-border bg-bg-elevated px-3 py-2 text-[12px] text-muted flex items-start gap-2"
+          data-testid="folder-undo-anchor-gone"
+        >
+          <CornerDownRight size={14} className="mt-[1px] shrink-0" aria-hidden="true" />
+          <span className="min-w-0 flex-1" style={{ overflowWrap: 'anywhere' }}>
+            <Trans
+              i18nKey={folderUndoAnchorGone.parent === null
+                ? 'pages.chatSidebar.folder_undo_anchor_gone_top'
+                : 'pages.chatSidebar.folder_undo_anchor_gone'}
+              values={{ name: folderUndoAnchorGone.name, parent: folderUndoAnchorGone.parent ?? '' }}
+              components={{
+                name: <strong className="font-semibold text-text" />,
+                parent: <strong className="font-semibold text-text" />,
+              }}
+            />
+          </span>
+          <IconButton
+            className="shrink-0 -my-[3px] -mr-[3px]"
+            aria-label={i18nT('components.errorNotice.dismiss')}
+            title={i18nT('components.errorNotice.dismiss')}
+            onClick={() => setFolderUndoAnchorGone(null)}
+          >
+            <X size={14} aria-hidden="true" />
+          </IconButton>
+        </div>
+      )}
       {/* The folder order (dashboard.folder_sort) could not be read AND there is
        *  no body to fall back on: the tree is drawn in the stored order meanwhile
        *  and sibling drags are withdrawn, so the person is told why the order they

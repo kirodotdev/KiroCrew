@@ -24,6 +24,12 @@ from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK, OwnerRequest
+from kiro_crew.dashboard.folder_rank import (
+    append_rank,
+    rank_between,
+    section_siblings,
+    valid_rank,
+)
 
 _APP_ROOT = Path(__file__).resolve().parent.parent
 _ROUTES = _APP_ROOT / "backend" / "routes.py"
@@ -2927,6 +2933,52 @@ class TestFollowupRoutes(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             [f["name"] for f in state._folders],
             [self.mod.followup.FOLDER_NAME])
+
+    async def test_the_folder_keeps_a_ranked_section_ranked(self):
+        """A new folder in a fully ranked top level gets a trailing rank, like
+        the dashboard's own creators give one. Without it the section reads as
+        partially unranked and an app's next move answers 409
+        folder_section_unranked until a person drags a folder by hand."""
+        self._record()
+        first_rank = rank_between(None, None)
+        existing = [
+            {"id": "a" * 12, "name": "Alpha", "order": 0, "parent_id": "",
+             "rank": first_rank},
+            {"id": "b" * 12, "name": "Beta", "order": 1, "parent_id": "",
+             "rank": rank_between(first_rank, None)},
+        ]
+        state = _FakeState(_FakeSessions(), folders=existing)
+        self.mod._APP_STATE["state"] = state
+        resp = await self.mod._handle_followup_start(
+            _Req({"run_id": "run1", "change_id": "GH-o-r-42"}))
+        self.assertEqual(resp.status, 200)
+        created = [f for f in state._folders
+                   if f["name"] == self.mod.followup.FOLDER_NAME]
+        self.assertEqual(len(created), 1)
+        folder = created[0]
+        self.assertIsNotNone(valid_rank(folder.get("rank")))
+        # Sorted last among the top-level siblings, and the section stays fully
+        # ranked so append_rank still yields a rank for the next newcomer.
+        siblings = section_siblings(state._folders, "")
+        self.assertEqual(siblings[-1]["id"], folder["id"])
+        self.assertIsNotNone(append_rank(siblings))
+        self.assertEqual(folder["order"], 2)
+
+    async def test_the_folder_stays_unranked_in_an_unranked_section(self):
+        """An unranked sibling means the section is not ranked yet; the folder
+        joins by ``order`` like every other row instead of inventing a rank."""
+        self._record()
+        state = _FakeState(_FakeSessions(), folders=[
+            {"id": "a" * 12, "name": "Alpha", "order": 0, "parent_id": ""},
+        ])
+        self.mod._APP_STATE["state"] = state
+        resp = await self.mod._handle_followup_start(
+            _Req({"run_id": "run1", "change_id": "GH-o-r-42"}))
+        self.assertEqual(resp.status, 200)
+        folder = [f for f in state._folders
+                  if f["name"] == self.mod.followup.FOLDER_NAME][0]
+        self.assertNotIn("rank", folder)
+        self.assertEqual(folder["order"], 1)
 
     async def test_a_disabled_app_answers_nothing(self):
         """Disabling an app withdraws its runtime, not just its UI — a request

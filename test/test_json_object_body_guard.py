@@ -162,6 +162,13 @@ _CAP_REASONS = {
 #: expression passed for a per-route cap.
 _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # Pre-existing capped sites -- the bounded read's live consumers.
+    # Folder PATCH bodies are fixed control fields, but steering_dirs permits
+    # 16 paths of 4,096 characters. One MiB covers their worst-case escaped
+    # JSON representation while retaining a pre-decode ceiling.
+    "chat_folders.py::api_chat_folder_update": (
+        "_MAX_FOLDER_UPDATE_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
     "chat_pins.py::api_chat_pins_create": ("<default>", _BOUNDED_BY_DEFAULT),
     # A checklist tick is one task id and one boolean, so the shared default
     # ceiling is far above any legitimate body.
@@ -292,14 +299,6 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_tags.py::api_chat_tag_column_update": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_tag_columns_reorder": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "chat_tags.py::api_chat_slot_drop": ("<default>", _BOUNDED_CONTROL_FIELDS),
-    # chat_folders.py: the reorder endpoint carries a bounded list of folder
-    # ids and integer orders, capped at the folder ceiling, so it takes a
-    # per-route byte ceiling sized from that entry budget rather than the
-    # shared default (a max-size flat-tree reorder exceeds 64 KB).
-    "chat_folders.py::api_chat_folder_reorder": (
-        "_MAX_REORDER_BODY_BYTES",
-        _BOUNDED_EXPLICIT,
-    ),
     # The mute-opened toggle carries a boolean and an optional expected_created
     # stamp -- a fixed set of control fields, so the shared default cap is right.
     "chat_folders.py::api_chat_slot_mutes_opened": ("<default>", _BOUNDED_CONTROL_FIELDS),

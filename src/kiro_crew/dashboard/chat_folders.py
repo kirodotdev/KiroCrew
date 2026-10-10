@@ -20,6 +20,17 @@ from kiro_crew.dashboard.chat_persistence import _coerce_requested_mode, save_sl
 from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.create_rate_limit import FOLDER_CREATE, allow_create
+from kiro_crew.dashboard.folder_rank import (
+    ORDER_LIMIT,
+    append_rank,
+    assign_append_rank,
+    custom_sort_key,
+    legacy_order,
+    plan_position,
+    section_siblings,
+    spread_ranks,
+    valid_rank,
+)
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
 from kiro_crew.dashboard.slot_ownership import (
     audit_app_slot_denial,
@@ -60,6 +71,17 @@ logger = logging.getLogger(__name__)
 #: authoritative while the lock is held, which is the same reason the parent is
 #: re-checked and ``order`` recounted there.
 MAX_CHAT_FOLDERS = 500
+
+#: PATCH accepts up to 16 steering-directory paths of 4,096 characters. MCP
+#: serializes non-ASCII JSON with escapes, where one astral character takes 12
+#: bytes, so 1 MiB covers that worst-case list and its control-field envelope.
+_MAX_FOLDER_UPDATE_BODY_BYTES = 1024 * 1024
+
+#: What a tab running a pre-rank bundle is told when it writes a position in
+#: the old shape: an integer ``order`` on PATCH, or the retired batch POST. The
+#: old client renders a non-2xx body's ``error`` field in the sidebar's error
+#: line, so this sentence is the one thing a stale tab sees.
+_STALE_POSITION_WRITE_MESSAGE = "This page is out of date; reload it to move folders."
 
 _folder_icon_lock = LoopBoundLock()
 
@@ -1432,6 +1454,11 @@ async def create_folder_record(
         folder["order"] = len(folders)  # recount under the lock
         if claim_parent_for_person and parent is not None:
             parent.pop(CREATED_BY_SESSION, None)
+        # A new folder lands at the end of its section. In a ranked section it
+        # takes a rank after the last sibling, so the section stays ranked and
+        # the next move there writes one row; otherwise it stays unranked, and
+        # unranked rows sort last by ``order`` -- the end all the same.
+        assign_append_rank(folder, folders, clear_unranked=True)
         folders.append(folder)
         return True, ""
 
@@ -1670,19 +1697,10 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if not folder:
         return web.json_response({"error": "not found"}, status=404)
     request_app = folder_principal(state, request)
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    if not isinstance(body, dict):
-        # ``[]``, ``"s"``, ``5``, ``true`` and ``null`` are all valid JSON, so
-        # the parse above succeeds and the ``body.get()`` below would raise
-        # AttributeError from outside the try — a 500 for what is really
-        # malformed client input.
-        return web.json_response(
-            {"error": "request body must be a JSON object", "code": "invalid_json"},
-            status=400,
-        )
+    body, body_err = await read_bounded_json(request, max_bytes=_MAX_FOLDER_UPDATE_BODY_BYTES)
+    if body_err is not None:
+        return body_err
+    assert body is not None  # read_bounded_json returns (dict, None) on success
     # Validate ALL submitted fields into a pending-changes dict BEFORE mutating
     # ``folder`` — otherwise an early field (e.g. name) is persisted while a later
     # field (e.g. an invalid/cyclic parent_id) returns 400, leaving the rejected
@@ -1702,15 +1720,49 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     if "hidden" in body:
         changes["hidden"] = bool(body["hidden"])
     if "order" in body:
-        # A non-numeric, null, or non-finite order is caller error, not a server
-        # fault: int() would raise and surface as a 500 (no middleware maps
-        # handler exceptions). OverflowError covers JSON infinities such as
-        # 1e309, which int() rejects with neither TypeError nor ValueError.
-        # Skip the field instead, matching api_chat_tag_update.
-        try:
-            changes["order"] = int(body["order"])
-        except (TypeError, ValueError, OverflowError):
-            pass
+        # The integer ``order`` is read for folders that predate ranks but is no
+        # longer written: a position is set by naming a sibling to sit next to
+        # (``before``/``after``), and the server picks the rank. Refused rather
+        # than ignored, so an old client learns its write did nothing.
+        return web.json_response(
+            {
+                "error": _STALE_POSITION_WRITE_MESSAGE,
+                "code": "order_retired",
+            },
+            status=400,
+        )
+    anchor_before = body.get("before")
+    anchor_after = body.get("after")
+    positioning = anchor_before is not None or anchor_after is not None
+    anchor_before_id = ""
+    anchor_after_id = ""
+    for raw_anchor, destination in (
+        (anchor_before, "before"),
+        (anchor_after, "after"),
+    ):
+        if raw_anchor is None:
+            continue
+        if not isinstance(raw_anchor, str) or not raw_anchor.strip():
+            return web.json_response(
+                {"error": "before/after must be a folder id", "code": "anchor_invalid"},
+                status=400,
+            )
+        anchor_id = raw_anchor.strip()
+        if anchor_id == fid:
+            return web.json_response(
+                {
+                    "error": "a folder cannot be positioned relative to itself",
+                    "code": "anchor_invalid",
+                },
+                status=400,
+            )
+        if destination == "before":
+            anchor_before_id = anchor_id
+        else:
+            anchor_after_id = anchor_id
+    paired_anchors = bool(anchor_before_id and anchor_after_id)
+    anchor_id = anchor_before_id or anchor_after_id
+    place_after = bool(anchor_after_id and not anchor_before_id)
     if "default_agent" in body:
         val = body["default_agent"]
         changes["default_agent"] = str(val).strip() if val is not None else ""
@@ -1901,12 +1953,12 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 return False, "forbidden_parent"
         if (
             request_app
-            and (reparenting or "order" in changes)
+            and (reparenting or positioning)
             and _subtree_holds_foreign_folder(folders, root_id=fid, request_app=request_app)
         ):
             # A move OR a reposition relocates the whole subtree with it, so a
             # folder the person nested inside this one would be relocated by an
-            # app's write. Both a reparent and an order change are gated: a
+            # app's write. Both a reparent and a reposition are gated: a
             # rename, a colour or a collapse changes nothing about where the
             # descendants sit, but a reposition changes where the subtree
             # renders exactly as a reparent does. Checked for a move to the top
@@ -1929,6 +1981,50 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
                 for f in folders
             ):
                 return False, "name_exists"
+        # The destination section, decided here under the lock so a concurrent
+        # move of the anchor or of a sibling is seen. Positioning names a
+        # sibling, so the anchor must sit directly in that section NOW.
+        respread: dict[str, str] = {}
+        new_rank: str | None = None
+        re_rank = False
+        if positioning or reparenting:
+            known = {f["id"] for f in folders}
+            cur_parent = str(target.get("parent_id") or "")
+            cur_parent = cur_parent if cur_parent in known else ""
+            dest_parent = new_parent if reparenting else cur_parent
+            siblings = section_siblings(folders, dest_parent, exclude_id=fid)
+            if positioning:
+                slot = next((i for i, f in enumerate(siblings) if f["id"] == anchor_id), -1)
+                if slot < 0:
+                    return False, "anchor_not_sibling"
+                if paired_anchors:
+                    after_slot = next(
+                        (i for i, f in enumerate(siblings) if f["id"] == anchor_after_id), -1
+                    )
+                    if after_slot < 0 or after_slot + 1 != slot:
+                        return False, "anchor_not_sibling"
+                new_rank, respread = plan_position(siblings, slot + 1 if place_after else slot)
+                # A section that needs re-ranking is re-ranked only by the person
+                # or when every row it rewrites is the caller's own: an app never
+                # writes a rank onto a folder it does not own.
+                if request_app and any(
+                    _folder_owner_app(f) != request_app for f in siblings if f["id"] in respread
+                ):
+                    return False, "section_unranked"
+                re_rank = True
+            elif dest_parent != cur_parent:
+                # A reparent with no anchor lands at the end of its new section.
+                # The rank it carried described a place among its OLD siblings.
+                new_rank, respread = plan_position(siblings, len(siblings))
+                if request_app and any(
+                    _folder_owner_app(f) != request_app for f in siblings if f["id"] in respread
+                ):
+                    # A plain app reparent writes only the moved row, leaving a
+                    # legacy section owned by the person untouched. The moved
+                    # row keeps its legacy order, as it did before ranks existed.
+                    new_rank = None
+                    respread = {}
+                re_rank = True
         target.update(changes)
         if claims_for_person:
             target.pop(CREATED_BY_SESSION, None)
@@ -1936,6 +2032,14 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             dest_row = next((f for f in folders if f["id"] == new_parent), None)
             if dest_row is not None:
                 dest_row.pop(CREATED_BY_SESSION, None)
+        if re_rank:
+            for f in folders:
+                if f["id"] in respread:
+                    f["rank"] = respread[f["id"]]
+            if new_rank is None:
+                target.pop("rank", None)
+            else:
+                target["rank"] = new_rank
         if not target.get("color"):
             target.pop("color", None)
         if not target.get("icon"):
@@ -2042,6 +2146,40 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
             },
             status=409,
         )
+    if err == "section_unranked":
+        _reason = "app cannot position in a section with foreign unranked folders"
+        sel().log_api_access(
+            caller=request_app,
+            operation="chat.folder_update",
+            outcome="denied",
+            source="app_isolation",
+            resources=fid,
+            error=_reason,
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "An app cannot place a folder in this section yet. Ask the "
+                    "person to drag any folder in it to a new spot once so its "
+                    "order is saved, then retry."
+                ),
+                "code": "folder_section_unranked",
+            },
+            status=409,
+        )
+    if err == "anchor_not_sibling":
+        # The anchor was deleted or moved to another section between the
+        # caller reading the tree and this write, so the gap it named is gone.
+        return web.json_response(
+            {
+                "error": (
+                    "The folder this move was placed next to has moved or was deleted. "
+                    "Try the move again."
+                ),
+                "code": "folder_anchor_not_sibling",
+            },
+            status=409,
+        )
     if regenerate_icon:
         # "Reset to auto" — re-run the emoji generator in the background.
         # Runs only after _apply succeeded, so app ownership has already been
@@ -2070,254 +2208,26 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     return web.json_response(folder)
 
 
-#: The most rows one reorder request may carry. A reorder writes one row per
-#: sibling touched, and the store itself is capped at :data:`MAX_CHAT_FOLDERS`,
-#: so a request naming more entries than there can be folders is malformed
-#: rather than large. The cap is the folder ceiling, not a smaller number: a
-#: person renumbering a flat tree of the maximum size sends exactly that many
-#: rows in one legitimate drag.
-_MAX_REORDER_ENTRIES = MAX_CHAT_FOLDERS
+async def api_chat_folder_reorder_retired(request: web.Request) -> web.Response:
+    """POST /api/chat/folders/reorder -- 410 tombstone for the retired batch reorder.
 
-#: Byte ceiling for a reorder body, sized from the entry cap rather than the
-#: shared 64 KB default: a legitimate max-size flat-tree reorder carries
-#: :data:`_MAX_REORDER_ENTRIES` entries, each ``{"id": "<uuid>", "order": <int>}``
-#: comfortably under 256 bytes with its JSON envelope, so 500 rows can exceed
-#: the shared default. The bound is that entry budget, so the largest legal
-#: request is admitted while an oversized body is rejected before decoding.
-_MAX_REORDER_BODY_BYTES = _MAX_REORDER_ENTRIES * 256
+    The batch ``{"orders": [{"id", "order"}, ...]}`` write is gone: a position is
+    now set by naming the sibling to sit next to, one PATCH per move. The route
+    stays registered so a dashboard tab still running the pre-rank bundle (which
+    drags folders through this POST) is told to reload, instead of getting
+    aiohttp's bare 404 and watching every drag snap back with no hint.
 
-
-async def api_chat_folder_reorder(request: web.Request) -> web.Response:
-    """POST /api/chat/folders/reorder -- set several folders' ``order`` atomically.
-
-    The one way to express a reorder as a SINGLE transaction. ``PATCH
-    /api/chat/folders/{id}`` takes one row per request, so a caller renumbering
-    several siblings issues N requests with no transaction between them: a
-    failure partway leaves the tree carrying a mix of old and new ``order``
-    numbers until the action is repeated. This endpoint applies the whole list
-    in one ``mutate_folders`` pass under the folder-store lock, all-or-none -- so
-    a rejected row leaves the stored order exactly as it was, never half-applied.
-
-    Body: ``{"orders": [{"id": str, "order": int}, ...]}``, plus the optional
-    request-level ``expected_parent`` described below. Every entry is
-    validated into a pending map BEFORE the lock is taken (the same shape
-    discipline ``api_chat_folder_update`` uses for its single row), so a
-    malformed request is a 400 that never touches the store.
-
-    Ownership is re-decided per row INSIDE the lock, exactly as ``_apply`` does
-    for one row: an app may reorder only the folders it owns, and a batch naming
-    one it does not is refused whole. Row ownership is not the whole rule --
-    repositioning a folder relocates its whole subtree, so a row the app owns
-    whose descendants include the person's is refused too, the same violation
-    the reparent PATCH refuses one level down. Both live here because the reorder
-    that composes these writes is the one place under the lock that sees the
-    subtree, so a positioning caller states the whole renumber as a single batch
-    and relies on this endpoint to authorize it.
-
-    Reorder touches only ``order``: it never reparents, renames, recolors or
-    retags. A row naming a folder absent from the store is a 404 for the whole
-    batch (the reorder the caller computed describes a tree that has since
-    shifted), so no partial renumber lands against a shifted tree.
-
-    ``order`` is a per-container index, so a renumber is only correct for rows
-    still living in the container the caller computed it against. The optional
-    request-level ``expected_parent`` states that container: when the key is
-    present, every written row's stored ``parent_id`` must equal its value
-    (empty string names the root lane), compared under the same lock that does
-    the writing -- checking earlier would reopen the window it closes. A
-    mismatch means a concurrent reparent moved a row between the caller's read
-    and this write, and landing the batch anyway would persist an index
-    computed for the old container onto a row in a new one; the whole batch is
-    refused as 409 ``folder_parent_changed`` with the store untouched. Absence
-    of the key is the one way to make no assumption -- a caller positioning
-    rows by absolute index never read a container, so no claim is demanded of
-    it -- and is told apart from an empty string by the key's presence, never
-    its value. The stored parent is read, never written.
+    Nothing is read and nothing is written: the body is not parsed and the
+    folder store is not touched. The caller guard is the one every folder write
+    has, so the tombstone is never an unauthenticated route.
     """
     state: DashboardState = request.app["state"]
     if (refusal := _refuse_unattributable_caller(state, request)) is not None:
         return refusal
-    request_app = folder_principal(state, request)
-    body, body_err = await read_bounded_json(request, max_bytes=_MAX_REORDER_BODY_BYTES)
-    if body_err is not None:
-        return body_err
-    assert body is not None  # read_bounded_json returns (dict, None) on success
-    raw_orders = body.get("orders")
-    if not isinstance(raw_orders, list):
-        return web.json_response(
-            {"error": "orders must be an array", "code": "orders_not_array"}, status=400
-        )
-    if len(raw_orders) > _MAX_REORDER_ENTRIES:
-        return web.json_response(
-            {"error": "too many folders in one reorder", "code": "orders_too_many"}, status=400
-        )
-    # The container claim is presence-checked, the same idiom the reparent PATCH
-    # uses for ``parent_id``: ``None`` here means the key is absent and no row's
-    # parent is compared. A present value must be a real string -- coercing
-    # (say) a JSON null or 0 through falsiness would silently turn caller junk
-    # into a root claim, so a non-string is a 400 instead.
-    expected_parent: str | None = None
-    if "expected_parent" in body:
-        raw_expected = body["expected_parent"]
-        if not isinstance(raw_expected, str):
-            return web.json_response(
-                {"error": "expected_parent must be a string", "code": "expected_parent_invalid"},
-                status=400,
-            )
-        expected_parent = raw_expected
-    # Validate every entry into an id -> order map BEFORE the lock is taken, the
-    # same shape discipline api_chat_folder_update applies to its single row: a
-    # malformed batch is a 400 that never touches the store. Last-writer-wins on
-    # a duplicate id, matching how the store tolerates two rows sharing a number.
-    pending: dict[str, int] = {}
-    for entry in raw_orders:
-        if not isinstance(entry, dict):
-            return web.json_response(
-                {"error": "each order entry must be an object", "code": "order_entry_invalid"},
-                status=400,
-            )
-        fid = str(entry.get("id") or "")
-        if not fid:
-            return web.json_response(
-                {"error": "each order entry needs an id", "code": "order_id_missing"}, status=400
-            )
-        # A non-numeric, null, or non-finite order is caller error, not a server
-        # fault -- matching the single-row PATCH, which skips such a field. Here
-        # the field IS the request, so a bad value is a 400 rather than a
-        # silent skip: a caller sending it meant to move the row, and dropping
-        # it would leave that row where the reorder did not want it.
-        #
-        # ``type(...) is int`` not ``isinstance`` and not a bare ``int(...)``:
-        # a JSON boolean is a Python ``bool`` (an ``int`` subclass, so ``True``
-        # would slip through as 1) and a JSON float like ``1.5`` would be
-        # truncated by ``int()`` -- both violate the integer-only contract, so
-        # they are 400s, not coerced.
-        try:
-            order_val = entry["order"]
-        except KeyError:
-            return web.json_response(
-                {"error": "each order must be an integer", "code": "order_not_int"}, status=400
-            )
-        if type(order_val) is not int:
-            return web.json_response(
-                {"error": "each order must be an integer", "code": "order_not_int"}, status=400
-            )
-        pending[fid] = order_val
-
-    if not pending:
-        # An empty reorder changes nothing; report success without a store write.
-        return web.json_response({"ok": True})
-
-    def _apply(folders: list[dict[str, Any]]) -> tuple[bool, str]:
-        by_id = {f["id"]: f for f in folders}
-        # Re-find and re-authorize EVERY row under the lock before mutating any,
-        # so the pass is all-or-none: a missing or foreign row aborts with the
-        # store untouched, never half-renumbered. Mirrors _apply's single-row
-        # re-find + ownership check, applied to each entry.
-        for fid, _order in pending.items():
-            target = by_id.get(fid)
-            if target is None:
-                return False, "not_found"
-            if request_app and _folder_owner_app(target) != request_app:
-                return False, "not_owned"
-            # Ownership of the row itself is not the whole rule: repositioning a
-            # folder relocates its whole subtree, so a row the app owns whose
-            # descendants include the person's relocates theirs -- the same
-            # violation the reparent PATCH refuses one level down, reached here
-            # for a position that sends no parent_id. The reorder that composes
-            # these writes is the only place that sees the subtree, so the
-            # subtree rule is enforced here, per row, before any write lands.
-            if request_app and _subtree_holds_foreign_folder(
-                folders, root_id=fid, request_app=request_app
-            ):
-                return False, "subtree_not_owned"
-            # The container claim is decided last, so authorization always wins
-            # over the precondition: a caller refused a foreign row learns
-            # nothing about where that row now lives. The stored parent is
-            # normalized the way the tree walkers read it (absent and null both
-            # mean the root lane), and one mismatched row refuses the whole
-            # batch -- its order number was computed for a container it has
-            # left, so landing the rest around it renumbers a tree the caller
-            # never saw.
-            if expected_parent is not None:
-                if str(target.get("parent_id") or "") != expected_parent:
-                    return False, "parent_changed"
-        changed = False
-        for fid, order in pending.items():
-            target = by_id[fid]
-            if target.get("order") != order:
-                target["order"] = order
-                changed = True
-        return changed, ""
-
-    err = await state.mutate_folders(_apply)
-    if err == "not_found":
-        # A folder named in the batch is absent from the store: it was deleted
-        # between the caller reading the tree and this write. The reorder
-        # describes a tree that has since changed, so none of it lands.
-        return web.json_response(
-            {"error": "a folder in the reorder no longer exists", "code": "folder_not_found"},
-            status=404,
-        )
-    if err == "parent_changed":
-        # A row's stored parent differs from the caller's claim: a concurrent
-        # reparent moved it between the caller's read and this write. A benign
-        # race like the deleted-row 404 above, not a violation, so it is not
-        # audited as denied. The 409 tells the caller its cached tree is stale;
-        # refetching and redrawing is the recovery, exactly as for the 404.
-        return web.json_response(
-            {
-                "error": "a folder in the reorder was moved to another parent",
-                "code": "folder_parent_changed",
-            },
-            status=409,
-        )
-    if err == "not_owned":
-        # One row named a folder this app does not own. Refused whole, and
-        # distinguished only in the audit -- the same one code for the caller
-        # api_chat_folder_update uses, so the response reports no folder as
-        # foreign.
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.folder_reorder",
-            outcome="denied",
-            source="app_isolation",
-            resources=",".join(list(pending)[:10]),
-            error="app cannot reorder a folder it does not own",
-        )
-        return web.json_response(
-            {"error": "this app does not own one of those folders", "code": "folder_not_owned"},
-            status=403,
-        )
-    if err == "subtree_not_owned":
-        # A row the app owns has descendants the person owns. Repositioning it
-        # relocates theirs, which is the reparent-path violation reached one
-        # level down, so the whole batch is refused with the store untouched.
-        sel().log_api_access(
-            caller=request_app,
-            operation="chat.folder_reorder",
-            outcome="denied",
-            source="app_isolation",
-            resources=",".join(list(pending)[:10]),
-            error="app cannot reposition a folder whose subtree holds the person's",
-        )
-        return web.json_response(
-            {
-                "error": "one of those folders contains folders this app does not own",
-                "code": "folder_not_owned",
-            },
-            status=403,
-        )
-    state.push_slots_update()
-    source, caller = _audit_origin(request)
-    sel().log_api_access(
-        caller=caller,
-        operation="chat.folder_reorder",
-        outcome="allowed",
-        source=source,
-        resources=",".join(list(pending)[:10]),
+    return web.json_response(
+        {"error": _STALE_POSITION_WRITE_MESSAGE, "code": "reorder_retired"},
+        status=410,
     )
-    return web.json_response({"ok": True})
 
 
 async def api_chat_folder_delete(request: web.Request) -> web.Response:
@@ -2551,12 +2461,52 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
         state.push_slots_update()
 
     def _remove(folders: list[dict[str, Any]]) -> tuple[bool, None]:
-        for f in folders:
-            if f.get("parent_id") == fid:
-                f["parent_id"] = ""
+        # The deleted folder's children move to the top level, in the order
+        # they sat inside it. A child's rank was generated for its OLD section,
+        # so carrying it over as-is can collide with a root sibling's rank (the
+        # first child of any folder and the first root folder share "V"). A
+        # duplicate makes the next positioned move re-spread the whole root,
+        # which rewrites the person's own folders and refuses an app's
+        # anchored move with folder_section_unranked. So each child is placed
+        # the way an anchor-less reparent is: appended after the root's last
+        # ranked sibling, one at a time so each lands after the previous; in a
+        # root that is not fully ranked (or at key-length exhaustion) it stays
+        # unranked and sorts last by its legacy ``order``. Done here so the
+        # placement reads the root under the same lock as the removal.
+        promoted = sorted((f for f in folders if f.get("parent_id") == fid), key=custom_sort_key)
         # In place, not a rebind: mutate_folders snapshots the list object it
         # was given, and other holders of state._folders must see the removal.
         folders[:] = [f for f in folders if f["id"] != fid]
+        promoted_ids = {f["id"] for f in promoted}
+        root = [f for f in section_siblings(folders, "") if f["id"] not in promoted_ids]
+        trailing_order = max(
+            (legacy_order(row) for row in root if valid_rank(row.get("rank")) is None),
+            default=-1,
+        )
+        if promoted and append_rank(root) is None and trailing_order + len(promoted) > ORDER_LIMIT:
+            # A fresh root spread preserves its drawn order and makes every append distinct.
+            for f in promoted:
+                f["parent_id"] = ""
+            root.extend(promoted)
+            for row, new_rank in zip(root, spread_ranks(len(root)), strict=True):
+                row["rank"] = new_rank
+            return True, None
+        for f in promoted:
+            f["parent_id"] = ""
+            rank = append_rank(root)
+            if rank is None:
+                f.pop("rank", None)
+                # Unranked promotions follow every legacy root sibling in child order.
+                f["order"] = (
+                    max(
+                        (legacy_order(row) for row in root if valid_rank(row.get("rank")) is None),
+                        default=-1,
+                    )
+                    + 1
+                )
+            else:
+                f["rank"] = rank
+            root.append(f)
         return True, None
 
     try:

@@ -15,6 +15,23 @@ export interface ChannelFolderBackfillMoved {
   label: string
 }
 
+/** Fields accepted by `PATCH /api/chat/folders/{id}`. */
+export interface ChatFolderUpdateBody {
+  name?: string
+  collapsed?: boolean
+  hidden?: boolean
+  parent_id?: string
+  before?: string
+  after?: string
+  default_agent?: string
+  project_dir?: string
+  color?: string | null
+  icon?: string | null
+  regenerate_icon?: boolean
+  tags?: string[]
+  steering_dirs?: string[]
+}
+
 /** The report `POST /api/channel-folders/backfill` answers with.
  *
  *  The endpoint's report IS its response body and the settings panel renders
@@ -49,17 +66,7 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
      *  omitted when empty so the backend applies its own default. */
     createChatFolder: (name: string, parentId?: string, config?: { project_dir?: string; default_agent?: string; color?: string; icon?: string; tags?: string[]; steering_dirs?: string[] }) =>
       post('/api/chat/folders', { name, parent_id: parentId || '', ...(config ?? {}) }).then(j),
-    updateChatFolder: (id: string, body: object) => patch('/api/chat/folders/' + encodeURIComponent(id), body).then(j),
-    /** Set several folders' `order` in ONE atomic request. The sidebar drag
-     *  renumbers a run of siblings, and one PATCH per row has no transaction: a
-     *  failure partway leaves a mix of old and new order numbers. This posts the
-     *  whole list to the reorder endpoint, which applies it all-or-none under the
-     *  folder-store lock, so a rejected write leaves the stored order untouched
-     *  rather than half-applied (issue #10406). */
-    reorderChatFolders: (orders: { id: string; order: number }[], expectedParent?: string) =>
-      // Empty string is a real claim (the root lane); only undefined means the
-      // caller makes no assumption about which container it computed against.
-      post('/api/chat/folders/reorder', expectedParent === undefined ? { orders } : { orders, expected_parent: expectedParent }).then(j),
+    updateChatFolder: (id: string, body: ChatFolderUpdateBody) => patch('/api/chat/folders/' + encodeURIComponent(id), body).then(j),
     deleteChatFolder: (id: string) => del('/api/chat/folders/' + encodeURIComponent(id)).then(j),
     /** Delete every folder whose subtree holds no live session and no setting.
      *  `dryRun` lists the ids (and how many archived sessions each one holds)

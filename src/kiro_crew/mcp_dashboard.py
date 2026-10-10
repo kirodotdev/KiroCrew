@@ -83,10 +83,7 @@ from urllib.parse import quote
 
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES
-from kiro_crew.dashboard.chat_folders import (
-    _folder_owner_app,
-    _subtree_holds_foreign_folder,
-)
+from kiro_crew.dashboard.folder_rank import ORDER_LIMIT, custom_sort_key, legacy_order, name_key
 from kiro_crew.mcp_shared import run_mcp_stdio_loop
 
 # The authenticated loopback client to the gateway is ``mcp_core``'s request
@@ -206,10 +203,12 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "in its custom folder order, and when the person has sorted folders "
                 "by name or creation date (chat_folder_tree's header says which) an "
                 "anchor changes nothing they see until they switch back. An app "
-                "agent may move only a folder it created itself, "
-                "and only to the top level or under another of its own; positioning "
-                "is refused outright when it would renumber siblings the app does "
-                "not own. A crew member is bound by the same own-folders-only rule."
+                "agent may move and position only a folder it created itself, and "
+                "only to the top level or under another of its own. It may position "
+                "its folder among the person's once the person has arranged that "
+                "section by dragging any folder there; until then positioning is "
+                "refused with a message explaining what the person must do. A crew "
+                "member is bound by the same own-folders-only rule."
             ),
             schema={
                 "type": "object",
@@ -242,7 +241,6 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "GET /api/chat/slots",
                 "GET /api/chat/folders",
                 "PATCH /api/chat/folders/{folder}",
-                "POST /api/chat/folders/reorder",
             ),
         ),
         Tool(
@@ -1446,103 +1444,20 @@ def _chat_folder_children(folders: list[dict], parent_id: str, name: str) -> lis
     ]
 
 
-# The largest integer JavaScript represents exactly (``Number.MAX_SAFE_INTEGER``).
-# The sidebar reads folder rows through ``JSON.parse``, so an ``order`` past this
-# is not the number the store holds; both sides clamp to it so their comparisons
-# agree on rows no sane writer produces but a hand-edited store can.
-_CHAT_FOLDER_ORDER_LIMIT = 2**53 - 1
+# The legacy order and name keys live with the rank comparator they feed, so
+# the gateway's placement code and this listing sort siblings through one key.
+_CHAT_FOLDER_ORDER_LIMIT = ORDER_LIMIT
+_chat_folder_order = legacy_order
+_chat_folder_name_key = name_key
 
 # A bare ``json.loads`` yields these for ``1e999`` / ``-1e999``; neither is a
 # position, and neither survives the arithmetic a placement does with one.
 _POS_INF = float("inf")
 _NEG_INF = float("-inf")
 
-
-def _chat_folder_order(folder: dict) -> int:
-    """A folder's sidebar sort position. Anything that is not a finite number is 0.
-
-    The endpoint stores whatever int a PATCH hands it and never renumbers, so a
-    row can carry a duplicate order, a gap, or (from an older store) no ``order``
-    key at all. The sidebar tolerates all three; so must every reader here.
-
-    Only a real JSON number is accepted, and the frontend's counterpart accepts
-    exactly the same set. That is deliberate: this value has to sort IDENTICALLY
-    here and in the sidebar, and the two languages' conversions of everything else
-    do not agree — ``int("0x10")`` and ``int("1e3")`` raise where ``Number`` reads
-    16 and 1000, ``int([5])`` raises where ``Number`` reads 5. Rejecting the whole
-    class costs nothing (the endpoint only ever writes an int) and removes the
-    parity question instead of answering it per type.
-
-    A float truncates toward zero, matching ``Math.trunc``, and ``bool`` is
-    excluded even though it is an ``int`` subclass, because ``typeof true`` is not
-    ``'number'`` on the other side. The result is clamped to the range JavaScript
-    represents exactly: Python ints are unbounded, but the sidebar reads the same
-    row through ``JSON.parse``, where ``2**53 + 1`` and ``2**53`` collapse to one
-    value — so without the clamp those two rows compare as ordered here and as
-    EQUAL there, and there the name tie-break decides the pair instead.
-
-    This is a SORT KEY: an escaping exception would abort the whole sort and take
-    down every folder tool rather than one row, so nothing here may raise.
-    """
-    value = folder.get("order")
-    if isinstance(value, bool) or not isinstance(value, (int, float)):
-        return 0
-    if value != value or value in (_POS_INF, _NEG_INF):  # NaN, ±Infinity
-        return 0
-    return max(-_CHAT_FOLDER_ORDER_LIMIT, min(_CHAT_FOLDER_ORDER_LIMIT, int(value)))
-
-
-# A-Z to a-z and nothing else, written out rather than looked up. Every Unicode
-# version ever published maps this range identically, so both sides can fold it
-# without consulting a table — which is the whole reason the fold stops here.
+# A-Z to a-z and nothing else, the same literal fold ``name_key`` applies, for
+# the ``name`` sort mode's natural key below.
 _ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
-
-
-def _chat_folder_name_key(folder: dict) -> bytes:
-    """A folder name as the frontend's ``<`` would compare it.
-
-    ``chat_folder_tree`` is where an agent picks a ``before``/``after`` anchor, so a
-    sequence that differs from the rendered one aims the anchor at the wrong gap.
-    That makes this key part of a contract with ``folderTree.bySidebarOrder``, and
-    every operation in it has to mean the same thing in both languages.
-
-    No Unicode-table fold. ``str.lower()`` reads the interpreter's tables and
-    ``String.prototype.toLowerCase()`` reads the browser's, so a character whose case
-    mapping was added or changed between the interpreter's version and the browser's
-    folds differently on the two sides — a skew no code here can close, because
-    neither side owns both tables.
-
-    ``A``-``Z`` fold anyway, through the literal 26-entry table above. That range's
-    case mapping is fixed for every Unicode version ever published and the frontend
-    does the same fold by ARITHMETIC on the code unit, so it carries no version
-    dependency while still ordering ``alpha`` before ``Beta``. The distinction is
-    worth drawing because a store written before ``order`` existed has every sibling
-    tied at 0 — the whole tie-break decides those sidebars, so a fold that only
-    ordered by raw code unit would show them uppercase-first until the first drag.
-
-    ``utf-16-be`` rather than the str itself: Python orders str by CODE POINT while
-    JavaScript orders by UTF-16 CODE UNIT, and the two disagree above U+FFFF — an
-    astral character's surrogates start at 0xD800, so Python sorts U+1F600 after
-    U+FF21 and JavaScript sorts it before. Comparing the big-endian UTF-16 bytes is
-    code-unit order. This is a fixed encoding, not a table lookup, so it carries no
-    version dependency either.
-
-    ``surrogatepass`` because a folder name is persisted JSON and can hold a LONE
-    surrogate, which the strict codec refuses outright — and a raised encoder
-    inside a sort key takes down every folder tool, not one row. Passing it through
-    also keeps the byte-for-byte match: a JavaScript string holds that same lone
-    unit and compares it as 0xD800, which is exactly what these bytes carry.
-
-    A name that is not a ``str`` reads as empty rather than being stringified, and
-    the frontend's counterpart does the same. Stringifying is where the two
-    languages part company: ``str({"a": 1})`` is ``"{'a': 1}"`` where
-    ``String({a: 1})`` is ``"[object Object]"``, and ``str(True)`` is ``"True"``
-    where ``String(true)`` is ``"true"``. Reading the whole class as empty makes
-    both sides agree by construction instead of per type.
-    """
-    name = folder.get("name")
-    text = name if isinstance(name, str) else ""
-    return text.translate(_ASCII_FOLD).encode("utf-16-be", "surrogatepass")
 
 
 def _chat_folder_created(folder: dict) -> float | None:
@@ -1604,9 +1519,10 @@ def _chat_folder_natural_key(folder: dict) -> tuple[tuple[Any, ...], ...]:
 def _chat_folder_sort_key(mode: str) -> Callable[[dict], tuple[Any, ...]]:
     """The sibling sort key for one folder sort mode.
 
-    ``custom`` is the stored ``order`` then the folded name -- the only order that
-    existed before the mode did, and the one every placement (``before``/``after``)
-    is computed in. ``name`` and ``created`` are VIEW orders layered on top: each
+    ``custom`` is the stored order (``folder_rank.custom_sort_key``: ranked
+    folders by rank, then folders that predate ranks by ``order`` and name) --
+    the only order that existed before the mode did, and the one every placement
+    (``before``/``after``) is computed in. ``name`` and ``created`` are VIEW orders layered on top: each
     ends in the ``custom`` key so two folders the mode cannot separate keep the
     order the person arranged, and so the whole key stays total on both sides.
     ``created`` is newest first, the direction the sidebar's session list already
@@ -1616,10 +1532,7 @@ def _chat_folder_sort_key(mode: str) -> Callable[[dict], tuple[Any, ...]]:
     called from a listing an agent depends on and the loader has already reduced
     the stored value to a known one.
     """
-
-    def custom(folder: dict) -> tuple[Any, ...]:
-        return (_chat_folder_order(folder), _chat_folder_name_key(folder))
-
+    custom = custom_sort_key
     if mode == "name":
         return lambda f: (_chat_folder_natural_key(f), *custom(f))
     if mode == "created":
@@ -1638,11 +1551,9 @@ def _chat_folder_siblings(
     """Direct children of ``parent_id``, in the order the sidebar renders them.
 
     The comparator mirrors the sidebar's own (``folderTree.folderComparator``
-    sorts each parent's children by the person's folder sort mode -- stored
-    ``order`` then name in ``custom``), because a caller saying "put this after
-    that" means after what the PERSON SEES. Sorting by ``order`` alone would
-    disagree with the rendered list wherever two siblings share a number, which
-    the store permits.
+    sorts each parent's children by the person's folder sort mode --
+    ``folder_rank.custom_sort_key`` in ``custom``), because a caller saying "put
+    this after that" means after what the PERSON SEES.
 
     ``mode`` defaults to ``custom`` because that is the order a POSITION lives in:
     the placement helpers call this to find the gap a ``before``/``after`` anchor
@@ -1719,42 +1630,6 @@ def _chat_folder_render_order(
             seen.add(fid)
             out.append((fid, 0))
     return out
-
-
-def _free_slot_order(siblings: list[dict], index: int) -> int | None:
-    """An unused ``order`` that lands a folder at ``index``, or ``None`` if none fits.
-
-    Positioning a folder means writing several rows when the siblings have to be
-    renumbered, and several writes cannot be made atomic from here — so the cheap
-    case is worth taking whenever the store already has room: before the first
-    sibling, after the last, or in a gap between two adjacent ones. Then the whole
-    reposition is ONE write and cannot land half-applied.
-
-    ``siblings`` is the destination's children WITHOUT the folder being placed, in
-    render order. ``None`` means the neighbours are adjacent integers, which is
-    what a sidebar drag leaves behind, and the caller must renumber instead.
-
-    An edge slot at ``±_CHAT_FOLDER_ORDER_LIMIT`` is also not free. The neighbour's
-    order is read back through the same clamp, so a value one past the bound
-    returns as the bound itself — equal to the anchor rather than outside it, which
-    hands the pair to the name tie-break and can place the folder on the wrong
-    side. There is no representable slot there, so the caller renumbers.
-    """
-    if not siblings:
-        return 0
-    if index <= 0:
-        first = _chat_folder_order(siblings[0])
-        return None if first <= -_CHAT_FOLDER_ORDER_LIMIT else first - 1
-    if index >= len(siblings):
-        last = _chat_folder_order(siblings[-1])
-        return None if last >= _CHAT_FOLDER_ORDER_LIMIT else last + 1
-    low = _chat_folder_order(siblings[index - 1])
-    high = _chat_folder_order(siblings[index])
-    # Equal or inverted neighbours leave no room either: the pair is already
-    # separated only by the name tie-break, which no order value can get between.
-    if high - low >= 2:
-        return low + (high - low) // 2
-    return None
 
 
 def _ambiguous_segment_error(seg: str, matches: list[dict]) -> str:
@@ -3383,7 +3258,7 @@ def _run_chat_folder_create(args: dict[str, Any], ctx: ToolContext) -> str:
 
 
 def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
-    caller_key, caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "moving a folder")
+    caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable(ctx, "moving a folder")
     if gate:
         return gate
     before_ref = str(args.get("before") or "").strip()
@@ -3434,187 +3309,34 @@ def _run_chat_folder_move(args: dict[str, Any], ctx: ToolContext) -> str:
                 "parent."
             )
 
-    # Placing a folder is ONE write whenever the store already has a free
-    # integer slot at that position — before the first sibling, after the last,
-    # or in a gap. Only when the two neighbours are adjacent integers, which is
-    # what a sidebar drag leaves behind, do the siblings have to be renumbered;
-    # that renumber is contiguous 0..n-1, the same shape a drag writes, so the
-    # two paths leave one convention rather than two.
+    # One PATCH carries the whole move: the reparent (only when the parent
+    # changes) and the anchor. The gateway picks the rank under the folder
+    # store lock, so the position is decided against the tree as it is at
+    # the write, and it enforces every ownership rule there: an app may move
+    # only its own folder, into one of its own, and not one whose subtree
+    # holds the person's. If assigning the rank requires a section re-spread,
+    # every sibling whose rank would change must also belong to the app.
     #
-    # The distinction is worth the branch because several writes cannot be made
-    # atomic from here: the endpoint takes one row at a time. The one-write case
-    # therefore cannot land half-applied at all, and the renumber is reserved
-    # for the positions that genuinely need it.
-    order_writes: list[tuple[str, int]] = []
-    if anchor_id:
-        siblings = [
-            f for f in _chat_folder_siblings(chat_folders, dest_id) if str(f.get("id")) != fld_id
-        ]
-        slot = next((i for i, f in enumerate(siblings) if str(f.get("id")) == anchor_id), -1)
-        if slot < 0:
-            return "Error: the anchor folder is no longer where it was — re-read the tree."
-        moving = next(f for f in chat_folders if str(f.get("id")) == fld_id)
-        index = slot if before_ref else slot + 1
-        free = _free_slot_order(siblings, index)
-        if free is not None:
-            # Skip a write that would store the value the row already carries.
-            order_writes = [] if _chat_folder_order(moving) == free else [(fld_id, free)]
-        else:
-            placed = siblings[:index] + [moving] + siblings[index:]
-            order_writes = [
-                (str(f.get("id")), i) for i, f in enumerate(placed) if _chat_folder_order(f) != i
-            ]
-        # The moved folder itself must be owned -- the ONE ownership clause the
-        # write paths cannot re-derive, so it stays in the tool. Positioning is
-        # RELATIVE: renumbering the app's OWN siblings around a folder changes
-        # where that folder renders WITHOUT writing to it (when its own order is
-        # unchanged, `own_pos` is None and no PATCH names it). A caller could
-        # then reposition a folder it does not own by writing only rows it does,
-        # and every write the reorder endpoint sees would be legitimately owned,
-        # leaving nothing for it to refuse. The sibling-row and subtree clauses
-        # of the old predicate genuinely moved to the write paths (the reorder
-        # endpoint re-authorizes each row AND its subtree under the lock); only
-        # this moved-folder clause has no write to hang off, so it is checked
-        # here, before any write, exactly as the base did. A plain reparent is
-        # not gated here because it always writes to the moved folder, so the
-        # PATCH endpoint's own ownership check refuses it.
-        if caller_app:
-            moving_owner = _folder_owner_app(
-                next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
-            )
-            if moving_owner != caller_app:
-                return (
-                    "Error: this app does not own the folder it is positioning, "
-                    "so the position is refused. An app may reorder only its own "
-                    "folders; ask the person to set the order of theirs."
-                )
-            # And its SUBTREE, but ONLY when no write names the moved folder.
-            # Positioning takes the descendants with it, so an app repositioning
-            # a folder it owns whose subtree holds the person's relocates theirs.
-            # When a write DOES name the moved folder (a free-slot order PATCH, or
-            # a reparent), the endpoint's own subtree guard fires on that write --
-            # so the tool must not pre-empt it there. The uncovered case is the
-            # relative renumber: the moved folder's own order is unchanged, so no
-            # write names it, and neither write path sees a row to refuse. That is
-            # the one the tool must catch, exactly as the base's moved-folder
-            # subtree clause did.
-            moved_is_written = any(sid == fld_id for sid, _pos in order_writes)
-            if not moved_is_written and _subtree_holds_foreign_folder(
-                chat_folders, root_id=fld_id, request_app=caller_app
-            ):
-                return (
-                    "Error: this folder contains folders this app does not own, "
-                    "and positioning it moves everything inside it, so the "
-                    "position is refused. Ask the person to set the order."
-                )
-
-    # The moved folder's own position rides along with the reparent: one write
-    # for the row this call is about, so the common case stays a single request.
-    #
-    # ``parent_id`` is omitted when the parent is NOT changing. The endpoint
-    # treats its presence as a reparent and applies the reparent-only rule that
-    # a subtree holding a folder the caller does not own cannot be moved — so
-    # sending the current parent back would make an app's pure reposition fail
-    # on a guard about a move that is not happening.
+    # ``parent_id`` is omitted when the parent is NOT changing: sending the
+    # current parent again is a no-op for position.
     move_body: dict[str, Any] = {}
     if current_parent != dest_id:
         move_body["parent_id"] = dest_id
-    own_pos = next((pos for fid, pos in order_writes if fid == fld_id), None)
-    # A renumber writes several sibling rows, and those cannot be made atomic
-    # one PATCH at a time: a refusal partway would leave the person's sidebar
-    # in an order nobody chose. So the moved folder's own position folds into
-    # the reparent PATCH ONLY when it is the single row to write (a free slot
-    # existed); when siblings must be renumbered too, the whole set -- moved
-    # folder included -- goes through the atomic reorder endpoint below, and
-    # the reparent PATCH carries parent_id alone.
-    sibling_writes = [(sid, pos) for sid, pos in order_writes if sid != fld_id]
-    if own_pos is not None and not sibling_writes:
-        move_body["order"] = own_pos
-    # A renumber goes through the atomic reorder endpoint, which refuses the
-    # whole batch if any named row (or its subtree) is not the app's and leaves
-    # the stored order untouched -- so a same-parent reposition needs no
-    # tool-layer pre-check: the endpoint's atomic refusal is complete and no
-    # write can strand.
-    #
-    # The one case that IS exposed is a cross-parent move whose renumber also
-    # needs the reorder: the reparent PATCH commits first (parent_id below),
-    # THEN the reorder can reject, leaving the folder reparented but
-    # unpositioned. For that case only, preflight the endpoint's own per-row
-    # predicate over the whole batch before the reparent commits, so a batch
-    # that would be refused writes nothing at all. This adds no refusal a
-    # legitimate call would not already hit at the endpoint; it only moves the
-    # already-certain refusal ahead of the reparent. Reproduces the reorder
-    # endpoint's check (`chat_folders.api_chat_folder_reorder._apply`): row
-    # owned by the app AND its subtree holds no foreign folder.
-    if caller_app and sibling_writes and "parent_id" in move_body:
-        for sid, _pos in order_writes:
-            row = next((f for f in chat_folders if str(f.get("id")) == sid), {})
-            if _folder_owner_app(row) != caller_app:
-                return (
-                    "Error: this move would renumber a folder this app does not "
-                    "own, so it is refused before anything is moved. An app may "
-                    "reorder only its own folders; ask the person to set the "
-                    "order of theirs."
-                )
-            if _subtree_holds_foreign_folder(chat_folders, root_id=sid, request_app=caller_app):
-                return (
-                    "Error: this move would reposition a folder whose subtree "
-                    "holds folders this app does not own, so it is refused "
-                    "before anything is moved. Ask the person to reorder theirs."
-                )
+    if anchor_id:
+        move_body["before" if before_ref else "after"] = anchor_id
     if move_body:
         try:
             d = ctx.client.patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
         except DashboardError as refused:
-            # The endpoint owns the cycle guard (a folder cannot move into its
-            # own descendant) — surface its verdict rather than re-deriving it.
+            # The endpoint owns the cycle, ownership and anchor checks --
+            # surface its verdict rather than re-deriving it.
             return f"Error: {refused.error}"
     else:
-        # Nothing to write for this row: it is already in the destination and
-        # already holds the position asked for.
+        # Nothing to write: already in the destination, and no position asked.
         d = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
     moved: list[dict] = [f for f in chat_folders if str(f.get("id")) != fld_id]
     moved.append({**d, "id": fld_id})
     dest_path = _chat_folder_paths(moved).get(fld_id) or "(top level)"
-    if sibling_writes:
-        # The renumber, in ONE atomic request. The endpoint applies the whole
-        # list under the folder-store lock, all-or-none, re-validating this
-        # app's ownership of EVERY row inside that lock the way a single PATCH
-        # does -- so ownership lives with the lock-holder rather than a
-        # tool-layer pre-check here, and a refusal leaves the stored order
-        # untouched instead of half-applied. The moved folder's own order
-        # joins the batch here (it is not folded into the reparent PATCH
-        # above), so its position relative to the renumbered siblings lands
-        # in the same transaction.
-        reorder_body = [{"id": sid, "order": pos} for sid, pos in order_writes]
-        try:
-            ctx.client.post(
-                "/api/chat/folders/reorder",
-                # Every row in the batch lives in the destination container by
-                # this point (the reparent PATCH above has landed), and the
-                # batch was computed from a snapshot -- so the claim lets the
-                # endpoint refuse the renumber if a concurrent reparent moved a
-                # sibling between that read and this write, instead of landing
-                # an index computed for a container the row has left.
-                {"orders": reorder_body, "expected_parent": dest_id},
-                session_key=caller_key,
-            )
-        except DashboardError as refused:
-            # The reparent (if any) landed and is not in doubt; the ordering
-            # did not -- and, being atomic, left the stored order untouched
-            # rather than partway. Say which half held so the caller can
-            # re-run to finish, matching the success wording's move/reposition
-            # split.
-            landed = (
-                f"Repositioned folder (id={fld_id})"
-                if current_parent == dest_id
-                else f"Moved folder (id={fld_id}) to `{dest_path}`"
-            )
-            return redact(
-                f"{landed}, but ordering was refused: {refused.error}. "
-                "The stored order is unchanged. Re-run the same call to finish "
-                "positioning it."
-            )
     if anchor_id:
         side = "before" if before_ref else "after"
         anchor_path = _chat_folder_paths(chat_folders).get(anchor_id) or anchor_id
