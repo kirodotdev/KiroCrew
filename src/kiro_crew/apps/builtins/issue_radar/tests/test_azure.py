@@ -1332,5 +1332,60 @@ class TestCommentBodiesAreRedacted(unittest.TestCase):
                 spawn.assert_not_called()
 
 
+def _extension_api_version_to_float(api_version: str) -> float:
+    """The ``azure-devops`` CLI extension's own ``--api-version`` parse.
+
+    Reproduced byte-for-byte from ``azext_devops/dev/team/invoke.py``
+    (``apiVersionToFloat``), which ``az devops invoke`` runs before it opens a
+    connection. A version string this raises on fails every call it is used on.
+    """
+    return float(api_version.replace("-preview", ""))
+
+
+class TestAzureApiVersionsSurviveTheCliParse(unittest.TestCase):
+    """Every ``--api-version`` this client sends must parse in the CLI extension.
+
+    The extension turns ``7.1-preview.1`` into ``7.1.1`` and raises on it, so a
+    revisioned preview version breaks every read and write that uses it.
+    """
+
+    def _all_api_versions(self) -> dict[str, str]:
+        return {
+            name: value
+            for name, value in vars(azure_client).items()
+            if name.startswith("_API_") and isinstance(value, str)
+        }
+
+    def test_the_extension_parse_rejects_a_revisioned_preview(self):
+        # Pins the premise: if this stops raising, the guard below is moot.
+        with self.assertRaises(ValueError):
+            _extension_api_version_to_float("7.1-preview.1")
+
+    def test_every_api_version_parses(self):
+        versions = self._all_api_versions()
+        self.assertGreaterEqual(len(versions), 9)
+        for name, value in versions.items():
+            with self.subTest(name=name, value=value):
+                self.assertEqual(_extension_api_version_to_float(value), 7.1)
+
+    def test_preview_resources_still_ask_for_a_preview(self):
+        # A GA version sent to a preview-only resource is refused by the service.
+        for value in azure_client._PREVIEW_API_VERSIONS:
+            with self.subTest(value=value):
+                self.assertEqual(value, "7.1-preview")
+
+    def test_a_preview_read_sends_the_parseable_version(self):
+        spawn = mock.Mock(return_value={"value": [{"name": "Shipped", "category": "Completed"}]})
+        with mock.patch.dict(azure_client._closed_states_cache, clear=True):
+            with mock.patch.object(azure_client, "_az_invoke", spawn):
+                closed = azure_client._closed_state_names(
+                    "contoso", "Widgets", "Bug", host="dev.azure.com", timeout=5.0
+                )
+        self.assertEqual(closed, frozenset({"Shipped"}))
+        sent = spawn.call_args.kwargs["api_version"]
+        self.assertEqual(_extension_api_version_to_float(sent), 7.1)
+        self.assertTrue(sent.endswith("-preview"))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

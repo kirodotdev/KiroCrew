@@ -115,11 +115,28 @@ _API_WIT = "7.1"
 _API_BUILD = "7.1"
 _API_CORE = "7.1"
 # Preview-only resources. The suffix is part of the version string, not a flag.
-_API_WIT_COMMENTS = "7.1-preview.4"
-_API_WIT_TAGS = "7.1-preview.1"
-_API_WIT_STATES = "7.1-preview.1"
-_API_POLICY = "7.1-preview.1"
-_API_IDENTITY = "7.1-preview.1"
+#
+# These are spelled ``{major}.{minor}-preview`` WITHOUT the ``.{resource-version}``
+# revision. The ``azure-devops`` CLI extension parses ``--api-version`` by deleting
+# the substring ``-preview`` and calling ``float()`` on what is left, before any
+# request is sent, so ``7.1-preview.4`` becomes ``7.1.4`` and every call fails
+# with "could not convert string to float". The unrevisioned form is a valid
+# REST API version: the service answers it with the newest preview revision of
+# the 7.1 resource, which for each of these is the revision the 7.1 reference
+# documents (comments .4, the rest .1). ``_PREVIEW_API_VERSIONS`` is what the
+# test suite holds to the extension's parse.
+_API_WIT_COMMENTS = "7.1-preview"
+_API_WIT_TAGS = "7.1-preview"
+_API_WIT_STATES = "7.1-preview"
+_API_POLICY = "7.1-preview"
+_API_IDENTITY = "7.1-preview"
+_PREVIEW_API_VERSIONS = (
+    _API_WIT_COMMENTS,
+    _API_WIT_TAGS,
+    _API_WIT_STATES,
+    _API_POLICY,
+    _API_IDENTITY,
+)
 
 # Azure list responses come back as ``{"count": n, "value": [...]}`` and are
 # paged with ``$top``/``$skip`` rather than a page number.
