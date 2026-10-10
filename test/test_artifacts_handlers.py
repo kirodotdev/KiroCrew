@@ -19,6 +19,7 @@ from kiro_crew import artifacts as art_mod
 from kiro_crew.artifacts import ArtifactStore
 from kiro_crew.dashboard.handlers.artifacts import (
     _MAX_BODY_BYTES,
+    _clean_origin_session_key,
     api_artifact_delete,
     api_artifact_detail,
     api_artifact_events,
@@ -145,6 +146,40 @@ def disposable_file(tmp_path: Path, monkeypatch):
 
 def _json_body(resp) -> dict:
     return json.loads(resp.body)
+
+
+# ── Origin session key ──────────────────────────────────────────────────────
+
+
+class TestCleanOriginSessionKey:
+    """The validator judges the WHOLE client value, trailing newline included.
+
+    Python's ``$`` matches immediately before a final newline, so a
+    ``$``-anchored pattern applied with ``.match`` accepts ``"dashboard:abc\\n"``,
+    and both HTTP write paths (artifact create, conversation-log materialize)
+    would store it unchanged; the store compares session keys exactly, so such a
+    value never matches the real session again. The pattern anchors at ``\\Z``,
+    as the artifact tag validators do.
+    """
+
+    @pytest.mark.parametrize(
+        "key", ["chat-2", "dashboard:chat-2", "cron:foo", "1700000000.123456", "a" * 128]
+    )
+    def test_key_inside_the_grammar_is_returned_unchanged(self, key: str) -> None:
+        assert _clean_origin_session_key(key) == key
+
+    @pytest.mark.parametrize("key", ["dashboard:abc\n", "a" * 128 + "\n"])
+    def test_trailing_newline_collapses_to_no_origin(self, key: str) -> None:
+        """The one placement a ``$`` anchor lets through."""
+        assert _clean_origin_session_key(key) == ""
+
+    @pytest.mark.parametrize("key", ["dashboard:a\nbc", "\ndashboard:abc", "dashboard:abc\n\n"])
+    def test_any_other_newline_placement_still_collapses(self, key: str) -> None:
+        assert _clean_origin_session_key(key) == ""
+
+    @pytest.mark.parametrize("raw", [None, 7, ["chat-2"], "", "a" * 129, "chat 2", "<b>"])
+    def test_values_outside_the_grammar_still_collapse(self, raw: object) -> None:
+        assert _clean_origin_session_key(raw) == ""
 
 
 # ── List ────────────────────────────────────────────────────────────────────

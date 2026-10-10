@@ -47,6 +47,7 @@ from kiro_crew.cloud import config as cloud_config
 from kiro_crew.cloud import ec2, fargate_engine, login_target, ssm
 from kiro_crew.cloud.fargate import identity, runtask, taskdef
 from kiro_crew.crew_log import schema as crew_log_schema
+from kiro_crew.dashboard.handlers import artifacts as artifact_handlers
 from kiro_crew.skill_providers import github as skill_provider_github
 
 #: Packages whose modules validate client-supplied input on a request path.
@@ -98,6 +99,16 @@ _VALIDATORS = (
     pytest.param(skill_provider_github._SEGMENT_RE, "SKILL.md", id="skill-provider-path-segment"),
     pytest.param(skill_provider_github._REF_RE, "release/1.2", id="skill-provider-ref"),
     pytest.param(crew_log_schema._SEGMENT_RE, "activity", id="crew-log-name-segment"),
+    # The dashboard artifact handler's two raw ``.match`` validators.
+    # Behavioral half only: the handlers package is not in
+    # ``_REQUEST_PATH_PACKAGES``, since other modules in it still carry the
+    # ``$`` shape and a structural walk over the package is its own change.
+    pytest.param(
+        artifact_handlers._SESSION_KEY_RE, "dashboard:chat-2", id="artifact-origin-session-key"
+    ),
+    pytest.param(
+        artifact_handlers._ARTIFACT_PROVIDER_RE, "default", id="artifact-publish-provider"
+    ),
 )
 
 #: Registered for the STRUCTURAL half only. ``skill_providers.github._ADDRESS_RE``

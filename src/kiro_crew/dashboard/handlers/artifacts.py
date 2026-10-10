@@ -120,8 +120,10 @@ _MAX_BODY_BYTES = MAX_CONTENT_BYTES + 8 * 1024 * 1024  # 25 MiB content + 8 MiB 
 # Publish-provider name grammar. Upstream imports this from ``validation`` where
 # it also backs the MCP publish-tool FieldSpecs; the public fork's validation
 # module doesn't carry those tools, so the constraint lives here at the sole
-# HTTP boundary that accepts a provider name.
-_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}$")
+# HTTP boundary that accepts a provider name. ``\Z``-anchored like
+# ``_SESSION_KEY_RE`` below: matched raw with ``.match``, so a ``$`` anchor would
+# admit a trailing newline.
+_ARTIFACT_PROVIDER_RE = re.compile(r"^[a-z0-9-]{1,32}\Z")
 
 # Upper bound (seconds) on any single awaited remote-publish-provider network
 # call. Without it a slow/hung provider would block the awaiting request (and
@@ -214,8 +216,10 @@ def _artifact_source_for_request(request: web.Request) -> str:
 #: opaque handles like ``chat-2`` / ``dashboard:chat-2`` / ``cron:foo`` / a Slack
 #: ``ts``; restrict to that charset so a malformed or hostile value (e.g. a JSON
 #: list, or injected markup) can neither poison persisted metadata nor reach the
-#: dashboard surface unsanitized.
-_SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,128}$")
+#: dashboard surface unsanitized. Anchored at ``\Z``, not ``$``: Python's ``$``
+#: also matches before a final newline, so a ``$`` anchor under ``.match`` admits
+#: ``"dashboard:abc\n"`` into the store, where keys compare exactly.
+_SESSION_KEY_RE = re.compile(r"^[A-Za-z0-9:_.\-]{1,128}\Z")
 
 
 def _clean_origin_session_key(raw: Any) -> str:

@@ -1096,7 +1096,9 @@ every `artifact_save` from the MCP path, which stores `session_key=""`. Since
 empty tab rather than a foreign one. This is not only a hostile-input case — a slot
 key can legitimately exceed the grammar's 128-char cap, because the artifact
 companion-chat flow names a slot `Artifact: <name>` and names run to
-`MAX_NAME_LEN` (200).
+`MAX_NAME_LEN` (200). The grammar is judged against the whole value, anchored
+at the true end of input (`\Z`), so a key carrying a trailing newline is a miss,
+not the key it resembles.
 
 Like `?folder=`, absent means "don't scope" while present-but-empty means "only
 unattributed" — the handler reads the raw key to keep the two distinct. `?pinned=`
