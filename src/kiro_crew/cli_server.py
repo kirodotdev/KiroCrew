@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import codecs
+import enum
 import http.client
 import io
 import json
@@ -44,6 +45,7 @@ from kiro_crew.dashboard.origin import (
 )
 from kiro_crew.dashboard.tailnet import is_governance_pinned_off, tailnet_origin
 from kiro_crew.dashboard.token_auth import parse_duration
+from kiro_crew.dashboard.urls import dashboard_socket_path
 from kiro_crew.embeddings import (
     make_sync_embed_fn,
     model_file_present,
@@ -62,7 +64,8 @@ from kiro_crew.hooks import HookManager, hooks_config_from_config_dict
 from kiro_crew.instances import run_marker
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, is_bundled_kiro_cli, pin_kiro_cli
 from kiro_crew.learn import LessonStore
-from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.loopback_http import loopback_urlopen, tcp_verified_urlopen, unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
 from kiro_crew.memory import MemoryStore
 from kiro_crew.owner_only_files import owner_only_opener
 from kiro_crew.platform.update_capability import (
@@ -164,6 +167,349 @@ def _probe_dashboard_health(port: int) -> None:
 _TOKEN_REQUEST_TIMEOUT = 20.0
 
 
+class _GatewayPeerRefused(Exception):
+    """The connection-bound ownership proof refused the gateway peer.
+
+    Deliberately NOT an :class:`OSError`. ``AbstractHTTPHandler.do_open`` wraps a
+    raised ``OSError`` into ``URLError`` (``except OSError as err: raise
+    URLError(err)``), so a ``PermissionError`` from a ``verify_peer`` hook would
+    reach ``_token``/``_logout`` as a ``URLError`` and be reported as "gateway
+    not running" against a gateway that is in fact live but refused. This type
+    escapes that wrap and propagates unwrapped, so the caller reports the real
+    refusal.
+    """
+
+
+def _audit_peer_denied(operation: str, port: int, detail: str) -> None:
+    """Emit a ``denied`` SEL event for a connection-bound ownership refusal.
+
+    The connection-bound gate is the authoritative check, and a refusal must not
+    be silent -- backend-security-controls requires every permission decision to
+    emit a SEL event. Called by the ``verify_peer`` hooks right before they
+    raise.
+    """
+    sel().log_api_access(
+        caller="cli",
+        operation=operation,
+        outcome="denied",
+        source="cli",
+        resources=f"port={port} reason=connected_peer_unverified",
+        error=detail,
+    )
+
+
+def _audit_peer_allowed(operation: str, port: int) -> None:
+    """Emit an ``allowed`` SEL event for a connection-bound ownership grant.
+
+    The authoritative connection-bound gate authorizes the owner-minting secret
+    send only on a positively confirmed same-principal peer. That positive
+    decision is a permission decision too, and backend-security-controls requires
+    every permission decision to emit a SEL event -- symmetric to the ``denied``
+    event emitted on refusal. Called by the ``verify_peer`` hooks right after the
+    peer verifies and before the secret header is written.
+    """
+    sel().log_api_access(
+        caller="cli",
+        operation=operation,
+        outcome="allowed",
+        source="cli",
+        resources=f"port={port} reason=connected_peer_verified",
+    )
+
+
+def _recorded_gateway_pid(port: int) -> "int | None":
+    """The pid the gateway recorded for *port*, iff its start token is intact.
+
+    Reads ``run/gateway-<port>.pid`` and its ``.start`` sidecar (written ``0600``
+    inside the ``0700`` ``run/`` dir, on the ``is_sensitive_path`` floor) and
+    returns the recorded pid only when the sidecar's start token still matches
+    the live pid's -- so a pid left behind by a crash and recycled onto an
+    unrelated process cannot inherit the claim. Returns ``None`` when no record
+    exists or the start token is absent or stale. This is the single
+    recorded-gateway predicate the three ownership proofs share
+    (``_verified_loopback_gateway_pids``, ``_connected_peer_verdict``,
+    ``_connected_unix_peer_is_recorded_gateway``); each then adds its own
+    reachability and owner checks.
+    """
+    record = run_marker.read_pid_record_path(
+        config_dir() / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(port)
+    )
+    if record is None:
+        return None
+    pid, start_token = record
+    if not start_token or start_token != run_marker.pid_start_token(pid):
+        return None
+    return pid
+
+
+def _connected_unix_peer_is_recorded_gateway(sock, port: int) -> bool:
+    """Whether the connected AF_UNIX peer is the gateway recorded for *port*.
+
+    The uid check (``check_peer_is_self``) proves only that the peer runs as this
+    account -- any same-uid process passes it, including one that rebound the
+    socket path, which is not on an owner-only floor every platform guarantees.
+    So bind the peer to the recorded gateway identity as well: resolve the peer
+    pid from the connected socket (``SO_PEERCRED`` on Linux, ``LOCAL_PEERPID`` on
+    macOS) and require it to equal the pid recorded for *port* with a matching
+    start token -- the same recorded-identity proof the TCP path applies. The
+    start token is held outside agent-writable paths, so a same-uid impostor on a
+    different pid, or without the real start token, is refused. Fails closed: an
+    unreadable peer pid or an absent/mismatched record returns ``False``.
+    """
+    peer_pid = get_peer_pid(sock)
+    if peer_pid is None:
+        return False
+    recorded_pid = _recorded_gateway_pid(port)
+    return recorded_pid is not None and peer_pid == recorded_pid
+
+
+def _owner_verified_secret_urlopen(
+    req: "urllib.request.Request", port: int, timeout: float, *, operation: str
+):
+    """Open *req* against the local gateway with ownership PROVEN ON THE TRANSPORT.
+
+    ``_token``/``_logout`` attach the owner-minting local secret, so the proof
+    that the peer is this install's own gateway must be bound to the very
+    connection that carries the secret -- verifying one connection and sending on
+    another leaves a TOCTOU window where the gateway can die and a foreign
+    listener bind the freed loopback port between the two. NO send path, main or
+    fallback, writes the secret without a connection-bound proof.
+
+    The proof is bound to the connection on whichever transport the host offers,
+    and a configuration the server documents as supported never loses sign-in:
+
+    1. POSIX with the gateway's own ``AF_UNIX`` socket present (the ordinary
+       case): send over that socket -- it lives in an owner-only directory no
+       other user can answer -- via :func:`unix_socket_urlopen` (NO TCP handler
+       at all), with a ``verify_peer`` hook that runs on the CONNECTED socket
+       before any byte is written and raises unless the kernel confirms the peer
+       is this principal (``SO_PEERCRED``/``LOCAL_PEERCRED`` via
+       :func:`check_peer_is_self`).
+
+    2. No ``AF_UNIX`` socket to prefer -- a TCP-only gateway (the server
+       documents these), or native Windows (no ``AF_UNIX`` at all): send over
+       loopback TCP via :func:`tcp_verified_urlopen` with the SAME security
+       guarantee bound to the connection -- :func:`_connected_peer_verdict` on
+       the CONNECTED socket, right before the first byte, reads the kernel's
+       exact 4-tuple to name the pid on the far end and confirm it is this
+       install's recorded gateway, owned by this account (uid on POSIX, access-
+       token owner SID on Windows). The secret is written ONLY on a positively
+       confirmed ``MATCH``; a ``MISMATCH`` (resolved foreign peer) and an
+       ``UNAVAILABLE`` (the peer could not be resolved at all -- e.g. a host with
+       no trusted ``lsof``) BOTH refuse. Fail closed: an owner-minting secret is
+       never written to an unproven peer, since the unresolvable case is exactly
+       where a foreign listener on a crash-freed port could be the far end.
+
+    Because POSIX proves ownership by uid here, a legitimate same-user TCP-only
+    gateway resolves to ``MATCH`` -- it is NOT pushed into the refused
+    ``UNAVAILABLE`` branch -- so a supported loopback-TCP configuration keeps
+    working while an unprovable peer is still refused. Linux resolves the peer
+    from ``/proc`` with no external tool; only a host that genuinely cannot
+    resolve the connected peer reaches ``UNAVAILABLE``, and there the fail-closed
+    refusal is correct.
+
+    When a hook refuses, it emits a ``denied`` SEL event for *operation* BEFORE
+    raising, and when the peer verifies it emits an ``allowed`` SEL event for
+    *operation* before the secret header is written, so both arms of the
+    connection-bound decision are auditable and the audit trail cannot assert a
+    verified allow for an operation that was actually denied -- nor leave the
+    authoritative grant unrecorded. It raises
+    :class:`_GatewayPeerRefused`, which is NOT an :class:`OSError`: urllib's
+    ``AbstractHTTPHandler.do_open`` wraps a raised ``OSError`` into ``URLError``,
+    which would make a live-but-refused gateway read to the caller as "gateway
+    not running". The non-``OSError`` refusal propagates unwrapped so the caller
+    reports the real reason.
+    """
+    if hasattr(socket, "AF_UNIX"):
+        try:
+            socket_path = str(dashboard_socket_path(port))
+        except Exception:
+            socket_path = ""
+        if socket_path and os.path.exists(socket_path):
+
+            def _verify_peer(sock) -> None:
+                # Runs between connect() and the first send; raising refuses
+                # before the secret header is written. Deny-by-default: the peer
+                # must be this account (uid) AND the gateway recorded for this
+                # port (pid + start token) -- the uid alone is not enough, since
+                # any same-uid process can rebind the socket path, so bind to the
+                # recorded identity the way the TCP path does. Audit both arms --
+                # the denial before raising and the positive grant before the
+                # send -- so every connection-bound permission decision is
+                # recorded.
+                if check_peer_is_self(sock) is not PeerCredResult.MATCH:
+                    _audit_peer_denied(operation, port, "connected socket peer is not this account")
+                    raise _GatewayPeerRefused("connected gateway socket peer is not this account")
+                if not _connected_unix_peer_is_recorded_gateway(sock, port):
+                    _audit_peer_denied(
+                        operation, port, "connected socket peer is not this install's gateway"
+                    )
+                    raise _GatewayPeerRefused(
+                        "connected socket peer is a same-user process but not this "
+                        "install's recorded gateway"
+                    )
+                _audit_peer_allowed(operation, port)
+
+            return unix_socket_urlopen(
+                req, timeout, socket_path=socket_path, verify_peer=_verify_peer
+            )
+        # No owner-only socket here (TCP-only gateway, a supported config): fall
+        # through to the connection-bound TCP proof below rather than hard-fail.
+
+    def _verify_tcp_peer(sock) -> None:
+        # Bind the proof to the connected TCP socket and FAIL CLOSED: the
+        # owner-minting secret is written only on a positively confirmed MATCH.
+        # A resolved foreign peer (MISMATCH) and a peer that cannot be resolved
+        # at all (UNAVAILABLE -- a host with no trusted lsof) are BOTH refused --
+        # an unproven peer must never receive X-Local-Secret, because the
+        # unresolvable case is exactly where a foreign listener on a crash-freed
+        # port could be the far end. The two refusals carry different remedies:
+        # UNAVAILABLE is operator-actionable (install the ownership tool), a
+        # MISMATCH is a genuine foreign peer. POSIX gets a real proof path (uid,
+        # below), so a legitimate TCP-only gateway resolves to MATCH and is not
+        # pushed into either refusal.
+        verdict = _connected_peer_verdict(sock)
+        if verdict is _ConnectedPeerVerdict.UNAVAILABLE:
+            _audit_peer_denied(operation, port, "connected peer could not be resolved on this host")
+            raise _GatewayPeerRefused(
+                "could not verify the gateway on this connection: this host cannot "
+                "resolve a loopback connection's peer. Install lsof so ownership "
+                "can be proven, or run the gateway over its owner-only socket."
+            )
+        if verdict is not _ConnectedPeerVerdict.MATCH:
+            _audit_peer_denied(
+                operation, port, "connected peer could not be proven to be this gateway"
+            )
+            raise _GatewayPeerRefused(
+                "the peer on this established connection could not be proven to be "
+                "this install's gateway"
+            )
+        _audit_peer_allowed(operation, port)
+
+    return tcp_verified_urlopen(req, timeout, verify_peer=_verify_tcp_peer)
+
+
+class _ConnectedPeerVerdict(enum.Enum):
+    """Outcome of proving the peer on an established loopback TCP connection.
+
+    ``MATCH`` -- the kernel 4-tuple table names the far end as this install's
+    recorded gateway, owned by this account.
+    ``MISMATCH`` -- the peer was resolved to a different pid, a wrong start
+    token, or a foreign owner; fail closed.
+    ``UNAVAILABLE`` -- the host cannot resolve the connected peer at all because
+    the ownership tool is absent (macOS without ``lsof``). Linux resolves from
+    ``/proc`` without an external tool and does not return this. The secret-send
+    caller treats it the same as ``MISMATCH`` -- fail closed -- because an
+    owner-minting secret must never be written to a peer that cannot be proven,
+    and an unresolvable peer is exactly where a foreign listener on a crash-freed
+    port could be the far end. POSIX proves ownership by uid (not SID), so a
+    legitimate same-user TCP-only gateway resolves to ``MATCH`` and is never
+    forced into this branch.
+    """
+
+    MATCH = "match"
+    MISMATCH = "mismatch"
+    UNAVAILABLE = "unavailable"
+
+
+def _connected_peer_proof_available() -> bool:
+    """Whether this host can resolve a loopback TCP connection's peer at all.
+
+    Linux reads the peer from ``/proc`` with no external tool, and Windows reads
+    the kernel owner-PID connection table through ``GetExtendedTcpTable`` (a
+    native call in :func:`platform_compat.get_tcp_peer_pid`, not the ``netstat``
+    shell tool), so neither needs ``lsof``. macOS shells out to ``lsof``; without
+    it the kernel 4-tuple table is unreadable, so an unresolved peer is reported
+    ``UNAVAILABLE`` rather than ``MISMATCH`` -- a distinct state the secret-send
+    caller still refuses, kept separate so the reason (tool absent, not a foreign
+    peer) is legible. This gates only the UNAVAILABLE-vs-MISMATCH distinction;
+    the authoritative decision is :func:`_connected_peer_verdict`, which refuses
+    (fail closed) whenever the peer is not positively confirmed, on every
+    platform.
+    """
+    if sys.platform == "linux" or platform_compat.IS_WINDOWS:
+        return True
+    return platform_compat.listening_pid_tool_available()
+
+
+def _connected_peer_verdict(sock) -> "_ConnectedPeerVerdict":
+    """Prove the peer of THIS established connection the secret will travel over.
+
+    Reads the far end of the exact 4-tuple (not who owns the port now, which a
+    foreign listener can defeat by accepting the connection then releasing the
+    port during a restart) via :func:`platform_compat.get_tcp_peer_pid` (Linux
+    /proc inode, macOS lsof, Windows ``GetExtendedTcpTable``). That resolver
+    returns the pid owning the socket whose ``local`` endpoint equals its
+    ``client_endpoint`` argument and whose ``remote`` endpoint equals its
+    ``server_endpoint`` argument. We hold the CLI's end of the connection, so to
+    name the GATEWAY's pid we describe the gateway's socket: its local end is our
+    ``getpeername()`` (``gateway_endpoint``, passed as ``client_endpoint``) and
+    its remote end is our ``getsockname()`` (``cli_endpoint``, passed as
+    ``server_endpoint``). That resolved pid must equal the gateway recorded for
+    this port, with a matching start token, and be owned by this account.
+
+    Returns ``UNAVAILABLE`` (not ``MISMATCH``) when the host cannot resolve the
+    connected peer at all, keeping "tool absent" legible as distinct from a
+    resolved foreign peer. The secret-send caller refuses on BOTH -- an
+    unprovable peer never receives the owner-minting secret. Every other
+    unresolved step is ``MISMATCH`` -- fail closed, never a port snapshot. POSIX
+    proves ownership by uid, Windows by access-token owner SID.
+    """
+    try:
+        local = sock.getsockname()
+        peer = sock.getpeername()
+        if not (isinstance(local, tuple) and isinstance(peer, tuple)):
+            return _ConnectedPeerVerdict.MISMATCH
+        cli_endpoint = (str(local[0]), int(local[1]))
+        gateway_endpoint = (str(peer[0]), int(peer[1]))
+        # Resolve the GATEWAY's owning pid. get_tcp_peer_pid finds the socket
+        # whose local endpoint == client_endpoint and whose remote endpoint ==
+        # server_endpoint. The gateway's socket has local == gateway_endpoint
+        # (our peername) and remote == cli_endpoint (our sockname), so the
+        # gateway endpoint is the client_endpoint and our own endpoint is the
+        # server_endpoint. This is the gateway's socket, not ours.
+        peer_pid = platform_compat.get_tcp_peer_pid(
+            server_endpoint=cli_endpoint, client_endpoint=gateway_endpoint
+        )
+        if peer_pid is None:
+            # No unique established connection resolved. On a host that can
+            # resolve peers at all, that is a fail-closed MISMATCH. On a host
+            # that structurally cannot (lsof-less macOS), it is UNAVAILABLE --
+            # kept distinct only so the reason (tool absent, not a foreign peer)
+            # is legible. The secret-send caller refuses on BOTH: an owner-
+            # minting secret is never written to a peer that cannot be proven,
+            # so UNAVAILABLE is fail-closed too and surfaces the install-the-tool
+            # remedy rather than proceeding.
+            return (
+                _ConnectedPeerVerdict.MISMATCH
+                if _connected_peer_proof_available()
+                else _ConnectedPeerVerdict.UNAVAILABLE
+            )
+        recorded_pid = _recorded_gateway_pid(gateway_endpoint[1])
+        if recorded_pid is None or peer_pid != recorded_pid:
+            return _ConnectedPeerVerdict.MISMATCH
+        pid = recorded_pid
+        # Prove the peer process is owned by THIS account, in the form each
+        # platform can bear: uid on POSIX (os.getuid vs the pid's owner uid),
+        # access-token owner SID on Windows (no uid there). Using the SID on
+        # POSIX would always be None -> a legitimate same-user TCP-only gateway
+        # would never reach MATCH and would be forced into the refused
+        # UNAVAILABLE path; the uid check is the POSIX equivalent that lets it
+        # verify. Fails closed if ownership is unresolvable on either platform.
+        if platform_compat.IS_POSIX:
+            owner_uid = platform_compat.process_owner_uid(pid)
+            if owner_uid is not None and owner_uid == os.getuid():
+                return _ConnectedPeerVerdict.MATCH
+            return _ConnectedPeerVerdict.MISMATCH
+        me = platform_compat.current_user_sid()
+        owner_sid = platform_compat.process_owner_sid(pid)
+        if me is not None and owner_sid is not None and owner_sid == me:
+            return _ConnectedPeerVerdict.MATCH
+        return _ConnectedPeerVerdict.MISMATCH
+    except Exception:
+        return _ConnectedPeerVerdict.MISMATCH
+
+
 def _token(args: argparse.Namespace) -> None:
     """Print a dashboard URL with a fresh auth token.
 
@@ -186,6 +532,15 @@ def _token(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     port = resolve_client_port(args.port)
+    # /api/token/local mints owner credentials, so the secret must reach only
+    # this install's own gateway. The authoritative proof is bound to the live
+    # connection in _owner_verified_secret_urlopen (_connected_peer_verdict on
+    # TCP, SO_PEERCRED on the unix socket): it reads the exact kernel 4-tuple to
+    # name the peer, confirms it is this account's recorded gateway, writes the
+    # secret only on a positive MATCH, and audits allowed/denied itself. No
+    # pre-flight port snapshot precedes it -- that check was both weaker (a port
+    # snapshot a foreign listener can defeat on restart) and a second, redundant
+    # way for a legitimate sign-in to fail.
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
         print("❌ Gateway not running — start it with: kirocrew gateway", file=sys.stderr)
@@ -197,9 +552,16 @@ def _token(args: argparse.Namespace) -> None:
         url += f"&embed_parent_port={int(epp)}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        with loopback_urlopen(req, timeout=_TOKEN_REQUEST_TIMEOUT) as resp:
+        with _owner_verified_secret_urlopen(
+            req, port, timeout=_TOKEN_REQUEST_TIMEOUT, operation="gateway_token"
+        ) as resp:
             data = json.loads(resp.read())
             token = data.get("token", "")
+    except _GatewayPeerRefused as exc:
+        # The gateway is live but its connection-bound ownership proof refused
+        # this peer -- report the refusal, not "gateway not running".
+        print(f"❌ Gateway ownership could not be verified on port {port}: {exc}", file=sys.stderr)
+        sys.exit(1)
     except urllib.error.HTTPError as exc:
         # The gateway answered; its body names the reason (for example the
         # host-provenance refusal on /api/token/local). Reporting that as
@@ -336,6 +698,13 @@ def _emit_session_urls(port: int, token: str) -> None:
 
 def _logout(port: int) -> None:
     """Revoke all dashboard sessions by calling the gateway's /api/logout endpoint."""
+    # /api/logout acts on owner authority, so the secret must reach only this
+    # install's own gateway. The authoritative proof is bound to the live
+    # connection in _owner_verified_secret_urlopen (_connected_peer_verdict on
+    # TCP, SO_PEERCRED on the unix socket), which writes the secret only on a
+    # positive MATCH and audits allowed/denied itself. No pre-flight port
+    # snapshot precedes it -- that check was weaker and a second redundant way
+    # for a legitimate sign-in to fail.
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
         print("❌ Gateway not running — start it with: kirocrew gateway")
@@ -349,13 +718,22 @@ def _logout(port: int) -> None:
         data=b"{}",
     )
     try:
-        with loopback_urlopen(req, timeout=5) as resp:
+        with _owner_verified_secret_urlopen(
+            req, port, timeout=5, operation="gateway_logout"
+        ) as resp:
             data = json.loads(resp.read())
             if data.get("ok"):
                 print("✅ All dashboard sessions revoked.")
             else:
                 print(f"❌ Failed to revoke sessions: {data.get('error', 'unknown error')}")
                 sys.exit(1)
+    except _GatewayPeerRefused as e:
+        # The gateway is live but its connection-bound ownership proof refused
+        # this peer. _GatewayPeerRefused is NOT an OSError, so it reaches here
+        # unwrapped instead of being folded into the URLError arm below and
+        # mislabelled "gateway not running" against a live gateway.
+        print(f"❌ Failed to revoke sessions: gateway ownership not verified: {e}")
+        sys.exit(1)
     except urllib.error.HTTPError as e:
         print(f"❌ Failed to revoke sessions: HTTP {e.code}")
         sys.exit(1)
@@ -382,6 +760,16 @@ def _request_gateway_shutdown(port: int) -> bool:
     identity is guessed or signaled on this path. Any missing credential,
     refusal, malformed response, or transport failure returns ``False`` so the
     caller retains the existing no-target diagnostic.
+
+    No port-ownership gate is applied here, deliberately, and the two ``_stop``
+    arms that reach this call rest on different grounds. The argv-declined arm is
+    fronted by ``_verified_loopback_gateway_pids`` (an argv-free identity check
+    at least as strong as ``_gateway_owns_port``), so it carries a positive
+    proof. The empty-lookup arm carries NONE: it is the path taken precisely when
+    the listener lookup cannot be trusted, so it is an intentionally unverified
+    fallback -- re-running that same lookup here would delete the fallback rather
+    than protect it, and it relies instead on the gateway's own handler, which
+    requires loopback origin plus a constant-time secret match before acting.
     """
     secret = read_local_secret(port, dial_host=_CLI_LOOPBACK)
     if not secret:
@@ -486,13 +874,8 @@ def _verified_loopback_gateway_pids(port: int) -> list[int]:
     """
     if not platform_compat.IS_POSIX:
         return []
-    record = run_marker.read_pid_record_path(
-        config_dir() / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(port)
-    )
-    if record is None:
-        return []
-    pid, start_token = record
-    if not start_token or start_token != run_marker.pid_start_token(pid):
+    pid = _recorded_gateway_pid(port)
+    if pid is None:
         return []
     if pid not in platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port)):
         return []
@@ -1444,7 +1827,9 @@ def _print_token_url(port: int) -> None:
                 continue
             url = f"http://{_CLI_LOOPBACK}:{port}/api/token/local?ttl={_RESTART_TOKEN_TTL}"
             req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
-            with loopback_urlopen(req, timeout=3) as resp:
+            with _owner_verified_secret_urlopen(
+                req, port, timeout=3, operation="gateway_token"
+            ) as resp:
                 data = json.loads(resp.read())
                 token = data.get("token", "")
             if token:
@@ -1460,7 +1845,13 @@ def _print_token_url(port: int) -> None:
                 if origin and "localhost" not in origin:
                     print(f"   {origin}/?token={token}")
                 return
-        except (OSError, urllib.error.URLError, FileNotFoundError, ValueError):
+        except (_GatewayPeerRefused, OSError, urllib.error.URLError, FileNotFoundError, ValueError):
+            # _GatewayPeerRefused is not an OSError, so it must be named here or
+            # it escapes this retry loop. A TCP-only gateway whose best-effort
+            # run-marker write has not landed yet while the port already serves
+            # yields a MISMATCH verdict during the restart window -- exactly the
+            # transient this loop exists to absorb -- so a peer refusal falls into
+            # the non-fatal fallback below like any other transport failure.
             pass
         time.sleep(1)
     # Non-fatal — gateway might just be slow to start

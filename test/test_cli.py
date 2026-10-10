@@ -1837,6 +1837,23 @@ class TestManifest:
 class TestLogout:
     """Tests for _logout CLI function."""
 
+    @pytest.fixture(autouse=True)
+    def _posix_ownership(self, _floor_monkeypatch):
+        # Pin the POSIX branch so the connection-bound ownership proof takes its
+        # uid path on every runner; on Windows it would otherwise take the SID
+        # path and refuse first. Route the owner-verified secret transport
+        # through the stubbed loopback_urlopen so the send works without a real
+        # unix socket; the transport's own proof is covered in
+        # test_cli_server_more_coverage.
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
+
     def test_logout_success(self, tmp_path, monkeypatch):
         """Successful logout prints success message."""
         secret_file = tmp_path / ".local_secret"
@@ -5897,6 +5914,7 @@ class TestConfigDirOverride:
     def test_logout_reads_secret_for_listener_port(self, monkeypatch):
         """_logout resolves the secret paired with the requested listener."""
         read_secret = MagicMock(return_value="test-secret")
+        monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
         monkeypatch.setattr("kiro_crew.cli_server.read_local_secret", read_secret)
 
         from kiro_crew.cli_server import _logout
@@ -5906,6 +5924,12 @@ class TestConfigDirOverride:
         mock_resp.__enter__ = MagicMock(return_value=mock_resp)
         mock_resp.__exit__ = MagicMock(return_value=False)
 
+        monkeypatch.setattr(
+            "kiro_crew.cli_server._owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": __import__(
+                "kiro_crew.cli_server", fromlist=["loopback_urlopen"]
+            ).loopback_urlopen(req, timeout=timeout),
+        )
         with patch("kiro_crew.cli_server.loopback_urlopen", return_value=mock_resp):
             _logout(5476)
         read_secret.assert_called_once_with(5476, dial_host="127.0.0.1")
@@ -7560,6 +7584,20 @@ class TestWaitGatewayReady:
 class TestPrintTokenUrl:
     """Tests for _print_token_url (auto-token after restart)."""
 
+    @pytest.fixture(autouse=True)
+    def _route_secret_transport(self, _floor_monkeypatch):
+        # Route the owner-verified secret transport through the stubbed
+        # loopback_urlopen so the post-restart token poll works without a real
+        # unix socket; the transport's own proof is covered elsewhere.
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
+
     def test_prints_token_on_success(self, tmp_path, capsys, monkeypatch):
         from kiro_crew.cli_server import _print_token_url
 
@@ -7666,6 +7704,70 @@ class TestPrintTokenUrl:
 
         _print_token_url(7777)
 
+        out = capsys.readouterr().out
+        assert "kirocrew token" in out
+
+    def test_peer_refusal_falls_into_the_nonfatal_fallback(self, capsys, monkeypatch):
+        # A TCP-only gateway whose run-marker write has not landed yet while the
+        # port already serves yields a MISMATCH during the restart window ->
+        # _GatewayPeerRefused. It is not an OSError, so it must be caught by the
+        # retry loop and hit the non-fatal fallback instead of escaping as a
+        # traceback. One loop pass runs the refusing send, then the deadline
+        # passes so the loop prints the fallback.
+        import kiro_crew.cli_server as _cs
+        from kiro_crew.cli_server import _print_token_url
+
+        monkeypatch.setattr(
+            "kiro_crew.cli_server.read_local_secret", lambda _port, **_kw: "test-secret"
+        )
+        # Positive wait so the while-guard admits one pass; monotonic steps past
+        # the deadline right after that pass, and sleep is a no-op so the test
+        # does not block on the loop's trailing sleep(1).
+        monkeypatch.setattr("kiro_crew.cli_server._RESTART_TOKEN_WAIT", 10)
+        # First two monotonic() reads (deadline anchor + first while-guard) sit
+        # before the deadline so one pass runs; every read after jumps past it,
+        # so the loop exits after that single swallowed refusal. A plain counter
+        # (not an exhaustible iterator) tolerates extra reads without raising.
+        ticks = {"n": 0}
+
+        def _clock():
+            ticks["n"] += 1
+            return 0.0 if ticks["n"] <= 2 else 100.0
+
+        # Rebind cli_server's own ``time`` reference to a shim that fakes only
+        # monotonic/sleep and delegates every other name to the real module.
+        # Patching ``cli_server.time.monotonic`` directly would mutate the
+        # shared stdlib ``time`` object and freeze the clock for the whole test
+        # worker; this confines the fakes to cli_server's view and undoes
+        # cleanly at teardown.
+        import time as _real_time
+
+        class _FakeTime:
+            monotonic = staticmethod(_clock)
+
+            @staticmethod
+            def sleep(_s):
+                return None
+
+            def __getattr__(self, name):
+                return getattr(_real_time, name)
+
+        monkeypatch.setattr(_cs, "time", _FakeTime())
+
+        calls = {"n": 0}
+
+        def _refuse(*_a, **_k):
+            calls["n"] += 1
+            raise _cs._GatewayPeerRefused("peer not proven")
+
+        # Overrides the class autouse routing fixture for this test.
+        monkeypatch.setattr(_cs, "_owner_verified_secret_urlopen", _refuse)
+
+        _print_token_url(7777)  # must NOT raise -- the refusal is swallowed
+
+        # The refusing send ran (branch actually exercised: if the retry handler
+        # did not name _GatewayPeerRefused this call would have propagated).
+        assert calls["n"] == 1
         out = capsys.readouterr().out
         assert "kirocrew token" in out
 
@@ -8004,6 +8106,21 @@ class TestChildWatcherApiRemoved:
 
 class TestTokenCommand:
     """Tests for the ``kirocrew token`` command handler (``_token``)."""
+
+    @pytest.fixture(autouse=True)
+    def _posix_ownership(self, _floor_monkeypatch):
+        # Pin the POSIX branch so the connection-bound ownership proof takes its
+        # uid path; the non-POSIX branch would take the SID path and refuse
+        # first. Route the owner-verified secret transport through the stubbed
+        # loopback_urlopen so the send works without a real unix socket.
+        _floor_monkeypatch.setattr("kiro_crew.cli_server.platform_compat.IS_POSIX", True)
+        import kiro_crew.cli_server as _cs
+
+        _floor_monkeypatch.setattr(
+            _cs,
+            "_owner_verified_secret_urlopen",
+            lambda req, port, timeout, *, operation="": _cs.loopback_urlopen(req, timeout=timeout),
+        )
 
     def _mock_token_response(self, token: str) -> MagicMock:
         mock_resp = MagicMock()

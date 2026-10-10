@@ -141,9 +141,7 @@ class TestLoopbackSecretNeverReachesAProxy:
         ) as resp:
             assert resp.status == 200
 
-        assert listeners["proxy_hits"] == [], (
-            f"secret reached the proxy: {listeners['proxy_hits']}"
-        )
+        assert listeners["proxy_hits"] == [], f"secret reached the proxy: {listeners['proxy_hits']}"
         assert [h["secret"] for h in listeners["gateway_hits"]] == [CANARY]
 
     def test_ignores_proxy_when_no_proxy_names_localhost_only(self, monkeypatch, listeners):
@@ -160,9 +158,9 @@ class TestLoopbackSecretNeverReachesAProxy:
         ) as resp:
             assert resp.status == 200
 
-        assert listeners["proxy_hits"] == [], (
-            f"secret reached the proxy despite no_proxy=localhost: {listeners['proxy_hits']}"
-        )
+        assert (
+            listeners["proxy_hits"] == []
+        ), f"secret reached the proxy despite no_proxy=localhost: {listeners['proxy_hits']}"
         assert [h["secret"] for h in listeners["gateway_hits"]] == [CANARY]
 
     def test_default_opener_does_leak(self, monkeypatch, listeners):
@@ -201,9 +199,7 @@ class TestLoopbackSecretNeverReachesAProxy:
         )
         try:
             with pytest.raises(urllib.error.HTTPError) as excinfo:
-                loopback_urlopen(
-                    _post(f"http://127.0.0.1:{gateway_port}/api/lessons"), timeout=5
-                )
+                loopback_urlopen(_post(f"http://127.0.0.1:{gateway_port}/api/lessons"), timeout=5)
             assert excinfo.value.code == 302
             assert redirect_hits == [], f"secret followed the redirect: {redirect_hits}"
         finally:
@@ -243,7 +239,7 @@ class TestNoNewBareLoopbackSender:
             for i, line in enumerate(lines):
                 if "urllib.request.urlopen(" not in line:
                     continue
-                window = "\n".join(lines[max(0, i - 5): i + 1])
+                window = "\n".join(lines[max(0, i - 5) : i + 1])
                 if any(m in window for m in self.EXTERNAL_MARKERS):
                     continue
                 offenders.append(f"{path.relative_to(src)}:{i + 1}: {line.strip()}")
@@ -274,3 +270,127 @@ class TestOpenerShape:
             if isinstance(h, urllib.request.ProxyHandler) and h.proxies
         ]
         assert live == [], f"opener still carries a populated ProxyHandler: {live}"
+
+
+class TestTcpVerifiedUrlopen:
+    """The TCP-verify transport runs ``verify_peer`` on the CONNECTED socket
+    before any byte is written, and refuses by raising -- all exercised with a
+    mocked connection so no real network round-trip happens (hermetic on every
+    platform, including the Windows shard where nothing listens on 5476)."""
+
+    def _patch_connect(self, monkeypatch):
+        """Make ``HTTPConnection.connect`` install a fake socket instead of
+        opening a real one, and hand the fake sock back so the test can assert
+        the verifier saw it."""
+        import http.client
+
+        fake_sock = object()
+
+        def fake_super_connect(self):
+            self.sock = fake_sock
+
+        monkeypatch.setattr(http.client.HTTPConnection, "connect", fake_super_connect)
+        return fake_sock
+
+    def test_connect_runs_verify_peer_on_the_connected_socket(self, monkeypatch):
+        from kiro_crew.loopback_http import _TCPVerifyHTTPConnection
+
+        fake_sock = self._patch_connect(monkeypatch)
+        seen = {}
+
+        def verify(sock):
+            seen["sock"] = sock
+
+        conn = _TCPVerifyHTTPConnection("127.0.0.1:5476", timeout=3, verify_peer=verify)
+        conn.connect()
+        # The verifier ran on the exact connected socket, before any send.
+        assert seen["sock"] is fake_sock
+
+    def test_connect_closes_the_fd_and_propagates_when_verify_refuses(self, monkeypatch):
+        from kiro_crew.loopback_http import _TCPVerifyHTTPConnection
+
+        self._patch_connect(monkeypatch)
+        closed = {"n": 0}
+        monkeypatch.setattr(
+            _TCPVerifyHTTPConnection,
+            "close",
+            lambda self: closed.__setitem__("n", closed["n"] + 1),
+        )
+
+        class _Refused(Exception):
+            pass
+
+        def verify(_sock):
+            raise _Refused("peer not proven")
+
+        conn = _TCPVerifyHTTPConnection("127.0.0.1:5476", timeout=3, verify_peer=verify)
+        # A non-OSError refusal propagates unwrapped (so a caller can tell a
+        # refused-but-live peer from an unreachable one), and the fd is closed
+        # so the peer never sees the request line.
+        with pytest.raises(_Refused):
+            conn.connect()
+        assert closed["n"] == 1
+
+    def test_connect_without_a_verifier_just_connects(self, monkeypatch):
+        from kiro_crew.loopback_http import _TCPVerifyHTTPConnection
+
+        fake_sock = self._patch_connect(monkeypatch)
+        conn = _TCPVerifyHTTPConnection("127.0.0.1:5476", timeout=3, verify_peer=None)
+        conn.connect()  # no verifier -> no raise
+        assert conn.sock is fake_sock
+
+    def test_connect_defaults_timeout_when_none(self, monkeypatch):
+        from kiro_crew.loopback_http import _TCPVerifyHTTPConnection
+
+        self._patch_connect(monkeypatch)
+        # timeout=None exercises the no-timeout super().__init__ arm.
+        conn = _TCPVerifyHTTPConnection("127.0.0.1:5476", verify_peer=None)
+        conn.connect()
+        assert conn.sock is not None
+
+    def test_tcp_verified_urlopen_wires_the_verifier_through_http_open(self, monkeypatch):
+        import urllib.request
+
+        from kiro_crew.loopback_http import (
+            _TCPVerifyHTTPConnection,
+            tcp_verified_urlopen,
+        )
+
+        fake_sock = self._patch_connect(monkeypatch)
+        seen = {}
+
+        def verify(sock):
+            seen["sock"] = sock
+
+        # Capture the connection factory http_open builds, and short-circuit
+        # do_open so no HTTP response is parsed -- the behavior under test is
+        # that the verifier is threaded onto the connected socket, not urllib's
+        # response handling.
+        captured = {}
+
+        def fake_do_open(self, factory, req, **kwargs):
+            conn = factory("127.0.0.1:5476", timeout=3)
+            captured["conn"] = conn
+            conn.connect()  # runs the real _TCPVerifyHTTPConnection.connect
+
+            class _Resp:
+                code = 200
+                status = 200
+                msg = "OK"
+
+                def info(self):
+                    import email.message
+
+                    return email.message.Message()
+
+            return _Resp()
+
+        monkeypatch.setattr(urllib.request.HTTPHandler, "do_open", fake_do_open)
+        req = urllib.request.Request("http://127.0.0.1:5476/x")
+        result = tcp_verified_urlopen(req, 3, verify_peer=verify)
+        # The opener dispatched through _TCPVerifyHTTPHandler.http_open, whose
+        # factory built a _TCPVerifyHTTPConnection carrying our verifier, and
+        # connect() ran it on the connected socket.
+        assert result.code == 200
+        assert isinstance(captured["conn"], _TCPVerifyHTTPConnection)
+        assert seen["sock"] is fake_sock
