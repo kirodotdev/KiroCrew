@@ -1074,6 +1074,83 @@ class TestShutdown:
         await orch._shutdown()
         assert task.cancelled()
 
+    @staticmethod
+    def _orch_with_dashboard_turn(turn: "asyncio.Task"):
+        orch = _make_orchestrator()
+        for name in ("cron_svc", "heartbeat_svc", "secretary_svc", "subagent_mgr"):
+            setattr(orch, name, None)
+        orch._dashboard_runner = None
+        orch.sessions = MagicMock()
+        orch.sessions.close_all = AsyncMock()
+        state = MagicMock()
+        state._slots = {"s1": SimpleNamespace(task=turn)}
+        state.close_all_ws = AsyncMock()
+        orch.dashboard_state = state
+        return orch
+
+    @pytest.mark.asyncio
+    async def test_shutdown_waits_for_a_dashboard_turn_that_is_unwinding(self, monkeypatch):
+        """A turn cut by close_all() saves its partial reply as it unwinds; the hard
+        exit after shutdown must not beat that save."""
+        monkeypatch.setattr(
+            "kiro_crew.gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS", 5.0, raising=False
+        )
+        order: list[str] = []
+        closed = asyncio.Event()
+        collected = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _turn():
+            await closed.wait()
+            # The unwind and its save: parked until the test lets it finish.
+            await release.wait()
+            order.append("saved")
+
+        turn = asyncio.create_task(_turn())
+        try:
+            orch = self._orch_with_dashboard_turn(turn)
+            orch.sessions.close_all = AsyncMock(side_effect=lambda: closed.set())
+            state, slots = orch.dashboard_state, orch.dashboard_state._slots
+
+            def _slots_read(_self):
+                # Shutdown reads the slots after close_all() only to wait for
+                # their turns; that read is the signal to let the turn finish.
+                if closed.is_set():
+                    collected.set()
+                return slots
+
+            type(state)._slots = property(_slots_read)
+            shutdown = asyncio.create_task(orch._shutdown())
+            shutdown.add_done_callback(lambda _t: order.append("shutdown returned"))
+            collecting = asyncio.create_task(collected.wait())
+            await asyncio.wait_for(
+                asyncio.wait({collecting, shutdown}, return_when=asyncio.FIRST_COMPLETED), 10
+            )
+            collecting.cancel()
+            release.set()
+            await asyncio.wait_for(asyncio.gather(turn, shutdown), timeout=10)
+            assert order == [
+                "saved",
+                "shutdown returned",
+            ], f"shutdown returned before the cut turn saved: {order}"
+        finally:
+            turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+
+    @pytest.mark.asyncio
+    async def test_shutdown_never_cancels_or_outwaits_a_hung_dashboard_turn(self, monkeypatch):
+        monkeypatch.setattr(
+            "kiro_crew.gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS", 0.2, raising=False
+        )
+        turn = asyncio.create_task(asyncio.Event().wait())
+        orch = self._orch_with_dashboard_turn(turn)
+        try:
+            await asyncio.wait_for(orch._shutdown(), timeout=10)
+            assert not turn.done(), "a hung turn must be left to the exit, not cancelled"
+        finally:
+            turn.cancel()
+            await asyncio.gather(turn, return_exceptions=True)
+
     @pytest.mark.asyncio
     async def test_shutdown_cancels_and_reaps_console_script_repair(self, tmp_path):
         """Shutdown owns the repair task, not only its direct cancellation path."""

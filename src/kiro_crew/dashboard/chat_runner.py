@@ -8874,6 +8874,24 @@ async def _run_chat(
                 text=_redacted,
                 interrupted=True,
             )
+            if _gateway_shutdown_requested(state):
+                # The graceful save ran before this row existed, and the turn's
+                # teardown skips its own save while the process is going away, so
+                # without this the row dies with the process. Saved with the
+                # in-flight marker still set: the next start shows this text with
+                # its interruption row and the Resume button. Before the usage
+                # write and the recovery rows below, so the restart reconciles
+                # exactly the text the user watched stream.
+                try:
+                    await save_slot_off_loop(
+                        state,
+                        slot,
+                        force=True,
+                        expected_history_key=slot_history_key(slot),
+                        expected_slot_name=slot.key,
+                    )
+                except Exception:
+                    logger.debug("Saving the partial reply at shutdown failed", exc_info=True)
         # The usage row is written whether or not the turn produced partial text
         # -- a turn cut after many tool calls bills credits with no final
         # assistant segment -- so it sits outside the ``assistant_text`` guard.

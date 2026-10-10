@@ -1428,3 +1428,100 @@ def test_a_lost_subagent_completion_opener_is_restored(tmp_path):
     assert restored is not None
     tail = [m for m in restored.messages if m.get("role") == "subagent"]
     assert tail and tail[-1]["content"] == completion["content"]
+
+
+# ── the text a SIGTERM shutdown cuts off ───────────────────────────────────
+
+
+def _client_cut_by_shutdown(text: str, session_closed: asyncio.Event) -> AsyncMock:
+    """Streams *text*, then dies the way an in-flight prompt does when close_all() ends it."""
+    from kiro_crew.acp.transport_errors import AcpProcessDied
+    from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+    client = _provider_mock()
+
+    async def _stream(msg):
+        yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=text)
+        await session_closed.wait()
+        raise AcpProcessDied("Process exited during prompt (exit code -15)")
+
+    client.stream = _stream
+    client.stream_command = _stream
+    return client
+
+
+async def _sigterm_mid_reply(tmp_path, monkeypatch, key: str, text: str):
+    """Run the shutdown order on a turn mid-reply: graceful save, then the session dies."""
+    from kiro_crew import shutdown_event
+    from kiro_crew.dashboard.chat import _run_chat, save_all_slots_to_history
+
+    state = _state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot(key)
+    slot.append("user", "explain the plan", "msg msg-u")
+    session_closed = asyncio.Event()
+    state.sessions.get_or_create = AsyncMock(
+        return_value=(_client_cut_by_shutdown(text, session_closed), True, False)
+    )
+    turn = asyncio.create_task(_run_chat(state, slot, "explain the plan"))
+    slot.task = turn
+    async with asyncio.timeout(10):
+        while not any(m.get("role") == "chunk" for m in slot.messages):
+            assert not turn.done(), "the turn ended before it streamed any text"
+            await asyncio.sleep(0.01)
+    shutdown_event.set()
+    try:
+        save_all_slots_to_history(state)  # the shutdown's first step for chat slots
+        session_closed.set()  # sessions.close_all() ends the ACP process
+        await asyncio.wait_for(turn, timeout=20)
+    finally:
+        shutdown_event.clear()
+    del state._slots[key]  # the next process restores from disk
+    return state, _rehydrate_slot_from_history(state, key)
+
+
+@pytest.mark.asyncio
+async def test_a_shutdown_keeps_the_text_the_user_watched_stream(tmp_path, monkeypatch):
+    text = "Part one of the plan is to move the queue first"
+    _state, restored = await _sigterm_mid_reply(tmp_path, monkeypatch, "cut", text)
+
+    assert restored is not None
+    contents = [str(m.get("content", "")) for m in restored.messages]
+    assert any(
+        text in c for c in contents
+    ), f"the text the user watched stream is gone after the restart: {contents}"
+    # The next start marks the cut and offers Resume, with the row after the text.
+    assert restored.to_dict()["interrupted"] is True
+    rows = _restart_rows(restored.messages)
+    assert len(rows) == 1
+    assert restored.messages.index(rows[0]) > next(i for i, c in enumerate(contents) if text in c)
+
+
+@pytest.mark.asyncio
+async def test_a_turn_that_finishes_keeps_its_reply_and_clears_the_marker(tmp_path, monkeypatch):
+    from kiro_crew.acp.types import STOP_REASON_END_TURN
+    from kiro_crew.dashboard.chat import _run_chat
+    from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+    state = _state_for_run_chat(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("done")
+    slot.append("user", "explain the plan", "msg msg-u")
+    state.sessions.get_or_create = AsyncMock(
+        return_value=(
+            _client_streaming(
+                [
+                    LLMEvent(kind=EVENT_TEXT_CHUNK, text="The whole answer."),
+                    LLMEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+                ]
+            ),
+            True,
+            False,
+        )
+    )
+    await _run_chat(state, slot, "explain the plan")
+    del state._slots["done"]
+    restored = _rehydrate_slot_from_history(state, "done")
+
+    assert restored is not None
+    assert any("The whole answer." in str(m.get("content", "")) for m in restored.messages)
+    assert restored.to_dict()["interrupted"] is False
+    assert _restart_rows(restored.messages) == []

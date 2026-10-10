@@ -11648,6 +11648,26 @@ class GatewayOrchestrator:
 
         await asyncio.to_thread(self._stop_memory_startup)
 
+        # close_all() above ended every ACP session, so a dashboard turn that was
+        # mid-reply is now unwinding, and it saves the text its user watched stream
+        # before it ends. Nothing else waits for those turns, and the hard exit
+        # after this method would beat the save. Last, so the steps above keep
+        # their share of the shutdown deadline. Bounded, and never cancelling: a
+        # turn still running at the deadline is left to the exit.
+        _dashboard_slots = getattr(self.dashboard_state, "_slots", None)
+        if isinstance(_dashboard_slots, dict):
+            _unwinding = {
+                task
+                for task in (getattr(s, "task", None) for s in list(_dashboard_slots.values()))
+                if isinstance(task, asyncio.Future) and not task.done()
+            }
+            if _unwinding:
+                from kiro_crew import gateway_shutdown_budget
+
+                await asyncio.wait(
+                    _unwinding, timeout=gateway_shutdown_budget.DASHBOARD_TURN_UNWIND_SECS
+                )
+
     # ------------------------------------------------------------------
     # Auto-update
     # ------------------------------------------------------------------
