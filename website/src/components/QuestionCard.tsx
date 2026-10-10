@@ -20,6 +20,11 @@ interface Question {
   multiSelect?: boolean
 }
 
+/** How long a completing single-select pick stays on screen, selected, before
+ *  the card submits it. Long enough to see which option was taken, short enough
+ *  not to feel like waiting. */
+const AUTO_SUBMIT_DELAY_MS = 200
+
 interface QuestionCardProps {
   questions: Question[]
   /** Present only when this card blocks an ask_question tool call. */
@@ -142,9 +147,39 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
 
   const isAnswered = (i: number) => !!answerOf(i)
 
+  /* A single-select pick on the last page that leaves every question answered
+     submits the card on its own, so the common one-question card costs one click
+     instead of a pick plus Submit. The pick lands on the option's ordinary `click`, which fires on
+     release, so pressing and dragging off an option still backs out of it.
+
+     The submit waits a moment so the chosen option paints as selected before the
+     card goes away. Anything else the user does in that window (another pick, a
+     deselect, typing, paging, Submit or Dismiss) cancels it, and the callback
+     re-reads the latest render through a ref, so a card that is no longer
+     complete (including one whose question set was replaced, which resets every
+     answer) or that is already submitting does not fire. */
+  const autoSubmitTimer = useRef<number | null>(null)
+  const cancelAutoSubmit = () => {
+    if (autoSubmitTimer.current === null) return
+    window.clearTimeout(autoSubmitTimer.current)
+    autoSubmitTimer.current = null
+  }
+  useEffect(() => () => {
+    if (autoSubmitTimer.current !== null) window.clearTimeout(autoSubmitTimer.current)
+  }, [])
+  const latest = useRef<{ ready: boolean; submit: () => void }>({ ready: false, submit: () => {} })
+  const scheduleAutoSubmit = () => {
+    cancelAutoSubmit()
+    autoSubmitTimer.current = window.setTimeout(() => {
+      autoSubmitTimer.current = null
+      if (latest.current.ready) latest.current.submit()
+    }, AUTO_SUBMIT_DELAY_MS)
+  }
+
   /** Move to `next`, clamped, recording the direction for the slide. A no-op move
    *  still sets direction, which is harmless and keeps the callers branch-free. */
   const goTo = (next: number) => {
+    cancelAutoSubmit()
     const clamped = Math.max(0, Math.min(questions.length - 1, next))
     setDirection(clamped >= page ? 1 : -1)
     setPage(clamped)
@@ -206,6 +241,11 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
 
   const toggleOption = (qIdx: number, label: string, multi: boolean) => {
     if (qIdx !== pageRef.current) return
+    /* A complete card counts as revised only once its own submit is no longer
+       pending: a second pick inside the beat replaces the first and inherits
+       its submit. */
+    const revising = autoSubmitTimer.current === null && questions.every((_, i) => isAnswered(i))
+    cancelAutoSubmit()
     const wasSelected = !!selections[qIdx]?.has(label)
     setSelections(prev => {
       const current = prev[qIdx] || new Set<string>()
@@ -219,27 +259,34 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
       return { ...prev, [qIdx]: next }
     })
     setCustomInputs(prev => ({ ...prev, [qIdx]: '' }))
-    /* Advance to the next question that still needs an answer. Only for
-       single-select — a multi-select is not finished after one click, so
-       advancing would steal the second pick — only when the card holds more than
-       one question, and never when the click DESELECTED (the user is still
-       choosing, and jumping away would look like the deselect did something
-       else).
+    /* Advance to the next question that still needs an answer, or submit when
+       none does. Only for single-select — a multi-select is not finished after
+       one click, so advancing would steal the second pick and submitting would
+       cut the answer short — and never when the click DESELECTED (the user is
+       still choosing, and jumping away would look like the deselect did
+       something else).
 
        Auto-advance is what makes a 4-question card one gesture per question
-       instead of an answer plus a Next. It targets the next UNANSWERED question
-       rather than `page + 1`, so re-opening an earlier question to change its
-       pick returns to whatever is still outstanding instead of walking forward
-       from the middle. When nothing is outstanding the page holds still: the
-       card is complete and Submit is the only thing left to do. Answered means a
+       instead of an answer plus a Next, and auto-submit drops the final Submit
+       for the same reason. Advance targets the next UNANSWERED question rather
+       than `page + 1`, so re-opening an earlier question to change its pick
+       returns to whatever is still outstanding instead of walking forward from
+       the middle. When nothing is outstanding the page holds still, and the pick
+       that answers the last open question submits the card when it is made on
+       the LAST page. Two completing picks do not submit. One is a pick on an
+       earlier page, because Submit belongs at the end of the walk (the same rule
+       the footer and the Enter key follow). The other is a change to an answer
+       on a card that was already complete, because a user who came back to
+       revise did so on purpose and may want to check the rest. Answered means a
        picked option or typed custom text, the same pair Submit reads. */
-    if (!multi && !wasSelected && questions.length > 1) {
+    if (!multi && !wasSelected) {
       const answered = (i: number) =>
         i === qIdx ||
         (selections[i]?.size ?? 0) > 0 ||
         (customInputs[i] ?? '').trim() !== ''
       const nextUnanswered = questions.findIndex((_, i) => !answered(i))
       if (nextUnanswered !== -1) goTo(nextUnanswered)
+      else if (qIdx === questions.length - 1 && !revising) scheduleAutoSubmit()
     }
   }
 
@@ -262,8 +309,10 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
   useEffect(() => {
     draftRef.current?.(currentDraftAnswers)
   }, [currentDraftAnswers])
-  const handleSubmit = () =>
+  const handleSubmit = () => {
+    cancelAutoSubmit()
     onSubmit(Object.fromEntries(Object.entries(currentDraftAnswers).map(([q, a]) => [q, a.trim()])))
+  }
 
   /* Every question must be answered before Submit unlocks. The answer map is
      keyed by question text, so a partial submit resumes the blocked agent with
@@ -271,6 +320,7 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
      "never asked" and proceeds on incomplete input. A multi-question card is
      one atomic ask, so the gate is `every`, not `some`. */
   const allAnswered = questions.every((_, i) => isAnswered(i))
+  latest.current = { ready: allAnswered && !busy, submit: handleSubmit }
   const unansweredCount = questions.filter((_, i) => !isAnswered(i)).length
   const firstUnanswered = questions.findIndex((_, i) => !isAnswered(i))
   const paged = questions.length > 1
@@ -466,6 +516,7 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
                 value={customInputs[page] || ''}
                 onChange={e => {
                   if (page !== pageRef.current) return
+                  cancelAutoSubmit()
                   setCustomInputs(prev => ({ ...prev, [page]: e.target.value }))
                   setSelections(prev => ({ ...prev, [page]: new Set() }))
                 }}
@@ -537,7 +588,7 @@ function QuestionCard({ questions, askId, onSubmit, draftAnswers, onDismiss, bus
         <div className="flex justify-end items-center gap-2">
           {onDismiss && (
             <button
-              onClick={onDismiss}
+              onClick={() => { cancelAutoSubmit(); onDismiss() }}
               disabled={busy}
               aria-label={i18nT('components.questionCard.dismiss_question_without_answering')}
               title={i18nT('components.questionCard.dismiss_hint')}
