@@ -57,6 +57,7 @@ from aiohttp.multipart import BodyPartReader  # noqa: F401
 
 from kiro_crew import (  # noqa: F401
     executors,
+    external_editor,
     pinned_fs,
     platform_compat,
     redaction_seams,
@@ -140,6 +141,8 @@ from kiro_crew.dashboard.file_api.dashboard_config import (  # noqa: F401
     api_dashboard_config,
 )
 from kiro_crew.dashboard.file_api.desktop import (  # noqa: F401
+    _open_in_editor,
+    _resolve_screened,
     _screenshot_dir,
     api_reveal_path,
     api_screenshot,

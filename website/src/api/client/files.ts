@@ -263,7 +263,7 @@ export function createFilesEndpoints({ post, put, del, j, jfetch: fetch, checkSe
     // nor shows a dialog. The single caller `revealOrOpen` owns the clipboard copy,
     // so the degrade is presented in exactly one place instead of in the transport
     // layer where a dialog is a surprise.
-    revealPath: (path: string, action: 'open' | 'reveal' = 'reveal') =>
+    revealPath: (path: string, action: 'open' | 'reveal' | 'editor' = 'reveal') =>
       post('/api/reveal', { path, action }).then(j) as Promise<RevealResult>,
   }
 

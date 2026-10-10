@@ -9,6 +9,7 @@ import { downloadFileToDisk, isAbsolutePath } from '../utils/fileReadUrl'
 import { copyToClipboard } from '../utils/clipboard'
 import { WINDOWS_ABS_PATH_RE } from '../utils/urlTransform'
 import { i18nT } from '../i18n/t'
+import { api, ApiError } from '../api/client'
 import { useBranding } from '../hooks/useBranding'
 import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron } from '../lib/electron'
@@ -367,8 +368,25 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // `directLocal`, which reads true through an `ssh -L` forward. Only this menu
   // offers it: the panel shows the gateway's copy of the file, while a path in a
   // transcript may name a file on another machine (a session environment).
-  const { remoteEditor, remoteEditorHost } = useBranding()
-  const remoteEditorHref = remoteEditorUrl(remoteEditor, remoteEditorHost, filePath)
+  //
+  // "Open in Kiro" takes its place while a Kiro window is attached to this host
+  // over Remote-SSH (`editorAvailable`): the gateway runs that window's remote
+  // CLI (`/api/reveal` action=editor), so it needs no setting and its SSH
+  // authority is the one already in use. The link stays the fallback.
+  const { remoteEditor, remoteEditorHost, editorAvailable } = useBranding()
+  const remoteEditorHref = editorAvailable ? null : remoteEditorUrl(remoteEditor, remoteEditorHost, filePath)
+  const openInAttachedEditor = async () => {
+    try {
+      await api.revealPath(filePath, 'editor')
+    } catch (err) {
+      // eslint-disable-next-line no-console -- surface editor failures for diagnostics
+      console.error('attached editor open failed', err)
+      const blockedByPolicy = err instanceof ApiError && err.status === 403 && !err.authRequired
+      onError(i18nT(blockedByPolicy
+        ? 'components.filePathMenu.reveal_blocked'
+        : 'components.filePathMenu.reveal_failed'))
+    }
+  }
   // "Open in <app>": the in-dashboard destination, gated on an app page that
   // opens a path being enabled and natively routed (see usePathOpenerTarget) and
   // on the path being absolute — the app's backend has no project directory to
@@ -535,6 +553,11 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           {/* The desktop app refuses an in-window navigation to an editor scheme, in a
               window and in an embedded pane alike, so there the link opens as a new
               window, which the desktop app confirms before handing it to the OS. */}
+          {editorAvailable && (
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void openInAttachedEditor(); setOpen(false) }}>
+              {i18nT('components.markdownPanel.open_in_remote_editor', { editor: 'Kiro' })}
+            </button>
+          )}
           {remoteEditorHref && (
             <a role="menuitem" data-option tabIndex={-1} className={menuRowCls} href={remoteEditorHref} target={isElectron || isEmbeddedPane() ? '_blank' : undefined} onClick={() => setOpen(false)}>
               {i18nT('components.markdownPanel.open_in_remote_editor', { editor: REMOTE_EDITORS[remoteEditor] })}

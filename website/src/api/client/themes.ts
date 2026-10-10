@@ -16,6 +16,9 @@ export function createThemesEndpoints({ post, put, del, j, jfetch: fetch, sessio
       /** Whether the gateway host can open a file manager right now: the launcher
        *  `/api/reveal` starts, and on Linux a desktop session for it. */
       desktop_launcher?: boolean
+      /** Whether a Kiro window is attached to the gateway host over Remote-SSH,
+       *  so `/api/reveal` action=editor can open a path in it. */
+      editor_available?: boolean
       /** `dashboard.remote_editor`, each value the schema refuses already read as "". */
       remote_editor?: { editor?: string; host?: string }
     }>,

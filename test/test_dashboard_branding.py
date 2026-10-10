@@ -341,6 +341,23 @@ class TestBrandingReadsTheLiveConfig:
         resp = await api_branding(MagicMock())
         assert json.loads(resp.body)["bot_name"] == "Friday"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("available", [True, False])
+    async def test_branding_reports_an_attached_editor_window(self, available):
+        # The probe's own mechanics live in test_external_editor; this pins
+        # only that its verdict reaches the payload the menu gates on.
+        from kiro_crew.dashboard.handlers import api_branding
+
+        req = MagicMock()
+        status = {"available": available, "reason": "ok", "version": None, "connections": 0}
+        with (
+            patch("kiro_crew.dashboard.handlers.KiroCrewConfig.load", return_value=KiroCrewConfig()),
+            patch("kiro_crew.external_editor.editor_status", return_value=status),
+        ):
+            resp = await api_branding(req)
+        body = json.loads(resp.body)
+        assert body["editor_available"] is available
+
 
 class TestLogoAssetInvariant:
     """The dashboard-served logo and the PWA 512 icon are the same image.

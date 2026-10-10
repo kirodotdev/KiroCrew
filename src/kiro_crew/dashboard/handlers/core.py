@@ -26,7 +26,7 @@ from aiohttp import web
 import kiro_crew
 import kiro_crew._facade_mirror as _facade_mirror
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import aws_consent, beacon, edition, platform_compat, stt
+from kiro_crew import aws_consent, beacon, edition, external_editor, platform_compat, stt
 from kiro_crew.acp_backends import selectable_backend_values, selectable_stored_backend_values
 from kiro_crew.apps.manifest import KEBAB_RE
 from kiro_crew.computer_use.types import MAX_SCREENSHOT_MAX_PX as _CU_MAX_SCREENSHOT_MAX_PX
@@ -323,6 +323,14 @@ async def api_branding(request: web.Request) -> web.Response:
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
             "desktop_launcher": await asyncio.to_thread(platform_compat.desktop_launcher_available),
+            # Whether a Kiro window is attached to this host over Remote-SSH, so
+            # `/api/reveal` action=editor can open a path in it through that
+            # window's remote CLI, with no `remote_editor` config. Preferred over
+            # the configured link, which stays the fallback when no window is
+            # attached. A connect() per candidate socket, so off the loop.
+            "editor_available": bool(
+                (await asyncio.to_thread(external_editor.editor_status))["available"]
+            ),
             "remote_editor": _remote_editor_branding(cfg.dashboard.remote_editor),
         }
     )
