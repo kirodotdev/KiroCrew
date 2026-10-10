@@ -166,6 +166,12 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     saveAgentConfig: (config: object) => put('/api/agent/config', { config }).then(j),
     defaultAgent: () => fetch('/api/config/default-agent').then(j),
     setDefaultAgent: (agent: string) => put('/api/config/default-agent', { agent }).then(j),
+    // The TEMPLATE a session runs when nothing names one (`agent.default_agent`);
+    // `setDefaultAgent` above picks the default CREWMATE and is a different setting.
+    // `overridden`: config.local.json pins the value, so a PUT is refused and
+    // `override_path` names the file to edit instead.
+    defaultTemplate: () => fetch('/api/config/default-template').then(j) as Promise<{ default_template: string; effective: string; overridden: boolean; override_path?: string }>,
+    setDefaultTemplate: (template: string) => put('/api/config/default-template', { template }).then(j) as Promise<{ ok: boolean; default_template: string; effective: string }>,
     kirocrewConfig: () => fetch('/api/config/kirocrew').then(j),
     saveKirocrewConfig: (agent: object) => put('/api/config/kirocrew', { agent }).then(j) as Promise<{ ok?: boolean; restart_required?: boolean; error?: string }>,
     patchConfig: (path: string, value: unknown) => fetch('/api/config/kirocrew', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ path, value }) }).then(j),

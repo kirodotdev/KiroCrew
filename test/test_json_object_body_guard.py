@@ -180,6 +180,9 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "chat_voice.py::api_voice_synthesize": ("<default>", _BOUNDED_BY_DEFAULT),
     "chat_voice.py::api_voice_cancel": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/feedback.py::api_feedback_submit": ("<default>", _BOUNDED_BY_DEFAULT),
+    # One template name (63 characters by TEMPLATE_NAME_RE), so the shared
+    # default ceiling is far above any legitimate body.
+    "handlers/agent_templates.py::api_default_template": ("<default>", _BOUNDED_BY_DEFAULT),
     "handlers/redaction.py::api_redaction_allow_host": ("_MAX_BODY", _BOUNDED_BY_DEFAULT),
     "handlers/messaging.py::api_notification_agent_push": (
         "<default>",

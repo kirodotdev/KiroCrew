@@ -1708,6 +1708,23 @@ Resolution order:
 3. otherwise `config.default_agent`, then the first available alias, then bare
    defaults.
 
+**Two "default agent" settings, two things.** `config.default_agent` (top-level)
+is a CREWMATE alias — a key of `config.agents` — and is what rung 3 and the
+crewmate-less dispatch paths resolve to; `/api/config/default-agent` writes it.
+`config.agent.default_agent` is a TEMPLATE name — what a session runs when
+nothing names one (a plain chat, a CLI chat, a channel thread, a warm-pool
+process, an agent-less schedule), the runtime's own `kirocrew` when unset — and is
+the one the Custom agents tab's picker writes through
+`/api/config/default-template` (see [learn-cron-dashboard](learn-cron-dashboard.md)).
+Its GET body is `{default_template, effective, overridden, override_path?}`:
+`overridden` says whether `config.local.json` states `agent.default_agent` as any
+string (including `""`), and the absolute `override_path` appears only for the
+owner so an open read cannot disclose the owner's home-directory path. The
+template roster reports it as a `used_by` reference of kind `default`. Only an
+installed GLOBAL template may be stored there: never a crewmate's private copy,
+a background-only runtime spec or an app's materialized agent, each of which can
+disappear underneath the setting.
+
 `selection_kind="template"` restricts an existing conversation to the materialized
 template namespace even if discovery has imported a same-named member.
 `selection_kind="member"` requires the configured alias instead of falling back
