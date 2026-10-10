@@ -2115,7 +2115,7 @@ def _render_rich_text_element(el: dict) -> str:
 
 
 def _extract_blocks_text(blocks: list[dict]) -> str:
-    """Extract readable text from Block Kit blocks (rich_text, section, context).
+    """Extract readable text from Block Kit blocks (rich_text, section, context, table).
 
     Handles the common block types Slack uses for user messages and shared
     content.  Returns empty string if no text can be recovered.
@@ -2181,6 +2181,20 @@ def _extract_blocks_text(blocks: list[dict]) -> str:
                 ctx_text = el.get("text", "")
                 if ctx_text:
                     parts.append(ctx_text)
+        elif block_type == "table":
+            # Pasted spreadsheet: one "a | b" line per row. A cell is raw_text
+            # (its text field) or rich_text (rendered like a rich_text block).
+            rows = block.get("rows", [])
+            for row in rows if isinstance(rows, list) else []:
+                if not isinstance(row, list):
+                    continue
+                cells = [
+                    _extract_blocks_text([c]) if c.get("type") == "rich_text" else str(c.get("text") or "")
+                    for c in row
+                    if isinstance(c, dict)
+                ]
+                if any(cells):
+                    parts.append(" | ".join(cells))
     result = "\n".join(parts).strip()
     if not result:
         return ""
@@ -2344,6 +2358,17 @@ def _extract_shared_text(event: dict) -> str:
     return "\n\n".join(part for part in parts if part).strip()
 
 
+def _extract_table_text(event: dict) -> str:
+    """Render pasted-spreadsheet ``table`` blocks of *event* and its non-link-preview attachments."""
+    blocks = event.get("blocks")
+    blocks = list(blocks) if isinstance(blocks, list) else []
+    for att in event.get("attachments") or []:
+        if isinstance(att, dict) and not att.get("from_url") and isinstance(att.get("blocks"), list):
+            blocks.extend(att["blocks"])
+    tables = [b for b in blocks if isinstance(b, dict) and b.get("type") == "table"]
+    return _extract_blocks_text(tables) if tables else ""
+
+
 async def _route_message(
     orch: GatewayOrchestrator,
     event: dict,
@@ -2366,6 +2391,10 @@ async def _route_message(
     if not text or text in _SLACK_BLOCK_FALLBACKS:
         fallback = "" if text in _SLACK_BLOCK_FALLBACKS else text
         text = _extract_shared_text(event) or fallback
+    # Pasted tables live only in blocks: append them even when text is present.
+    table_text = _extract_table_text(event)
+    if table_text and table_text not in text:
+        text = f"{text}\n\n{table_text}" if text else table_text
 
     logger.debug("Stream debug: team_id=%s user_id=%s channel=%s", team_id, sender_id, channel)
 

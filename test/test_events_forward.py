@@ -903,3 +903,66 @@ class TestThreadFollowAddressedToOthers:
     @pytest.mark.asyncio
     async def test_unknown_self_id_keeps_existing_behaviour(self):
         await self._assert_answered(f"<@{self.OTHER_UID}> please verify", self_uid="")
+
+
+def _rich_cell(text: str) -> dict:
+    return {"type": "rich_text", "elements": [{"type": "rich_text_section", "elements": [{"type": "text", "text": text}]}]}
+
+
+#: A pasted spreadsheet as Slack delivers it: rich_text header cells, raw_text data cells.
+_TABLE_BLOCK = {
+    "type": "table",
+    "rows": [
+        [_rich_cell("Name"), _rich_cell("Qty")],
+        [{"type": "raw_text", "text": "Apple"}, {"type": "raw_text", "text": "3"}],
+    ],
+}
+
+
+class TestPastedTableBlocks:
+    """Pasted tables (``table`` blocks) reach the routed message text."""
+
+    def test_table_block_renders_one_pipe_row_per_line(self):
+        assert _extract_blocks_text([_TABLE_BLOCK]) == "Name | Qty\nApple | 3"
+
+    def test_malformed_table_rows_are_skipped(self):
+        block = {"type": "table", "rows": [None, "x", [None, {"type": "raw_text", "text": None}, {"type": "raw_text", "text": "ok"}]]}
+        assert _extract_blocks_text([block]) == "| ok"
+
+    async def _routed_text(self, event: dict) -> str:
+        orch = AsyncMock()
+        ch_cfg = MagicMock(activation="mention", thread_follow=True)
+        orch._cfg = MagicMock()
+        orch._cfg.channel_config.return_value = ch_cfg
+        orch.channel_history = orch.sessions = orch.conv_log = orch.slack = None
+        orch._session_tasks = {}
+        seen = MagicMock()
+        seen.check_and_add = lambda x: False
+        seen.check = lambda x: False
+        seen.add = lambda x: None
+        with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+             patch("kiro_crew.slack.events.sel"), \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.is_owner", return_value=True), \
+             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+            await _route_message(orch, dict(event, user="U123", channel="C456", ts="1.2", team="T789"), seen, is_mention=True)
+        assert mock_handle.called
+        return str(mock_handle.call_args)
+
+    @pytest.mark.asyncio
+    async def test_table_in_attachment_is_appended_to_present_text(self):
+        routed = await self._routed_text({"text": "read this table", "attachments": [{"blocks": [_TABLE_BLOCK]}]})
+        assert "read this table" in routed
+        assert "Name | Qty\\nApple | 3" in routed
+
+    @pytest.mark.asyncio
+    async def test_table_only_message_is_routed_once(self):
+        routed = await self._routed_text({"text": "", "blocks": [_TABLE_BLOCK]})
+        assert routed.count("Apple | 3") == 1
+
+    @pytest.mark.asyncio
+    async def test_table_in_link_preview_attachment_is_not_appended(self):
+        unfurl = {"from_url": "https://example.com/sheet", "blocks": [_TABLE_BLOCK]}
+        routed = await self._routed_text({"text": "see https://example.com/sheet", "attachments": [unfurl]})
+        assert "see https://example.com/sheet" in routed
+        assert "Apple | 3" not in routed
