@@ -29,18 +29,18 @@ from kiro_crew.dashboard.chat_utils import slot_history_key
 
 
 @pytest.fixture(autouse=True)
-def _enabled(monkeypatch):
+def _enabled(_floor_monkeypatch):
     """Run in the shipped (enabled) session-control state without reading config."""
-    monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+    _floor_monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
 
 
 @pytest.fixture(autouse=True)
-def _quiet_audit(monkeypatch):
+def _quiet_audit(_floor_monkeypatch):
     """Both discard sites write an SEL row; keep them inline and off disk."""
     fake = MagicMock()
-    monkeypatch.setattr(sc, "sel", lambda: fake)
-    monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
-    monkeypatch.setattr(ch, "sel", lambda: fake)
+    _floor_monkeypatch.setattr(sc, "sel", lambda: fake)
+    _floor_monkeypatch.setattr(sc, "_sel_off_loop", lambda write, what: write())
+    _floor_monkeypatch.setattr(ch, "sel", lambda: fake)
     return fake
 
 
