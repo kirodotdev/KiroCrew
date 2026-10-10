@@ -14,8 +14,16 @@ A field spec is ``{"type": ..., "source": ...}``. ``type`` is one of
 :data:`FIELD_TYPES`. ``source`` says where the value comes from:
 
 ``{"fold": "<name>", "path": "a.b.c"}``
-    A crew-log fold (session or slot keyed) read through the bus subscription, never
-    by refolding the log. ``path`` walks the rendered fold value.
+    A crew-log fold, read through the bus subscription rather than by refolding the
+    log. ``path`` walks the rendered fold value.
+
+    One of the THREE key kinds -- session, slot or tree. A TREE-keyed fold is the one a
+    block binding a TREE reaches, and it is the one exception to the sentence above: it
+    joins the logs of many slots, so no bus scope keys it and it is read on a page load
+    and on a refetch instead of pushed (see
+    :data:`~kiro_crew.crew_log.projection.TREE_PROJECTION_NAMES` and
+    :func:`~kiro_crew.dashboard_feed.scope_for`). A block binds it exactly the same way;
+    what differs is when the value arrives.
 ``{"agentic": true}``
     The agent writes the value itself (an agentic fold). The page marks it.
 
@@ -50,7 +58,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Mapping
 
-from kiro_crew.crew_log.projection import SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES
+from kiro_crew.crew_log.projection import (
+    SESSION_FOLD_NAMES,
+    SLOT_PROJECTION_NAMES,
+    TREE_PROJECTION_NAMES,
+)
 from kiro_crew.dashboard_templates.parity import ExtractionRefused, html_fields
 
 __all__ = [
@@ -69,7 +81,16 @@ __all__ = [
 #: list or an object where a name belongs, and an unhashable candidate raises out of
 #: the loader instead of being collected as one more refusal.
 FIELD_TYPES: Final[frozenset[str]] = frozenset({"number", "string", "boolean", "array", "object"})
-FOLD_NAMES: Final[frozenset[str]] = frozenset(SESSION_FOLD_NAMES) | frozenset(SLOT_PROJECTION_NAMES)
+#: Every fold a block may bind, as the union of the kernel's THREE key-kind sets rather
+#: than as a list here, so a fold added to the kernel is bindable without this file being
+#: edited. The third set is what closes the gap a block had before it: the tree placement
+#: rules were a pure function, and a block binds a fold NAME, so no block could reach a
+#: tree however correct that function was.
+FOLD_NAMES: Final[frozenset[str]] = (
+    frozenset(SESSION_FOLD_NAMES)
+    | frozenset(SLOT_PROJECTION_NAMES)
+    | frozenset(TREE_PROJECTION_NAMES)
+)
 SOURCES: Final[frozenset[str]] = frozenset({"builtin", "user", "shared"})
 #: ``\Z``, never ``$``: Python's ``$`` also matches just before a TRAILING NEWLINE, so
 #: ``"report\n"`` satisfies a ``$``-anchored id. That id becomes a user-template

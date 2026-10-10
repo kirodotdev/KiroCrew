@@ -154,6 +154,24 @@ def _owner_served_refusal(name: str) -> web.Response:
     )
 
 
+def _tree_keyed_refusal(name: str) -> web.Response:
+    """The answer for a tree-keyed fold on a route that addresses ONE session."""
+    return _bad_request(
+        f"projection {name!r} is tree-keyed and spans the logs of many sessions, "
+        "so it is not served by this per-session route",
+        "unknown_projection",
+    )
+
+
+def _unkeyed_refusal(name: str) -> web.Response:
+    """The answer for a registered fold that is in no key-kind set."""
+    return _bad_request(
+        f"projection {name!r} is registered but belongs to no key kind, so this route "
+        "cannot tell which units it is folded over",
+        "unknown_projection",
+    )
+
+
 def _seq_param(request: web.Request, name: str) -> int | None:
     """A positive-int query parameter, ``None`` when absent, or raise ValueError."""
     raw = request.query.get(name)
@@ -340,6 +358,20 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         # do, and folding the one unit it addresses would serve a part of the record
         # as the whole. Refused the way an unregistered name is.
         return _owner_served_refusal(name)
+    if name in projections.TREE_PROJECTION_NAMES:
+        # TREE-keyed, and REFUSED here rather than folded. This route addresses ONE
+        # session, and a tree fold's population is not a property of the key: it is
+        # resolved by walking what the record says -- the root's units, every worker
+        # they recorded a bind for, and every board those workers conduct, to closure.
+        # Folding this route's one unit would serve a single session as the whole tree,
+        # which is the same part-served-as-the-whole this route already refuses for a
+        # slot fold its owner serves.
+        #
+        # Fails CLOSED rather than folding the subset the caller addressed, because a
+        # tree over "the part I can reach" is a complete-looking wrong answer. A served
+        # tree read belongs with the first consumer that can bound the walk and gate
+        # each unit it reaches.
+        return _tree_keyed_refusal(name)
     unit_id, _ = _unit_id(request, session_id)
     try:
         if name in projections.SLOT_PROJECTION_NAMES:
@@ -349,8 +381,15 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
             # per-unit read above, so a caller holding a slot key reaches its own
             # record either way.
             result = await asyncio.to_thread(_read_slot_fold, unit_id, name)
-        else:
+        elif name in projections.SESSION_FOLD_NAMES:
             result = await asyncio.to_thread(projections.read_projection, unit_id, name)
+        else:
+            # A registered name in NO key-kind set. It cannot reach here while every
+            # fold is in exactly one set -- an import-time guard requires that -- so
+            # this is the branch that keeps a fold added to the registry and to no set
+            # from falling through to the one-session read and answering as though it
+            # were session-keyed.
+            return _unkeyed_refusal(name)
     except CrewLogError as exc:
         return _crew_log_refusal(exc)
     # ``session_id`` is what the CALLER asked about, not the unit the fold read:

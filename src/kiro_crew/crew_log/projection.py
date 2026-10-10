@@ -110,7 +110,7 @@ from kiro_crew.crew_log.entry_types import (
 )
 from kiro_crew.crew_log.errors import CODE_BAD_DATA, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION, MAX_ENTRY_BYTES, Entry
-from kiro_crew.crew_log.session_tree import OpenedRecord, log_rank_of
+from kiro_crew.crew_log.session_tree import OpenedRecord, fold_citations, log_rank_of
 from kiro_crew.crew_log.store import (
     CrewLog,
     ReadCursor,
@@ -228,9 +228,46 @@ SLOT_PROJECTION_NAMES: Final[tuple[str, ...]] = (
 #: projection routes refuse this name the way they refuse an unregistered one.
 OWNER_SERVED_SLOT_PROJECTION: Final[str] = "radar"
 
+#: The fold's registry name, spelled HERE for :data:`TREE_PROJECTION_NAMES`' sake, the
+#: way :data:`WORKSTREAMS_FOLD_NAME` is spelled above its own table.
+WORKTREE_FOLD_NAME: Final[str] = "worktree"
+
+#: Projections keyed by a TREE ROOT -- the THIRD key kind, and the one that lets a
+#: dashboard block bind to a tree instead of to a list.
+#:
+#: WHY A THIRD KIND AND NOT A WIDE SLOT FOLD. Three facts separate it, and each one on
+#: its own would be enough:
+#:
+#: 1. THE POPULATION. A session fold reads ONE unit; a slot fold reads the units of ONE
+#:    slot (:func:`~kiro_crew.crew_log.store.session_units_for_slot`) and joins them
+#:    (:func:`fold_slot`). A tree fold reads the units of MANY SLOTS -- a root board's,
+#:    every worker it bound, and every board those workers conduct, to closure. No
+#:    listing of the key's own slot names them: they are reached by following what the
+#:    record says, not by asking the store what one slot ran under.
+#: 2. THE KEY DOES NOT DETERMINE THE POPULATION. A slot's units are a property OF THE
+#:    SLOT, so a cell may be keyed by it. A tree's membership is a property of the
+#:    RECORD: a bind appended today adds a slot that was not in yesterday's closure, and
+#:    nothing about the key changed. So the population is re-resolved per read
+#:    (:func:`tree_fold_units`) and cannot be cached against the key the way a slot's is.
+#: 3. INVALIDATION. A slot cell goes stale when THAT slot's log grows, which is the event
+#:    the eager folder already wakes on. A tree cell goes stale when ANY member's log
+#:    grows -- including a member the cell did not know existed when it was built -- and
+#:    that is a different wake rule with no publisher. It is why the tree fold is LAZY
+#:    (:attr:`_Fold.lazy_reason`) and has no bus scope
+#:    (:func:`~kiro_crew.dashboard_feed.scope_for`): it is served on a page load and on a
+#:    refetch, never pushed.
+#:
+#: And a third kind needs its OWN measured row cost, which is the other half of why it
+#: is named here rather than folded into the slot set: :data:`_SLOT_FOLD_ROW_BYTES`'
+#: ceiling is stated against its largest member, so a key kind admitted with no measured
+#: cost would charge the fallback and leave that budget unbounded in practice. See
+#: :data:`_TREE_FOLD_ROW_BYTES`, which states its method the way the slot table states
+#: its own, and the import-time guard below that refuses a tree fold without one.
+TREE_PROJECTION_NAMES: Final[tuple[str, ...]] = (WORKTREE_FOLD_NAME,)
+
 #: Every fold this module registers, in registry order.
 FOLD_NAMES: Final[tuple[str, ...]] = (
-    PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES + SLOT_PROJECTION_NAMES
+    PROJECTION_NAMES + INTERNAL_PROJECTION_NAMES + SLOT_PROJECTION_NAMES + TREE_PROJECTION_NAMES
 )
 
 #: The SHAPE of what these folds store, which is what a savepoint holds. It lives
@@ -4373,9 +4410,66 @@ def slot_fold_cache_bytes() -> int:
     return DEFAULT_SLOT_FOLD_CACHE_BYTES
 
 
+#: What ONE RETAINED ROW of each TREE-keyed fold costs -- the third key kind's own
+#: budget, measured the same way :data:`_SLOT_FOLD_ROW_BYTES` measures its members and
+#: deliberately NOT folded into that table: these folds have no warm cell to charge, so
+#: a figure sitting among the ones the eviction loop reads would describe a cell that
+#: does not exist.
+#:
+#: WHAT IT IS FOR, given there is no cell. Two readers. A composing agent sizing a block
+#: against a fold that retains rows reads it out of the catalog
+#: (:attr:`~kiro_crew.dashboard_types.FoldType.row_bytes`), which is the whole reason the
+#: figure has to be true rather than absent. And :func:`slot_fold_cell_bytes` charges a
+#: fold with no entry in EITHER table :data:`_UNMEASURED_ROW_BYTES` -- 64 KiB a row --
+#: so admitting a key kind here with no measured cost is what would make that budget
+#: unbounded in practice the moment a tree fold ever did get a cell.
+#:
+#: PER ROW AND NOT PER CELL, for :data:`_SLOT_FOLD_ROW_BYTES`' reason, arriving here by
+#: the other route. This fold keeps TWO row kinds and they ADD rather than nest --
+#: ``boards`` (:data:`WORKTREE_BOARD_LIMIT`) and the item-to-board map
+#: (:data:`WORKTREE_OWNER_LIMIT`) -- so its cap-state is 200 + 4,000 = 4,200 rows, which
+#: at the figure below is 4.2 MiB. A per-cell figure still could not bound it: the two
+#: caps are independent and the second is set by the RECORD's item count rather than by
+#: anything a page shows, so one number measured at one shape would be right for one
+#: tree and wrong for the next.
+#:
+#: HOW MEASURED, and against WHICH member. One figure per fold, the WIDEST of its own
+#: kinds, which here is a BOARD row: it carries the clamped goal preview
+#: (:data:`WORKTREE_GOAL_CHARS`) while an owner row is two bounded ids. The cost is
+#: ``(bytes at N rows - bytes at 1 row) / (N - 1)`` of
+#: ``len(json.dumps(state, ensure_ascii=False).encode("utf-8"))``, with every free-text
+#: field driven at the clamp the FOLD applies and in 4-byte UTF-8 characters, because
+#: the clamps count CHARACTERS and an ASCII row is a quarter of the bytes the same clamp
+#: admits. Measured over 40 rows: a board row is **1,017 bytes** (1 row 1,100 B, 40 rows
+#: 40,754 B) and an owner row is 41, so the board row is the figure and it over-charges
+#: an owner row twenty-five-fold -- the safe direction, the one
+#: :data:`_SLOT_FOLD_ROW_BYTES` takes for the same reason.
+#: ``test_the_tree_folds_row_cost_is_derived_from_its_own_rows`` re-derives both kinds
+#: from a driven fold, so a clamp raised without re-measuring fails CI rather than
+#: quietly invalidating this.
+_TREE_FOLD_ROW_BYTES: Final[dict[str, int]] = {
+    # a board row with its goal preview at WORKTREE_GOAL_CHARS in 4-byte characters,
+    # beside the slot key, the cited parent item, the depth and the generation
+    # (1,017 measured)
+    WORKTREE_FOLD_NAME: 1_050,
+}
+
+
 def slot_fold_row_bytes(name: str) -> int:
     """What one retained row of the *name* fold is charged. See :data:`_SLOT_FOLD_ROW_BYTES`."""
-    return _SLOT_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
+    if name in _SLOT_FOLD_ROW_BYTES:
+        return _SLOT_FOLD_ROW_BYTES[name]
+    return _TREE_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
+
+
+def tree_fold_row_bytes(name: str) -> int:
+    """What one retained row of the TREE-keyed *name* fold is charged.
+
+    A reader asking about the third key kind reads this rather than
+    :func:`slot_fold_row_bytes`, so a name that is not a tree fold answers the
+    unmeasured fallback here instead of silently returning a slot fold's figure.
+    """
+    return _TREE_FOLD_ROW_BYTES.get(name, _UNMEASURED_ROW_BYTES)
 
 
 def slot_fold_cell_bytes(name: str, state: "Mapping[str, Any] | None" = None) -> int:
@@ -7447,8 +7541,17 @@ def _workstreams_binds_in(unit_ids: Iterable[str]) -> "tuple[str, ...]":
     return tuple(workers)
 
 
-def _workstreams_units(slot: str) -> "tuple[str, ...]":
-    """The slot's own units, then every bound worker's, then the nested boards', oldest first.
+def _board_closure_units(slot: str) -> "tuple[tuple[str, ...], int]":
+    """Every unit of the board tree rooted at *slot*, oldest first, and how many were
+    refused for want of room.
+
+    THE WALK, with the workstreams fold taken out of it. :func:`_workstreams_units` is
+    one caller and keeps the part that is about that fold -- handing the refused count to
+    its render through a side map, because a slot fold's render cannot be passed a number
+    the selection discovered. The second caller is the TREE-keyed fold
+    (:func:`tree_fold_units`), which renders the count directly and needs no such map;
+    the two must not share one, because the map is read-and-cleared and whichever of them
+    read it second would get zero while the other's number was thrown away.
 
     The conductor's units lead, which is what :func:`_work_units` establishes and what
     makes a bind known before the worker's own entries are read; the workers follow in
@@ -7535,12 +7638,24 @@ def _workstreams_units(slot: str) -> "tuple[str, ...]":
         if not added:
             break
         frontier = tuple(added)
+    return tuple(units), dropped
+
+
+def _workstreams_units(slot: str) -> "tuple[str, ...]":
+    """:func:`_board_closure_units` for the workstreams fold, with the refused count
+    handed to its render through :data:`_WORKSTREAMS_UNITS_DROPPED`.
+
+    The side map is this fold's and not the walk's: a slot-keyed fold is rendered from
+    its state alone, so a number the SELECTION discovered has no other way in. A tree
+    fold renders the count itself and takes the walk's second return instead.
+    """
+    units, dropped = _board_closure_units(slot)
     _WORKSTREAMS_UNITS_DROPPED[slot] = dropped
     if len(_WORKSTREAMS_UNITS_DROPPED) > _WORKSTREAMS_DROPPED_SLOTS:
         # Bounded like everything else here. The map is a handoff and not a cache, so
         # the oldest pending entry is the one nobody came back for.
         _WORKSTREAMS_UNITS_DROPPED.pop(next(iter(_WORKSTREAMS_UNITS_DROPPED)), None)
-    return tuple(units)
+    return units
 
 
 #: How many slots may have an unread unit-overflow count pending at once. One read
@@ -7562,6 +7677,345 @@ _WORKSTREAMS_UNITS_DROPPED: Final[dict[str, int]] = {}
 def _workstreams_units_dropped(slot: str) -> int:
     """How many units the last selection for *slot* refused. Clears on read."""
     return _WORKSTREAMS_UNITS_DROPPED.pop(slot, 0)
+
+
+# worktree -- the tree of work BOARDS, keyed by its root. The THIRD key kind.
+# --------------------------------------------------------------------------- #
+#
+# Nothing to do with a git worktree. A "work tree" here is what
+# :attr:`~kiro_crew.work_vocab.WorkBoardConductor.parent_item` builds: a whole board
+# hangs under ONE ITEM of a parent board, so a fleet of conductors is a tree whose nodes
+# are boards and whose edges are items. The ``work`` fold cannot render it -- it binds to
+# one slot and drops every entry naming another, by design -- and before this fold a
+# dashboard block could not reach the tree at all: :func:`~kiro_crew.crew_log.
+# session_tree.fold_citations` holds the placement rules but is a pure FUNCTION, and a
+# block binds a fold NAME plus a dotted path. This fold is that name.
+#
+# The placement rules are NOT restated here. They are ``fold_citations``' -- first
+# citation carrying a parent wins, an unfollowable citation degrades the child to a root
+# that still carries it, a cycle marks every node on it -- and this fold is a second
+# caller of exactly the machinery the session tree uses, which is what the data line
+# generalized it for. What lives here is the part that is about WORK: that an edge is
+# recorded as an ITEM id and has to be resolved to the board that created that item.
+
+#: Boards (nodes) this fold retains, in the order it first saw them, with ``dropped``
+#: beside them. Two hundred because a board is a conductor and a fleet that deep is
+#: already past what one page renders; a tree larger than this reports short rather than
+#: growing without bound.
+WORKTREE_BOARD_LIMIT: Final[int] = 200
+
+#: Entries the item-to-board map retains. The map answers ONE question -- which board
+#: created the item a child board's ``parent_item`` cites -- and a board has at most one
+#: ``parent_item``, so at most :data:`WORKTREE_BOARD_LIMIT` of its rows can ever be read.
+#: The limit is twenty times that, as headroom for the ids that arrive before the
+#: citation they will answer: an item's creation and the board hanging under it are
+#: recorded in different logs, so the fold cannot know which ids matter while it reads.
+WORKTREE_OWNER_LIMIT: Final[int] = 4_000
+
+#: Characters of a board's goal kept as its label. CHARACTERS, not bytes -- the unit
+#: every clamp in this module counts in -- and the row cost in
+#: :data:`_TREE_FOLD_ROW_BYTES` is read OFF this clamp at four bytes a character.
+#: Shorter than the ``work`` fold's own 2,000-character goal because a node in a tree is
+#: labelled, not read: the board's own fold serves the whole goal to a reader who wants it.
+WORKTREE_GOAL_CHARS: Final[int] = 200
+
+
+def _worktree_start() -> dict[str, Any]:
+    return {
+        # The root the tree was read from, so a rendered value says which tree it is.
+        # Set by ``bind_slot``, like the ``work`` fold's board.
+        "root": "",
+        # board slot -> that board's header row.
+        "boards": {},
+        # Board slots in the order first seen, which IS the citation order handed to
+        # ``fold_citations`` -- and that function takes the order as given rather than
+        # inventing one, so this list is load-bearing and not a convenience. The walk
+        # yields the root's units first and then each worker's, so a parent board is
+        # seen before the children it bound.
+        "order": [],
+        # item id -> the board that CREATED it. The edge source: a child board cites a
+        # parent ITEM, and only this map turns that into a parent BOARD.
+        "owner": {},
+        # Entries and rows this fold refused, for the reason every fold here renders one:
+        # a tree that silently shows fewer boards than the record holds reads as whole.
+        "omitted": 0,
+    }
+
+
+def _worktree_copy(state: dict[str, Any]) -> dict[str, Any]:
+    """Copy every container ``step`` can reach. Board rows are flat, so one level
+    inside ``boards`` is the whole of it."""
+    return {
+        "root": state["root"],
+        "boards": {slot: dict(row) for slot, row in state["boards"].items()},
+        "order": list(state["order"]),
+        "owner": dict(state["owner"]),
+        "omitted": state["omitted"],
+    }
+
+
+def _worktree_bind_slot(state: dict[str, Any], slot: str) -> None:
+    """The ROOT this tree is read from, as the reader names it, before the first entry."""
+    state["root"] = slot
+
+
+def _worktree_new_board(slot: str) -> dict[str, Any]:
+    return {
+        "board": slot,
+        "parent_item": None,
+        "depth": 0,
+        "goal": "",
+        "items": 0,
+        "generation": "",
+    }
+
+
+def _worktree_step(state: dict[str, Any], entry: Entry) -> None:
+    if entry.type != WORK_ENTRY_TYPE:
+        return
+    data = entry.data
+    slot = _as_str(data.get("slot"))
+    if not slot:
+        # An entry naming no board places nothing in a tree whose nodes ARE boards.
+        state["omitted"] += 1
+        return
+    row = state["boards"].get(slot)
+    if row is None:
+        if len(state["boards"]) >= WORKTREE_BOARD_LIMIT:
+            state["omitted"] += 1
+            return
+        row = state["boards"][slot] = _worktree_new_board(slot)
+        state["order"].append(slot)
+
+    # THE GENERATION RULE, one branch. A generation is an opaque id minted with a board's
+    # record, so generations transition in LOG order and are never compared: a CONDUCTOR
+    # entry carrying an id this row does not hold is the next board under that slot, and
+    # its header replaces the earlier board's. Any other entry whose id disagrees is a
+    # straggler from a board that was purged or superseded -- the log is append-only, so
+    # it outlives that board forever -- and applying its header would resurrect it on
+    # every fold.
+    generation = _as_str(data.get("generation"))
+    conductor = data.get("actor") == "conductor"
+    if generation and generation != row["generation"]:
+        if not conductor and row["generation"]:
+            state["omitted"] += 1
+            return
+        if conductor and row["generation"]:
+            # Header only. ``owner`` is deliberately NOT cleared: see the module note
+            # above this fold and "Deliberate limitations" in the evidence -- an item id
+            # from a superseded generation still identifies the board that created it,
+            # which is the board a ``parent_item`` citing that id meant.
+            fresh = _worktree_new_board(slot)
+            for key in ("parent_item", "depth", "goal"):
+                row[key] = fresh[key]
+        row["generation"] = generation
+    elif not generation and row["generation"]:
+        # A stamped board is live, so an entry with no generation cannot be its.
+        state["omitted"] += 1
+        return
+
+    # The citation, and the board label beside it. ``parent_item`` and ``depth`` are
+    # first-write-wins for :func:`_work_apply_header`'s reason: they are the board's
+    # lineage, which is minted once and never rewritten, so a later entry repeating them
+    # is a repeat and not a correction.
+    parent_item = data.get("parent_item")
+    if isinstance(parent_item, str) and row["parent_item"] is None:
+        row["parent_item"] = _as_id(parent_item)
+    if "depth" in data and not row["depth"]:
+        row["depth"] = _as_int(data.get("depth"))
+    # The goal comes from a conductor's ``goal`` write, which is the authoritative one;
+    # a worker baseline supplies it only while the record holds none for this board.
+    if isinstance(data.get("goal"), str):
+        if (conductor and _as_str(data.get("action")) == "goal") or not row["goal"]:
+            row["goal"] = _as_str(data["goal"])[:WORKTREE_GOAL_CHARS]
+
+    # The edge source. Only a CREATE or a BASELINE establishes which board owns an item:
+    # a worker's report also carries ``slot`` and ``item_id``, and that slot is the board
+    # the report was filed AGAINST, not a second claim on the item.
+    item_id = _as_id(data.get("item_id"))
+    if not item_id:
+        return
+    action = _as_str(data.get("action"))
+    if action != "create" and data.get("baseline") is not True:
+        return
+    if item_id in state["owner"]:
+        # First claim wins, the same rule the placement itself runs on. A second create
+        # of one id is what the ``work`` fold omits too.
+        state["omitted"] += 1
+        return
+    if len(state["owner"]) >= WORKTREE_OWNER_LIMIT:
+        state["omitted"] += 1
+        return
+    state["owner"][item_id] = slot
+    row["items"] += 1
+
+
+def _worktree_rows(state: Mapping[str, Any]) -> int:
+    """Every container this state retains, as a count of rows.
+
+    BOTH kinds. A counter that weighed only ``boards`` would charge a tree of three
+    boards and four thousand owner rows as three rows, and the owner map is the half
+    that grows with the record rather than with the page.
+    """
+    boards = state.get("boards")
+    owner = state.get("owner")
+    return (len(boards) if isinstance(boards, Mapping) else 0) + (
+        len(owner) if isinstance(owner, Mapping) else 0
+    )
+
+
+def _worktree_render(state: dict[str, Any]) -> dict[str, Any]:
+    """The tree: one row per board, each with the parent the record resolves to.
+
+    The placement is :func:`~kiro_crew.crew_log.session_tree.fold_citations`' answer and
+    not this function's. What happens here is the translation either side of it: a cited
+    ITEM becomes a cited BOARD on the way in, and a
+    :class:`~kiro_crew.crew_log.session_tree.TreePlacement` becomes a board row on the
+    way out. So the orphan and cycle handling a block binding this tree gets is the same
+    code the Sessions table has been nesting sessions with.
+
+    ``unresolved`` counts the boards whose ``parent_item`` names an item no board in THIS
+    tree created, which is the ordinary reading for a root read from mid-tree: the item
+    lives in a board above the root and the root's own citation cannot be followed. Those
+    boards render as roots that still carry ``parent_item``, so a reader can tell "no
+    parent" from "a parent outside this tree" -- and a count beside them says how many.
+    """
+    boards = state["boards"]
+    owner = state["owner"]
+    citations: list[tuple[str, str | None]] = []
+    unresolved = 0
+    for slot in state["order"]:
+        row = boards.get(slot)
+        if row is None:  # pragma: no cover - order and boards are written together
+            continue
+        cited_item = row["parent_item"]
+        parent_board = owner.get(cited_item) if cited_item else None
+        if cited_item and parent_board is None:
+            unresolved += 1
+        citations.append((slot, parent_board))
+    placements = fold_citations(citations)
+    rendered: list[dict[str, Any]] = []
+    roots: list[str] = []
+    cycles = 0
+    for slot in state["order"]:
+        row = boards.get(slot)
+        placement = placements.get(slot)
+        if row is None or placement is None:  # pragma: no cover - same population
+            continue
+        if placement.cycle:
+            cycles += 1
+        # A board with no FOLLOWABLE parent is a root of this tree, whatever its own
+        # record cites. A cycle member is not a root: it has a parent the tree can
+        # follow, and the consumer is told not to nest it rather than told it is a top.
+        if placement.parent is None:
+            roots.append(slot)
+        rendered.append(
+            {
+                "board": slot,
+                "parent": placement.parent,
+                # The record's own citation, kept beside the resolved parent because the
+                # two differ exactly where it matters: a board whose cited item is
+                # outside the tree carries one and not the other.
+                "parent_item": row["parent_item"],
+                "cycle": placement.cycle,
+                "depth": row["depth"],
+                "goal": row["goal"],
+                "items": row["items"],
+                "generation": row["generation"],
+            }
+        )
+    return {
+        "root": state["root"],
+        "boards": rendered,
+        # The boards nothing in this tree hangs under, which is what a renderer starts
+        # its walk from. A list and not a count: a tree read from a mid-tree root has
+        # several, and a renderer needs to know WHICH.
+        "roots": roots,
+        "cycles": cycles,
+        "unresolved": unresolved,
+        "dropped": state["omitted"],
+        "limit": WORKTREE_BOARD_LIMIT,
+        "owner_limit": WORKTREE_OWNER_LIMIT,
+        "goal_chars": WORKTREE_GOAL_CHARS,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Reading a tree's folds
+# --------------------------------------------------------------------------- #
+
+
+def tree_fold_units(root: str, name: str) -> "tuple[tuple[str, ...], int]":
+    """The units *name* is folded over for the tree rooted at *root*, and how many the
+    selection refused.
+
+    THE THIRD KEY KIND'S unit resolver, and the reason it is a third kind: this answer is
+    not a property of the key. It walks what the record SAYS -- the root's own units,
+    every worker those units recorded a bind for, and every board those workers conduct,
+    to closure (:func:`_board_closure_units`) -- so a bind appended after the last read
+    changes the population with nothing about *root* having changed. A slot fold's units
+    come from the store's listing for one slot and cannot do that.
+    """
+    if require_name(name) not in TREE_PROJECTION_NAMES:
+        # The same refusal shape ``require_name`` raises for a name this module does not
+        # fold at all, because the consequence is the same: answering here for a slot
+        # fold would fold it over a whole tree's units and serve several boards' entries
+        # as one board's, which is a complete-looking wrong answer.
+        raise CrewLogError(
+            f"{name!r} is not a tree-keyed projection; expected one of "
+            f"{list(TREE_PROJECTION_NAMES)}",
+            code=CODE_BAD_DATA,
+            field="name",
+        )
+    return _board_closure_units(root)
+
+
+def fold_tree_checkpoint(name: str, root: str) -> Checkpoint:
+    """*name* folded over every unit of the tree rooted at *root*, OLDEST UNIT FIRST.
+
+    :func:`fold_slot_checkpoint`'s counterpart for the third key kind, and it re-bases
+    the seq guard per unit for the same reason that one does: a ``seq`` is comparable only
+    WITHIN one file, so handing the units' own seqs over unchanged would see the second
+    unit's entries sit at or below the first's and refuse them as a re-fold.
+
+    ``last_seq`` is the last entry folded from the NEWEST unit, which is the only figure
+    a later read can compare against -- not a sum across files, which is a number no file
+    carries.
+
+    The refused-unit count is NOT returned here. It belongs to the rendered value (the
+    fold's ``dropped``), and it is folded in as the state's own ``omitted`` so that a
+    checkpoint resumed from a savepoint cannot read it as zero.
+    """
+    fold_spec = _FOLDS[require_name(name)]
+    units, dropped = tree_fold_units(root, name)
+    state = fold_spec.start()
+    if fold_spec.bind_slot is not None:
+        fold_spec.bind_slot(state, root)
+    state["omitted"] = state.get("omitted", 0) + dropped
+    reached = 0
+    for unit_id in units:
+        handle = open_session_log(unit_id)
+        if handle is None:
+            continue
+        grown = advance(
+            Checkpoint(name=name, last_seq=0, state=state),
+            handle.iter_from(1, known=KNOWN_TYPES),
+        )
+        state = grown.state
+        reached = grown.last_seq
+    return Checkpoint(name=name, last_seq=reached, state=state)
+
+
+def read_tree_projection(root: str, name: str) -> Projection:
+    """One tree-keyed projection for the tree rooted at *root*. The read a block gets.
+
+    COLD every time, and that is the posture the key kind earns rather than an omission:
+    a warm cell would be invalidated by growth in ANY member's log, including a member
+    the cell did not know existed, and there is no publisher for that event. So this fold
+    is lazy, has no bus scope, and is served on a page load and on a refetch -- which the
+    controller contract already covers, since a gap triggers a full refetch anyway.
+    """
+    return projection_of(fold_tree_checkpoint(require_name(name), root))
 
 
 # panel -- a crew's own webview, keyed by the publishing member's slot
@@ -8614,6 +9068,39 @@ _FOLDS: Final[dict[str, _Fold]] = {
         copy_state=_workstreams_copy,
         count_rows=_workstreams_rows,
     ),
+    # The TREE-keyed fold, the third key kind, argued where
+    # :data:`TREE_PROJECTION_NAMES` names it. ``affects`` is the one work entry type:
+    # the nodes are boards and the edges are items, and both are recorded there.
+    #
+    # LAZY, and it is the only lazy fold in this registry -- which is why
+    # :attr:`_Fold.lazy_reason` is required rather than optional. Eager would mean a
+    # warm cell, and a tree cell is invalidated by growth in ANY member's log,
+    # including a member the cell did not know existed when it was built; no publisher
+    # raises that event, so an eager tree fold would be woken for the root's own log
+    # and then serve a tree missing every change made in a child's.
+    #
+    # ``count_rows`` is declared even though a lazy fold holds no cell, because the
+    # guard below requires it of a tree fold for the reason the slot guard requires it
+    # of a slot fold: a charge that cannot see the row count is a constant, and the
+    # figure a composing agent reads out of the catalog has to be true now rather than
+    # when somebody later gives this kind a cell.
+    WORKTREE_FOLD_NAME: _Fold(
+        WORKTREE_FOLD_NAME,
+        _worktree_start,
+        _worktree_step,
+        _worktree_render,
+        bind_slot=_worktree_bind_slot,
+        affects=frozenset({WORK_ENTRY_TYPE}),
+        copy_state=_worktree_copy,
+        count_rows=_worktree_rows,
+        mode="lazy",
+        lazy_reason=(
+            "a tree joins the logs of many slots, so its value is stale when ANY "
+            "member's log grows -- including a member not known when the value was "
+            "built -- and no publisher raises that event. Read on a page load and on a "
+            "refetch instead, which the controller's gap rule already covers."
+        ),
+    ),
 }
 
 if tuple(_FOLDS) != FOLD_NAMES:  # pragma: no cover - import-time consistency
@@ -8669,6 +9156,46 @@ if _UNCOUNTED_SLOT_FOLDS:  # pragma: no cover - import-time
     raise RuntimeError(
         "a slot-keyed fold must declare count_rows, or the warm memo's byte budget "
         f"charges it a constant while its state grows: {list(_UNCOUNTED_SLOT_FOLDS)}"
+    )
+
+#: THE THIRD KEY KIND'S OWN BUDGET GUARD, and the reason the kind could not simply be
+#: admitted: a tree fold with no measured row cost falls through to
+#: :data:`_UNMEASURED_ROW_BYTES` -- 64 KiB a row -- which is not a measurement and makes
+#: any ceiling stated over it unbounded in practice. Both halves are required, because
+#: either one alone is a constant: a row cost with no counter charges one row forever,
+#: and a counter with no cost charges the fallback. Checked at import, like the slot
+#: guard, because a registry the process cannot honour is not a thing to discover under
+#: load.
+_UNMEASURED_TREE_FOLDS: Final[tuple[str, ...]] = tuple(
+    name
+    for name in TREE_PROJECTION_NAMES
+    if _FOLDS[name].count_rows is None or name not in _TREE_FOLD_ROW_BYTES
+)
+if _UNMEASURED_TREE_FOLDS:  # pragma: no cover - import-time
+    raise RuntimeError(
+        "a tree-keyed fold must declare BOTH count_rows and a measured row cost in "
+        "_TREE_FOLD_ROW_BYTES, or its budget is a constant charged against an "
+        f"unmeasured fallback: {list(_UNMEASURED_TREE_FOLDS)}"
+    )
+
+#: A fold must belong to EXACTLY ONE key kind. The three sets are what every consumer
+#: routes on -- the manifest's binding gate, the bus scope, the catalog's ``keyed_by``,
+#: this module's own read functions -- and each of them tests them in its own order, so
+#: a name in two sets would be routed one way by one consumer and another way by the
+#: next, while a name in none is registered and unreachable.
+_MISKEYED_FOLDS: Final[tuple[str, ...]] = tuple(
+    name
+    for name in FOLD_NAMES
+    if sum(
+        name in family
+        for family in (SESSION_FOLD_NAMES, SLOT_PROJECTION_NAMES, TREE_PROJECTION_NAMES)
+    )
+    != 1
+)
+if _MISKEYED_FOLDS:  # pragma: no cover - import-time
+    raise RuntimeError(
+        "every registered fold must be in exactly one of SESSION_FOLD_NAMES, "
+        f"SLOT_PROJECTION_NAMES or TREE_PROJECTION_NAMES: {list(_MISKEYED_FOLDS)}"
     )
 
 

@@ -134,12 +134,23 @@ class FieldRead:
 
 
 def scope_for(fold: str) -> str:
-    """Which bus scope a fold is keyed by.
+    """Which bus scope a fold is keyed by, or ``""`` for one no scope keys.
 
-    Read off the projection kernel's own two sets rather than from a list here, so
+    Read off the projection kernel's own key-kind sets rather than from a list here, so
     a fold that moves family -- or a new one -- is keyed correctly without an edit.
-    A name in NEITHER set is not a fold this channel can subscribe to, and saying so
-    is better than guessing a scope and silently never receiving an event.
+
+    ``""`` means this channel cannot subscribe to the fold, which is better than
+    guessing a scope and silently never receiving an event. TWO different folds answer
+    it, and a caller must not read them as the same thing:
+
+    * A name in NO key-kind set is not a registered fold at all.
+    * A TREE-keyed fold IS registered and IS bindable, and deliberately has no scope:
+      it joins the logs of many slots, so its value is stale when any member's log
+      grows and the bus has no key that covers that. It is read on a page load and on a
+      refetch (:func:`~kiro_crew.crew_log.projection.read_tree_projection`), which the
+      controller's gap rule already covers. Stated here rather than left to fall out of
+      three failed membership tests, because an absence that means "by design" and an
+      absence that means "unknown name" would otherwise look identical.
     """
     if fold in SLOT_PROJECTION_NAMES:
         return crew_log_bus.SCOPE_SLOT

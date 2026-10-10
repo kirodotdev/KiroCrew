@@ -125,6 +125,10 @@ _ANSWERS: dict[str, str] = {
         "Every workstream this crewmate is running: each board's goal and counts, each "
         "task's result, and what each task cost its own worker session"
     ),
+    "worktree": (
+        "The shape of a fleet: every work board the tree reaches, which board each one "
+        "hangs under, and which boards are its roots"
+    ),
 }
 
 
@@ -207,7 +211,15 @@ def catalogue() -> dict[str, Any]:
                 # fold answers about ONE conversation; a slot-keyed one answers about a
                 # workstream that outlived several, and is folded over every log the slot
                 # ran under -- so serving it under one session's id reports a part as the
-                # whole.
+                # whole. A TREE-keyed one answers about a whole fleet and is folded over
+                # the logs of every slot the tree reaches, so serving it under one slot
+                # reports one board as the tree.
+                #
+                # One lookup, in ``dashboard_types._keyed_by``. A second one here would
+                # have to be kept in the same order -- tree before slot before session,
+                # because a two-branch test reports a tree fold as session-keyed -- and
+                # the import-time key-kind guard makes a wrong answer unreachable only on
+                # the side that asks the guard's own sets.
                 "mode": entry.keyed_by,
                 "advertised": name not in proj.INTERNAL_PROJECTION_NAMES,
                 # ``None`` means every entry moves this fold -- whether the registry
@@ -255,7 +267,11 @@ def render_markdown(doc: dict[str, Any]) -> str:
         "",
         "A `session` fold answers about ONE conversation. A `slot` fold answers about a",
         "workstream that outlived several conversations and is folded over every log the",
-        "slot ran under.",
+        "slot ran under. A `tree` fold answers about a whole FLEET: it is keyed by a tree",
+        "root and folded over the logs of every slot the tree reaches, so it is the kind a",
+        "block binding a tree names. It is read on a page load and on a refetch rather",
+        "than pushed, because its value is stale when any member's log grows and no bus",
+        "scope covers that.",
         "",
         "## Which fold answers what",
         "",
@@ -366,7 +382,7 @@ def selftest() -> int:
     vocabulary = set(dt.describe()["field_types"]) | {UNKNOWN_TYPE}
     for fold in doc["folds"]:
         assert fold["fields"], f"{fold['name']} rendered no fields"
-        assert fold["mode"] in (dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT), fold
+        assert fold["mode"] in (dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT, dt.KEYED_BY_TREE), fold
         for row in fold["fields"]:
             # The MANIFEST's words, which is the whole point of rendering the catalog
             # rather than probing: a Python type name here would be one an author
@@ -383,6 +399,12 @@ def selftest() -> int:
     # empty list -- an empty list would read as "no entry moves it".
     status = next(fold for fold in doc["folds"] if fold["name"] == "status")
     assert status["affects"] is None, status
+
+    # The tree-keyed fold is the only one whose mode is neither of the original two, and
+    # a regression to ``session`` or ``slot`` is the silent one: it reads as a complete
+    # answer and sends a template author to key a whole fleet's tree by one conversation.
+    tree_names = [fold["name"] for fold in doc["folds"] if fold["mode"] == "tree"]
+    assert tree_names == list(proj.TREE_PROJECTION_NAMES), tree_names
 
     # Planted drift: one renamed field must change both renderings.
     mutated = json.loads(json.dumps(doc))

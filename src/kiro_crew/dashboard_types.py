@@ -58,16 +58,19 @@ from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
 from kiro_crew.crew_log.projection import (
     _FOLDS,
     _SLOT_FOLD_ROW_BYTES,
+    _TREE_FOLD_ROW_BYTES,
     FOLD_NAMES,
     OWNER_SERVED_SLOT_PROJECTION,
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
+    TREE_PROJECTION_NAMES,
 )
 from kiro_crew.dashboard_templates.manifest import FIELD_TYPES
 
 __all__ = [
     "KEYED_BY_SESSION",
     "KEYED_BY_SLOT",
+    "KEYED_BY_TREE",
     "UNKNOWN_TYPE",
     "FoldType",
     "catalog",
@@ -76,6 +79,11 @@ __all__ = [
 
 KEYED_BY_SESSION: Final[str] = "session"
 KEYED_BY_SLOT: Final[str] = "slot"
+#: The THIRD key kind: a fold keyed by a tree ROOT, folded over the logs of every slot
+#: the tree reaches. What a block binding a TREE names, and the one kind whose value
+#: arrives on a page load and on a refetch rather than on a bus push -- a composing agent
+#: reads that off this value, so it is a distinct word and not ``slot`` with a footnote.
+KEYED_BY_TREE: Final[str] = "tree"
 
 #: The ``type`` of a leaf the probe saw as ``null`` and nothing declares. Deliberately
 #: NOT a member of :data:`~kiro_crew.dashboard_templates.manifest.FIELD_TYPES`: a Model
@@ -219,9 +227,12 @@ class FoldType:
     #: What the fold's stored state is versioned at. A reader comparing two gateways'
     #: catalogs uses it to tell "the same fold" from "the same name".
     state_version: int
-    #: Bytes the warm cache charges one row of this fold, for a composer sizing a block
-    #: against a fold that retains rows. ``None`` for a session-keyed fold, which holds
-    #: no warm slot cell and is charged by serialized size instead.
+    #: Bytes charged for one row of this fold, for a composer sizing a block against a
+    #: fold that retains rows. Read from the key kind's own measured table -- the slot
+    #: folds' for a slot fold, the tree folds' for a tree fold -- because each kind states
+    #: its figure against its own largest member and a kind with no measured cost would
+    #: leave the budget charging an unmeasured fallback. ``None`` for a session-keyed
+    #: fold, which holds no cell at all and is charged by serialized size instead.
     row_bytes: int | None
     folded_through: int | None = None
 
@@ -305,6 +316,21 @@ def _probe(name: str) -> dict[str, Any]:
     return _node(name, "", fold.render(state))
 
 
+def _keyed_by(name: str) -> str:
+    """Which of the THREE key kinds *name* is keyed by.
+
+    Tested against the kernel's own sets, most specific first: the tree set is the
+    newest and the smallest, and a two-branch ``slot else session`` would have reported
+    a tree fold as session-keyed -- the one answer that reads as a complete and wrong
+    one, since a composer would then key a tree block by a session unit id.
+    """
+    if name in TREE_PROJECTION_NAMES:
+        return KEYED_BY_TREE
+    if name in SLOT_PROJECTION_NAMES:
+        return KEYED_BY_SLOT
+    return KEYED_BY_SESSION
+
+
 def catalog(folded_through: Mapping[str, int | None] | None = None) -> tuple[FoldType, ...]:
     """Every data type a dashboard can bind to, in registry order.
 
@@ -322,10 +348,10 @@ def catalog(folded_through: Mapping[str, int | None] | None = None) -> tuple[Fol
             # derived type sets to the fold it is derived FROM, and a reader walks it
             # to find the subscription a block actually needs.
             source_fold=name,
-            keyed_by=KEYED_BY_SLOT if name in SLOT_PROJECTION_NAMES else KEYED_BY_SESSION,
+            keyed_by=_keyed_by(name),
             owner_served=name == OWNER_SERVED_SLOT_PROJECTION,
             state_version=_FOLDS[name].state_version,
-            row_bytes=_SLOT_FOLD_ROW_BYTES.get(name),
+            row_bytes=_SLOT_FOLD_ROW_BYTES.get(name, _TREE_FOLD_ROW_BYTES.get(name)),
             folded_through=reached.get(name),
         )
         for name in FOLD_NAMES
@@ -346,4 +372,9 @@ def describe(folded_through: Mapping[str, int | None] | None = None) -> dict[str
         "owner_served": OWNER_SERVED_SLOT_PROJECTION,
         "session_keyed": list(SESSION_FOLD_NAMES),
         "slot_keyed": list(SLOT_PROJECTION_NAMES),
+        # The third key kind, listed beside the other two so a reader resolving a type's
+        # key does it from one payload. A fold here is read on a page load and on a
+        # refetch rather than pushed over the bus, which is the one thing a composer has
+        # to know about this kind beyond its name.
+        "tree_keyed": list(TREE_PROJECTION_NAMES),
     }

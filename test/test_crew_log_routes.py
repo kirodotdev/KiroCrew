@@ -317,6 +317,44 @@ async def test_a_read_addressed_by_slot_key_folds_that_slot_s_unit():
 
 
 @pytest.mark.asyncio
+async def test_the_session_route_refuses_a_tree_keyed_fold_rather_than_folding_one_unit():
+    """A tree fold's population is not a property of the key, so this route cannot serve
+    it.
+
+    It is resolved by walking what the record says -- the root's units, every worker they
+    recorded a bind for, and every board those workers conduct, to closure -- so folding
+    the ONE unit this route addresses would serve a single session as the whole tree.
+    That is the same part-served-as-the-whole the route already refuses for a slot fold
+    its owner serves, so it gets the same refusal rather than a 200 carrying a partial
+    answer.
+
+    FAILS CLOSED on purpose: a tree over "the part this route can reach" is a
+    complete-looking wrong answer, which is worse than a refusal a caller can act on.
+    """
+    handle = _log()
+    _opened(handle)
+    assert crew_log.TREE_PROJECTION_NAMES, "the tree key kind has no members to check"
+    for name in crew_log.TREE_PROJECTION_NAMES:
+        # Registered and bindable, so it passes ``require_name`` -- the refusal below is
+        # the route's own, not an unknown-name rejection.
+        assert name in crew_log._FOLDS
+        assert name not in crew_log.SLOT_PROJECTION_NAMES
+        assert name not in crew_log.SESSION_FOLD_NAMES
+        response = await routes.api_session_crew_log_projection(
+            _request_with_sessions("fold", "chat-7", {"chat-7": SESSION}, name=name)
+        )
+        assert response.status == 400, response.text
+        assert _body(response)["code"] == "unknown_projection"
+        assert "tree-keyed" in _body(response)["error"]
+    # The folds this route DOES serve still answer, so the refusal is scoped to the kind.
+    for name in ("ledger", "status"):
+        served = await routes.api_session_crew_log_projection(
+            _request_with_sessions("fold", "chat-7", {"chat-7": SESSION}, name=name)
+        )
+        assert served.status == 200, served.text
+
+
+@pytest.mark.asyncio
 async def test_the_projection_routes_refuse_a_slot_keyed_fold_its_owner_serves(monkeypatch):
     """A slot-keyed fold its OWNER serves (the radar fold: its owner orders the slot's
     units by what the crew recorded and pins the live unit last) is refused by both
