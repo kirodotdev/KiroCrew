@@ -33,11 +33,13 @@ from kiro_crew.apps.registry_pipeline.checkout import (
 )
 from kiro_crew.apps.registry_pipeline.git_targets import (
     _entry_git_url,
+    _git_output_is_auth_shaped,
     _git_target_is_unsupported,
     _loggable_git_transport_output,
     _looks_like_git_url,
     _public_registry_name,
     _redact_url_userinfo,
+    _redacted_git_failure_class,
     _same_git_target,
     _strip_git_target_userinfo,
 )
@@ -199,11 +201,53 @@ async def _owner_tier_confirmed(entry: dict[str, Any]) -> bool:
     return False
 
 
+# Registries whose latest index fetch failed because git refused the sign-in,
+# keyed by (public repo, branch). The fetch keeps returning ``None`` on failure
+# (callers and tests depend on that shape), so this travels beside it for the
+# refresh path to report. A refused sign-in is the one failure the user fixes
+# themselves, so it is the only one the dashboard names.
+_SIGN_IN_REFUSED: set[tuple[str, str]] = set()
+
+
+def _registry_sign_in_refused(repo: str, branch: str) -> bool:
+    """Whether the last fetch of *repo*@*branch* failed on a refused sign-in."""
+    return (_strip_git_target_userinfo(repo), branch) in _SIGN_IN_REFUSED
+
+
 async def _fetch_external_registry_index(
     repo: str,
     branch: str,
 ) -> list[dict[str, Any]] | None:
+    """Fetch a registry index, recording a refused sign-in when the clone hits one.
+
+    See :func:`_fetch_external_registry_index_unrecorded` for the fetch itself.
+    """
+    key = (_strip_git_target_userinfo(repo), branch)
+    _SIGN_IN_REFUSED.discard(key)
+    clone_failure: list[tuple[bool, str]] = []
+    entries = await _fetch_external_registry_index_unrecorded(repo, branch, clone_failure)
+    if entries is None and clone_failure:
+        sign_in_refused, failure_class = clone_failure[0]
+        if sign_in_refused:
+            _SIGN_IN_REFUSED.add(key)
+            logger.warning("External registry clone failed: git refused the sign-in")
+        else:
+            logger.warning(
+                "External registry clone failed: %s", failure_class or "unclassified git failure"
+            )
+    return entries
+
+
+async def _fetch_external_registry_index_unrecorded(
+    repo: str,
+    branch: str,
+    clone_failure: list[tuple[bool, str]],
+) -> list[dict[str, Any]] | None:
     """Fetch app-registry.json from an external repo via a shallow git clone.
+
+    When the clone itself fails, whether git refused the sign-in and the fixed
+    failure-class label for git's output (never the output itself) are appended
+    to *clone_failure*.
 
     *repo* is a git-cloneable URL (https/ssh/git/scp-style).  The repo is
     shallow-cloned into a throwaway temp directory.  If it contains an
@@ -268,17 +312,25 @@ async def _fetch_external_registry_index(
             # See `_git_fetch_branch`: a combined credentialed clone would let
             # checkout-time filters inherit the one-shot credential mapping.
             clone_path /= "branch"
+            fetch_log: list[str] = []
             err = await _git_fetch_branch(
                 git_url,
                 branch,
                 clone_path,
-                [],
+                fetch_log,
                 credential_target=credential_target,
                 clone_env=minimal_env(),
                 sandbox_mode=_context_clone_sandbox_mode(git_url),
             )
             if err is not None:
                 _sel_outcome("failed")
+                fetch_text = "\n".join(fetch_log)
+                clone_failure.append(
+                    (
+                        _git_output_is_auth_shaped(fetch_text),
+                        _redacted_git_failure_class(fetch_text),
+                    )
+                )
                 return None
         else:
             clone_cmd = [
@@ -305,9 +357,16 @@ async def _fetch_external_registry_index(
                 start_new_session=platform_compat.IS_POSIX,
                 creationflags=platform_compat.CREATE_NEW_PROCESS_GROUP,
             )
-            _, _ = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
+            _, clone_err = await _communicate_with_timeout(proc, timeout=_CLONE_TIMEOUT)
             if proc.returncode != 0:
                 _sel_outcome("failed")
+                clone_text = (clone_err or b"").decode(errors="replace")
+                clone_failure.append(
+                    (
+                        _git_output_is_auth_shaped(clone_text),
+                        _redacted_git_failure_class(clone_text),
+                    )
+                )
                 return None
 
         # Prefer an explicit app-registry.json index.

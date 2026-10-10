@@ -7933,6 +7933,8 @@
       "branch": "브랜치",
       "cancel": "취소",
       "could_not_refresh_still_showing_last_synced": "새로 고칠 수 없습니다: {{names}} — 해당 항목은 마지막으로 동기화된 앱을 표시합니다.",
+      "refresh_sign_in_refused": "{{names}}의 {{host}} 로그인이 거부되었습니다. 이 컴퓨터가 {{host}}에 사용하는 git 자격 증명을 갱신한 뒤 다시 새로 고치세요. 게이트웨이를 다시 시작해도 해결되지 않습니다.",
+      "refresh_sign_in_refused_no_host": "{{names}}에 대한 로그인이 거부되었습니다. 이 컴퓨터가 해당 레지스트리에 사용하는 git 자격 증명을 갱신한 뒤 다시 새로 고치세요. 게이트웨이를 다시 시작해도 해결되지 않습니다.",
       "dismiss_trust_notice": "신뢰 알림 닫기",
       "display_name": "표시 이름",
       "e_g_identity_services": "예: Identity Services",

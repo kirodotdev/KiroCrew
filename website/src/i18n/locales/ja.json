@@ -7933,6 +7933,8 @@
       "branch": "ブランチ",
       "cancel": "キャンセル",
       "could_not_refresh_still_showing_last_synced": "更新できませんでした：{{names}} — これらについては前回同期時のアプリを表示しています。",
+      "refresh_sign_in_refused": "{{names}} の {{host}} へのサインインが拒否されました。このマシンが {{host}} に使っている git の認証情報を更新してから、もう一度更新してください。ゲートウェイを再起動しても解決しません。",
+      "refresh_sign_in_refused_no_host": "{{names}} へのサインインが拒否されました。このマシンがそのレジストリに使っている git の認証情報を更新してから、もう一度更新してください。ゲートウェイを再起動しても解決しません。",
       "dismiss_trust_notice": "信頼通知を閉じる",
       "display_name": "表示名",
       "e_g_identity_services": "例：Identity Services",

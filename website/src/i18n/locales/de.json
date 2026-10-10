@@ -8056,6 +8056,8 @@
       "branch": "Branch",
       "cancel": "Abbrechen",
       "could_not_refresh_still_showing_last_synced": "Aktualisierung fehlgeschlagen: {{names}} — dafür werden weiterhin die zuletzt synchronisierten Apps angezeigt.",
+      "refresh_sign_in_refused": "Anmeldung bei {{host}} für {{names}} abgelehnt. Erneuere die Git-Zugangsdaten, die dieser Rechner für {{host}} nutzt, und aktualisiere dann erneut — ein Neustart des Gateways behebt das nicht.",
+      "refresh_sign_in_refused_no_host": "Anmeldung für {{names}} abgelehnt. Erneuere die Git-Zugangsdaten, die dieser Rechner für diese Registry nutzt, und aktualisiere dann erneut — ein Neustart des Gateways behebt das nicht.",
       "dismiss_trust_notice": "Vertrauenshinweis schließen",
       "display_name": "Anzeigename",
       "e_g_identity_services": "z. B. Identity Services",

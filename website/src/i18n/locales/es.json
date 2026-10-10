@@ -8179,6 +8179,8 @@
       "branch": "Rama",
       "cancel": "Cancelar",
       "could_not_refresh_still_showing_last_synced": "No se pudo recargar: {{names}} — se siguen mostrando las apps de la última sincronización.",
+      "refresh_sign_in_refused": "Se rechazó el inicio de sesión en {{host}} para {{names}}. Renueva las credenciales de git que este equipo usa para {{host}} y vuelve a recargar; reiniciar el gateway no lo soluciona.",
+      "refresh_sign_in_refused_no_host": "Se rechazó el inicio de sesión para {{names}}. Renueva las credenciales de git que este equipo usa para ese registro y vuelve a recargar; reiniciar el gateway no lo soluciona.",
       "dismiss_trust_notice": "Descartar el aviso de confianza",
       "display_name": "Nombre visible",
       "e_g_identity_services": "p. ej. Identity Services",

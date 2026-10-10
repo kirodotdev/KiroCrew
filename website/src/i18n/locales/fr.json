@@ -8179,6 +8179,8 @@
       "branch": "Branche",
       "cancel": "Annuler",
       "could_not_refresh_still_showing_last_synced": "Actualisation impossible : {{names}} — les applications de la dernière synchronisation restent affichées pour celles-ci.",
+      "refresh_sign_in_refused": "Connexion à {{host}} refusée pour {{names}}. Renouvelle les identifiants git que cette machine utilise pour {{host}}, puis actualise à nouveau — redémarrer la passerelle ne résoudra pas le problème.",
+      "refresh_sign_in_refused_no_host": "Connexion refusée pour {{names}}. Renouvelle les identifiants git que cette machine utilise pour ce registre, puis actualise à nouveau — redémarrer la passerelle ne résoudra pas le problème.",
       "dismiss_trust_notice": "Ignorer l'avis de confiance",
       "display_name": "Nom affiché",
       "e_g_identity_services": "ex. Identity Services",
