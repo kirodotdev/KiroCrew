@@ -7457,7 +7457,8 @@
       "click_to_show_this_folder_in_the_sidebar": "इस फ़ोल्डर को साइडबार में देखने के लिए क्लिक करो",
       "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से फ़ोल्डर पथ {{label}} कॉपी होता है।",
       "couldnt_copy_the_image_path": "छवि पथ कॉपी नहीं किया जा सका",
-      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से पथ {{label}} कॉपी होता है।"
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "कॉपी नहीं हो सकी। Ctrl/Cmd+क्लिक से पथ {{label}} कॉपी होता है।",
+      "unclosed_diff_warning": "यहाँ फ़ॉर्मैटिंग टूट गई, इसलिए जवाब का बाकी हिस्सा इस diff के अंदर दिख सकता है।"
     },
     "markdownToc": {
       "contents": "विषय-सूची",

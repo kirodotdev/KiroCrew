@@ -28,6 +28,39 @@ const FENCE_CLOSE_RE = (() => {
     return re
   }
 })()
+// A closing fence the model glued to the prose that follows it
+// (```**Summary**). CommonMark has no such closer, so the strict rule above
+// keeps the whole rest of the reply inside the fence; on a diff that tail is
+// then folded away behind a collapsed chip. Group 1 is the backtick run, group
+// 2 the glued text. The recovery is deliberately narrow: see isGluedProse.
+const GLUED_CLOSE = /^(`{3,})([^`].*)$/
+// The shape of an info string: a tag (```python, ```js:app.js), optionally
+// followed by whitespace and attributes (```python title="app.py"), or an
+// attribute block on its own (```{r}). A glued remainder of this shape may be
+// a nested opener or literal content, so it is never read as a close. A tag
+// starts with a letter or `_` and runs to the first space, backtick or `{`,
+// so ```rust,ignore and ```js= stay openers. A digit-first remainder such as
+// ```358KB is glued text.
+const INFO_STRING_SHAPE = /^(?:[A-Za-z_][^\s`{]*(?:\s.*|\{.*)?|\{.*)$/
+// Glued prose starts the way a line of reply text does: markdown emphasis or
+// a heading (`*`, `_`, `#`), a tag or quote marker (`<`, `>`), an image `!`,
+// a strike `~`, a digit, or a non-ASCII letter. A remainder that starts with a
+// quote, bracket or other code punctuation (```""" in a Python string that
+// builds markdown) is literal code, so it never closes the fence.
+const PROSE_START = /^[\d*_#<>!~\p{L}]/u
+
+/** True when the text after a backtick run is prose glued to a closing fence
+ * rather than an info string or code. It must contain no backtick (code such
+ * as a template literal keeps its run), must start like prose (see
+ * PROSE_START; this also rules out a leading space, as in the spaced-tag
+ * opener ``` foo), and must not have the shape of an info string. parseBlocks
+ * uses it inside a fence and inside a widget's fence. fixCodeFences in
+ * MarkdownRenderer keeps its own, wider split rule for markdown blocks. */
+export function isGluedProse(rest: string): boolean {
+  if (rest.includes('`') || !PROSE_START.test(rest)) return false
+  return !INFO_STRING_SHAPE.test(rest)
+}
+
 const DIFF_LINE = /^@@|^[+-]\d+:|^[+-][^+-\s]/
 // Outer fence languages where nested code fence examples are expected.
 // Only these languages trigger inner-fence depth tracking. Code languages
@@ -160,6 +193,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
   let widgetTitle = ''
   let widgetSlug = ''
   let widgetFenceTick = ''
+  let widgetFenceLen = 0  // raw backtick count of the widget's inner fence
   let mdStart = 1
   let codeStart = 1
   let widgetStart = 1
@@ -171,7 +205,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     mdBuf = []
   }
 
-  const flushCode = (complete: boolean) => {
+  const flushCode = (complete: boolean, closed = true) => {
     const code = codeBuf.join('\n')
     const lang = fenceLang || undefined
     let type: ContentBlock['type'] = 'code'
@@ -180,7 +214,12 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     // but an explicit language must never lose to content sniffing.
     else if (lang === 'excalidraw') type = 'excalidraw'
     else if (lang === 'diff' || isDiffContent(code, lang)) type = 'diff'
-    blocks.push({ type, content: code, language: lang, complete, startLine: codeStart })
+    const block: ContentBlock = { type, content: code, language: lang, complete, startLine: codeStart }
+    // Finished streaming is not the same as an observed closer: a finalized
+    // fence that never closed may hold the rest of the reply, so the renderer
+    // must not fold it away like a normal patch.
+    if (complete && !closed) block.unclosed = true
+    blocks.push(block)
     codeBuf = []
     fenceTick = ''
     fenceLang = ''
@@ -202,6 +241,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
     widgetTitle = ''
     widgetSlug = ''
     widgetFenceTick = ''
+    widgetFenceLen = 0
   }
 
   const pushMd = (text: string, lineIdx: number) => {
@@ -275,20 +315,36 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
             flushCode(true)
             state = 'outside'
           }
-        } else {
-          // Check if this line opens a nested fence inside our code block.
-          // Scoped to markup/doc outer languages where embedded code examples
-          // are common. For code languages (python, js, bash, etc.) a line
-          // like ```python is almost certainly literal content, not a nested
-          // structural fence — so we skip depth tracking entirely.
-          if (fenceNestable) {
-            const innerMatch = FENCE_OPEN.exec(line)
-            if (innerMatch && innerMatch[1].length === fenceLen && innerMatch[2]) {
-              innerFenceDepth++
-            }
-          }
-          codeBuf.push(line)
+          break
         }
+        // Check if this line opens a nested fence inside our code block.
+        // Scoped to markup/doc outer languages where embedded code examples
+        // are common. For code languages (python, js, bash, etc.) a line
+        // like ```python is almost certainly literal content, not a nested
+        // structural fence — so we skip depth tracking entirely. Runs before
+        // the glued-close check, so a markup example keeps its pre-existing
+        // nesting and an attributed inner opener never closes it.
+        if (fenceNestable) {
+          const innerMatch = FENCE_OPEN.exec(line)
+          if (innerMatch && innerMatch[1].length === fenceLen && innerMatch[2]) {
+            innerFenceDepth++
+            codeBuf.push(line)
+            break
+          }
+        }
+        // A closing run glued to prose: close here and re-read the glued
+        // text as an ordinary outside line, so a summary or widget tag after
+        // it gets its own block. Only a run at least as long as the opener
+        // can close it (CommonMark), and never while a nested example is open.
+        const glued = GLUED_CLOSE.exec(line)
+        if (glued && innerFenceDepth === 0 && glued[1].length >= fenceLen && isGluedProse(glued[2])) {
+          flushCode(true)
+          state = 'outside'
+          lines[i] = glued[2]
+          i--
+          break
+        }
+        codeBuf.push(line)
         break
       }
 
@@ -308,6 +364,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
         if (fenceMatch) {
           widgetBuf.push(line)
           widgetFenceTick = escapeRegExp(fenceMatch[1])
+          widgetFenceLen = fenceMatch[1].length
           state = 'widget-fence'
           break
         }
@@ -316,10 +373,23 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
       }
 
       case 'widget-fence': {
-        widgetBuf.push(line)
         if (FENCE_CLOSE_RE(widgetFenceTick).test(line)) {
+          widgetBuf.push(line)
           state = 'widget'
+          break
         }
+        // The same glued-closer recovery as the 'fence' state: close the
+        // inner fence and re-read the glued text as a widget line, so a
+        // </mcwidget> glued after it still ends the widget.
+        const glued = GLUED_CLOSE.exec(line)
+        if (glued && glued[1].length >= widgetFenceLen && isGluedProse(glued[2])) {
+          widgetBuf.push(glued[1])
+          state = 'widget'
+          lines[i] = glued[2]
+          i--
+          break
+        }
+        widgetBuf.push(line)
         break
       }
     }
@@ -327,7 +397,7 @@ export function parseBlocks(raw: string, streaming: boolean): ContentBlock[] {
 
   // End of input: flush any open state.
   if (state === 'fence') {
-    flushCode(!streaming)
+    flushCode(!streaming, false)
   } else if (state === 'widget' || state === 'widget-fence') {
     flushWidget(!streaming)
   }

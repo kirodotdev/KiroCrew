@@ -1598,6 +1598,9 @@ export interface ContentBlock {
   complete: boolean
   /** 1-based line in the original raw source where this block starts. */
   startLine?: number
+  /** Set on a finalized fence whose closing delimiter never appeared. Its
+   * content may include the rest of the reply, so it must stay visible. */
+  unclosed?: boolean
   /** Artifact slug (widget blocks only) — when present, the widget is
    * already saved as an artifact in the user's library. The dashboard uses
    * this to render the bookmark filled, link the title to /artifacts/<slug>,

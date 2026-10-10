@@ -137,4 +137,17 @@ describe('fixCodeFences — info strings beyond \\w', () => {
     expect(fixCodeFences('```asp.net\nbody\n```')).toBe('```asp.net\nbody\n```')
     expect(fixCodeFences('```\ncode\n```358KB')).toBe('```\ncode\n```\n358KB')
   })
+
+  it('keeps openers whose tag carries a comma or `=` whole', () => {
+    for (const tag of ['rust,ignore', 'rust,no_run', 'js=']) {
+      const input = '```' + tag + '\nfn main() {}\n```'
+      expect(fixCodeFences(input)).toBe(input)
+    }
+  })
+
+  it('still splits glued remainders that do not start with a letter', () => {
+    for (const rest of ['"x"', '(a)', '-1', ' 358KB']) {
+      expect(fixCodeFences('```\ncode\n```' + rest)).toBe('```\ncode\n```\n' + rest)
+    }
+  })
 })

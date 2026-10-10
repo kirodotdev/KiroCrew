@@ -7345,7 +7345,8 @@
       "click_to_show_this_folder_in_the_sidebar": "クリックしてこのフォルダーをサイドバーに表示",
       "the_copy_failed_ctrl_cmd_click_copies_the_folder_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでフォルダーのパス {{label}} をコピーします。",
       "couldnt_copy_the_image_path": "画像のパスをコピーできませんでした",
-      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでパス {{label}} をコピーします。"
+      "the_copy_failed_ctrl_cmd_click_copies_the_path_label": "コピーできませんでした。Ctrl/Cmd+クリックでパス {{label}} をコピーします。",
+      "unclosed_diff_warning": "ここで書式が崩れたため、返答の残りがこの差分の中に表示されている可能性があります。"
     },
     "markdownToc": {
       "contents": "目次",

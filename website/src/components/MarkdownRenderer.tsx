@@ -952,9 +952,13 @@ function BlockRenderer({ block, prevBlock, onFileOpen, sourcePos, messageTs, slo
       const foldKey = slotKey != null && messageTs != null && block.startLine != null
         ? `${slotKey}:${messageTs}:${block.startLine}`
         : undefined
-      const node = collapseDiffs
-        ? <FoldableDiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} foldKey={foldKey} />
-        : <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} />
+      // A finalized fence that never closed may have swallowed the rest of the
+      // reply, so the chat must not leave it folded: the same chip stays
+      // mounted, opens itself and says why it looks wrong.
+      const node = !collapseDiffs
+        ? <DiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} />
+        : <FoldableDiffBlock code={block.content} complete={block.complete} onFileOpen={onFileOpen} pathHint={pathHint} foldKey={foldKey}
+            warning={block.unclosed ? i18nT('components.markdownRenderer.unclosed_diff_warning') : undefined} />
       // Smooth mode: wrap so the block height eases as lines arrive. The wrapper
       // is mounted for the whole message lifecycle (smooth is constant) so the
       // child never remounts when streaming flips to complete.

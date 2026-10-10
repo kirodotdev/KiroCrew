@@ -4773,7 +4773,8 @@
       "remote_media_loaded_from": "Loaded from <host/>",
       "remote_media_site": "Site: <host/>",
       "remote_media_sites": "Sites: <host/>",
-      "remote_media_gateway_refused": "Media not loaded: its address goes through this dashboard's own server, so the site it would reach can't be shown."
+      "remote_media_gateway_refused": "Media not loaded: its address goes through this dashboard's own server, so the site it would reach can't be shown.",
+      "unclosed_diff_warning": "The formatting broke here, so the rest of the reply may appear inside this diff."
     },
     "markdownToc": {
       "contents": "Contents",
