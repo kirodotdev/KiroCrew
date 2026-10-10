@@ -144,7 +144,7 @@ class TestWaveStopsAfterTheFirstRefusal:
     def _run(self, args: dict, error: str) -> tuple[str, list[tuple[str, dict]]]:
         posts: list[tuple[str, dict]] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             posts.append((path, body))
             if path == "/api/spawn":
                 return {"error": error, "code": sa.AGENT_NOT_FOUND_CODE, "counted": True}
@@ -154,7 +154,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            return spawn_tools.spawn_run("spawn_run", args), posts
+            return spawn_tools.mcp_core._call_tool("spawn_run", args), posts
 
     def test_one_bad_name_is_posted_once_not_per_task(self) -> None:
         out, posts = self._run(
@@ -176,7 +176,7 @@ class TestWaveStopsAfterTheFirstRefusal:
         """The refusal is a property of the NAME: only members sharing it are skipped."""
         posts: list[dict] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             if path != "/api/spawn":
                 return {}
             posts.append(body)
@@ -192,7 +192,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            out = spawn_tools.spawn_run(
+            out = spawn_tools.mcp_core._call_tool(
                 "spawn_run",
                 {"tasks": ["a", "b", "c"], "agents": ["ghost", "scout", "ghost"]},
             )
@@ -203,7 +203,7 @@ class TestWaveStopsAfterTheFirstRefusal:
         """Acceptance is unknown there, so the name is not proven bad."""
         posts: list[dict] = []
 
-        def _post(path: str, body: dict) -> dict:
+        def _post(path: str, body: dict, **_kwargs: object) -> dict:
             if path != "/api/spawn":
                 return {}
             posts.append(body)
@@ -217,7 +217,7 @@ class TestWaveStopsAfterTheFirstRefusal:
             patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
             patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
         ):
-            spawn_tools.spawn_run("spawn_run", {"tasks": ["a", "b"], "agent": "scout"})
+            spawn_tools.mcp_core._call_tool("spawn_run", {"tasks": ["a", "b"], "agent": "scout"})
         assert len(posts) == 2
 
 

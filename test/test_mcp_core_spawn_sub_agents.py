@@ -2,9 +2,213 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import json
+from unittest.mock import MagicMock, patch
 
-from kiro_crew.mcp_core import _call_tool
+import pytest
+
+from kiro_crew import mcp_core
+from kiro_crew.mcp_core import _call_tool, _call_tool_deferrable
+from kiro_crew.mcp_shared import DeferredTool, _DeferredEntry, drive_deferred
+from kiro_crew.mcp_tools.spawn import _SubAgentsStep, spawn_sub_agents
+
+
+def _call_after_submission(args, clock, poll_at):
+    """Start the wait clock after the last accepted submission, then advance it."""
+    clock.monotonic.return_value = 0
+    deferred = _call_tool_deferrable("spawn_sub_agents", args)
+    assert isinstance(deferred, DeferredTool)
+    for entry in args["agents"]:
+        if entry.get("prompt", "").strip():
+            assert deferred.step() is None
+    clock.monotonic.return_value = poll_at
+    return drive_deferred(deferred, clock=clock)
+
+
+class TestDeferredSubmission:
+    def test_handler_returns_before_any_submission(self, monkeypatch):
+        post = MagicMock()
+        audit = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "sel", lambda: audit)
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        step = spawn_sub_agents("spawn_sub_agents", {"agents": [{"prompt": "task"}]})
+        assert isinstance(step, DeferredTool)
+        assert step.phase == "submit"
+        assert step.sa_ids == [] and step.sa_errors == [] and step.sa_deferred == set()
+        post.assert_not_called()
+        audit.log_api_access.assert_called_once()
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "attempt"
+
+    def test_each_step_posts_one_member_and_retains_all_outcomes(self, monkeypatch, manual_clock):
+        manual_clock.install(monkeypatch, mcp_core)
+        responses = iter([{"id": "a1"}, {"id": "a2", "status": "queued"},
+                          {"error": "capacity reached"}, {}])
+
+        def submit(path, body, **_kwargs):
+            manual_clock.advance(8)
+            return next(responses)
+
+        post = MagicMock(side_effect=submit)
+        get = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "_get", get)
+        monkeypatch.setattr(mcp_core, "sel", MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        agents = [
+            {"agent_or_mode": "coder", "prompt": " code it "},
+            {"agent_or_mode": "reviewer", "prompt": "review it"},
+            {"prompt": "doomed task"}, {"prompt": "missing id"}, {"prompt": " "},
+        ]
+        step = spawn_sub_agents("spawn_sub_agents", {
+            "agents": agents, "cwd": "/workspace/project", "include_memory": False,
+            "include_lessons": False, "include_project": False,
+        })
+        assert isinstance(step, _SubAgentsStep)
+        for index in range(4):
+            assert step.step() is None
+            assert post.call_count == index + 1
+            assert step.due_at() == manual_clock.monotonic()
+            assert step.phase == ("poll" if index == 3 else "submit")
+        assert step.sa_ids == ["a1", "a2"]
+        assert step.sa_deferred == {"a2"}
+        assert step.sa_errors == ["doomed task: capacity reached",
+                                  "missing id: spawn returned no agent id"]
+        for index, call in enumerate(post.call_args_list):
+            assert call.args == ("/api/spawn", {
+                "task": agents[index]["prompt"].strip(),
+                "agent": agents[index].get("agent_or_mode", ""),
+                "parent_session": "dashboard:owner", "cwd": "/workspace/project",
+                "include_memory": False, "include_lessons": False, "include_project": False,
+            })
+        get.assert_not_called()
+        assert step.deadline == manual_clock.monotonic() + step.max_wait
+        assert step.hold.deadline == step.deadline
+        assert step.next_ping == manual_clock.monotonic() + step.KEEPALIVE_SECS
+
+    def test_large_batch_keeps_progress_past_the_gateway_ceiling(self, monkeypatch, manual_clock):
+        from kiro_crew.mcp_gateway.backend import PROGRESS_WEDGE_CEILING_SECS
+
+        members = 128
+        manual_clock.install(monkeypatch, mcp_core)
+        ids = iter(f"a{i}" for i in range(members))
+
+        def submit(path, body, **_kwargs):
+            manual_clock.advance(8)
+            return {"id": next(ids)}
+
+        post = MagicMock(side_effect=submit)
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "sel", MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        step = spawn_sub_agents("spawn_sub_agents", {
+            "agents": [{"prompt": "task"} for _ in range(members)],
+        })
+        entry = _DeferredEntry("call", "spawn_sub_agents", None, "", step)
+        started = manual_clock.monotonic()
+        for index in range(members):
+            assert step.step() is None
+            assert post.call_count == index + 1
+            assert entry.progressing(manual_clock.monotonic())
+        assert manual_clock.monotonic() - started > PROGRESS_WEDGE_CEILING_SECS
+        assert step.phase == "poll" and len(step.sa_ids) == members
+        # The polling step retains no member prompts, and nothing reads as unsubmitted.
+        assert step.agents_input == []
+        assert "not_submitted" not in step.abandon()
+        assert step.deadline == manual_clock.monotonic() + step.max_wait
+
+    def test_a_member_keeps_only_its_two_fields_while_parked(self, monkeypatch):
+        """The parked step retains every member until it is submitted, so the
+        handler copies only ``prompt`` and ``agent_or_mode`` (clamped) into the
+        step; any other key the caller sent is dropped, not retained and not
+        refused -- the advertised schema never promised to refuse it."""
+        from kiro_crew.validation import MAX_MEDIUM_STRING, MAX_SHORT_STRING
+
+        post = MagicMock(return_value={"id": "a1"})
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        from kiro_crew.validation import SPAWN_SUB_AGENTS_SCHEMA, validate_tool_args
+
+        agents = [
+            {"prompt": "p" * 50_000, "agent_or_mode": "m" * 5_000, "extra": {"payload": "x" * 1024}},
+            {"prompt": "do work", "name": "ignored"},
+        ]
+        # The advertised schema accepts the member as it always did.
+        cleaned = validate_tool_args({"agents": agents}, SPAWN_SUB_AGENTS_SCHEMA)
+        step = spawn_sub_agents("spawn_sub_agents", cleaned)
+        assert isinstance(step, _SubAgentsStep)
+        post.assert_not_called()
+        assert step.agents_input == [
+            {"prompt": "p" * MAX_MEDIUM_STRING, "agent_or_mode": "m" * MAX_SHORT_STRING},
+            {"prompt": "do work", "agent_or_mode": ""},
+        ]
+        assert not any("extra" in m or "name" in m for m in step.agents_input)
+
+    @pytest.mark.parametrize("agents, response, expected", [
+        ([{"prompt": "task"}], {"error": "capacity reached"},
+         "Error spawning sub-agents:\n  - task: capacity reached"),
+        ([{"prompt": " "}], {}, "Error: no valid agent entries found in 'agents' array"),
+    ])
+    def test_early_errors_settle_without_collecting(self, monkeypatch, agents, response, expected):
+        post = MagicMock(return_value=response)
+        get = MagicMock()
+        audit = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "_get", get)
+        monkeypatch.setattr(mcp_core, "sel", lambda: audit)
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        with patch("kiro_crew.mcp_shared.sel", return_value=audit):
+            step = _call_tool_deferrable("spawn_sub_agents", {"agents": agents})
+            assert isinstance(step, DeferredTool)
+            post.assert_not_called()
+            text = step.step()
+            assert text == expected
+            step.on_settled(text)
+        assert post.call_count == (1 if agents[0]["prompt"].strip() else 0)
+        get.assert_not_called()
+        terminal = [call.kwargs for call in audit.log_tool_invocation.call_args_list
+                    if call.kwargs["source"] == "mcp"]
+        assert len(terminal) == 1 and terminal[0]["error"] in ("", "execution_failed")
+        # A batch that settles from the submit phase ran no collect, so the tool's
+        # own outcome row (completed/partial + tallies) is not written: the only
+        # mcp_core row is the attempt.
+        own = [call.kwargs for call in audit.log_tool_invocation.call_args_list
+               if call.kwargs["source"] == "mcp_core"]
+        assert [row["outcome"] for row in own] == ["attempt"]
+
+    @pytest.mark.parametrize("submitted", [0, 1, 2])
+    def test_abandon_during_submission_names_accepted_and_unsubmitted(self, monkeypatch, submitted):
+        post = MagicMock(side_effect=[{"id": "a1"}, {"error": "capacity reached"}])
+        get = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "_get", get)
+        monkeypatch.setattr(mcp_core, "sel", MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        step = spawn_sub_agents("spawn_sub_agents", {
+            "agents": [{"prompt": "one"}, {"prompt": "two"}, {"prompt": "three"}],
+        })
+        for _ in range(submitted):
+            assert step.step() is None
+        step.cancel()  # accepted children keep running; cancellation sends no POST
+        text = step.abandon()
+        if submitted == 0:
+            # Nothing accepted yet: the whole call is retryable, so no final text.
+            assert text is None
+            assert post.call_count == 0
+            get.assert_not_called()
+            return
+        records = [json.loads(block) for block in text.split("\n\n")]
+        assert records[0]["task_ids"] == ["a1"]
+        assert "Do not spawn them again" in records[0]["note"]
+        assert records[1]["status"] == "not_submitted"
+        assert records[1]["count"] == 3 - submitted
+        assert "NOT submitted or spawned" in records[1]["note"]
+        if submitted == 2:
+            assert records[2]["status"] == "spawn_errors"
+        step.on_settled("abandoned")
+        assert post.call_count == submitted
+        get.assert_not_called()
 
 
 class TestSpawnSubAgents:
@@ -107,19 +311,16 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.time") as mock_time, \
              patch("kiro_crew.mcp_core.sel") as mock_sel, \
+             patch("kiro_crew.mcp_shared.sel", side_effect=lambda: mock_sel.return_value), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": False, "agent": "slow"}
-            # Deadline now uses time.monotonic(): calls are
-            # (1) deadline init, (2) _next_ping init, (3) loop guard.
-            # Make the loop-guard value exceed the deadline to time out at once.
-            mock_time.monotonic.side_effect = [0, 0, 999999]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {
+            result = _call_after_submission({
                 "agents": [{"prompt": "long task"}],
                 "solo_reason": "bulk_data",
-            })
+            }, mock_time, 999999)
 
             assert '"timed_out"' not in result
             assert '"failed"' not in result
@@ -137,9 +338,12 @@ class TestSpawnSubAgents:
                 call.args and call.args[0] == "/api/spawn/mark-collected"
                 for call in mock_post.call_args_list
             )
-            outcome_call = mock_sel.return_value.log_tool_invocation.call_args_list[-1]
-            assert outcome_call.kwargs["outcome"] == "partial"
-            assert outcome_call.kwargs["metadata"]["still_running"] == 1
+            completed_rows = [
+                call for call in mock_sel.return_value.log_tool_invocation.call_args_list
+                if call.kwargs.get("outcome") == "completed"
+            ]
+            assert len(completed_rows) == 1
+            assert completed_rows[0].kwargs["source"] == "mcp"
 
     def test_wait_expiry_reports_queued_and_permission_states(self):
         import json
@@ -155,11 +359,10 @@ class TestSpawnSubAgents:
                 "/api/spawn/p1": {"done": False, "awaiting_approval": True},
             }
             mock_get.side_effect = lambda path, *a, **k: by_id.get(path, {"done": False})
-            mock_time.monotonic.side_effect = [0, 0, 999999]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool(
-                "spawn_sub_agents", {"agents": [{"prompt": "a"}, {"prompt": "b"}]}
+            result = _call_after_submission(
+                {"agents": [{"prompt": "a"}, {"prompt": "b"}]}, mock_time, 999999,
             )
 
             records = [json.loads(chunk) for chunk in result.split("\n\n")]
@@ -179,12 +382,11 @@ class TestSpawnSubAgents:
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
-            # monotonic calls: deadline init(0), next_ping init(0), loop guard(10),
-            # keepalive check(70 >= 60 -> ping), next_ping reset(70).
-            mock_time.monotonic.side_effect = [0, 0, 10, 70, 70]
             mock_time.sleep = lambda _: None
 
-            _call_tool("spawn_sub_agents", {"agents": [{"prompt": "slow task"}], "solo_reason": "bulk_data"})
+            _call_after_submission({
+                "agents": [{"prompt": "slow task"}], "solo_reason": "bulk_data",
+            }, mock_time, 70)
 
             assert any(
                 call.args and call.args[0] == "/api/session-keepalive"
@@ -217,11 +419,11 @@ class TestSpawnSubAgents:
                                        "KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT": "120"}):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": False, "agent": "slow"}
-            # deadline = 0 + 120 = 120; loop guard at 200 exceeds it -> time out.
-            mock_time.monotonic.side_effect = [0, 0, 200]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "t"}], "solo_reason": "bulk_data"})
+            result = _call_after_submission({
+                "agents": [{"prompt": "t"}], "solo_reason": "bulk_data",
+            }, mock_time, 200)
 
             assert '"still_running"' in result
             assert '"waited_secs": 120' in result
@@ -518,12 +720,13 @@ class TestSpawnSubAgentsSummarization:
                 return {"id": "a1"}
             mock_post.side_effect = _post_side
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
-            # Trigger the ping branch (70 >= 60).
-            mock_time.monotonic.side_effect = [0, 0, 10, 70, 70]
             mock_time.sleep = lambda _: None
 
-            result = _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
-
+            result = _call_after_submission({
+                "agents": [{"prompt": "task"}], "solo_reason": "bulk_data",
+            }, mock_time, 70)
+            assert any(call.args[0] == "/api/session-keepalive"
+                       for call in mock_post.call_args_list)
             assert '"completed"' in result
 
     def test_poll_waits_then_completes(self):
@@ -630,26 +833,35 @@ class TestSpawnSubAgentsFailedChildTranscript:
         assert blocks == [{"agent": "w", "status": "error", "error": "HTTP 503"}]
 
     def test_finished_child_that_ended_in_error_is_still_counted_as_errored(self):
+        """The tool's own SEL row keeps the per-child tallies and the ``partial``
+        outcome; the generic ``call_tool_with_logging`` row stays ``completed``."""
         with patch("kiro_crew.mcp_core._post") as mock_post, \
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel") as mock_sel, \
+             patch("kiro_crew.mcp_shared.sel", side_effect=lambda: mock_sel.return_value), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {
                 "done": True, "agent": "w", "error": "crashed", "result": "partial",
             }
-            _call_tool("spawn_sub_agents", {
+            result = _call_tool("spawn_sub_agents", {
                 "agents": [{"prompt": "task"}],
                 "solo_reason": "bulk_data",
             })
+            assert '"status": "error"' in result
+            assert '"text": "partial"' in result
 
         final = [
             c.kwargs for c in mock_sel.return_value.log_tool_invocation.call_args_list
             if c.kwargs.get("outcome") in ("completed", "partial")
         ]
-        assert final and final[-1]["outcome"] == "partial"
-        assert final[-1]["metadata"]["errored"] == 1
-        assert final[-1]["metadata"]["completed"] == 0
+        own = [c for c in final if c["source"] == "mcp_core"]
+        assert len(own) == 1 and own[0]["outcome"] == "partial"
+        assert own[0]["metadata"] == {
+            "spawned": 1, "completed": 0, "still_running": 0, "errored": 1,
+        }
+        generic = [c for c in final if c["source"] == "mcp"]
+        assert len(generic) == 1 and generic[0]["outcome"] == "completed"
 
 
 class TestSpawnList:
@@ -711,8 +923,9 @@ class TestSpawnSubAgentsAuditOwner:
             _call_tool("spawn_sub_agents", {"agents": [{"prompt": "task"}], "solo_reason": "bulk_data"})
 
             owners = self._audit_owners(mock_sel)
-            # Both the attempt and the outcome record are written.
-            assert len(owners) == 2
+            # The tool's attempt carries the lost-owner marker; its terminal
+            # invocation row belongs to the shared audited wrapper.
+            assert len(owners) == 2  # the attempt row and the tool's own settle row
             for owner in owners:
                 assert owner != ""
                 # Wire format an audit reader filters on. Never presented as
@@ -755,3 +968,182 @@ class TestSpawnSubAgentsAuditOwner:
             assert spawn_bodies
             for body in spawn_bodies:
                 assert body["parent_session"] == ""
+
+
+class TestSpawnSubAgentsAbandon:
+    """A pruned install exits while the parent waits on its children: the
+    children were already POSTed and keep running, so the answer must name
+    them and say not to spawn them again, never invite a retry."""
+
+    def test_abandon_keeps_a_member_of_unknown_acceptance_from_being_resubmitted(self, monkeypatch):
+        """A member whose POST failed in transport may have been accepted, so
+        with no confirmed id the step still returns final text naming it under
+        ``unknown_acceptance`` instead of ``None``; the retryable refusal would
+        have the agent resubmit a child that may already run."""
+        monkeypatch.setattr(
+            mcp_core, "_post", MagicMock(return_value={"error": "timed out", "transport_error": True})
+        )
+        monkeypatch.setattr(mcp_core, "sel", MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        step = spawn_sub_agents("spawn_sub_agents", {"agents": [{"prompt": "a"}, {"prompt": "b"}]})
+        assert step.step() is None  # member "a": transport error, acceptance unknown
+        assert step.sa_ids == [] and len(step.sa_unknown) == 1
+        text = step.abandon()
+        assert text is not None
+        records = [json.loads(block) for block in text.split("\n\n")]
+        unknown = next(r for r in records if r["status"] == "unknown_acceptance")
+        assert unknown["count"] == 1 and "Do not resubmit" in unknown["note"]
+        assert any(r["status"] == "not_submitted" and r["count"] == 1 for r in records)
+
+    def test_abandon_before_any_child_is_accepted_leaves_the_call_retryable(self, monkeypatch):
+        """Turned away (table full, pool cannot start) before its first member
+        was submitted, the step has nothing running: ``abandon()`` returns
+        ``None`` so the loop's retryable refusal answers the call, instead of a
+        'still running, do not spawn again' result with no ids."""
+        monkeypatch.setattr(mcp_core, "_post", MagicMock(return_value={"id": "a1"}))
+        monkeypatch.setattr(mcp_core, "sel", MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        step = spawn_sub_agents("spawn_sub_agents", {"agents": [{"prompt": "a"}, {"prompt": "b"}]})
+        assert step.phase == "submit" and step.sa_ids == []
+        assert step.abandon() is None
+        assert step.phase == "submit", "a retryable call is not marked abandoned"
+        # Once one child is accepted the final text names it and the one not submitted.
+        assert step.step() is None
+        text = step.abandon()
+        assert text is not None and "a1" in text and '"count": 1' in text
+
+    def test_abandon_names_every_spawned_child_and_forbids_a_respawn(self):
+        import json
+
+        from kiro_crew.mcp_tools.spawn import _SubAgentsStep, spawn_sub_agents
+
+        ids = iter(["a1", "a2"])
+
+        def _post(path, body, **_kw):
+            if path == "/api/spawn":
+                if body["task"] == "broken":
+                    return {"error": "capacity reached"}
+                return {"id": next(ids)}
+            return {}
+
+        with patch("kiro_crew.mcp_core._post", side_effect=_post) as mock_post, \
+             patch("kiro_crew.mcp_core._get") as mock_get, \
+             patch("kiro_crew.mcp_core.sel"), \
+             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "sess1"}):
+            step = spawn_sub_agents("spawn_sub_agents", {
+                "agents": [{"prompt": "one"}, {"prompt": "two"}, {"prompt": "broken"}],
+            })
+            assert isinstance(step, _SubAgentsStep)
+            for _ in range(len(step.agents_input)):
+                assert step.step() is None
+            assert step.phase == "poll"
+            posts_before = mock_post.call_count
+            text = step.abandon()
+
+        assert text is not None
+        records = [json.loads(chunk) for chunk in text.split("\n\n")]
+        running = records[0]
+        assert running["status"] == "still_running"
+        assert running["task_ids"] == ["a1", "a2"]
+        assert "Do not spawn them again" in running["note"]
+        assert "[Subagent completion event]" in running["note"]
+        assert records[1]["status"] == "spawn_errors"
+        assert "capacity reached" in records[1]["errors"][0]
+        # Nothing is marked collected (or polled), so each child's completion
+        # event still reaches the parent.
+        assert mock_post.call_count == posts_before
+        mock_get.assert_not_called()
+
+
+class TestDeferredCollectionCommit:
+    def test_collect_only_builds_text_and_settlement_marks_once(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.spawn import _SubAgentsStep
+
+        post = MagicMock()
+        audit = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "sel", lambda: audit)
+        monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
+        step = _SubAgentsStep(
+            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            max_wait=60, inline_result=lambda aid, text: text,
+        )
+        text = step._collect()
+        assert '"completed"' in text
+        post.assert_not_called()
+        audit.log_tool_invocation.assert_not_called()
+        step.on_settled(text)
+        step.on_settled(text)
+        # The tool's own row (tallies + outcome) is written once, at settle.
+        audit.log_tool_invocation.assert_called_once()
+        assert audit.log_tool_invocation.call_args.kwargs["outcome"] == "completed"
+        assert audit.log_tool_invocation.call_args.kwargs["metadata"]["completed"] == 1
+        post.assert_called_once_with(
+            "/api/spawn/mark-collected",
+            {"ids": ["a1"], "parent_session": "dashboard:owner"}, timeout=5,
+        )
+
+    def test_abandon_never_commits_a_collect_result(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.spawn import _SubAgentsStep
+
+        post = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        monkeypatch.setattr(mcp_core, "_get", lambda path: {"done": True, "result": "ok"})
+        step = _SubAgentsStep(
+            sa_ids=["a1"], sa_deferred=set(), sa_errors=[], parent_session="dashboard:owner",
+            max_wait=60, inline_result=lambda aid, text: text,
+        )
+        text = step.abandon()
+        step._collect()  # A stuck collect can finish after the abandonment decision.
+        step.on_settled(text)
+        post.assert_not_called()
+
+    def test_batch_member_limit_is_checked_before_spawning(self, monkeypatch):
+        """``agents`` shares ``SPAWN_BATCH_MEMBERS_MAX`` with ``spawn_run``: the
+        parked step retains every member until submitted, so the count is bounded
+        where it is retained and an oversized batch spawns nothing."""
+        from unittest.mock import MagicMock
+
+        from kiro_crew import mcp_core
+        from kiro_crew.validation import (
+            SPAWN_BATCH_MEMBERS_MAX,
+            SPAWN_SUB_AGENTS_SCHEMA,
+            validate_tool_args,
+        )
+
+        agents = [{"prompt": "task"} for _ in range(SPAWN_BATCH_MEMBERS_MAX)]
+        cleaned = validate_tool_args({"agents": agents}, SPAWN_SUB_AGENTS_SCHEMA)["agents"]
+        assert len(cleaned) == SPAWN_BATCH_MEMBERS_MAX
+        post = MagicMock()
+        monkeypatch.setattr(mcp_core, "_post", post)
+        result = _call_tool("spawn_sub_agents", {"agents": agents + [{"prompt": "overflow"}]})
+        assert f"exceeds max items {SPAWN_BATCH_MEMBERS_MAX}" in result
+        post.assert_not_called()
+
+    def test_a_parked_batch_bounds_each_refusal_line(self, monkeypatch):
+        from unittest.mock import MagicMock
+
+        from kiro_crew import mcp_core
+        from kiro_crew.mcp_tools.spawn import _SA_ERROR_MAX_CHARS, _SubAgentsStep, spawn_sub_agents
+
+        monkeypatch.setattr(mcp_core, "sel", lambda: MagicMock())
+        monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:owner")
+        monkeypatch.setattr(mcp_core, "_post", MagicMock(side_effect=[
+            {"id": "a1"}, {"error": "refused " * _SA_ERROR_MAX_CHARS}, {},
+        ]))
+        step = spawn_sub_agents("spawn_sub_agents", {"agents": [
+            {"prompt": "running task"}, {"prompt": "refused task"}, {"prompt": "missing id"},
+        ]})
+        assert isinstance(step, _SubAgentsStep)
+        for _ in range(len(step.agents_input)):
+            assert step.step() is None
+        assert step.phase == "poll"
+        assert len(step.sa_errors) == 2
+        assert len(step.sa_errors[0]) == _SA_ERROR_MAX_CHARS
+        assert all(len(error) <= _SA_ERROR_MAX_CHARS for error in step.sa_errors)

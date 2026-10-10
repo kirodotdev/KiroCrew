@@ -1456,6 +1456,12 @@ SPAWN_RUN_TASK_ITEM_SCHEMA = ToolSchema(
     ],
 )
 
+#: Members one spawn batch may carry (``spawn_run.tasks``, ``spawn_run.agents``,
+#: ``spawn_sub_agents.agents``). A parked step retains its member list until
+#: submission finishes, so the count is bounded where it is retained, by one
+#: name shared by both tools. Twice the configured sub-agent ceiling of 64.
+SPAWN_BATCH_MEMBERS_MAX = 128
+
 SPAWN_RUN_SCHEMA = ToolSchema(
     tool_name="spawn_run",
     fields=[
@@ -1463,6 +1469,7 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec(
             "tasks",
             list,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
             item_type=(str, dict),
             item_max_len=MAX_MEDIUM_STRING,
             item_schema=SPAWN_RUN_TASK_ITEM_SCHEMA,
@@ -1471,6 +1478,7 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec(
             "agents",
             list,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
             item_type=str,
             item_max_len=MAX_SHORT_STRING,
             item_pattern=REGISTERED_AGENT_NAME_RE,
@@ -1560,7 +1568,13 @@ SPAWN_SUB_AGENTS_SCHEMA = ToolSchema(
         # Each item is a dict with prompt (required, max MAX_MEDIUM_STRING) and
         # agent_or_mode (optional, max MAX_SHORT_STRING). Per-field validation
         # enforced in handler (no item_schema support in FieldSpec).
-        FieldSpec("agents", list, required=True, item_type=dict),
+        FieldSpec(
+            "agents",
+            list,
+            required=True,
+            max_items=SPAWN_BATCH_MEMBERS_MAX,
+            item_type=dict,
+        ),
         FieldSpec("cwd", str, max_len=MAX_MEDIUM_STRING),
         # Context groups, as on spawn_run: batch-wide, all default True.
         FieldSpec("include_memory", bool, default=True),
@@ -1960,11 +1974,17 @@ _ASK_MAX_ANSWER_LEN = (
     - _ASK_MAX_QUESTIONS * _ASK_ANSWER_LINE_OVERHEAD
 ) // _ASK_MAX_QUESTIONS
 
-#: One wait slice of a blocking ask, shared by the gateway and the MCP tool.
-#: Short enough that a cancelled tool call withdraws its card promptly and the
-#: keepalive between slices resets the ACP tool-stall watchdog long before its
-#: 600s; long enough that an idle card costs a request every ~20s.
-ASK_WAIT_SLICE_SECS = 20
+#: One wait slice of a blocking ask, fixed server-side and shared by the
+#: gateway's wait route and the MCP tool's deferred ask step. A step holds one
+#: of DEFERRED_STEP_WORKERS threads for one slice, so with DEFERRED_PARKED_MAX
+#: cards parked the worst gap between two polls of one card is
+#: ceil(64 / 8) * 5 = 40s, well under the dashboard's 120s answer grace
+#: (_AGENT_ASK_STALE_SECS); at 20s the same queue would take 160s and an answer
+#: could go stale before its card was polled again. At 2s an idle card would cost a
+#: request every 2s, 32 requests a second at 64 cards; at 5s it is one request
+#: every 5s. The keepalive between slices still resets the ACP tool-stall
+#: watchdog long before its 600s.
+ASK_WAIT_SLICE_SECS = 5
 
 
 def format_ask_answers(pairs: Iterable[tuple[str, str]]) -> str:

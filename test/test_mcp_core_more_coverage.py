@@ -46,7 +46,7 @@ from kiro_crew.mcp_core import (
     _vet_memory_writes_governance,
     _vet_messaging_governance,
 )
-from kiro_crew.mcp_shared import ToolCancelled
+from kiro_crew.mcp_shared import DeferredTool, drive_deferred
 
 _GOV = "kiro_crew.platform.governance_profiles"
 
@@ -721,10 +721,12 @@ class TestWaitTool:
         with patch.object(mcp_core, "time", clock):
             with patch.object(mcp_core, "_resolve_session_key_strict", return_value=strict_key):
                 with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
-                    with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=False):
-                        with patch.object(mcp_core, "sel", lambda: rec):
-                            with patch.object(mcp_core, "_post", post) as p:
-                                out = _call_tool_inner("wait", dict(args))
+                    with patch.object(mcp_core, "sel", lambda: rec):
+                        with patch.object(mcp_core, "_post", post) as p:
+                            with patch("kiro_crew.mcp_shared.sel", lambda: rec):
+                                out = mcp_core._call_tool_deferrable("wait", dict(args))
+                                if isinstance(out, DeferredTool):
+                                    out = drive_deferred(out, clock=clock)
         return out, clock, rec, p
 
     def test_an_unidentified_sleep_publishes_nothing_and_pings_slowly(self) -> None:
@@ -743,8 +745,9 @@ class TestWaitTool:
         assert [body for _, body in posts] == [{}, {}]
         # Unidentified sleeps revert to the 60s staleness cadence, not 5s.
         assert clock.slept == [60.0, 60.0]
+        assert len(rec.tools) == 1
         assert rec.tools[0]["tool_name"] == "wait"
-        assert rec.tools[0]["outcome"] == "success"
+        assert rec.tools[0]["outcome"] == "completed"
 
     def test_an_identified_sleep_publishes_its_deadline_and_retires_the_card(self) -> None:
         posts: list[tuple[str, dict]] = []
@@ -821,17 +824,27 @@ class TestWaitTool:
         assert out == "Waited 60s. Resuming: x"
         assert calls[-1]["wait_done"] is True
 
-    def test_cancellation_raises_tool_cancelled_with_elapsed_seconds(self) -> None:
+    def test_cancellation_retires_the_card_and_never_reports_success(self) -> None:
+        """A parked sleep is cancelled by the dispatch loop dropping it and
+        running its ``cancel`` hook: the countdown card is retired (an
+        identified sleep published one) and no success row is written."""
         clock = _FakeClock()
         rec = _RecordingSel()
+        posts: list[dict] = []
+
+        def post(path, body=None, **_kw):
+            posts.append(dict(body or {}))
+            return {}
+
         with patch.object(mcp_core, "time", clock):
-            with patch.object(mcp_core, "_resolve_session_key_strict", return_value=""):
-                with patch("kiro_crew.mcp_tools.control.is_tool_cancelled", return_value=True):
-                    with patch.object(mcp_core, "sel", lambda: rec):
-                        with patch.object(mcp_core, "_post", lambda *a, **k: {}):
-                            with pytest.raises(ToolCancelled) as ei:
-                                _call_tool_inner("wait", {"seconds": 60, "reason": "x"})
-        assert "wait cancelled after 0s" in str(ei.value)
+            with patch.object(mcp_core, "_resolve_session_key_strict", return_value="dashboard:c"):
+                with patch.object(mcp_core, "sel", lambda: rec):
+                    with patch.object(mcp_core, "_post", post):
+                        parked = _call_tool_inner("wait", {"seconds": 60, "reason": "x"})
+                        assert isinstance(parked, DeferredTool)
+                        assert parked.step() is None  # one keepalive ping
+                        parked.cancel()
+        assert posts[-1].get("wait_done") is True, "the card was not retired"
         # A cancelled sleep never reports success.
         assert rec.tools == []
 
@@ -1683,3 +1696,30 @@ class TestIssueRadarRecordInvestigation:
         with patch.object(mcp_core, "_put", return_value={"error": "HTTP 409"}):
             out = _call_tool_inner("issue_radar_record_investigation", dict(self._BASE))
         assert out == "Error: HTTP 409"
+
+
+# -- which servers opt into the in-flight report --------------------------------
+
+
+@pytest.mark.parametrize(
+    "module_name, entry_name, expected",
+    [
+        ("kiro_crew.mcp_core", "run_mcp_core_server", True),
+        ("kiro_crew.mcp_cron", "run_mcp_server", False),
+        ("kiro_crew.mcp_work", "run_mcp_server", False),
+        ("kiro_crew.mcp_guide", "run_mcp_server", False),
+        ("kiro_crew.mcp_panel", "run_mcp_server", False),
+    ],
+)
+def test_only_kirocrew_core_opts_into_the_inflight_report(
+    module_name: str, entry_name: str, expected: bool, monkeypatch
+) -> None:
+    """Opting in lowers the gateway's recycle ceiling under a running call, so
+    it is reserved for the one server that parks ``DeferredTool`` calls."""
+    import importlib
+
+    module = importlib.import_module(module_name)
+    captured: dict[str, Any] = {}
+    monkeypatch.setattr(module, "run_mcp_stdio_loop", lambda *a, **k: captured.update(k))
+    getattr(module, entry_name)()
+    assert captured.get("reports_inflight", False) is expected

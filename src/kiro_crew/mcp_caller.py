@@ -95,6 +95,22 @@ CALLER_META_KEY = "kirocrew.caller"
 #: understands the ``kirocrew.caller`` ``_meta`` block and is safe to pool.
 CALLER_CAPABILITY_KEY = "kirocrew.caller-identity"
 
+#: Capability key a CLIENT declares in its ``initialize`` request under
+#: ``capabilities.experimental`` to receive :data:`INFLIGHT_NOTIFICATION`, and
+#: a SERVER advertises in its response to say it sends one. Both directions
+#: must hold: a backend only sends to a client that asked (a direct kiro-cli
+#: or an older gateway never asked, and would drop the frame as
+#: unattributable), and the gateway only shortens its wedge ceiling for a
+#: backend that said it reports (``mcp_gateway.backend``).
+INFLIGHT_CAPABILITY_KEY = "kirocrew.inflight-report"
+
+#: Server->client notification naming the request ids the server is still
+#: making progress on -- its parked (deferred) calls that are not stuck inside
+#: a step. ``params.requestIds`` is a list of the ids as the client sent them.
+#: See ``mcp_shared.DeferredTool`` (sender) and
+#: ``mcp_gateway.backend.Backend._apply_inflight_report`` (receiver).
+INFLIGHT_NOTIFICATION = "notifications/kirocrew/inflight"
+
 #: Current schema version of the caller identity block. Bump when fields
 #: change in a non-additive way. Additive changes (new optional fields) do
 #: NOT bump this version — consumers MUST ignore unknown fields.

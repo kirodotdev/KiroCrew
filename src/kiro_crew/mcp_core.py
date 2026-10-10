@@ -59,9 +59,12 @@ from kiro_crew.mcp_caller import (
     set_current_caller,
 )
 from kiro_crew.mcp_shared import (
+    DeferredTool,
     call_tool_with_logging,
+    drive_deferred,
     external_client_identity_note,
     internal_caller,
+    map_deferred,
     run_mcp_stdio_loop,
     spawned_without_gateway_identity,
 )
@@ -2167,6 +2170,19 @@ def derive_directive(
 
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
+    """Run one tool call to completion and return its text.
+
+    The entry point every direct caller and test uses. A handler that returns
+    a :class:`DeferredTool` (``wait``, ``spawn_sub_agents``) is driven to
+    completion here, so from this side a deferred tool is a blocking one. The
+    stdio server uses :func:`_call_tool_deferrable` instead, which hands the
+    deferred object to the dispatch loop's timer rather than sleeping on it.
+    """
+    result = _call_tool_deferrable(name, raw_args)
+    return drive_deferred(result, clock=time) if isinstance(result, DeferredTool) else result
+
+
+def _call_tool_deferrable(name: str, raw_args: dict[str, Any]) -> "str | DeferredTool":
     # Call-in-flight record for control._emit_directive: the tool name and the
     # RAW arguments (pre-validation), which is what the gateway is told so it can
     # re-derive the directive itself. Cleared on exit so a direct handler call in
@@ -2186,7 +2202,7 @@ def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
         _CURRENT_CALL_RAW_ARGS.reset(_t_args)
 
 
-def _call_tool_body(name: str, raw_args: dict[str, Any]) -> str:
+def _call_tool_body(name: str, raw_args: dict[str, Any]) -> "str | DeferredTool":
     if _DIRECTIVE_CAPTURE.get() is not None:
         # Gateway-side derivation (derive_directive): the handler's only write is
         # the directive it publishes, which capture_directive intercepts, and the
@@ -2206,20 +2222,22 @@ def _call_tool_body(name: str, raw_args: dict[str, Any]) -> str:
     # produced it, so a directive emitted by the PREVIOUS call must not be able
     # to authorize marker-shaped bytes in this one.
     clear_vouch()
-    return refuse_if_markerless(
+    result = call_tool_with_logging(
         name,
-        call_tool_with_logging(
-            name,
-            raw_args,
-            _validate_args,
-            _call_tool_inner,
-            # Real caller identity when resolvable (per-call caller context in
-            # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
-            # attribution for every standard tool audit in shared backends.
-            session_key=_resolve_session_key() or "mcp_core",
-            downstream_service="kirocrew-core",
-        ),
+        raw_args,
+        _validate_args,
+        _call_tool_inner,
+        # Real caller identity when resolvable (per-call caller context in
+        # pooled backends, env/PID otherwise) — a hardcoded "mcp_core" lost
+        # attribution for every standard tool audit in shared backends.
+        session_key=_resolve_session_key() or "mcp_core",
+        downstream_service="kirocrew-core",
     )
+    if isinstance(result, DeferredTool):
+        # Not a result yet: the loop answers the call when a step settles it,
+        # and the tag below is applied to that text then, as it is here.
+        return map_deferred(result, lambda text: refuse_if_markerless(name, text))
+    return refuse_if_markerless(name, result)
 
 
 # ── Chat-history search helpers (Phase 1: search_chat_history / get_chat_session) ──
@@ -2766,7 +2784,7 @@ def _crew_ledger_view(payload: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
-def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
+def _call_tool_inner(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     """Run one tool call and return its text result.
 
     Handlers live beside their descriptors in :mod:`kiro_crew.mcp_tools`; this
@@ -2814,7 +2832,9 @@ def run_mcp_core_server() -> None:
         "kirocrew-core",
         "1.0.0",
         _list_tools,
-        _call_tool,
+        # Deferrable: a waiting tool hands the loop a DeferredTool instead of
+        # holding the worker (see mcp_shared.DeferredTool).
+        _call_tool_deferrable,
         # Pooled-operation opt-in: kirocrew-core consumes the per-call
         # ``kirocrew.caller`` identity (see _resolve_session_key*), so it is
         # safe to share one backend across sessions. All four managed servers
@@ -2823,4 +2843,7 @@ def run_mcp_core_server() -> None:
         # pooled all the same (nothing declines to pool one; see
         # ``rewriter.UNPOOLABLE_SERVERS``) and simply never receives an identity.
         advertise_caller_identity=ADVERTISE_CALLER_IDENTITY,
+        # The only server that parks DeferredTools, so the only one whose
+        # gateway needs the in-flight report (see run_mcp_stdio_loop).
+        reports_inflight=True,
     )

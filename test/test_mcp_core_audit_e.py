@@ -1,9 +1,9 @@
 """Regression tests for audit-E mcp_core bugs.
 
-Bug 2 (spawn_sub_agents poll loop): the loop blocked the tool worker until
-every sub-agent settled or max_wait elapsed, ignoring notifications/cancelled.
-It must check ``is_tool_cancelled()`` on each iteration — like ``wait`` does —
-and raise ``ToolCancelled`` when cancelled.
+Bug 2 (spawn_sub_agents poll loop): the wait for the children is a parked
+``DeferredTool`` the dispatch loop steps; a ``notifications/cancelled`` drops the
+parked entry so it is never stepped again, and the children are never polled
+after that.
 
 Bug 3 (file_send session resolution): ``_current_session_thread_ts()`` globbed
 every ``session_pid_*.txt`` and used the newest by mtime — i.e. an arbitrary,
@@ -15,47 +15,49 @@ session key via ``_resolve_session_key`` (env var / hardened
 
 from __future__ import annotations
 
-import threading
 from unittest.mock import patch
 
-import pytest
-
 import kiro_crew.mcp_core as mcp_core
-import kiro_crew.mcp_shared as mcp_shared
-from kiro_crew.mcp_core import _call_tool, _current_session_thread_ts
-from kiro_crew.mcp_shared import ToolCancelled
+from kiro_crew.mcp_core import _call_tool, _call_tool_deferrable, _current_session_thread_ts
+from kiro_crew.mcp_shared import DeferredTool
 
 
 class TestSpawnSubAgentsCancellation:
     def test_poll_loop_honors_cancellation(self):
-        """Failure scenario: sub-agents never finish, but a cancel arrives —
-        the loop must raise ToolCancelled instead of blocking until max_wait."""
-        evt = threading.Event()
-        evt.set()  # cancel already signalled before the first poll iteration
-        mcp_shared._thread_cancel_event = evt
-        try:
-            with patch("kiro_crew.mcp_core._post") as mock_post, \
-                 patch("kiro_crew.mcp_core._get") as mock_get, \
-                 patch("kiro_crew.mcp_core.sel"), \
-                 patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-                mock_post.return_value = {"id": "a1"}
-                mock_get.return_value = {"done": False, "agent": "slow"}
+        """Failure scenario: sub-agents never finish, but a cancel arrives --
+        the parked wait is dropped by the loop and never stepped again, so
+        the children are not polled after the cancel and no result is built."""
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch("kiro_crew.mcp_core._get") as mock_get,
+            patch("kiro_crew.mcp_core.sel"),
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}),
+        ):
+            mock_post.return_value = {"id": "a1"}
+            mock_get.return_value = {"done": False, "agent": "slow"}
 
-                with pytest.raises(ToolCancelled):
-                    _call_tool(
-                        "spawn_sub_agents",
-                        {"agents": [{"prompt": "never finishes"}], "solo_reason": "bulk_data"},
-                    )
-        finally:
-            mcp_shared._thread_cancel_event = None
+            parked = _call_tool_deferrable(
+                "spawn_sub_agents",
+                {"agents": [{"prompt": "never finishes"}], "solo_reason": "bulk_data"},
+            )
+            assert isinstance(parked, DeferredTool)
+            mock_post.assert_not_called()
+            assert parked.step() is None  # submit the one member
+            assert parked.step() is None  # one poll pass: the child is not done
+            assert mock_get.call_count == 1
+            polls_before = mock_get.call_count
+            parked.cancel()  # what the loop does for a notifications/cancelled
+            # Nothing polls the children again on this call's behalf.
+            assert mock_get.call_count == polls_before
 
     def test_not_cancelled_completes_normally(self):
-        """Control: with no cancel set, a done agent still collects results."""
-        mcp_shared._thread_cancel_event = None
-        with patch("kiro_crew.mcp_core._post") as mock_post, \
-             patch("kiro_crew.mcp_core._get") as mock_get, \
-             patch("kiro_crew.mcp_core.sel"), \
-             patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
+        """Control: with no cancel, a done agent still collects results."""
+        with (
+            patch("kiro_crew.mcp_core._post") as mock_post,
+            patch("kiro_crew.mcp_core._get") as mock_get,
+            patch("kiro_crew.mcp_core.sel"),
+            patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}),
+        ):
             mock_post.return_value = {"id": "a1"}
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
             result = _call_tool(
@@ -69,9 +71,7 @@ class TestFileSendCallerSessionResolution:
         # Outward-facing send resolves via the STRICT resolver (env var or
         # HMAC-verified host-pid only) — never the lenient/forgeable path.
         # An already-bare legacy Slack thread_ts passes through unchanged.
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "1710000000.001"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "1710000000.001")
         assert _current_session_thread_ts() == "1710000000.001"
 
     def test_canonical_slack_key_converts_to_bare_thread_ts(self, monkeypatch):
@@ -88,9 +88,7 @@ class TestFileSendCallerSessionResolution:
         assert _current_session_thread_ts() == "1783733803.877979"
 
     def test_dashboard_session_has_no_thread_ts(self, monkeypatch):
-        monkeypatch.setattr(
-            mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1"
-        )
+        monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "dashboard:chat-1")
         assert _current_session_thread_ts() is None
 
     def test_non_slack_namespaces_return_none(self, monkeypatch):
@@ -106,9 +104,7 @@ class TestFileSendCallerSessionResolution:
             "telegram:987654321",
             "some-future-namespace:whatever",
         ):
-            monkeypatch.setattr(
-                mcp_core, "_resolve_session_key_strict", lambda k=key: k
-            )
+            monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda k=key: k)
             assert _current_session_thread_ts() is None, key
 
     def test_unresolvable_session_returns_none(self, monkeypatch):
@@ -132,6 +128,7 @@ class TestFileSendCallerSessionResolution:
         caller's resolved key and must NEVER touch ``Path.home()`` — so a decoy
         pid file can't misroute the upload. Fail loudly if the glob path runs.
         """
+
         def _boom():
             raise AssertionError("Path.home() must not be consulted anymore")
 
@@ -175,9 +172,11 @@ class TestFileSendThreeStateIdentity:
             args["channel"] = channel
 
         monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: strict_key)
-        with patch.object(mcp_core, "_post") as mock_post, \
-             patch.object(mcp_core, "outbox_dir", return_value=tmp_path), \
-             patch.object(mcp_core, "sel"):
+        with (
+            patch.object(mcp_core, "_post") as mock_post,
+            patch.object(mcp_core, "outbox_dir", return_value=tmp_path),
+            patch.object(mcp_core, "sel"),
+        ):
             mock_post.return_value = {}
             result = mcp_core._call_tool_inner("file_send", args)
         return mock_post, result
@@ -206,9 +205,7 @@ class TestFileSendThreeStateIdentity:
         channel the upload carries ``thread_ts=None`` and no channel, so the
         handler applies its OWN authorized routing (owner DM / session-map
         linked thread) — it can never post at a channel root for this caller."""
-        mock_post, _ = self._run_file_send(
-            monkeypatch, tmp_path, strict_key="dashboard:chat-1"
-        )
+        mock_post, _ = self._run_file_send(monkeypatch, tmp_path, strict_key="dashboard:chat-1")
         calls = _slack_upload_calls(mock_post)
         assert len(calls) == 1
         assert calls[0]["thread_ts"] is None

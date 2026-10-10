@@ -30,7 +30,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.execution_context import read_session_execution
-from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
+from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import (
@@ -58,6 +58,15 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# A parked batch retains one refusal per entry, each bounded to this many characters.
+_SA_ERROR_MAX_CHARS = 240
+
+#: Bound on one ``/api/spawn/lost`` report posted from a deferred's ``cancel()``
+#: or ``abandon()``, which the dispatch loop runs on its own thread: a gateway
+#: that is not answering must cost that thread one short wait, not one
+#: ``_post`` default timeout per unsubmitted task.
+_LOST_REPORT_TIMEOUT_SECS = 5.0
 
 # Roster carried in the spawn_run parameter descriptions. Kept small on purpose:
 # a tool description is always-on context in every session, so this buys
@@ -705,7 +714,87 @@ def _collapse_effort_verdicts(
     return [(", ".join(ids), text) for text, ids in grouped.items()]
 
 
-def spawn_run(name: str, args: dict[str, Any]) -> str:
+class _SpawnRunStep(DeferredTool):
+    """Submit one task per pool step, then return the background-run receipt."""
+
+    def __init__(
+        self,
+        *,
+        task_count: int,
+        agent_ids: list[str],
+        transport_errors: list[str],
+        submit_one: Callable[[int], None],
+        receipt: Callable[[], str],
+        reconcile_lost: Callable[[str], bool],
+    ) -> None:
+        self.task_count = task_count
+        self.agent_ids = agent_ids
+        self.transport_errors = transport_errors
+        self._submit_one = submit_one
+        self._receipt = receipt
+        self._reconcile_lost = reconcile_lost
+        self._submit_index = 0
+        self._unsubmitted_closed = False
+        self.phase = "submit"
+        self.next_due = mcp_core.time.monotonic()
+
+    def _close_unsubmitted(self) -> None:
+        """Reconcile every task this call never posted, exactly once.
+
+        Each member index ends in one bucket: accepted, refused (reconciled by
+        the submit itself), transport-unknown (left to the stuck-wave sweep), or
+        unsubmitted. Every sibling's ``batch_total`` counts the unsubmitted
+        ones, so the wave digest holds the accepted children's results until
+        each of them is reported lost here. Before the first POST the gateway
+        has no wave for this batch, so there is nothing to reconcile and a
+        report would only announce failures for a call that spawned nothing.
+        """
+        if self._unsubmitted_closed or self._submit_index == 0:
+            return
+        self._unsubmitted_closed = True
+        reason = "not submitted: the spawn_run call ended before this task was posted"
+        for _ in range(self._submit_index, self.task_count):
+            if not self._reconcile_lost(reason):
+                # The gateway is not answering: every later report would wait
+                # out the same timeout on the loop's thread, and the stuck-wave
+                # sweep closes the wave anyway. One bounded attempt is the cost.
+                break
+
+    def due_at(self) -> float:
+        return self.next_due
+
+    def step(self) -> str | None:
+        if self._submit_index < self.task_count:
+            self._submit_one(self._submit_index)
+            self._submit_index += 1
+        self.next_due = mcp_core.time.monotonic()
+        if self._submit_index < self.task_count:
+            return None
+        self.phase = "done"
+        return self._receipt()
+
+    def abandon(self) -> str | None:
+        remaining = self.task_count - self._submit_index
+        self._close_unsubmitted()
+        if not self.agent_ids and not self.transport_errors:
+            return None
+        self.phase = "abandoned"
+        return self._receipt() + (
+            "\n\nAny accepted subagents were NOT cancelled and keep running "
+            "(queued members start once their condition clears). Do not spawn them again. "
+            f"{remaining} task(s) were NOT submitted; only those unsubmitted tasks may be "
+            "submitted again as a new call. They are reported lost to the wave, so its "
+            "digest does not wait on them."
+        )
+
+    def cancel(self) -> None:
+        # Accepted children keep running and deliver their completion events;
+        # the tasks never posted are reported lost so their wave can close.
+        self._close_unsubmitted()
+
+
+def spawn_run(name: str, args: dict[str, Any]) -> str | DeferredTool:
+    """Prepare a background batch; its deferred steps submit one task at a time."""
     args = validate_tool_args(args, SPAWN_RUN_SCHEMA)
 
     tasks = args.get("tasks")
@@ -805,17 +894,19 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # of N) and emit batch lifecycle events at 60-100-agent scale.
     batch_id = uuid.uuid4().hex[:12] if len(task_list) > 1 else ""
 
-    def _reconcile_lost(reason: str) -> None:
+    def _reconcile_lost(reason: str) -> bool:
         """Tell the gateway this member never reached ``mgr.spawn``.
 
         Every sibling's ``batch_total`` counts it, so an un-reconciled member
         leaves the wave at submitted < expected forever: the digest never closes
-        and held sibling results strand until restart.
+        and held sibling results strand until restart. Returns whether the
+        report was delivered; the POST is bounded by ``_LOST_REPORT_TIMEOUT_SECS``
+        because ``_close_unsubmitted`` runs it from the dispatch loop's thread.
         """
         if not batch_id:
-            return
+            return True
         try:
-            mcp_core._post(
+            reply = mcp_core._post(
                 "/api/spawn/lost",
                 {
                     "batch_id": batch_id,
@@ -823,9 +914,13 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
                     "reason": reason[:300],
                     "parent_session": parent_session,
                 },
+                timeout=_LOST_REPORT_TIMEOUT_SECS,
             )
         except Exception:
-            pass  # reaper backstop covers delivery failure
+            return False  # reaper backstop covers delivery failure
+        # ``_post`` answers a transport or HTTP failure as an error dict rather
+        # than raising, so the reply decides whether the report landed.
+        return not (isinstance(reply, dict) and reply.get("error"))
 
     # Agent names this wave already learned the gateway refuses as unknown.
     # Re-posting one cannot succeed: the refusal is a property of the NAME, not
@@ -833,7 +928,10 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # observed cost of not knowing that was a whole wave of doomed dispatches on
     # one invented name.
     refused_agents: dict[str, str] = {}
-    for i, t in enumerate(task_list):
+
+    def _submit_one(i: int) -> None:
+        nonlocal can_work
+        t = task_list[i]
         over = task_overrides[i]
         a = agents_list[i] if agents_list else agent
         t_model = over.get("model") or model
@@ -842,9 +940,11 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             # Short line on purpose: the full roster is already on the first
             # refusal above, and repeating it once per remaining member would
             # bury it.
-            errors.append(f"{t[:60]}: not dispatched - agent {a!r} refused above")
+            errors.append(
+                f"{t[:60]}: not dispatched - agent {a!r} refused above"[:_SA_ERROR_MAX_CHARS]
+            )
             _reconcile_lost(refused_agents[a])
-            continue
+            return
         body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
         if crew:
             body["crew"] = crew
@@ -874,14 +974,14 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         d = mcp_core._post("/api/spawn", body)
         can_work = can_work and d.get("parent_work_supported") is True
         if d.get("error"):
-            error_line = f"{t[:60]}: {d['error']}"
+            error_line = f"{t[:60]}: {d['error']}"[:_SA_ERROR_MAX_CHARS]
             if d.get("transport_error"):
                 # The gateway may have accepted the spawn before the
                 # response failed. Treat it as unknown, not rejected, and
                 # do not reconcile it as lost (which could close a batch
                 # early while the accepted member is still running).
                 transport_errors.append(error_line)
-                continue
+                return
             errors.append(error_line)
             if a and _is_unknown_agent_refusal(d, a):
                 refused_agents[a] = str(d["error"])
@@ -896,7 +996,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             # safe backstop when such a submission was truly lost.
             if not d.get("counted"):
                 _reconcile_lost(str(d.get("error", "")))
-            continue
+            return
         agent_ids.append(d.get("id", "?"))
         agent_names.append(a)
         agent_tasks.append(t)
@@ -909,12 +1009,52 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             # waiting merely for a slot or the stagger tick sends ``spawned``.
             queued_reasons[str(d.get("id", "?"))] = str(
                 d.get("reason_detail") or d.get("reason") or "deferred by the spawn gate"
-            )
+            )[:_SA_ERROR_MAX_CHARS]
         if d.get("effort_dropped"):
             effort_drops.append((str(d.get("id", "?")), (t_effort, str(d["effort_dropped"]))))
         if d.get("effort_applied"):
             effort_applies.append((str(d.get("id", "?")), (t_effort, str(d["effort_applied"]))))
 
+    def _receipt() -> str:
+        return _spawn_run_receipt(
+            agent_ids=agent_ids,
+            agent_names=agent_names,
+            agent_tasks=agent_tasks,
+            effort_drops=effort_drops,
+            effort_applies=effort_applies,
+            queued_reasons=queued_reasons,
+            errors=errors,
+            transport_errors=transport_errors,
+            parent_session=parent_session,
+            can_work=can_work,
+            keep=keep,
+        )
+
+    return _SpawnRunStep(
+        task_count=len(task_list),
+        agent_ids=agent_ids,
+        transport_errors=transport_errors,
+        submit_one=_submit_one,
+        receipt=_receipt,
+        reconcile_lost=_reconcile_lost,
+    )
+
+
+def _spawn_run_receipt(
+    *,
+    agent_ids: list[str],
+    agent_names: list[str],
+    agent_tasks: list[str],
+    effort_drops: list[tuple[str, tuple[str, str]]],
+    effort_applies: list[tuple[str, tuple[str, str]]],
+    queued_reasons: dict[str, str],
+    errors: list[str],
+    transport_errors: list[str],
+    parent_session: str,
+    can_work: bool,
+    keep: bool,
+) -> str:
+    """Render the accumulated background-run receipt without gateway requests."""
     spawn_lines: list[str] = []
     # Server-computed effort verdicts (never a rejection — gated on agent_ids
     # so a total-failure result keeps its "Error:" first line, which SEL and
@@ -1350,54 +1490,68 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
 RESUME_HOLD_SECS = 8.0
 
 
-def _hold_for_parent_resume(parent_session: str, deadline: float) -> dict[str, Any] | None:
-    """Block until the subagent parent's slot is granted back, or *deadline*.
+class _ResumeHold:
+    """Wait, one probe at a time, for the subagent parent's slot to be granted back.
 
     Only a ``subagent:<id>`` parent has a lane slot to wait for; a chat-turn
-    parent returns at once. The gateway answers ``known=False`` for a run it
+    parent is done at once. The gateway answers ``known=False`` for a run it
     does not hold (finished, other incarnation), which also releases the hold.
-    Returns a note for the tool result when the deadline passed first; None
-    when the parent holds its slot (or nothing had to be held).
+    Split into probes so the deferred ``spawn_sub_agents`` can take one per
+    step: each probe is one server-held request of at most ``RESUME_HOLD_SECS``,
+    never the whole wait. The deadline passing with the slot still not granted
+    yields a note for the tool result.
     """
-    if not parent_session.startswith("subagent:"):
-        return None
-    parent_id = parent_session[len("subagent:") :]
-    if not parent_id:
-        return None
-    held = False
-    while True:
-        remaining = deadline - mcp_core.time.monotonic()
+
+    def __init__(self, parent_session: str, deadline: float) -> None:
+        self.parent_id = ""
+        if parent_session.startswith("subagent:"):
+            self.parent_id = parent_session[len("subagent:") :]
+        self.deadline = deadline
+        self.held = False
+
+    def probe(self) -> tuple[bool, dict[str, Any] | None]:
+        """``(done, note)``: ``done`` False means ask again; ``note`` is the
+        result note when the deadline passed with the slot still not granted."""
+        if not self.parent_id:
+            return True, None
+        remaining = self.deadline - mcp_core.time.monotonic()
         if remaining <= 0:
-            break
-        if is_tool_cancelled():
-            raise ToolCancelled("spawn_sub_agents cancelled while awaiting the parent's slot")
+            if not self.held:
+                # The deadline was already spent on the children (still_running
+                # is reported for them); nothing about the slot was observed.
+                return True, None
+            return True, {
+                "status": "resume_pending",
+                "parent": self.parent_id,
+                "note": (
+                    "The children finished but this run's execution slot was not granted "
+                    "back before the wait deadline; it re-enters through admission by "
+                    "capacity."
+                ),
+            }
         hold = max(0.0, min(RESUME_HOLD_SECS, remaining))
         try:
-            st = mcp_core._get(f"/api/spawn/{parent_id}/resume?wait_secs={hold:.1f}")
+            st = mcp_core._get(f"/api/spawn/{self.parent_id}/resume?wait_secs={hold:.1f}")
         except Exception:
-            return None  # a gateway that cannot answer is not a reason to hold
+            return True, None  # a gateway that cannot answer is not a reason to hold
         if not isinstance(st, dict) or st.get("error"):
-            return None
+            return True, None
         if st.get("known") is not True or st.get("granted") is not False:
-            return None
+            return True, None
         # ``granted`` False with the hold consumed: the pump has not reached
         # this parent yet; ask again (the request itself was the wait).
-        held = True
-    if not held:
-        # The deadline was already spent on the children (still_running is
-        # reported for them); nothing about the slot was observed.
-        return None
-    return {
-        "status": "resume_pending",
-        "parent": parent_id,
-        "note": (
-            "The children finished but this run's execution slot was not granted back "
-            "before the wait deadline; it re-enters through admission by capacity."
-        ),
-    }
+        self.held = True
+        return False, None
 
 
-def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
+def spawn_sub_agents(name: str, args: dict[str, Any]) -> "str | DeferredTool":
+    """Spawn the agents, then wait for them without holding the MCP worker.
+
+    Submission, polling the children, the parent's slot grant and collection
+    are :class:`_SubAgentsStep` phases the dispatch loop times. Each submission
+    posts one member, so a large batch never holds the shared worker for its
+    cumulative submission time (see ``mcp_shared.DeferredTool``).
+    """
     args = validate_tool_args(args, SPAWN_SUB_AGENTS_SCHEMA)
     agents_input = args.get("agents")
     if not agents_input or not isinstance(agents_input, list):
@@ -1461,70 +1615,241 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         metadata={"agent_count": len(agents_input)},
     )
 
-    sa_ids: list[str] = []
-    sa_errors: list[str] = []
-    # Members the gate accepted as ``queued`` (deferred, not started).
-    sa_deferred: set[str] = set()
-    for entry in agents_input:
-        prompt = entry.get("prompt", "").strip()
-        if not prompt:
-            continue
-        sa_agent = entry.get("agent_or_mode") or ""
-        sa_body = {
-            "task": prompt,
-            "agent": sa_agent,
-            "parent_session": parent_session,
-            **sa_groups,
-        }
-        if cwd:
-            sa_body["cwd"] = cwd
-        d = mcp_core._post("/api/spawn", sa_body)
-        if d.get("error"):
-            sa_errors.append(f"{_redact_sa(prompt)[:60]}: {_redact_sa(d['error'])}")
-        else:
-            aid = d.get("id", "")
-            if aid:
-                sa_ids.append(aid)
-                if d.get("status") == "queued":
-                    # Deferred by the gate, not started. Its final read decides
-                    # how it is reported; this says it was accepted.
-                    sa_deferred.add(aid)
-            else:
-                sa_errors.append(f"{_redact_sa(prompt)[:60]}: spawn returned no agent id")
+    # The parked step retains its members until each is submitted, so it keeps
+    # only the two clamped fields it reads; any other key a caller sent is
+    # dropped here, as the blocking tool ignored it.
+    pending = [
+        {"prompt": entry["prompt"], "agent_or_mode": entry.get("agent_or_mode") or ""}
+        for entry in agents_input
+        if entry.get("prompt", "").strip()
+    ]
 
-    if not sa_ids and sa_errors:
-        return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in sa_errors)
-    if not sa_ids:
-        return "Error: no valid agent entries found in 'agents' array"
-
-    # Poll until all sub-agents complete. Ping /api/session-keepalive every
-    # 60s so the gateway's is_responsive() does not flag this session as
-    # stale and SIGTERM the ACP subprocess mid-poll, which would abort the
-    # very sub-agents we are waiting on.
-    poll_interval = 2.0
     try:
         max_wait = float(os.environ.get("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200"))
     except (TypeError, ValueError):
         max_wait = 7200.0
     max_wait = max(60.0, min(7200.0, max_wait))  # clamp: 1 min .. 2 hours
-    deadline = mcp_core.time.monotonic() + max_wait
-    _next_ping = mcp_core.time.monotonic() + 60.0  # first keepalive after 60s, not immediately
-    _wait_settled: set[str] = set()
-    while mcp_core.time.monotonic() < deadline:
-        # Cooperative cancellation: honor notifications/cancelled the same
-        # way wait does, so a cancelled spawn_sub_agents call exits promptly
-        # instead of blocking the tool worker until every sub-agent settles
-        # or max_wait elapses.
-        if is_tool_cancelled():
-            raise ToolCancelled(
-                f"spawn_sub_agents cancelled while awaiting {len(sa_ids)} sub-agent(s)"
+    return _SubAgentsStep(
+        sa_ids=[],
+        sa_deferred=set(),
+        sa_errors=[],
+        parent_session=parent_session,
+        max_wait=max_wait,
+        inline_result=_inline_result,
+        agents_input=pending,
+        sa_groups=sa_groups,
+        cwd=cwd,
+    )
+
+
+class _SubAgentsStep(DeferredTool):
+    """Submit the batch, then poll, hold and collect without owning the worker.
+
+    One submission step posts one member. Later steps poll the children, probe
+    the parent's slot (``hold``), or build the final reply (``collect``).
+    """
+
+    #: Seconds between polls of the children.
+    POLL_INTERVAL = 2.0
+    #: Seconds between session keepalives while polling. Pinging
+    #: ``/api/session-keepalive`` keeps the gateway's ``is_responsive()`` from
+    #: flagging this session as stale and SIGTERMing the ACP subprocess
+    #: mid-wait, which would abort the very sub-agents being waited on.
+    KEEPALIVE_SECS = 60.0
+
+    def __init__(
+        self,
+        *,
+        sa_ids: list[str],
+        sa_deferred: set[str],
+        sa_errors: list[str],
+        parent_session: str,
+        max_wait: float,
+        inline_result: Callable[[str, str], str],
+        agents_input: list[dict[str, Any]] | None = None,
+        sa_groups: dict[str, bool] | None = None,
+        cwd: str = "",
+    ) -> None:
+        self.agents_input = agents_input or []
+        self.sa_groups = sa_groups or {}
+        self.cwd = cwd
+        self._submit_index = 0
+        self.sa_ids = sa_ids
+        self.sa_deferred = sa_deferred
+        self.sa_errors = sa_errors
+        # Members whose POST failed in transport: the gateway may have accepted
+        # them, so they are neither ids nor plain refusals, and a retry could
+        # run them twice. Bounded like ``sa_errors``.
+        self.sa_unknown: list[str] = []
+        self.parent_session = parent_session
+        self.max_wait = max_wait
+        self._inline_result = inline_result
+        now = mcp_core.time.monotonic()
+        self.deadline = now + max_wait
+        self.next_ping = now + self.KEEPALIVE_SECS  # first keepalive after 60s, not immediately
+        self.next_due = now
+        self.wait_settled: set[str] = set()
+        self.phase = "submit" if agents_input is not None else "poll"
+        self.hold = _ResumeHold(parent_session, self.deadline)
+        self.resume_note: dict[str, Any] | None = None
+        self._settled_ids: set[str] = set()
+        # Per-child tallies the collect step computes for this call's own SEL
+        # row (``outcome`` and ``metadata``), written at settle. ``None`` until a
+        # collect ran: a batch the gateway refused outright settles from the
+        # submit phase with an error text and gets no outcome row, as the
+        # blocking tool returned before writing one.
+        self._counts: dict[str, int] | None = None
+
+    def due_at(self) -> float:
+        return self.next_due
+
+    def abandon(self) -> str | None:
+        """This wait cannot be continued -- the serving process is exiting,
+        the parked table is full, or the step pool could not start -- and the
+        loop will never step it again. The children were already spawned and
+        keep running, so "retry the call" would run them twice: answer with
+        their ids instead, worded without naming a cause this step cannot
+        see. Nothing is marked collected, so each child's completion event
+        still arrives. With no child accepted yet AND no member whose POST
+        failed in transport (acceptance unknown) -- turned away before its
+        first member was submitted, or every member plainly refused -- nothing
+        runs, so the whole call may safely be retried: ``None`` keeps the
+        loop's retryable refusal. A member of unknown acceptance is reported
+        as such, since resubmitting it could run it twice."""
+        if not self.sa_ids and not self.sa_unknown:
+            return None
+        self.phase = "abandoned"
+        sa_results = [
+            json.dumps(
+                {
+                    "status": "still_running",
+                    "task_ids": list(self.sa_ids),
+                    "query": "spawn_status/spawn_list",
+                    "note": (
+                        "This wait could not be continued; these sub-agents were already "
+                        "spawned, were NOT cancelled and keep running. Do not "
+                        "spawn them again. Their [Subagent completion event] messages still "
+                        "arrive; poll spawn_list or spawn_status for progress."
+                    ),
+                }
             )
-        if mcp_core.time.monotonic() >= _next_ping:
+        ]
+        remaining = len(self.agents_input) - self._submit_index
+        if remaining:
+            sa_results.append(
+                json.dumps(
+                    {
+                        "status": "not_submitted",
+                        "count": remaining,
+                        "note": (
+                            f"{remaining} batch member(s) were NOT submitted or spawned. "
+                            "Only these unsubmitted members may be submitted again."
+                        ),
+                    }
+                )
+            )
+        if self.sa_unknown:
+            sa_results.append(
+                json.dumps(
+                    {
+                        "status": "unknown_acceptance",
+                        "count": len(self.sa_unknown),
+                        "members": self.sa_unknown,
+                        "note": (
+                            "These members' spawn requests failed in transport, so the "
+                            "gateway may or may not have accepted them. Do not resubmit "
+                            "them blindly; check spawn_list first."
+                        ),
+                    }
+                )
+            )
+        if self.sa_errors:
+            sa_results.append(json.dumps({"status": "spawn_errors", "errors": self.sa_errors}))
+        return "\n\n".join(sa_results)
+
+    def _submit_one(self) -> str | None:
+        if self._submit_index < len(self.agents_input):
+            entry = self.agents_input[self._submit_index]
+            prompt = entry["prompt"].strip()
+            body = {
+                "task": prompt,
+                "agent": entry.get("agent_or_mode") or "",
+                "parent_session": self.parent_session,
+                **self.sa_groups,
+            }
+            if self.cwd:
+                body["cwd"] = self.cwd
+            data = mcp_core._post("/api/spawn", body)
+            self._submit_index += 1
+            if data.get("transport_error"):
+                line = f"{redact(prompt)[:60]}: {redact(str(data.get('error', '')))}"
+                self.sa_unknown.append(line[:_SA_ERROR_MAX_CHARS])
+                self.sa_errors.append(line[:_SA_ERROR_MAX_CHARS])
+            elif data.get("error"):
+                self.sa_errors.append(
+                    f"{redact(prompt)[:60]}: {redact(data['error'])}"[:_SA_ERROR_MAX_CHARS]
+                )
+            elif data.get("id"):
+                aid = data["id"]
+                self.sa_ids.append(aid)
+                if data.get("status") == "queued":
+                    self.sa_deferred.add(aid)
+            else:
+                self.sa_errors.append(
+                    f"{redact(prompt)[:60]}: spawn returned no agent id"[:_SA_ERROR_MAX_CHARS]
+                )
+        now = mcp_core.time.monotonic()
+        self.next_due = now
+        if self._submit_index < len(self.agents_input):
+            return None
+        if not self.sa_ids and self.sa_errors:
+            return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in self.sa_errors)
+        if not self.sa_ids:
+            return "Error: no valid agent entries found in 'agents' array"
+        # Submission time is not part of the children's blocking wait budget.
+        self.deadline = now + self.max_wait
+        self.next_ping = now + self.KEEPALIVE_SECS
+        self.hold = _ResumeHold(self.parent_session, self.deadline)
+        self.phase = "poll"
+        # Every member is posted: a parked, polling step retains no prompts.
+        self.agents_input = []
+        self._submit_index = 0
+        return None
+
+    def step(self) -> str | None:
+        if self.phase == "submit":
+            return self._submit_one()
+        if self.phase == "poll":
+            self._poll_once()
+            return None
+        if self.phase == "hold":
+            # Hold the result until the PARENT holds its execution slot again. A
+            # subagent parent blocked here yielded its lane slot
+            # (waiting_children); its last child ending wakes it in the store,
+            # but the slot comes back through admission's pump by capacity.
+            # Handing the result over before the grant would let the parent run
+            # on without a slot. Event-driven: each request is held server-side
+            # until the grant or its bound, so a grant is seen at once. Bounded
+            # by the same deadline; on expiry the results are still returned,
+            # with the pending resume named.
+            done, self.resume_note = self.hold.probe()
+            if done:
+                self.phase = "collect"
+            self.next_due = mcp_core.time.monotonic()
+            return None
+        return self._collect()
+
+    def _poll_once(self) -> None:
+        now = mcp_core.time.monotonic()
+        if now >= self.deadline:
+            self.phase = "hold"
+            return
+        if now >= self.next_ping:
             try:
                 mcp_core._post("/api/session-keepalive", {})
             except Exception:
                 pass  # keepalive is best-effort
-            _next_ping = mcp_core.time.monotonic() + 60.0
+            self.next_ping = now + self.KEEPALIVE_SECS
         # Settled for this wait, and not polled again: done, or held by a gate
         # DEFERRAL -- that can wait far longer than this call should hold the
         # parent's turn, and its completion event arrives on its own later. A
@@ -1534,169 +1859,170 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         # done=True would otherwise spin the loop until max_wait), since it can
         # be one failed poll of a member that is still running.
         all_settled = True
-        for aid in [a for a in sa_ids if a not in _wait_settled]:
+        for aid in [a for a in self.sa_ids if a not in self.wait_settled]:
             sa_st = mcp_core._get(f"/api/spawn/{aid}")
             if sa_st.get("done") or _held_by_a_deferral(sa_st):
-                _wait_settled.add(aid)
+                self.wait_settled.add(aid)
             elif not sa_st.get("error"):
                 all_settled = False
                 break
         if all_settled:
-            break
-        mcp_core.time.sleep(poll_interval)
+            self.phase = "hold"
+            self.next_due = mcp_core.time.monotonic()
+            return
+        self.next_due = mcp_core.time.monotonic() + self.POLL_INTERVAL
 
-    # Hold the result until the PARENT holds its execution slot again. A
-    # subagent parent blocked here yielded its lane slot (waiting_children);
-    # its last child ending wakes it in the store, but the slot comes back
-    # through admission's pump by capacity. Handing the result over before the
-    # grant would let the parent run on without a slot. Event-driven: each
-    # request is held server-side until the grant or its bound, so a grant is
-    # seen at once. Bounded by the same deadline; on expiry the results are
-    # still returned, with the pending resume named.
-    _resume_note = _hold_for_parent_resume(parent_session, deadline)
-
-    # Collect results
-    sa_results: list[str] = []
-    completed = 0
-    still_running = 0
-    errored = 0
-    _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
-    # Children the wait ended on, with the state each was last seen in. The
-    # wait expiring is a fact about THIS call, not about them: they keep their
-    # own execution budget, are never cancelled here, and their completion
-    # events still arrive, so the caller is told how to keep following them
-    # rather than told they failed.
-    _unsettled: dict[str, str] = {}
-    # Members accepted and still not started when the wait ended (gate-deferred,
-    # or waiting for a slot), with the reason they wait. Each is reported ONCE,
-    # in the ``queued`` record below, and never as an error: a caller that sees
-    # an error for accepted work dispatches it again, and then it runs twice.
-    never_started: dict[str, str] = {}
-    for aid in sa_ids:
-        sa_st = mcp_core._get(f"/api/spawn/{aid}")
-        sa_name = _redact_sa(sa_st.get("agent", ""))
-        label = sa_name if sa_name else aid
-        if not sa_st.get("done") and sa_st.get("queued") is True:
-            still_running += 1
-            if sa_st.get("resuming") is True:
-                # It ran before and waits to go on: running work, not unstarted.
-                _unsettled[aid] = "waiting_to_resume"
+    def _collect(self) -> str:
+        # Collect results
+        sa_results: list[str] = []
+        _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+        # Children the wait ended on, with the state each was last seen in. The
+        # wait expiring is a fact about THIS call, not about them: they keep their
+        # own execution budget, are never cancelled here, and their completion
+        # events still arrive, so the caller is told how to keep following them
+        # rather than told they failed.
+        _unsettled: dict[str, str] = {}
+        # Members accepted and still not started when the wait ended (gate-deferred,
+        # or waiting for a slot), with the reason they wait. Each is reported ONCE,
+        # in the ``queued`` record below, and never as an error: a caller that sees
+        # an error for accepted work dispatches it again, and then it runs twice.
+        never_started: dict[str, str] = {}
+        completed = still_running = errored = 0
+        for aid in self.sa_ids:
+            sa_st = mcp_core._get(f"/api/spawn/{aid}")
+            sa_name = redact(sa_st.get("agent", ""))
+            label = sa_name if sa_name else aid
+            if not sa_st.get("done") and sa_st.get("queued") is True:
+                still_running += 1
+                if sa_st.get("resuming") is True:
+                    # It ran before and waits to go on: running work, not unstarted.
+                    _unsettled[aid] = "waiting_to_resume"
+                else:
+                    never_started[aid] = _queued_why(sa_st)
+                continue
+            if sa_st.get("error"):
+                errored += 1
+                # Only mark as settled if done is also true (confirmed terminal
+                # state). An "error" without "done" could be a transport failure
+                # from _get() — the agent may still be running.
+                if sa_st.get("done"):
+                    _settled_ids.add(aid)
+                failure: dict[str, Any] = {
+                    "agent": label,
+                    "status": "error",
+                    "error": redact(sa_st["error"]),
+                }
+                if sa_st.get("done"):
+                    # On a finished run ``error`` is why it ended badly, sent next to
+                    # the output the run retained (a timed-out run keeps its partial
+                    # work). This call marks the child collected, so its completion
+                    # event is not injected either: the reply is where that output
+                    # reaches the caller.
+                    failure["text"] = self._inline_result(aid, sa_st.get("result", ""))
+                if aid in self.sa_deferred and not sa_st.get("done"):
+                    failure["hint"] = (
+                        "accepted at spawn time; its state couldn't be read now; "
+                        "check spawn_status before re-spawning"
+                    )
+                sa_results.append(json.dumps(failure))
+            elif not sa_st.get("done"):
+                still_running += 1
+                if sa_st.get("awaiting_approval"):
+                    _unsettled[aid] = "waiting_permission"
+                else:
+                    _unsettled[aid] = "running"
             else:
-                never_started[aid] = _queued_why(sa_st)
-            continue
-        if sa_st.get("error"):
-            errored += 1
-            # Only mark as settled if done is also true (confirmed terminal
-            # state). An "error" without "done" could be a transport failure
-            # from _get() — the agent may still be running.
-            if sa_st.get("done"):
+                completed += 1
                 _settled_ids.add(aid)
-            failure: dict[str, Any] = {
-                "agent": label,
-                "status": "error",
-                "error": _redact_sa(sa_st["error"]),
-            }
-            if sa_st.get("done"):
-                # On a finished run ``error`` is why it ended badly, sent next to
-                # the output the run retained (a timed-out run keeps its partial
-                # work). This call marks the child collected, so its completion
-                # event is not injected either: the reply is where that output
-                # reaches the caller.
-                failure["text"] = _inline_result(aid, sa_st.get("result", ""))
-            if aid in sa_deferred and not sa_st.get("done"):
-                failure["hint"] = (
-                    "accepted at spawn time; its state couldn't be read now; "
-                    "check spawn_status before re-spawning"
+                result_text = self._inline_result(aid, sa_st.get("result", ""))
+                sa_results.append(
+                    json.dumps(
+                        {
+                            "agent": label,
+                            "status": "completed",
+                            "text": result_text,
+                        }
+                    )
                 )
-            sa_results.append(json.dumps(failure))
-        elif not sa_st.get("done"):
-            still_running += 1
-            if sa_st.get("awaiting_approval"):
-                _unsettled[aid] = "waiting_permission"
-            else:
-                _unsettled[aid] = "running"
-        else:
-            completed += 1
-            _settled_ids.add(aid)
-            result_text = _inline_result(aid, sa_st.get("result", ""))
+        if _unsettled:
             sa_results.append(
                 json.dumps(
                     {
-                        "agent": label,
-                        "status": "completed",
-                        "text": result_text,
+                        "status": "still_running",
+                        "task_ids": list(_unsettled),
+                        "states": _unsettled,
+                        "waited_secs": int(self.max_wait),
+                        "query": "spawn_status/spawn_list",
+                        "note": (
+                            "The blocking wait ended; these sub-agents were NOT cancelled and "
+                            "keep running on their own budget. Their [Subagent completion "
+                            "event] messages still arrive; poll spawn_list or spawn_status "
+                            "for progress."
+                        ),
                     }
                 )
             )
-    if _unsettled:
-        sa_results.append(
-            json.dumps(
-                {
-                    "status": "still_running",
-                    "task_ids": list(_unsettled),
-                    "states": _unsettled,
-                    "waited_secs": int(max_wait),
-                    "query": "spawn_status/spawn_list",
-                    "note": (
-                        "The blocking wait ended; these sub-agents were NOT cancelled and "
-                        "keep running on their own budget. Their [Subagent completion "
-                        "event] messages still arrive; poll spawn_list or spawn_status "
-                        "for progress."
-                    ),
-                }
+        # Members still queued and not started (collected above). They have no run
+        # yet, so without this record the reason -- the one fact that says what to
+        # change -- would stay in the gateway log.
+        if never_started:
+            sa_results.append(
+                json.dumps(
+                    {
+                        "status": "queued",
+                        "agents": never_started,
+                        "note": (
+                            "Queued, not started: accepted, and waiting for the reason given. "
+                            "They start on their own once it clears and their [Subagent "
+                            "completion event] messages arrive as usual; nothing was "
+                            "cancelled. Do not spawn them again."
+                        ),
+                    }
+                )
             )
-        )
-    # Members still queued and not started (collected above). They have no run
-    # yet, so without this record the reason -- the one fact that says what to
-    # change -- would stay in the gateway log.
-    if never_started:
-        sa_results.append(
-            json.dumps(
-                {
-                    "status": "queued",
-                    "agents": never_started,
-                    "note": (
-                        "Queued, not started: accepted, and waiting for the reason given. "
-                        "They start on their own once it clears and their [Subagent "
-                        "completion event] messages arrive as usual; nothing was "
-                        "cancelled. Do not spawn them again."
-                    ),
-                }
-            )
-        )
-    if _resume_note:
-        sa_results.append(json.dumps(_resume_note))
-    if sa_errors:
-        sa_results.append(json.dumps({"status": "spawn_errors", "errors": sa_errors}))
-    mcp_core.sel().log_tool_invocation(
-        session_key=_audit_owner(parent_session),
-        source="mcp_core",
-        tool_name="spawn_sub_agents",
-        outcome="completed" if not still_running and not errored else "partial",
-        metadata={
-            "spawned": len(sa_ids),
+        if self.resume_note:
+            sa_results.append(json.dumps(self.resume_note))
+        if self.sa_errors:
+            sa_results.append(json.dumps({"status": "spawn_errors", "errors": self.sa_errors}))
+        self._settled_ids = _settled_ids
+        self._counts = {
             "completed": completed,
             "still_running": still_running,
             "errored": errored,
-        },
-    )
-    # Mark collected IDs so _subagent_done skips redundant injection.
-    # The blocking tool already delivered results inline; without this the
-    # on_done callback triggers a new _run_chat turn that clobbers any
-    # [OPTIONS:] buttons rendered in the synthesis.
-    # Only mark agents whose results were actually delivered inline
-    # (completed or errored) — still-running agents complete later and
-    # their real result must not be suppressed.
-    if _settled_ids and parent_session:
-        try:
-            mcp_core._post(
-                "/api/spawn/mark-collected",
-                {"ids": list(_settled_ids), "parent_session": parent_session},
-                timeout=5,
+        }
+        return "\n\n".join(sa_results)
+
+    def on_settled(self, text: str) -> None:
+        # Only the driver's accepted-result commit suppresses completion events
+        # and writes this tool's own row: a cancelled collection or an abandon
+        # reply has delivered no child output. The generic ``call_tool_with_logging``
+        # row is _AuditedDeferred's; this one carries the per-child tallies and the
+        # ``partial`` outcome, as the blocking tool's did.
+        if self.phase == "abandoned":
+            return
+        counts, self._counts = self._counts, None
+        if counts is not None:
+            mcp_core.sel().log_tool_invocation(
+                session_key=_audit_owner(self.parent_session),
+                source="mcp_core",
+                tool_name="spawn_sub_agents",
+                outcome=(
+                    "completed"
+                    if not counts["still_running"] and not counts["errored"]
+                    else "partial"
+                ),
+                metadata={"spawned": len(self.sa_ids), **counts},
             )
-        except Exception:
-            pass  # best-effort; worst case = duplicate turn (pre-existing behavior)
-    return "\n\n".join(sa_results)
+        settled_ids, self._settled_ids = self._settled_ids, set()
+        if settled_ids and self.parent_session:
+            try:
+                mcp_core._post(
+                    "/api/spawn/mark-collected",
+                    {"ids": list(settled_ids), "parent_session": self.parent_session},
+                    timeout=5,
+                )
+            except Exception:
+                pass  # best-effort: a missed mark leaves the completion event enabled
 
 
 def _live_adaptive_state() -> dict[str, Any] | None:
@@ -1788,7 +2114,7 @@ def resource_status(name: str, args: dict[str, Any]) -> str:
     return "\n".join(out)
 
 
-HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
+HANDLERS: dict[str, Callable[[str, dict[str, Any]], "str | DeferredTool"]] = {
     "spawn_run": spawn_run,
     "spawn_continue": spawn_continue,
     "spawn_steer": spawn_steer,

@@ -93,7 +93,7 @@ def _run_tool(args: dict[str, Any]) -> tuple[list[dict], str]:
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
+        result = mcp_core._call_tool("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 
@@ -162,7 +162,7 @@ def _run_tool_with_server_verdicts(
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        result = mcp_core._call_tool_inner("spawn_run", _through_solo_gate(args))
+        result = mcp_core._call_tool("spawn_run", _through_solo_gate(args))
     return bodies, result
 
 
@@ -243,7 +243,7 @@ class TestUnsupportedModelReport:
             patch.object(mcp_core, "_resolve_session_key", return_value="dash:1"),
             patch.object(mcp_core, "sel", MagicMock()),
         ):
-            result = mcp_core._call_tool_inner(
+            result = mcp_core._call_tool(
                 "spawn_run",
                 {"task": "x", "model": "deepseek-3.2", "reasoning_effort": "high"},
             )
