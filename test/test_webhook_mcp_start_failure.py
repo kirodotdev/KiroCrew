@@ -46,7 +46,7 @@ class _FakeClient:
 
 
 def _state(client: _FakeClient) -> MagicMock:
-    state = MagicMock()
+    state = MagicMock(memory_startup_task=None)
     state.context_builder = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, False, False))
     state.sessions.record_success = MagicMock()
