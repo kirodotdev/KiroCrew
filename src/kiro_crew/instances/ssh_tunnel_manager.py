@@ -1685,6 +1685,11 @@ class _Mint:
     ttl: str = ""
     hop_id: str = ""
     hop_gen: int = -1
+    #: The ``gateway_id`` the parent's own forward reaches for this crew, as the
+    #: parent states it in the authenticated mint reply. ``None`` when the reply
+    #: carries no such field (a parent build without it); ``""`` when the parent
+    #: could not tell (a crew build that reports no id).
+    crew_gateway_id: str | None = None
 
 
 @dataclass
@@ -1842,13 +1847,17 @@ class SshTunnelManager:
         #: ``_credential_forward_moved``: it is what makes that comparison an
         #: identity rather than a port number, which a reused port defeats.
         self._chained_hop_identity: dict[str, tuple[str, int]] = {}
-        #: The ``gateway_id`` the far end of each chained forward reported when the
-        #: forward was built. The forward's local end is a loopback port on the
+        #: The ``gateway_id`` of the crew behind each chained forward: the one its
+        #: parent states in the mint reply, which the far end must also report when
+        #: the forward is built (or, for a parent build that states none, what the
+        #: far end reported then). The forward's local end is a loopback port on the
         #: PARENT's host, which that port's owner can release (a parent gateway that
         #: exits frees it) while the credential for the crew behind it stays valid;
-        #: whatever binds it next answers over the same ``ssh -L``. A process that
-        #: merely binds the port cannot report this id, so it is compared before
-        #: any credential travels (:meth:`_chained_far_end_holds`).
+        #: whatever binds it next answers over the same ``ssh -L``. It is compared
+        #: before any credential travels (:meth:`_chained_far_end_holds`), which
+        #: stops a listener that merely took the port. The id is public to a
+        #: direct-local caller, so a process that read it from the hop earlier and
+        #: replays it passes this check; the lent lifetime cap still bounds that.
         self._chained_far_end: dict[str, str] = {}
         # Retirement tasks, held so they are not garbage-collected mid-teardown.
         self._retirements: set[asyncio.Task] = set()
@@ -2595,10 +2604,25 @@ class SshTunnelManager:
     async def _peer_gateway_id(self, local_port: int) -> str:
         """The ``gateway_id`` reported at ``127.0.0.1:<local_port>``, or ``""``.
 
+        ``""`` covers every "cannot tell": an unreachable port, a malformed
+        reply, and a crew whose build predates the field. Callers that must tell
+        those apart use :meth:`_peer_identity`.
+        """
+        return await self._peer_identity(local_port) or ""
+
+    async def _peer_identity(self, local_port: int) -> str | None:
+        """What ``127.0.0.1:<local_port>`` says about its own ``gateway_id``.
+
         ``/api/health`` needs no credential, and it reveals identity only to a
         direct-local caller — which is what a request through the loopback end of
-        our own forward is. ``""`` covers every "cannot tell": an unreachable
-        port, a malformed reply, and a crew whose build predates the field.
+        our own forward is. Three answers, kept apart because a decision that
+        fails open for one of them must not fail open for the others:
+
+        * the id, when the reply names one;
+        * ``""`` when a well-formed health reply names none -- a crew whose
+          build predates the field;
+        * ``None`` when there is no such reply at all: unreachable, timed out,
+          not 200, oversized or malformed.
         """
         url = f"http://{_LOOPBACK}:{int(local_port)}/api/health"
         try:
@@ -2606,18 +2630,20 @@ class SshTunnelManager:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.get(url, allow_redirects=False) as resp:
                     if resp.status != 200:
-                        return ""
+                        return None
                     raw = await resp.content.read(_CHAINED_MINT_REPLY_MAX_BYTES + 1)
                     if len(raw) > _CHAINED_MINT_REPLY_MAX_BYTES:
-                        return ""
+                        return None
                     payload = json.loads(raw)
         except Exception as e:
             logger.debug("gateway-id probe on port %d failed (%s)", local_port, type(e).__name__)
-            return ""
-        if not isinstance(payload, dict):
-            return ""
+            return None
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            return None
         reported = payload.get("gateway_id")
-        return reported if isinstance(reported, str) else ""
+        if reported is None:
+            return ""
+        return reported if isinstance(reported, str) and reported else None
 
     async def _chain_cycle_reason(self, inst: Instance, local_port: int) -> str:
         """Why *inst*'s freshly-opened chained forward closes a loop, or ``""``.
@@ -2981,12 +3007,17 @@ class SshTunnelManager:
                             )
                             else 0
                         )
+                        # Optional, because a parent build without the field still
+                        # answers this route. A value that is not a string is
+                        # treated as absent rather than as an identity.
+                        stated_crew = payload.get("crew_gateway_id")
                         return _Mint(
                             token=token,
                             hop=usable_port,
                             ttl=reported_ttl,
                             hop_id=reported_id,
                             hop_gen=reported_gen,
+                            crew_gateway_id=(stated_crew if isinstance(stated_crew, str) else None),
                         )
             except TokenMintError:
                 raise
@@ -3144,6 +3175,25 @@ class SshTunnelManager:
                 "code": "instance_mint_failed",
                 "status": 502,
             }
+        # Which gateway our own forward to this crew reaches, read with no
+        # credential. The hub compares it with what answers at the far end of ITS
+        # forward before it sends anything, so it learns the crew's identity from
+        # us, over our credential, rather than from whatever holds the hop port.
+        # The generation check under the lock below confirms the forward probed is
+        # the one this answer names.
+        crew_gateway_id = await self._peer_identity(hop)
+        if crew_gateway_id is None:
+            # Without an answer we cannot tell the hub which crew the hop reaches,
+            # and an empty statement would read as "a crew too old to say", which
+            # leaves the hub's forward ungated. So no credential is issued.
+            return False, {
+                "error": (
+                    f"{inst.name} did not answer the identity check over our forward, "
+                    "so no token was minted for another dashboard; try again"
+                ),
+                "code": "instance_identity_unconfirmed",
+                "status": 502,
+            }
         # The same decision, from the one exit that RETURNS a credential instead of
         # storing it. It passes an identity-less mint because it is not riding a hop:
         # it IS the hop, so the identity branch has nothing to compare and the two
@@ -3158,11 +3208,25 @@ class SshTunnelManager:
         # this lock, and it goes through `_remint_parent_under_lock` instead.
         async with self._lock:
             return await self._answer_embed_mint(
-                inst, instance_id, token, hop, epoch, lent_ttl=lent_ttl
+                inst,
+                instance_id,
+                token,
+                hop,
+                epoch,
+                lent_ttl=lent_ttl,
+                crew_gateway_id=crew_gateway_id,
             )
 
     async def _answer_embed_mint(
-        self, inst: Instance, instance_id: str, token: str, hop: int, epoch: int, *, lent_ttl: str
+        self,
+        inst: Instance,
+        instance_id: str,
+        token: str,
+        hop: int,
+        epoch: int,
+        *,
+        lent_ttl: str,
+        crew_gateway_id: str = "",
     ) -> tuple[bool, dict]:
         """Validate the hop and record it as lent, then answer. Caller holds the lock.
 
@@ -3323,6 +3387,10 @@ class SshTunnelManager:
             # rebuilt forward from the one it dialled even when the port is identical.
             "hop_id": inst.id,
             "hop_gen": epoch,
+            # The gateway our forward to this crew reaches, ``""`` when the crew
+            # reports none. The hub requires the far end of its own forward to
+            # answer with this before any credential goes over it.
+            "crew_gateway_id": crew_gateway_id,
         }
 
     async def _mint_token_with_parent_port(
@@ -3742,7 +3810,31 @@ class SshTunnelManager:
             # Who answers at the far end of this hop right now: the crew the
             # credential below is for. Recorded only once that credential is
             # stored, so a refused connect leaves nothing behind.
-            far_end = await self._peer_gateway_id(local_port) if params.is_chained else ""
+            far_end: str | None = await self._peer_identity(local_port) if params.is_chained else ""
+            stated = chained_mint.crew_gateway_id if chained_mint is not None else None
+            refusal = ""
+            if far_end is None:
+                # No answer cannot be told apart from a listener that stays silent,
+                # and treating it as "a crew too old to say" would leave this
+                # forward ungated for its whole life.
+                refusal = (
+                    "the crew at this hop did not answer the identity check, so its "
+                    "token was withheld. Connect again."
+                )
+            elif stated is not None and far_end != stated:
+                # The parent named the crew this credential is for -- or said the
+                # crew reports no id. Anything else answering at the hop, including
+                # a listener that took the port after the parent let it go, gets
+                # nothing.
+                refusal = (
+                    "the crew answering at this hop is not the one its parent minted "
+                    "the token for, so the token was withheld. Connect again."
+                )
+            if refusal:
+                with contextlib.suppress(Exception):
+                    await tunnel.stop()
+                self._tunnels.pop(instance_id, None)
+                return self._error_status(inst, refusal)
 
             # Mint a per-instance token over the same transport (never logged).
             # A fargate forward reaches a turn API, not a dashboard: there is no
@@ -3778,8 +3870,9 @@ class SshTunnelManager:
                 if far_end:
                     self._chained_far_end[instance_id] = far_end
                 else:
-                    # A crew whose build predates the field cannot be told apart
-                    # from a squatter, the same arrangement the cycle guard admits.
+                    # A crew that answered but whose build predates the field, as
+                    # both ends saw it: nothing to compare against, the same
+                    # arrangement the cycle guard admits.
                     self._chained_far_end.pop(instance_id, None)
                 self._schedule_token_refresh(instance_id)
                 await self._prime_peer_session(instance_id)
@@ -4792,28 +4885,39 @@ class SshTunnelManager:
         ``True`` for every forward with no recorded far end: a top-level forward
         rides no hop, and a chained crew that reported no id at build time has
         nothing to compare. For a chained forward with a recorded id, the
-        current answer at its local port must equal it exactly. Anything else --
-        a different id, no id, an unreachable port -- fails closed: the forward
-        is retired (intent kept, so an ordinary reconnect can rebuild it on a
-        hop that is really ours) and the caller sends no credential.
+        current answer at its local port must equal it exactly, and anything
+        else sends no credential. Only a DIFFERENT id retires the forward
+        (intent kept, so an ordinary reconnect can rebuild it on a hop that is
+        really ours). No answer -- a probe timeout on a slow link, a forward
+        that is down -- withholds this one send and leaves the forward to the
+        next attempt and to self-heal.
 
         The probe itself carries no credential, so asking it of a squatter
-        discloses nothing.
+        discloses nothing. The id is not a secret, though: a local process that
+        read it while the crew answered on the hop can replay it after the port
+        frees, so this check stops a listener that did not, not one that did.
         """
         expected = self._chained_far_end.get(instance_id, "")
         if not expected:
             return True
-        st = self.status(instance_id)
-        port = int(getattr(st, "local_port", 0) or 0)
-        connected = st is not None and st.state is TunnelState.CONNECTED and port > 0
-        reported = await self._peer_gateway_id(port) if connected else ""
+        stamp = self._peer_forward_stamp(instance_id)
+        port = stamp[0]
+        reported = await self._peer_gateway_id(port) if port > 0 else ""
+        if port > 0 and self._peer_forward_stamp(instance_id) != stamp:
+            # The forward this probe read changed while it ran: it exited, or
+            # another took its place. The answer describes neither, and retiring
+            # here could tear down a replacement, so the credential is withheld.
+            return False
         if reported == expected and self._chained_far_end.get(instance_id) == expected:
             return True
+        if not reported:
+            logger.info("Holding back a send for %s: far end did not answer", instance_id)
+            return False
         reason = (
             "the crew behind this forward no longer answers for the gateway it was "
             "built against, so its credential is withheld. Connect again."
         )
-        logger.warning("Withholding the credential for %s: far end changed", instance_id)
+        logger.warning("Holding back a send for %s: far end changed", instance_id)
         self._schedule_chained_retirement(instance_id, reason)
         return False
 

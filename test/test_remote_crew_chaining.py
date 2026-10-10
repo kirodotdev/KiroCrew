@@ -128,8 +128,13 @@ def _fake_base_port() -> int:
     return 23700 + index * 40
 
 
-def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False):
-    """A manager over a fresh registry, with a fake forwarder and a fake mint."""
+def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False, real_identity=False):
+    """A manager over a fresh registry, with a fake forwarder and a fake mint.
+
+    The far-end identity probe answers as a crew whose build reports no id
+    unless *real_identity* is set: the fake forwarders bind nothing, so a real
+    probe would read "no answer", which a chained connect refuses.
+    """
     _free_ports(monkeypatch)
     from kiro_crew.instances.ssh_tunnel_manager import SshTunnelManager
 
@@ -165,6 +170,12 @@ def _mgr(tmp_path, monkeypatch, *, mint=None, real_hop_guard=False):
     # Fake-port cases bind nothing; real ownership cases keep the manager's real guard.
     if not real_hop_guard:
         mgr._hop_guard = _InertGuard()
+    if not real_identity:
+
+        async def _reports_no_id(_port):
+            return ""
+
+        monkeypatch.setattr(mgr, "_peer_identity", _reports_no_id)
     return reg, mgr
 
 
@@ -731,6 +742,8 @@ class TestChainedToken:
         assert mint.hop_gen == payload["hop_gen"]
         assert mint.hop == payload["port"]
         assert mint.ttl == payload["ttl"]
+        assert "crew_gateway_id" in payload, "the parent did not say which gateway the hop reaches"
+        assert mint.crew_gateway_id == payload["crew_gateway_id"]
 
     def test_the_parent_refuses_to_mint_for_a_crew_it_reaches_through_a_hop(
         self, tmp_path, monkeypatch
@@ -5191,7 +5204,7 @@ class TestAChainedCredentialGoesOnlyToTheCrewItWasBuiltFor:
             probed.append(port)
             return answer["id"]
 
-        monkeypatch.setattr(mgr, "_peer_gateway_id", peer_id)
+        monkeypatch.setattr(mgr, "_peer_identity", peer_id)
         exchanged: list[str] = []
 
         async def exchange(_url, link, _name):
@@ -5264,18 +5277,26 @@ class TestAChainedCredentialGoesOnlyToTheCrewItWasBuiltFor:
         assert reg.get("c").was_connected is True
         assert "withheld" in (mgr.last_error("c") or "")
 
-    def test_an_unreachable_far_end_fails_closed(self, tmp_path, monkeypatch):
+    def test_an_unreachable_far_end_withholds_without_retiring(self, tmp_path, monkeypatch):
+        """No answer (a probe timeout on a slow link) withholds that one send and
+        leaves the forward up for the next attempt."""
         _reg, mgr, answer, _probed, _ex = self._chained(tmp_path, monkeypatch)
 
         async def go():
             await mgr.connect("c")
             answer["id"] = ""
             got = await mgr.refresh_token("c")
+            retirements = len(mgr._retirements)
             await self._settle(mgr)
-            return got
+            answer["id"] = "CREW-C"
+            again = await mgr.refresh_token("c")
+            return got, retirements, again
 
-        assert asyncio.run(go()) is None
-        assert mgr.status("c") is None
+        got, retirements, again = asyncio.run(go())
+        assert got is None
+        assert retirements == 0
+        assert mgr.status("c") is not None
+        assert again == "CHAINED_TOKEN", "the forward did not recover once the far end answered"
 
     def test_the_liveness_probe_never_carries_the_token_to_a_squatter(self, tmp_path, monkeypatch):
         _reg, mgr, answer, _probed, _ex = self._chained(tmp_path, monkeypatch)
@@ -5388,3 +5409,344 @@ class TestAChainedCredentialGoesOnlyToTheCrewItWasBuiltFor:
         after_disconnect, after_shutdown = asyncio.run(go())
         assert after_disconnect == {}
         assert after_shutdown == {}
+
+    def test_a_forward_replaced_during_the_probe_is_not_retired(self, tmp_path, monkeypatch):
+        """The probe awaits; a reconnect landing inside it owns the forward now,
+        and an answer read against the old one must not tear the new one down."""
+        _reg, mgr, _answer, _probed, _ex = self._chained(tmp_path, monkeypatch)
+
+        async def go():
+            await mgr.connect("c")
+
+            async def moved_under_us(_port):
+                mgr._tunnel_epoch["c"] = mgr._tunnel_epoch.get("c", 0) + 1
+                return "SOMEONE-ELSE"
+
+            monkeypatch.setattr(mgr, "_peer_gateway_id", moved_under_us)
+            held = await mgr._chained_far_end_holds("c")
+            return held, len(mgr._retirements)
+
+        held, retirements = asyncio.run(go())
+        assert held is False
+        assert retirements == 0
+        assert mgr.status("c") is not None
+
+    def test_the_parent_states_the_gateway_its_own_forward_reaches(self, tmp_path, monkeypatch):
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="C", ssh_host="c-host", instance_id="c")
+        asyncio.run(mgr.connect("c"))
+        port = mgr.status("c").local_port
+        asked: list[int] = []
+
+        async def peer_id(p):
+            asked.append(p)
+            return "CREW-C"
+
+        monkeypatch.setattr(mgr, "_peer_identity", peer_id)
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 9191))
+        assert ok is True
+        assert payload["crew_gateway_id"] == "CREW-C"
+        assert asked == [port], "probed something other than our own forward to the crew"
+
+    @pytest.mark.parametrize("bad", [None, 7, ["CREW-C"], {"id": "x"}])
+    def test_a_non_string_stated_id_is_treated_as_absent(self, tmp_path, monkeypatch, bad):
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="B", ssh_host="b-host", instance_id="b")
+        inst = reg.add(
+            name="C",
+            ssh_host="c-host",
+            instance_id="c",
+            via_instance_id="b",
+            via_remote_port=5432,
+            via_remote_id="c-2",
+        )
+        reply = dict(_FakeMintSession.reply)
+        reply["crew_gateway_id"] = bad
+        monkeypatch.setattr(_FakeMintSession, "reply", reply)
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _FakeMintSession)
+        monkeypatch.setattr(
+            mgr, "_peer_target", lambda _pid, path: (f"http://127.0.0.1:1{path}", "kc")
+        )
+        monkeypatch.setattr(mgr, "_peer_cookie_header", _no_cookie_header)
+        params = mgr._resolve_chained_transport(inst, reg.get("b"))
+        mint = asyncio.run(mgr._mint_through_parent(inst, params))
+        assert mint.crew_gateway_id is None
+
+    def _stated(self, tmp_path, monkeypatch, *, stated, far_end):
+        reg, mgr, answer, _probed, exchanged = self._chained(tmp_path, monkeypatch, far_end=far_end)
+        relay = _relay_mint(mgr)
+
+        async def stating(inst, params):
+            import dataclasses
+
+            return dataclasses.replace(await relay(inst, params), crew_gateway_id=stated)
+
+        monkeypatch.setattr(mgr, "_mint_through_parent", stating)
+        return reg, mgr, answer, exchanged
+
+    def test_a_listener_that_took_the_hop_before_the_build_gets_nothing(
+        self, tmp_path, monkeypatch
+    ):
+        """The parent exits between its mint reply and our build: whatever holds
+        the port now answers with its own id, which is not the one the parent
+        stated, so the forward is refused before anything is primed."""
+        _reg, mgr, _answer, exchanged = self._stated(
+            tmp_path, monkeypatch, stated="CREW-C", far_end="SQUATTER"
+        )
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "error"
+        assert "withheld" in st.error
+        assert mgr.status("c") is None
+        assert "c" not in mgr._tokens
+        assert "c" not in mgr._chained_far_end
+        assert exchanged == [], "the link was primed against the squatter"
+        built = [t for t in _FakeTunnel.made if t.iid == "c"]
+        assert built and built[0].stopped
+
+    def test_a_silent_far_end_is_refused_when_the_parent_named_one(self, tmp_path, monkeypatch):
+        _reg, mgr, _answer, exchanged = self._stated(
+            tmp_path, monkeypatch, stated="CREW-C", far_end=""
+        )
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "error"
+        assert exchanged == []
+
+    def test_the_parents_statement_is_what_later_sends_compare_against(self, tmp_path, monkeypatch):
+        _reg, mgr, _answer, _ex = self._stated(
+            tmp_path, monkeypatch, stated="CREW-C", far_end="CREW-C"
+        )
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "connected"
+        assert mgr._chained_far_end == {"c": "CREW-C"}
+
+    def test_a_parent_that_cannot_tell_leaves_the_crew_ungated(self, tmp_path, monkeypatch):
+        """A crew build that reports no id: the parent says so with an empty
+        statement, and the arrangement stays what the cycle guard admits."""
+        _reg, mgr, _answer, _ex = self._stated(tmp_path, monkeypatch, stated="", far_end="")
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "connected"
+        assert "c" not in mgr._chained_far_end
+
+    def test_a_forwarder_that_exits_during_the_probe_gets_nothing(self, tmp_path, monkeypatch):
+        """The child dies while the identity probe is in flight: the state flips
+        to ERROR with the generation unchanged, and whatever then answers on the
+        port must not receive the credential on the strength of that answer."""
+        from kiro_crew.instances.ssh_tunnel_manager import TunnelState
+
+        _reg, mgr, _answer, _probed, _ex = self._chained(tmp_path, monkeypatch)
+
+        async def go():
+            await mgr.connect("c")
+
+            async def exits_mid_probe(_port):
+                mgr._tunnels["c"].status.state = TunnelState.ERROR
+                return "CREW-C"
+
+            monkeypatch.setattr(mgr, "_peer_gateway_id", exits_mid_probe)
+            return await mgr._chained_far_end_holds("c")
+
+        assert asyncio.run(go()) is False
+
+
+class TestTheIdentityProbeCrossesARelayedChain:
+    """The far-end id is read over real loopback sockets through two byte relays.
+
+    Each relay stands in for one ``ssh -L``: it copies bytes and adds nothing, so
+    the crew sees a loopback peer, no forwarding header, and the ``Host`` the hub
+    sent. That is the request the crew's ``/api/health`` gate admits, and it is
+    the same read the cycle guard already makes over a chained forward.
+    """
+
+    @staticmethod
+    async def _relay(target_port: int):
+        async def pipe(reader, writer):
+            try:
+                while data := await reader.read(65536):
+                    writer.write(data)
+                    await writer.drain()
+            except Exception:
+                pass
+            finally:
+                with contextlib.suppress(Exception):
+                    writer.close()
+
+        async def handle(reader, writer):
+            up_r, up_w = await asyncio.open_connection("127.0.0.1", target_port)
+            await asyncio.gather(pipe(reader, up_w), pipe(up_r, writer))
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        return server, server.sockets[0].getsockname()[1]
+
+    def test_the_crews_id_comes_back_through_two_hops(self, tmp_path, monkeypatch):
+        from aiohttp import web
+
+        from kiro_crew.dashboard.handlers import core as core_mod
+
+        monkeypatch.setattr(core_mod, "gateway_id", lambda *_a, **_k: "CREW-C")
+        _reg, mgr = _mgr(tmp_path, monkeypatch, real_identity=True)
+
+        async def go():
+            app = web.Application()
+            app["allowed_origins"] = {"http://localhost:5476", "http://127.0.0.1:5476"}
+            app.router.add_get("/api/health", core_mod.api_health)
+            runner = web.AppRunner(app)
+            await runner.setup()
+            site = web.TCPSite(runner, "127.0.0.1", 0)
+            await site.start()
+            crew_port = site._server.sockets[0].getsockname()[1]
+            parent_hop, parent_port = await self._relay(crew_port)
+            hub_fwd, hub_port = await self._relay(parent_port)
+            try:
+                return await mgr._peer_gateway_id(hub_port)
+            finally:
+                hub_fwd.close()
+                parent_hop.close()
+                await runner.cleanup()
+
+        assert asyncio.run(go()) == "CREW-C"
+
+
+class TestAProbeWithNoAnswerIsNotACrewWithNoId:
+    """A crew too old to report an id answers ``/api/health`` with ``ok`` and
+    nothing else; a probe that times out, or a listener that is not a crew,
+    gives no such answer. Only the first may leave a chained forward ungated."""
+
+    def _chained(self, tmp_path, monkeypatch, *, far_end, stated):
+        import dataclasses
+
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="B", ssh_host="b-host", instance_id="b")
+        reg.add(
+            name="C",
+            ssh_host="c-host",
+            instance_id="c",
+            via_instance_id="b",
+            via_remote_port=53999,
+            via_remote_id=VIA_ID,
+        )
+        relay = _relay_mint(mgr)
+
+        async def stating(inst, params):
+            return dataclasses.replace(await relay(inst, params), crew_gateway_id=stated)
+
+        monkeypatch.setattr(mgr, "_mint_through_parent", stating)
+
+        async def no_cycle(_inst, _port):
+            return ""
+
+        monkeypatch.setattr(mgr, "_chain_cycle_reason", no_cycle)
+
+        async def identity(_port):
+            return far_end
+
+        monkeypatch.setattr(mgr, "_peer_identity", identity)
+        primed: list[str] = []
+
+        async def exchange(_url, link, _name):
+            primed.append(link)
+            return "SESSION"
+
+        monkeypatch.setattr(mgr, "_exchange_link", exchange)
+        return mgr, primed
+
+    @pytest.mark.parametrize("stated", [None, "", "CREW-C"])
+    def test_a_far_end_that_does_not_answer_is_refused_at_connect(
+        self, tmp_path, monkeypatch, stated
+    ):
+        mgr, primed = self._chained(tmp_path, monkeypatch, far_end=None, stated=stated)
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "error"
+        assert "did not answer" in st.error
+        assert "c" not in mgr._tokens
+        assert primed == []
+
+    def test_an_id_where_the_parent_saw_none_is_refused(self, tmp_path, monkeypatch):
+        mgr, primed = self._chained(tmp_path, monkeypatch, far_end="SOMEONE", stated="")
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "error"
+        assert primed == []
+
+    def test_a_crew_both_ends_saw_without_an_id_connects_ungated(self, tmp_path, monkeypatch):
+        mgr, _primed = self._chained(tmp_path, monkeypatch, far_end="", stated="")
+        st = asyncio.run(mgr.connect("c"))
+        assert st.state.value == "connected"
+        assert "c" not in mgr._chained_far_end
+
+    def test_the_parent_refuses_to_mint_when_its_own_probe_gets_no_answer(
+        self, tmp_path, monkeypatch
+    ):
+        reg, mgr = _mgr(tmp_path, monkeypatch)
+        reg.add(name="C", ssh_host="c-host", instance_id="c")
+        asyncio.run(mgr.connect("c"))
+
+        async def silent(_port):
+            return None
+
+        monkeypatch.setattr(mgr, "_peer_identity", silent)
+        ok, payload = asyncio.run(mgr.mint_embed_token("c", 9191))
+        assert ok is False
+        assert payload["code"] == "instance_identity_unconfirmed"
+        assert "token" not in payload
+        assert not mgr._lent_hops, "lent a hop it refused to mint for"
+
+
+class TestTheIdentityReplyIsReadThreeWays:
+    @staticmethod
+    def _answer(monkeypatch, status, body):
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        raw = body if isinstance(body, bytes) else json.dumps(body).encode()
+
+        class _Resp:
+            def __init__(self):
+                self.status = status
+                self.content = _FakeMintReader(raw)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+        class _Session:
+            def __init__(self, *_a, **_k):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *_exc):
+                return False
+
+            def get(self, *_a, **_k):
+                return _Resp()
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _Session)
+
+    @pytest.mark.parametrize(
+        ("status", "body", "expected"),
+        [
+            (200, {"ok": True, "gateway_id": "CREW-C"}, "CREW-C"),
+            (200, {"ok": True}, ""),
+            (200, {"ok": True, "gateway_id": ""}, None),
+            (200, {"ok": True, "gateway_id": 7}, None),
+            (200, {"gateway_id": "CREW-C"}, None),
+            (200, ["ok"], None),
+            (200, b"not json", None),
+            (503, {"ok": True, "gateway_id": "CREW-C"}, None),
+        ],
+    )
+    def test_each_reply_shape(self, tmp_path, monkeypatch, status, body, expected):
+        _reg, mgr = _mgr(tmp_path, monkeypatch, real_identity=True)
+        self._answer(monkeypatch, status, body)
+        assert asyncio.run(mgr._peer_identity(1)) == expected
+        assert asyncio.run(mgr._peer_gateway_id(1)) == (expected or "")
+
+    def test_an_unreachable_port_is_no_answer(self, tmp_path, monkeypatch):
+        _reg, mgr = _mgr(tmp_path, monkeypatch, real_identity=True)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            free = s.getsockname()[1]
+        assert asyncio.run(mgr._peer_identity(free)) is None
