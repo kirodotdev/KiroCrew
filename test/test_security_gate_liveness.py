@@ -230,7 +230,63 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Raised to 29,942 for ``publish_program_word.py``: the git-publish floor reads
+#: program position on quote-aware shell words, so a push run under a program word
+#: the shell resolves at run time (``"$G"``, ``g?t``, a substitution) is found in
+#: every program position -- after newlines, glued and background separators,
+#: inside compound constructs, behind precommands and redirections -- and judged
+#: by its target when its argv is known. Substitution bodies are read in their
+#: own quote context, comments and heredoc bodies are cut before the read and
+#: each body is read as command text of its own, and quoting is read per
+#: character in a glob. The
+#: reading is a security-deciding predicate, so it cannot leave the package; it
+#: sits in its own module so ``argv_floor`` stays under the per-module cap.
+#:
+#: Raised again, from 29,942, for two reach closures in ``publish_program_word.py``:
+#: a precommand split-string option (``env -S``/``--split-string``) builds the
+#: program and argv out of a string the floor cannot split back into words, so a
+#: publish behind it is unverifiable; and a ``git`` inert companion carrying
+#: ``--output``/``--output-directory`` writes a file a heredoc sink then runs, so
+#: its body is read as command text. One option table and helper, one output-option
+#: pattern and its check, with their reasons. No pass widened and no threshold moved.
+#:
+#: Raised again, from 29,979, for four more reach closures in `publish_program_word.py`:
+#: a split-string option is recognised in its attached (`--split-string=x`) and
+#: abbreviated (`--split`) spellings and a runtime-resolved precommand option is
+#: treated as a possible argv-changer, so neither hides the publish behind it; an
+#: unquoted expansion that can expand to nothing (`${x:-}`) does not settle program
+#: position, so the reachable program word after it is judged; and a `case` inside a
+#: command substitution is read by tracking `case`/`esac`, so its pattern parens are
+#: not read as the body's close and a real push in it is found while a command that
+#: only prints `push` is allowed. One regex, one helper, two short branches and a
+#: counter, with their reasons. No pass widened and no threshold moved.
+#:
+#: Raised again, from 30,019, for three more reach closures in `publish_program_word.py`:
+#: a quoted expansion that yields zero words (`"$@"`, `"${a[@]}"`) is treated as able to
+#: vanish like the unquoted forms; a precommand option value is consumed before it is read
+#: as a reserved word, so `env -u function` does not hide the program after it; and `case`
+#: and `esac` are read only at command position, so an argument spelled `case` does not
+#: open a compound command. One regex, one command-position helper, one early branch and
+#: two guards, offset by the dead option-value branches removed. No pass widened and no
+#: threshold moved.
+#:
+#: Raised again, from 30,061, for the full set of vanishing program words: a braced or
+#: concatenated zero-word positional/array expansion (`"${@}"`, `"$@""$@"`) and an
+#: unquoted glob that matches nothing under `nullglob` also leave program position to the
+#: next word, judged at both early returns; and a detached-long split-string option takes
+#: the next word while a short option's attachment is read from the option itself. One
+#: widened pattern, a glob check in the vanish test and one extra guard. No pass widened
+#: and no threshold moved.
+#:
+#: Raised again, from 30,071, for three reads a review found: a word that is wholly a
+#: redirection (``&>f``, ``{fd}>f``) is kept whole so splitting invents no program word;
+#: a word that can vanish leaves program position to the next word inside a precommand
+#: too, and a zero-word sliced positional (``"${@:2}"``) is recognised; and the sink
+#: option checks dequote their words and withhold the exemption when an option name
+#: carries an unresolved expansion. One guard, one moved branch, one widened pattern and
+#: a dequoting option helper. No pass widened and no threshold moved.
+_PACKAGE_LINE_BUDGET = 30_097
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

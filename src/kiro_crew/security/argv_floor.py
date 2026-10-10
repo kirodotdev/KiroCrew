@@ -91,6 +91,13 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .publish_program_word import (
+    _GIT_ARG_FLAGS,
+    _commands_without_runtime_publish,
+    _runs_runtime_program_publish,
+    _runtime_publishes,
+    _without_judged_program_words,
+)
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
@@ -3490,259 +3497,6 @@ def _is_git_publish(text_lower: str) -> bool:
     return _runs_runtime_program_publish(text_lower)
 
 
-#: Words after which the next word is still in program position: the reserved
-#: words that open a command list in a compound construct, plus ``!``, which
-#: prefixes a pipeline.
-_GIT_PROGRAM_LEAD_WORDS = frozenset({"!", "do", "elif", "else", "if", "then", "until", "while"})
-
-#: Precommand programs and keywords that run one of their later words as a
-#: program. Their option values cannot be told apart from the program word
-#: without modelling each one's options, so every later word of the command is
-#: read as a possible program word (the fail-closed reading).
-_GIT_PRECOMMAND_WORDS = frozenset(
-    {
-        "builtin",
-        "chroot",
-        "command",
-        "coproc",
-        "doas",
-        "env",
-        "exec",
-        "flock",
-        "ionice",
-        "nice",
-        "nohup",
-        "parallel",
-        "setsid",
-        "stdbuf",
-        "sudo",
-        "taskset",
-        "time",
-        "timeout",
-        "unbuffer",
-        "watch",
-        "xargs",
-    }
-)
-
-
-def _program_word_may_resolve_to_git(word: str) -> bool:
-    """True if the shell may resolve the dequoted program word *word* to git.
-
-    An expansion (``$G``, ``${G}``, ``$(...)``, a backtick body) names a program
-    the gate cannot evaluate, so it may be git.  A glob is resolved by the shell
-    before exec, so it counts when it can expand to ``git`` (``g?t``,
-    ``/usr/bin/[g]it``).
-    """
-    if "$" in word or "`" in word:
-        return True
-    return _glob_could_expand_to(os.path.basename(word), ("git",))
-
-
-def _raw_word_nesting(word: str) -> int:
-    """Unquoted ``(`` minus unquoted ``)`` in the raw shell word *word*."""
-    return _shell_quote_walk(word).paren_delta
-
-
-def _unescaped_backticks(word: str) -> int:
-    """Count of backticks in *word* that are not backslash-escaped."""
-    count = 0
-    index = 0
-    while index < len(word):
-        if word[index] == "\\":
-            index += 2
-            continue
-        if word[index] == "`":
-            count += 1
-        index += 1
-    return count
-
-
-def _raw_program_word_end(words: "list[str]", start: int, first: str) -> int:
-    """Index of the raw word that closes the program word opened at *start*.
-
-    A command substitution in program position can span several words
-    (``$(echo git)`` splits as ``$(echo`` and ``git)``).  The program word ends
-    at the first word where every backtick is paired and every unquoted ``(`` is
-    closed.  *first* is the spelling of ``words[start]`` to count, with any
-    subshell punctuation already removed.  An unclosed span reads as ending at
-    *start*.
-    """
-    depth = 0
-    backticks = 0
-    for index in range(start, len(words)):
-        word = first if index == start else words[index]
-        depth += _raw_word_nesting(word)
-        backticks += _unescaped_backticks(word)
-        if depth <= 0 and backticks % 2 == 0:
-            return index
-    return start
-
-
-def _raw_git_subcommand(words: "list[str]", index: int) -> "str | None":
-    """The git subcommand at or after raw word *index*, skipping global flags.
-
-    Same seek as the normalizer pass: an empty word and a simple flag are
-    skipped, and a flag in ``_GIT_ARG_FLAGS`` consumes its value as well.  A
-    redirection is consumed by the shell before git runs, so it is skipped
-    together with a separated target.
-    """
-    while index < len(words):
-        is_redirection, consumes_next = _push_token_redirection(words[index])
-        if is_redirection:
-            index += 2 if consumes_next else 1
-            continue
-        word = _dequote_token(_cut_at_operator(words[index]))
-        if not word.strip():
-            index += 1
-        elif word in _GIT_ARG_FLAGS:
-            index += 2
-        elif word.startswith("-"):
-            index += 1
-        else:
-            return word
-    return None
-
-
-#: Marker for a command boundary found INSIDE a segment: a background ``&`` or
-#: the ``|&`` pipe, which ``_split_push_command_segments`` leaves in place.
-_BACKGROUND_BOUNDARY = "\x00&"
-
-
-def _split_background_boundaries(word: str) -> "list[str]":
-    """*word* split at its unquoted background ``&`` / ``|&`` operators.
-
-    Each boundary becomes ``_BACKGROUND_BOUNDARY``.  An ``&`` that belongs to a
-    redirection (``2>&1``, ``&>log``, ``<&0``) is not a boundary.
-    """
-    steps = list(_iter_shell_chars(word))
-    pieces: list[str] = []
-    buf: list[str] = []
-    for position, step in enumerate(steps):
-        if step.trailing_escape:
-            buf.append(step.text)
-            break
-        if step.active and step.char in "&|":
-            before = steps[position - 1].char if position else ""
-            after = steps[position + 1].char if position + 1 < len(steps) else ""
-            redirection = step.char == "&" and (before in ("<", ">") or after == ">")
-            if not redirection:
-                if buf:
-                    pieces.append("".join(buf))
-                    buf = []
-                if not pieces or pieces[-1] != _BACKGROUND_BOUNDARY:
-                    pieces.append(_BACKGROUND_BOUNDARY)
-                continue
-        buf.append(step.text)
-    if buf:
-        pieces.append("".join(buf))
-    return pieces
-
-
-def _segment_runs_runtime_program_publish(segment: str) -> bool:
-    """True if *segment* runs ``push`` under a program word resolved at run time.
-
-    *segment* is one command segment from ``_split_push_command_segments``, so
-    quoted separators are already left inside their words and every newline,
-    ``;``, ``&&``, ``||`` and ``|`` has already ended a command.  Within the
-    segment, program position opens:
-
-    * at its first word, and after a background ``&`` or a ``|&`` pipe;
-    * after a reserved word in ``_GIT_PROGRAM_LEAD_WORDS`` and after a bare
-      ``{``, and after the name that follows ``function``;
-    * after leading ``(`` punctuation, which also leaves the rest of its word
-      in program position;
-    * after a word whose unquoted ``)`` closes more than it opens once its
-      leading ``(`` is set aside (a ``case`` pattern such as ``x)`` or ``(x)``,
-      the end of a subshell);
-    * after a function header ``name()`` or ``name(){``.
-
-    Leading ``VAR=value`` assignments and redirections keep it open.  After a
-    precommand word every later word is a candidate.  Words inside an open
-    substitution belong to the substitution's own command, which the payload
-    walk judges as a source of its own.
-    """
-    words: list[str] = []
-    for raw_word in _split_shell_words(segment):
-        words.extend(_split_background_boundaries(raw_word))
-    expect_program = True
-    precommand = False
-    skip_name = False
-    skip_target = False
-    depth = 0
-    backticks = 0
-    for index, raw in enumerate(words):
-        if raw == _BACKGROUND_BOUNDARY:
-            if depth <= 0 and backticks % 2 == 0:
-                expect_program = True
-                precommand = False
-            continue
-        nested = depth > 0 or backticks % 2 == 1
-        counted = raw
-        if skip_target:
-            skip_target = False
-        elif skip_name:
-            skip_name = False
-            expect_program = True
-        elif (expect_program or precommand) and not nested:
-            # Leading ``(`` in program position opens a subshell, not a
-            # substitution, so it adds no nesting.
-            counted = raw.lstrip("(")
-            word = _dequote_token(counted)
-            is_redirection, consumes_next = _push_token_redirection(counted)
-            if not word or word == "{":
-                pass  # subshell or group punctuation: the next word is the program
-            elif is_redirection:
-                skip_target = consumes_next
-            elif word == "function":
-                skip_name = True
-                expect_program = False
-            elif _shell_normalizer.ENV_ASSIGNMENT_RE.match(word) or word in _GIT_PROGRAM_LEAD_WORDS:
-                pass
-            elif os.path.basename(word) in _GIT_PRECOMMAND_WORDS:
-                precommand = True
-                expect_program = False
-            else:
-                if _program_word_may_resolve_to_git(word):
-                    end = _raw_program_word_end(words, index, counted)
-                    if _raw_git_subcommand(words, end + 1) == "push":
-                        return True
-                expect_program = False
-        depth_before = depth
-        depth += _raw_word_nesting(counted)
-        backticks += _unescaped_backticks(counted)
-        # Outside any open substitution, an unquoted ``)`` that closes more than
-        # the word opens (``x)``, ``(x)``, ``main)``) ends a pattern or subshell.
-        closes_pattern = depth_before <= 0 and _raw_word_nesting(raw.lstrip("(")) < 0
-        if depth < 0 or closes_pattern or raw.rstrip("{").endswith("()"):
-            depth = max(depth, 0)
-            expect_program = True
-            precommand = False
-    return False
-
-
-def _runs_runtime_program_publish(text_lower: str) -> bool:
-    """True if any command segment of *text_lower* runs a runtime-resolved push.
-
-    See :func:`_segment_runs_runtime_program_publish`.  Line continuations are
-    folded first, as the shell folds them before it reads words.  Answers False
-    when the text cannot be split, matching the normalizer pass.
-    """
-    if "push" not in _dequote_token(text_lower):
-        return False
-    try:
-        folded = _shell_normalizer._fold_line_continuations(text_lower)
-        segments = _split_push_command_segments(folded)
-        return any(_segment_runs_runtime_program_publish(segment) for segment in segments)
-    except Exception:
-        return False
-
-
-# Git global flags that consume a separate argument token (appear between
-# `git` and the subcommand).
-_GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
-
-
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
     """Normalizer-based git push detection (second pass).
 
@@ -3963,16 +3717,6 @@ def _git_push_args(segment: str) -> list[str] | None:
 
     start = next((k for k in range(len(anchors)) if _anchor_is_git(k)), None)
     if start is None:
-        return None
-    # A publish under a program word the shell resolves at run time makes the
-    # segment's target unknowable: its refs are whatever that program receives,
-    # and a later literal git's arguments say nothing about them. A walk that
-    # cannot answer fails closed the same way.
-    try:
-        runtime_publish = _segment_runs_runtime_program_publish(segment)
-    except Exception:
-        runtime_publish = True
-    if runtime_publish:
         return None
     i = start + 1
     while i < len(anchors) and anchors[i].startswith("-"):
@@ -4629,10 +4373,41 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         # unverifiable (the shell fuses it into the verb or the target word).
         # This is also what covers brace expansion, which is why
         # ``git-publish-push-brace-expansion-refspec`` stays floor-enforced.
-        if _AMBIGUOUS_EXPANSION_RE.search(command):
+        # A runtime program word whose argv is known is judged below instead.
+        # Every push this segment runs under a program word the shell resolves
+        # at run time is judged on its own, so a literal publish elsewhere in
+        # the segment cannot answer for it. One whose argv after ``push`` is
+        # known is read with the same argument grammar as a literal git push;
+        # any other is unverifiable. A walk that cannot answer fails closed.
+        try:
+            runtime = _runtime_publishes(command)
+        except Exception:
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
+        if _AMBIGUOUS_EXPANSION_RE.search(_without_judged_program_words(command, runtime)):
+            tags.add(_GIT_PUBLISH_UNGATED)
+            continue
+        for publish in runtime:
+            known = None
+            if publish.args is not None:
+                known = _git_push_args("git push " + " ".join(publish.args))
+            if known is None:
+                tags.add(_GIT_PUBLISH_UNGATED)
+            else:
+                tags |= _push_segment_targets_protected(known)
         args = _git_push_args(command)
+        # The segment needs no parse of its own only when every publish in it
+        # was judged above; a literal publish beside a runtime one still falls
+        # to the fail-closed reading below.
+        if args is None and runtime:
+            try:
+                unclaimed = any(
+                    _is_git_publish(piece) for piece in _commands_without_runtime_publish(command)
+                )
+            except Exception:
+                unclaimed = True
+            if not unclaimed:
+                continue
         if args is None:
             # Detected as a push but not cleanly parseable. That normally means
             # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
@@ -4659,17 +4434,12 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
             # payload that is not a publish answers nothing, so it buys no pass,
             # and with no payload at all there is nothing to wait for.
             #
-            # A segment that ITSELF publishes under a runtime-resolved program
-            # word is the publish that must be judged, so it never defers: a
-            # feature push carried among its arguments cannot stand in for the
-            # target it really publishes to.
-            #
             # Guarded because this runs inside the PreToolUse gate, which must
             # return a security DECISION and never raise. Failing CLOSED is the
             # only sound answer here: an exception means we cannot tell whether a
             # payload reading exists to defer to.
             try:
-                defer_to_payload = not _segment_runs_runtime_program_publish(command) and any(
+                defer_to_payload = any(
                     _is_git_publish(payload)
                     for payload in _nested_shell_payloads(
                         _shell_normalizer.normalize_shell_command(command)
