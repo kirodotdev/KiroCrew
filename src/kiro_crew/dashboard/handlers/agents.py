@@ -1217,12 +1217,15 @@ async def _fetch_kiro_catalog() -> list[dict]:
     return [wire_row(m) for m in models if not is_deprecated_model(m.get("model_name", ""))]
 
 
-def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
+def _shared_catalog_fetch(bus: Any = None) -> "asyncio.Task[list[dict]]":
     """Return the in-flight catalog fetch, starting one if none is running.
 
     Single-flight: concurrent polls share one spawn. The task caches its result
     (and clears itself) when it finishes, so the next poll after a slow success
     is served straight from the cache rather than starting another cold start.
+
+    ``bus`` is the notification bus a repricing note goes to; the request that
+    starts the fetch supplies it (see :func:`kiro_crew.model_rates.notify_rate_changes`).
     """
     existing = _catalog_cache.task
     if existing is not None and not existing.done():
@@ -1240,6 +1243,13 @@ def _shared_catalog_fetch() -> "asyncio.Task[list[dict]]":
         bounded = _bounded_catalog(models)
         _catalog_cache.models = bounded
         _catalog_cache.fetched_at = time.monotonic()
+        # After caching, so a poll arriving during this await is served from the
+        # cache instead of starting a second spawn: compare this read with the
+        # last multipliers seen and post a bell note for any model the service
+        # repriced. Never raises.
+        from kiro_crew import model_rates
+
+        await model_rates.notify_rate_changes(bounded, bus)
         return bounded
 
     task = asyncio.ensure_future(_run())
@@ -1313,7 +1323,7 @@ async def api_models(request: web.Request) -> web.Response:
             # still runs on every request, so a plan change is reflected now even
             # when the catalog rows themselves are a few minutes old.
             if time.monotonic() - _catalog_cache.fetched_at >= _LIST_MODELS_CATALOG_TTL_SECS:
-                _shared_catalog_fetch()
+                _shared_catalog_fetch(getattr(request.app.get("state"), "notification_bus", None))
             models = await _entitled_kiro_models(request, list(cached))
             return web.json_response(models)
 
@@ -1323,7 +1333,7 @@ async def api_models(request: web.Request) -> web.Response:
         # cancelled: it runs on under its own longer ceiling and warms the cache,
         # so the next 8s poll is served from its result instead of starting
         # another doomed cold start.
-        task = _shared_catalog_fetch()
+        task = _shared_catalog_fetch(getattr(request.app.get("state"), "notification_bus", None))
         try:
             models = await asyncio.wait_for(
                 asyncio.shield(task), timeout=_LIST_MODELS_SUBPROCESS_TIMEOUT_SECS

@@ -63,6 +63,10 @@ SYSTEM_CHANNELS: dict[str, str] = {
     # A dashboard terminal shell that exited with a non-zero code; its tab
     # closed with it, so the note is where the code is left to read.
     "system.terminal": _DEFAULT_PRIORITY,
+    # A model's credit multiplier differs from the one last seen in the
+    # ``--list-models`` catalog (kiro_crew/model_rates.py). The rate is set
+    # service-side, so this note is the only in-app signal that it moved.
+    "system.models": _DEFAULT_PRIORITY,
 }
 
 # The channel the gateway's monitor-loop stop/finish notices use. Their legacy

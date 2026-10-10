@@ -215,6 +215,20 @@ set to the `model_id` and the printed name kept as `display_name`
 (`_fetch_kiro_catalog`). Left under its printed name, the row would never match an
 advertised id and the picker would hide a model the account can run.
 
+A catalog row's `rate_multiplier` (the credit cost relative to Auto, shown as the
+picker's badge) is set service-side and can change without a release. Each fresh
+catalog fetch therefore compares the multipliers with the last ones seen, kept as
+`{model id: multiplier}` in `<data home>/model_rates.json` (`model_rates.py`), and
+posts ONE `system.models` bell note naming every model whose rate moved, as
+`<id> now bills at 4.4x credits (was 2.4x).`. The first sighting of a model only
+records a baseline, so a fresh install announces nothing; a model missing from one
+read keeps its baseline; a row without a priced multiplier neither records nor
+reports. The sidecar holds rates only and is never served as a catalog, so it
+cannot carry a downgraded account's rows past a restart. The note fires on the
+first `GET /api/models` read that refreshes the catalog (the cache is refreshed
+behind a read once it is five minutes old), not at the turn that first bills the
+new rate: nothing on the client knows a rate before kiro-cli reports it.
+
 That live list is revalidated on the read path before it narrows anything. A
 `session/new` snapshot is one answer captured at one instant, and an entitlement
 lookup racing a token refresh can answer with the free tier; no explicit pick is
