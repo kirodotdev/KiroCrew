@@ -226,9 +226,9 @@ describe('a held fallback with a header row carries the cue in that row, only wh
     expect(screen.getByTestId('impl-plain')).toBeVisible()
   })
 
-  it('drops the cue when the deadline fail-safe releases a surface that never paints', async () => {
+  it('drops the cue at the deadline but keeps the readable fallback while nothing paints', async () => {
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'], shouldAdvanceTime: true })
-    await mountWithinBudgetPair()
+    const { container } = await mountWithinBudgetPair()
     fireResize()
     await act(async () => { await vi.advanceTimersByTimeAsync(1500) })
     fireResize()
@@ -236,6 +236,14 @@ describe('a held fallback with a header row carries the cue in that row, only wh
     expect(hintOnScreen()).toHaveLength(1)
 
     await act(async () => { await vi.advanceTimersByTimeAsync(1200) })
+    // Past the deadline the text stays (revealing would blank it) and the
+    // pending cue goes: this is no longer a short highlight pass.
+    expect(implHidden()).toBe(true)
+    expect(screen.queryByText(HINT)).toBeNull()
+    expect([...container.querySelectorAll('pre.pierre-plain')].filter(el => el.closest('[aria-hidden="true"]') == null)).toHaveLength(1)
+
+    await setPhase('rows')
+    fireResize()
     expect(implHidden()).toBe(false)
     expect(screen.queryByText(HINT)).toBeNull()
   })
