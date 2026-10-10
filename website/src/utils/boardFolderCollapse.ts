@@ -1,4 +1,4 @@
-import { safeGetItem, safeSetItem } from './safeStorage'
+import { safeGetItem, safeRemoveItem, safeSetItem } from './safeStorage'
 
 /** Per-column collapse overrides for board-view session folders.
  *
@@ -16,6 +16,14 @@ import { safeGetItem, safeSetItem } from './safeStorage'
  *  blob whose read-modify-write could interleave and drop the other tab's
  *  entry. Reads/writes go through safeStorage (quota reclaim + retry), the
  *  repo's single guarded entry point for Web Storage.
+ *
+ *  The host backup (`lib/uiPrefs.ts`) holds the whole family as ONE durable
+ *  key, `kc-board-folder-collapsed`. The host caps the number of keys it
+ *  stores, so the pairs cannot travel one key each. That key exists only on
+ *  the wire. `boardFolderCollapseBackup` projects it from the per-key entries
+ *  and writes nothing. A host restore hands its value to
+ *  `adoptBoardFolderCollapse`, which writes the pairs it lists as per-key
+ *  entries and removes the rest, so the key itself never reaches localStorage.
  */
 
 const KEY_PREFIX = 'kc-board-folder-collapsed:'
@@ -64,6 +72,70 @@ export function loadBoardFolderCollapse(): Map<string, boolean> {
   return overrides
 }
 
+/** The family as the host backup stores it: one JSON object with the pairs in
+ *  sorted order. The same overrides therefore always produce the same string.
+ *  A round trip through the host reads as unchanged. */
+function serializeFamily(overrides: Map<string, boolean>): string {
+  const out: Record<string, boolean> = {}
+  for (const pair of [...overrides.keys()].sort()) out[pair] = overrides.get(pair)!
+  return JSON.stringify(out)
+}
+
+/** The value the host backup stores for the family. Null when there is no
+ *  override to back up. Read-only: it writes nothing. */
+export function boardFolderCollapseBackup(): string | null {
+  const overrides = loadBoardFolderCollapse()
+  return overrides.size === 0 ? null : serializeFamily(overrides)
+}
+
+/** The pairs a host backup value lists, as `pair -> collapsed`. An entry is
+ *  skipped unless its value is a boolean and its key contains a `:`. Empty
+ *  when the value is not a JSON object. */
+function parseFamily(raw: string): Map<string, boolean> {
+  const family = new Map<string, boolean>()
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [pair, collapsed] of Object.entries(parsed as Record<string, unknown>)) {
+        if (typeof collapsed === 'boolean' && pair.includes(':')) family.set(pair, collapsed)
+      }
+    }
+  } catch { /* not JSON: nothing to adopt */ }
+  return family
+}
+
+/** Writes a host backup value as the whole family. Every pair it lists becomes
+ *  its own per-key entry. Every entry it does not list is removed. Returns
+ *  false when the value lists no usable pair. Also returns false when the
+ *  quota-safe writer refuses a write. On a refusal the family reads as it did
+ *  before the call. The entries this call added are removed. The entries it
+ *  overwrote are written back. An overwritten entry the writer also refuses
+ *  to write back is removed instead. A quota refusal needs a value longer than
+ *  the one byte written over it. The read skips every such value as corrupt.
+ *  Idempotent. */
+export function adoptBoardFolderCollapse(raw: string): boolean {
+  const family = parseFamily(raw)
+  if (family.size === 0) return false
+  const previous = new Map<string, string | null>()
+  for (const [pair, collapsed] of family) {
+    const key = storageKey(pair)
+    const value = collapsed ? '1' : '0'
+    const before = safeGetItem(key)
+    if (before === value) continue
+    if (!safeSetItem(key, value)) {
+      for (const [k, v] of previous) {
+        if (v === null || !safeSetItem(k, v)) safeRemoveItem(k)
+      }
+      return false
+    }
+    previous.set(key, before)
+  }
+  for (const key of overrideStorageKeys()) {
+    if (!family.has(key.slice(KEY_PREFIX.length))) safeRemoveItem(key)
+  }
+  return true
+}
+
 export function persistBoardOverride(columnId: string, folderId: string, collapsed: boolean): void {
   safeSetItem(storageKey(boardCollapseKey(columnId, folderId)), collapsed ? '1' : '0')
 }
@@ -74,7 +146,7 @@ export function persistClearFolderOverrides(folderId: string, columnId?: string)
     const overrideKey = key.slice(KEY_PREFIX.length)
     if (!matchesClear(overrideKey, folderId, columnId)) continue
     if (safeGetItem(key) !== '1') continue
-    try { localStorage.removeItem(key) } catch { /* storage unavailable */ }
+    safeRemoveItem(key)
   }
 }
 

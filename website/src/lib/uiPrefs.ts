@@ -39,13 +39,26 @@
 
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { bottomTerminalPrefsSnapshot } from '../hooks/useBottomTerminal'
+import { adoptBoardFolderCollapse, boardFolderCollapseBackup } from '../utils/boardFolderCollapse'
 
-/** Terminal labels have per-id write coordinates, but share the layout's
- *  existing backup key. Projection is read-only: syncing cannot race a layout
- *  mutation by publishing a synthesized snapshot back into localStorage. */
+/** Two keys are projections of state stored under other keys. Terminal labels
+ *  have per-id write coordinates and share the layout's backup key. The board
+ *  folder-collapse overrides live one localStorage key per pair and travel as
+ *  one wire key. Both projections are read-only. Syncing therefore cannot race
+ *  a live write by publishing a synthesized snapshot back into localStorage. */
 function readPreference(key: string): string | null {
+  if (key === 'kc-board-folder-collapsed') return boardFolderCollapseBackup()
   const raw = safeGetItem(key)
   return key === 'mc-bottom-terminal' && raw !== null ? bottomTerminalPrefsSnapshot(raw) : raw
+}
+
+/** Writes a host value under a plain wire key. The board folder-collapse value
+ *  is written as the per-key family it projects. The wire key itself never
+ *  reaches localStorage. Returns false when nothing was written. The caller
+ *  then treats the key as dropped, exactly as it does for `safeSetItem`. */
+function writePreference(key: string, value: string): boolean {
+  if (key === 'kc-board-folder-collapsed') return adoptBoardFolderCollapse(value)
+  return safeSetItem(key, value)
 }
 
 /**
@@ -325,6 +338,16 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-filter-folders-shelved',
   'mc-flat-hidden-folders',
   'mc-input-height',
+  // Sessions sidebar width (pages/chat-sidebar/resize.ts). The pre-board key
+  // is the width to restore when the user leaves board view. Without it a
+  // restored profile keeps the board width in list view.
+  'mc-sidebar-width',
+  'mc-sidebar-width-pre-board',
+  // Board-view folder collapse overrides (utils/boardFolderCollapse.ts). The
+  // overrides live one localStorage key per (column, folder) pair. They travel
+  // as this one key because the host caps the key count. `readPreference`
+  // projects the value from the per-key entries.
+  'kc-board-folder-collapsed',
   // Diff and file viewer toggles.
   'mc-diff-plain',
   'mc-diff-split',
@@ -978,7 +1001,7 @@ export async function reconcileNewDurableKeys(): Promise<number> {
         continue
       }
       const wrote =
-        field === null ? safeSetItem(key, value) : writeCompositeField(field, parsed)
+        field === null ? writePreference(key, value) : writeCompositeField(field, parsed)
       if (wrote) {
         updates.set(key, value)
         restored += 1
@@ -987,9 +1010,16 @@ export async function reconcileNewDurableKeys(): Promise<number> {
         // so it is neither baselined nor marked reconciled, and the reconcile
         // fails below (GPT 6.1 F2).
         failedChildRestores.add(key)
+      } else if (local !== null) {
+        // A plain key's host-wins restore was refused by quota. The local value
+        // stays in use. It is baselined like a kept local value on the cold
+        // hydrate. Unbaselined, the first flush would upload it over the host
+        // copy.
+        updates.set(key, local)
       }
-      // Dropped by quota: NOT baselined, or the first flush would read the
-      // missing key as a deletion and null out a good host backup.
+      // Dropped by quota with no local value: NOT baselined, or the first flush
+      // would read the missing key as a deletion and null out a good host
+      // backup.
     }
     // Commit baselines and roster in ONE verified write. Two separate writes
     // opened a real clobber: the baseline write could be dropped by quota while
@@ -1446,7 +1476,7 @@ function restoreHostValues(
       const local = readPreference(wireKey)
       if (local === raw) continue
       if (local !== null && (owned === null || owned.has(wireKey))) continue
-      if (safeSetItem(wireKey, raw)) restored += 1
+      if (writePreference(wireKey, raw)) restored += 1
       continue
     }
     // Composite field: decide local-vs-host per field, then stage it.
