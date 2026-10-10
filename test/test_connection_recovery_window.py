@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 
 from kiro_crew.acp.client import AcpError
-from kiro_crew.acp.transport_errors import _raise_acp_error, is_connection_failure_text
+from kiro_crew.acp.transport_errors import (
+    PROVIDER_ERROR_CONNECTION,
+    _raise_acp_error,
+    classify_provider_error,
+)
 from kiro_crew.llm_helpers import (
     CONNECTION_RECOVERY_WINDOW_SECS,
     CONNECTION_RETRY_MAX_DELAY,
@@ -47,7 +51,6 @@ def test_network_path_drops_are_tagged(data):
     [
         "InternalServerException: internal server error, please try again",
         "ThrottlingException: Too many requests",
-        "ServiceUnavailableException: status code 503 connection reset",
         "ExpiredTokenException: the security token included in the request is expired",
     ],
 )
@@ -70,9 +73,13 @@ def test_terminal_verdict_wins_over_connection_wording():
     assert not acp_error_is_connection_failure(exc)
 
 
-def test_connection_wording_alongside_a_throttle_is_not_a_drop():
-    assert is_connection_failure_text("connection reset")
-    assert not is_connection_failure_text("ThrottlingException after connection reset")
+def test_tag_and_shared_classifier_agree():
+    for data in ("dispatch failure", "connection reset", "status code 503 connection reset"):
+        assert classify_provider_error(data).kind == PROVIDER_ERROR_CONNECTION
+        assert _raised(data).connection_failure is True
+    throttled = "ThrottlingException after connection reset"
+    assert classify_provider_error(throttled).kind != PROVIDER_ERROR_CONNECTION
+    assert _raised(throttled).connection_failure is False
 
 
 def test_window_is_measured_from_the_first_retry():

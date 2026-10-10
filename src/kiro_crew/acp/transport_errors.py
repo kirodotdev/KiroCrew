@@ -1290,8 +1290,9 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
 
     Precedence mirrors :func:`_is_transient_raw_error` exactly: usage-limit →
     malformed-request → model-unavailable → throttle → credential-propagation →
-    auth → session-expiry → connection → 5xx (named / status / retry hint) →
-    unknown. ``unknown`` is terminal. This is the public face of the private
+    auth → session-expiry → connection (including a connector dispatch
+    failure, which the formatter words as a 5xx) → 5xx (named / status / retry
+    hint) → unknown. ``unknown`` is terminal. This is the public face of the private
     ``_RE_*`` patterns: the dependency coordinator's ACP adapter and any other
     reader classify through it so a third copy of the vocabulary cannot drift.
     """
@@ -1315,7 +1316,7 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
         return ProviderErrorClass(PROVIDER_ERROR_AUTH, False, match.group(0))
     if _is_session_expired(text):
         return ProviderErrorClass(PROVIDER_ERROR_SESSION_EXPIRED, False, "session expired")
-    match = _RE_CONNECTION.search(text)
+    match = _RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_CONNECTION, True, match.group(0))
     match = (
@@ -1328,32 +1329,6 @@ def classify_provider_error(haystack: str, *, data: str | None = None) -> Provid
     if match:
         return ProviderErrorClass(PROVIDER_ERROR_HTTP_5XX, True, match.group(0))
     return ProviderErrorClass(PROVIDER_ERROR_UNKNOWN, False)
-
-
-def is_connection_failure_text(haystack: str) -> bool:
-    """True when *haystack* says the network path to the provider dropped.
-
-    A connection refusal, reset, timeout, socket hang-up or connector dispatch
-    failure means no provider answer arrived at all, so waiting for the network
-    to come back is the remedy. Any sign that the provider DID answer outranks
-    the connection wording: a throttle, an HTTP 5xx status, a usage limit, an
-    auth or session-expiry rejection, or a model-availability answer each keeps
-    its own retry policy, so a frame carrying both wordings is never treated as
-    a network drop.
-    """
-    text = haystack or ""
-    if not (_RE_CONNECTION.search(text) or _RE_CONNECTOR_FAILURE.search(text)):
-        return False
-    return not (
-        _RE_USAGE_LIMIT.search(text)
-        or _RE_MODEL_UNAVAILABLE.search(text)
-        or _RE_MODEL_TEMP_UNAVAILABLE.search(text)
-        or _RE_THROTTLE_NAMED.search(text)
-        or _RE_THROTTLE_GENERIC.search(text)
-        or _RE_5XX_STATUS.search(text)
-        or _RE_AUTH.search(text)
-        or _is_session_expired(text)
-    )
 
 
 def _auto_remedy(available_models: Sequence[str] | None) -> str:
@@ -1804,7 +1779,9 @@ def _raise_acp_error(
     # Tag a network-path drop so the interactive retry ladder can wait out a
     # short outage instead of spending the fixed provider-error budget. Only a
     # transient verdict qualifies, so a terminal frame never becomes waitable.
-    err.connection_failure = bool(err.transient) and is_connection_failure_text(raw_data)
+    err.connection_failure = (
+        bool(err.transient) and classify_provider_error(raw_data).kind == PROVIDER_ERROR_CONNECTION
+    )
     # Tag deterministic STRUCTURAL rejections so self-driving callers can
     # stop resending identical context. Keep the classifier data-scoped: a phrase
     # echoed only in JSON-RPC ``message`` cannot stamp an unrelated error. Four

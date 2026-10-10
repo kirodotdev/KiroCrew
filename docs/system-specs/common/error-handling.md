@@ -247,13 +247,13 @@ branch a catch-all that discards the real cause.
 
 A **network-path drop** is the one transient class that waits by time rather
 than by count. `AcpError.connection_failure` is set from the raw frame when the
-verdict is transient and the frame carries connection wording (`_RE_CONNECTION`,
-or a connector dispatch failure or named connection reset) with no sign that the
-provider answered: a throttle, an HTTP 5xx status, a usage limit, an auth or
-session-expiry rejection, or a model-availability answer each outranks it
-(`is_connection_failure_text`). The formatter folds a dispatch failure into the
-generic 5xx prose, which is why the verdict travels as a tag instead of being
-read back from the message. On an interactive dashboard turn
+verdict is transient and `classify_provider_error` names the frame
+`PROVIDER_ERROR_CONNECTION`: connection wording (`_RE_CONNECTION`) or a
+connector dispatch failure, with no throttle, usage limit, auth or
+session-expiry rejection, or model-availability answer outranking it. The
+formatter folds a dispatch failure into the generic 5xx prose, which is why the
+verdict travels as a tag instead of being read back from the message. On an
+interactive dashboard turn
 (`chat_runner`'s pre-stream transient branch) a connection failure keeps
 re-prompting the same live session past `TRANSIENT_RETRIES` until
 `CONNECTION_RECOVERY_WINDOW_SECS` (300 s) have passed since the ladder's first

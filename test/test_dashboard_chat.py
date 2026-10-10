@@ -22326,12 +22326,18 @@ class TestRunChatTransientRetry:
         raise AssertionError("_raise_acp_error did not raise")
 
     @pytest.mark.asyncio
-    async def test_connection_drop_shorter_than_window_recovers(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("synthetic", [False, True], ids=["user-turn", "recovery-turn"])
+    async def test_connection_drop_shorter_than_window_recovers(
+        self, tmp_path, monkeypatch, synthetic
+    ):
         """A network drop that outlasts the fixed TRANSIENT_RETRIES count but
         ends inside the recovery window resumes the turn on the SAME session,
-        with one standing retry notice rather than one per extra attempt."""
+        with one standing retry notice rather than one per extra attempt. A
+        runner recovery turn replays as a different inject kind and gets the
+        same single notice."""
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.dashboard.chat_utils import (
+            _SYNTHETIC_RECOVERY_MSGS,
             TRANSIENT_NOTICE_META_KEY,
             TRANSIENT_NOTICE_RETRYING,
         )
@@ -22362,7 +22368,16 @@ class TestRunChatTransientRetry:
             sleeps.append(secs)
 
         with patch("asyncio.sleep", side_effect=_fake_sleep):
-            await _run_chat(state, slot, "hello")
+            if synthetic:
+                await _run_chat(
+                    state,
+                    slot,
+                    _SYNTHETIC_RECOVERY_MSGS[0],
+                    _synthetic_recovery_turn=True,
+                    _synthetic_payload=True,
+                )
+            else:
+                await _run_chat(state, slot, "hello")
             await self._drain_bg(state)
 
         assert call_count == drop_attempts + 1
@@ -22381,31 +22396,41 @@ class TestRunChatTransientRetry:
     @pytest.mark.asyncio
     async def test_connection_drop_longer_than_window_fails_clearly(self, tmp_path, monkeypatch):
         """A drop that outlasts the recovery window ends in the same clean,
-        resumable ❌ as an exhausted provider-error ladder. Elapsed time is
-        simulated by moving the ladder's start stamp back on every attempt."""
+        resumable ❌ as an exhausted provider-error ladder. Elapsed time comes
+        from one fake monotonic clock that both modules read and each attempt
+        advances, so the result does not depend on the host's uptime."""
+        import types
+
         from kiro_crew.dashboard.chat import _run_chat
         from kiro_crew.llm_helpers import CONNECTION_RECOVERY_WINDOW_SECS, TRANSIENT_RETRIES
 
         step = CONNECTION_RECOVERY_WINDOW_SECS / 5
+        clock = {"now": 10_000.0}
         call_count = 0
-        slot_ref: dict = {}
 
         async def _stream(msg):
             nonlocal call_count
             call_count += 1
-            slot = slot_ref["slot"]
-            if slot._transient_ladder_started:
-                slot._transient_ladder_started -= step
+            if call_count > 1:
+                clock["now"] += step
             raise self._connection_drop()
             yield  # pragma: no cover
 
         state = self._make_state(tmp_path, monkeypatch)
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._agent_fallback_chain", lambda: ())
+        import kiro_crew.dashboard.chat_runner as runner_mod
+        import kiro_crew.llm_helpers as helpers_mod
+
+        for mod in (runner_mod, helpers_mod):
+            fake = types.SimpleNamespace(
+                **{k: getattr(mod.time, k) for k in dir(mod.time) if not k.startswith("__")}
+            )
+            fake.monotonic = lambda: clock["now"]
+            monkeypatch.setattr(mod, "time", fake)
         client = self._client(_stream)
         self._wire_sessions(state, client)
         slot = state.get_or_create_slot("s1")
         slot._titled = True
-        slot_ref["slot"] = slot
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await _run_chat(state, slot, "hello")

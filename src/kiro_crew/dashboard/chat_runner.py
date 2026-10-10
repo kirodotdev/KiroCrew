@@ -380,6 +380,7 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
     _MAX_SLOT_MESSAGES,
+    _TURN_CONTINUING_INJECT_KINDS,
     CRON_NOTIFY_PREFIX,
     CRON_NOTIFY_RE,
     DENY_CAUSE_APPROVAL_NO_BUDGET,
@@ -18164,12 +18165,13 @@ async def _run_chat(
                 # retry that never happened, and it corrects the row in place.
                 # Inside the recovery window one standing notice covers the
                 # outage: a retrying row is not repeated when only the replays
-                # of this same message have been appended since it.
+                # of this same turn have been appended since it.
                 _tail: dict = {}
                 for _row in reversed(slot.messages):
                     if (
                         _row.get("role") == "inject"
-                        and (_row.get("meta") or {}).get("injectKind") == "user_replay"
+                        and (_row.get("meta") or {}).get("injectKind")
+                        in _TURN_CONTINUING_INJECT_KINDS
                     ):
                         continue
                     _tail = _row
