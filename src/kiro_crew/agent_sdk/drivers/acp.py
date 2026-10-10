@@ -37,11 +37,14 @@ sandbox posture at their defining modules.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from kiro_crew.agent_sdk.context import ContextPromptProvider
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "EntitlementRevalidating",
@@ -50,6 +53,7 @@ __all__ = [
     "projected_session_mcp_servers",
     "agent_spec_mcp_refs",
     "claude_adapter_cached_negative",
+    "claude_adapter_honours_session_options",
     "claude_adapter_install_command",
     "claude_components_resolve",
     "derived_agent_permissions",
@@ -341,6 +345,38 @@ def claude_adapter_cached_negative() -> bool:
     except Exception:
         return False
     return not argv
+
+
+def claude_adapter_honours_session_options() -> bool:
+    """Whether the installed claude-agent-acp is at or above the options floor.
+
+    ``CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`` is where the adapter is verified to
+    spread ``_meta.claudeCode.options`` into the session, which the read-only
+    shape of a Side Chat or thread-reply session depends on. A missing adapter, or
+    one whose version cannot be read, answers False. The spawn's own cached
+    resolution is read first, as :func:`claude_adapter_cached_negative` does.
+    Blocking (resolves the adapter and reads its package.json); call it off the loop.
+    """
+    from kiro_crew.acp import client as _client
+
+    resolution = _client._claude_acp_argv_cache
+    if resolution is _client._UNRESOLVED:
+        resolution = _client._resolve_claude_acp_bin()
+    argv = resolution[0] if isinstance(resolution, tuple) else None
+    if not argv:
+        return False
+    version = _client._claude_adapter_installed_version(argv)
+    if _client._claude_adapter_honours_setting_sources(version):
+        return True
+    logger.warning(
+        "claude-agent-acp %r is not verified to honour session options (needs %s or "
+        "newer), so Side Chat and thread replies run without tools. Upgrade with "
+        "'npm i -g %s'.",
+        _client._scrub_observed(version),
+        ".".join(str(part) for part in _client.CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION),
+        _client.CLAUDE_ACP_NPM_PKG,
+    )
+    return False
 
 
 def codex_adapter_resolves() -> bool:

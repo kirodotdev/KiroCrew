@@ -11066,6 +11066,7 @@
         "off_record_marker": "Chat laterale · non salvata nella conversazione",
         "context_only_tools_unavailable": "Sola lettura · Qui si possono consultare informazioni, ma non fare modifiche. Usa la chat principale per eseguire azioni.",
         "context_only_tools_unavailable_backend": "Solo contesto · Con questo backend dell'agente, gli strumenti non sono disponibili qui. Usa la chat principale per eseguire azioni.",
+        "context_only_claude_adapter_outdated": "Solo contesto · Aggiorna claude-agent-acp per usare qui gli strumenti in sola lettura. Usa la chat principale per eseguire azioni.",
         "context_only_config_unavailable": "Impossibile caricare la configurazione dell'agente, quindi la chat laterale funziona senza strumenti. Usa la chat principale per eseguire azioni.",
         "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "question_too_long_with_paste": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}}, testo incollato compresso incluso). Seleziona il chip dell'incolla e premi Backspace per rimuoverlo, oppure incolla un estratto più breve.",

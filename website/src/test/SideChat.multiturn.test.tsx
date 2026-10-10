@@ -16,7 +16,8 @@ vi.mock('../api/client', () => ({
           : prop === 'sideTurn' ? { ok: true, run_id: 'r1', messages: 1 }
             : prop === 'sideClose' ? { ok: true, was_open: true }
               : prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
-                : {},
+                : prop === 'sideTools' ? { read_only_tools: true }
+                  : {},
       )
       Object.defineProperty(_t, prop, { value: fn, writable: true, configurable: true })
       return fn
@@ -97,16 +98,16 @@ describe('Side multi-turn conversation', () => {
       renderWithProviders(<SideChat slot={SLOT} />, { store })
       expect(screen.getByText('Turn 1 q')).toBeInTheDocument()
       expect(screen.getByText('Turn 2 a')).toBeInTheDocument()
-      // The footer claims the read-only allowance only once the config has
-      // loaded and named the kiro backend (the mock resolves to kiro's default).
+      // The footer claims the read-only allowance only once the gateway says the
+      // side turn runs it (the mock answers as the kiro default does).
       expect(await screen.findByRole('note')).toHaveTextContent(
         "Read-only · Lookups work here, but changes don't. Use the main chat to take action.",
       )
     })
 
-    it('says so instead of claiming lookups work when the config fails to load', async () => {
+    it('says so instead of claiming lookups work when the answer fails to load', async () => {
       const { api } = await import('../api/client')
-      ;(api.kirocrewConfig as unknown as Mock).mockRejectedValue(new Error('config unavailable'))
+      ;(api.sideTools as unknown as Mock).mockRejectedValue(new Error('config unavailable'))
       const store = createTestStore({
         chat: {
           activeSlot: SLOT,
@@ -143,6 +144,52 @@ describe('Side multi-turn conversation', () => {
         "Couldn't load the agent configuration, so Side Chat runs without tools. Use the main chat to take action.",
       )
       expect(screen.queryByRole('note')).toBeNull()
+    })
+
+    // The gateway answers false off `ACP_BACKENDS_SIDE_READONLY` and for a
+    // claude adapter below the verified floor, whose side turn runs no tools.
+    it.each([
+      [true, false, "Read-only · Lookups work here, but changes don't. Use the main chat to take action."],
+      [false, false, 'Context only · Tools are unavailable here on this agent backend. Use the main chat to take action.'],
+      [false, true, 'Context only · Update claude-agent-acp to use read-only tools here. Use the main chat to take action.'],
+    ])('shows the footer for read_only_tools=%s, claude_adapter_outdated=%s', async (readOnlyTools, adapterOutdated, footer) => {
+      const { api } = await import('../api/client')
+      ;(api.sideTools as unknown as Mock).mockResolvedValue({
+        read_only_tools: readOnlyTools,
+        claude_adapter_outdated: adapterOutdated,
+      })
+      const store = createTestStore({
+        chat: {
+          activeSlot: SLOT,
+          messages: [],
+          slotSide: { [SLOT]: { messages: [], lastRunId: '' } },
+          slotHistory: [SLOT],
+          stopPressedAt: {},
+        } as unknown as RootState['chat'],
+      })
+      renderWithProviders(<SideChat slot={SLOT} />, { store })
+      expect(await screen.findByRole('note')).toHaveTextContent(footer)
+    })
+
+    it('asks again when the config changes', async () => {
+      const { api } = await import('../api/client')
+      const sideTools = api.sideTools as unknown as Mock
+      sideTools.mockResolvedValue({ read_only_tools: false, claude_adapter_outdated: false })
+      const store = createTestStore({
+        chat: {
+          activeSlot: SLOT,
+          messages: [],
+          slotSide: { [SLOT]: { messages: [], lastRunId: '' } },
+          slotHistory: [SLOT],
+          stopPressedAt: {},
+        } as unknown as RootState['chat'],
+      })
+      const { queryClient } = renderWithProviders(<SideChat slot={SLOT} />, { store })
+      expect(await screen.findByRole('note')).toHaveTextContent('Context only')
+      sideTools.mockResolvedValue({ read_only_tools: true, claude_adapter_outdated: false })
+      // What a config refresh frame does (hooks/websocket/serverState.ts).
+      await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      expect(await screen.findByText(/^Read-only/)).toBeInTheDocument()
     })
   })
 })

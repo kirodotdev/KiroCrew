@@ -17,10 +17,27 @@ SIDE_BOUNDARY_PROMPT = (
     "unless the side question explicitly asks for them."
 )
 
+#: The read-only boundary for a side session with no shell tool (claude, which
+#: starts it with only its read built-ins). Naming shell commands there would
+#: send the model after a tool the session does not have.
+SIDE_BOUNDARY_PROMPT_NO_SHELL = (
+    "You are answering an ephemeral side question. Use the conversation "
+    "only as background context. Do not continue or complete any "
+    "unfinished tasks from the main conversation. This side conversation "
+    "is read-only: lookups work here, but changes don't. Reading files, "
+    "searching the codebase, and searching or fetching web pages run here "
+    "without asking, so use them when a question needs them. There is no "
+    "shell here. Writing or editing files, running commands, and MCP tools "
+    "are refused here, even when the user explicitly requests them. Never "
+    "claim that a tool is unconfigured or suggest enabling it. If the user "
+    "wants a change made, tell them to use the main chat to take action. Do "
+    "not include shell commands, patches, or code unless the side question "
+    "explicitly asks for them."
+)
+
 #: The boundary for a harness where the side turn runs with NO tools at all
-#: (``ToolApprovalPolicy.REJECT_ALL``): the read-only allowance is a kiro-cli
-#: agent-spec mechanism, and another backend's own pre-approval surface is one
-#: the host gate cannot see, so nothing may execute there. Same shape as the
+#: (``ToolApprovalPolicy.REJECT_ALL``): its own pre-approval surface is one the
+#: host gate cannot see, so nothing may execute there. Same shape as the
 #: read-only prompt so the model is told exactly what the policy does.
 SIDE_BOUNDARY_PROMPT_NO_TOOLS = (
     "You are answering an ephemeral side question. Use the conversation "
@@ -46,12 +63,21 @@ SIDE_DEVELOPER_INSTRUCTIONS = (
 )
 
 
-def build_side_system_prompt(*, tools_available: bool = True) -> str:
-    """Return the developer-instructions + boundary-prompt envelope.
+def side_boundary_prompt(*, tools_available: bool = True, shell_available: bool = True) -> str:
+    """The boundary the policy enforces on this harness.
 
-    ``tools_available`` selects the boundary the policy enforces on this
-    harness: the read-only allowance (kiro-cli, ``READ_ONLY``) or no tools at
-    all (every other backend, ``REJECT_ALL``).
+    ``tools_available`` picks the read-only allowance (``READ_ONLY``) or no
+    tools at all (``REJECT_ALL``); ``shell_available`` says whether the
+    read-only session has a shell tool for the read-only commands.
     """
-    boundary = SIDE_BOUNDARY_PROMPT if tools_available else SIDE_BOUNDARY_PROMPT_NO_TOOLS
+    if not tools_available:
+        return SIDE_BOUNDARY_PROMPT_NO_TOOLS
+    return SIDE_BOUNDARY_PROMPT if shell_available else SIDE_BOUNDARY_PROMPT_NO_SHELL
+
+
+def build_side_system_prompt(*, tools_available: bool = True, shell_available: bool = True) -> str:
+    """Return the developer-instructions + boundary-prompt envelope."""
+    boundary = side_boundary_prompt(
+        tools_available=tools_available, shell_available=shell_available
+    )
     return f"{SIDE_DEVELOPER_INSTRUCTIONS}\n\n{boundary}"

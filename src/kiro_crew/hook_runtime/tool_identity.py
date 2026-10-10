@@ -147,6 +147,11 @@ class ToolCall:
     #: provenance. Gates the identity-keyed operator grant and the host-known
     #: read-only built-in proof.
     identity_trusted: bool = False
+    #: ``AcpEvent.harness_builtin_tool``: the kiro-cli read built-in a claude call
+    #: is for, from the name claude-agent-acp stamped on the tool_call frame. A
+    #: deny target, so a rule on ``web_fetch`` binds claude's WebFetch, and the
+    #: claude half of the read-only built-in proof. Never a grant.
+    harness_builtin_tool: str = ""
     #: The ``spawn_run`` target the governance spawn policy judges.
     spawn_target: str = ""
     #: The agent that ACTUALLY ran (``read_effective_agent``), never the slot's
@@ -192,6 +197,7 @@ class ToolCall:
             "mcp_server": getattr(event, "mcp_server_name", "") or "",
             "mcp_tool": getattr(event, "tool_name", "") or "",
             "identity_trusted": bool(getattr(event, "mcp_identity_trusted", False)),
+            "harness_builtin_tool": getattr(event, "harness_builtin_tool", "") or "",
             "spawn_target": getattr(event, "spawn_target", "") or "",
         }
         values.update(overrides)
@@ -213,6 +219,7 @@ class ToolCall:
             "mcp_server_name": self.mcp_server,
             "mcp_tool_name": self.mcp_tool,
             "mcp_identity_trusted": self.identity_trusted,
+            "harness_builtin_tool": self.harness_builtin_tool,
             "spawn_target": self.spawn_target,
         }
 
@@ -292,6 +299,20 @@ def _is_host_read_only_builtin(
         return False
     name = _HOST_READ_ONLY_BUILTIN_ALIASES.get(mcp_tool_name, mcp_tool_name)
     return name in _HOST_READ_ONLY_BUILTIN_TOOLS
+
+
+def _is_harness_read_only_builtin(harness_builtin_tool: str, mcp_server_name: str) -> bool:
+    """True when a claude call's adapter-stamped name maps to a read-only BUILT-IN.
+
+    ``harness_builtin_tool`` is filled only from the ``_meta.claudeCode.toolName``
+    claude-agent-acp stamped on the call's own tool_call frame
+    (``AcpEvent.harness_builtin_tool``), never from the permission payload or the
+    title. That name is the tool claude-agent-acp runs, so a write tool cannot
+    arrive under a read tool's name. A call with an MCP server behind it fails closed.
+    """
+    if mcp_server_name:
+        return False
+    return harness_builtin_tool in _HOST_READ_ONLY_BUILTIN_TOOLS
 
 
 def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:

@@ -510,7 +510,8 @@ pre-approved) is kept as the session started it, so an operator's stricter postu
 never widened. A pin that fails stops the harness,
 so a session never runs with Crew's tools under a mode that approves on its own.
 
-The pin runs only on this path. A session whose file Crew authored is not pinned: a
+The pin runs only on this path and on a Side Chat session (below). Any other session
+whose file Crew authored is not pinned: a
 user `~/.claude` mode reaching it is the inherited-config gap below ("Known gap: the
 user's global `~/.claude` is inherited"), which this path does not widen. The exclusion is never taken below
 `CLAUDE_ACP_SETTING_SOURCES_MIN_VERSION`, or when Crew requested a mode itself, so
@@ -565,6 +566,18 @@ core does not set `CLAUDE_CONFIG_DIR` itself: an isolated CC config root (seedin
 Crew-owned directory from the user's `~/.claude`, keeping credentials and models
 while stripping inherited `permissions` that would pre-approve past Crew's gate)
 is **not implemented here** — see the known gap below.
+
+### A Side Chat session
+
+A Side Chat or thread-reply session (`side_read_only`) runs under `READ_ONLY`, which
+has no approver behind it, so it cannot inherit the gap below. It is started with
+only the read built-ins (`tools`: Read, Grep, Glob, WebFetch, WebSearch), an empty
+`mcpServers` array and `strictMcpConfig`, inline settings that add `permissions.ask`
+rules for the two web tools and set `disableAllHooks`, and bypass off; it is pinned
+like the exclusion path above, and refused below the same version floor. Its setting
+sources are not narrowed, because the user tier carries the provider routing and
+model ids the session needs: an allow rule there can now pre-approve only a read.
+Detail: [side.md](side.md), "On claude the confinement is the session's own options".
 
 ### Known gap: the user's global `~/.claude` is inherited
 

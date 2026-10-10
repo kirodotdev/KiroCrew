@@ -25,7 +25,11 @@ from pathlib import Path
 from typing import Any, NamedTuple, cast
 
 from kiro_crew import mcp_apps_render, session_directive
-from kiro_crew.acp.harness_tool_names import MAX_HARNESS_TOOL_NAME_LEN, qualified_harness_tool_id
+from kiro_crew.acp.harness_tool_names import (
+    CLAUDE_READ_ONLY_BUILTINS,
+    MAX_HARNESS_TOOL_NAME_LEN,
+    qualified_harness_tool_id,
+)
 from kiro_crew.acp.types import (
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
@@ -64,7 +68,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
     RefusalInfo,
 )
-from kiro_crew.acp_backends import ACP_BACKENDS_META_IDENTITY
+from kiro_crew.acp_backends import ACP_BACKEND_CLAUDE, ACP_BACKENDS_META_IDENTITY
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints
@@ -1690,11 +1694,12 @@ def _permission_tool_id(params: dict[str, Any]) -> str:
 def harness_tool_name(update: dict[str, Any]) -> str:
     """The tool's own name as a ``tool_call`` frame states it, or "".
 
-    goose writes it in ``_meta.goose.toolCall.toolName``; opencode writes it as the
-    first frame's ``title`` (``bash``), where later updates carry the command. Read
-    from that first frame only, and only as an identifier: a title with whitespace
-    or any other prose character is not a name and yields "". Which backend's
-    table the name is looked up in is decided by the permission event's caller
+    goose writes it in ``_meta.goose.toolCall.toolName`` and claude-agent-acp in
+    ``_meta.claudeCode.toolName``; opencode writes it as the first frame's
+    ``title`` (``bash``), where later updates carry the command. Read from that
+    first frame only, and only as an identifier: a title with whitespace or any
+    other prose character is not a name and yields "". Which backend's table the
+    name is looked up in is decided by the permission event's caller
     (:func:`kiro_crew.acp.harness_tool_names.qualified_harness_tool_id`), so the
     title of a backend with no table is never read as a name.
     """
@@ -1702,6 +1707,11 @@ def harness_tool_name(update: dict[str, Any]) -> str:
     goose = meta.get("goose") if isinstance(meta, dict) else None
     call = goose.get("toolCall") if isinstance(goose, dict) else None
     name = call.get("toolName") if isinstance(call, dict) else None
+    claude = meta.get("claudeCode") if isinstance(meta, dict) else None
+    if name is None and isinstance(claude, dict):
+        # claude-agent-acp builds its title from the call's arguments (a search
+        # query, a path), so only its own stamp may name the tool.
+        name = claude.get("toolName") or ""
     if name is None:
         name = update.get("title")
     # Bounded by MAX_HARNESS_TOOL_NAME_LEN, not KAS's 128: an opencode MCP title
@@ -1732,6 +1742,7 @@ def build_permission_event(
     harness_tool_name_cache: dict[str, str] | None = None,
     harness_backend: str = "",
     harness_mcp_servers: tuple[str, ...] = (),
+    side_read_only: bool = False,
 ) -> tuple[AcpEvent | None, dict[str, str] | None]:
     """Build an ``EVENT_PERMISSION_REQUEST`` from a ``session/request_permission``.
 
@@ -1750,8 +1761,12 @@ def build_permission_event(
     and ``harness_backend`` give a backend that states no ``_meta.kiro.toolId`` a
     ``harness_tool_id`` anyway: the tool name its preceding ``tool_call`` frame
     stated, qualified by the backend (``goose#shell``). Only a backend with a name
-    table (:mod:`kiro_crew.acp.harness_tool_names`) gets one; every other backend's
-    event is built exactly as before. ``harness_mcp_servers`` are the server names
+    table (:mod:`kiro_crew.acp.harness_tool_names`) gets one. On a claude Side Chat
+    session (``side_read_only``) the same cache gives ``harness_builtin_tool``
+    instead: the kiro-cli read built-in the call stands for
+    (:data:`~kiro_crew.acp.harness_tool_names.CLAUDE_READ_ONLY_BUILTINS`). Every
+    other session's event is built exactly as before.
+    ``harness_mcp_servers`` are the server names
     Crew placed on the session, so an opencode MCP tool's fused name is split.
 
     Single source of truth shared by ``AcpClient`` and ``AcpSessionHandle`` so
@@ -2031,6 +2046,21 @@ def build_permission_event(
         _harness_tool_id = qualified_harness_tool_id(
             harness_backend, harness_tool_name_cache.get(_ck, ""), harness_mcp_servers
         )
+    # claude-agent-acp states no tool name on the permission request itself, so
+    # the kiro-cli built-in a claude read tool stands for comes only from the name
+    # its preceding tool_call frame stamped. Only a Side Chat session gets it: the
+    # name is what the READ_ONLY gate accepts as a read, and in any other session
+    # it would also bind kiro-cli-named deny and governance rules to claude calls.
+    _harness_builtin_tool = ""
+    if (
+        side_read_only
+        and harness_backend == ACP_BACKEND_CLAUDE
+        and harness_tool_name_cache is not None
+        and tool_call_id
+    ):
+        _harness_builtin_tool = CLAUDE_READ_ONLY_BUILTINS.get(
+            harness_tool_name_cache.get(_ck, ""), ""
+        )
 
     # The agent's stated reason for the call, shown beside the approval. The
     # same agent-authored display text a tool_call frame carries, read the same
@@ -2060,6 +2090,7 @@ def build_permission_event(
         diff_path=_diff_path,
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
+        harness_builtin_tool=_harness_builtin_tool,
         tool_purpose=_purpose,
     )
     return event, recorded

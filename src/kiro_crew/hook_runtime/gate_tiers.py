@@ -37,6 +37,7 @@ if TYPE_CHECKING:
         _governance_denial,
         _is_declared_builtin_mcp_server,
         _is_first_party_app,
+        _is_harness_read_only_builtin,
         _is_host_read_only_builtin,
         _normalize_tool_name,
         _note_title_only_grant_pattern,
@@ -286,6 +287,10 @@ class GateFacts:
             )
             if alias and alias not in targets:
                 targets.append(alias)
+            # claude states no _meta.kiro identity, so this is the only form in
+            # which a rule written as ``web_fetch`` meets claude's WebFetch.
+            if call.harness_builtin_tool and call.harness_builtin_tool not in targets:
+                targets.append(call.harness_builtin_tool)
             if call.command:
                 targets.append(call.command)
             for raw_command in self.raw_shell_commands:
@@ -666,7 +671,13 @@ def _tier_governance(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     # not the host's file reader and gets no alias. Both in the one query;
     # neither repeats the title.
     alias = "" if call.mcp_server else _HOST_READ_ONLY_BUILTIN_ALIASES.get(call.mcp_tool, "")
-    extra_titles = tuple(name for name in (call.mcp_tool, alias) if name and name != call.title)
+    # claude states no _meta.kiro identity: its read built-in is named by
+    # harness_builtin_tool, so a ceiling's deny on web_search binds it too.
+    extra_titles = tuple(
+        name
+        for name in dict.fromkeys((call.mcp_tool, alias, call.harness_builtin_tool))
+        if name and name != call.title
+    )
     gov_reason = _governance_denial(
         facts.ctx,
         call.title,
@@ -864,7 +875,10 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
     carrying ``identity_trusted``, the provenance flag saying that pair came from
     the ``_meta.kiro`` parse this client made of the tool_call frame
     (``AcpEvent.mcp_identity_trusted``) rather than from an inline payload or a
-    hand-built event -- without it a host-known name is unproven and refused. The
+    hand-built event -- without it a host-known name is unproven and refused. On
+    claude, which stamps no ``_meta.kiro``, the same built-in is named by
+    ``harness_builtin_tool``, mapped from the tool name claude-agent-acp stamped on
+    the tool_call frame (``_is_harness_read_only_builtin``). The
     agent-influenced inputs -- the ACP ``kind`` and the title -- may NARROW (a
     non-read kind refuses) but never prove, so a mutating tool labelled
     ``kind="read"`` or titled ``Read …`` is not auto-approved; an MCP-served tool,
@@ -906,7 +920,7 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
             return ToolHookResult.allow()
         if _is_host_read_only_builtin(
             call.mcp_tool, call.mcp_server, mcp_identity_trusted=call.identity_trusted
-        ):
+        ) or _is_harness_read_only_builtin(call.harness_builtin_tool, call.mcp_server):
             return ToolHookResult.auto_approve(read_only=True)
         return ToolHookResult.allow()
     # Trust the SEMANTIC kind, as an ALLOW-list. ``kind`` is passed through

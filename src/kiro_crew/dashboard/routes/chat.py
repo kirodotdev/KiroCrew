@@ -150,6 +150,7 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/chat/threads", chat_threads.api_chat_threads_summary)
     app.router.add_get("/api/chat/threads/{mid}", chat_threads.api_chat_thread_detail)
     app.router.add_post("/api/chat/threads/{mid}/reply", chat_threads.api_chat_thread_reply)
+    app.router.add_get("/api/chat/side/tools", handlers.api_side_tools)
     app.router.add_post("/api/chat/slots/{slot}/side/open", handlers.api_side_open)
     app.router.add_post("/api/chat/slots/{slot}/side/turn", handlers.api_side_turn)
     app.router.add_post("/api/chat/slots/{slot}/side/stop", handlers.api_side_stop)

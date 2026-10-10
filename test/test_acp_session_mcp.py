@@ -1770,6 +1770,152 @@ class TestClientSeam:
         source = inspect.getsource(client_mod.AcpClient._initialize_session)
         assert source.count("await self._pin_claude_starting_mode(") == 2
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["new", "load"])
+    async def test_a_side_read_only_session_starts_confined_and_pinned(
+        self, tmp_path, agents_dir, monkeypatch, path
+    ):
+        """A Side Chat session gets only the read built-ins and no MCP server.
+
+        The spec's servers are not mounted, every web call is forced to the host by
+        an inline ``ask`` rule, settings hooks are off, bypass cannot be the
+        starting mode, and an approving mode inherited from the user's settings is
+        pinned to ``default`` before the first prompt -- on both establishment paths.
+        """
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        client = self._seeded(
+            tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, side_read_only=True
+        )
+        if path == "load":
+            client._resume_session_id = "s-old"
+        sent, killed = self._adapter_transport(
+            client, monkeypatch, started_mode="bypassPermissions"
+        )
+
+        await client._initialize_session()
+
+        params = dict(sent)["session/load" if path == "load" else "session/new"]
+        assert params["mcpServers"] == []
+        options = params["_meta"]["claudeCode"]["options"]
+        assert options["tools"] == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+        assert options["strictMcpConfig"] is True
+        assert options["allowDangerouslySkipPermissions"] is False
+        assert "settingSources" not in options
+        assert options["settings"]["permissions"]["ask"] == ["WebFetch", "WebSearch"]
+        assert options["settings"]["disableAllHooks"] is True
+        assert [p for m, p in sent if m == "session/set_mode"] == [
+            {"sessionId": client._session_id, "modeId": "default"}
+        ]
+        assert killed == []
+
+    def test_a_side_read_only_session_keeps_the_exclusions_restrictions(self, tmp_path, agents_dir):
+        """On the exclusion path the side shape is added to, never swapped for,
+        the inline settings: the project's deny rules still ride along and only
+        the user tier loads."""
+        _write_spec(agents_dir, servers={"foo": {"command": "/bin/foo"}}, tools=["@foo"])
+        local = tmp_path / ".claude" / "settings.local.json"
+        local.parent.mkdir(parents=True)
+        local.write_text(
+            json.dumps({"permissions": {"deny": ["Read(./secrets/**)"], "ask": ["WebFetch"]}}),
+            encoding="utf-8",
+        )
+        client = AcpClient(
+            work_dir=tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, side_read_only=True
+        )
+        client._claude_adapter_disk_version = "0.84.0"
+        client._write_claude_local_settings()
+        assert client._claude_local_settings_excluded is True
+
+        options = client._claude_session_meta()["claudeCode"]["options"]
+
+        assert options["settingSources"] == ["user"]
+        permissions = options["settings"]["permissions"]
+        assert "Read(./secrets/**)" in permissions["deny"]
+        assert permissions["ask"] == ["WebFetch", "WebSearch"]
+        assert options["tools"] == ["Read", "Grep", "Glob", "WebFetch", "WebSearch"]
+
+    @pytest.mark.parametrize(("side_read_only", "builtin"), [(True, "fs_read"), (False, "")])
+    def test_only_a_side_read_only_session_names_a_claude_read_builtin(
+        self, tmp_path, side_read_only, builtin
+    ):
+        """The mapped name is how the READ_ONLY gate proves a claude read on a
+        Side Chat session; on any other session it would bind kiro-cli-named deny
+        rules to claude's own tools."""
+        from kiro_crew.acp.types import JsonRpcMessage
+
+        client = AcpClient(
+            work_dir=tmp_path, acp_backend=ACP_BACKEND_CLAUDE, side_read_only=side_read_only
+        )
+        client._extract_tool_event(
+            JsonRpcMessage(
+                method="session/update",
+                params={
+                    "update": {
+                        "_meta": {"claudeCode": {"toolName": "Read"}},
+                        "sessionUpdate": "tool_call",
+                        "toolCallId": "toolu_1",
+                        "title": "Read /etc/hosts",
+                        "kind": "read",
+                        "rawInput": {"file_path": "/etc/hosts"},
+                    }
+                },
+            )
+        )
+        event = client._build_permission_event(
+            JsonRpcMessage(
+                id=7,
+                method="session/request_permission",
+                params={
+                    "toolCall": {
+                        "toolCallId": "toolu_1",
+                        "title": "Read /etc/hosts",
+                        "kind": "read",
+                    },
+                    "options": [
+                        {"optionId": "allow-once", "name": "Yes", "kind": "allow_once"},
+                        {"optionId": "reject-once", "name": "No", "kind": "reject_once"},
+                    ],
+                },
+            )
+        )
+        assert event is not None
+        assert event.harness_builtin_tool == builtin
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("version", ["0.83.0", None])
+    async def test_a_handshake_below_the_floor_stops_a_side_read_only_session(
+        self, tmp_path, agents_dir, monkeypatch, version
+    ):
+        """The read-only shape rides session options an unverified adapter may
+        ignore, so the session never reaches its first prompt."""
+        client = self._seeded(
+            tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE, side_read_only=True
+        )
+        _sent, killed = self._adapter_transport(
+            client, monkeypatch, started_mode="default", version=version
+        )
+        with pytest.raises(client_mod.AcpError, match="not verified to honour settingSources"):
+            await client._initialize_session()
+        assert killed == [True]
+
+    @pytest.mark.parametrize(
+        ("version", "expected"),
+        [("0.84.0", True), ("0.86.0", True), ("0.81.2", False), ("", False)],
+    )
+    def test_side_chat_asks_the_installed_adapters_version(self, monkeypatch, version, expected):
+        """Side Chat grants tools on claude only from an adapter at the floor."""
+        from kiro_crew.agent_sdk.drivers.acp import claude_adapter_honours_session_options
+
+        monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", (["/x/claude-agent-acp"], ""))
+        monkeypatch.setattr(client_mod, "_claude_adapter_installed_version", lambda argv: version)
+        assert claude_adapter_honours_session_options() is expected
+
+    def test_side_chat_sees_no_adapter_as_unverified(self, monkeypatch):
+        from kiro_crew.agent_sdk.drivers.acp import claude_adapter_honours_session_options
+
+        monkeypatch.setattr(client_mod, "_claude_acp_argv_cache", (None, "PATH"))
+        assert claude_adapter_honours_session_options() is False
+
     @pytest.mark.parametrize(
         "raw",
         [

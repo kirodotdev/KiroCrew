@@ -96,6 +96,20 @@ OPENCODE_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
     "use_subagent": ("task",),
 }
 
+#: claude-agent-acp's read-only built-ins, keyed by the name the adapter stamps on
+#: a ``tool_call`` frame (``_meta.claudeCode.toolName``), mapped to the kiro-cli
+#: built-in that does the same job. It names that built-in on a permission event
+#: (``AcpEvent.harness_builtin_tool``) for the deny floor and the read-only proof.
+#: Not a :data:`HARNESS_TOOL_TABLES` row: that would also change which spec and
+#: Hooks-page hooks match a claude call.
+CLAUDE_READ_ONLY_BUILTINS: dict[str, str] = {
+    "Read": "fs_read",
+    "Grep": "grep",
+    "Glob": "glob",
+    "WebFetch": "web_fetch",
+    "WebSearch": "web_search",
+}
+
 #: The backends whose permission event carries a qualified harness tool id.
 HARNESS_TOOL_TABLES: dict[str, dict[str, tuple[str, ...]]] = {
     ACP_BACKEND_GOOSE: GOOSE_TOOL_IDS_BY_KIRO_TOOL,
