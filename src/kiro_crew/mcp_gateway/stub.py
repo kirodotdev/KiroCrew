@@ -1420,6 +1420,13 @@ async def run_bridge(
                     session.note_outbound(line, msg)
                     if "method" in msg and "id" in msg:
                         _outstanding_ids.add(msg["id"])
+                    elif msg.get("method") == "notifications/cancelled":
+                        # A cancelled request is owed no response, so it stops
+                        # being outstanding: it neither keeps the liveness
+                        # monitor pinging nor gets an error when the bridge drops.
+                        _cparams = msg.get("params")
+                        if isinstance(_cparams, dict) and "requestId" in _cparams:
+                            _outstanding_ids.discard(_cparams["requestId"])
                 except (ValueError, TypeError):
                     pass
             try:
