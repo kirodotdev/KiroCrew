@@ -976,6 +976,23 @@ def _point_private_state_at_scratch(
     env[env_var] = str(scratch)
 
 
+def _seed_private_state(env: dict[str, str], plan: SpawnPlan, scratch: Path | None) -> None:
+    """Let the host prepare its private-state directory before the child starts.
+
+    Runs only when the plan names both a private-state variable and a seed, the
+    process has scratch, and nobody already chose a location for the variable:
+    an operator's value means the child uses that directory, not scratch.
+    """
+    if (
+        plan.private_state_seed is None
+        or plan.private_state_env is None
+        or scratch is None
+        or env.get(plan.private_state_env)
+    ):
+        return
+    plan.private_state_seed(env, scratch)
+
+
 async def _retrying_spawn_factory(
     factory: "Callable[..., Awaitable[asyncio.subprocess.Process]]", **kwargs: Any
 ) -> asyncio.subprocess.Process:
@@ -2169,6 +2186,9 @@ class AcpRuntime:
                 self._harness.apply_spawn_env(
                     env, spawned_binary=spawned_binary, cli_owned_auth=not plan.host_auth
                 )
+                # A host that keeps private state may prepare it in scratch before
+                # the child exists; one more blocking file copy, so it rides here.
+                _seed_private_state(env, plan, self._scratch_dir)
 
             await self._to_thread_guarding_sandbox(_resolve_env_off_loop)
             return env

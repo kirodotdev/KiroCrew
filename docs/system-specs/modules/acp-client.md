@@ -3113,15 +3113,24 @@ set, or one a cron or workflow `extra_env` carries, reaches the child as set.
 Without a scratch directory nothing is set and one warning is logged: the child
 gets codex's shared default rather than a refused spawn.
 
-The rebuild cost is paid on every start, not once. The scratch directory lives
-and dies with its process, so each new chat, resume, subagent, cron run and
-knowledge worker that starts Codex begins on an empty database home and rebuilds
-codex's index from the rollouts in `CODEX_HOME`. The cost scales with the
-user's Codex history: reported on codex 0.159 with about 3,200 threads (7.5 GB
-of rollouts), `initialize` took about 60 s and wrote about 400 MB per runtime,
-against 0.2 s on the shared home. On that host dashboard model discovery for a
-Codex crew gave up before `initialize` answered, so the model picker offered
-only `auto`. The operator workaround is to set `CODEX_SQLITE_HOME` in the gateway's
-own environment (for a systemd user unit, `Environment=CODEX_SQLITE_HOME=%h/.codex`
-in a drop-in), which restores the shared, warm index and gives up the isolation
-from other `codex app-server` processes that this section exists for.
+The scratch directory lives and dies with its process, so each new chat, resume,
+subagent, cron run and knowledge worker that starts Codex begins on an empty
+database home. Left empty,
+codex rebuilds its index from the rollouts in `CODEX_HOME`, and that cost scales
+with the user's Codex history: about 60 s and 400 MB per runtime at 3,200 threads
+on codex 0.159, and past the 90 s `initialize` timeout at about 17,000 rollouts,
+where every retry restarts the same rebuild. So the harness also names a seed
+(`SpawnPlan.private_state_seed`, `acp/codex_sqlite.py`), which the runtime calls
+on the spawn worker before the child exists, once scratch is allocated and only
+when nobody chose a location for the variable. It copies `CODEX_HOME/state_5.sqlite`
+into scratch with SQLite's online backup (committed WAL pages included, the
+source left unchanged) only when that index reports `backfill_state.status =
+'complete'`, inside a 10 s budget, through a staging file renamed into place.
+Only the state index is copied, never credentials or the log database, and each
+runtime still owns its own copy. A missing, incomplete or unreadable source, an
+existing destination, or any copy error leaves scratch as it was, and codex
+falls back to its cold initialization. An operator who sets `CODEX_SQLITE_HOME`
+in the gateway's own environment (for a systemd user unit,
+`Environment=CODEX_SQLITE_HOME=%h/.codex` in a drop-in) gets the shared index
+with no seed, and gives up the isolation from other `codex app-server`
+processes that this section exists for.

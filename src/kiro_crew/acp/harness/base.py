@@ -219,6 +219,13 @@ class SpawnPlan:
     A value already in the child's environment is left as set.
     """
 
+    private_state_seed: Callable[[Mapping[str, str], Path], None] | None = None
+    """Optional preparation of the private directory before the child exists.
+
+    Runs on the spawn worker with the merged environment. An explicit private
+    state location skips preparation, preserving the operator's override.
+    """
+
 
 # ── Seam 3: session/new and session/load extras ──
 
