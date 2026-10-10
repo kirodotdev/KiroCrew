@@ -812,7 +812,7 @@ class TestOneTurnPerSessionKey:
     async def test_the_key_is_released_when_the_turn_finishes(self, wired, monkeypatch):
         """A completed turn must not leave its key claimed forever."""
         monkeypatch.setattr(H, "_run_hook_inner", AsyncMock(return_value="done"))
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -873,7 +873,7 @@ class TestOneTurnPerSessionKey:
             return_value=None if crashed else "done",
         )
         monkeypatch.setattr(H, "_run_hook_inner", inner)
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -906,7 +906,7 @@ class TestOneTurnPerSessionKey:
     async def test_a_crashed_turn_still_releases_the_key(self, wired, monkeypatch):
         """A failing turn must not wedge the session key permanently."""
         monkeypatch.setattr(H, "_run_hook_inner", AsyncMock(side_effect=RuntimeError("boom")))
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         state.owner_id = None
@@ -940,7 +940,7 @@ class TestDeliveryIsRecordedAfterItHappens:
 
     @staticmethod
     def _state():
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.record_failure = AsyncMock()
         state.sessions.reset = AsyncMock()
         return state
@@ -1651,7 +1651,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_completed_run_recorded_with_token(self, wired, monkeypatch):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()
@@ -1682,7 +1682,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_timeout_run_recorded(self, wired):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()
@@ -1705,7 +1705,7 @@ class TestRejectionPathsAreRecorded:
 
     @pytest.mark.asyncio
     async def test_error_run_recorded(self, wired):
-        state = MagicMock()
+        state = MagicMock(memory_startup_task=None)
         state.sessions.release = MagicMock()
         state.sessions.reset = AsyncMock()
         state.sessions.record_failure = AsyncMock()

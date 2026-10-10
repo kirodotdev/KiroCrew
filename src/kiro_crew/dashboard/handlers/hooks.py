@@ -26,6 +26,7 @@ from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.execution_context import ExecutionContext, clear_session_execution
 from kiro_crew.executors import run_in_embed_pool, run_in_tool_gate_pool
+from kiro_crew.memory_startup import MemoryStartupUnavailable, wait_for_memory_preparation
 from kiro_crew.permission_floor import (
     OUTCOME_PENDING_APPROVAL,
     OUTCOME_REJECTED_TRANSPORT_FLOOR,
@@ -1528,6 +1529,14 @@ async def _run_hook_agent(
                 f"{message}"
             )
 
+        # The inner turn's first step opens the session's memory, which the
+        # gateway keeps closed from boot until its startup preparation task has
+        # restored and initialized every store. A dashboard chat turn waits for
+        # that task before it reads memory; this turn takes the same bounded
+        # wait, so a webhook accepted during startup runs once memory is ready
+        # instead of failing on its first read.
+        await wait_for_memory_preparation(getattr(state, "memory_startup_task", None))
+
         result_text = await asyncio.wait_for(
             _run_hook_inner(
                 state,
@@ -1544,6 +1553,15 @@ async def _run_hook_agent(
         result_text = f"Hook agent timed out after {timeout_secs}s"
         detail = result_text
         logger.warning("Hook agent timeout: %s", session_key)
+        await state.sessions.record_failure(session_key)
+    except MemoryStartupUnavailable as exc:
+        # Memory preparation outlasted the wait, or recovery failed for this
+        # store. The run record and the delivered result name that, so the
+        # caller knows to retry or to inspect memory recovery.
+        outcome = "error"
+        result_text = f"Hook agent did not start: {exc}"
+        detail = result_text
+        logger.warning("Hook agent %s did not start: %s", session_key, exc)
         await state.sessions.record_failure(session_key)
     except Exception:
         outcome = "error"
