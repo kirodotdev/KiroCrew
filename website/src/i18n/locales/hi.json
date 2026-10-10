@@ -13784,7 +13784,12 @@
         "dismiss_summary_result": "सारांश का नतीजा हटाओ",
         "summarize_now": "अभी सारांश बनाओ",
         "tool": "टूल",
-        "when": "कब"
+        "when": "कब",
+        "search_lessons": "पाठ खोजें…",
+        "edit": "संपादित करें",
+        "cancel": "रद्द करें",
+        "edit_rule": "नियम संपादित करें",
+        "edit_failed": "पाठ को अपडेट नहीं किया जा सका"
       },
       "portabilityTab": {
         "archive_contents": "आर्काइव की सामग्री:",

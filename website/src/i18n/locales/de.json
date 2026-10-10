@@ -13784,7 +13784,12 @@
         "dismiss_summary_result": "Zusammenfassungsergebnis schließen",
         "summarize_now": "Jetzt zusammenfassen",
         "tool": "Werkzeug",
-        "when": "Wann"
+        "when": "Wann",
+        "search_lessons": "Lektionen suchen…",
+        "edit": "Bearbeiten",
+        "cancel": "Abbrechen",
+        "edit_rule": "Regel bearbeiten",
+        "edit_failed": "Lektion konnte nicht aktualisiert werden"
       },
       "portabilityTab": {
         "archive_contents": "Archivinhalt:",

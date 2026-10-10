@@ -14208,7 +14208,12 @@
         "dismiss_summary_result": "Скрыть результат сводки",
         "summarize_now": "Создать сводку",
         "tool": "инструмент",
-        "when": "Когда"
+        "when": "Когда",
+        "search_lessons": "Поиск уроков…",
+        "edit": "Редактировать",
+        "cancel": "Отмена",
+        "edit_rule": "Редактировать правило",
+        "edit_failed": "Не удалось обновить урок"
       },
       "portabilityTab": {
         "archive_contents": "Содержимое архива:",

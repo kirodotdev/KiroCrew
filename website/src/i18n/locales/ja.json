@@ -13572,7 +13572,12 @@
         "dismiss_summary_result": "要約結果を閉じる",
         "summarize_now": "今すぐ要約",
         "tool": "ツール",
-        "when": "時間"
+        "when": "時間",
+        "search_lessons": "レッスンを検索…",
+        "edit": "編集",
+        "cancel": "キャンセル",
+        "edit_rule": "ルールを編集",
+        "edit_failed": "レッスンを更新できませんでした"
       },
       "portabilityTab": {
         "archive_contents": "アーカイブの内容:",

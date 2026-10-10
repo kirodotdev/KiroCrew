@@ -13996,7 +13996,12 @@
         "dismiss_summary_result": "Dispensar o resultado do resumo",
         "summarize_now": "Resumir agora",
         "tool": "ferramenta",
-        "when": "Quando"
+        "when": "Quando",
+        "search_lessons": "Pesquisar lições…",
+        "edit": "Editar",
+        "cancel": "Cancelar",
+        "edit_rule": "Editar regra",
+        "edit_failed": "Não foi possível atualizar a lição"
       },
       "portabilityTab": {
         "archive_contents": "Conteúdo do arquivo:",
