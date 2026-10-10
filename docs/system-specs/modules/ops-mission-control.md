@@ -1924,6 +1924,17 @@ keystone secret and compared with `hmac.compare_digest`. **Fail-closed**: not
 enabled, or no configured secret, means reject everything. Accepted deliveries land
 in a bounded (200-entry) spool. No public ingress or tunnel is shipped.
 
+**The signature header is compared as bytes, and that is load-bearing rather than
+stylistic.** `hmac.compare_digest` rejects a `str` holding a non-ASCII character by
+raising `TypeError`, and `X-OMC-Signature` is caller-chosen — this is the one route
+on the app that accepts input from whoever can reach the port, and aiohttp decodes a
+header byte that is not valid UTF-8 into a lone surrogate. Encoding both operands
+(`expected` as ASCII hex, the supplied value with `surrogatepass`) gives every
+possible header value the same verdict — the 401 `signature mismatch` a wrong hex
+signature already gets — instead of an unhandled exception that answers 500 with a
+traceback and never reaches the refusal. Same shape as
+`apps.proxy_auth.verify_proxy_request` and the `dev_fleet` inline copy.
+
 **A read never consumes the spool — only a claim does.** `poll()` calls `peek()`, and
 `dispatch.run_cycle` calls `webhook.ack({claimed ids})` after the claim loop. `poll_all`
 has three callers and only ONE of them claims: the heartbeat, `GET /signals` (the Signals

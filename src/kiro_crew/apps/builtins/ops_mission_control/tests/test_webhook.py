@@ -155,6 +155,25 @@ class TestSignature(_Env):
         source = inspect.getsource(webhook.verify_signature)
         self.assertIn("compare_digest", source)
 
+    def test_a_non_ascii_signature_is_a_clean_rejection_not_a_raise(self) -> None:
+        """A malformed header must not escape the refusal as an exception.
+
+        ``hmac.compare_digest`` raises ``TypeError`` when either ``str`` operand
+        holds a non-ASCII character. ``provided`` is the attacker-chosen
+        ``X-OMC-Signature`` header, and aiohttp decodes a header byte that is not
+        valid UTF-8 into a lone surrogate, so both an ordinary accented character
+        and a lone surrogate reach this compare. Each must produce the same
+        ``(False, "signature mismatch")`` a wrong hex signature gets — never a
+        ``TypeError`` that would answer 500 and skip the caller's audit line.
+        """
+        body = _body()
+        for malformed in ("\u00e9", "abc\u00e9", "\udcff", "0" * 63 + "\u00e9"):
+            with self.subTest(provided=malformed):
+                accepted, detail = webhook.enqueue(body, malformed)
+                self.assertFalse(accepted)
+                self.assertEqual(detail, "signature mismatch")
+        self.assertEqual(webhook.queue_depth(), 0)
+
 
 class TestUnauthenticatedInputIsNeverParsed(_Env):
     def setUp(self) -> None:
