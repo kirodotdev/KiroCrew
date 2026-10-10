@@ -44,13 +44,11 @@ import math
 import re
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
-from functools import lru_cache
 from pathlib import Path
 from typing import Any, Final
 
 from kiro_crew.artifact_store.dashboard_package import (
     MAX_THEME_CSS_BYTES,
-    BlockType,
     data_type_catalog,
     view_block_catalog,
 )
@@ -90,6 +88,22 @@ RENDER_CSP: Final[str] = "; ".join(
         "form-action 'none'",
     )
 )
+
+#: The wire type of a BLOCK PATCH: new values for the blocks that subscribe to a
+#: fold that just advanced, and nothing else.
+#:
+#: Distinct from :data:`kiro_crew.dashboard_frame.DATA_MESSAGE_TYPE`, which
+#: replaces the whole read. The two are different events on the controller's
+#: side -- a full refetch after a sequence gap, against the normal case of one
+#: fold moving -- and collapsing them would make a patch repaint every block and
+#: re-run the count-up animation on numbers that did not change.
+#:
+#: The payload is VALUES, never markup: ``{type, blocks: {<block id>:
+#: {fields, display}}, seq?, stale?, missing?}``. A model or view change
+#: versions the package and that is a reload, so a patch has nothing to rebuild
+#: -- which keeps this boundary one that cannot introduce an element.
+#: :func:`block_patch` builds the payload.
+BLOCK_PATCH_MESSAGE_TYPE: Final[str] = "kirocrew-dashboard:block-patch"
 
 _DATA_ELEMENT_ID: Final[str] = "kirocrew-dashboard-data"
 _VENDOR_DIR: Final[Path] = Path(__file__).with_name("dashboard_package_vendor")
@@ -277,7 +291,16 @@ def _as_number(value: object) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return None if math.isnan(value) or math.isinf(value) else float(value)
+        # An int has no size limit and a float does, so the conversion is what
+        # fails: `float(10**400)` raises OverflowError, which is NOT a
+        # ValueError and so is not caught by the string arm below. A fold is
+        # free to carry an integer that large, and letting it through turns one
+        # oversized value into a render error for the whole block.
+        try:
+            as_float = float(value)
+        except OverflowError:
+            return None
+        return None if math.isnan(as_float) or math.isinf(as_float) else as_float
     if isinstance(value, str):
         try:
             parsed = float(value.strip())
@@ -306,9 +329,13 @@ def _format_timestamp(value: object, _spec: Mapping[str, Any]) -> str:
     moment = _parse_instant(value)
     if moment is None:
         return value.strip()
-    return (
-        moment.strftime("%b %-d, %H:%M") if _supports_dash_d() else moment.strftime("%b %d, %H:%M")
-    )
+    # THE DAY IS BUILT, NOT FORMATTED, and that is deliberate: every strftime
+    # directive for a day without a leading zero is platform-dependent. `%-d` is a
+    # glibc extension that Windows rejects outright, so a branch on it renders
+    # "Oct 9" on Linux and "Oct 09" on Windows -- one page, two spellings of the
+    # same instant, and a test asserting either is red on the other platform.
+    # `moment.day` is an int on every platform, so there is one answer.
+    return f"{moment.strftime('%b')} {moment.day}, {moment.strftime('%H:%M')}"
 
 
 def _format_text(value: object, spec: Mapping[str, Any]) -> str:
@@ -351,15 +378,6 @@ _FORMATTERS: Final[Mapping[str, Callable[[object, Mapping[str, Any]], str]]] = {
     "enum": _format_enum,
     "bool": _format_bool,
 }
-
-
-@lru_cache(maxsize=1)
-def _supports_dash_d() -> bool:
-    try:
-        datetime(2026, 1, 2, tzinfo=timezone.utc).strftime("%-d")
-    except ValueError:  # pragma: no cover -- platform-dependent (Windows)
-        return False
-    return True
 
 
 def _parse_instant(value: str) -> datetime | None:
@@ -1034,6 +1052,9 @@ _PAGE_JS: Final[str] = (
   var MESSAGE = """
     + json.dumps(DATA_MESSAGE_TYPE)
     + """;
+  var PATCH = """
+    + json.dumps(BLOCK_PATCH_MESSAGE_TYPE)
+    + """;
   var EVENT = """
     + json.dumps(PAGE_EVENT)
     + """;
@@ -1077,10 +1098,15 @@ _PAGE_JS: Final[str] = (
     return isFinite(parsed) ? parsed : null;
   }
 
-  function fill() {
+  // Every painter takes a ROOT. The whole page on first load; one block's own
+  // <section> on a patch, because a patch names the blocks that moved and
+  // repainting the rest would re-run their count-up animation for a number that
+  // did not change -- which is exactly the decoration the brief rules out.
+  function fill(root) {
+    var scope = root || document;
     var agentic = {};
     for (var i = 0; i < (read.agentic || []).length; i++) agentic[read.agentic[i]] = true;
-    var nodes = document.querySelectorAll('[' + BIND + ']');
+    var nodes = scope.querySelectorAll('[' + BIND + ']');
     for (var n = 0; n < nodes.length; n++) {
       var node = nodes[n];
       var name = node.getAttribute(BIND);
@@ -1095,14 +1121,15 @@ _PAGE_JS: Final[str] = (
       if (agentic[name]) holder.setAttribute('data-dashboard-agentic', 'true');
       else holder.removeAttribute('data-dashboard-agentic');
     }
-    bars();
-    gauges();
-    countUp();
+    bars(scope);
+    gauges(scope);
+    countUp(scope);
+    orbits(scope);
     band();
   }
 
-  function bars() {
-    var groups = document.querySelectorAll('.pkg-bars');
+  function bars(scope) {
+    var groups = scope.querySelectorAll('.pkg-bars');
     for (var g = 0; g < groups.length; g++) {
       var rows = groups[g].querySelectorAll('.pkg-bar-row');
       var largest = 0;
@@ -1122,8 +1149,8 @@ _PAGE_JS: Final[str] = (
     }
   }
 
-  function gauges() {
-    var rings = document.querySelectorAll('.pkg-gauge');
+  function gauges(scope) {
+    var rings = scope.querySelectorAll('.pkg-gauge');
     for (var i = 0; i < rings.length; i++) {
       var box = rings[i];
       var circumference = parseFloat(box.getAttribute('data-pkg-circumference')) || 0;
@@ -1146,9 +1173,9 @@ _PAGE_JS: Final[str] = (
   // Numbers count up when they change, and a change is the only thing that
   // animates: a loop would be decoration, and the brief says every animation
   // says something happened.
-  function countUp() {
+  function countUp(scope) {
     if (still || typeof anime !== 'function') return;
-    var cells = document.querySelectorAll('.pkg-v--number[data-pkg-raw]');
+    var cells = scope.querySelectorAll('.pkg-v--number[data-pkg-raw]');
     for (var i = 0; i < cells.length; i++) {
       var cell = cells[i];
       var name = cell.getAttribute(BIND);
@@ -1192,11 +1219,16 @@ _PAGE_JS: Final[str] = (
   }
 
   // ---- the 3D block -------------------------------------------------------
-  function orbits() {
-    var boxes = document.querySelectorAll('.pkg-orbit');
+  function orbits(scope) {
+    var boxes = (scope || document).querySelectorAll('.pkg-orbit');
     for (var i = 0; i < boxes.length; i++) orbit(boxes[i]);
   }
   function orbit(box) {
+    // IDEMPOTENT. orbits() runs on first paint and again for any block a patch
+    // touched, and a second pass over a stage that already has a canvas would
+    // append another one and leave two scenes animating over each other.
+    var existing = box.querySelector('.pkg-orbit-stage canvas');
+    if (existing) return;
     var toggle = box.querySelector('.pkg-orbit-toggle');
     if (toggle) {
       toggle.addEventListener('click', function () {
@@ -1302,14 +1334,46 @@ _PAGE_JS: Final[str] = (
     // recorded number on the page with one it chose.
     if (event.source !== parent) return;
     var data = event.data;
-    if (!data || data.type !== MESSAGE || !data.read || typeof data.read !== 'object') return;
-    read = data.read;
+    if (!data) return;
+    if (data.type === MESSAGE && data.read && typeof data.read === 'object') {
+      read = data.read;
+      publish();
+      fill();
+      window.dispatchEvent(new Event(EVENT));
+      return;
+    }
+    if (data.type !== PATCH || !data.blocks || typeof data.blocks !== 'object') return;
+    // A BLOCK PATCH: only the blocks that subscribe to the fold that advanced.
+    // Values only -- no markup crosses this boundary. The model and the view
+    // change only when the package is versioned, and that is a reload, so a
+    // patch has nothing to rebuild and this stays a path that cannot introduce
+    // an element.
+    var merged = { fields: {}, display: {} };
+    for (var key of Object.keys(read)) merged[key] = read[key];
+    merged.fields = Object.assign({}, read.fields);
+    merged.display = Object.assign({}, read.display);
+    var touched = [];
+    for (var id of Object.keys(data.blocks)) {
+      var patch = data.blocks[id];
+      if (!patch || typeof patch !== 'object') continue;
+      var section = document.querySelector('[data-pkg-block="' + CSS.escape(id) + '"]');
+      if (!section) continue;
+      Object.assign(merged.fields, patch.fields || {});
+      Object.assign(merged.display, patch.display || {});
+      touched.push(section);
+    }
+    if (!touched.length) return;
+    if (typeof data.seq === 'number') merged.seq = data.seq;
+    if (typeof data.stale === 'boolean') merged.stale = data.stale;
+    if (Array.isArray(data.missing)) merged.missing = data.missing;
+    read = merged;
     publish();
-    fill();
+    for (var t = 0; t < touched.length; t++) fill(touched[t]);
+    band();
     window.dispatchEvent(new Event(EVENT));
   });
 
-  function start() { fill(); orbits(); }
+  function start() { fill(); }
   if (document.readyState === 'loading') addEventListener('DOMContentLoaded', start);
   else start();
 })();
@@ -1317,22 +1381,65 @@ _PAGE_JS: Final[str] = (
 )
 
 
-def block_catalog_summary() -> list[dict[str, Any]]:
-    """The shipped block catalog as plain rows, for a skill page or an evidence file."""
-    rows: list[dict[str, Any]] = []
-    for name, entry in sorted(view_block_catalog().items()):
-        assert isinstance(entry, BlockType)
-        rows.append(
-            {
-                "type": name,
-                "fields": f"{entry.min_fields}..{entry.max_fields}",
-                "accepts": sorted(entry.accepts),
-                "requires": sorted(entry.requires),
-                "renderer": BLOCK_RENDERERS.get(name) is not None,
-                "summary": entry.summary,
-            }
-        )
-    return rows
+def blocks_reading(package: Mapping[str, Any], field_names: Sequence[str]) -> list[str]:
+    """The ids of the blocks that render any of *field_names*, in view order.
+
+    What a controller needs in order to push to the blocks a fold actually
+    moved rather than to the whole page. The same answer
+    ``DashboardModel.subscribers`` gives per field, over a set of fields and in
+    one call.
+    """
+    wanted = set(field_names)
+    return [
+        str(block.get("id"))
+        for block in package.get("view", {}).get("blocks", ())
+        if wanted.intersection(block.get("fields", ()))
+    ]
+
+
+def block_patch(
+    package: Mapping[str, Any],
+    fields: Mapping[str, Any],
+    *,
+    block_ids: Sequence[str] | None = None,
+    seq: int = 0,
+    stale: bool = False,
+    missing: Sequence[str] = (),
+) -> dict[str, Any]:
+    """The payload for a :data:`BLOCK_PATCH_MESSAGE_TYPE` message.
+
+    *fields* is the values that moved. With no *block_ids* the blocks are worked
+    out from the package by :func:`blocks_reading`, so a caller holding a fold's
+    new values does not also have to hold the subscription map.
+
+    Each block carries only the fields IT renders, so a patch cannot leak a
+    value to a block the view never put it on, and the formatted strings come
+    from :func:`display_values` -- the same formatter the first render used,
+    which is what keeps a refilled cell and a first-painted cell the same.
+    """
+    declared = package.get("model", {}).get("types", {})
+    known = {name: value for name, value in fields.items() if name in declared}
+    shown = display_values(package, known)
+    ids = list(block_ids) if block_ids is not None else blocks_reading(package, list(known))
+    by_block: dict[str, Any] = {}
+    for block in package.get("view", {}).get("blocks", ()):
+        block_id = str(block.get("id"))
+        if block_id not in ids:
+            continue
+        mine = [name for name in block.get("fields", ()) if name in known]
+        if not mine:
+            continue
+        by_block[block_id] = {
+            "fields": {name: known[name] for name in mine},
+            "display": {name: shown[name] for name in mine if name in shown},
+        }
+    return {
+        "type": BLOCK_PATCH_MESSAGE_TYPE,
+        "blocks": by_block,
+        "seq": int(seq),
+        "stale": bool(stale),
+        "missing": sorted(missing),
+    }
 
 
 def unrenderable_types() -> dict[str, list[str]]:

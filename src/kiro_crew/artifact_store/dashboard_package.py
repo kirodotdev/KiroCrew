@@ -255,8 +255,7 @@ _COMMON_BLOCK_KEYS: Mapping[str, Callable[[Any], Any]] = {
     "caption": _a_label,
 }
 
-#: The block types a view may place. Owned by the display line (CREW-21660), and
-#: no longer a stub: every entry has a renderer in
+#: The block types a view may place. Every entry has a renderer in
 #: :mod:`kiro_crew.dashboard_package_render`, and every type in its ``accepts``
 #: has a rendering inside that block.
 #:
@@ -373,10 +372,10 @@ def view_block_catalog() -> Mapping[str, BlockType]:
 
     Same contract as :func:`data_type_catalog`, for the other half of the
     package, and the same single point of truth: validation, the JSON Schema and
-    the renderer's dispatch table all read THIS function. The display line owns
-    it (CREW-21660) and :mod:`kiro_crew.dashboard_package_render` is the other
-    half -- a type here with no renderer, or a renderer with no type here, is a
-    test failure rather than a surprise on somebody's dashboard.
+    the renderer's dispatch table all read THIS function.
+    :mod:`kiro_crew.dashboard_package_render` is the other half -- a type here
+    with no renderer, or a renderer with no type here, is a test failure rather
+    than a surprise on somebody's dashboard.
     """
     return {b.name: b for b in _BLOCK_TYPES}
 
@@ -939,14 +938,23 @@ def revert_package(stored_content: str, target_content: str) -> str:
     stale binding names. The live binding therefore wins, and only
     ``model`` / ``view`` / ``theme`` come back from the target.
 
-    Unparseable live content (nothing valid stored yet) falls back to the
-    target's own binding: there is no live binding to preserve.
+    Unparseable live content is REFUSED rather than fallen back on. The only
+    binding available then is the target version's, and adopting it is the very
+    move this function exists to prevent -- a silent rebind to whoever a stale
+    copy named, arrived at through an ordinary revert. A corrupt live package is
+    recoverable by writing one explicitly, which states the binding rather than
+    inheriting it.
     """
     target = parse_package(target_content)
     try:
         live = parse_package(stored_content)
     except ArtifactValidationError:
-        return dump_package(target)
+        raise _refuse(
+            "package",
+            "cannot be reverted while the live package does not parse: the binding "
+            "would have to come from the target version, which is a silent rebind -- "
+            "write the package you want instead, so it states its own bound_to",
+        ) from None
     target["bound_to"] = live["bound_to"]
     return dump_package(target)
 

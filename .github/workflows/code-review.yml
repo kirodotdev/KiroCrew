@@ -266,11 +266,16 @@ jobs:
           BASE: ${{ steps.diffbase.outputs.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
-          # _vendor is third-party code (llama-cpp-python) whose upstream URLs
-          # and identifiers must not be rewritten — mirrors the .woke.yml
-          # ignore_files entry (file ignores don't apply to a --stdin scan).
+          # _vendor and dashboard_package_vendor are third-party code
+          # (llama-cpp-python; anime.js and three.js) whose upstream URLs and
+          # identifiers must not be rewritten — mirrors the .woke.yml
+          # ignore_files entries (file ignores don't apply to a --stdin scan).
+          # The two vendor directories are the exclusion; a repo-wide `*.min.js`
+          # would add nothing, because every minified bundle in the tree lives
+          # under one of them, and a wider pattern than the facts support is a
+          # hole waiting for the first minified file committed somewhere else.
           git diff "$BASE".."$HEAD" --unified=0 --diff-filter=ACMR \
-            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' ':(exclude)test/fixtures/denied_commands_golden.json' \
+            -- ':(exclude)THIRD-PARTY-NOTICES' ':(exclude)CHANGELOG.md' ':(exclude)*.lock' ':(exclude).woke.yml' ':(exclude)AUTOSDE.yaml' ':(exclude)website/AUTOSDE.yaml' ':(exclude)src/kiro_crew/_vendor/**' ':(exclude)src/kiro_crew/dashboard_package_vendor/**' ':(exclude)test/fixtures/denied_commands_golden.json' \
             | grep '^+[^+]' | sed 's/^+//' > /tmp/diff-added-lines.txt
 
           if [ ! -s /tmp/diff-added-lines.txt ]; then
