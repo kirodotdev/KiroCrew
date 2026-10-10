@@ -642,7 +642,6 @@ if _typing.TYPE_CHECKING:
         list_catalog_apps,
         list_installed_apps,
         list_registry,
-        official_catalog,
         refresh_registries,
         registry_name_from_source,
         resolve_installed_trust_repository,
@@ -763,6 +762,7 @@ if _typing.TYPE_CHECKING:
         _fetch_app_manifest,
         _merge_manifest,
         _resolve_manifest,
+        official_catalog,
     )
     from kiro_crew.apps.registry_pipeline.recovery import (  # noqa: F401
         _STALE_CHECKOUT_PATTERN,

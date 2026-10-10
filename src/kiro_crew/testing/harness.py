@@ -940,9 +940,10 @@ def harness_environment(
     Layered over the caller's ``os.environ`` so supported production knobs the
     test process exports (``KIROCREW_EMBED_MODEL_URL``, ``OLLAMA_MODELS``) reach
     the gateway, then pinned: the data home, the agent-spec home, the test-rig
-    marker, unbuffered stdout, and -- unless ``skip_model_download`` is False --
-    the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is the ONLY
-    default a caller can drop, and only through this keyword: it is what a
+    marker, unbuffered stdout, the app store's off-network switch
+    (``KIROCREW_SKIP_APP_STORE_FETCH=1``), and -- unless ``skip_model_download``
+    is False -- the ``KIROCREW_SKIP_MODEL_DOWNLOAD=1`` escape hatch. That flag is
+    the ONLY default a caller can drop, and only through this keyword: it is what a
     dedicated download-failure evidence gateway needs, because the production
     download manager honours the same flag for the dashboard's Retry click as
     for the boot-time background task. A caller that drops it must also export
@@ -980,6 +981,15 @@ def harness_environment(
         # "Created default config") would block-buffer when stdout is a
         # pipe and could mask early failures.
         "PYTHONUNBUFFERED": "1",
+        # The app store answers from the bundled seed, never the live CDN or a
+        # clone of a listed repository: a harness gateway is the offline rig the
+        # browser specs run against, and ``GET /api/apps/registry`` otherwise
+        # pays an uncached HTTPS round trip per listing, bounded only by the
+        # catalog's fetch timeout -- the specs' ready budget. Spelled literally,
+        # like the model-download switch below: ``apps.official_catalog`` owns
+        # the name (``SKIP_FETCH_ENV``) and this module does not import the apps
+        # package.
+        "KIROCREW_SKIP_APP_STORE_FETCH": "1",
     }
     if skip_model_download:
         # Embeddings are default-on; never let a harness-spawned gateway

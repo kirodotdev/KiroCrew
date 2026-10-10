@@ -1525,8 +1525,12 @@ def test_gateway_launcher_fixed_command_and_restart_seed(
 
 def test_harness_environment_skips_the_model_download_by_default(tmp_path, monkeypatch) -> None:
     monkeypatch.delenv("KIROCREW_SKIP_MODEL_DOWNLOAD", raising=False)
+    monkeypatch.delenv("KIROCREW_SKIP_APP_STORE_FETCH", raising=False)
     env = harness_environment(tmp_path, tmp_path / "src")
     assert env["KIROCREW_SKIP_MODEL_DOWNLOAD"] == "1"
+    # The app store stays off the network: the browser specs' Discover page
+    # must not wait on the live CDN.
+    assert env["KIROCREW_SKIP_APP_STORE_FETCH"] == "1"
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
     assert env["PYTHONUNBUFFERED"] == "1"
@@ -1546,6 +1550,7 @@ def test_harness_environment_can_arm_the_download_path_for_one_gateway(
     # The isolation the harness exists for is not negotiable through the switch.
     assert env["KIROCREW_HOME"] == str(tmp_path)
     assert env["KIRO_HOME"] == str(tmp_path / "kiro")
+    assert env["KIROCREW_SKIP_APP_STORE_FETCH"] == "1"
 
 
 def test_harness_environment_pins_home_over_an_inherited_one(tmp_path, monkeypatch) -> None:

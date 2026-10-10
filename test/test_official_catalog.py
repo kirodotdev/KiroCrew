@@ -508,6 +508,40 @@ class TestNameSquattingCannotInheritCuratedCopy:
         assert rows[0]["displayName"] == "The Real One"
 
 
+class TestSkipFetchSwitch:
+    """``KIROCREW_SKIP_APP_STORE_FETCH=1`` keeps every document off the network.
+
+    The E2E harness gateway sets it. The suite's autouse ``_no_live_catalog_network``
+    makes ``_open_catalog`` raise ``AssertionError`` -- outside the family
+    ``fetch_document`` degrades on -- so a skip that reached the seam would fail
+    these tests loudly rather than pass as a degraded fetch.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _armed(self, _floor_monkeypatch):
+        # The floor's own MonkeyPatch (D11): a test's ``monkeypatch.undo()``
+        # cannot lift the switch mid-test.
+        _floor_monkeypatch.setenv(oc.SKIP_FETCH_ENV, "1")
+
+    def test_every_document_reads_as_unreachable_before_the_seam(self):
+        for url in (oc.OFFICIAL_CATALOG_URL, oc.OFFICIAL_CATALOG_BASE + "editorial.json"):
+            assert oc.fetch_document(url) is None
+
+    def test_the_store_degrades_to_the_seed_and_remembers_it(self):
+        assert oc.load_official_catalog() == []
+        cached = oc._read_cache()
+        assert cached is not None and oc._FAILED_KEY in cached
+
+    def test_the_fresh_inventory_fetch_refuses(self):
+        with pytest.raises(oc.CatalogUnavailable):
+            oc.fetch_inventory_entries()
+
+    @pytest.mark.parametrize("value", ["", "0", "true", "yes"])
+    def test_only_the_exact_value_arms_it(self, monkeypatch, value):
+        monkeypatch.setenv(oc.SKIP_FETCH_ENV, value)
+        assert oc.store_fetch_skipped() is False
+
+
 class TestFailedFetchIsRemembered:
     """An outage must not cost every store load a fresh timeout.
 

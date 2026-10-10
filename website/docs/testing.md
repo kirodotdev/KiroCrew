@@ -156,7 +156,10 @@ fails on connection refused.
 **In CI these specs run through the backend gate, not through npm.**
 `python setup.py test_e2e` boots a real gateway wired to a packaged fake ACP
 backend and shells this suite against it, entirely offline. That is the harness to
-match when you are debugging a CI-only failure.
+match when you are debugging a CI-only failure. Offline includes the app store:
+the harness gateway runs with `KIROCREW_SKIP_APP_STORE_FETCH=1`, so Discover
+renders the bundled seed, not the live catalog, and a spec's verdict never waits
+on the CDN. A gateway you start by hand for a local run does not set it.
 
 ## CI gates
 

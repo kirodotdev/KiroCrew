@@ -327,6 +327,31 @@ async def test_list_registry_reaps_detect_probe_tree_on_timeout(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# The off-network switch also covers the listing's per-row manifest clone
+# --------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_resolve_manifest_does_not_clone_under_the_skip_switch(monkeypatch, tmp_path):
+    """A seed row with no cached manifest renders its minimal info, no clone.
+
+    ``KIROCREW_SKIP_APP_STORE_FETCH=1`` is what the E2E harness gateway runs
+    with; the seed fallback otherwise pays a shallow clone per row, bounded by
+    the clone timeout, on a rig that promises to stay offline.
+    """
+    from kiro_crew.apps import official_catalog
+
+    monkeypatch.setenv(official_catalog.SKIP_FETCH_ENV, "1")
+    monkeypatch.setattr(registry, "_read_manifest_cache", lambda entry: None)
+
+    async def _must_not_clone(*args, **kwargs):
+        raise AssertionError("the listing reached the clone under the skip switch")
+
+    monkeypatch.setattr(registry, "_fetch_app_manifest", _must_not_clone)
+    entry = {"name": "demoapp", "repo": "https://example.com/demo.git", "branch": "main"}
+
+    assert await registry._resolve_manifest(dict(entry)) == entry
+
+
+# --------------------------------------------------------------------------
 # Bug 2b — install_from_registry detect probe reaps the tree on timeout
 # --------------------------------------------------------------------------
 @pytest.mark.asyncio

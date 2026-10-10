@@ -412,6 +412,11 @@ scenario costs about three minutes; the CI helper enforces a 12-minute ceiling
 for the dedicated UI lane, without imposing that ceiling on the shared suite.
 `harness_environment()` is unit-tested in `test/test_harness.py`: the default
 skip, the drop, and that `KIROCREW_HOME`/`KIRO_HOME` stay pinned either way.
+It also pins `KIROCREW_SKIP_APP_STORE_FETCH=1`, which no caller can drop: the
+app store answers from the bundled seed, so `GET /api/apps/registry` never pays
+the live catalog's uncached HTTPS round trip (bounded by `FETCH_TIMEOUT`, the
+same 10 s the Discover specs wait for their ready signal) or a per-row manifest
+clone. `kiro_crew.apps.official_catalog.SKIP_FETCH_ENV` owns the name.
 The supervisor restart test also verifies that only the download switch changes:
 all other environment values retain the initial launch snapshot. The failed
 mirror port stays bound without listening until teardown, and loopback hosts

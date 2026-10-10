@@ -36,6 +36,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import os
 import re
 import time
 import urllib.error
@@ -71,10 +72,27 @@ CACHE_TTL = 3600  # 1 hour
 #: cost of remembering too long is a store that stays stale after the CDN is back.
 FAILURE_TTL = 60
 FETCH_TIMEOUT = 10
+#: Escape hatch for tests and CI, mirroring ``KIROCREW_SKIP_MODEL_DOWNLOAD``: a
+#: test rig's store must never reach the published documents' origin. Set to
+#: ``"1"`` it makes every document read as unreachable, so the store degrades to
+#: the bundled seed exactly as it does offline, and the seed listing's per-row
+#: manifest clone is skipped as well (``registry_pipeline.manifests``). It is a
+#: gate on the fetch, never a redirect: nothing here lets the origin be replaced,
+#: which is the change that would turn a URL into a file read or a spoofed
+#: catalog. The E2E harness gateway sets it because ``GET /api/apps/registry``
+#: otherwise pays an uncached HTTPS round trip per listing
+#: (``fetch_inventory_entries`` is deliberately uncached) bounded only by
+#: ``FETCH_TIMEOUT``, which is also the browser specs' ready budget.
+SKIP_FETCH_ENV = "KIROCREW_SKIP_APP_STORE_FETCH"
 #: A catalog of a few dozen apps is tens of kilobytes. The cap is not about disk
 #: but about not reading an unbounded body into memory from a host we do not
 #: control at parse time.
 MAX_BYTES = 4 * 1024 * 1024
+
+
+def store_fetch_skipped() -> bool:
+    """Whether :data:`SKIP_FETCH_ENV` holds the store off the network."""
+    return os.environ.get(SKIP_FETCH_ENV) == "1"
 
 
 def _cache_path() -> Path:
@@ -204,7 +222,14 @@ def fetch_document(url: str) -> dict[str, Any] | None:
 
     Every failure is a degradation rather than an error: each caller has a
     working answer without the document.
+
+    Checked BEFORE the seam, not inside it: ``_open_catalog`` is what tests
+    intercept, and a skip that reached it would be indistinguishable from a
+    fetch that did.
     """
+    if store_fetch_skipped():
+        logger.info("%s=1 — not fetching %s", SKIP_FETCH_ENV, url)
+        return None
     try:
         req = _https_request(url)
         with _open_catalog(req) as resp:

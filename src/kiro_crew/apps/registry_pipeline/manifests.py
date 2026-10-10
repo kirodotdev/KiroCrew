@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
+from kiro_crew.apps import official_catalog
 from kiro_crew.apps.registry_pipeline import _FACADE
 from kiro_crew.apps.registry_pipeline.caches import _read_manifest_cache, _write_manifest_cache
 from kiro_crew.apps.registry_pipeline.checkout import (
@@ -310,6 +311,15 @@ async def _resolve_manifest(entry: dict[str, Any]) -> dict[str, Any]:
     cached = await asyncio.to_thread(_read_manifest_cache, entry)
     if cached:
         return _merge_manifest(entry, cached)
+
+    # The same switch that keeps the catalog documents off the network keeps
+    # the listing's clone off it too: a seed row with no cached manifest
+    # renders its minimal info, which is exactly the failed-fetch degradation
+    # below. The install path (``install.py``) calls ``_fetch_app_manifest``
+    # directly and is not gated here -- an install needs the network anyway.
+    if official_catalog.store_fetch_skipped():
+        logger.info("%s=1 — not fetching app.json for %s", official_catalog.SKIP_FETCH_ENV, name)
+        return entry
 
     # Fetch from repo
     # Same-repo credential carve-out: if the entry's clone URL matches the
