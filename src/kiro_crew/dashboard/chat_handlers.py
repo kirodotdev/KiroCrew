@@ -6228,8 +6228,18 @@ def _wire_model_id(provider: AcpProvider, model_name: str) -> str:
     namespace = capabilities_of(provider).model_id_namespace
     if namespace != MODEL_NAMESPACE_ACP:
         # No id on this namespace means "let the server choose", so returning to
-        # default needs a reset.
-        return "" if is_default else model_registry.to_provider_id(model_name, namespace)
+        # default needs a reset. Otherwise translate the pick to the provider id
+        # and fold it onto the spelling the backend actually advertised: the
+        # static registry can expand a short alias such as ``sonnet`` to a
+        # Bedrock-style id the adapter now rejects, and ``resolve_wire_model_id``
+        # tightens that back onto the advertised alias (the same fold the startup
+        # path applies). An id translated here but not folded reaches the wire as
+        # the stale spelling.
+        if is_default:
+            return ""
+        return model_registry.resolve_wire_model_id(
+            model_registry.to_provider_id(model_name, namespace), namespace
+        )
     if is_default:
         # kiro DOES express Auto as a real model id — but only switch to it when
         # this session's backend actually advertised it.

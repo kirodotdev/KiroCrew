@@ -288,3 +288,34 @@ def test_cc_models_falls_back_to_registry_without_a_session(tmp_path: Path):
     assert "us.anthropic.claude-opus-5" not in names
     assert "sonnet" not in names
     assert len(names) > 1
+
+
+def test_live_switch_prefers_claude_advertised_alias_over_registry_id():
+    from kiro_crew import model_registry
+    from kiro_crew.acp.types import ACP_BACKEND_CLAUDE
+    from kiro_crew.agent_sdk.capabilities import capabilities_for
+    from kiro_crew.dashboard.chat_handlers import _wire_model_id
+
+    # The adapter advertises short family aliases; the static registry expands a
+    # pick to a stale Bedrock-style id the adapter rejects. _wire_model_id must
+    # fold the translated id back onto the advertised alias via the shared
+    # resolve_wire_model_id fold (the same one the startup path uses).
+    model_registry.refresh_advertised_models("claude_code", ["default", "opus", "sonnet", "haiku"])
+
+    class Provider:
+        capabilities = capabilities_for(ACP_BACKEND_CLAUDE)
+
+        def available_models(self):
+            return [
+                {"modelId": "default"},
+                {"modelId": "opus"},
+                {"modelId": "sonnet"},
+                {"modelId": "haiku"},
+            ]
+
+    provider = Provider()
+
+    assert _wire_model_id(provider, "sonnet") == "sonnet"
+    assert _wire_model_id(provider, "sonnet-4.6-1m") == "sonnet"
+    assert _wire_model_id(provider, "global.anthropic.claude-sonnet-4-6[1m]") == "sonnet"
+    assert _wire_model_id(provider, "opus-4.8-1m") == "opus"
