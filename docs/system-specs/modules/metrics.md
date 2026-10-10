@@ -731,8 +731,37 @@ the recorder's `redact()` guardrail.
 ## Dashboard handler
 
 `dashboard/handlers/telemetry.py` — `GET /api/telemetry/startup` scans the JSONL
-shards (14-day window, shard-fingerprint + 30s-TTL cache, aggregation offloaded
-via `asyncio.to_thread`), aggregates the startup histogram into p50/p90 split by
+shards over ONE reporting window shared by every block of the payload. The window
+is `?days=N` (rolling, ending now) or `?since=&until=` (a fixed range in epoch
+seconds; the panel sends local midnights, so `until` is the midnight after the
+last picked day), resolved by `usage.resolve_window`. A request naming no window
+(the panel's `Default` choice, where it sits until the reader picks) answers
+exactly as before the range control existed: the OTEL and context blocks cover
+the last 14 days (`_WINDOW_DAYS`) and the spend block the last 7
+(`SPEND_WINDOW_DAYS`); the payload says so with `window_default: true` and
+`cost_window_days`. A named window drives every block, and is CLAMPED, never refused: a rolling `days` to at
+least one day, the start to
+`usage.MAX_WINDOW_DAYS` (90) before now, the end to now rounded up to the minute
+(so a range running to "today" keeps one `until` between 5s polls), an inverted
+range swapped, and a collapsed one widened to the day before its end. The panel's
+custom picker offers start days back to `MAX_WINDOW_DAYS - 1` days before today,
+so a picked range holds at most 90 whole dates, all inside the clamp. The
+effective window is echoed as `window_days`, `window_start`/`window_end` (UTC
+ISO-8601) and `window_rolling`, beside
+`metrics_retention_days` (`telemetry.retention_days`, 0 disables age pruning;
+`telemetry.max_total_mb` can still drop the oldest shards by size), which
+the panel uses to say when OTEL figures cannot reach as far back as the window
+and to title those cards with the span they do cover. The turn drill-down
+(`/api/usage/turns`) is fetched over the echoed bounds, not the request, so it
+lists exactly the turns its row summed.
+Shard FILES are picked by their UTC day. With a named window each data point is
+then kept only when its own `time_unix_nano` falls inside it (a point with no
+timestamp keeps its shard's day); with no window every point in the picked
+shards counts, exactly as on main. The cache keys on the window, that mode, plus
+the shard fingerprint; a
+rolling window keys on its length, so the moving start costs no cache miss and
+the 30s TTL bounds its drift. Aggregation is offloaded via `asyncio.to_thread`;
+it aggregates the startup histogram into p50/p90 split by
 cold/warm (`spawned` attr) + outcome + daily series, the turn histogram into a
 `turn` block (stats + outcome counts + `fault_rate`), and generically surfaces
 every other `kirocrew.*` metric (`other` list) so new emit call-sites appear
@@ -1140,9 +1169,12 @@ the per-turn drill-down under `slot_spend`'s aggregate: one row per turn with
 (tokens in/out, cache create/read, `credits`, `cost`, `duration_ms`, and the
 context meter pair). A non-numeric or non-finite field is dropped from its row,
 never the row itself. `handlers/telemetry.py::api_usage_turns` serves it as
-`GET /api/usage/turns?slot=<session key>[&days=N]` (`400` on a missing slot;
-`days` clamps to `[1, SPEND_WINDOW_DAYS]` rather than refusing, because shards
-beyond the window are retired anyway). This is the endpoint an **app** is
+`GET /api/usage/turns?slot=<session key>[&days=N | &since=&until=]` (`400` on a
+missing slot; the window is read by the same `resolve_window` as the panel, so the
+Spend table's drill-down lists the turns of the range its row summed, defaults to
+`SPEND_WINDOW_DAYS`, and clamps to `MAX_WINDOW_DAYS` rather than refusing; the
+response is `{slot, days, turns}`, with `days` the clamped length and no
+start/end echo, because the drill-down already sends the bounds it measured). This is the endpoint an **app** is
 granted through its manifest's `permissions.api` to account for what its own
 agent slots cost — apps otherwise have no path to credits, and the shard files'
 location and row shape stay this module's private contract. **App isolation is

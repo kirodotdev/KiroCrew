@@ -13,7 +13,7 @@ import time
 from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from aiohttp import web
 
@@ -113,8 +113,11 @@ def _shard_path_for(ts: datetime) -> Path:
     return _token_usage_dir() / f"{ts.astimezone().strftime('%Y-%m-%d')}.jsonl"
 
 
-def _shards_in_window(days: int) -> list[Path]:
+def _shards_in_window(days: float, until: float | None = None) -> list[Path]:
     """Return shards whose date falls inside the last ``days`` days.
+
+    ``until`` (an epoch) anchors the window's END instead of now, so a range
+    that ended in the past also drops the shards written after it.
 
     The directory listing is cheap (≤31 entries) and we filter by filename
     rather than statting each file, so this stays well under a millisecond
@@ -130,7 +133,14 @@ def _shards_in_window(days: int) -> list[Path]:
     shard_dir = _token_usage_dir()
     if not shard_dir.exists():
         return paths
-    cutoff_date = (datetime.now().astimezone() - timedelta(days=days)).date()
+    end = (
+        datetime.now().astimezone() if until is None else datetime.fromtimestamp(until).astimezone()
+    )
+    # Subtract in epoch seconds, then convert: ``end - timedelta`` would keep
+    # END's UTC offset, so a window whose start sits on the other side of a DST
+    # change lands on the wrong local day and drops that day's shard.
+    cutoff_date = datetime.fromtimestamp(end.timestamp() - days * 86400).astimezone().date()
+    last_date = end.date()
     try:
         entries = list(shard_dir.iterdir())
     except OSError as exc:
@@ -143,16 +153,125 @@ def _shards_in_window(days: int) -> list[Path]:
             shard_date = datetime.strptime(p.stem, "%Y-%m-%d").date()
         except ValueError:
             continue
-        if shard_date >= cutoff_date:
+        if cutoff_date <= shard_date and (until is None or shard_date <= last_date):
             paths.append(p)
     return paths
 
 
-#: Window (in days) that the spend tab and the sessions table both sum over.
-#: This is the single source of truth: ``cost_breakdown`` defaults to it, and
-#: ``slot_spend`` uses it, so the two surfaces are arithmetically incapable of
-#: reporting different totals for the same session.
+#: Default window (in days) for a spend request that names no window, and the
+#: fixed window ``slot_spend`` sums for the Sessions table. The Telemetry panel's
+#: range control can now ask ``cost_breakdown`` for any other window, so the
+#: Spend card and the Sessions table agree only while the panel shows this
+#: default; with another range picked they may legitimately differ.
 SPEND_WINDOW_DAYS = 7
+
+#: The shortest rolling (``days``) window. Fractions above it are honoured.
+_MIN_ROLLING_DAYS = 1.0
+
+#: The widest window the Telemetry panel's range control may ask for. Wider
+#: requests are clamped to it rather than refused. The per-turn shards are never
+#: pruned, so this is a read-cost ceiling, not a retention fact: the spend view
+#: reads TWICE the window (for its preceding-period comparison), and 180 daily
+#: shards is the most one 5s poll should open.
+MAX_WINDOW_DAYS = 90
+
+
+class TimeWindow(NamedTuple):
+    """An effective ``[start, end)`` reporting window, in epoch seconds.
+
+    ``rolling`` means the end tracks "now": the window was asked for as a length
+    (``days``), not as a fixed range. Readers keep passing ``until=None`` for a
+    rolling window so their caches key on the LENGTH, not on a ``now`` that
+    changes every request and would never hit.
+    """
+
+    start: float
+    end: float
+    rolling: bool
+
+    @property
+    def days(self) -> float:
+        return (self.end - self.start) / 86400
+
+    @property
+    def until(self) -> float | None:
+        """The ``until`` readers take: ``None`` for a rolling window."""
+        return None if self.rolling else self.end
+
+
+def _parse_bound(raw: str) -> float | None:
+    """One ``since``/``until`` query value as epoch seconds, or ``None`` if unusable.
+
+    Epoch seconds only: the panel sends its local-midnight bounds that way so the
+    browser's timezone decides what a calendar day is.
+    """
+    raw = raw.strip()
+    if not raw:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    return value if math.isfinite(value) else None
+
+
+def resolve_window(
+    *,
+    days: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+    default_days: float,
+    now: float | None = None,
+) -> TimeWindow:
+    """Turn the raw ``days`` / ``since`` / ``until`` query values into a window.
+
+    Never refuses: anything out of range is CLAMPED, because a range control
+    that errors on an over-wide pick leaves the panel blank. The end is capped
+    at now (rounded up to the minute), the start at ``MAX_WINDOW_DAYS`` before now,
+    an inverted range is swapped, and a range that collapses to nothing
+    becomes the day before its end, or the oldest legal day when its end
+    sits at the start clamp.
+
+    ``since`` or ``until`` makes the window fixed. ``days`` alone, or nothing,
+    is rolling. Unparseable values fall back as if they were absent.
+    """
+    now = time.time() if now is None else now
+    floor = now - MAX_WINDOW_DAYS * 86400
+    # A fixed range's end is capped at the next minute boundary rather than at
+    # the instant: a range that runs to "today" would otherwise carry a new
+    # ``until`` on every 5s poll and miss every reader's cache. No row is
+    # written in the future, so the extra seconds hold nothing.
+    ceiling = math.ceil(now / 60) * 60
+    start = _parse_bound(since) if since else None
+    end = _parse_bound(until) if until else None
+    if start is None and end is None:
+        try:
+            length = float(days) if days else float(default_days)
+        except ValueError:
+            length = float(default_days)
+        if not math.isfinite(length):
+            length = float(default_days)
+        # One day is the shortest rolling window, as it was before ``days``
+        # took fractions: a sub-day length would report minutes as "0.0 days".
+        # A finite length at or below zero clamps up to it too, as main's
+        # ``max(1, days)`` did; only a missing or unusable value takes the default.
+        length = max(_MIN_ROLLING_DAYS, min(length, float(MAX_WINDOW_DAYS)))
+        return TimeWindow(now - length * 86400, now, True)
+    if end is None or end > ceiling:
+        end = ceiling
+    if start is None:
+        start = end - float(default_days) * 86400
+    if start > end:
+        start, end = end, start
+    end = min(max(end, floor), ceiling)
+    start = max(start, floor)
+    if end - start <= 0:
+        start = max(end - 86400, floor)
+    if end - start <= 0:
+        # Both ends sat at the floor; the oldest legal day is all that is left.
+        start, end = floor, floor + 86400
+    return TimeWindow(start, end, False)
+
 
 # Bare dashboard slot key: chat-<seq>-<epoch>. The shard's ``slot`` field uses
 # this shape (without a ``dashboard:`` prefix), while the session manager keys
@@ -436,7 +555,7 @@ _COMPACTION_PCT = 90.0
 _COMPACTION_DROP_PCT = 1.0
 
 
-def context_occupancy(days: int = 14) -> dict[str, Any]:
+def context_occupancy(days: float = 14, until: float | None = None) -> dict[str, Any]:
     """Aggregate per-turn context-window occupancy from the token row store.
 
     ``persist_token_record`` writes ``context_used`` / ``context_window`` on
@@ -452,15 +571,20 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
     Rows predating the field, or any row whose window is missing/zero, are
     skipped — an unknown window cannot yield a ratio, and defaulting one would
     invent a number.
+
+    ``until`` ends the window at that epoch instead of now (see
+    :class:`TimeWindow`).
     """
     per_session: dict[str, dict[str, Any]] = {}
     pcts: list[float] = []
-    cutoff = time.time() - (days * 86400)
+    cutoff = (time.time() if until is None else until) - (days * 86400)
+    upper = math.inf if until is None else until
 
-    shard_paths = _shards_in_window(days)
+    shard_paths = _shards_in_window(days, until)
     try:
         cache_key: tuple[Any, ...] | None = (
             days,
+            until,
             tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
         )
     except OSError:
@@ -490,7 +614,7 @@ def context_occupancy(days: int = 14) -> dict[str, Any]:
                         continue
                     ts_raw = str(obj.get("ts") or "")
                     ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < cutoff:
+                    if ts_epoch is None or ts_epoch < cutoff or ts_epoch >= upper:
                         continue
                     slot = str(obj.get("slot") or "unknown")
                     # Before the percentile sample, not after: the spread and the
@@ -660,7 +784,11 @@ def _usage_number(value: Any) -> int | float | None:
 
 
 def slot_turn_usage(
-    slot: str, days: int = SPEND_WINDOW_DAYS, *, app: str | None = None
+    slot: str,
+    days: float = SPEND_WINDOW_DAYS,
+    *,
+    app: str | None = None,
+    until: float | None = None,
 ) -> list[dict[str, Any]]:
     """Per-turn usage rows for ONE session, oldest first.
 
@@ -688,11 +816,13 @@ def slot_turn_usage(
     The window is enforced per ROW, not only per shard file: the oldest shard
     in the window covers a whole day, so without a row-level cutoff a request
     for N days returns rows up to a day older than asked — wrong in the one
-    place this API exists for, accounting.
+    place this API exists for, accounting. ``until`` ends the window at that
+    epoch instead of now (see :class:`TimeWindow`).
     """
     turns: list[dict[str, Any]] = []
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).timestamp()
-    for shard_path in _shards_in_window(days):
+    cutoff = (time.time() if until is None else until) - days * 86400
+    upper = math.inf if until is None else until
+    for shard_path in _shards_in_window(days, until):
         try:
             with shard_path.open("rb") as fh:
                 for line in bounded_records(fh, shard_path, label="usage"):
@@ -707,7 +837,7 @@ def slot_turn_usage(
                     if app is not None and str(obj.get("app") or "") != app:
                         continue
                     ts = _parse_row_ts(str(obj.get("ts") or ""))
-                    if ts is None or ts < cutoff:
+                    if ts is None or ts < cutoff or ts >= upper:
                         # An unparseable timestamp cannot prove it is inside the
                         # window; accounting excludes what it cannot date.
                         continue
@@ -941,7 +1071,7 @@ def _row_iso(raw: Any) -> tuple[float, str] | None:
         return None
 
 
-def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
+def cost_breakdown(days: float = SPEND_WINDOW_DAYS, until: float | None = None) -> dict[str, Any]:
     """Aggregate per-turn spend from the token row store into a cost view.
 
     Answers "what did the last *days* cost, compared with the *days* before it,
@@ -963,15 +1093,22 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
     * Context bands are absolute token counts rather than occupancy ratios:
       spend tracks how many tokens get re-sent, and window sizes differ per
       model, so a ratio would average incomparable populations.
+
+    ``until`` ends the window at that epoch instead of now (see
+    :class:`TimeWindow`). The comparison period is always the equal-length
+    stretch immediately before the window, whichever way it is anchored.
     """
     now = time.time()
-    cutoff = now - (days * 86400)
-    prior_cutoff = now - (2 * days * 86400)
+    anchor = now if until is None else until
+    upper = math.inf if until is None else until
+    cutoff = anchor - (days * 86400)
+    prior_cutoff = anchor - (2 * days * 86400)
 
-    shard_paths = _shards_in_window(2 * days)
+    shard_paths = _shards_in_window(2 * days, until)
     try:
         cache_key: tuple[Any, ...] | None = (
             days,
+            until,
             tuple(sorted((str(p), p.stat().st_mtime, p.stat().st_size) for p in shard_paths)),
         )
     except OSError:
@@ -1010,7 +1147,7 @@ def cost_breakdown(days: int = SPEND_WINDOW_DAYS) -> dict[str, Any]:
                         continue
                     ts_raw = str(obj.get("ts") or "")
                     ts_epoch = _parse_row_ts(ts_raw)
-                    if ts_epoch is None or ts_epoch < prior_cutoff:
+                    if ts_epoch is None or ts_epoch < prior_cutoff or ts_epoch >= upper:
                         continue
 
                     credits = float(obj.get("credits") or 0.0)

@@ -40,8 +40,14 @@ interface SegmentedControlProps<T extends string = string> {
   layoutId?: string
   ariaLabel?: string
   ariaDescribedBy?: string
-  /** Allow full labels to wrap rather than hiding them. */
-  wrap?: boolean
+  /**
+   * Allow full labels to wrap rather than hiding them. `true` stretches the
+   * group to its container and grows every segment to fill each row. `'hug'`
+   * keeps each segment its content width and the group no wider than its
+   * segments, so a row that fits stays one row and only a container that is
+   * genuinely too narrow wraps.
+   */
+  wrap?: boolean | 'hug'
   /**
    * Responsive collapsing (full -> compact -> dropdown) is measured against the
    * PARENT element, so it only works when the parent's width is independent of
@@ -283,7 +289,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
         role="radiogroup"
         aria-label={ariaLabel}
         aria-describedby={ariaDescribedBy}
-        className={`inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5 ${wrap ? 'flex-wrap w-full' : ''}`}
+        className={`isolate inline-flex rounded-lg bg-bg-elevated border border-border p-0.5 gap-0.5 ${wrap === 'hug' ? 'flex-wrap max-w-full' : wrap ? 'flex-wrap w-full' : ''}`}
       >
         {segments.map(s => {
           const isActive = s.key === value
@@ -312,6 +318,14 @@ export default function SegmentedControl<T extends string = string>({ segments, 
           //      keeps the cross-segment position spring but takes the size from
           //      CSS `inset-0`, so the pill matches the button box on every
           //      frame, settled or mid-reveal.
+          // The button carries NO z-index, so it opens no stacking context of
+          // its own. The pill lives inside the NEWLY active button and, while it
+          // springs across, sits over the segments it passes; with each button
+          // its own `z-[1]` context, a later button's pill painted over an
+          // earlier sibling's label (picking 90d from 7d blanked "30d" for the
+          // whole travel). Without it the pill (z auto) and every label
+          // (`z-[1]`) share the group's context, which `isolate` bounds, so
+          // every label paints above the pill wherever it is.
           return (
             <motion.button
               key={s.key}
@@ -331,7 +345,7 @@ export default function SegmentedControl<T extends string = string>({ segments, 
               title={s.tooltip || s.label}
               whileTap={isActive && !isDisabled ? { scale: 0.95 } : undefined}
               transition={{ duration: 0.15 }}
-              className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium border-none transition-colors z-[1] ${wrap ? 'flex-1 basis-32 justify-center' : ''} ${
+              className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium border-none transition-colors ${wrap === true ? 'flex-1 basis-32 justify-center' : ''} ${
                 isDisabled
                   ? isActive
                     ? 'text-accent/60 cursor-not-allowed'

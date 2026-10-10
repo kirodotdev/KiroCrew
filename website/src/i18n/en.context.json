@@ -668,6 +668,13 @@
     "components.guideLayer.predicate_goal_loop_running": "Guide blocker before the goal button: no goal loop (auto-nudge) runs in the open chat, so its Pause is not there.",
     "components.guideLayer.predicate_monitor_running": "Guide blocker before the goal button: no unfinished monitor watches the open chat, so its Stop monitor is not there.",
     "components.guideLayer.select_the_only_one_tick": "Guide panel line on a choose-one step whose pick is the row's checkbox (the outline is on that checkbox) when the list holds exactly one job.",
-    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button."
+    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button.",
+    "pages.telemetryPanel.range_hours": "Segment label on the Telemetry panel's window control meaning a rolling window of the last N HOURS ending now. Keep it as short as a unit abbreviation; it sits in a row of six segments.",
+    "pages.telemetryPanel.range_days": "Segment label on the Telemetry panel's window control meaning a rolling window of the last N DAYS ending now. Keep it as short as a unit abbreviation; it sits in a row of six segments.",
+    "pages.telemetryPanel.range_default": "First segment of the Telemetry panel's time-window control, selected until the reader picks a window: each card then keeps its own built-in reporting period (spend a week, the other cards two weeks). Short, like the other segments.",
+    "pages.telemetryPanel.range_label": "Caption in front of the Telemetry panel's time-window control: the span of time every card on the panel reports over. A noun, not a verb, and not a GUI window.",
+    "pages.telemetryPanel.range_from": "Accessible name of the start-date picker of a custom reporting range. The picked day is included.",
+    "pages.telemetryPanel.range_to": "Accessible name of the end-date picker of a custom reporting range. The picked day is included, so use the inclusive word for an end date.",
+    "pages.telemetryPanel.window_range": "A custom reporting range shown in each Telemetry card title, e.g. Sep 1, 2026 – Sep 3, 2026. Both dates are already formatted for the locale; keep the separator a dash or the locale's range punctuation."
   }
 }

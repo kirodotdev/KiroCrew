@@ -308,13 +308,17 @@ def test_parse_startup_metrics_empty_window_reports_no_shards(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(h, "_telemetry_cfg", lambda: _state(tmp_path / "absent"))
-    assert h._parse_startup_metrics() == {
+    assert h._parse_startup_metrics(_WEEK) == {
         "startup": None,
         "turn": None,
         "other": [],
         "shard_count": 0,
     }
     assert h._CACHE is None and h._CACHE_KEY is None
+
+
+# A rolling week, the panel's default window.
+_WEEK = h.resolve_window(default_days=7)
 
 
 def _state(directory: Path) -> h._TelemetryState:
@@ -333,15 +337,18 @@ def test_parse_startup_metrics_caches_on_the_shard_fingerprint(
     directory = tmp_path / "m"
     shard = _shard(directory, _today(), _startup_metric())
     monkeypatch.setattr(h, "_telemetry_cfg", lambda: _state(directory))
-    first = h._parse_startup_metrics()
+    first = h._parse_startup_metrics(_WEEK)
     assert first["shard_count"] == 1
     assert first["startup"]["overall"]["count"] == 2
-    # A cache HIT hands back the very same object.
-    assert h._parse_startup_metrics() is first
+    # A cache HIT hands back the very same object, for any request of the same
+    # rolling length: `now` moving on does not change the key.
+    assert h._parse_startup_metrics(h.resolve_window(default_days=7)) is first
+    # A different window over the same shards is a different answer.
+    assert h._parse_startup_metrics(h.resolve_window(days="1", default_days=7)) is not first
     # Appending changes (mtime, size), so the fingerprint stops matching.
     with shard.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps({"resource_metrics": []}) + "\n")
-    second = h._parse_startup_metrics()
+    second = h._parse_startup_metrics(_WEEK)
     assert second is not first
     assert second["startup"]["overall"]["count"] == 2
 
@@ -352,59 +359,61 @@ def test_parse_startup_metrics_caches_on_the_shard_fingerprint(
 def test_context_block_returns_none_when_nothing_is_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(h, "context_occupancy", lambda days: {"turns": []})
-    assert h._context_block() is None
+    monkeypatch.setattr(h, "context_occupancy", lambda days, until: {"turns": []})
+    assert h._context_block(_WEEK) is None
 
 
 def test_context_block_returns_none_when_the_row_store_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _boom(_days: int) -> dict:
+    def _boom(_days: float, _until: float | None) -> dict:
         raise RuntimeError("row store unreadable")
 
     monkeypatch.setattr(h, "context_occupancy", _boom)
-    assert h._context_block() is None
+    assert h._context_block(_WEEK) is None
 
 
 def test_context_block_passes_the_window_through(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[int] = []
+    seen: list[tuple[float, float | None]] = []
 
-    def _occupancy(days: int) -> dict:
-        seen.append(days)
+    def _occupancy(days: float, until: float | None) -> dict:
+        seen.append((days, until))
         return {"turns": [{"slot": "chat-1-1"}]}
 
     monkeypatch.setattr(h, "context_occupancy", _occupancy)
-    assert h._context_block() == {"turns": [{"slot": "chat-1-1"}]}
-    assert seen == [h._WINDOW_DAYS]
+    fixed = h.resolve_window(since="1000000", until="1086400", default_days=7, now=2_000_000)
+    assert h._context_block(fixed) == {"turns": [{"slot": "chat-1-1"}]}
+    assert seen == [(pytest.approx(1.0), 1_086_400.0)]
 
 
 def test_cost_block_returns_none_when_nothing_is_recorded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(h, "cost_breakdown", lambda days: {"turns": []})
-    assert h._cost_block() is None
+    monkeypatch.setattr(h, "cost_breakdown", lambda days, until: {"turns": []})
+    assert h._cost_block(_WEEK) is None
 
 
 def test_cost_block_returns_none_when_the_row_store_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def _boom(_days: int) -> dict:
+    def _boom(_days: float, _until: float | None) -> dict:
         raise RuntimeError("row store unreadable")
 
     monkeypatch.setattr(h, "cost_breakdown", _boom)
-    assert h._cost_block() is None
+    assert h._cost_block(_WEEK) is None
 
 
-def test_cost_block_uses_the_shorter_spend_window(monkeypatch: pytest.MonkeyPatch) -> None:
-    seen: list[int] = []
+def test_cost_block_passes_a_rolling_window_as_a_length(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[tuple[float, float | None]] = []
 
-    def _cost(days: int) -> dict:
-        seen.append(days)
+    def _cost(days: float, until: float | None) -> dict:
+        seen.append((days, until))
         return {"turns": [{"slot": "chat-1-1"}]}
 
     monkeypatch.setattr(h, "cost_breakdown", _cost)
-    assert h._cost_block()
-    assert seen == [h._COST_WINDOW_DAYS]
+    assert h._cost_block(_WEEK)
+    # `until` stays None so the reader's cache keys on the length, not on now.
+    assert seen == [(pytest.approx(7.0), None)]
 
 
 # --- GET /api/telemetry/startup ---------------------------------------------
@@ -418,18 +427,20 @@ async def test_startup_route_reports_posture_and_all_four_blocks(
     monkeypatch.setattr(
         h,
         "_parse_startup_metrics",
-        lambda: {
+        lambda _w, **_kw: {
             "startup": {"overall": {"count": 1}},
             "turn": {"count": 1},
             "other": [{"name": "kirocrew.x", "kind": "counter"}],
             "shard_count": 3,
         },
     )
-    monkeypatch.setattr(h, "_context_block", lambda: {"turns": [1]})
-    monkeypatch.setattr(h, "_cost_block", lambda: None)
+    monkeypatch.setattr(h, "_context_block", lambda _w: {"turns": [1]})
+    monkeypatch.setattr(h, "_cost_block", lambda _w: None)
     payload = _body(await h.api_telemetry_startup(_mk()))
     assert payload["enabled"] is True
     assert payload["window_days"] == h._WINDOW_DAYS
+    assert "max_window_days" not in payload
+    assert payload["metrics_retention_days"] == 0
     assert payload["metrics_dir"] == str(tmp_path / "m")
     assert payload["shard_count"] == 3
     assert payload["startup"] == {"overall": {"count": 1}}
@@ -445,11 +456,11 @@ async def test_startup_route_titles_the_cost_ranking(
 ) -> None:
     monkeypatch.setattr(h, "_telemetry_cfg", lambda: _state(tmp_path / "m"))
     monkeypatch.setattr(
-        h, "_parse_startup_metrics", lambda: {"startup": None, "turn": None, "other": []}
+        h, "_parse_startup_metrics", lambda _w, **_kw: {"startup": None, "turn": None, "other": []}
     )
-    monkeypatch.setattr(h, "_context_block", lambda: None)
+    monkeypatch.setattr(h, "_context_block", lambda _w: None)
     monkeypatch.setattr(
-        h, "_cost_block", lambda: {"turns": [1], "conversations": [{"slot": "chat-1-9"}]}
+        h, "_cost_block", lambda _w: {"turns": [1], "conversations": [{"slot": "chat-1-9"}]}
     )
     slot = SimpleNamespace(display_title="zzq ranked convo")
     state = SimpleNamespace(get_slot=lambda key: slot, conversation_log=None)

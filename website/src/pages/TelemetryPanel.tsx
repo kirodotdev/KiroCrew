@@ -1,6 +1,6 @@
-import React, { useMemo, useState } from 'react'
+import React, { createContext, useContext, useMemo, useState } from 'react'
 
-import { useQuery } from '@tanstack/react-query'
+import { keepPreviousData, useQuery } from '@tanstack/react-query'
 import { Activity, ChevronDown, ChevronRight, ChevronUp, Coins, Gauge, Rocket } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
@@ -10,12 +10,25 @@ import ErrorNotice from '../components/ErrorNotice'
 import InfoTip from '../components/InfoTip'
 import SegmentedControl from '../components/SegmentedControl'
 import { SettingRef } from '../components/settingRef/SettingRef'
-import { Btn, Card, CardTitle, EmptyState } from '../components/ui'
+import { Btn, Card, CardTitle, EmptyState, Input } from '../components/ui'
 import { useSortableTable } from '../hooks/useSortableTable'
 import { usePersistedBool } from '../hooks/usePersistedBool'
 import { usePersistedString } from '../hooks/usePersistedString'
-import { compareText, fmtBytes, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
+import { compareText, fmtBytes, fmtDate, fmtDateNumeric, fmtNumber, fmtPercent, fmtTimeNumeric, fmtUnit } from '../i18n/format'
 import { i18nT } from '../i18n/t'
+import {
+  DEFAULT_RANGE,
+  MAX_RANGE_DAYS,
+  RANGE_CHOICES,
+  type RangeChoice,
+  customDays,
+  earliestDay,
+  inclusiveEnd,
+  localDay,
+  measuredQuery,
+  rangeQuery,
+  rangeSearch,
+} from './telemetryRange'
 // ── GET /api/telemetry/startup shape (dashboard/handlers/telemetry.py) ──
 type Stat = {
   count: number
@@ -173,7 +186,20 @@ type Cost = {
 }
 type Resp = {
   enabled: boolean
+  /** The effective window every block covers, after the gateway's clamp. */
   window_days: number
+  window_start?: string
+  window_end?: string
+  /** True when the window ends now (a preset); false for a fixed custom range. */
+  window_rolling?: boolean
+  /**
+   * True when no window was asked for: every block keeps main's own window, so
+   * the spend block covers `cost_window_days` and the rest `window_days`.
+   */
+  window_default?: boolean
+  cost_window_days?: number
+  /** `telemetry.retention_days`: metric shards older than this are pruned (0 = never). */
+  metrics_retention_days?: number
   shard_count: number
   metrics_dir: string
   startup: Startup | null
@@ -204,6 +230,96 @@ const fmtSharePct = (credits: number, total: number): string => {
 
 const fmtDelta = (d?: number | null): string =>
   d == null ? i18nT('pages.telemetryPanel.cost_new') : (d > 0 ? '+' : '') + fmtPercent(d / 100)
+
+/**
+ * How every card names the window it shows, worked out once from the payload.
+ *
+ * `period` is the short label in each card title ("Last 7d", or "Sep 1, 2026 –
+ * Sep 3, 2026" for a custom range); `measured` is the spend and context cards'
+ * source line. Both are read from the gateway's EFFECTIVE window, not from the
+ * control, so a clamped pick is labelled with what was measured. `range` is the
+ * query string for that same measured window, which the per-session turn
+ * drill-down fetches with so it lists the same turns its row summed.
+ */
+type PanelWindow = { period: string; measured: string; range: string }
+
+const PanelWindowCtx = createContext<PanelWindow>({ period: '', measured: '', range: '' })
+
+/** The title label for a rolling window of `days`. */
+function rollingPeriod(days: number): string {
+  return days === 1
+    ? i18nT('pages.telemetryPanel.period_last_hours', { n: fmtNumber(24) })
+    : i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })
+}
+
+function panelWindow(data: Resp | undefined, fallbackRange: string): PanelWindow {
+  const days = data?.window_days ?? 0
+  // The bounds the payload reports, not the request: a custom range ending
+  // today sends a future `until` that each reader would clamp to its own now.
+  const measured = data ? measuredQuery(data) : null
+  const range = measured ? rangeSearch(measured) : fallbackRange
+  // Decided by the payload, not by the control: while a new pick is loading the
+  // previous payload stays on screen, and its label has to describe it.
+  if (data?.window_rolling === false && data.window_start && data.window_end) {
+    const label = i18nT('pages.telemetryPanel.window_range', {
+      start: fmtDate(data.window_start),
+      end: fmtDate(inclusiveEnd(data.window_end)),
+    })
+    return {
+      period: label,
+      measured: i18nT('pages.telemetryPanel.measured_from_token_records_range', { range: label }),
+      range,
+    }
+  }
+  return {
+    period: rollingPeriod(days),
+    measured: i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(days) }),
+    range,
+  }
+}
+
+/**
+ * The window the OTEL cards (health strip, latency, startup) actually cover.
+ * The exporter prunes metric shards after `telemetry.retention_days`, so when
+ * the panel's window starts before that cutoff those cards hold less than the
+ * panel window, and their titles name what they hold: "Last 14d" under a 30d
+ * pick, or a range whose start is the cutoff day. `null` when nothing is cut.
+ */
+function otelWindow(data: Resp, win: PanelWindow, nowMs: number): PanelWindow | null {
+  const retention = data.metrics_retention_days ?? 0
+  // Compared against the window's START, not its length: a 3-day range a month
+  // ago is short but already pruned.
+  const start = Date.parse(data.window_start ?? '')
+  const cutoff = nowMs - retention * 86_400_000
+  if (!(retention > 0) || !Number.isFinite(start) || start >= cutoff) return null
+  if (data.window_rolling === false && data.window_end) {
+    const end = inclusiveEnd(data.window_end)
+    // A range wholly before the cutoff covers nothing; its start then names
+    // the end day rather than a start after the end.
+    const coveredStart = new Date(Math.min(cutoff, end.getTime()))
+    return {
+      ...win,
+      period: i18nT('pages.telemetryPanel.window_range', { start: fmtDate(coveredStart), end: fmtDate(end) }),
+    }
+  }
+  return { ...win, period: rollingPeriod(Math.min(retention, data.window_days)) }
+}
+
+/**
+ * The spend card's window. With no pick (`window_default`) the spend block keeps
+ * main's week while the rest of the panel keeps main's fortnight, so the card
+ * titles itself, and its drill-down reads, over `cost_window_days`. After a pick
+ * it is simply the panel's window.
+ */
+function spendWindow(data: Resp, win: PanelWindow): PanelWindow {
+  const days = data.cost_window_days
+  if (!data.window_default || !(typeof days === 'number' && days > 0)) return win
+  return {
+    period: rollingPeriod(days),
+    measured: i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(days) }),
+    range: rangeSearch({ days }),
+  }
+}
 
 function Notice({ children }: { children: React.ReactNode }) {
   return <div className="text-muted text-sm py-12 text-center leading-relaxed">{children}</div>
@@ -772,9 +888,10 @@ const DRILL_HIDE_CONTEXT = 'max-[480px]:hidden'
  * switch mid-session or one runaway turn is invisible in an average.
  */
 function SessionTurnsDrilldown({ slot }: { slot: string }) {
+  const { range } = useContext(PanelWindowCtx)
   const q = useQuery<{ turns: TurnUsageRow[] }>({
-    queryKey: ['usage-turns', slot],
-    queryFn: () => api.usageTurns(slot),
+    queryKey: ['usage-turns', slot, range],
+    queryFn: () => api.usageTurns(slot, range),
   })
   if (q.isLoading) {
     return <div className="text-[11px] text-muted px-2 py-1">{i18nT('pages.telemetryPanel.turns_loading')}</div>
@@ -1161,6 +1278,7 @@ function sessionBars(convos: CostConvo[], navigable: string, limit: number): Spe
 }
 
 function SpendTab({ c }: { c: Cost }) {
+  const win = useContext(PanelWindowCtx)
   const [group, setGroup] = usePersistedChoice<SpendGroup>(
     'telemetry:spend-group',
     SPEND_GROUPS,
@@ -1183,19 +1301,15 @@ function SpendTab({ c }: { c: Cost }) {
     <Card className="mb-4">
       <CardTitle>
         {i18nT('pages.telemetryPanel.credits')}
-        <InfoTip text={i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(c.window_days) })}
-        </span>
+        <InfoTip text={win.measured} />
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{win.period}</span>
       </CardTitle>
       {/* In the open, not only in the title's InfoTip. The spend and OTEL
           numbers come from different stores over different windows, so a
           950-turn spend total sits beside a 685-turn throughput; without the
           source stated where both are visible, fewer turns over a longer
           window reads as broken data rather than as two measurements. */}
-      <div className="text-[10px] text-muted -mt-2 mb-2.5">
-        {i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })}
-      </div>
+      <div className="text-[10px] text-muted -mt-2 mb-2.5">{win.measured}</div>
       <Sums
         items={[
           {
@@ -1556,18 +1670,15 @@ function ContextTab({
     for (const v of convos ?? []) bySlot.set(v.slot, v)
     return (slot: string) => bySlot.get(slot)
   }, [convos])
+  const win = useContext(PanelWindowCtx)
   return (
     <Card className="mb-4">
       <CardTitle>
         {i18nT('pages.telemetryPanel.context_window')}
-        <InfoTip text={i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(c.window_days) })}
-        </span>
+        <InfoTip text={win.measured} />
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{win.period}</span>
       </CardTitle>
-      <div className="text-[10px] text-muted -mt-2 mb-2.5">
-        {i18nT('pages.telemetryPanel.measured_from_token_records', { days: fmtNumber(c.window_days) })}
-      </div>
+      <div className="text-[10px] text-muted -mt-2 mb-2.5">{win.measured}</div>
       <DataTable<ContextSession>
         rows={c.sessions ?? []}
           key="telemetry-context"
@@ -1618,7 +1729,8 @@ function ContextTab({
  * per-conversation latency column would have been.
  */
 
-function LatencyTab({ other, days }: { other: Other[]; days: number }) {
+function LatencyTab({ other }: { other: Other[] }) {
+  const { period } = useContext(PanelWindowCtx)
   // Split on the KIND the API states, not on whether `p50_ms` is present. A
   // histogram in a unit other than milliseconds carries `p50`/`max` instead, so
   // the presence test sent it to the counter list, which renders its count and
@@ -1672,9 +1784,7 @@ function LatencyTab({ other, days }: { other: Other[]; days: number }) {
       <CardTitle>
         {i18nT('pages.telemetryPanel.instruments')}
         <InfoTip text={i18nT('pages.telemetryPanel.otel_has_no_per_conversation_split')} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })}
-        </span>
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{period}</span>
       </CardTitle>
 
       {hist.length === 0 && counters.length === 0 && gauges.length === 0 ? (
@@ -1858,7 +1968,8 @@ function statCols(first: string): Col<Stat & { name: string }>[] {
 type Bucket = { label: string; count: number; idx: number }
 
 
-function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; total: number; days: number }) {
+function StartupTab({ s, faults, total }: { s: Startup; faults: number; total: number }) {
+  const { period } = useContext(PanelWindowCtx)
   const [group, setGroup] = usePersistedChoice<StartupGroup>(
     'telemetry:startup-group',
     STARTUP_GROUPS,
@@ -1884,9 +1995,7 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
       <CardTitle>
         {i18nT('pages.telemetryPanel.session_startup')}
         <InfoTip text={i18nT('pages.telemetryPanel.startup_is_per_process_not_per_conversation')} />
-        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">
-          {i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) })}
-        </span>
+        <span className="ml-auto text-[12px] text-muted font-mono tabular-nums font-normal">{period}</span>
       </CardTitle>
       <div className="flex flex-wrap items-center gap-2 mb-2">
         <span className="text-[10px] text-muted uppercase tracking-wide">
@@ -1992,7 +2101,8 @@ function StartupTab({ s, faults, total, days }: { s: Startup; faults: number; to
  * whole job is to be noticed, so it sits in a persistent strip — the same role
  * Activity Monitor's bottom bar plays for load.
  */
-function HealthBar({ t, days }: { t: Turn | null; days: number }) {
+function HealthBar({ t }: { t: Turn | null }) {
+  const { period } = useContext(PanelWindowCtx)
   const turnFaults = t
     ? // Count faults the way the API computes fault_rate: everything that is
       // neither "ok" nor a named non-fault outcome. Naming the failure outcomes
@@ -2080,7 +2190,7 @@ function HealthBar({ t, days }: { t: Turn | null; days: number }) {
           {
             label: i18nT('pages.telemetryPanel.throughput'),
             value: t ? fmtNumber(t.count) : '—',
-            sub: t ? i18nT('pages.telemetryPanel.credits_this_period', { days: fmtNumber(days) }) : noTurns,
+            sub: t ? period : noTurns,
           },
         ]}
       />
@@ -2134,13 +2244,137 @@ function usePersistedChoice<T extends string>(
   return [value, setRaw as (next: T) => void] as const
 }
 
+/**
+ * The one window control for the whole panel: presets ending now, or a custom
+ * pair of days. Every card below reads the payload it drives, and labels itself
+ * from the window the gateway reports back, so this control never has to say
+ * what was clamped.
+ */
+function WindowControl({
+  choice,
+  onChoice,
+  since,
+  until,
+  onSince,
+  onUntil,
+  pending,
+}: {
+  choice: RangeChoice
+  onChoice: (next: RangeChoice) => void
+  since: string
+  until: string
+  /** A blank value resets only that end: start to a week before the end, end to today. */
+  onSince: (next: string) => void
+  onUntil: (next: string) => void
+  /** The figures on screen still belong to the previous pick. */
+  pending: boolean
+}) {
+  const now = new Date()
+  const today = localDay(now)
+  // Start through today spans at most MAX_RANGE_DAYS dates, end day included.
+  const earliest = localDay(earliestDay(MAX_RANGE_DAYS, now))
+  const preset = (key: RangeChoice, n: number, unit: 'h' | 'd') => ({
+    key,
+    label: i18nT(unit === 'h' ? 'pages.telemetryPanel.range_hours' : 'pages.telemetryPanel.range_days', {
+      n: fmtNumber(n),
+    }),
+  })
+  return (
+    <div className="flex flex-wrap items-center gap-2 mb-1" data-testid="telemetry-range">
+      <span className="text-[10px] text-muted uppercase tracking-wide">{i18nT('pages.telemetryPanel.range_label')}</span>
+      <SegmentedControl<RangeChoice>
+        layoutId="telemetry-range"
+        collapse={false}
+        // Content-sized segments: one row at desktop widths. Seven segments in
+        // the longer locales outgrow a phone-width row; wrap rather than
+        // overflow there, since this is the panel's only window control.
+        wrap="hug"
+        ariaLabel={i18nT('pages.telemetryPanel.range_label')}
+        value={choice}
+        onChange={onChoice}
+        segments={[
+          { key: 'default', label: i18nT('pages.telemetryPanel.range_default') },
+          preset('24h', 24, 'h'),
+          preset('7d', 7, 'd'),
+          preset('14d', 14, 'd'),
+          preset('30d', 30, 'd'),
+          preset('90d', 90, 'd'),
+          { key: 'custom', label: i18nT('pages.telemetryPanel.range_custom') },
+        ]}
+      />
+      {choice === 'custom' && (
+        <span className="flex items-center gap-1.5">
+          <Input
+            type="date"
+            className="flex-none px-2 py-1 text-[12px]"
+            aria-label={i18nT('pages.telemetryPanel.range_from')}
+            value={since}
+            min={earliest}
+            max={until}
+            onChange={e => onSince(e.target.value)}
+          />
+          <span className="text-muted text-[12px]" aria-hidden="true">
+            –
+          </span>
+          <Input
+            type="date"
+            className="flex-none px-2 py-1 text-[12px]"
+            aria-label={i18nT('pages.telemetryPanel.range_to')}
+            value={until}
+            min={since}
+            max={today}
+            onChange={e => onUntil(e.target.value)}
+          />
+        </span>
+      )}
+      {/* Always rendered, a full row of fixed height: an inline status wrapped
+          onto a row of its own at phone widths only while a pick loaded, so
+          every card below jumped down and back on each pick. The text alone
+          comes and goes, which the live region announces. */}
+      <span
+        role="status"
+        className="basis-full h-4 leading-4 truncate text-muted text-[11px]"
+        data-testid="telemetry-range-pending"
+      >
+        {pending ? i18nT('pages.telemetryPanel.loading_telemetry') : null}
+      </span>
+    </div>
+  )
+}
+
 export default function TelemetryPanel() {
-  const { data, isLoading, isError, error } = useQuery<Resp>({
-    queryKey: ['telemetry-startup'],
-    queryFn: () => api.telemetryStartup(),
+  const [range, setRange] = usePersistedChoice<RangeChoice>('telemetry:range', RANGE_CHOICES, DEFAULT_RANGE)
+  const [sinceRaw, setSince] = usePersistedString('telemetry:range-since', '')
+  const [untilRaw, setUntil] = usePersistedString('telemetry:range-until', '')
+  const custom = customDays(sinceRaw, untilRaw)
+  const query = rangeSearch(rangeQuery(range, custom.since, custom.until))
+  const { data, isLoading, isError, error, isPlaceholderData } = useQuery<Resp>({
+    // Keyed on the range: two windows are two answers, and a cached week must
+    // never be served as a month.
+    queryKey: ['telemetry-startup', query],
+    queryFn: () => api.telemetryStartup(query),
     refetchInterval: 5000,
+    // A new pick keeps the current figures up until its own arrive, instead of
+    // blanking the panel to "Loading" on every click of the control.
+    placeholderData: keepPreviousData,
   })
   const [tab, setTab] = usePersistedChoice<Tab>('telemetry:tab', TABS, 'spend')
+  // Every card, and the turn drill-down's own fetch, reads the window the
+  // payload ON SCREEN reports it measured. While a new pick loads that is still
+  // the previous payload, so one view never mixes two windows; and a fixed range
+  // reuses the measured bounds, not the request's future `until`.
+  const win = panelWindow(data, query)
+  const windowControl = (
+    <WindowControl
+      choice={range}
+      onChoice={setRange}
+      since={custom.since}
+      until={custom.until}
+      onSince={setSince}
+      onUntil={setUntil}
+      pending={isPlaceholderData}
+    />
+  )
 
   if (isLoading && !data) return <Notice>{i18nT('pages.telemetryPanel.loading_telemetry')}</Notice>
   // A fetch that never produced data is a failure, not "nothing recorded": the
@@ -2184,25 +2418,33 @@ export default function TelemetryPanel() {
     const offCost = data.cost && data.cost.turns ? data.cost : null
     if (!data.context && !offCost) {
       return (
-        <>
+        <PanelWindowCtx.Provider value={win}>
           {refetchNotice}
+          {windowControl}
           <Notice>
             <div className="text-text font-medium mb-1">{i18nT('pages.telemetryPanel.telemetry_is_off')}</div>
             {offBody}
           </Notice>
-        </>
+        </PanelWindowCtx.Provider>
       )
     }
     return (
-      <div className="overflow-y-auto flex-1 min-h-0 pb-8">
-        {refetchNotice}
-        {offCost && <SpendTab c={offCost} />}
-        {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
-        <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
-          <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
-          <span className="text-muted">{offBody}</span>
+      <PanelWindowCtx.Provider value={win}>
+        <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+          {refetchNotice}
+          {windowControl}
+          {offCost && (
+            <PanelWindowCtx.Provider value={spendWindow(data, win)}>
+              <SpendTab c={offCost} />
+            </PanelWindowCtx.Provider>
+          )}
+          {data.context && <ContextTab c={data.context} convos={offCost?.conversations} navigable={offCost?.navigable_category} />}
+          <div className="border border-border bg-card rounded-xl p-3 text-[11px] leading-relaxed">
+            <span className="text-text font-medium">{i18nT('pages.telemetryPanel.telemetry_is_off')}</span>{' '}
+            <span className="text-muted">{offBody}</span>
+          </div>
         </div>
-      </div>
+      </PanelWindowCtx.Provider>
     )
   }
 
@@ -2218,14 +2460,14 @@ export default function TelemetryPanel() {
   const hasData =
     !!(s && s.overall.count) || !!(t && t.count) || !!ctx || other.length > 0 || !!(data?.cost && data.cost.turns)
   if (!data || !hasData) {
+    // The control stays on screen here too: a reader who picked a window with
+    // nothing in it must be able to pick a wider one.
     return (
-      <>
+      <PanelWindowCtx.Provider value={win}>
         {refetchNotice}
-        <Notice>
-          {i18nT('pages.telemetryPanel.no_telemetry_recorded_yet_in_the_last')} {data?.window_days ?? 14}{' '}
-          {i18nT('pages.telemetryPanel.days')}
-        </Notice>
-      </>
+        {windowControl}
+        <Notice>{i18nT('pages.telemetryPanel.no_telemetry_in_window', { period: win.period })}</Notice>
+      </PanelWindowCtx.Provider>
     )
   }
 
@@ -2267,35 +2509,65 @@ export default function TelemetryPanel() {
       : []),
   ]
   const active = segments.some(g => g.key === tab) ? tab : (segments[0]?.key ?? 'spend')
+  // The exporter prunes metric shards after `telemetry.retention_days`, so the
+  // OTEL figures (health strip, latency, startup) cannot reach as far back as a
+  // wider window. Said once under the control, and each of those cards titles
+  // itself with the span it does cover rather than the panel's window.
+  const retention = data.metrics_retention_days ?? 0
+  const otelWin = otelWindow(data, win, Date.now())
 
   return (
-    <div className="overflow-y-auto flex-1 min-h-0 pb-8">
-      {refetchNotice}
-      {/* Above the tabs, not after the active tab's table.
-          The justification for this strip is that the fault rate is the one
-          number that has to find the reader rather than be looked for — and
-          placed at the bottom of a scroll container it was exactly as
-          findable as the section it replaced, i.e. only by scrolling. An
-          Activity Monitor bar sits at an EDGE; this is the edge that costs no
-          sticky positioning inside an already-scrolling panel. */}
-      <HealthBar t={t} days={data.window_days} />
+    <PanelWindowCtx.Provider value={win}>
+      <div className="overflow-y-auto flex-1 min-h-0 pb-8">
+        {refetchNotice}
+        {windowControl}
+        {otelWin && (
+          <div className="text-muted text-[11px] -mt-1 mb-3" data-testid="telemetry-otel-retention">
+            <Trans
+              i18nKey="pages.telemetryPanel.otel_retention_cap"
+              values={{ days: fmtNumber(retention) }}
+              // The chip draws its own border, so give it room from the
+              // surrounding brackets instead of letting it sit on them.
+              components={{ settingRef: <span className="mx-1 inline-block" data-testid="retention-setting-ref"><SettingRef configKey="telemetry.retention_days" /></span> }}
+            />
+          </div>
+        )}
+        <PanelWindowCtx.Provider value={otelWin ?? win}>
+          {/* Above the tabs, not after the active tab's table.
+              The justification for this strip is that the fault rate is the one
+              number that has to find the reader rather than be looked for — and
+              placed at the bottom of a scroll container it was exactly as
+              findable as the section it replaced, i.e. only by scrolling. An
+              Activity Monitor bar sits at an EDGE; this is the edge that costs no
+              sticky positioning inside an already-scrolling panel. */}
+          <HealthBar t={t} />
+        </PanelWindowCtx.Provider>
 
-      {segments.length > 1 && (
-        <div className="mb-3">
-          <SegmentedControl<Tab> segments={segments} value={active} onChange={setTab} />
+        {segments.length > 1 && (
+          <div className="mb-3">
+            <SegmentedControl<Tab> segments={segments} value={active} onChange={setTab} />
+          </div>
+        )}
+
+        {active === 'spend' && data.cost && (
+          <PanelWindowCtx.Provider value={spendWindow(data, win)}>
+            <SpendTab c={data.cost} />
+          </PanelWindowCtx.Provider>
+        )}
+        {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
+        <PanelWindowCtx.Provider value={otelWin ?? win}>
+          {active === 'latency' && <LatencyTab other={other} />}
+          {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} />}
+        </PanelWindowCtx.Provider>
+
+        <div className="text-muted text-[11px] mt-2">
+          {/* The footer speaks for the OTEL sections, so it names the period they
+              cover: the retention-capped one their card titles use, when capped. */}
+          {i18nT('pages.telemetryPanel.window_footer', { period: (otelWin ?? win).period })} {data.shard_count}{' '}
+          {i18nT('pages.telemetryPanel.shard_s_source')} <code>{data.metrics_dir}</code>{' '}
+          {i18nT('pages.telemetryPanel.local_only_no_egress')}
         </div>
-      )}
-
-      {active === 'spend' && data.cost && <SpendTab c={data.cost} />}
-      {active === 'context' && ctx && <ContextTab c={ctx} convos={data?.cost?.conversations} navigable={data?.cost?.navigable_category} />}
-      {active === 'latency' && <LatencyTab other={other} days={data.window_days} />}
-      {active === 'startup' && s && <StartupTab s={s} faults={startupFaults} total={startupTotal} days={data.window_days} />}
-
-      <div className="text-muted text-[11px] mt-2">
-        {i18nT('pages.telemetryPanel.window_last')} {data.window_days}
-        {i18nT('pages.telemetryPanel.d')} {data.shard_count} {i18nT('pages.telemetryPanel.shard_s_source')}{' '}
-        <code>{data.metrics_dir}</code> {i18nT('pages.telemetryPanel.local_only_no_egress')}
       </div>
-    </div>
+    </PanelWindowCtx.Provider>
   )
 }

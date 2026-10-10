@@ -14,6 +14,13 @@
   "tags": []
  },
  {
+  "path": "telemetry.retention_days",
+  "type": "integer",
+  "label": "Retention (days)",
+  "help": "Prune local JSONL metric shards older than this many days.",
+  "tags": []
+ },
+ {
   "path": "instances.enabled",
   "type": "boolean",
   "label": "Enabled",

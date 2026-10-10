@@ -97,4 +97,22 @@ describe('SegmentedControl — #9684 indicator layout prop contract', () => {
     // used to mis-track must still be present, so a "fix" that removed it is caught.
     expect(screen.getByRole('radio', { name: /gallery/i }).textContent).toContain('Gallery')
   })
+
+  it('keeps every label above the travelling pill: no button opens its own stacking context', () => {
+    // The pill renders inside the newly active button and springs across its
+    // siblings. A z-index on each button made each one a stacking context, so a
+    // later button's pill painted over an earlier sibling's label mid-travel.
+    // happy-dom computes no paint order, so the contract is pinned on classes.
+    const three = [...SEGMENTS, { key: 'list' as const, label: 'List' }]
+    const { container } = render(<SegmentedControl segments={three} value="list" onChange={vi.fn()} layoutId="seg" collapse={false} />)
+    const group = screen.getByRole('radiogroup')
+    expect(group.className.split(/\s+/)).toContain('isolate')
+    for (const radio of screen.getAllByRole('radio')) {
+      expect(radio.className).not.toMatch(/(^|\s)z-/)
+    }
+    // Every label still sits on z-[1], above the pill's z auto.
+    const labels = Array.from(container.querySelectorAll('[role="radio"] > span'))
+    expect(labels.length).toBeGreaterThanOrEqual(3)
+    for (const label of labels) expect(label.className).toContain('z-[1]')
+  })
 })
