@@ -357,6 +357,23 @@ class TestExtractSharedText:
         }
         assert _extract_shared_text(event) == "actual content from blocks"
 
+    def test_field_only_section_keeps_forwarded_output_empty(self):
+        event = {
+            "attachments": [
+                {
+                    "is_share": True,
+                    "fallback": "This message contains interactive elements.",
+                    "blocks": [
+                        {
+                            "type": "section",
+                            "fields": [{"type": "mrkdwn", "text": "trusted-only field"}],
+                        }
+                    ],
+                }
+            ]
+        }
+        assert _extract_shared_text(event) == ""
+
     def test_event_level_blocks_fallback(self):
         """When attachments yield nothing, try event-level blocks."""
         event = {
