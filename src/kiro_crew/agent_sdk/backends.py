@@ -194,6 +194,9 @@ with no row here.
    * - ``ACP_BACKENDS_RESUME_WITHOUT_LOAD``
      - driver-internal (which ACP verb restores a session, and which capability
        key advertises it)
+   * - ``ACP_BACKENDS_FORK_AT_MESSAGE``
+     - driver-internal (whether ``session/fork`` honours a fork point, so a
+       rewind keeps the retained native history)
    * - ``ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY``
      - driver-internal (whether the session's project checkout scopes the broker
        overlay lookup, read only through :func:`overlay_project_scope` while
@@ -2405,6 +2408,15 @@ ACP_BACKENDS_LOAD_WITHOUT_MODES = frozenset({ACP_BACKEND_OPENCODE, ACP_BACKEND_D
 # set is the record, and adding a harness to it is a deliberate edit with a capture
 # behind it (harness-parity H6, the same reason every capability here is opt-in).
 ACP_BACKENDS_RESUME_WITHOUT_LOAD = frozenset({ACP_BACKEND_DEEPSEEK})
+
+# Harnesses whose ``session/fork`` copies a stored session only up to a given
+# assistant message, which is what lets a rewind keep the native history it
+# retains. Advertising ``sessionCapabilities.fork`` is not enough: a fork that
+# ignores the fork point copies the whole session, including the suffix the
+# rewind discards. claude-agent-acp reads the point from
+# ``_meta.jetbrains.air.fork.messageId`` (from 0.71.0; see
+# ``CLAUDE_ACP_FORK_POINT_MIN_VERSION``).
+ACP_BACKENDS_FORK_AT_MESSAGE = frozenset({ACP_BACKEND_CLAUDE})
 
 
 # ── How a harness is made to ask ──

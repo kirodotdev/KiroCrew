@@ -2313,19 +2313,24 @@ class SessionAllocationService:
             )
 
         resume_sid: str | None = None
+        # A rewind's (source sid, fork point): restores history like a resume, so
+        # it is gated, placed and kept off the warm pool like one.
+        native_fork: tuple[str, str] | None = None
         is_stateless = (
             key in (constants.background_key, constants.heartbeat_key)
             or any(key.startswith(prefix) for prefix in constants.stateless_prefixes)
         ) and not owner._is_continuable_key(key)
         if not is_stateless:
             resume_sid = owner._session_map.get(key)
-        if speculative and resume_sid and not speculative_resume:
+            if not resume_sid:
+                native_fork = owner._session_map.get_native_fork(key)
+        if speculative and (resume_sid or native_fork) and not speculative_resume:
             raise SpeculativeResumeRefused(key)
 
         from kiro_crew.session_capabilities import prepare_runtime
 
         effective_cwd = cwd
-        if not effective_cwd and resume_sid:
+        if not effective_cwd and (resume_sid or native_fork):
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
@@ -2368,7 +2373,7 @@ class SessionAllocationService:
             pool_decision = "disabled"
         elif preparation.revision:
             pool_decision = "bypass_member_capabilities"
-        elif resume_sid:
+        elif resume_sid or native_fork:
             pool_decision = "bypass_resume"
         elif is_stateless:
             pool_decision = "bypass_stateless"
@@ -2607,6 +2612,15 @@ class SessionAllocationService:
                 elif self._deps.is_claude_provider(provider):
                     cast(Any, provider).set_resume_session_id(resume_sid)
                     self._deps.logger.info("CC resume for %s (sid=%s)", key, resume_sid)
+            elif native_fork:
+                # One attempt: a fork that fails falls back to a fresh session.
+                # Never for a restricted mode, which restores no native history.
+                owner._session_map.clear_native_fork(key)
+                if memory_mode == "persistent" and self._deps.is_claude_backend(provider):
+                    cast(Any, provider).client.set_fork_request(*native_fork)
+                    self._deps.logger.info(
+                        "Attempting session/fork for %s (source=%s)", key, native_fork[0]
+                    )
             # Ordered by start priority (rule: ``kiro_crew.start_priority``); the
             # provider's own spawn and session/new queues read the same answer.
             provider.start_priority = start_priority

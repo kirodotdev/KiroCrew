@@ -810,6 +810,21 @@ def parse_text_chunk(update: dict[str, Any]) -> tuple[str | None, bool]:
     return None, False
 
 
+# A real id is well under this (claude's are ~60 chars); anything longer is not
+# one and is not worth persisting onto every transcript row.
+_MESSAGE_ID_MAX_CHARS = 256
+
+
+def parse_message_id(update: object) -> str:
+    """The ``messageId`` a message/thought chunk update carries, or ``""``."""
+    if not isinstance(update, dict):
+        return ""
+    message_id = update.get("messageId")
+    if not isinstance(message_id, str) or len(message_id) > _MESSAGE_ID_MAX_CHARS:
+        return ""
+    return message_id
+
+
 # claude-agent-acp has no out-of-band compaction notification: where kiro-cli
 # sends ``_kiro.dev/compaction/status`` and KAS sends its summarization kinds
 # under ``_meta.kiro``, the Claude adapter reports compaction as PLAIN
@@ -3109,6 +3124,7 @@ def parse_session_update(
                 AcpEvent(
                     kind=EVENT_THINKING_CHUNK if is_thinking else EVENT_TEXT_CHUNK,
                     text=text,
+                    message_id=parse_message_id(update),
                 )
             )
         return events

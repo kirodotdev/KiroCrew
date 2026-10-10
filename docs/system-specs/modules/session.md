@@ -1757,6 +1757,24 @@ App-authenticated requests may rewind only a slot's own dashboard session:
 a channel-linked slot is refused, because its effective session is a
 conversation the app does not own.
 
+**On the claude backend the replacement session is a fork, not a replay.** Every
+assistant segment row records the adapter's `messageId` as
+`meta.native_message_id`. When the last row before the edited message, skipping
+runtime notices, is an assistant row carrying one, rewind leaves a `native_fork`
+request (`{sid, message_id}`) on the session-map entry. The next cold start sends
+`session/fork` for the discarded sid cut at that message and restores the fork
+like any resume, so the retained history keeps its tool calls and results instead
+of being rebuilt as text. The discarded suffix stays excluded, because the fork
+copies nothing after the fork point, and the source session is left untouched.
+Any write or clear of the entry's `sid` drops a pending request, so a reset
+issued before the cold start wins. A backend outside
+`ACP_BACKENDS_FORK_AT_MESSAGE`, an adapter below
+`CLAUDE_ACP_FORK_POINT_MIN_VERSION` (0.71.0) or not advertising
+`sessionCapabilities.fork`, a temporary or incognito session, a row with no id,
+or a failed fork falls back to the replay above. Membership and the floor exist
+because the fork point travels in claude-agent-acp's own `_meta` key, and a fork
+that ignored the key would copy the edited-away suffix too.
+
 **`edit-resend` is the same boundary, not a lighter one.** It truncates and
 persists history exactly as rewind does, so it runs the same three-step sequence
 — discard the native conversation, flush the cleared resume sid, then rewrite the

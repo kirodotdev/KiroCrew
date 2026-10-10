@@ -426,7 +426,9 @@ def test_the_dispatch_path_flags_the_notice_chunk_it_forwards() -> None:
     src = (
         pathlib.Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "acp" / "client.py"
     ).read_text(encoding="utf-8")
-    assert "yield AcpEvent(kind=kind, text=chunk, control_notice=_notice_chunk)" in src
+    assert re.search(
+        r"yield AcpEvent\(\s*kind=kind,\s*text=chunk,\s*control_notice=_notice_chunk\b", src
+    ), "the forwarded chunk must carry the notice flag"
     assert re.search(
         r"if _compaction_event is not None:\s*\n"
         r"\s*yield _compaction_event\s*\n"
