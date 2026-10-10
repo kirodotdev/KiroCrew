@@ -112,10 +112,15 @@ export const SIDEBAR_LANE_LS_KEY = 'mc-sidebar-lane'
  *  default, so a crew this browser has never seen shows its rows. */
 export const CREW_COLLAPSED_LS_KEY = 'mc-sidebar-crew-collapsed'
 
+/** The collapsed spaces (a crew's own folders) inside crew groups, as
+ *  `crewSpaceId` strings. Separate from the crew ids: one crew's group and its
+ *  folders open and close on their own. */
+export const CREW_SPACE_COLLAPSED_LS_KEY = 'mc-sidebar-crew-space-collapsed'
+
 /** The collapsed crew ids, or an empty set when the value is unusable. */
-export function readCollapsedCrews(): Set<string> {
+export function readCollapsedCrews(key = CREW_COLLAPSED_LS_KEY): Set<string> {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(CREW_COLLAPSED_LS_KEY) ?? '[]')
+    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? '[]')
     return new Set(Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [])
   } catch {
     return new Set()

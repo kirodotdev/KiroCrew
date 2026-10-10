@@ -11863,6 +11863,7 @@
       "crew_group_disabled": "꺼짐. 켜기 전까지 연결하지 않습니다.",
       "crew_enable": "사용",
       "crew_enable_named": "{{name}} 사용",
+      "crew_spaces_unavailable": "{{name}}의 폴더를 불러올 수 없습니다. 채팅은 폴더 없이 표시됩니다.",
       "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다"
     },
     "connectionsPage": {

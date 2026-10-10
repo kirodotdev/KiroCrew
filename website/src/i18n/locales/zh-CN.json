@@ -11863,6 +11863,7 @@
       "crew_group_disabled": "已关闭。启用前不会连接。",
       "crew_enable": "启用",
       "crew_enable_named": "启用 {{name}}",
+      "crew_spaces_unavailable": "无法加载 {{name}} 的文件夹。其聊天将不分文件夹列出。",
       "crew_enable_failed": "无法启用 {{name}}"
     },
     "connectionsPage": {

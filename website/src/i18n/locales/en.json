@@ -6865,6 +6865,7 @@
       "crew_group_disabled": "Off. No connection until you enable it.",
       "crew_enable": "Enable",
       "crew_enable_named": "Enable {{name}}",
+      "crew_spaces_unavailable": "Folders from {{name}} could not be loaded. Its chats are listed without them.",
       "crew_enable_failed": "Could not enable {{name}}"
     },
     "contextBreakdown": {

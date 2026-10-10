@@ -12239,6 +12239,7 @@
       "crew_group_disabled": "Éteint. Aucune connexion tant que tu ne l'actives pas.",
       "crew_enable": "Activer",
       "crew_enable_named": "Activer {{name}}",
+      "crew_spaces_unavailable": "Impossible de charger les dossiers de {{name}}. Ses discussions sont listées sans eux.",
       "crew_enable_failed": "Impossible d'activer {{name}}"
     },
     "connectionsPage": {

@@ -157,8 +157,10 @@ export function useSessionSources({ historyFilter, slotTitleDigest, localSlots }
   // One sidebar group per crew, preview only. Read off `allRows` so a local slot
   // whose turns run on a crew gives that crew a group even while it is offline.
   const crewGroups = useMemo(
-    () => (instanceSessionsEnabled ? crewGroupsFor(instancesList, allRows) : []),
-    [instanceSessionsEnabled, instancesList, allRows],
+    () => (instanceSessionsEnabled
+      ? crewGroupsFor(instancesList, allRows, instanceSessions.folders, instanceSessions.folderFailures)
+      : []),
+    [instanceSessionsEnabled, instancesList, allRows, instanceSessions.folders, instanceSessions.folderFailures],
   )
   // `selectInstance` stays for the FEDERATED OLDER-SESSIONS rows the pane renders,
   // which genuinely have nowhere local to go: a history row names a closed

@@ -12051,6 +12051,7 @@
       "crew_group_disabled": "Aus. Keine Verbindung, bis du sie aktivierst.",
       "crew_enable": "Aktivieren",
       "crew_enable_named": "{{name}} aktivieren",
+      "crew_spaces_unavailable": "Ordner von {{name}} konnten nicht geladen werden. Die Chats werden ohne sie aufgelistet.",
       "crew_enable_failed": "{{name}} konnte nicht aktiviert werden"
     },
     "connectionsPage": {

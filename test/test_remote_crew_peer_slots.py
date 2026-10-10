@@ -290,6 +290,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "last_turn_ts": "2026-01-01T00:00:00Z",
             "last_ts": "2026-01-01T00:00:01Z",
             "created": "2025-12-31T00:00:00Z",
+            "folder_id": "f-1",
             # Everything below is real `slot_projection` output the sidebar never
             # reads off a PEER row.
             "last_message": "here is the token I found",
@@ -316,6 +317,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "last_turn_ts",
             "last_ts",
             "created",
+            "folder_id",
             "parent",
             # Not forwarded FROM the peer — stamped BY this hub after the
             # allowlist runs. A peer cannot influence it: the value is composed
@@ -343,6 +345,7 @@ class TestPeerTextIsRedactedAndAllowlisted:
             "last_turn_ts": "2026-01-01T00:00:00Z",
             "last_ts": "2026-01-01T00:00:01Z",
             "created": "2025-12-31T00:00:00Z",
+            "folder_id": "f-1",
             "parent": {"slot": "p0", "key": "p0"},
             "lineage_pending": True,
         }

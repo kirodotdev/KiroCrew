@@ -57,6 +57,9 @@ export interface Slot {
    *  the local slot key — read `key`. */
   row_identity?: string
   peer_name?: string
+  /** A peer row's folder in the PEER's own tree (`InstanceSessionRow`); read
+   *  only by the crew group's spaces, never as a local `folder_id`. */
+  peer_folder_id?: string
   unread?: boolean
   // `pending_approval` rides on every ChatSlot payload; the sidebar reads it to
   // suppress the "your turn" dot and show the yellow "Needs approval" subtitle.

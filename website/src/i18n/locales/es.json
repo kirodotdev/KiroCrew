@@ -12239,6 +12239,7 @@
       "crew_group_disabled": "Apagado. No se conecta hasta que lo actives.",
       "crew_enable": "Activar",
       "crew_enable_named": "Activar {{name}}",
+      "crew_spaces_unavailable": "No se pudieron cargar las carpetas de {{name}}. Sus chats se muestran sin ellas.",
       "crew_enable_failed": "No se pudo activar {{name}}"
     },
     "connectionsPage": {

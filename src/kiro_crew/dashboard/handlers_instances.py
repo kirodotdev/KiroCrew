@@ -1966,6 +1966,11 @@ _PEER_SLOT_STR_FIELDS: dict[str, int] = {
     "last_turn_ts": 64,
     "last_ts": 64,
     "created": 64,
+    # The PEER's sidebar folder the row is filed in, an id in the peer's own folder
+    # space. The crew group nests the row under that folder, whose name the browser
+    # reads from the peer's ``api/chat/folders`` through the proxy. Clamped like
+    # ``key``: an opaque id, matched, never shown.
+    "folder_id": _PEER_FIELD_MAX_CHARS,
 }
 
 #: The booleans the sidebar reads, coerced with ``is True`` rather than

@@ -113,7 +113,7 @@ import { useStableCallbackProps } from './chat/useStableCallbackProps'
 import { sessionRowIdentity, historyRowIdentity } from './chat-sidebar/rowIdentity'
 import { buildSidebarRows, chipLabel, sameRowView, type ConductorRowView, type RowScene, type RowShell, type SessionRowView, type SidebarRows } from './chat-sidebar/rows'
 import { useSessionSources } from './chat-sidebar/sessionSources'
-import { CrewGroupSection, CrewOfflineContext, LocalGroupHeader, useCollapsedCrews, useCrewEnable } from './chat-sidebar/CrewGroups'
+import { CrewGroupSection, CrewOfflineContext, LocalGroupHeader, crewSpaceChain, useCollapsedCrews, useCollapsedCrewSpaces, useCrewEnable } from './chat-sidebar/CrewGroups'
 import { crewOf, type CrewGroup } from '../hooks/useInstanceSessions'
 import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-sidebar/rename'
 import { useSlotTitleGenerating } from '../hooks/slotTitleGeneration'
@@ -2890,6 +2890,7 @@ function ChatSidebar({
   } = sidebarRows.lanes
   const filterCounts = sidebarRows.statusCounts
   const [collapsedCrews, toggleCrewCollapsed, expandCrew] = useCollapsedCrews()
+  const [collapsedSpaces, toggleSpaceCollapsed, expandSpaces] = useCollapsedCrewSpaces()
   const enableCrew = useCallback((id: string) => setCrewEnabled(dispatch, id, true)
     .finally(() => { void queryClient.invalidateQueries({ queryKey: ['instances'] }) }), [dispatch, queryClient])
   const crewEnable = useCrewEnable(enableCrew, id => instancesList.find(i => i.id === id)?.name || id)
@@ -2965,9 +2966,14 @@ function ChatSidebar({
   const expandRevealAncestors = useCallback((identity: string) => {
     const row = allRows.find(s => sessionRowIdentity(s) === identity)
     const crew = row ? crewOf(row) : undefined
-    if (crew && shownCrewRows.has(crew)) expandCrew(crew)
+    if (crew && shownCrewRows.has(crew)) {
+      expandCrew(crew)
+      // And the crew's own spaces above the row, so the reveal lands on it.
+      const folders = shownCrewGroups.find(g => g.id === crew)?.folders ?? []
+      expandSpaces(...crewSpaceChain(crew, folders, row?.peer_folder_id))
+    }
     expandConductorAncestors(identity)
-  }, [allRows, shownCrewRows, expandCrew, expandConductorAncestors])
+  }, [allRows, shownCrewRows, shownCrewGroups, expandCrew, expandSpaces, expandConductorAncestors])
 
   const {
     availableLanes, nextLane, laneSwitchLabel, cycleLane,
@@ -3487,6 +3493,11 @@ function ChatSidebar({
       collapsed={collapsedCrews.has(g.id)} onToggle={toggleCrewCollapsed} hideWhenEmpty={listNarrowed}
       chevron={<DisclosureChevron open={!collapsedCrews.has(g.id)} size={11} />}
       onEnable={crewEnable.onEnable}
+      spaces={{
+        collapsed: collapsedSpaces, onToggle: toggleSpaceCollapsed,
+        // A local folder's own body: connector line, inset and collapse motion.
+        body: (open, children) => <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={open}><div className={FOLDER_BODY_CLS}>{children}</div></FolderBody>,
+      }}
       renderRows={(rows, scope) => rows.map((s, i) => renderSessionRow(
         s, 0, i < rows.length - 1 && !isActiveRow(s) && !isActiveRow(rows[i + 1]), scope,
       ))} />

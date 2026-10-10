@@ -21,10 +21,11 @@ import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
 import en from '../i18n/locales/en.json'
 import enManual from '../i18n/locales/en.manual.json'
 
-const { instanceChatSlotsMock, listInstancesMock, chatFoldersMock } = vi.hoisted(() => ({
+const { instanceChatSlotsMock, listInstancesMock, chatFoldersMock, crewPeerGetMock } = vi.hoisted(() => ({
   instanceChatSlotsMock: vi.fn(),
   listInstancesMock: vi.fn(),
   chatFoldersMock: vi.fn(),
+  crewPeerGetMock: vi.fn(),
 }))
 
 vi.mock('../api/client', async (importOriginal) => {
@@ -45,6 +46,7 @@ vi.mock('../api/client', async (importOriginal) => {
       kirocrewConfig: vi.fn().mockResolvedValue({}),
       listInstances: listInstancesMock,
       instanceChatSlots: instanceChatSlotsMock,
+      crewPeerGet: crewPeerGetMock,
     },
   }
 })
@@ -141,6 +143,7 @@ describe('ChatSidebar – per-machine groups', () => {
     chatFoldersMock.mockReset().mockResolvedValue([])
     instanceChatSlotsMock.mockReset().mockResolvedValue([PEER_ROW])
     listInstancesMock.mockReset().mockResolvedValue({ instances: [crew('connected')] })
+    crewPeerGetMock.mockReset().mockResolvedValue([])
   })
 
   it('renders Local and one group per connected crew, each row in its own group', async () => {
@@ -337,5 +340,87 @@ describe('ChatSidebar – per-machine groups', () => {
     expect(screen.queryByTestId('machine-group-local')).toBeNull()
     expect(normalize(on.container.innerHTML)).toBe(offHtml)
     expect(instanceChatSlotsMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('ChatSidebar – spaces inside a crew group', () => {
+  // Every space waits on a chain: the instances query, then the crew's slots and
+  // folders queries it enables. Bounded explicitly so a loaded runner fails on
+  // the chain, not on the default deadline.
+  const CHAIN_WAIT = { timeout: 5_000 }
+  const peerRow = (key: string, title: string, folder?: string) => ({
+    ...PEER_ROW, key, row_identity: `inst-a:${key}`, title, ...(folder ? { folder_id: folder } : {}),
+  })
+  // The crew's own tree: Work > Sidebar, plus an empty Archive that holds no chat.
+  const PEER_FOLDERS = [
+    { id: 'f-work', name: 'Work', order: 1 },
+    { id: 'f-sub', name: 'Sidebar', order: 0, parent_id: 'f-work' },
+    { id: 'f-arch', name: 'Archive', order: 2 },
+  ]
+
+  beforeEach(() => {
+    localStorage.clear()
+    localStorage.setItem(PREVIEW_INSTANCE_SESSIONS, '1')
+    chatFoldersMock.mockReset().mockResolvedValue([])
+    listInstancesMock.mockReset().mockResolvedValue({ instances: [crew('connected')] })
+    instanceChatSlotsMock.mockReset().mockResolvedValue([
+      peerRow('c-loose', 'LOOSE chat'),
+      peerRow('c-work', 'WORK chat', 'f-work'),
+      peerRow('c-sub', 'SUB chat', 'f-sub'),
+      // Filed in a folder the crew did not list: shown unfiled, never lost.
+      peerRow('c-gone', 'GONE-folder chat', 'f-missing'),
+    ])
+    crewPeerGetMock.mockReset().mockImplementation((_id: string, path: string) =>
+      Promise.resolve(path === 'api/chat/folders' ? PEER_FOLDERS : []))
+  })
+
+  it('nests each chat under the crew\'s own folder, unfiled chats last', async () => {
+    renderSidebar()
+    const work = await screen.findByTestId('crew-space-inst-a-f-work', {}, CHAIN_WAIT)
+    expect(crewPeerGetMock).toHaveBeenCalledWith('inst-a', 'api/chat/folders')
+    const sub = within(work).getByTestId('crew-space-inst-a-f-sub')
+    expect(within(work).getByTestId('crew-space-toggle-inst-a-f-work')).toHaveTextContent(/Work\s*2/)
+    expect(rowIn(sub, 'SUB chat')).not.toBeNull()
+    expect(rowIn(work, 'WORK chat')).not.toBeNull()
+    // A space with no chat below it is left out.
+    expect(screen.queryByTestId('crew-space-inst-a-f-arch')).toBeNull()
+    // Unfiled rows come after every space, outside them.
+    const body = screen.getByTestId('crew-group-body-inst-a')
+    expect(rowIn(work, 'LOOSE chat')).toBeNull()
+    expect(rowIn(work, 'GONE-folder chat')).toBeNull()
+    const order = [...body.querySelectorAll('[data-session-row]')].map(el => el.textContent ?? '')
+    const at = (t: string) => order.findIndex(x => x.includes(t))
+    expect(at('SUB chat')).toBeLessThan(at('WORK chat'))
+    expect(at('WORK chat')).toBeLessThan(at('LOOSE chat'))
+    expect(at('WORK chat')).toBeLessThan(at('GONE-folder chat'))
+    // The crew group's own count still counts every chat.
+    expect(screen.getByTestId('crew-group-toggle-inst-a')).toHaveTextContent('4')
+  })
+
+  it('collapses one space on its own and remembers it', async () => {
+    renderSidebar()
+    const toggle = await screen.findByTestId('crew-space-toggle-inst-a-f-work', {}, CHAIN_WAIT)
+    expect(toggle).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.click(toggle)
+    expect(toggle).toHaveAttribute('aria-expanded', 'false')
+    const work = screen.getByTestId('crew-space-inst-a-f-work')
+    expect(within(work).getByText('WORK chat').closest('[aria-hidden="true"]')).not.toBeNull()
+    // The crew group and the unfiled rows stay open.
+    expect(screen.getByTestId('crew-group-toggle-inst-a')).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByText('LOOSE chat').closest('[aria-hidden="true"]')).toBeNull()
+    expect(JSON.parse(localStorage.getItem('mc-sidebar-crew-space-collapsed') ?? '[]')).toEqual([JSON.stringify(['inst-a', 'f-work'])])
+  })
+
+  it('lists the chats flat when the crew\'s folder read fails', async () => {
+    crewPeerGetMock.mockReset().mockRejectedValue(new Error('peer down'))
+    renderSidebar()
+    const group = await screen.findByTestId('crew-group-inst-a', {}, CHAIN_WAIT)
+    await waitFor(() => expect(rowIn(group, 'SUB chat')).not.toBeNull(), CHAIN_WAIT)
+    expect(rowIn(group, 'WORK chat')).not.toBeNull()
+    expect(screen.queryByTestId(/^crew-space-/)).toBeNull()
+    // The failure is said, beside the rows it left unfiled.
+    const notice = within(group).getByTestId('crew-group-spaces-error-inst-a')
+    expect(notice).toHaveTextContent('peer down')
+    expect(notice).toHaveTextContent(S.crew_spaces_unavailable.replace('{{name}}', 'astro'))
   })
 })

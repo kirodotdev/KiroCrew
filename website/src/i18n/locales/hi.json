@@ -12051,6 +12051,7 @@
       "crew_group_disabled": "बंद है। चालू करने तक कनेक्ट नहीं होगा।",
       "crew_enable": "चालू करो",
       "crew_enable_named": "{{name}} चालू करो",
+      "crew_spaces_unavailable": "{{name}} से फ़ोल्डर लोड नहीं हो सके। इसकी चैट फ़ोल्डर के बिना दिखाई जा रही हैं।",
       "crew_enable_failed": "{{name}} चालू नहीं हो सका"
     },
     "connectionsPage": {

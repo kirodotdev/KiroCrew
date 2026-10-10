@@ -114,6 +114,10 @@ interface PeerSlot {
   /** Present and true while the peer's lineage projection is still seeding, so
    *  this frame's `parent` is provisional. Absent on a settled frame. */
   lineage_pending?: boolean
+  /** The peer's own sidebar folder this slot is filed in, an id in the PEER's
+   *  folder space. Absent when the slot is unfiled, or on a peer build whose
+   *  chat-slots route does not forward it. */
+  folder_id?: string
 }
 
 /** A peer slot flattened into the shape the Sessions list already renders.
@@ -162,6 +166,22 @@ export interface InstanceSessionRow {
    *  without it a peer's re-parented worker reads as a child of the lead. */
   parent?: { slot?: string; key?: string; ancestor?: boolean }
   lineage_pending?: boolean
+  /** The PEER's folder this row is filed in (`PeerFolder.id`). Deliberately NOT
+   *  `folder_id`: that field names a LOCAL folder, and every local folder
+   *  reader (placement, the folder filter, drag) would file a peer row into
+   *  whichever local folder happened to share the id. Read only by the crew
+   *  group, which nests the row under its peer folder. */
+  peer_folder_id?: string
+}
+
+/** One folder of a peer's own sidebar tree, as its `api/chat/folders` lists it.
+ *  Only what the crew group draws: the name, the tree shape and the stored
+ *  order. The tree is a read-only mirror; it is edited on the peer. */
+export interface PeerFolder {
+  id: string
+  name: string
+  parent_id?: string
+  order: number
 }
 
 export interface InstanceSessions {
@@ -184,10 +204,22 @@ export interface InstanceSessions {
   failure?: string
   /** True while any instance's first fetch is outstanding. */
   loading: boolean
+  /** Each crew's folder tree, by instance id. A crew whose folder read has not
+   *  answered, or failed, has no entry, and its rows render unfiled: the folder
+   *  names are a grouping aid and the rows are still all there. */
+  folders: ReadonlyMap<string, readonly PeerFolder[]>
+  /** A connected crew whose folder read failed with no tree to fall back on,
+   *  and that read's error text. Its rows render unfiled, and the group says why. */
+  folderFailures: ReadonlyMap<string, string>
 }
 
 const REFRESH_MS = 15_000
-const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false }
+/** Folders move far less often than sessions, and the peer's folder list walks
+ *  its archived sessions on disk to count them, so it is read less often. */
+const FOLDERS_REFRESH_MS = 60_000
+const NO_FOLDERS: ReadonlyMap<string, readonly PeerFolder[]> = new Map()
+const NO_FAILURES: ReadonlyMap<string, string> = new Map()
+const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false, folders: NO_FOLDERS, folderFailures: NO_FAILURES }
 
 /** Return `v` only when it really is a string, else `undefined`.
  *
@@ -210,6 +242,27 @@ const EMPTY: InstanceSessions = { rows: [], failed: [], loading: false }
 const str = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined)
 
 const isConnected = (inst: InstanceView): boolean => inst.status?.state === 'connected'
+
+/** The folders in a peer's `api/chat/folders` answer, checked one by one: the
+ *  reply crossed a machine boundary, so a row without a string `id` and `name`
+ *  is dropped rather than rendered, and a repeated `id` keeps its first row. */
+export function peerFoldersOf(data: unknown): PeerFolder[] {
+  if (!Array.isArray(data)) return []
+  const out: PeerFolder[] = []
+  const seen = new Set<string>()
+  for (const f of data) {
+    if (!f || typeof f !== 'object') continue
+    const { id, name, parent_id: parent, order } = f as Record<string, unknown>
+    if (typeof id !== 'string' || !id || typeof name !== 'string' || seen.has(id)) continue
+    seen.add(id)
+    out.push({
+      id, name,
+      order: typeof order === 'number' && Number.isFinite(order) ? order : 0,
+      ...(typeof parent === 'string' && parent ? { parent_id: parent } : {}),
+    })
+  }
+  return out
+}
 
 /** Crews whose chat slots can be listed: connected, and running a dashboard
  *  behind the forward. A fargate crew is connected without one, so asking it
@@ -242,6 +295,10 @@ export interface CrewGroup {
   disabled: boolean
   /** `TunnelStatus.error`, shown as the badge's tooltip. */
   error?: string
+  /** The crew's own folder tree, nested inside the group. Absent until it answers. */
+  folders?: readonly PeerFolder[]
+  /** The crew's folder read failed and no tree is cached: its error text. */
+  foldersError?: string
 }
 
 /** The crew a sidebar row belongs to: the peer that owns it, or the crew a
@@ -258,6 +315,8 @@ export function crewOf(row: { peer_id?: string; executor?: string; instance_id?:
 export function crewGroupsFor(
   instances: readonly InstanceView[],
   rows: readonly { peer_id?: string; executor?: string; instance_id?: string }[],
+  folders: ReadonlyMap<string, readonly PeerFolder[]> = NO_FOLDERS,
+  folderFailures: ReadonlyMap<string, string> = NO_FAILURES,
 ): CrewGroup[] {
   const owned = new Set<string>()
   for (const r of rows) {
@@ -274,6 +333,8 @@ export function crewGroupsFor(
       offline: !isConnected(inst),
       disabled: !!inst.disabled,
       ...(inst.status?.error ? { error: inst.status.error } : {}),
+      ...(folders.has(inst.id) ? { folders: folders.get(inst.id) } : {}),
+      ...(folderFailures.has(inst.id) ? { foldersError: folderFailures.get(inst.id) } : {}),
     }))
 }
 
@@ -357,6 +418,7 @@ export function useInstanceSessions(
         rows.push({
           ...(parent ? { parent } : {}),
           ...(s.lineage_pending === true ? { lineage_pending: true } : {}),
+          ...(str(s.folder_id) ? { peer_folder_id: s.folder_id } : {}),
           key: s.key,
           title: str(s.title),
           last_turn_ts: str(s.last_turn_ts),
@@ -377,8 +439,36 @@ export function useInstanceSessions(
       }
     })
 
-    return { rows, failed, failure, loading }
+    return { rows, failed, failure, loading, folders: NO_FOLDERS, folderFailures: NO_FAILURES }
   }, [listed])
+
+  // Each crew's folder tree, through the owner-only proxy (`api/chat` is an
+  // admitted, redacted prefix). Same per-crew isolation as the slot reads. A
+  // failure with no cached tree keeps the rows, unfiled, and is reported beside
+  // them; a disconnected crew's old error says nothing about it now.
+  const combineFolders = useCallback((results: UseQueryResult<unknown>[]) => {
+    const out = new Map<string, readonly PeerFolder[]>()
+    const failures = new Map<string, string>()
+    results.forEach((r, i) => {
+      const inst = listed[i]
+      if (!inst) return
+      if (r.data !== undefined) out.set(inst.id, peerFoldersOf(r.data))
+      else if (isConnected(inst) && r.isError) {
+        failures.set(inst.id, r.error instanceof Error && r.error.message ? r.error.message : String(r.error))
+      }
+    })
+    return { folders: out.size === 0 ? NO_FOLDERS : out, folderFailures: failures.size === 0 ? NO_FAILURES : failures }
+  }, [listed])
+  const folderReads = useQueries({
+    queries: listed.map(inst => ({
+      queryKey: ['instance-folders', inst.id],
+      queryFn: () => api.crewPeerGet(inst.id, 'api/chat/folders') as Promise<unknown>,
+      enabled: enabled && isConnected(inst),
+      refetchInterval: FOLDERS_REFRESH_MS,
+      retry: false,
+    })),
+    combine: combineFolders,
+  })
 
   // `combine` structurally shares its result while the underlying query results
   // are unchanged. Without it, useQueries returns a fresh array on every render,
@@ -397,8 +487,9 @@ export function useInstanceSessions(
 
   return useMemo(() => {
     if (!enabled) return EMPTY
-    return instancesUnanswered && !combined.loading
-      ? { ...combined, loading: true }
-      : combined
-  }, [enabled, combined, instancesUnanswered])
+    return {
+      ...combined, folders: folderReads.folders, folderFailures: folderReads.folderFailures,
+      ...(instancesUnanswered && !combined.loading ? { loading: true } : {}),
+    }
+  }, [enabled, combined, folderReads, instancesUnanswered])
 }

@@ -12051,6 +12051,7 @@
       "crew_group_disabled": "বন্ধ আছে। চালু না করা পর্যন্ত সংযোগ হবে না।",
       "crew_enable": "চালু করো",
       "crew_enable_named": "{{name}} চালু করো",
+      "crew_spaces_unavailable": "{{name}} থেকে ফোল্ডার লোড করা যায়নি। এর চ্যাটগুলো ফোল্ডার ছাড়াই দেখানো হচ্ছে।",
       "crew_enable_failed": "{{name}} চালু করা যায়নি"
     },
     "connectionsPage": {

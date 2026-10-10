@@ -11863,6 +11863,7 @@
       "crew_group_disabled": "オフです。有効にするまで接続しません。",
       "crew_enable": "有効にする",
       "crew_enable_named": "{{name}} を有効にする",
+      "crew_spaces_unavailable": "{{name}} のフォルダーを読み込めませんでした。チャットはフォルダーなしで表示されています。",
       "crew_enable_failed": "{{name}} を有効にできませんでした"
     },
     "connectionsPage": {

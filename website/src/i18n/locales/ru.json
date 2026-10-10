@@ -12427,6 +12427,7 @@
       "crew_group_disabled": "Выключен. Подключения не будет, пока ты его не включишь.",
       "crew_enable": "Включить",
       "crew_enable_named": "Включить {{name}}",
+      "crew_spaces_unavailable": "Не удалось загрузить папки {{name}}. Чаты показаны без них.",
       "crew_enable_failed": "Не удалось включить {{name}}"
     },
     "connectionsPage": {

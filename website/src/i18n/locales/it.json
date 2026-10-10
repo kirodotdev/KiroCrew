@@ -12239,6 +12239,7 @@
       "crew_group_disabled": "Spento. Nessuna connessione finché non lo attivi.",
       "crew_enable": "Attiva",
       "crew_enable_named": "Attiva {{name}}",
+      "crew_spaces_unavailable": "Impossibile caricare le cartelle di {{name}}. Le sue chat sono elencate senza di esse.",
       "crew_enable_failed": "Impossibile attivare {{name}}"
     },
     "connectionsPage": {
