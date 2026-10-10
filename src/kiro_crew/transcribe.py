@@ -1517,7 +1517,12 @@ async def transcribe_audio(audio_path: str, stt_config=None) -> str | None:  # t
 
 
 class _ProfileCredentialResolver(CredentialResolver):
-    """Async credential resolver that delegates to a boto3 Session profile."""
+    """Async credential resolver that delegates to a boto3 Session profile.
+
+    Built per stream, and resolves once: the SDK asks again for every audio event,
+    and each event's signature chains from the opening request's, so a key the
+    session refreshed mid-stream would have Transcribe refuse the next event.
+    """
 
     def __init__(self, profile: str) -> None:
         if boto3 is None:  # pragma: no cover (the optional 'voice' extra is absent)
@@ -1526,8 +1531,11 @@ class _ProfileCredentialResolver(CredentialResolver):
                 f"dependencies ({install_hint('voice-aws')})."
             )
         self._session = boto3.Session(profile_name=profile)
+        self._credentials: Credentials | None = None
 
     async def get_credentials(self) -> Credentials | None:
+        if self._credentials is not None:
+            return self._credentials
         loop = asyncio.get_running_loop()
         creds = await loop.run_in_executor(None, lambda: self._session.get_credentials())
         if creds is None:
@@ -1537,7 +1545,8 @@ class _ProfileCredentialResolver(CredentialResolver):
                 f"No AWS credentials found for profile '{self._session.profile_name}'"
             )
         frozen = await loop.run_in_executor(None, creds.get_frozen_credentials)
-        return Credentials(frozen.access_key, frozen.secret_key, frozen.token)
+        self._credentials = Credentials(frozen.access_key, frozen.secret_key, frozen.token)
+        return self._credentials
 
 
 #: Sample rate declared to AWS Transcribe for the ogg-opus stream. Chrome's

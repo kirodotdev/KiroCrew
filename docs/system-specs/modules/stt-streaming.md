@@ -288,7 +288,12 @@ After the three gates, each provider has its own precondition and failure frame:
   `_CODE_AWS_ACCESS_DENIED`, because every retry is refused the same way. A
   refused custom vocabulary has its own code too
   ([Custom vocabulary](#custom-vocabulary-transcribe-only)); any other start
-  failure is `_CODE_SESSION_FAILED`.
+  failure is `_CODE_SESSION_FAILED`. A stream on a named `stt.transcribe_profile`
+  keeps the credentials it opened with: `_ProfileCredentialResolver` resolves once,
+  because the SDK asks again for every audio event and each event's signature
+  chains from the opening request's, so a key the profile refreshed mid-stream
+  would be refused. With no profile set, the SDK's own default-chain resolver
+  signs the stream.
 
 ### The AWS consent gate is an authorization, not a preference
 

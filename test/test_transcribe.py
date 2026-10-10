@@ -20,6 +20,7 @@ import sys
 import threading
 import types
 import wave
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2641,20 +2642,66 @@ class TestTranscribeFormatValidation:
 
 
 class TestProfileCredentialResolver:
+    @staticmethod
+    def _resolver(session: MagicMock) -> _ProfileCredentialResolver:
+        with patch.object(transcribe, "boto3") as boto3_module:
+            boto3_module.Session.return_value = session
+            return _ProfileCredentialResolver("test-profile")
+
     @pytest.mark.asyncio
     async def test_none_credentials_raises(self):
-        resolver = _ProfileCredentialResolver.__new__(_ProfileCredentialResolver)
         mock_session = MagicMock()
         mock_session.get_credentials.return_value = None
         mock_session.profile_name = "test-profile"
-        resolver._session = mock_session
-        mock_creds_module = MagicMock()
-        with patch.dict(
-            "sys.modules",
-            {"amazon_transcribe": MagicMock(), "amazon_transcribe.auth": mock_creds_module},
-        ):
-            with pytest.raises(RuntimeError, match="No AWS credentials found"):
-                await resolver.get_credentials()
+        resolver = self._resolver(mock_session)
+        with pytest.raises(RuntimeError, match="No AWS credentials found"):
+            await resolver.get_credentials()
+
+    @pytest.mark.asyncio
+    async def test_a_stream_keeps_the_credentials_it_opened_with(self):
+        """A refresh mid-stream must not reach the events still to be signed.
+
+        The SDK asks the resolver again for every audio event, and each event's
+        signature chains from the opening request's, so Transcribe refuses an
+        event signed with a refreshed key.
+        """
+        pytest.importorskip("amazon_transcribe")
+        botocore_credentials = pytest.importorskip("botocore.credentials")
+        now = datetime(2026, 10, 7, 20, 0, tzinfo=timezone.utc)
+        # Inside botocore's advisory refresh window, so every read refreshes.
+        expiry = now + timedelta(minutes=12)
+        issued = iter(range(2, 100))
+
+        def _refresh() -> dict[str, str]:
+            n = next(issued)
+            return {
+                "access_key": f"AKIA{n}",
+                "secret_key": f"secret-{n}",
+                "token": f"token-{n}",
+                "expiry_time": expiry.isoformat(),
+            }
+
+        refreshing = botocore_credentials.RefreshableCredentials(
+            access_key="AKIA1",
+            secret_key="secret-1",
+            token="token-1",
+            expiry_time=expiry,
+            refresh_using=_refresh,
+            method="test",
+            time_fetcher=lambda: now,
+        )
+        session = MagicMock()
+        session.get_credentials.return_value = refreshing
+        resolver = self._resolver(session)
+
+        opening = await resolver.get_credentials()
+        later = [await resolver.get_credentials() for _ in range(3)]
+
+        assert refreshing.get_frozen_credentials().access_key != opening.access_key_id
+        assert {(c.access_key_id, c.secret_access_key, c.session_token) for c in later} == {
+            (opening.access_key_id, opening.secret_access_key, opening.session_token)
+        }
+        session.get_credentials.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
