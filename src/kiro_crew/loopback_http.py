@@ -40,7 +40,15 @@ import urllib.error
 import urllib.request
 from collections.abc import Callable
 
-__all__ = ["build_loopback_opener", "loopback_urlopen", "unix_socket_urlopen"]
+__all__ = [
+    "build_loopback_opener",
+    "loopback_urlopen",
+    "unix_socket_urlopen",
+]
+# tcp_verified_urlopen is intentionally NOT exported: it has one in-tree caller
+# (cli_server._owner_verified_secret_urlopen), which imports it by name. Keeping
+# it off __all__ avoids advertising a secret-bearing TCP sender as public API
+# until a second caller justifies the surface.
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -143,6 +151,91 @@ def _build_unix_opener(
         _NoRedirect(),
         _UnixHTTPHandler(socket_path, verify_peer),
     )
+
+
+class _TCPVerifyHTTPConnection(http.client.HTTPConnection):
+    """A TCP ``HTTPConnection`` that verifies the peer before the first send.
+
+    The TCP twin of :class:`_UnixHTTPConnection`'s ``verify_peer`` hook: the
+    socket is connected normally, then *verify_peer* is called with the
+    connected socket BEFORE any HTTP byte is written. Raising refuses the send,
+    and the connected fd is closed, so a peer that fails verification never sees
+    the request line or the credential headers behind it.
+
+    This exists for the platform where a credential-bearing loopback send has no
+    unix socket to prefer -- native Windows, which has no ``AF_UNIX``. There the
+    verifier binds the ownership proof to the actual connection the secret rides,
+    closing the verify-then-reconnect TOCTOU on the only transport available.
+    """
+
+    def __init__(
+        self,
+        host: str,
+        timeout=None,
+        verify_peer: "Callable[[socket.socket], None] | None" = None,
+    ) -> None:
+        if timeout is None:
+            super().__init__(host)
+        else:
+            super().__init__(host, timeout=timeout)
+        self._verify_peer = verify_peer
+
+    def connect(self) -> None:  # noqa: D102 -- contract inherited
+        super().connect()
+        if self._verify_peer is not None:
+            try:
+                # Between connect() and the first send: a peer that fails
+                # verification must never see the request line, let alone the
+                # credential headers. BaseException so even an interrupt cannot
+                # leak the connected fd.
+                self._verify_peer(self.sock)
+            except BaseException:
+                self.close()
+                raise
+
+
+class _TCPVerifyHTTPHandler(urllib.request.HTTPHandler):
+    """Route ``http://`` over a TCP connection that verifies the peer first."""
+
+    def __init__(
+        self,
+        verify_peer: "Callable[[socket.socket], None] | None" = None,
+    ) -> None:
+        super().__init__()
+        self._verify_peer = verify_peer
+
+    def http_open(self, req):  # noqa: D102 -- contract inherited
+        def _factory(host, timeout=None, **_kwargs):
+            return _TCPVerifyHTTPConnection(host, timeout=timeout, verify_peer=self._verify_peer)
+
+        return self.do_open(_factory, req)
+
+
+def tcp_verified_urlopen(
+    req: urllib.request.Request | str,
+    timeout: float,
+    *,
+    verify_peer: "Callable[[socket.socket], None] | None" = None,
+):
+    """Open ``req`` over TCP, verifying the peer on the connected socket first.
+
+    The TCP twin of :func:`unix_socket_urlopen` for a credential-bearing send on
+    a platform with no unix socket. Proxies are disabled and redirects refused
+    exactly as :func:`build_loopback_opener`; *verify_peer* runs on the connected
+    socket before any byte is written and raises to refuse. There is no silent
+    retry. The hook runs inside ``connect()`` during ``do_open``, which catches
+    ``OSError`` and re-raises it as ``URLError`` -- so a hook that must keep its
+    own error type legible to the caller (to tell a refused-but-live gateway
+    apart from an unreachable one) MUST raise a NON-``OSError`` exception, which
+    propagates unwrapped. A hook that raises an ``OSError`` reaches the caller as
+    ``URLError``.
+    """
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        _NoRedirect(),
+        _TCPVerifyHTTPHandler(verify_peer),
+    )
+    return opener.open(req, timeout=timeout)
 
 
 def unix_socket_urlopen(

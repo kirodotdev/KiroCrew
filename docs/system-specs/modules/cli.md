@@ -450,7 +450,11 @@ module outside the snapshot family imports an owner.
 
 `kirocrew token` has a **machine-readable stdout contract**: stdout carries only
 the dashboard URL(s), and every failure reason (invalid TTL, gateway not running,
-gateway unreachable, gateway refused, empty token) goes to **stderr**.
+gateway not verified on this port, gateway unreachable, gateway refused, empty
+token) goes to **stderr**. "Gateway not verified on this port" means the listener
+on the resolved port could not be proven to be this install's gateway, so the
+token-minting secret is withheld — distinct from "gateway not running", which
+means no listener was reachable at all.
 
 A gateway that ANSWERS with an HTTP error is reported as a refusal carrying the
 gateway's own reason (`Gateway refused the token request (HTTP 403): <error

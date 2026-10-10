@@ -153,7 +153,7 @@ class TestTokenRefusal:
         )
         body = json.dumps({"error": reason, "code": "member_owner_token_refused"}).encode()
 
-        def refused(*a, **k):
+        def refused(req, port, timeout, *, operation=""):
             raise urllib.error.HTTPError(
                 "http://127.0.0.1/api/token/local", 403, "Forbidden", {}, io.BytesIO(body)
             )
@@ -161,7 +161,8 @@ class TestTokenRefusal:
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
-        monkeypatch.setattr(cli_server, "loopback_urlopen", refused)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", refused)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         assert exc.value.code == 1
@@ -170,13 +171,14 @@ class TestTokenRefusal:
         assert "Could not reach gateway" not in err
 
     def test_connection_refused_still_reports_unreachable(self, monkeypatch, capsys) -> None:
-        def boom(*a, **k):
+        def boom(req, port, timeout, *, operation=""):
             raise urllib.error.URLError("refused")
 
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
-        monkeypatch.setattr(cli_server, "loopback_urlopen", boom)
+        monkeypatch.setattr(cli_server, "_verified_loopback_gateway_pids", lambda _port: [4242])
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", boom)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         assert exc.value.code == 1
@@ -200,7 +202,7 @@ class TestTokenRefusal:
         monkeypatch.setattr(cli_server, "run_preflight_checks", lambda: None)
         monkeypatch.setattr(cli_server, "resolve_client_port", lambda _port: 5476)
         monkeypatch.setattr(cli_server, "read_local_secret", lambda _port, **_kw: "s3cr3t")
-        monkeypatch.setattr(cli_server, "loopback_urlopen", stalls)
+        monkeypatch.setattr(cli_server, "_owner_verified_secret_urlopen", stalls)
         with pytest.raises(SystemExit) as exc:
             cli_server._token(argparse.Namespace(ttl="1h", port=None))
         assert exc.value.code == 1
