@@ -382,3 +382,39 @@ class TestFlaggedDownloadHonoursOwnerGrant:
             resp = await _download(f)
         assert resp.status == 200
         is_granted.assert_not_called()
+
+
+def _telegram_shaped() -> str:
+    """A bot-token-shaped run, built so no literal token sits in the source."""
+    return "123456789:" + _key_shaped(3, 35).replace("+", "_").replace("/", "-")
+
+
+class TestBinaryDownloadUsesTheBinaryScan:
+    """Non-UTF-8 bytes go through the shared binary scan, not the text redactor."""
+
+    @pytest.mark.asyncio
+    async def test_baseline_jpeg_downloads(self, tmp_path, mock_sel):
+        # Every baseline JPEG carries the standard Huffman table, whose
+        # printable run reads as a bot token to the text redactor.
+        image = pytest.importorskip("PIL.Image")
+        f = tmp_path / "shot.jpg"
+        image.new("RGB", (64, 36), (120, 30, 200)).save(f, "JPEG")
+        assert b"456789:CDEFGHIJ" in f.read_bytes()
+        resp = await _download(f)
+        assert resp.status == 200
+
+    @pytest.mark.asyncio
+    async def test_text_with_telegram_token_is_still_refused(self, tmp_path, mock_sel):
+        f = tmp_path / "config.txt"
+        f.write_text(f"bot_token = {_telegram_shaped()}\n")
+        resp = await _download(f)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
+
+    @pytest.mark.asyncio
+    async def test_binary_with_telegram_token_is_still_refused(self, tmp_path, mock_sel):
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\xff\xd8\xff\xe0\x80 " + _telegram_shaped().encode() + b" \x80")
+        resp = await _download(f)
+        assert resp.status == 400
+        assert json.loads(resp.text)["code"] == "content_redacted"
