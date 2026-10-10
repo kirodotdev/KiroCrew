@@ -1011,6 +1011,58 @@ def _has_flag(args: list[str], flag: str) -> bool:
     return False
 
 
+# Global git options that take their value as the NEXT token, so the
+# subcommand scan must skip that token too (``git -C /x rebase``).
+_GIT_VALUE_OPTIONS = frozenset(
+    {"-c", "-C", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"}
+)
+# Editor values that exit at once and keep the message git prepared.
+_NON_INTERACTIVE_EDITORS = frozenset({"true", ":"})
+# Sequencer steps that write a commit message, keyed by subcommand. ``git am
+# --continue`` is absent: it commits with the patch's own message.
+_GIT_CONTINUE_EDITS = frozenset({"rebase", "cherry-pick", "merge", "revert"})
+# ``git revert`` flags that skip the message editor or end the revert.
+_GIT_REVERT_KEEPS_MESSAGE = ("--no-edit", "-n", "--no-commit", "--abort", "--quit", "--skip")
+
+
+def _git_editor_settings(env_prefix: list[str], args: list[str]) -> tuple[dict[str, str], int]:
+    """Editor settings visible in one git command line, and the subcommand index.
+
+    Returns ``({"editor": ..., "sequence": ...}, sub_i)``. ``editor`` and
+    ``sequence`` hold the effective value only when the command line itself
+    sets it: an inline ``GIT_EDITOR=`` wins over ``-c core.editor=``, and
+    ``GIT_SEQUENCE_EDITOR=`` over ``-c sequence.editor=``; the sequence editor
+    falls back to the editor. ``sub_i`` is ``len(args)`` when ``-P`` /
+    ``--no-pager`` is present, so no subcommand is read.
+    """
+    env = {}
+    for tok in env_prefix:
+        name, sep, value = tok.partition("=")
+        if sep:
+            env[name] = value.strip("'\"")
+    config = {}
+    sub_i = 0
+    while sub_i < len(args) and args[sub_i].startswith("-"):
+        opt = args[sub_i]
+        if opt in ("-P", "--no-pager"):
+            return {}, len(args)
+        if opt in _GIT_VALUE_OPTIONS:
+            if opt == "-c" and sub_i + 1 < len(args):
+                key, _, value = args[sub_i + 1].partition("=")
+                config[key.lower()] = value.strip("'\"")
+            sub_i += 2
+            continue
+        sub_i += 1
+    settings = {}
+    editor = env.get("GIT_EDITOR", config.get("core.editor"))
+    if editor is not None:
+        settings["editor"] = editor
+    sequence = env.get("GIT_SEQUENCE_EDITOR", config.get("sequence.editor", editor))
+    if sequence is not None:
+        settings["sequence"] = sequence
+    return settings, sub_i
+
+
 def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
     stripped = segment.strip()
     if not stripped:
@@ -1021,6 +1073,7 @@ def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
     program, args = _segment_program(tokens)
     if not program:
         return NOT_INTERACTIVE
+    env_prefix = tokens[: len(tokens) - len(args) - 1]
     positional = [a for a in args if not a.startswith("-") and not a.startswith("<")]
 
     if program in _EDITOR_PROGRAMS:
@@ -1044,15 +1097,19 @@ def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
             side_effecting=False,
         )
     if program == "git" and args:
-        sub_i = 0
-        while sub_i < len(args) and args[sub_i].startswith("-"):
-            if args[sub_i] in ("-P", "--no-pager"):
-                return NOT_INTERACTIVE
-            sub_i += 1
+        settings, sub_i = _git_editor_settings(env_prefix, args)
         sub = args[sub_i] if sub_i < len(args) else ""
         rest = args[sub_i + 1 :]
-        if sub == "commit" and not any(
-            _has_flag(rest, f) for f in ("-m", "--message", "-F", "--file", "--no-edit", "-C", "-c")
+        editor_quiet = settings.get("editor") in _NON_INTERACTIVE_EDITORS
+        sequence_quiet = settings.get("sequence") in _NON_INTERACTIVE_EDITORS
+        editor_hint = "GIT_EDITOR=true git " + " ".join(args)
+        if (
+            not editor_quiet
+            and sub == "commit"
+            and not any(
+                _has_flag(rest, f)
+                for f in ("-m", "--message", "-F", "--file", "--no-edit", "-C", "-c")
+            )
         ):
             return InteractiveClassification(
                 INTERACTIVE_EDITOR,
@@ -1061,7 +1118,37 @@ def _classify_segment(segment: str, *, last: bool) -> InteractiveClassification:
                 "git commit -m '<message>' (or GIT_EDITOR=true)",
                 side_effecting=True,
             )
-        if sub == "rebase" and (_has_flag(rest, "-i") or _has_flag(rest, "--interactive")):
+        if (
+            not editor_quiet
+            and sub in _GIT_CONTINUE_EDITS
+            and "--continue" in rest
+            and "--no-edit" not in rest
+        ):
+            return InteractiveClassification(
+                INTERACTIVE_EDITOR,
+                f"git {sub} --continue",
+                f"{sub} --continue opens an editor for the commit message",
+                editor_hint,
+                side_effecting=True,
+            )
+        if (
+            not editor_quiet
+            and sub == "revert"
+            and any(not a.startswith("-") for a in rest)
+            and not any(_has_flag(rest, f) for f in _GIT_REVERT_KEEPS_MESSAGE)
+        ):
+            return InteractiveClassification(
+                INTERACTIVE_EDITOR,
+                "git revert",
+                "git revert without --no-edit opens an editor for the commit message",
+                editor_hint,
+                side_effecting=True,
+            )
+        if (
+            sub == "rebase"
+            and not sequence_quiet
+            and (_has_flag(rest, "-i") or _has_flag(rest, "--interactive"))
+        ):
             return InteractiveClassification(
                 INTERACTIVE_EDITOR,
                 "git rebase -i",
