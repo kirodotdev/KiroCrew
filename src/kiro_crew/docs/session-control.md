@@ -47,6 +47,7 @@ conductor: a session that can dispatch but cannot edit a file. Always pass
 |---|---|---|
 | `title` | no | Short sidebar name. Say what the session is FOR |
 | `agent` | no (but always pass it) | Agent to bind the session to |
+| `agent_kind` | no | One value, `template`: run the shared template `agent` names on your own memory, even when a crewmate carries the same name. Omit for name-first resolution (a crewmate wins, with its own memory). Always pass it for `kirocrew-worker`, which needs no memory of its own. Requires `agent` (`agent_kind_requires_agent` otherwise); a kind that does not resolve is refused `agent_unresolved` rather than falling back to whoever answers by default |
 | `folder` | no | Sidebar folder id or `/`-separated path to file it into, atomically with creation. Missing path segments are created (`mkdir -p`). The create is checked first, so a create that would be refused normally leaves no new empty folder behind (a race can still leave one) |
 | `model` | no | Model the session starts on, pinned as if the person picked it in the model dropdown (same guard; refused with `model_rejected` when the picker would refuse it). Omit for the agent's or global default |
 
@@ -799,7 +800,9 @@ gateway-issued key counts. Refusals you should expect, by code:
 | `caller_unidentified` | The calling session could not be resolved from the connection, so nothing was done |
 | `caller_changed_mid_read` | session_status: the calling session moved workspace while its roster was read. Call again |
 | `linked_session_caller` / `mirrored_caller` | session_create from a channel-linked or channel-mirrored session. A Discord or Telegram owner DM is exempt; the refusal names which fact withheld the exemption. After a gateway restart, send one message in that DM first |
-| `memory_delegation_denied` | HTTP 403: session_create named a crew member's agent the caller may not bind (a cron, a fenced deputy, a peer member). Use a template agent, or ask the owner |
+| `memory_delegation_denied` | HTTP 403: session_create named a crew member's agent the caller may not bind (a cron, a fenced deputy, a peer member, a member thread on the shared store naming a member with private memory). The member's memory binding cannot be changed in Settings. Re-send with `agent_kind: "template"` to run that name's shared template on your own memory (a `kirocrew-worker` needs no memory of its own), or ask the owner to make the create from their own tab. The tool reply says the same |
+| `agent_kind_requires_agent` | `agent_kind` was given without `agent`. The namespace qualifies an explicit selection, not an inherited caller agent |
+| `invalid_agent_kind` | `agent_kind` is not `template`, the one value it takes |
 | `model_owner_only` | HTTP 403: `auto` and **Auto (Jev)** can only be picked by the owner from the model picker |
 | `model_rejected` | The model id is missing, malformed, looks like a credential, or is one the target's backend would refuse |
 | `target_replaced` | HTTP 409: the target was replaced by another session under the same key while the call ran; nothing was changed. Try again |

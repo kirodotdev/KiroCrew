@@ -3935,6 +3935,15 @@ SESSION_CREATE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("title", str, required=False, default="", max_len=200),
         FieldSpec("agent", str, required=False, default="", max_len=MAX_SHORT_STRING),
+        # The selection namespace for ``agent``, one value: ``template``. It
+        # exists for a template that a same-named crew member shadows (the stock
+        # ``kirocrew-worker`` on installs where an older sync enrolled it as a
+        # member): ``template`` dispatches the template on the caller's own
+        # memory instead of selecting the member, which a bare name already does.
+        # Omitted keeps name-first resolution; an empty string is not a namespace
+        # and is refused. No ``default``: validation runs twice per call, and a
+        # defaulted empty string would meet the allow-list on the second pass.
+        FieldSpec("agent_kind", str, required=False, allowed=frozenset({"template"})),
         # A sidebar-folder reference — a folder id OR a ``/``-separated human
         # path, the same shape ``chat_folder_move_session.folder`` takes — so
         # filing is atomic with creation instead of a create-then-move pair a

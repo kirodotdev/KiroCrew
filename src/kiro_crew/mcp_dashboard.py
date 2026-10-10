@@ -694,6 +694,20 @@ def _session_tools() -> tuple[Tool, ...]:
                             "explicitly \u2014 kirocrew-worker for a leaf work item."
                         ),
                     },
+                    "agent_kind": {
+                        "type": "string",
+                        "enum": ["template"],
+                        "description": (
+                            "Pass 'template' to run the shared template `agent` names "
+                            "on YOUR OWN memory, even when a crew member carries the "
+                            "same name. Omit for the usual name-first resolution (a "
+                            "member wins, with its own memory). Always pass 'template' "
+                            "for kirocrew-worker: a worker needs no memory of its own, "
+                            "and on installs where an older agent sync enrolled a crew "
+                            "member of that name the bare name selects that member and "
+                            "is refused `memory_delegation_denied`. Requires `agent`."
+                        ),
+                    },
                     "folder": {
                         "type": "string",
                         "description": (
@@ -2702,19 +2716,27 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
     payload: dict[str, Any] = {"title": args.get("title", ""), "agent": args.get("agent", "")}
     if args.get("model"):
         payload["model"] = args["model"]
+    if args.get("agent_kind"):
+        payload["agent_kind"] = args["agent_kind"]
+
+    def _refused(refused: DashboardError, suffix: str) -> str:
+        return redact(
+            f"could not create a session: {refused.error}{suffix}"
+            f"{_create_refusal_remedy(refused, payload)}"
+        )
 
     def _preflight_create(deepest_id: str) -> str | None:
         # The same create, as a dry run, against the folder the new path
-        # segments would hang from. Its refusal is the real create's.
+        # segments would hang from. Its refusal is the real create's, rendered
+        # WITHOUT the `Error:` prefix: `_resolve_folder_for_new_session` adds
+        # one to whatever the walk returns, and two of them read as a bug.
         probe = {**payload, "dry_run": True}
         if deepest_id:
             probe["folder_id"] = deepest_id
         try:
             ctx.client.post("/api/session-control/create", probe, session_key=ctx.caller_key)
         except DashboardError as refused:
-            return redact(
-                f"Error: could not create a session: {refused.error} " "(no folder was created)"
-            )
+            return _refused(refused, " (no folder was created)")
         return None
 
     fld_id, folder_label, made_note, fld_err = _resolve_folder_for_new_session(
@@ -2734,13 +2756,45 @@ def _run_session_create(args: dict[str, Any], ctx: ToolContext) -> str:
             session_key=ctx.caller_key,
         )
     except DashboardError as refused:
-        return redact(f"Error: could not create a session: {refused.error}{made_note}")
+        return f"Error: {_refused(refused, made_note)}"
     filed = f" filed in `{folder_label}`" if folder_label else ""
     on_model = f" on model `{resp['model']}`" if resp.get("model") else ""
     return redact(
         f"\U0001f195 Opened `{resp.get('target')}` ({resp.get('title')}){filed}{on_model}.{made_note} "
         "It is empty and waiting in the user's sidebar; watch it with "
         "session_read_message."
+    )
+
+
+def _create_refusal_remedy(refused: DashboardError, payload: dict[str, Any]) -> str:
+    """The one refusal a caller can act on by itself, with the two real remedies.
+
+    ``memory_delegation_denied`` is deliberately terse on the wire -- it names
+    neither the store nor the member, so a guessed agent name is never confirmed --
+    and that terseness is what left callers inventing remedies that do not exist
+    (a memory-store setting under Settings > Crew: a crew member's memory binding is
+    immutable, and the dashboard offers no such control). The remedy is appended
+    HERE, in the tool reply, because it holds for the whole refusal class and
+    discloses nothing the refusal withholds: dispatch the TEMPLATE of that name on
+    the caller's own memory (what a one-item worker needs), or let the owner's own
+    tab make the create. A request that already asked for the template gets the
+    second remedy alone, since the first is what it just tried.
+    """
+    if refused.code != "memory_delegation_denied":
+        return ""
+    if payload.get("agent_kind") == "template":
+        return (
+            " The template dispatch binds this session's OWN memory, and that binding is "
+            "what could not be verified. A member's memory binding cannot be changed in "
+            "Settings; the owner can re-select this session's agent (which re-binds its "
+            "memory) or run the dispatch from their own chat tab."
+        )
+    return (
+        " The agent you named is a crew member whose private memory this session may "
+        "not bind; a member's memory binding cannot be changed in Settings. Re-send "
+        'with `agent_kind: "template"` to run that agent\'s shared template on your own '
+        "memory (a kirocrew-worker needs no memory of its own), or ask the owner to run "
+        "this dispatch from their own chat tab."
     )
 
 

@@ -1538,6 +1538,110 @@ class TestSessionCreateModel:
         assert dash.requests == []
 
 
+class TestSessionCreateAgentKind:
+    """`session_create.agent_kind` — the selection namespace rides the payload, and a
+    `memory_delegation_denied` refusal tells the caller what it can actually do.
+
+    The refusal is terse on the wire by design (it names neither store nor
+    member), and that terseness left callers inventing a remedy that does not
+    exist — a memory-store setting under Settings > Crew. The tool reply names
+    the two real ones: re-send as a template dispatch, or the owner's own tab.
+    """
+
+    _DENIED = {
+        "error": "cannot verify delegation within the caller's memory assignment",
+        "code": "memory_delegation_denied",
+    }
+
+    def test_agent_kind_rides_the_create_payload(self) -> None:
+        created = {"target": "chat-9-900", "title": "worker"}
+        _, dash = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
+            {"POST /api/session-control/create": created},
+        )
+        (post,) = dash.requests
+        assert post.body["agent"] == "kirocrew-worker"
+        assert post.body["agent_kind"] == "template"
+
+    def test_omitted_agent_kind_sends_no_key(self) -> None:
+        _, dash = _call(
+            "session_create",
+            {"title": "w", "agent": "kirocrew-worker"},
+            {"POST /api/session-control/create": {"target": "chat-9-900", "title": "w"}},
+        )
+        assert "agent_kind" not in dash.requests[-1].body
+
+    @pytest.mark.parametrize("kind", ["crew", "member"])
+    def test_a_kind_outside_the_set_is_refused_before_any_call(self, kind: str) -> None:
+        # The set is `template` alone: a bare name already selects a member.
+        out, dash = _call(
+            "session_create", {"title": "w", "agent": "kirocrew-worker", "agent_kind": kind}, {}
+        )
+        assert out.startswith("Error:")
+        assert "agent_kind" in out
+        assert dash.requests == []
+
+    def test_a_delegation_refusal_names_the_template_dispatch_and_the_owner(self) -> None:
+        out, _ = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker"},
+            {"POST /api/session-control/create": self._DENIED},
+        )
+        assert out.startswith("Error: could not create a session:")
+        assert "cannot verify delegation" in out
+        assert 'agent_kind: "template"' in out
+        assert "own chat tab" in out
+        # The remedy says the binding is not a setting, so no caller goes looking
+        # for one -- and it still names neither the store nor the member.
+        assert "cannot be changed in Settings" in out
+        assert "member-" not in out
+
+    def test_a_refused_template_dispatch_points_at_the_owner_not_at_itself(self) -> None:
+        out, _ = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker", "agent_kind": "template"},
+            {"POST /api/session-control/create": self._DENIED},
+        )
+        assert out.startswith("Error: could not create a session:")
+        assert 'agent_kind: "template"' not in out
+        assert "re-select" in out
+        assert "own chat tab" in out
+
+    def test_other_refusals_carry_no_remedy(self) -> None:
+        out, _ = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker"},
+            {
+                "POST /api/session-control/create": {
+                    "error": "'kirocrew-worker' does not resolve to a configured agent",
+                    "code": "agent_unresolved",
+                }
+            },
+        )
+        assert out == (
+            "Error: could not create a session: 'kirocrew-worker' does not resolve to a "
+            "configured agent"
+        )
+
+    def test_the_preflight_refusal_carries_the_same_remedy(self) -> None:
+        # The dry-run probe that guards the folder walk renders the same refusal
+        # text as the real create, remedy included, with nothing created.
+        out, dash = _call(
+            "session_create",
+            {"title": "worker", "agent": "kirocrew-worker", "folder": "Goal/kirocrew-worker"},
+            {
+                **_reads(),
+                "POST /api/session-control/create": self._DENIED,
+                "POST /api/chat/folders": _minting_post(),
+            },
+        )
+        assert out.startswith("Error: could not create a session:")
+        assert "(no folder was created)" in out
+        assert 'agent_kind: "template"' in out
+        assert all(r.path != "/api/chat/folders" for r in _writes(dash))
+
+
 class TestSessionCreateFolder:
     """`session_create.folder` — filing atomic with creation.
 
