@@ -939,9 +939,9 @@ def load_index(path: Path | None = None, auto_path: Path | None = None) -> _Inde
     data only, never anything about a caller.
     """
     target = path or INDEX_PATH
-    auto_target = (
-        auto_path if auto_path is not None else (AUTO_INDEX_PATH if path is None else None)
-    )
+    auto_target = auto_path
+    if auto_target is None and path is None:
+        auto_target = AUTO_INDEX_PATH
     key = _stat_key(target)
     if key is None:
         raise IndexUnavailable("index file is missing")
