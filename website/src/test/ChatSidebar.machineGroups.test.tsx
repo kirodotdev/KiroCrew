@@ -17,7 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { requestSlotReveal } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
-import { PREVIEW_INSTANCE_SESSIONS } from '../utils/previewFlags'
+import { PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT } from '../utils/previewFlags'
 import en from '../i18n/locales/en.json'
 import enManual from '../i18n/locales/en.manual.json'
 
@@ -154,6 +154,21 @@ describe('ChatSidebar – per-machine groups', () => {
       .filter(el => el.tagName === 'SECTION')).toHaveLength(1)
     expect(screen.getByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_online)
     // A relay slot renders inside its crew's group; a plain local slot stays out.
+    expect(rowIn(group, 'RELAY slot')).not.toBeNull()
+    expect(rowIn(group, 'LOCAL plain slot')).toBeNull()
+    expect(screen.getByText('LOCAL plain slot')).toBeInTheDocument()
+  })
+
+  it('renders crew groups when Chat on a crew preview is on even with legacy preview off', async () => {
+    localStorage.setItem(PREVIEW_REMOTE_CREW_CHAT, '1')
+    renderSidebar({ relay: true })
+
+    const group = await screen.findByTestId('crew-group-inst-a')
+    await waitFor(() => expect(rowIn(group, 'REMOTE peer row')).not.toBeNull())
+    expect(screen.getByTestId('machine-group-local')).toHaveTextContent(S.machine_group_local)
+    expect(screen.getAllByTestId(/^crew-group-inst-/)
+      .filter(el => el.tagName === 'SECTION')).toHaveLength(1)
+    expect(screen.getByTestId('crew-group-badge-inst-a')).toHaveTextContent(S.crew_status_online)
     expect(rowIn(group, 'RELAY slot')).not.toBeNull()
     expect(rowIn(group, 'LOCAL plain slot')).toBeNull()
     expect(screen.getByText('LOCAL plain slot')).toBeInTheDocument()
