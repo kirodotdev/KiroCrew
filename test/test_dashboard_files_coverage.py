@@ -152,6 +152,131 @@ class TestFileRead:
             assert len(await resp.text()) == 512_000
 
     @pytest.mark.asyncio
+    async def test_a_credential_straddling_the_read_cap_is_still_masked(self, tmp_path, mock_sel):
+        """The redaction pass sees whole text and the cap cuts afterwards.
+
+        A cut first severs a credential at the cap and serves its prefix as real
+        bytes; whoever writes the file chooses the offset.
+        """
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        f = tmp_path / "padded.txt"
+        f.write_text("a" * (files_mod._FILE_READ_CAP - 10) + secret + "\nkeep\n", encoding="utf-8")
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            body = await resp.text()
+        assert resp.status == 200
+        assert resp.headers["X-Truncated"] == "true"
+        assert secret[:10] not in body
+        assert len(body) <= files_mod._FILE_READ_CAP
+
+    @pytest.mark.asyncio
+    async def test_redaction_shrinking_earlier_text_pulls_no_unmatched_tail_under_the_cap(
+        self, tmp_path, mock_sel
+    ):
+        """The cut is in raw coordinates, not in the shorter redacted output.
+
+        Long tokens near the top shrink by thousands of characters when masked;
+        a cut of the redacted text at the cap would then reach raw text past the
+        read window, where a key the read severed was never matched whole.
+        """
+        import base64
+
+        def b64(raw: str) -> str:
+            return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+
+        jwt = b64('{"alg":"HS256","typ":"JWT"}') + "." + b64("x" * 3000) + "." + "s" * 43
+        head = (jwt + "\n") * 4
+        cap, margin = files_mod._FILE_READ_CAP, files_mod._STREAM_HOLDBACK_JWT_MAX
+        secret = "AKIAIOSFODNN7EXAMPLE"
+        filler = "a" * (cap + margin - 6 - len(head))
+        f = tmp_path / "shrink.txt"
+        f.write_text(head + filler + secret + "\nkeep\n", encoding="utf-8")
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            body = await resp.text()
+        assert resp.status == 200
+        assert resp.headers["X-Truncated"] == "true"
+        assert resp.headers["X-Redacted"] == "true"
+        assert jwt not in body
+        assert secret[:6] not in body
+        assert len(body) <= cap
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("before_cap", [4999, 100])
+    async def test_a_jwt_longer_than_the_margin_straddling_the_cap_is_masked(
+        self, tmp_path, mock_sel, before_cap
+    ):
+        """A token longer than the margin is masked wherever it crosses the cap.
+
+        Its header may sit more than the margin before the cap, or its end may
+        lie past the read, so no pass over the read sees it whole.
+        """
+        import base64
+
+        def b64(raw: str) -> str:
+            return base64.urlsafe_b64encode(raw.encode()).rstrip(b"=").decode()
+
+        jwt = b64('{"alg":"HS256","typ":"JWT"}') + "." + b64("x" * 4500) + "." + "s" * 43
+        assert len(jwt) > files_mod._STREAM_HOLDBACK_JWT_MAX
+        cap = files_mod._FILE_READ_CAP
+        f = tmp_path / "long_jwt.txt"
+        f.write_text("a" * (cap - before_cap) + " " + jwt + "\nkeep\n", encoding="utf-8")
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            body = await resp.text()
+        assert resp.status == 200
+        assert resp.headers["X-Truncated"] == "true"
+        assert jwt[:40] not in body
+        assert len(body) <= cap
+
+    @pytest.mark.asyncio
+    async def test_a_pem_block_below_the_cap_is_masked_and_keeps_the_body_whole(
+        self, tmp_path, mock_sel
+    ):
+        """A key block well below the cap is masked and the body runs to the cap."""
+        line = "MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7" + "x" * 12
+        pem = (
+            "-----BEGIN PRIVATE KEY-----\n"
+            + "\n".join([line] * 100)
+            + "\n-----END PRIVATE KEY-----\n"
+        )
+        cap = files_mod._FILE_READ_CAP
+        raw = "a\n" * 50_000 + pem + "b\n" * 300_000
+        f = tmp_path / "pem.txt"
+        f.write_text(raw, encoding="utf-8")
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            body = await resp.text()
+        assert resp.status == 200
+        assert resp.headers["X-Truncated"] == "true"
+        assert line[:20] not in body
+        assert body.endswith("b\n" * 100)
+        assert len(body) > cap - len(pem) - 8192
+
+    @pytest.mark.asyncio
+    async def test_the_streaming_pass_keeps_its_buffer_bounded_on_a_partial_jwt_run(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        """Each streaming scan stays near one slice plus the holdback."""
+        seen: list[int] = []
+
+        class Recording(files_mod.StreamRedactor):
+            def feed(self, chunk: str) -> str:
+                out = super().feed(chunk)
+                seen.append(len(self._buf))
+                return out
+
+        monkeypatch.setattr(files_mod, "StreamRedactor", Recording)
+        f = tmp_path / "eyj.txt"
+        f.write_text("eyJ" * 173_333 + "!", encoding="utf-8")
+        monkeypatch.setattr(files_mod, "redact", lambda text: text)
+        async with TestClient(TestServer(self._client_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+        assert resp.status == 200
+        assert seen
+        assert max(seen) <= 2 * files_mod._STREAM_HOLDBACK_JWT_MAX
+
+    @pytest.mark.asyncio
     async def test_untruncated_file_has_no_flag(self, tmp_path, mock_sel):
         f = tmp_path / "small.txt"
         f.write_text("short", encoding="utf-8")
