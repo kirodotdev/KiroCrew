@@ -20,7 +20,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import chat_folders as cf
 from kiro_crew.dashboard.chat_folders import api_chat_folder_create, api_chat_folder_update
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 
 def _state(folders: list[dict[str, Any]]) -> DashboardState:
@@ -45,13 +45,16 @@ def _state(folders: list[dict[str, Any]]) -> DashboardState:
     return state
 
 
-def _make_app(state: DashboardState, principal: str) -> web.Application:
+def _make_app(state: DashboardState, principal: str, *, internal: bool = False) -> web.Application:
     app = web.Application()
     app["state"] = state
 
     @web.middleware
     async def _publish_app(request: web.Request, handler: Any) -> Any:
         request["app"] = principal
+        if internal:
+            # The internal loopback credential an agent's MCP tool call carries.
+            request["internal_auth"] = True
         return await handler(request)
 
     app.middlewares.append(_publish_app)
@@ -112,6 +115,37 @@ async def test_member_principal_is_refused_the_same_way(tmp_path, no_disk):
             json={"name": "Reviews", "steering_dirs": [str(tmp_path)]},
         )
         assert resp.status == 403, await resp.text()
+    assert no_disk == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("principal", ["acme", "member:reviewer-store"])
+async def test_a_tool_bound_clear_from_a_non_person_principal_is_refused(principal, no_disk):
+    """An agent's write (the internal credential ``chat_folder_steering_set``
+    uses) may not clear steering from a non-person principal either: only the
+    person could have declared it. That holds for a member however its slot is shaped (a
+    member DM, or an ordinary chat bound to the member's own store), because the
+    gate keys on the resolved principal, not on the slot's mode."""
+    own = {
+        "id": "f1",
+        "name": "Radar",
+        "parent_id": None,
+        "order": 0,
+        "owner_app": principal,
+        "steering_dirs": ["/srv/standards"],
+    }
+    state = _state([own])
+    # The tab the agent's call names is live (a gone one is refused earlier).
+    state._slots["chat-1-100"] = _ChatSlot("chat-1-100")
+    async with TestClient(TestServer(_make_app(state, principal, internal=True))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/f1",
+            json={"steering_dirs": []},
+            headers={"X-Session-Key": "dashboard:chat-1-100"},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "steering_dirs_forbidden"
+    assert state._folders[0]["steering_dirs"] == ["/srv/standards"]
     assert no_disk == []
 
 

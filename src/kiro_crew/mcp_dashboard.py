@@ -84,6 +84,7 @@ from urllib.parse import quote
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.config.sections import FOLDER_SORT_DEFAULT, FOLDER_SORT_MODES
 from kiro_crew.dashboard.chat_folders import (
+    STEERING_APPROVAL_TIMEOUT_SECS,
     _folder_owner_app,
     _subtree_holds_foreign_folder,
 )
@@ -103,6 +104,11 @@ from kiro_crew.validation import (
     MAX_BROADCAST_TARGETS,
     MCP_DASHBOARD_SCHEMAS,
 )
+
+#: The steering PATCH waits on the person's approval card for up to
+#: ``STEERING_APPROVAL_TIMEOUT_SECS``; the client waits a little longer so the
+#: endpoint's own refusal, not a transport timeout, is what the agent reads.
+STEERING_APPROVAL_CLIENT_TIMEOUT = STEERING_APPROVAL_TIMEOUT_SECS + 30
 
 logger = logging.getLogger(__name__)
 
@@ -138,12 +144,14 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "mode the listing says so and warns that an anchor sets the stored "
                 "position without changing the displayed order. Returns per "
                 "folder: id, human path, project directory, default "
-                "agent, and a hidden flag; "
+                "agent, a hidden flag, and the steering directories it DECLARES "
+                "(``steering=[…]``; a folder inherits its ancestors' too, "
+                "root-first, so read up the tree for the full set); "
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
                 "get folder ids/paths and session keys before calling "
                 "chat_folder_create / chat_folder_move / chat_folder_move_session / "
-                "chat_folder_delete, or when the user asks what their tree looks like. This is the "
+                "chat_folder_delete / chat_folder_steering_set, or when the user asks what their tree looks like. This is the "
                 "folder-shaped view; list_sessions is the flat newest-first one."
             ),
             schema={"type": "object", "properties": {}},
@@ -260,8 +268,10 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "project_dir, default_agent or steering_dirs (they are unknown "
                 "fields here): those fields change the working directory, agent, "
                 "memory boundary or standing instructions of every future session "
-                "filed in the folder, which is the person's call in the folder "
-                "settings, not an agent's. An app agent or crew member may update "
+                "filed in the folder. project_dir and default_agent are the "
+                "person's call in the folder settings; steering_dirs has its own "
+                "verb, chat_folder_steering_set, which waits for the person to "
+                "approve each change. An app agent or crew member may update "
                 "only a folder it created. Refused in a session linked to a channel "
                 "(a resumed channel conversation, a channel mirror or a linked Slack "
                 "thread)."
@@ -396,6 +406,53 @@ def _folder_tools() -> tuple[Tool, ...]:
                 "GET /api/chat/folders",
                 "POST /api/chat/folders",
                 "PATCH /api/chat/slots/{slot}/folder",
+            ),
+        ),
+        Tool(
+            name="chat_folder_steering_set",
+            description=(
+                "Set the ADDITIONAL STEERING DIRECTORIES of a sidebar folder — the "
+                "same setting as Folder settings → Additional steering in the "
+                "dashboard, through the same endpoint. Every always-inclusion "
+                "``*.md`` under each directory (``.kiro/steering``-style) is "
+                "delivered to every session filed in the folder or its subfolders, "
+                "accumulating root-first with the ancestors' directories; read "
+                "chat_folder_tree for what a folder declares and inherits. "
+                "``steering_dirs`` REPLACES the folder's list: pass the full set you "
+                "want, and ``[]`` to clear it. Each entry is an absolute path to an "
+                "existing directory; the endpoint refuses a sensitive path, a "
+                "duplicate, or a list longer than the endpoint allows. Nothing is "
+                "stored until the person approves a card in their dashboard showing "
+                "the exact change; the call waits for that answer and reports a "
+                "decline. Accepted only from the person's own dashboard tab: an app "
+                "or crew-member session, and a channel- or schedule-bound session, "
+                "is refused, for setting and clearing alike. Not available on "
+                "native Windows (the endpoint refuses a non-empty list there)."
+            ),
+            schema={
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": "Folder id or '/'-separated human path from chat_folder_tree.",
+                    },
+                    "steering_dirs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "The folder's complete steering-directory list: absolute "
+                            "paths to existing directories. ``[]`` clears."
+                        ),
+                    },
+                },
+                "required": ["folder", "steering_dirs"],
+            },
+            run=_run_chat_folder_steering_set,
+            identity="attribution",
+            routes=(
+                "GET /api/chat/slots",
+                "GET /api/chat/folders",
+                "PATCH /api/chat/folders/{folder}",
             ),
         ),
     )
@@ -2317,6 +2374,41 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
+def _refuse_non_person_steering_caller(caller_key: str, rows: list[dict]) -> str | None:
+    """Why this caller may not change steering directories, or ``None``.
+
+    The person's UI for this setting is a dashboard tab, so the agent surface is
+    bounded to the same place: a ``dashboard:`` caller whose slot is in the live
+    list and is not owned by an app (``app``) or a crew member
+    (``mode == "member"``). The endpoint refuses an app or member a non-empty
+    list but lets it clear a folder it owns, and only the person could have put
+    steering there, so set and clear are refused alike.
+    """
+    if not caller_key.startswith("dashboard:"):
+        return (
+            "Error: steering directories can be set or cleared only from the "
+            "person's own dashboard session — this caller is bound to a channel "
+            "or a schedule. Change them from a dashboard tab (Folder settings → "
+            "Additional steering) or from an agent running in one."
+        )
+    slot_key = caller_key.split(":", 1)[1]
+    row = next((r for r in rows if str(r.get("key") or "") == slot_key), None)
+    if row is None:
+        return (
+            "Error: this session's dashboard slot is not in the live list, so "
+            "setting steering directories is refused — the tab may have closed "
+            "while this call was in flight."
+        )
+    if str(row.get("app") or "") or str(row.get("mode") or "") == "member":
+        return (
+            "Error: this session belongs to an app or a crew member, so steering "
+            "directories can be neither set nor cleared from it — only the person "
+            "declares steering. Ask the person to change it from Folder settings "
+            "→ Additional steering."
+        )
+    return None
+
+
 def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
     """The caller's OWN sidebar slot row, or why it has none to file.
 
@@ -3302,6 +3394,14 @@ def _run_chat_folder_tree(args: dict[str, Any], ctx: ToolContext) -> str:
             meta_bits.append(f"project={row['project_dir']}")
         if row.get("default_agent"):
             meta_bits.append(f"agent={row['default_agent']}")
+        # What the folder DECLARES, verbatim from the row — the read half of
+        # chat_folder_steering_set, so an agent can see the list before
+        # replacing it. Inheritance is not rendered per folder: the tree is
+        # root-first already, so an ancestor's line above IS the inherited
+        # set, and re-deriving the ownership fence here would be a second
+        # copy of the delivery rule.
+        if isinstance(row.get("steering_dirs"), list) and row.get("steering_dirs"):
+            meta_bits.append(f"steering=[{', '.join(str(p) for p in row['steering_dirs'])}]")
         # No archived count. The invariant this server holds is that nothing it
         # emits discloses a non-persistent session — and the folders endpoint's
         # ``history_count`` covers archived transcripts with no memory_mode to
@@ -3872,6 +3972,114 @@ def _run_chat_folder_file_self(args: dict[str, Any], ctx: ToolContext) -> str:
         return redact(f"Unfiled this session (`{own_key}`) to the top level.{made_note}")
     folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
     return redact(f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}")
+
+
+def _run_chat_folder_steering_set(args: dict[str, Any], ctx: ToolContext) -> str:
+    # Declaring steering is tree shaping with a larger blast radius than a
+    # rename: it decides which host directories the gateway reads into every
+    # chat filed beneath the folder. So the same identity gate first (an
+    # unverifiable or delegated caller cannot be placed), and its verified
+    # key is what the write carries, per the gate's contract.
+    caller_key, caller_app, gate = _refuse_tree_shaping_if_unverifiable(
+        ctx, "setting steering directories"
+    )
+    if gate:
+        return gate
+    if caller_app:
+        # The PERSON-only rule holds for clearing too. The endpoint refuses a
+        # non-empty list from an app or member (``steering_dirs_forbidden``)
+        # but lets any principal clear a folder it owns, and only the person
+        # could have put steering there -- so an app-owned session sending
+        # ``[]`` would erase the person's declaration with no prior value
+        # retained. The gate already resolved the app this call is judged
+        # as; refusing on it here, before any read, keeps the tool's rule
+        # the same for set and clear rather than inheriting the endpoint's
+        # asymmetry. The member case is refused on the caller's own row
+        # below, where ``mode`` is visible.
+        return (
+            f"Error: this session belongs to the app `{redact(caller_app)}`, so "
+            "steering directories can be neither set nor cleared from it — "
+            "only the person declares steering (a steering directory is a "
+            "host-file read the gateway performs on the folder's behalf). Ask "
+            "the person to change it from Folder settings → Additional steering."
+        )
+    wanted: list[str] = [str(p) for p in args["steering_dirs"]]
+    # The slot list is re-read here (the identity gate does not hand its rows
+    # back), as file_self does.
+    slot_rows, slot_rows_err = _get_rows(ctx.client, "/api/chat/slots")
+    if slot_rows_err:
+        return redact(f"Error: {slot_rows_err}")
+    if (not_person := _refuse_non_person_steering_caller(caller_key, slot_rows)) is not None:
+        return not_person
+    # Agent-authored paths landing in durable state: redact like a folder
+    # name — but a REDACTED path names a different directory, so an entry the
+    # redactor rewrote is refused rather than stored under a spelling nobody
+    # asked for (the endpoint would only report it as not a directory).
+    for entry in wanted:
+        if redact(entry) != entry:
+            return (
+                f"Error: steering directory `{redact(entry)}` carries a "
+                "credential-shaped segment and was not stored — name the "
+                "directory without it."
+            )
+    chat_folders, folders_err = _get_rows(ctx.client, "/api/chat/folders")
+    if folders_err:
+        return redact(f"Error: {folders_err}")
+    fld_id, fld_err = _resolve_chat_folder_id(args["folder"], chat_folders)
+    if fld_err:
+        return redact(f"Error: {fld_err}")
+    if not fld_id:
+        return "Error: 'root' is not a folder — name the folder whose steering to set."
+    # One PATCH, carrying only this field. Validation (absolute, existing,
+    # not sensitive, deduped, ≤16), the person-only principal gate and the
+    # Windows refusal are all the endpoint's under its lock — the same
+    # verdicts the dashboard UI gets — so none of them is re-derived here.
+    # The endpoint holds this request open until the person answers an
+    # approval card for this exact change (or its window lapses), so the
+    # read timeout outlasts that window.
+    try:
+        d = ctx.client.patch(
+            f"/api/chat/folders/{fld_id}",
+            {"steering_dirs": wanted},
+            session_key=caller_key,
+            timeout=STEERING_APPROVAL_CLIENT_TIMEOUT,
+        )
+    except DashboardError as refused:
+        hint = ""
+        if refused.code == "steering_dirs_forbidden":
+            hint = (
+                " Folder permission does not grant host-file reads: ask the "
+                "person to set this from Folder settings → Additional steering."
+            )
+        elif refused.code == "steering_approval_declined":
+            hint = (
+                " The person answers an approval card on the dashboard for "
+                "every steering change an agent asks for; ask them, or they "
+                "can set it from Folder settings → Additional steering."
+            )
+        return redact(f"Error: {refused.error}{hint}")
+    folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
+    stored = (
+        d.get("steering_dirs")
+        if isinstance(d, dict) and isinstance(d.get("steering_dirs"), list)
+        else []
+    )
+    if not stored:
+        return redact(f"Cleared the steering directories of `{folder_label}` (id={fld_id}).")
+    lines = [
+        f"Set the steering directories of `{folder_label}` (id={fld_id}) to "
+        f"{len(stored)} director{'y' if len(stored) == 1 else 'ies'}:"
+    ]
+    lines.extend(f"  · {p}" for p in stored)
+    # The endpoint stores each entry RESOLVED (realpath), so what came back
+    # is what later chats read — echo that, not the caller's spelling.
+    lines.append(
+        "Every session filed in this folder or its subfolders receives the "
+        "always-inclusion *.md documents under these directories, after any "
+        "an ancestor folder declares; an app's or crew member's folder steers "
+        "only chats running as that principal."
+    )
+    return redact("\n".join(lines))
 
 
 def _run_chat_tag_list(args: dict[str, Any], ctx: ToolContext) -> str:

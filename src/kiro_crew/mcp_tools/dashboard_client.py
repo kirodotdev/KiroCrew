@@ -93,7 +93,12 @@ class DashboardClient(Protocol):
     ) -> Any: ...
 
     def patch(
-        self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        session_key: str | None = None,
+        timeout: float | None = None,
     ) -> Any: ...
 
     def put(
@@ -135,9 +140,16 @@ class LoopbackDashboardClient:
         return _accepted(mcp_core._post(path, body, timeout=timeout, session_key=session_key))
 
     def patch(
-        self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        session_key: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        return _accepted(mcp_core._patch(path, body, session_key=session_key))
+        if timeout is None:
+            return _accepted(mcp_core._patch(path, body, session_key=session_key))
+        return _accepted(mcp_core._patch(path, body, session_key=session_key, timeout=timeout))
 
     def put(
         self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
@@ -234,9 +246,16 @@ class InMemoryDashboardClient:
         )
 
     def patch(
-        self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        session_key: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
-        return self._answer(DashboardRequest("PATCH", path, copy.deepcopy(body), session_key))
+        return self._answer(
+            DashboardRequest("PATCH", path, copy.deepcopy(body), session_key, timeout)
+        )
 
     def put(
         self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
@@ -285,10 +304,15 @@ class _RouteScopedClient:
         return self._inner.post(path, body, session_key=session_key, timeout=timeout)
 
     def patch(
-        self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None
+        self,
+        path: str,
+        body: dict[str, Any] | None = None,
+        *,
+        session_key: str | None = None,
+        timeout: float | None = None,
     ) -> Any:
         self._check("PATCH", path)
-        return self._inner.patch(path, body, session_key=session_key)
+        return self._inner.patch(path, body, session_key=session_key, timeout=timeout)
 
     def put(
         self, path: str, body: dict[str, Any] | None = None, *, session_key: str | None = None

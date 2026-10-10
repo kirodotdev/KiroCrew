@@ -61,6 +61,10 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     internal_memory_scope,
 )
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.interaction_coordinator import _slot_decision
 from kiro_crew.dashboard.kiro_readiness import (
     _POLL_GATE_MAX_AGE_SECS,
@@ -4138,7 +4142,38 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid action"}, status=400)
     request_app = str(request.get("app") or "")
     if request_app:
+        # Before the person-only check: the app route never resolves a
+        # state-level approval (a person-only card is one) and answers every
+        # refusal with the uniform not-found, so an app learns nothing here.
         return await _resolve_app_approval(request, state, request_app, approval_id, action)
+    record = getattr(state, "_pending_approvals", {}).get(approval_id)
+    if isinstance(record, dict) and record.get("human_only") is True:
+        # Answered only by the person's own click (see ApprovalCoordinator.request):
+        # the owner's own dashboard session, never the agent's internal
+        # credential, an app token, or another signed dashboard subject.
+        if request.get("internal_auth") is True or not is_owner_dashboard_request(request):
+            try:
+                _sel().log_api_access(
+                    caller="internal" if request.get("internal_auth") is True else "dashboard",
+                    operation="approval_resolve",
+                    outcome="denied",
+                    source="approval_person_only",
+                    resources=approval_id,
+                    error="a person-only approval was answered by a non-person caller",
+                )
+            except Exception:
+                logger.warning(
+                    "SEL audit failed for refused person-only approval %s",
+                    approval_id,
+                    exc_info=True,
+                )
+            return stale_owner_session_response(request) or web.json_response(
+                {
+                    "error": "this approval can only be answered by the person",
+                    "code": "approval_person_only",
+                },
+                status=403,
+            )
     if "origin" in request.query:
         # Dynamic Dashboard echoes the inventory record's origin, exact slot and
         # instance. Do not fall through to native futures when that displayed

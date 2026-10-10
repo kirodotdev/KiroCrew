@@ -210,7 +210,10 @@ from kiro_crew.dashboard.handlers._shared import (
     cron_slot_creator,
     read_bounded_json,
 )
-from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.handlers.source_providers import (
+    is_owner_dashboard_request,
+    stale_owner_session_response,
+)
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.slot_buffers import (
@@ -9639,6 +9642,11 @@ async def apply_approval_mode(
         if not scoped:
             for aid in list(state._approval_futures):
                 fut = state._approval_futures[aid]
+                record = state._pending_approvals.get(aid)
+                if isinstance(record, dict) and record.get("human_only") is True:
+                    # A card only the person's own click may answer (see
+                    # ``ApprovalCoordinator.request``): no mode switch answers it.
+                    continue
                 if not fut.done():
                     state.resolve_approval(aid, True)
                     try:
@@ -9880,6 +9888,49 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
         state_fut = state._approval_futures.get(request_id) if request_id else None
         if state_fut and not state_fut.done():
             return _deny_trust_pattern(name, request_id, original_action, "approval_not_slot_owned")
+    if not fut or fut.done():
+        human_only_record = state._pending_approvals.get(request_id) if request_id else None
+        if isinstance(human_only_record, dict) and human_only_record.get("human_only") is True:
+            # A card only the person's own click answers (a steering change an
+            # agent asked for): only the owner's own dashboard session may
+            # answer it. Refuse an agent's internal credential, an app's token
+            # and any other signed dashboard subject BEFORE any action branch
+            # runs, so neither approving it nor a side effect of the action (a
+            # yolo arm, a trust grant) is reachable through the card.
+            if request.get("internal_auth") is True or not is_owner_dashboard_request(request):
+                try:
+                    sel().log_api_access(
+                        caller=f"dashboard:{name}",
+                        operation="chat.slot_approve",
+                        outcome="denied",
+                        source="approval_person_only",
+                        resources=request_id,
+                        error="a person-only approval was answered by a non-person caller",
+                    )
+                except Exception:
+                    logger.warning(
+                        "SEL audit failed for refused person-only approval %s",
+                        request_id,
+                        exc_info=True,
+                    )
+                return stale_owner_session_response(request) or web.json_response(
+                    {
+                        "error": "this approval can only be answered by the person",
+                        "code": "approval_person_only",
+                    },
+                    status=403,
+                )
+            if original_action not in ("approved", "rejected", "rejected_once"):
+                # The card decides this one change only: a trust or yolo answer
+                # would also widen the tab's approvals, which is not what the
+                # card shows.
+                return web.json_response(
+                    {
+                        "error": "this approval takes only approve or decline",
+                        "code": "approval_action_not_allowed",
+                    },
+                    status=400,
+                )
     # Trust: auto-approve remaining tools for this slot. The approval policy MUST
     # be keyed by the OWNER's EFFECTIVE session key — a linked cron/workflow or
     # channel-surfaced slot runs under ``linked_session_key``, not

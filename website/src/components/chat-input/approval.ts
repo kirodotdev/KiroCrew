@@ -192,7 +192,10 @@ export function useToolApproval({ slotId, slotApprovalChrome, approvalMode, disp
     return () => clearTimeout(t)
   }, [approvalToolCallId])
 
-  const showGhost = !!pendingApproval && !pillVisible && ghostSettled
+  // An approval with no tool call behind it (a coordinator card such as an
+  // agent's folder-steering change) has no in-chat pill to mirror, so the bar
+  // is the only place its input can be read before Allow once: always show it.
+  const showGhost = !!pendingApproval && (!approvalToolCallId || (!pillVisible && ghostSettled))
 
   // Auto-dismiss the failure notice. Bounded lifetime keeps a transient
   // backend hiccup from leaving a permanent banner over the composer.

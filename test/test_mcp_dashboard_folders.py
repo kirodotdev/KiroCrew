@@ -1683,6 +1683,7 @@ class TestAdvertisedSet:
             "chat_folder_move_session",
             "chat_folder_delete",
             "chat_folder_file_self",
+            "chat_folder_steering_set",
             "chat_tag_list",
             "chat_tag_create",
             "chat_tag_update",

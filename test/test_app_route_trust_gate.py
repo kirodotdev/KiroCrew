@@ -232,6 +232,37 @@ async def test_app_never_resolves_a_state_level_approval(state, app_name):
 
 
 @pytest.mark.asyncio
+async def test_app_never_resolves_a_person_only_approval(state):
+    """A person-only card (a folder steering change) stays the person's to answer.
+
+    The person-only refusal and the app route meet in the same handler; an app
+    token, granted or not, must get the app route's own answer and leave the card
+    pending, never resolve it.
+    """
+    _user_slot(state)
+    task = asyncio.ensure_future(
+        state.request_approval(
+            "steer:1", "dashboard", "chat_folder_steering_set", slot="user-tab", human_only=True
+        )
+    )
+    for _ in range(100):
+        if "steer:1" in state._pending_approvals:
+            break
+        await asyncio.sleep(0.01)
+    assert state._pending_approvals["steer:1"]["human_only"] is True
+    async with _serve(state) as client:
+        try:
+            resp = await client.post("/api/approvals/steer:1/approve", params=_q(_GRANTED))
+            assert (resp.status, await resp.json()) == (404, _NOT_FOUND)
+            resp = await client.post("/api/approvals/steer:1/approve", params=_q(_PLAIN))
+            assert (resp.status, await resp.json()) == (403, _NO_GRANT)
+            assert not task.done()
+        finally:
+            state.resolve_state_approval("steer:1", False)
+            assert await asyncio.wait_for(task, _SETTLE) is False
+
+
+@pytest.mark.asyncio
 async def test_app_without_grant_cannot_resolve_user_session_approval(state):
     future = _native_approval(state, "user-tab", "7", origin=SlotOrigin.USER)
     async with _serve(state) as client:

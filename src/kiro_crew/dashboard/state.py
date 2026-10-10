@@ -7418,8 +7418,13 @@ class DashboardState:
         tool_purpose: str = "",
         slot: str = "",
         is_background: bool = False,
+        human_only: bool = False,
     ) -> bool:
-        """Request interactive approval and deny on timeout or cancellation."""
+        """Request interactive approval and deny on timeout or cancellation.
+
+        ``human_only`` marks a card only a person's click may answer: a bulk
+        trust/yolo mode switch leaves it pending.
+        """
         return await _approvals_for(self).request(
             self,
             approval_id,
@@ -7431,6 +7436,7 @@ class DashboardState:
             is_background=is_background,
             redact_url=redact_exfiltration_urls,
             redact_secret=redact_credentials,
+            human_only=human_only,
         )
 
     def pending_coordinator_approvals(self, slot_key: str) -> list[dict]:

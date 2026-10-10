@@ -310,6 +310,23 @@ describe('ChatInput approval flow', () => {
     await waitFor(() => expect(screen.getByText(/command/)).toBeInTheDocument(), { timeout: 5000 })
   })
 
+  it('shows a coordinator card\'s input with no tool call to mirror', async () => {
+    // A coordinator approval (an agent's folder-steering change) carries no
+    // tool_call_id, so no in-chat pill exists: the bar is the only place the
+    // person can read what Allow once authorizes.
+    const state = stateWithApproval()
+    const msgs = (state.chat as unknown as { messages: { meta?: Record<string, unknown> }[] }).messages
+    msgs[1].meta = {
+      approval_id: 'steering-1',
+      registry: 'coordinator',
+      source: 'chat_folder_steering_set',
+      tool_input: '{"folder": "work", "steering_dirs": ["/home/me/private-notes"]}',
+    }
+    const store = createTestStore(state)
+    renderWithProviders(<ChatInput {...defaultProps} />, { store })
+    await waitFor(() => expect(screen.getByText(/private-notes/)).toBeInTheDocument(), { timeout: 5000 })
+  })
+
   it('uses approvalFullCommand for TrustDropdown', () => {
     const store = createTestStore(stateWithApproval())
     renderWithProviders(<ChatInput {...defaultProps} />, { store })

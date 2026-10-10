@@ -9,6 +9,8 @@ an empty list clears them.
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 from typing import Any
@@ -19,6 +21,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import folder_steering, pinned_fs
+from kiro_crew.dashboard import chat_folders as cf
 from kiro_crew.dashboard.chat_folders import (
     MAX_FOLDER_STEERING_DIR_LEN,
     MAX_FOLDER_STEERING_DIRS,
@@ -661,7 +664,9 @@ def _state(folders: list[dict[str, Any]]) -> DashboardState:
 
     async def _mutate(fn: Any, on_committed: Any = None) -> Any:
         changed, value = fn(state._folders)
-        if changed and on_committed is not None:
+        if not changed:
+            return value
+        if on_committed is not None:
             on_committed()
         return value
 
@@ -843,3 +848,363 @@ def test_walk_refuses_where_descriptor_relative_opens_are_unavailable(
     assert docs == []
     assert listed == []  # nothing was listed by name
     assert any("relative to a descriptor" in r.getMessage() for r in caplog.records)
+
+
+# ── an agent's steering write waits for the person's approval card ──
+
+
+def _bound_state(tmp_path):
+    d = tmp_path / "standards"
+    d.mkdir()
+    folders = [{"id": "fldr0001", "name": "Org", "parent_id": None, "order": 0}]
+    state = _state(folders)
+    state.get_slot = lambda key: state._slots.get(key)
+    state.approval_requests = []
+    state.approval_answer = True
+
+    async def _request_approval(approval_id, source, tool, **kwargs):
+        state.approval_requests.append(
+            {"id": approval_id, "source": source, "tool": tool, **kwargs}
+        )
+        answer = state.approval_answer
+        if isinstance(answer, BaseException):
+            raise answer
+        if answer == "hang":
+            await asyncio.sleep(3600)
+        return answer
+
+    state.request_approval = _request_approval
+    caller = state._slots["chat-1-100"]
+    return state, folders, caller, str(d.resolve())
+
+
+def _make_agent_app(state: DashboardState) -> web.Application:
+    """The folder routes as an agent reaches them: the internal loopback
+    credential every MCP tool call carries, with the person's principal."""
+    app = web.Application()
+    app["state"] = state
+
+    @web.middleware
+    async def _internal(request: web.Request, handler: Any) -> Any:
+        request["app"] = ""
+        request["internal_auth"] = True
+        return await handler(request)
+
+    app.middlewares.append(_internal)
+    app.router.add_patch("/api/chat/folders/{id}", api_chat_folder_update)
+    app.router.add_post("/api/chat/folders", api_chat_folder_create)
+    return app
+
+
+async def _agent_patch(state, directory, session_key="dashboard:chat-1-100"):
+    async with TestClient(TestServer(_make_agent_app(state))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/fldr0001",
+            json={"steering_dirs": [directory]},
+            headers={"X-Session-Key": session_key},
+        )
+        return resp.status, await resp.json()
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_an_agent_write_asks_the_person_on_a_human_only_card(tmp_path):
+    """Nothing in an agent's conversation proves its words are the person's,
+    so every agent write needs the person's own click on this exact change."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    status, body = await _agent_patch(state, directory)
+
+    assert status == 200, body
+    assert len(state.approval_requests) == 1
+    req = state.approval_requests[0]
+    assert req["human_only"] is True
+    assert req["slot"] == "chat-1-100"
+    # The card body is one JSON object carrying exactly what is stored, so no
+    # value is ambiguous or able to spoof another line of the card.
+    assert json.loads(req["tool_input"]) == {
+        "folder_id": "fldr0001",
+        "folder": "Org",
+        "steering_dirs": [directory],
+    }
+    assert folders[0]["steering_dirs"] == [directory]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_path_the_card_would_mask_is_refused_before_any_card(tmp_path):
+    """A credential-shaped spelling would be shown masked on the card while the
+    unmasked path is stored: refused before any card is raised."""
+    state, folders, caller, _directory = _bound_state(tmp_path)
+    target = tmp_path / "AKIAIOSFODNN7EXAMPLE"
+    target.mkdir()
+
+    status, body = await _agent_patch(state, str(target))
+
+    assert status == 400, body
+    assert body["code"] == "steering_dirs_invalid"
+    assert state.approval_requests == []
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_an_approved_link_that_resolves_elsewhere_stores_nothing(tmp_path):
+    """The card shows the spelling the agent sent; a link resolving to a
+    different directory (here a credential-shaped one) would store a path the
+    person never read, so the post-approval validation refuses it."""
+    state, folders, caller, _directory = _bound_state(tmp_path)
+    target = tmp_path / "AKIAIOSFODNN7EXAMPLE"
+    target.mkdir()
+    link = tmp_path / "standards-link"
+    link.symlink_to(target, target_is_directory=True)
+
+    status, body = await _agent_patch(state, str(link))
+
+    assert status == 400, body
+    assert body["code"] == "steering_dirs_invalid"
+    assert len(state.approval_requests) == 1
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_an_agent_writes_text_checks_run_off_the_event_loop(tmp_path, monkeypatch):
+    """``~name`` expansion is a user-database lookup that can block, so even the
+    pre-approval text pass runs on a worker thread, never the loop's."""
+    import threading
+
+    state, folders, caller, directory = _bound_state(tmp_path)
+    ran_on: list[threading.Thread] = []
+    real_lexical = cf._lexical_steering_dirs
+
+    def _recording(value):
+        ran_on.append(threading.current_thread())
+        return real_lexical(value)
+
+    monkeypatch.setattr(cf, "_lexical_steering_dirs", _recording)
+    loop_thread = threading.current_thread()
+
+    status, body = await _agent_patch(state, directory)
+
+    assert status == 200, body
+    assert ran_on, "the text pass never ran"
+    assert all(t is not loop_thread for t in ran_on)
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+@pytest.mark.parametrize("exists", [True, False])
+async def test_an_agent_write_probes_no_path_before_the_person_approves(
+    tmp_path, monkeypatch, exists
+):
+    """Existence/realpath of an agent-named path is an oracle outside its
+    sandbox: nothing is probed until the card is answered, so an existing and a
+    missing directory get the identical declined answer."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    state.approval_answer = False
+    probes: list[object] = []
+    real_validate = cf._validate_steering_dirs
+
+    def _recording(value):
+        probes.append(value)
+        return real_validate(value)
+
+    monkeypatch.setattr(cf, "_validate_steering_dirs", _recording)
+    wanted = directory if exists else str(tmp_path / "no-such-dir")
+
+    status, body = await _agent_patch(state, wanted)
+
+    assert status == 403, body
+    assert body["code"] == "steering_approval_declined"
+    assert probes == []
+    assert len(state.approval_requests) == 1
+    assert "steering_dirs" not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+@pytest.mark.parametrize("answer", [False, "timeout"])
+async def test_a_declined_or_unanswered_approval_stores_nothing(tmp_path, monkeypatch, answer):
+    state, folders, caller, directory = _bound_state(tmp_path)
+    if answer == "timeout":
+        monkeypatch.setattr(cf, "STEERING_APPROVAL_TIMEOUT_SECS", 0.05)
+        state.approval_answer = "hang"
+    else:
+        state.approval_answer = False
+    audited: list[dict] = []
+    monkeypatch.setattr(
+        cf, "sel", lambda: MagicMock(log_api_access=lambda **kw: audited.append(kw))
+    )
+
+    status, body = await _agent_patch(state, directory)
+
+    assert status == 403, body
+    assert body["code"] == "steering_approval_declined"
+    assert "steering_dirs" not in folders[0]
+    assert [(kw["outcome"], kw["source"]) for kw in audited] == [("denied", "steering_approval")]
+
+
+@pytest.mark.asyncio
+async def test_the_persons_own_ui_write_asks_nothing(tmp_path):
+    """Only an agent's write (the internal credential) is gated on a card."""
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.patch("/api/chat/folders/fldr0001", json={"steering_dirs": []})
+        assert resp.status == 200, await resp.text()
+    assert state.approval_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("session_key", ["", "slack:C1:1.2", "cron:nightly"])
+async def test_an_agent_write_from_outside_a_dashboard_tab_is_refused(tmp_path, session_key):
+    """The card is raised on the tab the agent runs in; a channel- or
+    schedule-bound caller has none the person is watching, so it is refused
+    before any card or path check."""
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    status, body = await _agent_patch(state, directory, session_key=session_key)
+    assert status == 403, body
+    assert body["code"] == "steering_dirs_forbidden"
+    assert state.approval_requests == []
+    assert "steering_dirs" not in folders[0]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_write_from_a_channel_linked_tab_is_refused(tmp_path):
+    """A conversation resumed from a channel keeps its ``dashboard:`` key while
+    the channel drives its turns, so the key alone cannot clear it."""
+    state, folders, caller, directory = _bound_state(tmp_path)
+    caller.linked_session_key = "slack:C1:1.2"
+    status, body = await _agent_patch(state, directory)
+    assert status == 403, body
+    assert body["code"] == "steering_dirs_forbidden"
+    assert state.approval_requests == []
+    assert "steering_dirs" not in folders[0]
+
+
+@pytest.mark.asyncio
+async def test_the_channel_probe_runs_off_the_event_loop(tmp_path, monkeypatch):
+    """The probe takes the session-store lock, which a channel-link commit
+    holds across a disk write; on the loop it would stall every chat."""
+    import threading
+
+    state, _folders, _caller, directory = _bound_state(tmp_path)
+    seen: list[threading.Thread] = []
+
+    def _probe(_request, _key):
+        seen.append(threading.current_thread())
+        return True
+
+    monkeypatch.setattr(cf, "_caller_reaches_a_channel", _probe)
+    status, body = await _agent_patch(state, directory)
+    assert status == 403, body
+    assert seen and seen[0] is not threading.main_thread()
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_an_approved_write_claims_the_agents_folder_for_the_person(tmp_path):
+    """Approving steering on a folder an agent created makes it the person's:
+    the creator mark is dropped, so that session's empty-folder delete does
+    not reach the approved list."""
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    folders[0][cf.CREATED_BY_SESSION] = "dashboard:chat-1-100"
+    status, body = await _agent_patch(state, directory)
+    assert status == 200, body
+    assert folders[0]["steering_dirs"] == [directory]
+    assert cf.CREATED_BY_SESSION not in folders[0]
+
+
+@_needs_pinned_walk
+@pytest.mark.asyncio
+async def test_a_declined_write_leaves_the_creator_mark(tmp_path):
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    folders[0][cf.CREATED_BY_SESSION] = "dashboard:chat-1-100"
+    state.approval_answer = False
+    status, _body = await _agent_patch(state, directory)
+    assert status == 403
+    assert folders[0][cf.CREATED_BY_SESSION] == "dashboard:chat-1-100"
+
+
+@pytest.mark.asyncio
+async def test_an_agent_clear_is_asked_too(tmp_path):
+    """Clearing erases the person's list with no prior value kept, so it is
+    the person's call as much as setting one."""
+    state, folders, _caller, _directory = _bound_state(tmp_path)
+    folders[0]["steering_dirs"] = ["/srv/standards"]
+    state.approval_answer = False
+    async with TestClient(TestServer(_make_agent_app(state))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/fldr0001",
+            json={"steering_dirs": []},
+            headers={"X-Session-Key": "dashboard:chat-1-100"},
+        )
+        assert resp.status == 403, await resp.text()
+    assert len(state.approval_requests) == 1
+    assert folders[0]["steering_dirs"] == ["/srv/standards"]
+
+
+@pytest.mark.asyncio
+async def test_an_agent_cannot_create_a_folder_with_steering(tmp_path):
+    """Create has no card, so an agent declaring steering there would store it
+    unasked; it must create the folder and set steering through the update."""
+    state, folders, _caller, directory = _bound_state(tmp_path)
+    async with TestClient(TestServer(_make_agent_app(state))) as client:
+        resp = await client.post(
+            "/api/chat/folders",
+            json={"name": "Standards", "steering_dirs": [directory]},
+            headers={"X-Session-Key": "dashboard:chat-1-100"},
+        )
+        assert resp.status == 403, await resp.text()
+        assert (await resp.json())["code"] == "steering_dirs_forbidden"
+    assert [f["name"] for f in folders] == ["Org"]
+    assert state.approval_requests == []
+
+
+@pytest.mark.parametrize("entry", ["~\x00/docs", "/srv/do\x00cs"])
+def test_the_lexical_pass_refuses_a_nul_entry_without_raising(entry):
+    """A NUL byte (and a ``~name`` the account database cannot look up) is an
+    invalid entry the validator answers with its own error, never an
+    exception the handler would turn into a 500."""
+    spelled, err = cf._lexical_steering_dirs([entry])
+    assert spelled == []
+    assert err
+
+
+@pytest.mark.asyncio
+async def test_a_nul_entry_is_a_400_not_a_500(tmp_path):
+    state, folders, _caller, _directory = _bound_state(tmp_path)
+    async with TestClient(TestServer(_make_app(state))) as client:
+        resp = await client.patch(
+            "/api/chat/folders/fldr0001", json={"steering_dirs": ["~\x00/docs"]}
+        )
+        assert resp.status == 400, await resp.text()
+        assert (await resp.json())["code"] == "steering_dirs_invalid"
+    assert "steering_dirs" not in folders[0]
+
+
+def test_the_lexical_pass_refuses_an_exact_repeat_without_touching_disk(monkeypatch, tmp_path):
+    """An exact repeat is decidable from the text, so the pre-approval pass
+    refuses it -- before the person's card -- and probes nothing."""
+    if not cf.pinned_fs.supports_pinned_tree_walk():
+        pytest.skip("steering directories are refused on this platform")
+    probed: list[str] = []
+    monkeypatch.setattr(cf.os.path, "realpath", lambda p, *a, **k: probed.append(p) or p)
+    monkeypatch.setattr(cf.os.path, "isdir", lambda p: probed.append(p) or True)
+    spot = str(tmp_path / "docs")
+
+    spelled, err = cf._lexical_steering_dirs([spot, spot + os.sep])
+
+    assert spelled == []
+    assert err == "steering_dirs must not repeat a directory"
+    assert probed == []
+
+
+def test_the_lexical_pass_keeps_distinct_spellings(tmp_path):
+    if not cf.pinned_fs.supports_pinned_tree_walk():
+        pytest.skip("steering directories are refused on this platform")
+    a, b = str(tmp_path / "a"), str(tmp_path / "b")
+
+    spelled, err = cf._lexical_steering_dirs([a, b])
+
+    assert err is None
+    assert spelled == [a, b]

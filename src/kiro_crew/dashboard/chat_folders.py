@@ -4,6 +4,7 @@ LLM emoji generator here serves both chat folders and the artifact library."""
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import time
@@ -662,8 +663,83 @@ MAX_FOLDER_STEERING_DIRS = 16
 MAX_FOLDER_STEERING_DIR_LEN = 4096
 
 
+#: How long an agent's steering write waits for the person's click. Under the
+#: MCP client's request timeout (``STEERING_APPROVAL_CLIENT_TIMEOUT``), so an
+#: unanswered card is retired as a refusal before the caller gives up on it.
+#: Kept short because the whole wait holds one ``kirocrew-dashboard``
+#: ``tools/call`` open: that server runs calls on one worker, and on native
+#: Windows it answers no ``ping`` while a call runs, so the client wait must stay
+#: under the gateway's ``PING_STALE_SECS`` or the backend is recycled as wedged.
+STEERING_APPROVAL_TIMEOUT_SECS = 90.0
+
+
+def _unshowable_on_card(values: list[str]) -> str | None:
+    """The first value the approval card could not show verbatim, or ``None``.
+
+    The card's text passes through credential and URL redaction before it is
+    rendered, so a value redaction would rewrite (a symlink resolving to a
+    credential-shaped path, say) would be approved as masked text while the
+    unmasked value is stored. Such a change is refused instead of asked.
+    """
+    for value in values:
+        if redact_credentials(value)[0] != value or redact_exfiltration_urls(value)[0] != value:
+            return value
+    return None
+
+
+def _steering_card_text(fid: str, name: str, steering_dirs: list[str]) -> str:
+    """The approval card's body: one JSON object, so every value is quoted and
+    escaped and no name or path can spoof another line of the card."""
+    return json.dumps(
+        {"folder_id": fid, "folder": name, "steering_dirs": steering_dirs},
+        ensure_ascii=True,
+        indent=1,
+    )
+
+
+async def _await_person_steering_approval(
+    state: Any, fid: str, steering_dirs: list[str], session_key: str
+) -> str:
+    """Ask the person, on a human-only dashboard card, to approve this change.
+
+    Returns ``"approved"``, ``"declined"`` (declined or unanswered), or
+    ``"unshowable"`` when a value would be masked on the card.
+    """
+    folder = next((f for f in getattr(state, "_folders", []) if f.get("id") == fid), None)
+    name = str((folder or {}).get("name") or fid)
+    card = _steering_card_text(fid, name, steering_dirs)
+    # Every raw value AND the composed card: redaction must leave what the
+    # person reads byte-identical to what is stored.
+    if _unshowable_on_card([fid, name, *steering_dirs, card]) is not None:
+        return "unshowable"
+    try:
+        approved = await asyncio.wait_for(
+            state.request_approval(
+                f"steering-{uuid.uuid4().hex}",
+                "chat_folder_steering_set",
+                "chat_folder_steering_set",
+                tool_input=card,
+                tool_purpose=(
+                    "An agent asks to change the steering directories this folder "
+                    "loads into every chat in it"
+                ),
+                slot=session_key.removeprefix("dashboard:"),
+                human_only=True,
+            ),
+            timeout=STEERING_APPROVAL_TIMEOUT_SECS,
+        )
+    except asyncio.TimeoutError:
+        return "declined"
+    return "approved" if approved else "declined"
+
+
 def _refuse_principal_steering_dirs(
-    request_app: str, steering_dirs: list, *, operation: str, folder_id: str
+    request_app: str,
+    steering_dirs: list,
+    *,
+    operation: str,
+    folder_id: str,
+    refuse_clear: bool = False,
 ) -> web.Response | None:
     """Only the PERSON may declare steering directories; refuse everyone else.
 
@@ -680,8 +756,14 @@ def _refuse_principal_steering_dirs(
     calls carry the empty principal and are unaffected; a person can still
     declare steering on a folder an app or member owns, and the delivery gate
     then routes it to that principal's chats as before.
+
+    ``refuse_clear`` extends the refusal to ``[]`` for the agent verb
+    (an agent's write, on the internal credential): only the person could
+    have put steering on a folder, so a non-person principal -- an app, or a
+    crew member however its slot is shaped (a member DM, or an ordinary chat
+    bound to the member's private store) -- may not erase it through the tool.
     """
-    if not request_app or not steering_dirs:
+    if not request_app or not (steering_dirs or refuse_clear):
         return None
     sel().log_api_access(
         caller=request_app,
@@ -703,23 +785,20 @@ def _refuse_principal_steering_dirs(
     )
 
 
-def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
-    """Validate a folder's ``steering_dirs`` list. Returns (resolved, error_msg).
+def _lexical_steering_dirs(value: object) -> tuple[list[str], str | None]:
+    """The ``steering_dirs`` checks that touch NO filesystem. Returns (spelled, err).
 
-    Reuses the ``_validate_project_dir`` contract per entry: absolute or
-    ``~``-prefixed, ``expanduser`` + ``realpath``, sensitive-path rejection
-    (SEL-logged like ``project_dir``), and must be an existing directory. Adds
-    list-level rules a single project path does not need: a ``16``-entry cap,
-    a per-entry length bound, rejection of duplicates within one folder
-    (compared by the resolved realpath, so two spellings of one directory are
-    still a duplicate), and a UNC gate applied BEFORE resolution -- on Windows
-    ``realpath``/``isdir`` on ``\\\\host\\share`` opens an SMB connection to
-    that host, so untrusted text must not reach the filesystem unless it names
-    a share this gateway already writes to (``unc_probe_allowed``). An empty
-    list is valid and resolves to ``[]`` -- and is the ONE spelling that clears
-    the field. An explicit ``None`` is refused like any other non-list: a
-    ``PATCH {"steering_dirs": null}`` is one ordinary request any client can
-    send, and accepting it as "clear" would silently drop a configured list.
+    Types, the entry cap and length bound, emptiness, the UNC gate, absoluteness
+    and the platform refusal -- every rule decidable from the text alone. Each
+    entry comes back as ``normpath(expanduser(entry))``. A bare ``~`` expands from
+    the environment; a ``~user`` prefix is resolved through the account database
+    (``pwd``, which may consult NSS/LDAP), so it can reveal whether an account
+    exists, though it never touches the named directory. An agent's write
+    runs only this before the person's approval card, so nothing an agent
+    names is probed (existence, links, realpath) until the person has approved
+    probing it; the full
+    :func:`_validate_steering_dirs` runs after, and its result must equal these
+    spellings.
     """
     if not isinstance(value, list) or any(not isinstance(entry, str) for entry in value):
         return [], "steering_dirs must be a list of strings (send [] to clear)"
@@ -729,11 +808,13 @@ def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
         return [], (
             f"each steering directory must be at most {MAX_FOLDER_STEERING_DIR_LEN} characters"
         )
-    resolved: list[str] = []
+    spelled: list[str] = []
     for entry in value:
         stripped = entry.strip()
         if not stripped:
             return [], "steering directory must not be empty"
+        if "\x00" in stripped:
+            return [], "Steering directory must not contain a NUL character"
         if is_unc_shape(stripped) and not unc_probe_allowed(stripped):
             # Lexical check only; never touches the network. Same refusal the
             # attachment and prompt-block readers apply to untrusted UNC text.
@@ -756,6 +837,46 @@ def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
                 "cannot be opened relative to a descriptor, so the tree could not be "
                 "read without following a swapped link"
             )
+        try:
+            expanded = os.path.expanduser(stripped)
+        except (ValueError, OSError):
+            # ``~name`` goes through the account database, which refuses a
+            # name the OS cannot represent; that is an invalid entry, not a 500.
+            return [], "Steering directory is not a valid path"
+        spelled.append(os.path.normpath(expanded))
+    if len(set(spelled)) != len(spelled):
+        # The textual twin of the realpath dedup in _validate_steering_dirs: an
+        # exact repeat is decidable here, so it is refused before the person's
+        # approval card rather than after their click. Two spellings of one
+        # directory still need the realpath, and are caught there.
+        return [], "steering_dirs must not repeat a directory"
+    return spelled, None
+
+
+def _validate_steering_dirs(value: object) -> tuple[list[str], str | None]:
+    """Validate a folder's ``steering_dirs`` list. Returns (resolved, error_msg).
+
+    Reuses the ``_validate_project_dir`` contract per entry: absolute or
+    ``~``-prefixed, ``expanduser`` + ``realpath``, sensitive-path rejection
+    (SEL-logged like ``project_dir``), and must be an existing directory. Adds
+    list-level rules a single project path does not need: a ``16``-entry cap,
+    a per-entry length bound, rejection of duplicates within one folder
+    (compared by the resolved realpath, so two spellings of one directory are
+    still a duplicate), and a UNC gate applied BEFORE resolution -- on Windows
+    ``realpath``/``isdir`` on ``\\\\host\\share`` opens an SMB connection to
+    that host, so untrusted text must not reach the filesystem unless it names
+    a share this gateway already writes to (``unc_probe_allowed``). An empty
+    list is valid and resolves to ``[]`` -- and is the ONE spelling that clears
+    the field. An explicit ``None`` is refused like any other non-list: a
+    ``PATCH {"steering_dirs": null}`` is one ordinary request any client can
+    send, and accepting it as "clear" would silently drop a configured list.
+    """
+    _lexical, err = _lexical_steering_dirs(value)
+    if err or not isinstance(value, list):
+        return [], err or "steering_dirs must be a list of strings (send [] to clear)"
+    resolved: list[str] = []
+    for entry in value:
+        stripped = entry.strip()
         # ``validate_file_path`` is the hardened canonicalizer, not the bare
         # ``realpath``/``isdir`` pair: representability, the UNC trusted-root
         # gate and the Windows LINK-TARGET screen all run BEFORE anything is
@@ -1550,6 +1671,29 @@ async def api_chat_folder_create(request: web.Request) -> web.Response:
     )
     if refused is not None:
         return refused
+    if steering_dirs and request.get("internal_auth") is True:
+        # An agent declares steering only through the update route, where the
+        # person approves the exact change on a card; creating a folder with a
+        # list would store it unasked. Create first, then set it there.
+        sel().log_api_access(
+            caller=request_app or "internal",
+            operation="chat.folder_create",
+            outcome="denied",
+            source="steering_agent_create",
+            resources=f"steering_dirs={len(steering_dirs)}",
+            error="an agent may not declare steering_dirs at folder create",
+        )
+        return web.json_response(
+            {
+                "error": (
+                    "an agent cannot declare steering directories when creating a "
+                    "folder; create it, then set them with chat_folder_steering_set "
+                    "so the person approves the change"
+                ),
+                "code": "steering_dirs_forbidden",
+            },
+            status=403,
+        )
     parent_id = str(body.get("parent_id") or "")
     try:
         folder = await create_folder_record(
@@ -1692,6 +1836,11 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
     # stamped once at create from the authenticated caller and is not a field a
     # request can hand over, take, or clear.
     changes: dict[str, object] = {}
+    # The calling session's key when an AGENT writes steering_dirs (the
+    # internal loopback credential every MCP tool call carries; the person's
+    # own browser never presents it). Such a write is held for the person's
+    # approval card below.
+    agent_steering_key: str | None = None
     if "name" in body:
         new_name = str(body["name"]).strip()[:100]
         if not new_name:
@@ -1809,17 +1958,60 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         # Only the person may declare a non-empty list (see
         # _refuse_principal_steering_dirs); the refusal precedes any path work.
         raw_steering = body["steering_dirs"]
+        agent_write = request.get("internal_auth") is True
         refused = _refuse_principal_steering_dirs(
             request_app,
             raw_steering if isinstance(raw_steering, list) else [raw_steering],
             operation="chat.folder_steering_dirs",
             folder_id=fid,
+            refuse_clear=agent_write,
         )
         if refused is not None:
             return refused
-        resolved_steering, steering_err = await asyncio.to_thread(
-            _validate_steering_dirs, body["steering_dirs"]
-        )
+        if agent_write:
+            # An agent's write is asked of the person on the card of the tab it
+            # runs in, so it must name one: a channel- or schedule-bound key
+            # has no tab the person is watching. A dashboard session a channel
+            # can drive (a resumed or linked conversation keeps its
+            # ``dashboard:`` key) is refused the same way an agent rename is.
+            # The reachability probe reads the session store under its lock,
+            # which a channel-link commit holds across a disk write, so it runs
+            # off the event loop.
+            caller_key = str(request.headers.get("X-Session-Key", "") or "").strip()
+            if not caller_key.startswith("dashboard:") or await asyncio.to_thread(
+                _caller_reaches_a_channel, request, caller_key
+            ):
+                sel().log_api_access(
+                    caller=request_app or "internal",
+                    operation="chat.folder_steering_dirs",
+                    outcome="denied",
+                    source="steering_agent_caller",
+                    resources=fid,
+                    error="an agent steering write from outside an unlinked dashboard tab",
+                )
+                return web.json_response(
+                    {
+                        "error": (
+                            "an agent may change steering directories only from the "
+                            "person's own dashboard tab, with no channel linked to it"
+                        ),
+                        "code": "steering_dirs_forbidden",
+                    },
+                    status=403,
+                )
+            agent_steering_key = caller_key
+            # An agent's write probes NOTHING before the person's approval:
+            # existence, links and realpath of an agent-named path are an oracle
+            # into the host, so only the text-level checks run here and the
+            # filesystem validation waits for the card. Off the loop all the
+            # same: ``~name`` expansion is a user-database lookup that can block.
+            resolved_steering, steering_err = await asyncio.to_thread(
+                _lexical_steering_dirs, body["steering_dirs"]
+            )
+        else:
+            resolved_steering, steering_err = await asyncio.to_thread(
+                _validate_steering_dirs, body["steering_dirs"]
+            )
         if steering_err:
             return web.json_response(
                 {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
@@ -1971,6 +2163,80 @@ async def api_chat_folder_update(request: web.Request) -> web.Response:
         if "icon" in changes or "name" in changes:
             _bump_icon_epoch(fid)
         committed_epoch.append(_CHAT_FOLDER_ICON_EPOCHS.get(fid, 0))
+
+    # An agent's steering write needs the PERSON's approval of this exact
+    # change, answered by their own click on a dashboard card: nothing in the
+    # caller's conversation can prove its words are the person's (a web page or
+    # file an agent read is in the context too), so only a per-call human
+    # decision authorizes it. The card is ``human_only`` (no trust/yolo sweep
+    # answers it) and its resolve route is not reachable with the agent's
+    # credential.
+    if agent_steering_key is not None:
+        verdict = await _await_person_steering_approval(
+            state, fid, [str(p) for p in resolved_steering or []], agent_steering_key
+        )
+        if verdict == "unshowable":
+            return web.json_response(
+                {
+                    "error": (
+                        "a steering directory or the folder name would be masked on "
+                        "the approval card, so it cannot be approved as shown; "
+                        "nothing was stored"
+                    ),
+                    "code": "steering_dirs_invalid",
+                },
+                status=400,
+            )
+        if verdict != "approved":
+            sel().log_api_access(
+                caller=request_app or "dashboard",
+                operation="chat.folder_steering_dirs",
+                outcome="denied",
+                source="steering_approval",
+                resources=fid,
+                error="the person declined the steering change or did not answer in time",
+            )
+            return web.json_response(
+                {
+                    "error": (
+                        "the person did not approve this steering change (declined, or no "
+                        "answer in time); nothing was stored"
+                    ),
+                    "code": "steering_approval_declined",
+                },
+                status=403,
+            )
+        # Only now, with the person's approval of these exact spellings, does
+        # the filesystem validation run. Its canonical result must BE what the
+        # person read: a link, ``..`` or a spelling that resolves elsewhere
+        # would store a directory the card never named, so it is refused and
+        # the person approves the resolved path in a new request instead.
+        approved_spellings = list(resolved_steering)
+        resolved_steering, steering_err = await asyncio.to_thread(
+            _validate_steering_dirs, body["steering_dirs"]
+        )
+        if steering_err:
+            return web.json_response(
+                {"error": steering_err, "code": "steering_dirs_invalid"}, status=400
+            )
+        if resolved_steering != approved_spellings:
+            return web.json_response(
+                {
+                    "error": (
+                        "a steering directory resolves (through a link or a relative "
+                        "segment, including a symlinked ancestor such as /tmp on macOS) "
+                        "to a different path than the one approved; nothing was stored "
+                        "-- name each directory by its real path"
+                    ),
+                    "code": "steering_dirs_invalid",
+                },
+                status=400,
+            )
+        changes["steering_dirs"] = resolved_steering
+        # The person's approval is the person's edit: it claims the folder as
+        # their own Folder-settings write would, which drops the creator mark
+        # chat_folder_delete keys on, so the approved list stays theirs.
+        claims_for_person = True
 
     if "tags" in changes:
         # Same point-of-application rule as create: the authoritative

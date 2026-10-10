@@ -382,6 +382,37 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
   signal. Clearing to `[]` stays allowed for every principal (it only removes
   reads). The person may still declare steering on a folder an app or member
   owns; delivery then routes it to that principal's chats as described below.
+- **Agent surface** (`mcp_dashboard.py`, `chat_folder_steering_set`). The
+  same setting is operable by an agent through the `kirocrew-dashboard` MCP
+  server, which issues the same `PATCH /api/chat/folders/{id}` the Folder
+  settings dialog does, so validation, the principal gate and the Windows
+  refusal are the endpoint's single verdict for both. The tool refuses an app-
+  or member-owned session and any caller that is not `dashboard:`, for clearing
+  as well as setting. At the endpoint, a `steering_dirs` write on the internal
+  loopback credential (`request["internal_auth"]`, which every MCP tool call
+  carries and the person's browser never does) is an agent's write: it must name
+  a `dashboard:` session key that no channel can drive (`_caller_reaches_a_channel`,
+  the same check an agent rename meets), a non-person principal may not clear through it
+  (`refuse_clear`), and it is held for the person's approval of this exact change
+  on a `human_only` dashboard card (`request_approval(..., human_only=True)`: no
+  trust/yolo sweep answers it, and the resolve routes answer it only for the
+  owner's own dashboard session (`is_owner_dashboard_request`), refusing an
+  internal-secret or app caller and any other signed dashboard subject, so the
+  requesting agent cannot approve itself; declined or unanswered within
+  `STEERING_APPROVAL_TIMEOUT_SECS` is 403 `steering_approval_declined`). Before
+  the card only the text-level checks run (`_lexical_steering_dirs`: type, cap,
+  length, UNC, absolute, platform, exact repeats): no agent-named path is
+  stat'ed, opened or resolved until the person approves, so the endpoint is no
+  existence oracle. The card shows those spellings; after approval the full
+  `_validate_steering_dirs` runs and its canonical result must equal them, so a
+  link or `..` segment resolving elsewhere is refused (400) rather than storing
+  a path the card never named. `POST /api/chat/folders` refuses a non-empty
+  `steering_dirs` on the internal credential outright (403
+  `steering_dirs_forbidden`): create has no card, so an agent creates the
+  folder and sets steering through the update. The verb is also on
+  `CHANNEL_AGENT_BLOCKED_TOOLS`.
+  `chat_folder_tree` renders each folder's declared list (`steering=[…]`) as
+  the read half.
 - **Resolution** (`_resolve_folder_steering_dirs`) is ACCUMULATIVE up the
   `parent_id` chain (root ancestor first, then descendants), unlike the
   nearest-wins `project_dir` resolver: an org-standards folder above a per-repo
