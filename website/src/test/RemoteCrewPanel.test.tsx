@@ -819,7 +819,7 @@ describe('RemoteCrewPanel', () => {
   })
 
   it('shows the enable CTA when the feature is disabled (403)', async () => {
-    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled'))
+    vi.mocked(api.listInstances).mockRejectedValue(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     vi.mocked(api.cloudLaunches).mockResolvedValue({ jobs: [] })
     renderWithProviders(<RemoteCrewPanel />)
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
@@ -844,7 +844,7 @@ describe('RemoteCrewPanel', () => {
     expect(screen.queryByRole('button', { name: /Enable remote crew management/i })).not.toBeInTheDocument()
 
     // After the 403 resolves: transitions directly to the disabled card.
-    rejectInstances(new ApiError(403, 'instances feature is disabled'))
+    rejectInstances(new ApiError(403, 'instances feature is disabled', JSON.stringify({ error: 'instances feature is disabled', code: 'instances_disabled' })))
     expect(await screen.findByText(/Remote crew management is off/i)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /Your crews/i })).not.toBeInTheDocument()
   })

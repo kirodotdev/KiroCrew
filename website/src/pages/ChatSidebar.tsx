@@ -866,12 +866,15 @@ function RemoteCrewNamesError() {
     enabled: topBarAbsent,
   })
   if (!topBarAbsent || !error || isInstancesDisabledError(error)) return null
+  // Lead with what failed in product terms; the server's text follows it.
+  const detail = errMessage(error)
   return (
     <div className="mx-2 mt-2 shrink-0">
       <ErrorNotice
         variant="inline"
         className="flex-wrap w-full"
-        message={errMessage(error) || i18nT('components.instanceTabBar.instances_load_failed')}
+        title={detail ? i18nT('components.instanceTabBar.instances_load_failed') : undefined}
+        message={detail || i18nT('components.instanceTabBar.instances_load_failed')}
         askAgent
         testId="remote-crew-names-error"
       />

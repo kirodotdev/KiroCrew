@@ -35,7 +35,8 @@
  */
 import { useCallback, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { api, ApiError } from '../api/client'
+import { api } from '../api/client'
+import { isInstancesDisabledError } from '../utils/instancesDisabled'
 import { useAppSelector } from '../store'
 import { isEmbeddedPane } from '../lib/embedded'
 import { isElectron } from '../lib/electron'
@@ -67,7 +68,9 @@ export function useInstanceShortcuts() {
   // Top-level only: share the ['instances'] React Query cache with
   // InstanceTabBar / viewport — same cache entry, not a second network poll.
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances(), enabled: !embedded && isElectron })
-  const forbidden = instancesQuery.error instanceof ApiError && instancesQuery.error.status === 403
+  // Only the feature being off turns the digit chords off. A non-owner 403 leaves
+  // no remote tabs, so Digit1 (Local) is the only chord that still matches.
+  const forbidden = isInstancesDisabledError(instancesQuery.error)
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data?.instances])
   // Same visibility rule as the bar, so the digit order matches the tabs 1:1.
   const tabInstances = useMemo(() => visibleInstanceTabs(instances, warm), [instances, warm])

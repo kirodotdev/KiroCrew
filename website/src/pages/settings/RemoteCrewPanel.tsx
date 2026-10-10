@@ -85,6 +85,7 @@ import {
 import type { ErrorReport } from '../../utils/errorReport'
 import { parseErrorCode } from '../../utils/errorReport'
 import { reportInstanceFailure } from '../../utils/instanceFailureReport'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { readPersistedString, usePersistedString } from '../../hooks/usePersistedString'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { AUTO_CONNECT_KEY } from '../../hooks/useAutoConnectInstances'
@@ -1607,10 +1608,9 @@ export function RemoteCrewPanel() {
     // until an unrelated refetch. Poll while any delete is in flight, then stop.
     refetchInterval: () => (deletingTags.size > 0 ? 4000 : false),
   })
-  const disabled =
-    instancesQuery.error instanceof ApiError &&
-    instancesQuery.error.status === 403 &&
-    /disabled/i.test(instancesQuery.error.message)
+  // Keyed on the gateway's `instances_disabled` code, not the message text, so
+  // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
+  const disabled = isInstancesDisabledError(instancesQuery.error)
   // Any OTHER failure is a load error, not "you have no crews": rendering the
   // empty state over it would tell the user their crews are gone.
   // Both queries gate the crew list: a row's cloud-vs-manual identity comes from the

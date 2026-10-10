@@ -27,6 +27,7 @@ import {
   Power,
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
+import { isInstancesDisabledError } from '../../utils/instancesDisabled'
 import { WARM_SET_CAP_AUTO_CEILING, usesSsmTransport } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
@@ -239,10 +240,9 @@ export function InstancesPanel() {
   }, [])
 
   const instancesQuery = useQuery({ queryKey: ['instances'], queryFn: () => api.listInstances() })
-  const disabled =
-    instancesQuery.error instanceof ApiError &&
-    instancesQuery.error.status === 403 &&
-    /disabled/i.test(instancesQuery.error.message)
+  // Keyed on the gateway's `instances_disabled` code, not the message text, so
+  // an owner-only or Slack-origin 403 shows as a load error, not as "turned off".
+  const disabled = isInstancesDisabledError(instancesQuery.error)
   const error =
     instancesQuery.error && !disabled
       ? instancesQuery.error instanceof ApiError

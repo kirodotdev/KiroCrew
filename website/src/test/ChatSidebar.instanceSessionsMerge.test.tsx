@@ -725,6 +725,8 @@ describe('ChatSidebar – remote crew sessions in the live list', () => {
     const notices = await screen.findAllByTestId('remote-crew-names-error')
     expect(notices).toHaveLength(1)
     expect(notices[0].textContent).toContain('non-owner identity rejected')
+    // Leads with the product sentence; the server's text follows it.
+    expect(notices[0].textContent).toContain('Couldn’t load the remote crews.')
   })
 
   it('stays quiet in an embedded pane when the preview banner already reports the failed read', async () => {

@@ -695,7 +695,7 @@ describe('the panel', () => {
 
   it('says it cannot tell, never "gone", when the Instances feature is off', async () => {
     cloudLaunches.mockResolvedValue({ jobs: [job()] })
-    listInstances.mockRejectedValue(new ApiError(403, 'Instances feature is disabled'))
+    listInstances.mockRejectedValue(new ApiError(403, 'Instances feature is disabled', JSON.stringify({ error: 'Instances feature is disabled', code: 'instances_disabled' })))
     renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
     const state = await screen.findByTestId('deploy-state-finished')
     expect(state.textContent).toContain('cannot tell whether it is still running')
@@ -735,9 +735,23 @@ describe('the panel', () => {
     expect(cloudLaunches).toHaveBeenCalledTimes(launchReads)
   }, 15000)
 
+  it('reports an owner-only 403 on the registry read as an error, not as the feature being off', async () => {
+    // Only the gateway's instances_disabled code means "off". The same route's
+    // owner-only 403 is an authorization failure and must not read as "cannot tell".
+    cloudLaunches.mockResolvedValue({ jobs: [job()] })
+    listInstances.mockRejectedValue(new ApiError(403, 'non-owner identity rejected', JSON.stringify({ error: 'non-owner identity rejected', code: 'owner_only' })))
+    renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
+    // Chained queries: the launch read must return a finished job before the
+    // registry read is enabled, so this wait spans both reads.
+    await waitFor(() => expect(screen.getByTestId('deploy-error')).toBeTruthy(), { timeout: 5000 })
+    expect(screen.queryByTestId('deploy-state-finished')).toBeNull()
+    // Still not retried: no retry changes an authorization answer.
+    expect(listInstances).toHaveBeenCalledTimes(1)
+  }, 15000)
+
   it('keeps the console words without a link when the record has no usable region', async () => {
     cloudLaunches.mockResolvedValue({ jobs: [job({ region: '' })] })
-    listInstances.mockRejectedValue(new ApiError(403, 'Instances feature is disabled'))
+    listInstances.mockRejectedValue(new ApiError(403, 'Instances feature is disabled', JSON.stringify({ error: 'Instances feature is disabled', code: 'instances_disabled' })))
     renderWithProviders(<DeployMyCrewDialog open onClose={() => {}} members={MEMBERS} />)
     await screen.findByTestId('deploy-state-finished')
     expect(screen.getByTestId('deploy-check-console').textContent).toContain('AWS console')

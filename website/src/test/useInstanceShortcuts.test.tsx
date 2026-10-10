@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { waitFor } from '@testing-library/react'
 import { act } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { renderHookWithProviders, createTestStore } from './helpers'
 import { useInstanceShortcuts } from '../hooks/useInstanceShortcuts'
 import { IS_MAC, SHORTCUTS_ENABLED_KEY, INSTANCE_SHORTCUTS } from '../hooks/useKeyboardShortcuts'
@@ -20,7 +21,7 @@ vi.mock('../api/client', () => {
     api: { listInstances: vi.fn(), connectInstance: vi.fn() },
   }
 })
-import { api } from '../api/client'
+import { api, ApiError } from '../api/client'
 vi.mock('../lib/embedded', () => ({ isEmbeddedPane: vi.fn(() => false) }))
 import { isEmbeddedPane } from '../lib/embedded'
 // The chord is Electron-only (browsers reserve ⌘/Ctrl+digit for tab switching).
@@ -78,6 +79,15 @@ async function loaded() {
   await act(async () => { await new Promise(r => setTimeout(r, 10)) })
 }
 
+/** Render the hook beside a read of the same ['instances'] query, so a test
+ *  can wait for the query's settled error before it dispatches a chord. */
+function renderWithQueryStatus(store: ReturnType<typeof createTestStore>) {
+  return renderHookWithProviders(() => {
+    useInstanceShortcuts()
+    return useQueryClient().getQueryState(['instances'])?.status
+  }, { store })
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(isEmbeddedPane).mockReturnValue(false)
@@ -85,6 +95,39 @@ beforeEach(() => {
 })
 
 describe('useInstanceShortcuts — top-level (Electron)', () => {
+  const denial = (body: Record<string, string>) =>
+    Object.assign(new ApiError(403, body.error), { body: JSON.stringify(body) })
+
+  it('leaves the chord alone when the instances feature is off (instances_disabled 403)', async () => {
+    vi.mocked(api.listInstances).mockRejectedValue(
+      denial({ error: 'instances feature is disabled', code: 'instances_disabled' }),
+    )
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {}, host: null },
+    })
+    const { result } = renderWithQueryStatus(store)
+    await waitFor(() => expect(result.current).toBe('error'))
+
+    const ev = pressDigit(1)
+    expect(ev.defaultPrevented).toBe(false)
+    expect(store.getState().instances.activeId).toBe('cd-1')
+  })
+
+  it('still switches to Local on an owner-only 403, which is not the feature being off', async () => {
+    vi.mocked(api.listInstances).mockRejectedValue(
+      denial({ error: 'non-owner identity rejected', code: 'owner_only' }),
+    )
+    const store = createTestStore({
+      instances: { warm: {}, activeId: 'cd-1', mru: ['cd-1'], unread: {}, host: null },
+    })
+    const { result } = renderWithQueryStatus(store)
+    await waitFor(() => expect(result.current).toBe('error'))
+
+    const ev = pressDigit(1)
+    expect(ev.defaultPrevented).toBe(true)
+    expect(store.getState().instances.activeId).toBeNull()
+  })
+
   it('digit 1 switches to Local (null pane)', async () => {
     vi.mocked(api.listInstances).mockResolvedValue(listResp([conn()]))
     const store = createTestStore({
