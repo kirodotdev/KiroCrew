@@ -1026,6 +1026,38 @@ hour of the previous ceiling's list; a path shape or bytes that can never be a s
 retried, and a failure that outlasts the attempts holds the spec with the attempt count in the
 warning.
 
+A **governance profile** governs the same lists: the writers ask `may_skip_gate_now`, which
+withholds a grant whenever any configured profile could govern the ref, so a profile saved
+after the spec was written has to re-derive it exactly as a ceiling move does. The memo the
+hook compares is therefore `governance_answer_generation()` (ceiling plus profiles), read
+after `poll_profiles_fresh` re-stats the profiles directory. Every `rebuild_agent_config`
+reads that answer before it derives any grant and publishes it
+(`agent._rebuild_answer_generation`) only once it completes; a rebuild that raised (and only that: one
+still running does not) sets `agent._rebuild_incomplete` and clears the projection memo under the lock, because such a rebuild may have written grants derived under an older answer before it failed: the seed then leaves the baseline unseeded, and the next poll or watch tick re-projects, whatever a later rebuild's completion does to the flag. Otherwise
+`prime_ceiling_projection` seeds the baseline from the published answer: the boot rebuild and the seed are far
+apart, and a profile reader between them (a tool-approval check, a dashboard read) re-stats
+and publishes an edit, which a seed read at that point would absorb as projected. With no
+rebuild recorded, the seed reads the store as it stands, loading it first if nothing has,
+because no written grant consulted it. A profile is saved by editing a file, which no
+distribution poll observes, and a host without central distribution has no poll at all, so
+the gateway runs its own **profile watch**: every `_PROFILE_PROJECTION_POLL_S` (15 s), off
+the event loop, `agent.reproject_for_profile_change` re-stats the directory and calls the
+hook when the answer differs from the one the memo records. A projection that does not land
+(a declined rebuild or a held spec, each of which logs a refusal and an audit event per
+attempt) is retried by the watch every `agent._PROFILE_WATCH_RETRY_S` (an hour) rather than
+every tick, and one whose rebuild raised after `agent._PROFILE_WATCH_RAISE_RETRY_S` (five
+minutes). The hook and the watch run on
+different threads, so both hold `agent._REPROJECT_LOCK` across the whole read, rebuild and
+record: without it, a rebuild derived under an older answer could finish last and leave its
+grants on disk while the memo records the newer answer. The other rebuilds (a dashboard
+save, a config change, the maintenance retry) run without that lock, so each one, on
+completing, clears the memo when the answer moved since it started
+(`agent._invalidate_projection_if_answer_moved`, taken under the lock so it orders after any
+projection in flight), and the next poll or watch tick re-projects over its write. The watch starts in its own block
+ahead of the seed and `start_refresher`, so a failure in either does not take it down, and
+`_shutdown` cancels it beside the refresher, so no re-projection starts into a closing
+gateway.
+
 A builtin can also be governed by a **capability** rather than by its name:
 `BUILTIN_TOOL_CAPABILITIES` maps `use_subagent` to `capabilities.spawn`. A capability is not
 a `tools` rule, so the name check cannot see it, and an auto-approved spawn raises no

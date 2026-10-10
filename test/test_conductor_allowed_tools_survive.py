@@ -1158,6 +1158,8 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         monkeypatch.setattr(agent, "_projected_ceiling_generation", None, raising=False)
         monkeypatch.setattr(agent, "_pending_projection_warned_generation", None, raising=False)
         monkeypatch.setattr(agent, "_conductor_spec_held", False, raising=False)
+        monkeypatch.setattr(agent, "_rebuild_answer_generation", None, raising=False)
+        monkeypatch.setattr(agent, "_rebuild_incomplete", False, raising=False)
 
     @staticmethod
     def _report() -> tuple[bool, list[bool]]:
@@ -1235,7 +1237,7 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
     ) -> None:
         """The hook reads both signals: a refusal OR a hold leaves the memo behind;
         only a rebuild that wrote and held nothing advances it."""
-        from kiro_crew.platform.context import governance_generation
+        from kiro_crew.platform.governance_profiles import governance_answer_generation
 
         outcomes = iter([(False, False), (True, True), (True, False)])
 
@@ -1251,7 +1253,7 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         agent.reproject_for_ceiling_change()
         assert agent._projected_ceiling_generation is None, "a held spec advanced the memo"
         agent.reproject_for_ceiling_change()
-        assert agent._projected_ceiling_generation == governance_generation()
+        assert agent._projected_ceiling_generation == governance_answer_generation()
 
     def test_a_spec_held_at_boot_is_retried_by_the_first_poll(
         self,
@@ -1266,7 +1268,7 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         again -- the list is never re-derived for the process lifetime. The baseline
         must stay unseeded while the last rebuild held, so the first poll retries; it
         advances only once the spec is rewritten."""
-        from kiro_crew.platform.context import governance_generation
+        from kiro_crew.platform.governance_profiles import governance_answer_generation
 
         shared = self._shared_home_rig(monkeypatch, tmp_path)
         agent.rebuild_agent_config()
@@ -1303,11 +1305,11 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
         # memo say the generation is projected.
         unreadable["value"] = False
         agent.reproject_for_ceiling_change()
-        assert agent._projected_ceiling_generation == governance_generation()
+        assert agent._projected_ceiling_generation == governance_answer_generation()
         assert retired not in json.loads(pipeline.read_text(encoding="utf-8"))["allowedTools"]
         # And a boot whose rebuild held nothing seeds the baseline as before.
         agent.prime_ceiling_projection()
-        assert agent._projected_ceiling_generation == governance_generation()
+        assert agent._projected_ceiling_generation == governance_answer_generation()
 
     def test_a_spec_held_at_boot_is_rewritten_by_the_maintenance_wake_without_a_poll(
         self,

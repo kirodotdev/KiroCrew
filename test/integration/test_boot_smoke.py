@@ -428,6 +428,9 @@ _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # itself (``_built_consent``) does not change here.
     ("kiro_crew.metrics.provider", "_check_in_flight"): "clock-driven recheck",
     ("kiro_crew.metrics.provider", "_consent_checked_at"): "clock",
+    # The governance answer generation the last agent-config rebuild read: a value of
+    # the two counters around it, not home state.
+    ("kiro_crew.agent", "_rebuild_answer_generation"): "counter",
     ("kiro_crew.platform.context", "_GOVERNANCE_GENERATION"): "counter",
     ("kiro_crew.platform.governance_profiles", "_PROFILE_GENERATION"): "counter",
     # Host facts re-probed on their own TTL or backoff: the user login session

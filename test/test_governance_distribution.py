@@ -3070,6 +3070,9 @@ class TestAllowedToolsIsReDerivedWhenTheCeilingTightens:
         from kiro_crew import agent as agent_mod
 
         monkeypatch.setattr(agent_mod, "_conductor_spec_held", False, raising=False)
+        # Nor may an earlier test's rebuild answer seed the baseline these tests pin.
+        monkeypatch.setattr(agent_mod, "_rebuild_answer_generation", None, raising=False)
+        monkeypatch.setattr(agent_mod, "_rebuild_incomplete", False, raising=False)
 
     @staticmethod
     def _hook(monkeypatch):

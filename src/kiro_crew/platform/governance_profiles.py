@@ -424,6 +424,16 @@ def poll_profiles_fresh() -> None:
         logger.debug("profile freshness poll failed; serving last token", exc_info=True)
 
 
+def profile_store_loaded() -> bool:
+    """Whether the profile store has published a snapshot read from the directory.
+
+    PURE READ, no filesystem access. False only before the first load, while the store
+    still holds its never-loaded snapshot: no caller has consulted the profiles yet, so
+    nothing derived so far depends on their content.
+    """
+    return _STORE.snapshot().loaded
+
+
 def governance_answer_generation() -> int:
     """One opaque token covering BOTH layers that can change a governance answer.
 

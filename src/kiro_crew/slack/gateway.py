@@ -693,6 +693,12 @@ class _DmDispatchAdapter:
 # active slots) — the marker is best-effort, the slot save is not.
 _MARKER_WRITE_WAIT_SECS = 5.0
 
+# How often the gateway re-stats the governance profiles directory and re-derives
+# the on-disk auto-approvals when a saved profile has moved the governance answer.
+# Bounds how long a profile that withdraws an auto-approved tool can be bypassed by
+# a newly started session; an unchanged tick costs a directory stat.
+_PROFILE_PROJECTION_POLL_S = 15.0
+
 
 # Slack Block Kit section.text hard limit is 3000 chars.
 # We split cron output at this boundary so each chunk fits in a section block.
@@ -1082,6 +1088,9 @@ class GatewayOrchestrator:
         # installed. Cancelled on shutdown so stalled network or installer work
         # cannot hold the process open.
         self._update_check_task: "asyncio.Task[None] | None" = None
+        # Periodic governance-profile re-projection; cancelled at shutdown beside the
+        # distribution refresher, so no rebuild starts into a closing gateway.
+        self._profile_watch_task: "asyncio.Task[None] | None" = None
         self._update_apply_deferred = False
         self._pending_update_respawn: Callable[[], str] | None = None
         # Whether the pending restart serves a policy floor, and its target key:
@@ -11202,6 +11211,14 @@ class GatewayOrchestrator:
             replay.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 await asyncio.wait_for(replay, timeout=1.0)
+        # Stop the governance profile watch for the same reason the refresher below is
+        # stopped: no re-projection may start into a closing gateway. A rebuild already
+        # running in its worker thread finishes on its own; this only stops new ones.
+        profile_watch = self._profile_watch_task
+        if profile_watch is not None and not profile_watch.done():
+            profile_watch.cancel()
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                await asyncio.wait_for(profile_watch, timeout=1.0)
         # Stop polling the central policy source, so a fetch in flight cannot
         # install a ceiling into a context the rest of this teardown is dismantling.
         # The join budget is deliberately small: the thread waits on an Event, so
@@ -13539,6 +13556,34 @@ class GatewayOrchestrator:
         # ``_test_mode`` skips it so the offline E2E gate never makes an outbound
         # request.
         if not self._test_mode:
+            # A governance profile is saved by editing a file under the profiles
+            # directory, which no distribution poll observes, and a host with no
+            # distribution source runs no poll at all. This watch re-stats that
+            # directory off the loop and re-derives the on-disk auto-approvals when the
+            # combined ceiling + profile answer has moved; on every other tick it is a
+            # directory stat and an integer compare. Sleeps first, so boot does no extra
+            # work, and starts in its own block, so a failure seeding the baseline or
+            # starting the refresher below does not take the watch down with it.
+            try:
+                from kiro_crew.agent import reproject_for_profile_change
+
+                async def _watch_profile_projection() -> None:
+                    while True:
+                        await asyncio.sleep(_PROFILE_PROJECTION_POLL_S)
+                        try:
+                            await asyncio.to_thread(reproject_for_profile_change)
+                        except Exception:
+                            logger.warning(
+                                "governance profile re-projection failed; the profile "
+                                "watch retries it after its raise backoff",
+                                exc_info=True,
+                            )
+
+                self._profile_watch_task = asyncio.create_task(
+                    _watch_profile_projection(), name="governance-profile-projection"
+                )
+            except Exception:
+                logger.warning("the governance profile watch did not start", exc_info=True)
             with contextlib.suppress(Exception):
                 from kiro_crew.agent import (
                     prime_ceiling_projection,
@@ -13565,8 +13610,9 @@ class GatewayOrchestrator:
                 # Seeded BEFORE the poller starts: the first poll can itself install a new
                 # ceiling, and a baseline taken on the hook's first call would record that
                 # generation and skip the rebuild it needed.
-                prime_ceiling_projection()
+                await asyncio.to_thread(prime_ceiling_projection)
                 register_post_install_hook(reproject_for_ceiling_change)
+
                 await asyncio.to_thread(start_refresher)
 
         # ── Hosted feature-video clips ──
