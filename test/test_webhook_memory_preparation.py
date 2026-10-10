@@ -23,11 +23,13 @@ SESSION_KEY = "hook:default:1791000000"
 
 
 @pytest.fixture(autouse=True)
-def _pin_home(tmp_path, monkeypatch):
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
-    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-    monkeypatch.setattr("kiro_crew.webhooks.config_dir", lambda: tmp_path)
+def _pin_home(tmp_path, _floor_monkeypatch):
+    # The isolation floor's own patch stack, so a test body's ``monkeypatch``
+    # is undone independently of these pins.
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    _floor_monkeypatch.setattr("kiro_crew.webhooks.config_dir", lambda: tmp_path)
 
 
 @pytest.fixture
@@ -98,14 +100,29 @@ def _hook_capacity_is_balanced():
 async def test_a_hook_accepted_before_memory_is_ready_runs_once_it_is(
     tmp_path, monkeypatch, closed_barrier
 ):
+    from kiro_crew.dashboard.handlers import hooks
+
     state, sent_to_model = _hook_state(tmp_path, monkeypatch)
+    waiting = asyncio.Event()
+    prepared = asyncio.Event()
+    real_wait = hooks.wait_for_memory_preparation
+
+    async def observed_wait(task) -> None:
+        waiting.set()  # the hook turn is now waiting for memory preparation
+        await real_wait(task)
+
+    monkeypatch.setattr(hooks, "wait_for_memory_preparation", observed_wait)
 
     async def prepare() -> None:
-        await asyncio.sleep(0.2)
+        await prepared.wait()
         assert closed_barrier.complete()
 
     state.memory_startup_task = asyncio.create_task(prepare())
-    await _run(state)
+    run = asyncio.create_task(_run(state))
+    await asyncio.wait_for(waiting.wait(), 5)
+    assert sent_to_model == []  # nothing reaches the model while memory is preparing
+    prepared.set()
+    await asyncio.wait_for(run, 20)
 
     assert sent_to_model == ["deploy finished"]
     assert "internal failure" not in _notified(state)
