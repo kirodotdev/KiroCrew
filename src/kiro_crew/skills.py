@@ -1245,15 +1245,22 @@ def _iter_skill_files(
 
 
 # Skills RELOCATED into the kirocrew-dev/ folder (the Kiro Crew development
-# suite). Without this, an upgraded install keeps BOTH the old flat copy
-# and the new nested copy — two divergent copies of the same skill matched
-# nondeterministically by trigger overlap. The flat copy is NOT deleted (it
+# suite), and skills SUPERSEDED by a replacement shipping under another name.
+# Without this, an upgraded install keeps BOTH the old copy
+# and the new one — two divergent copies of the same skill matched
+# nondeterministically by trigger overlap. The old copy is NOT deleted (it
 # may carry user edits
 # the mtime-preserving sync deliberately protects): its SKILL.md is renamed
 # to SKILL.md.pre-relocation, which removes it from loader discovery while
 # preserving every byte on disk for the user to reconcile. Only done when
-# the nested replacement is verifiably present, so a failed/partial sync
+# the replacement is verifiably present, so a failed/partial sync
 # never disables the only copy.
+#
+# Nesting is incidental: the table also carries a pure rename. What an entry
+# asserts is that the body to load for this name ships under the other name,
+# which makes it the one in-product way to retire a builtin skill without
+# shipping a tombstone — the stale sweep in ``_ensure_builtin_skills`` keys off
+# a hard-coded name set, so a name absent from the package is never swept.
 #
 # Module level so the packaging guard in test/test_builtin_skill_packaging.py
 # can assert every destination actually ships: a destination the package never
@@ -1265,6 +1272,18 @@ _RELOCATED_SKILLS: dict[str, str] = {
     "kirocrew-dev/prepare-pr": "kirocrew-dev/kirocrew-prepare-pr",
     "babysit": "kirocrew-dev/babysit",
     "kirocrew-worktree-dev": "kirocrew-dev/kirocrew-worktree-dev",
+    # Superseded rather than moved: ``dashboard`` carries a template-picker
+    # flow -- search a catalog, preview a ``template_id``, apply -- over a
+    # catalog the product does not serve, and instructs the agent that it
+    # cannot compose a page itself. ``dashboard-manager`` is the body that
+    # answers the same requests, so an install loading ``dashboard`` refuses
+    # work it can do.
+    #
+    # The entry is what retires it. Removing the packaged directory does not:
+    # the sweep below tests membership of a literal name set, so a directory
+    # already installed under a name the package stops shipping stays, and
+    # keeps being discovered, for the life of the install.
+    "dashboard": "dashboard-manager",
 }
 
 
