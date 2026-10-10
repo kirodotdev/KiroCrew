@@ -872,6 +872,146 @@ async def test_the_rebuild_route_rebuilds_the_callers_own_board_from_real_units(
     assert item is not None and item.title == "item one"
 
 
+@pytest.mark.asyncio
+async def test_an_auto_retired_board_rebuilds_clean_from_the_crew_log(monkeypatch):
+    """The crux of the generation archive: a board archived at the stored bound must
+    still rebuild from the crew log, NOT latch ``crew_log_incomplete``.
+
+    A purge creates the stuck state -- it drops the cached board but cannot take the
+    old board's entries out of the append-only log, so the fold answers with the dead
+    board while the cache holds the live one and the rebuild refuses to protect the
+    live one. An archive does not: it renames the old generation's directory aside
+    (its entries stay in the log, but under a different slot) and opens a fresh board;
+    the next create after the archive is a conductor entry stamped with the NEW
+    generation, which the work fold's ``_work_step`` sees and resets the board on, so
+    the fold crosses to the new generation with the cache. This drives a real crew log
+    to the bound through the routes (each create a real ``work/recorded`` entry
+    carrying the generation), closes every item so the board is archiveable, trips the
+    archive with one more create, then rebuilds and asserts the rebuild SUCCEEDS and
+    reproduces the fresh board, not the old one.
+    """
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 3)
+    # A real unit for the conductor, and the resolver pointed at it, so each route
+    # write appends a real ``work/recorded`` entry (unmocked ``on_work_recorded``).
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    _unit = "u-auto-retire"
+    CrewLog.create(lg.KIND_SESSION, _unit, owner="raymond", agent="kirocrew", slot=CONDUCTOR)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: _unit)
+
+    # A GOAL-FREE queue board: a board running a goal is refused at the bound, not
+    # retired, so the rotation under test is exercised with no goal recorded.
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        status, body = await _record(
+            CONDUCTOR, {"action": "create", "title": f"t{index}", "acceptance": ACCEPTANCE}
+        )
+        assert status == 200, body
+        status, body = await _record(
+            CONDUCTOR, {"action": "close", "item_id": body["item"]["item_id"], "state": "accepted"}
+        )
+        assert status == 200, body
+
+    old_generation = wl.read_conductor(CONDUCTOR).generation
+    assert old_generation
+
+    # One more create: the board is full and every item is terminal, so it is
+    # archived aside and this create lands on the fresh board.
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "fresh", "acceptance": ACCEPTANCE}
+    )
+    assert status == 200, body
+    fresh_item = body["item"]["item_id"]
+    new_generation = wl.read_conductor(CONDUCTOR).generation
+    assert new_generation and new_generation != old_generation
+
+    # The fresh board's cache holds only the fresh item.
+    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [fresh_item]
+
+    # THE CRUX: the rebuild succeeds -- it does not refuse crew_log_incomplete --
+    # and reproduces the fresh board (the fresh item), not the old generation's.
+    status, body = await _rebuild(CONDUCTOR)
+    assert status == 200, body
+    assert body["ok"] is True
+    header = wl.read_conductor(CONDUCTOR)
+    assert header is not None and header.generation == new_generation
+    assert [item.item_id for item in wl.list_work_items(CONDUCTOR)] == [fresh_item]
+
+
+@pytest.mark.asyncio
+async def test_a_full_board_with_an_open_item_is_not_retired_through_the_routes(monkeypatch):
+    """The route path refuses a full board that still holds live work, pointing at
+    closing the open items rather than at the sweep (which would decline it)."""
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 3)
+    monkeypatch.setattr(wl, "MAX_ITEMS_PER_CONDUCTOR", 99)
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    _unit = "u-open-no-retire"
+    CrewLog.create(lg.KIND_SESSION, _unit, owner="raymond", agent="kirocrew", slot=CONDUCTOR)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: _unit)
+
+    # Goal-free, so the OPEN-item branch is what refuses (a goal board is refused by
+    # the goal rule first, with a different message).
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        status, body = await _record(
+            CONDUCTOR, {"action": "create", "title": f"t{index}", "acceptance": ACCEPTANCE}
+        )
+        assert status == 200, body
+        if index < wl.MAX_STORED_ITEMS_PER_CONDUCTOR - 1:
+            status, body = await _record(
+                CONDUCTOR,
+                {"action": "close", "item_id": body["item"]["item_id"], "state": "accepted"},
+            )
+            assert status == 200, body
+
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "one too many", "acceptance": ACCEPTANCE}
+    )
+    assert status in (400, 409), body
+    assert body["code"] == "item_store_full"
+    assert "still open" in body["error"]
+    assert "ledger-sweep" not in body["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_full_board_running_a_goal_is_not_retired_through_the_routes(monkeypatch):
+    """The route path refuses a full board that is running a goal, pointing at a fresh
+    conductor rather than silently resetting the goal's spend ceiling."""
+    monkeypatch.setattr(routes.crew_log_emit, "enabled", lambda: True)
+    monkeypatch.setattr(wl, "MAX_STORED_ITEMS_PER_CONDUCTOR", 3)
+    monkeypatch.setattr(wl, "DEFAULT_GOAL_ITEM_CAP", 99)  # keep the goal's own cap out of the way
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import CrewLog
+
+    _unit = "u-goal-no-retire"
+    CrewLog.create(lg.KIND_SESSION, _unit, owner="raymond", agent="kirocrew", slot=CONDUCTOR)
+    monkeypatch.setattr(routes, "unit_for_session_key", lambda sessions, key: _unit)
+
+    status, body = await _record(CONDUCTOR, {"action": "goal", "goal": "ship it", "round": 1})
+    assert status == 200, body
+    for index in range(wl.MAX_STORED_ITEMS_PER_CONDUCTOR):
+        status, body = await _record(
+            CONDUCTOR, {"action": "create", "title": f"t{index}", "acceptance": ACCEPTANCE}
+        )
+        assert status == 200, body
+        status, body = await _record(
+            CONDUCTOR, {"action": "close", "item_id": body["item"]["item_id"], "state": "accepted"}
+        )
+        assert status == 200, body
+
+    status, body = await _record(
+        CONDUCTOR, {"action": "create", "title": "one too many", "acceptance": ACCEPTANCE}
+    )
+    assert status in (400, 409), body
+    assert body["code"] == "item_store_full"
+    assert "goal" in body["error"]
+    assert "fresh conductor" in body["error"]
+    assert "ledger-sweep" not in body["error"]
+
+
 # -- the record is refused before the commit, and answered for after it -------
 
 
