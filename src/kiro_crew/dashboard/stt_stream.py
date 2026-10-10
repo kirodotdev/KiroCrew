@@ -1632,14 +1632,15 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             await _close_and_end_audit(ws, caller, outcome="error")
             return ws
 
-        # An EXPLICIT claim by the cap itself, the same discipline as the other two
-        # branches, and NOT `deadline_task.done()`. Inferring from task state is racy
-        # here: the cap ends the read loop between frames and may still be
-        # unwinding when the `finally` runs, so its `done()` can read False. A capped
-        # session would then be audited as a clean stop, which on the one metered
-        # provider is the distinction an operator most needs. Claimed before any
-        # awaiting work, so it cannot be missed.
-        capped = False
+        # An EXPLICIT claim, the same discipline as the other two branches, and NOT
+        # a task's `done()`. Inferring from task state is racy here: the cap ends the
+        # read loop between frames and the result-stream watcher by closing the
+        # socket, and either may still be unwinding when the `finally` runs, so its
+        # `done()` can read False. A capped session would then be audited as a clean
+        # stop, which on the one metered provider is the distinction an operator
+        # most needs. Claimed before any awaiting work, so it cannot be missed, and
+        # only the first claimant acts.
+        fatal_outcome: str | None = None
 
         # Enforce the bill-cap with a dedicated task, not an in-loop check.
         # `async for msg in ws` only yields on client data; aiohttp handles
@@ -1651,13 +1652,17 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         reader_cancelled_by_cap = False
 
         async def _enforce_deadline() -> None:
-            nonlocal capped, reader_cancelled_by_cap
+            nonlocal fatal_outcome, reader_cancelled_by_cap
             await asyncio.sleep(_MAX_STREAM_DURATION_SECS)
             # A reader that already returned means a client `stop` owns the
             # teardown: a clean stop must not be re-labelled as the cap.
-            if ws.closed or (read_task is not None and read_task.done()):
+            if (
+                fatal_outcome is not None
+                or ws.closed
+                or (read_task is not None and read_task.done())
+            ):
                 return
-            capped = True
+            fatal_outcome = "timeout"
             # A server-initiated stop: end the read loop between frames so the
             # teardown ends the input stream and drains the trailing final to the
             # OPEN socket, then sends the cap's frame and closes. Closing here
@@ -1703,6 +1708,30 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 elif msg.type in (WSMsgType.CLOSE, WSMsgType.ERROR):
                     return
 
+        # Transcribe ends the result stream on its own when it refuses an audio
+        # event (a signature mismatch, 15 s without audio). The read loop would keep
+        # forwarding audio to it with the client still showing it is listening, so
+        # the session ends here. An exception's cause is logged by the drain below.
+        async def _watch_results(task: "asyncio.Task[Any]") -> None:
+            nonlocal fatal_outcome
+            try:
+                await asyncio.shield(task)
+            except Exception:
+                pass
+            if fatal_outcome is not None or ws.closed:
+                return
+            fatal_outcome = "error"
+            logger.warning("Amazon Transcribe ended the stream before the client stopped")
+            await _send_error(ws, "transcription stream ended", _CODE_SESSION_FAILED)
+            # Closing ends the read loop. Tolerated for the same reason `_send_error`
+            # tolerates a failed send: ws.close() can raise on a broken transport,
+            # and an unhandled exception here would surface as "Task exception was
+            # never retrieved".
+            try:
+                await ws.close()
+            except Exception:
+                pass
+
         # Wrap `send_json(ready)` + task creation in the cleanup `try`.
         # If any of these lines raises (most plausibly a client disconnect
         # during Transcribe cold-start), the finally must still run
@@ -1710,6 +1739,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
         # silently bills and counts against the concurrent-stream quota.
         handler_task = None
         deadline_task = None
+        watch_task = None
         read_task: asyncio.Task[None] | None = None
         # Build the endpointer once, before the try, so it is always bound in the
         # finally (a raise before assignment would otherwise NameError there).
@@ -1720,6 +1750,7 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
             handler = _make_handler(ws, endpointer)(stream.output_stream)
             handler_task = asyncio.create_task(handler.handle_events())
             deadline_task = asyncio.create_task(_enforce_deadline())
+            watch_task = asyncio.create_task(_watch_results(handler_task))
 
             read_task = asyncio.create_task(_read_audio())
             try:
@@ -1730,12 +1761,15 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 if not reader_cancelled_by_cap:
                     raise
         finally:
-            # Cancel first among the cleanup steps: it is the one thing that can still
-            # touch the socket, and leaving it live past cleanup would close a socket
-            # the next request may already own. Whether it FIRED is `capped`, claimed
-            # by the task itself.
+            # Cancel first among the cleanup steps: they are the only things that can
+            # still touch the socket, and leaving them live past cleanup would close a
+            # socket the next request may already own. The watcher also goes before
+            # `end_stream()`, whose normal completion of the result stream is not an
+            # early end. Whether either FIRED is `fatal_outcome`, claimed by the task.
             if deadline_task is not None:
                 deadline_task.cancel()
+            if watch_task is not None:
+                watch_task.cancel()
             try:
                 await stream.input_stream.end_stream()
             except Exception:
@@ -1775,14 +1809,14 @@ async def api_ws_stt(request: web.Request) -> web.WebSocketResponse:
                 await endpointer.aclose()
             # The cap's own frame goes out AFTER the trailing final the handler
             # drain just delivered, and before the audit and the close.
-            if capped and not ws.closed:
+            if fatal_outcome == "timeout" and not ws.closed:
                 await _send_error(ws, "max stream duration exceeded", _CODE_MAX_DURATION)
             # Audit BEFORE the close, for the reason documented on
             # _close_and_end_audit: ws.close() awaits the peer's close ack under
             # its own timeout, so a client that already went away would otherwise
             # hold stt_stream_end back for up to that long. The close is still
             # awaited right after, and still tolerates a broken transport.
-            _emit_end_audit(caller, outcome="timeout" if capped else "ok")
+            _emit_end_audit(caller, outcome=fatal_outcome or "ok")
             if not ws.closed:
                 try:
                     await ws.close()

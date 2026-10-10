@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
-from aiohttp import web
+from aiohttp import WSMsgType, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import stt
@@ -58,6 +58,15 @@ async def _wait_for_operation(calls: list[dict], operation: str) -> None:
             f"{operation!r} audit never emitted within {_AUDIT_WAIT_TIMEOUT_SECS}s; "
             f"got {[c['operation'] for c in calls]}"
         ) from None
+
+
+async def _bounded(awaitable):
+    """Await a client-side websocket read, failing by name instead of hanging.
+
+    A regression that leaves the server silent would otherwise park the test until
+    the 300 s duration cap, past the suite's per-test timeout, and lose the worker.
+    """
+    return await asyncio.wait_for(awaitable, _AUDIT_WAIT_TIMEOUT_SECS)
 
 
 def _make_app() -> web.Application:
@@ -791,7 +800,9 @@ class TestStreamLifecycle:
         # Stub Transcribe client.
         input_stream = MagicMock()
         input_stream.send_audio_event = AsyncMock()
-        input_stream.end_stream = AsyncMock()
+        # The real result stream ends only once the input stream is ended.
+        results_ended = asyncio.Event()
+        input_stream.end_stream = AsyncMock(side_effect=results_ended.set)
         stream = MagicMock()
         stream.input_stream = input_stream
         stream.output_stream = MagicMock()
@@ -808,17 +819,18 @@ class TestStreamLifecycle:
             lambda **kw: client,
         )
 
-        # Stub handler so handle_events exits quickly.
         original_init = TranscriptResultStreamHandler.__init__
         monkeypatch.setattr(
             TranscriptResultStreamHandler,
             "__init__",
             lambda self, output_stream: original_init(self, output_stream),
         )
+
+        async def _results_until_end_stream(self) -> None:
+            await results_ended.wait()
+
         monkeypatch.setattr(
-            TranscriptResultStreamHandler,
-            "handle_events",
-            AsyncMock(return_value=None),
+            TranscriptResultStreamHandler, "handle_events", _results_until_end_stream
         )
         return client, input_stream
 
@@ -1197,22 +1209,123 @@ class TestStreamLifecycle:
         input_stream.end_stream.assert_awaited()
 
     @pytest.mark.asyncio
-    async def test_handler_task_exception_does_not_crash(self, monkeypatch):
-        """handle_events() raising must be logged, not propagated."""
+    @pytest.mark.parametrize(
+        "ending", [RuntimeError("signature mismatch"), None], ids=["raises", "returns"]
+    )
+    async def test_a_result_stream_that_ends_early_ends_the_session(
+        self, monkeypatch, caplog, ending
+    ):
+        """Transcribe ending its result stream mid-dictation must reach the client.
+
+        Without the frame and the close, the read loop keeps forwarding audio to a
+        dead stream and the dashboard keeps showing it is listening. The
+        failure itself is logged at teardown, not propagated.
+        """
         from amazon_transcribe.handlers import TranscriptResultStreamHandler
 
         _, input_stream = self._install_stubs(monkeypatch)
-        monkeypatch.setattr(
-            TranscriptResultStreamHandler,
-            "handle_events",
-            AsyncMock(side_effect=RuntimeError("connection lost")),
-        )
+
+        async def _ended(self) -> None:
+            if ending is not None:
+                raise ending
+
+        monkeypatch.setattr(TranscriptResultStreamHandler, "handle_events", _ended)
+        calls: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_api_access = lambda **kw: calls.append(kw)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.stt_stream"):
+            async with TestClient(TestServer(_make_app())) as client:
+                ws = await client.ws_connect("/api/ws/stt")
+                assert (await _bounded(ws.receive_json()))["type"] == "ready"
+                assert (await _bounded(ws.receive_json())) == {
+                    "type": "error",
+                    "message": "transcription stream ended",
+                    "code": "stt_session_failed",
+                }
+                assert (await _bounded(ws.receive())).type == WSMsgType.CLOSE
+                await ws.close()
+            await _wait_for_operation(calls, "stt_stream_end")
+        end = next(c for c in calls if c["operation"] == "stt_stream_end")
+        assert end["outcome"] == "error"
+        input_stream.end_stream.assert_awaited()
+        assert "ended the stream before the client stopped" in caplog.text
+        assert ("Transcribe handler task failed" in caplog.text) is (ending is not None)
+
+    @pytest.mark.asyncio
+    async def test_a_cap_landing_during_an_early_end_sends_no_second_frame(self, monkeypatch):
+        """The first cause to claim the session is the only one the client hears.
+
+        The result stream ends first and its frame is held in flight until the
+        duration cap has run. A cap that ignored the claim would see the socket
+        still open, send a contradictory frame and relabel the audit.
+        """
+        from amazon_transcribe.handlers import TranscriptResultStreamHandler
+
+        from kiro_crew.dashboard import stt_stream
+
+        self._install_stubs(monkeypatch)
+
+        async def _ended(self) -> None:
+            return None
+
+        monkeypatch.setattr(TranscriptResultStreamHandler, "handle_events", _ended)
+        monkeypatch.setattr(stt_stream, "_MAX_STREAM_DURATION_SECS", 0.05)
+        real_send_error = stt_stream._send_error
+        sent_codes: list[str] = []
+        cap_ran: list[bool] = []
+
+        async def _held_send_error(ws, message, code):
+            sent_codes.append(code)
+            if len(sent_codes) == 1:
+                cap = next(
+                    t
+                    for t in asyncio.all_tasks()
+                    if getattr(t.get_coro(), "__name__", "") == "_enforce_deadline"
+                )
+                await asyncio.wait({cap}, timeout=_AUDIT_WAIT_TIMEOUT_SECS)
+                cap_ran.append(cap.done())
+            await real_send_error(ws, message, code)
+
+        monkeypatch.setattr(stt_stream, "_send_error", _held_send_error)
+        calls: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_api_access = lambda **kw: calls.append(kw)
+        monkeypatch.setattr(stt_stream, "sel", lambda: fake_sel)
         async with TestClient(TestServer(_make_app())) as client:
             ws = await client.ws_connect("/api/ws/stt")
-            assert (await ws.receive_json())["type"] == "ready"
-            await ws.send_str('{"type":"stop"}')
+            assert (await _bounded(ws.receive_json()))["type"] == "ready"
+            assert (await _bounded(ws.receive_json()))["code"] == "stt_session_failed"
+            assert (await _bounded(ws.receive())).type == WSMsgType.CLOSE
             await ws.close()
-        input_stream.end_stream.assert_awaited()
+        await _wait_for_operation(calls, "stt_stream_end")
+        assert cap_ran == [True]
+        assert sent_codes == ["stt_session_failed"]
+        end = next(c for c in calls if c["operation"] == "stt_stream_end")
+        assert end["outcome"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_a_clean_stop_is_not_reported_as_an_early_end(self, monkeypatch):
+        """The result stream also ends after a stop; that end is the normal one."""
+        self._install_stubs(monkeypatch)
+        calls: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_api_access = lambda **kw: calls.append(kw)
+        monkeypatch.setattr("kiro_crew.dashboard.stt_stream.sel", lambda: fake_sel)
+
+        async def _frames_until_close(ws) -> list[object]:
+            return [msg.data async for msg in ws]
+
+        async with TestClient(TestServer(_make_app())) as client:
+            ws = await client.ws_connect("/api/ws/stt")
+            assert (await _bounded(ws.receive_json()))["type"] == "ready"
+            await ws.send_bytes(b"\x00\x01" * 16)
+            await ws.send_str('{"type":"stop"}')
+            frames = await _bounded(_frames_until_close(ws))
+        await _wait_for_operation(calls, "stt_stream_end")
+        assert frames == []
+        end = next(c for c in calls if c["operation"] == "stt_stream_end")
+        assert end["outcome"] == "ok"
 
     @pytest.mark.asyncio
     async def test_max_duration_timeout_closes_stream(self, monkeypatch):
@@ -1667,7 +1780,8 @@ class TestDefensiveGuards:
         # Stub Transcribe happy-path client.
         input_stream = MagicMock()
         input_stream.send_audio_event = AsyncMock()
-        input_stream.end_stream = AsyncMock()
+        results_ended = asyncio.Event()
+        input_stream.end_stream = AsyncMock(side_effect=results_ended.set)
         stream = MagicMock(input_stream=input_stream, output_stream=MagicMock())
         client = MagicMock()
         client.start_stream_transcription = AsyncMock(return_value=stream)
@@ -1675,10 +1789,12 @@ class TestDefensiveGuards:
             "kiro_crew.dashboard.stt_stream.TranscribeStreamingClient",
             lambda **kw: client,
         )
+
+        async def _results_until_end_stream(self) -> None:
+            await results_ended.wait()
+
         monkeypatch.setattr(
-            TranscriptResultStreamHandler,
-            "handle_events",
-            AsyncMock(return_value=None),
+            TranscriptResultStreamHandler, "handle_events", _results_until_end_stream
         )
 
         # Patch WebSocketResponse.close to raise on the cleanup call.

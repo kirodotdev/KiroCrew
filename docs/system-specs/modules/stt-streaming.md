@@ -209,8 +209,11 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
 - `{"type":"endpoint","complete":true}`: the semantic endpointer judged the
   utterance a finished request, so the composer may submit without a keypress.
   Only when `stt.endpointing` is on.
-- `{"type":"error","message":"...","code":"..."}`: a setup failure, a refusal or
-  the cap. The cap is a server-initiated `stop` on all three providers: the
+- `{"type":"error","message":"...","code":"..."}`: a setup failure, a refusal,
+  the cap, or a `transcribe` result stream that Amazon Transcribe ended before the
+  client stopped (`_CODE_SESSION_FAILED`; the read loop would otherwise keep
+  forwarding audio to a dead stream while the dashboard shows it is listening, so
+  this frame goes out and the socket closes). The cap is a server-initiated `stop` on all three providers: the
   deadline ends the read loop without closing, the session finishes the
   utterance in flight and relays its `final` to the still-open socket, then this
   frame goes out with `_CODE_MAX_DURATION`, then the socket closes. How the read
@@ -1163,8 +1166,9 @@ tolerates a broken transport (logged, not raised).
 
 A claimed fatal cause outranks the read loop's own outcome: the loop can exit
 cleanly because the cap ended it (between frames, or by cancelling a reader stuck
-past its grace) or the relay closed the socket under it, and recording that as
-`ok` would report a session that died as a session that finished.
+past its grace), or the relay or the `transcribe` result-stream watcher closed the
+socket under it, and recording that as `ok` would report a session that died as a
+session that finished.
 
 Tests asserting on the audit pair must **wait** for the end event: neither
 receiving the error frame nor exiting the `TestClient` context orders the
