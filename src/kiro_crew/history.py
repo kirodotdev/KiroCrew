@@ -251,6 +251,8 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         # unowned key would be carried forward forever by
         # ``carry_unowned_metadata`` -- the session could never be un-muted.
         "mutes_opened",
+        # Same reason: an unmute of the per-row mute writes no key.
+        "muted",
         "color_index",
         "color_hex",
         "color_theme",

@@ -435,7 +435,7 @@ _SIGNATURES: dict[str, str] = {
     "_restored_mode": "(raw: 'object') -> 'str'",
     "_retain_reasoning_effort_values": "(acp_levels: 'list[str]', *, source: 'str') -> 'list[str]'",
     "_sanitize_open_slot_key": "(raw: 'object') -> 'str | None'",
-    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None, mutes_opened_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, refuse_stale_empty_merge: 'bool' = False) -> 'bool'",
+    "_save_slot_to_history": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, expected_history_key: 'str | None' = None, expected_disk_older_count: 'int | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, pending_mode_slot: '_ChatSlot | None' = None, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None, refuse_stale_empty_merge: 'bool' = False) -> 'bool'",
     "_stable_durable_queue": "(slot: '_ChatSlot') -> 'tuple[list[dict], int]'",
     "_tighten_carried_execution": "(meta_line: 'dict', mode: 'str') -> 'None'",
     "_validate_autocompact_pct": "(raw: 'object') -> 'float | None'",
@@ -457,7 +457,7 @@ _SIGNATURES: dict[str, str] = {
     "restore_recent_sessions": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "restore_recent_sessions_async": "(state: 'DashboardState', window_minutes: 'int' = 30, *, folders_only: 'bool' = False) -> 'int'",
     "save_all_slots_to_history": "(state: 'DashboardState') -> 'None'",
-    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False, mutes_opened_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None) -> 'bool'",
+    "save_slot_off_loop": "(state: 'DashboardState', slot: '_ChatSlot', messages: 'list[dict] | None' = None, *, closed: 'bool' = False, closed_at: 'float | None' = None, force: 'bool' = False, rewrite: 'bool' = False, best_effort: 'bool' = True, expected_history_key: 'str | None' = None, expected_slot_name: 'str | None' = None, rows_only: 'bool' = False, issued_by_the_retraction: 'bool' = False, mutes_opened_override: 'bool | None' = None, muted_override: 'bool | None' = None, after_commit_under_lock: 'Callable[[], None] | None' = None) -> 'bool'",
     "session_transcript_remains": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "session_was_deleted": "(state: 'DashboardState', slot: '_ChatSlot') -> 'bool'",
     "update_reasoning_effort_values": "(acp_levels: 'list[str]') -> 'None'",
@@ -1313,7 +1313,7 @@ _GOLDEN: dict[str, dict] = {
     },
     "empty_window_merge": {
         "file": (
-            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
+            '{"_type": "metadata", "created_at": "2026-01-02T03:04:05", "last_consolidated": 0, "title": "New", "rotation_generation": 4, "other_layer": "kept", "folder_id": "folder-2", "tags": ["a", "b"], "pinned": false, "mutes_opened": false, "muted": false, "mode": "", "artifact": "", "reasoning_effort": "", "color_index": null, "color_hex": "", "color_theme": "", "memory_mode": "persistent", "model": "", "queued_prompts": [], "autocompact_pct": null, "title_low_signal": false, "workspace": "default", "memory_store": "", "agent_kind": "", "project": "", "turn_in_flight_generation": 0, "turn_in_flight_prompt": null, "tab_id": "tab-golden-empty", "closed": true, "closed_at": 1767225600.0, "dismissed_source_links": [], "deferred_notes": []}\n'
         ),
         "ok": True,
     },

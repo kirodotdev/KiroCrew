@@ -37,6 +37,11 @@ interface CloseHold {
   confirmedUntil: number | null
 }
 
+/** The two user-owned mute flags on a slot. */
+export type MuteFlag = 'mutes_opened' | 'muted'
+/** The `slotMuteFlagError` key for one flag on one slot. */
+export const muteFlagErrorKey = (flag: MuteFlag, slotKey: string) => `${flag}:${slotKey}`
+
 interface DashboardState {
   status: StatusData | null
   /** The ad-hoc auto-approve duration this tab last saved in Settings, or
@@ -51,11 +56,12 @@ interface DashboardState {
   slotsGeneration: number
   /** Per-key optimistic/reconciliation pin writes, independent of other slot fields. */
   slotPinGenerations: Record<string, number>
-  /** Per-key last "mute sessions it opens" toggle failure, kept so the menu can
-   *  render it through ErrorNotice even after the kebab closed and reopened.
-   *  Set on the mutation's onError (after the optimistic flip is rolled back),
-   *  cleared when a later toggle for that key succeeds or is retried. */
-  slotMutesOpenedError: Record<string, string>
+  /** Last failed mute toggle, one record for both user-owned mute flags
+   *  (`mutes_opened` and `muted`), keyed by `muteFlagErrorKey(flag, slot)`.
+   *  Kept so the menu can render it through ErrorNotice even after the kebab
+   *  closed and reopened. Set on the mutation's onError (after the optimistic
+   *  flip is rolled back), cleared when a later toggle of that flag starts. */
+  slotMuteFlagError: Record<string, string>
   /** Keys whose close is in flight, awaiting another close's outcome, or just
    *  confirmed. An ordinary in-flight key is held out of `slots`; an awaiting
    *  key also survives `CLOSE_CONFIRMED_GRACE_FRAMES` lists before a WebSocket
@@ -312,7 +318,7 @@ const initialState: DashboardState = {
   slots: [],
   slotsGeneration: 0,
   slotPinGenerations: {},
-  slotMutesOpenedError: {},
+  slotMuteFlagError: {},
   closingSlots: {},
   durablyRemoved: {},
   slotFetchesInFlight: [],
@@ -1248,24 +1254,25 @@ const dashboardSlice = createSlice({
         state.slotPinGenerations[action.payload.key] = (state.slotPinGenerations[action.payload.key] ?? 0) + 1
       })
     },
-    /** Optimistic toggle of the "mute sessions it opens" rule. Unlike
-     *  pin it has no bearing on sidebar ordering, so it needs none of the pin
+    /** Optimistic toggle of a user-owned mute flag: the "mute sessions it
+     *  opens" rule (`mutes_opened`) or the per-row mute (`muted`). Unlike pin
+     *  neither bears on sidebar ordering, so they need none of the pin
      *  batch/order machinery -- just flip the row and let the authoritative
      *  `slot_patch` frame reconcile. */
-    updateSlotMutesOpened(state, action: PayloadAction<{ key: string; mutesOpened: boolean }>) {
-      patchSlotRow(state, action.payload.key, slot => {
-        slot.mutes_opened = action.payload.mutesOpened
+    updateSlotMuteFlag(state, action: PayloadAction<{ key: string; flag: MuteFlag; value: boolean }>) {
+      const { key, flag, value } = action.payload
+      patchSlotRow(state, key, slot => {
+        slot[flag] = value
       })
-      // A fresh attempt supersedes any prior failure for this row; onError
-      // re-sets it if this one also fails.
-      if (state.slotMutesOpenedError) delete state.slotMutesOpenedError[action.payload.key]
+      // A fresh attempt supersedes any prior failure for this flag on this row;
+      // onError re-sets it if this one also fails.
+      if (state.slotMuteFlagError) delete state.slotMuteFlagError[muteFlagErrorKey(flag, key)]
     },
-    /** Record a "mute sessions it opens" toggle failure so the kebab menu can
-     *  render it through ErrorNotice. Set after the optimistic flip has been
-     *  rolled back. */
-    setSlotMutesOpenedError(state, action: PayloadAction<{ key: string; message: string }>) {
-      state.slotMutesOpenedError ??= {}  // partial preloaded state
-      state.slotMutesOpenedError[action.payload.key] = action.payload.message
+    /** Record a mute toggle failure so the kebab menu can render it through
+     *  ErrorNotice. Set after the optimistic flip has been rolled back. */
+    setSlotMuteFlagError(state, action: PayloadAction<{ key: string; flag: MuteFlag; message: string }>) {
+      state.slotMuteFlagError ??= {}  // partial preloaded state
+      state.slotMuteFlagError[muteFlagErrorKey(action.payload.flag, action.payload.key)] = action.payload.message
     },
     triggerRefresh(state) { state.refreshTrigger += 1 },
     /** DUAL PAYLOAD SHAPE — the form IS the semantics. String payload =
@@ -1638,7 +1645,7 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMutesOpened, setSlotMutesOpenedError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
   setDesktopUpdateAvailable, sseSubagentStatus, sseSubagentText, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks } = dashboardSlice.actions
 
 /**

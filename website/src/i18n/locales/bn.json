@@ -8262,7 +8262,11 @@
       "unpin": "পিন সরাও",
       "mute_sessions_it_opens": "এটি যে সেশনগুলি খোলে সেগুলি নীরব করো",
       "unmute_sessions_it_opens": "এটি যে সেশনগুলি খোলে সেগুলি সচল করো",
-      "mute_sessions_it_opens_failed": "মিউট সেটিং পরিবর্তন করা যায়নি"
+      "mute_sessions_it_opens_failed": "মিউট সেটিং পরিবর্তন করা যায়নি",
+      "mute": "এই সেশন নীরব করো",
+      "unmute": "এই সেশনের নীরবতা তুলে নাও",
+      "mute_failed": "এই সেশন নীরব করা যায়নি",
+      "unmute_failed": "এই সেশনের নীরবতা তোলা যায়নি"
     },
     "sessionColorSwatches": {
       "custom_color": "কাস্টম রং",
@@ -12070,7 +12074,8 @@
       "crew_enable": "চালু করো",
       "crew_enable_named": "{{name}} চালু করো",
       "crew_spaces_unavailable": "{{name}} থেকে ফোল্ডার লোড করা যায়নি। এর চ্যাটগুলো ফোল্ডার ছাড়াই দেখানো হচ্ছে।",
-      "crew_enable_failed": "{{name}} চালু করা যায়নি"
+      "crew_enable_failed": "{{name}} চালু করা যায়নি",
+      "muted": "নীরব: কোনো শব্দ, টোস্ট বা ব্যাজ নয়"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

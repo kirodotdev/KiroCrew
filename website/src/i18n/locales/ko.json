@@ -8139,7 +8139,11 @@
       "unpin": "고정 해제",
       "mute_sessions_it_opens": "이 세션이 여는 세션 음소거",
       "unmute_sessions_it_opens": "이 세션이 여는 세션 음소거 해제",
-      "mute_sessions_it_opens_failed": "음소거 설정을 변경하지 못했습니다"
+      "mute_sessions_it_opens_failed": "음소거 설정을 변경하지 못했습니다",
+      "mute": "이 세션 음소거",
+      "unmute": "이 세션 음소거 해제",
+      "mute_failed": "이 세션을 음소거할 수 없습니다",
+      "unmute_failed": "이 세션의 음소거를 해제할 수 없습니다"
     },
     "sessionColorSwatches": {
       "custom_color": "사용자 지정 색상",
@@ -11882,7 +11886,8 @@
       "crew_enable": "사용",
       "crew_enable_named": "{{name}} 사용",
       "crew_spaces_unavailable": "{{name}}의 폴더를 불러올 수 없습니다. 채팅은 폴더 없이 표시됩니다.",
-      "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다"
+      "crew_enable_failed": "{{name}}을(를) 켤 수 없습니다",
+      "muted": "음소거됨: 알림음, 알림, 배지 없음"
     },
     "connectionsPage": {
       "action_failed": "작업에 실패했습니다: {{error}}",

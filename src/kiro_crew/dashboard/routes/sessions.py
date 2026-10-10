@@ -96,6 +96,7 @@ def register(app: web.Application) -> None:
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
     app.router.add_patch("/api/chat/slots/{slot}/mutes-opened", chat.api_chat_slot_mutes_opened)
+    app.router.add_patch("/api/chat/slots/{slot}/muted", chat.api_chat_slot_muted)
     app.router.add_patch("/api/chat/slots/{slot}/todo", chat.api_chat_slot_todo)
     app.router.add_patch("/api/chat/slots/{slot}/mode", chat.api_chat_slot_mode)
     # Message pins

@@ -8262,7 +8262,11 @@
       "unpin": "Entpinnen",
       "mute_sessions_it_opens": "Von dieser Sitzung geöffnete Sitzungen stummschalten",
       "unmute_sessions_it_opens": "Stummschaltung für von dieser Sitzung geöffnete Sitzungen aufheben",
-      "mute_sessions_it_opens_failed": "Stummschaltung konnte nicht geändert werden"
+      "mute_sessions_it_opens_failed": "Stummschaltung konnte nicht geändert werden",
+      "mute": "Diese Sitzung stummschalten",
+      "unmute": "Stummschaltung dieser Sitzung aufheben",
+      "mute_failed": "Diese Sitzung konnte nicht stummgeschaltet werden",
+      "unmute_failed": "Stummschaltung dieser Sitzung konnte nicht aufgehoben werden"
     },
     "sessionColorSwatches": {
       "custom_color": "Benutzerdefinierte Farbe",
@@ -12070,7 +12074,8 @@
       "crew_enable": "Aktivieren",
       "crew_enable_named": "{{name}} aktivieren",
       "crew_spaces_unavailable": "Ordner von {{name}} konnten nicht geladen werden. Die Chats werden ohne sie aufgelistet.",
-      "crew_enable_failed": "{{name}} konnte nicht aktiviert werden"
+      "crew_enable_failed": "{{name}} konnte nicht aktiviert werden",
+      "muted": "Stumm: kein Ton, keine Meldung, kein Badge"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

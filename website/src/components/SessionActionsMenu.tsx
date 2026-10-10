@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff } from 'lucide-react'
+import { Pencil, Circle, Pin, Locate, Link2, Tag as TagIcon, X, ExternalLink, Monitor, Undo2, RotateCw, PanelTop, Sparkles, GitFork, BellOff, Volume2, VolumeX } from 'lucide-react'
 import type { ChatFolder } from '../types'
 import FolderMoveSubmenu from './FolderMoveSubmenu'
 import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
@@ -14,6 +14,7 @@ import SourceLinksSubmenu from './SourceLinksSubmenu'
 import LinkedSurfacesSection from './LinkedSurfacesSection'
 import { DropdownMenuItem, DropdownMenuSeparator } from './ui/dropdown-menu'
 import { ContextMenuItem, ContextMenuSeparator } from './ui/context-menu'
+import { muteFlagErrorKey } from '../store/dashboardSlice'
 import { useAppSelector } from '../store'
 import { selectSlotSubagents } from '../store/chatSlice'
 import { useTagPopover } from '../hooks/useTagPopover'
@@ -132,7 +133,7 @@ export default function SessionActionsMenu({
   const Separator = variant === 'context' ? ContextMenuSeparator : DropdownMenuSeparator
 
   // Generic, surface-agnostic actions — one definition, wired straight to the store.
-  const { toggleRead, togglePin, toggleMutesOpened, copyLink, move, reload, close } = useSessionActions(mode)
+  const { toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close } = useSessionActions(mode)
   // Popped-out window coordination (shared singleton — one channel for all menus).
   const { isPoppedOut, isSelfPopout, open: openPopout, focus: focusPopout, bringBack, returnSelfToMain } = useChatPopouts()
   // This menu also renders INSIDE a popout window (via the header). There the
@@ -151,11 +152,15 @@ export default function SessionActionsMenu({
   const slot = useAppSelector(s => s.dashboard.slots.find(x => x.key === slotKey))
   const isPinned = !!slot?.pinned
   const isMutesOpened = !!slot?.mutes_opened
+  const isMuted = !!slot?.muted
+  // Same store-backed failure notice as the opened-sessions toggle below.
+  const mutedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('muted', slotKey)])
+  const mutedErrorId = React.useId()
   // A persisted mute-toggle failure for THIS row (set after rollback by the
   // mutation's onError). Store-backed so the notice survives the kebab closing
   // and reopening -- the row's state and what the user clicked now disagree,
   // and this is the only place that disagreement is said.
-  const mutesOpenedError = useAppSelector(s => s.dashboard.slotMutesOpenedError?.[slotKey])
+  const mutesOpenedError = useAppSelector(s => s.dashboard.slotMuteFlagError?.[muteFlagErrorKey('mutes_opened', slotKey)])
   const mutesOpenedErrorId = React.useId()
   const isRunning = !!slot?.running
   // The move-to submenu lists chat folders in the order the sidebar draws them.
@@ -206,6 +211,41 @@ export default function SessionActionsMenu({
       <Item key="pin" onSelect={() => togglePin(slotKey)} {...uiLocation('sessions.row-menu.pin')}>
         <Pin size={13} className="shrink-0 text-muted" /> {isPinned ? i18nT('components.sessionActionsMenu.unpin') : i18nT('components.sessionActionsMenu.pin')}
       </Item>,
+      // Per-row mute, keyed to THIS row's slotKey (not the active tab), so a
+      // background session can be silenced while the user works elsewhere.
+      <Item key="mute" onSelect={() => toggleMuted(slotKey)}>
+        {/* A speaker, not the bell: the bell belongs to "Mute sessions this one
+         *  opens" just below, and the two must not read as one control. */}
+        {isMuted
+          ? <Volume2 size={13} className="shrink-0 text-muted" />
+          : <VolumeX size={13} className="shrink-0 text-muted" />}
+        {' '}{isMuted ? i18nT('components.sessionActionsMenu.unmute') : i18nT('components.sessionActionsMenu.mute')}
+      </Item>,
+      mutedError && (
+        <React.Fragment key="mute-error">
+          <div className="max-w-[300px] px-2 py-1.5">
+            <ErrorNotice
+              id={mutedErrorId}
+              variant="inline"
+              className="flex-wrap"
+              title={isMuted
+                // The row has rolled back, so its current state names the
+                // action that failed: still muted means the unmute failed.
+                ? i18nT('components.sessionActionsMenu.unmute_failed')
+                : i18nT('components.sessionActionsMenu.mute_failed')}
+              message={mutedError}
+              messagePlacement="below"
+              testId="session-menu-mute-error"
+            />
+          </div>
+          <ErrorNoticeMenuItem
+            Item={Item}
+            message={mutedError}
+            describedBy={mutedErrorId}
+          />
+          <Separator />
+        </React.Fragment>
+      ),
       <Item key="mute-opened" onSelect={() => toggleMutesOpened(slotKey)}>
         <BellOff size={13} className="shrink-0 text-muted" /> {isMutesOpened ? i18nT('components.sessionActionsMenu.unmute_sessions_it_opens') : i18nT('components.sessionActionsMenu.mute_sessions_it_opens')}
       </Item>,

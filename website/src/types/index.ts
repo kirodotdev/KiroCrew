@@ -1193,6 +1193,12 @@ export interface ChatSlot {
    * muted session still surfaces. Set only by the user (never an agent);
    * durable, so it survives a gateway restart. */
   mutes_opened?: boolean
+  /** The user-owned per-row mute of THIS session, set from its own kebab menu.
+   * When true: no turn-done chime, background-finished toast or unread badge.
+   * A completion that pauses
+   * for the user, a terminal error and a tool-approval prompt still surface.
+   * Durable, like `pinned`. */
+  muted?: boolean
   /** The session tree's parent edge for this slot, attached to every row by
    * `_attach_slot_parents`: `{slot, key}`, or null when this slot has no parent.
    * `slot` is the parent's own citation and `key` names the parent's row IN THIS

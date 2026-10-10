@@ -8262,7 +8262,11 @@
       "unpin": "पिन हटाएँ",
       "mute_sessions_it_opens": "इसके द्वारा खोले गए सत्र म्यूट करो",
       "unmute_sessions_it_opens": "इसके द्वारा खोले गए सत्र अनम्यूट करो",
-      "mute_sessions_it_opens_failed": "म्यूट सेटिंग नहीं बदली जा सकी"
+      "mute_sessions_it_opens_failed": "म्यूट सेटिंग नहीं बदली जा सकी",
+      "mute": "यह सत्र म्यूट करो",
+      "unmute": "यह सत्र अनम्यूट करो",
+      "mute_failed": "यह सत्र म्यूट नहीं हो सका",
+      "unmute_failed": "यह सत्र अनम्यूट नहीं हो सका"
     },
     "sessionColorSwatches": {
       "custom_color": "कस्टम रंग",
@@ -12070,7 +12074,8 @@
       "crew_enable": "चालू करो",
       "crew_enable_named": "{{name}} चालू करो",
       "crew_spaces_unavailable": "{{name}} से फ़ोल्डर लोड नहीं हो सके। इसकी चैट फ़ोल्डर के बिना दिखाई जा रही हैं।",
-      "crew_enable_failed": "{{name}} चालू नहीं हो सका"
+      "crew_enable_failed": "{{name}} चालू नहीं हो सका",
+      "muted": "म्यूट: कोई ध्वनि, सूचना या बैज नहीं"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",

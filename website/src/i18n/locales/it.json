@@ -8385,7 +8385,11 @@
       "unpin": "Non fissare",
       "mute_sessions_it_opens": "Silenzia le sessioni aperte da questa",
       "unmute_sessions_it_opens": "Riattiva le sessioni aperte da questa",
-      "mute_sessions_it_opens_failed": "Impossibile modificare l'impostazione di silenzio"
+      "mute_sessions_it_opens_failed": "Impossibile modificare l'impostazione di silenzio",
+      "mute": "Silenzia questa sessione",
+      "unmute": "Riattiva l'audio di questa sessione",
+      "mute_failed": "Impossibile silenziare questa sessione",
+      "unmute_failed": "Impossibile riattivare l'audio di questa sessione"
     },
     "sessionColorSwatches": {
       "custom_color": "Colore personalizzato",
@@ -12258,7 +12262,8 @@
       "crew_enable": "Attiva",
       "crew_enable_named": "Attiva {{name}}",
       "crew_spaces_unavailable": "Impossibile caricare le cartelle di {{name}}. Le sue chat sono elencate senza di esse.",
-      "crew_enable_failed": "Impossibile attivare {{name}}"
+      "crew_enable_failed": "Impossibile attivare {{name}}",
+      "muted": "Silenziata: niente suono, avviso o badge"
     },
     "connectionsPage": {
       "action_failed": "Azione non riuscita: {{error}}",

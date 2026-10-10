@@ -336,6 +336,7 @@ def merge_empty_window(
     pending_mode_target: _ChatSlot,
     refusal_under_lock: Callable[[dict], str | None] | None = None,
     mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
     after_commit_under_lock: Callable[[], None] | None = None,
     queue_deferred_under_lock: Callable[[dict], bool] | None = None,
 ) -> str | None:
@@ -451,6 +452,7 @@ def merge_empty_window(
             # though the live flag has not flipped yet (the round-1 F1 gap, where
             # this branch ignored the staged value and wrote the stale live flag).
             mutes_opened=mutes_opened_override,
+            muted=muted_override,
         )
         merged_fields.update(cp._metadata_codec.encode(slot, merge=True, folds=folds))
         if queue_deferred_under_lock is not None and queue_deferred_under_lock(meta):
@@ -554,6 +556,7 @@ def build_full_line(
     rewrite: bool,
     rows_only: bool,
     mutes_opened_override: bool | None = None,
+    muted_override: bool | None = None,
 ) -> tuple[dict, str, list[dict], set[str], str | None]:
     """The line a full save writes: ``(line, mode, queue, retired note ids, tab_id)``.
 
@@ -728,6 +731,7 @@ def build_full_line(
             # the same override, so the committed value reaches disk whether a
             # session has a window or not.
             mutes_opened=mutes_opened_override,
+            muted=muted_override,
         ),
     )
     # The drop records this write retires are CONSUMED only after the

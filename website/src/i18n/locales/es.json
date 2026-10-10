@@ -8385,7 +8385,11 @@
       "unpin": "Dejar de fijar",
       "mute_sessions_it_opens": "Silenciar las sesiones que abre esta",
       "unmute_sessions_it_opens": "Reactivar las sesiones que abre esta",
-      "mute_sessions_it_opens_failed": "No se pudo cambiar el ajuste de silencio"
+      "mute_sessions_it_opens_failed": "No se pudo cambiar el ajuste de silencio",
+      "mute": "Silenciar esta sesión",
+      "unmute": "Dejar de silenciar esta sesión",
+      "mute_failed": "No se pudo silenciar esta sesión",
+      "unmute_failed": "No se pudo reactivar el sonido de esta sesión"
     },
     "sessionColorSwatches": {
       "custom_color": "Color personalizado",
@@ -12258,7 +12262,8 @@
       "crew_enable": "Activar",
       "crew_enable_named": "Activar {{name}}",
       "crew_spaces_unavailable": "No se pudieron cargar las carpetas de {{name}}. Sus chats se muestran sin ellas.",
-      "crew_enable_failed": "No se pudo activar {{name}}"
+      "crew_enable_failed": "No se pudo activar {{name}}",
+      "muted": "Silenciada: sin sonido, aviso ni insignia"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
