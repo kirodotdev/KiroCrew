@@ -8,6 +8,8 @@ import { render, screen, fireEvent, act } from '@testing-library/react'
 const mockApi = vi.hoisted(() => ({
   connectionsMint: vi.fn(),
   connectionsMintState: vi.fn(),
+  connectionsMintServer: vi.fn(),
+  connectionsMintServerState: vi.fn(),
   mcpOAuthRelay: vi.fn(),
   mcpProbe: vi.fn(),
 }))
@@ -55,13 +57,42 @@ async function tickPolls(n: number) {
 }
 
 describe('McpRowSignIn', () => {
+  it('signs in to an owner-configured server by its name, never through the provider routes', async () => {
+    mockApi.connectionsMintServer.mockResolvedValue({ ok: true, slug: 'docsServer', state: 'minting', token: 't1' })
+    mockApi.connectionsMintServerState.mockResolvedValue({
+      slug: 'docsServer',
+      state: 'waiting',
+      oauth_url: 'https://docs.example.com/authorize',
+    })
+
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" />)
+
+    fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
+    await flush()
+    expect(mockApi.connectionsMintServer).toHaveBeenCalledWith('docsServer')
+    await tickPolls(1)
+
+    expect(mockApi.connectionsMintServerState).toHaveBeenCalledWith('docsServer')
+    expect(mockApi.connectionsMint).not.toHaveBeenCalled()
+    expect(mockApi.connectionsMintState).not.toHaveBeenCalled()
+    expect(screen.getByRole('link', { name: /Authorize docsServer/ })).toHaveAttribute(
+      'href',
+      'https://docs.example.com/authorize',
+    )
+  })
+
+  it('reads "Sign in again" for a row that already holds a grant', () => {
+    render(<McpRowSignIn target={{ server: 'docsServer' }} serverName="docsServer" again />)
+    expect(screen.getByRole('button', { name: 'Sign in again' })).toBeInTheDocument()
+  })
+
   it('mints, polls, and renders the authorize link once the URL arrives', async () => {
     mockApi.connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 't1' })
     mockApi.connectionsMintState
       .mockResolvedValueOnce({ slug: 'notion', state: 'minting' })
       .mockResolvedValue({ slug: 'notion', state: 'waiting', oauth_url: 'https://mcp.notion.com/authorize' })
 
-    render(<McpRowSignIn slug="notion" serverName="notion" />)
+    render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
 
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await flush()
@@ -81,7 +112,7 @@ describe('McpRowSignIn', () => {
 
   it('shows an inline error with retry when the mint is rejected', async () => {
     mockApi.connectionsMint.mockRejectedValue(new Error('boom'))
-    render(<McpRowSignIn slug="notion" serverName="notion" />)
+    render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
 
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await flush()
@@ -95,7 +126,7 @@ describe('McpRowSignIn', () => {
     mockApi.connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 't1' })
     mockApi.connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'minting' })
 
-    render(<McpRowSignIn slug="notion" serverName="notion" />)
+    render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await flush()
 
@@ -113,7 +144,7 @@ describe('McpRowSignIn', () => {
     const probed = [{ name: 'notion', status: 'ok', tools: [], authChallenge: true, authGrantPresent: true }]
     mockApi.mcpProbe.mockResolvedValue(probed)
 
-    render(<McpRowSignIn slug="notion" serverName="notion" />)
+    render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await tickPolls(1)
 
@@ -130,7 +161,7 @@ describe('McpRowSignIn', () => {
     mockApi.connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 't1' })
     mockApi.connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'failed', reason: 'mint_timeouterror' })
 
-    render(<McpRowSignIn slug="notion" serverName="notion" />)
+    render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
     fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
     await tickPolls(1)
     expect(screen.getByRole('alert')).toHaveTextContent(/Could not start the sign-in/)
@@ -140,7 +171,7 @@ describe('McpRowSignIn', () => {
     async function reachAuthorize() {
       mockApi.connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 't1' })
       mockApi.connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'waiting', oauth_url: 'https://mcp.notion.com/authorize' })
-      render(<McpRowSignIn slug="notion" serverName="notion" />)
+      render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
       fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
       await tickPolls(1)
       screen.getByRole('link', { name: /Authorize notion/ })
@@ -281,7 +312,7 @@ describe('McpRowSignIn', () => {
       const probed = [{ name: 'notion', status: 'ok', tools: [], authChallenge: true, authGrantPresent: true }]
       mockApi.mcpProbe.mockResolvedValue(probed)
 
-      render(<McpRowSignIn slug="notion" serverName="notion" />)
+      render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
       fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
       await tickPolls(1)
       // Authorize link is up.
@@ -301,7 +332,7 @@ describe('McpRowSignIn', () => {
         .mockResolvedValueOnce({ slug: 'notion', state: 'waiting', oauth_url: 'https://mcp.notion.com/authorize' })
         .mockResolvedValue({ slug: 'notion', state: 'failed', reason: 'mint_timeouterror' })
 
-      render(<McpRowSignIn slug="notion" serverName="notion" />)
+      render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
       fireEvent.click(screen.getByRole('button', { name: /Sign in/ }))
       await tickPolls(1)
       expect(screen.getByRole('link', { name: /Authorize notion/ })).toBeInTheDocument()
@@ -318,7 +349,7 @@ describe('McpRowSignIn', () => {
       mockApi.connectionsMint.mockResolvedValue({ ok: true, slug: 'notion', state: 'minting', token: 't1' })
       mockApi.connectionsMintState.mockResolvedValue({ slug: 'notion', state: 'waiting', oauth_url: 'https://mcp.notion.com/authorize' })
 
-      render(<McpRowSignIn slug="notion" serverName="notion" />)
+      render(<McpRowSignIn target={{ slug: 'notion' }} serverName="notion" />)
       // Idle: no caption.
       expect(screen.queryByText(/refresh this row/)).not.toBeInTheDocument()
 

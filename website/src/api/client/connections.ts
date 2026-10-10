@@ -97,6 +97,13 @@ export function createConnectionsEndpoints({ post, put, del, j, jfetch: fetch }:
       post('/api/connections/mint', { slug }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
     connectionsMintState: (slug: string) =>
       fetch(`/api/connections/mint?slug=${encodeURIComponent(slug)}`).then(j) as Promise<ConnectionMintState>,
+    // The same mint for a remote server the owner added outside the registry,
+    // named by its exact mcp.json key. The gateway reads its URL from the owner's
+    // own config, so the body carries only the name.
+    connectionsMintServer: (server: string) =>
+      post('/api/connections/mint', { server }).then(j) as Promise<{ ok: boolean; slug: string; state: string; token: string }>,
+    connectionsMintServerState: (server: string) =>
+      fetch(`/api/connections/mint?server=${encodeURIComponent(server)}`).then(j) as Promise<ConnectionMintState>,
     // Warm every mintable provider's URL in one activation, so a later Connect
     // serves a URL the warm table already holds instead of paying a cold spawn.
     // Deliberately BODYLESS: what is mintable is a fact about the user's registry

@@ -313,6 +313,63 @@ def _requested_provider(slug: str) -> Provider | None:
     return provider
 
 
+def _configured_remote_server(name: object) -> dict[str, Any] | None:
+    """The owner-added remote MCP server ``name`` names, or None.
+
+    A server the owner added outside the Connections registry can be signed in
+    to from the dashboard on the same mint engine. The caller supplies only a
+    name. The URL the mint connects to is read from the main agent spec, which
+    is the entry every session already starts, and it must equal the URL the
+    owner recorded for that name when adding it from the dashboard
+    (:mod:`kiro_crew.connections.owner_servers`). That record lives in the sealed
+    ``config.json``, so a server an agent or a session added, or an owner entry
+    an agent re-pointed, has no matching record and is refused. A name that is
+    also a registry slug is refused so the two paths never share a mint row
+    under different URLs, and a name that ``mcp_server_alias`` would rewrite is
+    refused because the mint matches the engine's challenge by the spec key.
+
+    Returns ``{"slug": name, "mcp_url": url, "entry": entry}`` for a mint, where
+    ``entry`` is a copy of the validated spec entry the mint is pinned to, or
+    None when the name
+    is malformed, unknown, local (no http(s) ``url``), not owner-recorded, or a
+    file it reads is unreadable.
+    """
+    from kiro_crew import agent as _agent
+    from kiro_crew.agent_discovery import _read_agent_spec
+    from kiro_crew.agent_files import AGENT_FILENAME
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.owner_servers import (
+        is_owner_server,
+        is_signable_name,
+        remote_url,
+    )
+
+    if not isinstance(name, str) or not _is_valid_mcp_name(name):
+        return None
+    if not is_signable_name(name):
+        return None
+
+    spec = _read_agent_spec(
+        _agent.kiro_agents_dir_path() / AGENT_FILENAME,
+        operation="connections_mint",
+        source="dashboard",
+    )
+    if not isinstance(spec, dict):
+        return None
+    servers = spec.get("mcpServers")
+    entry = servers.get(name) if isinstance(servers, dict) else None
+    url = remote_url(entry)
+    if url is None or not isinstance(entry, dict):
+        return None
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable record proves nothing; refuse
+        return None
+    if not is_owner_server(config, name, entry):
+        return None
+    return {"slug": name, "mcp_url": url, "entry": dict(entry)}
+
+
 async def _mint_request(
     request: web.Request,
 ) -> tuple[dict, Provider] | web.Response:
@@ -337,6 +394,72 @@ async def _mint_request(
     return body, provider
 
 
+async def _configured_mint_request(
+    request: web.Request,
+) -> dict[str, Any] | web.Response | None:
+    """The configured server a mint body names under ``server``, if it names one.
+
+    None means the body carries no ``server`` field and the registry path
+    applies. A ``server`` that does not resolve to an owner-configured remote
+    server is a 400, never a fall-through to the registry: the caller asked for
+    a specific server and must not be handed a different one.
+    """
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — malformed body is a client error, not a fault
+        return _bad_request("body must be JSON", "invalid_body")
+    if not isinstance(body, dict) or "server" not in body:
+        return None
+    server = await asyncio.to_thread(_configured_remote_server, body.get("server"))
+    if server is None:
+        return _bad_request("unknown server", "unknown_server")
+    return server
+
+
+async def _start_cold_mint(
+    slug: str, mcp_url: str, resource: str, pinned: dict[str, Any] | None = None
+) -> web.Response:
+    """Reserve ``slug``'s mint row, schedule the mint, and answer with its token.
+
+    The one cold-start path for both mint forms. The row is reserved BEFORE
+    responding: the response names a row the caller polls immediately, so the
+    row has to be visible first. Allocating only a token here would leave the
+    previous (possibly terminal) row answering that poll, and the card would
+    read it as the verdict on this attempt. ``resource`` is the SEL label, and
+    ``pinned`` the validated entry an owner-added server mints with. The
+    mint engine is imported here rather than at module scope so the gateway boot
+    path never loads it.
+    """
+    from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
+
+    token, prior = await reserve_mint_row(slug)
+    try:
+        task = asyncio.create_task(
+            start_oauth_mint(slug, mcp_url, token, prior)
+            if pinned is None
+            else start_oauth_mint(slug, mcp_url, token, prior, pinned)
+        )
+    except BaseException:
+        # The flow owns the displaced row once it starts; if it never starts,
+        # nothing else will ever release that row's process and spec.
+        if prior is not None:
+            await _dispose_mint(prior)
+        raise
+    _mint_tasks.add(task)
+    task.add_done_callback(_mint_tasks.discard)
+
+    # A bare enqueue (plus the writer thread's one-time start on the process's
+    # first log()): the construction cost of a process's FIRST sel() is paid once
+    # at gateway startup instead (sel.warm_sel_singleton).
+    sel().log_api_access(
+        caller="dashboard",
+        operation="connections_mint",
+        outcome="started",
+        resources=resource,
+    )
+    return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
+
+
 async def api_connections_mint(request: web.Request) -> web.Response:
     """POST /api/connections/mint — start minting a provider's approval URL.
 
@@ -348,6 +471,16 @@ async def api_connections_mint(request: web.Request) -> web.Response:
     owner_denied = await require_owner_dashboard_request(request, "connections_mint")
     if owner_denied is not None:
         return owner_denied
+    configured = await _configured_mint_request(request)
+    if isinstance(configured, web.Response):
+        return configured
+    if configured is not None:
+        # An owner-configured server has no pre-registered OAuth app to check
+        # and no premint row to adopt, so it goes straight to the cold path.
+        name = configured["slug"]
+        return await _start_cold_mint(
+            name, configured["mcp_url"], f"server:{name}", configured["entry"]
+        )
     parsed = await _mint_request(request)
     if isinstance(parsed, web.Response):
         return parsed
@@ -367,13 +500,11 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         )
 
     # Function-local by DESIGN, not for a cycle: this handlers package is imported
-    # on the gateway boot path, and the mint engine drags in the ACP client, the
-    # credential predicate and the PID registry -- the warm engine adds the ACP
-    # runtime and the MCP inventory on top. Keeping both here is what stops a
-    # gateway start paying for a subsystem most requests never touch, and
+    # on the gateway boot path, and the warm engine drags in the ACP runtime and
+    # the MCP inventory. Keeping it here is what stops a gateway start paying for
+    # a subsystem most requests never touch, and
     # test_the_handlers_package_does_not_import_the_mint_engine (and its warm twin)
     # enforce it in a subprocess -- hoisting either to module scope turns them red.
-    from kiro_crew.connections.mint import _dispose_mint, reserve_mint_row, start_oauth_mint
     from kiro_crew.connections.warm import adopt_shared_mint
 
     # ADOPTION FIRST, because the alternative is throwing the answer away. The premint
@@ -399,32 +530,7 @@ async def api_connections_mint(request: web.Request) -> web.Response:
         # the mint state either way, and that poll now finds it on the first read.
         return web.json_response({"ok": True, "slug": slug, "state": "waiting", "token": adopted})
 
-    # Reserved BEFORE responding: the response names a row this tab polls
-    # immediately, so the row has to be visible first. Allocating only a token here
-    # would leave the previous (possibly terminal) row answering that poll, and the
-    # card would read it as the verdict on this attempt.
-    token, prior = await reserve_mint_row(slug)
-    try:
-        task = asyncio.create_task(start_oauth_mint(slug, str(provider["mcp_url"]), token, prior))
-    except BaseException:
-        # The flow owns the displaced row once it starts; if it never starts,
-        # nothing else will ever release that row's process and spec.
-        if prior is not None:
-            await _dispose_mint(prior)
-        raise
-    _mint_tasks.add(task)
-    task.add_done_callback(_mint_tasks.discard)
-
-    # A bare enqueue (plus the writer thread's one-time start on the process's
-    # first log()): the construction cost of a process's FIRST sel() is paid once
-    # at gateway startup instead (sel.warm_sel_singleton).
-    sel().log_api_access(
-        caller="dashboard",
-        operation="connections_mint",
-        outcome="started",
-        resources=f"provider:{slug}",
-    )
-    return web.json_response({"ok": True, "slug": slug, "state": "minting", "token": token})
+    return await _start_cold_mint(slug, str(provider["mcp_url"]), f"provider:{slug}")
 
 
 async def api_connections_mint_state(request: web.Request) -> web.Response:
@@ -435,7 +541,14 @@ async def api_connections_mint_state(request: web.Request) -> web.Response:
     than as a failure.
     """
     slug = str(request.query.get("slug") or "").strip().lower()
-    if _requested_provider(slug) is None:
+    if "server" in request.query:
+        # An owner-configured server's row is keyed by its exact name; the
+        # registry's lowercase slug rule does not apply to it.
+        server = await asyncio.to_thread(_configured_remote_server, request.query["server"])
+        if server is None:
+            return _bad_request("unknown server", "unknown_server")
+        slug = server["slug"]
+    elif _requested_provider(slug) is None:
         return _bad_request("unknown provider", "unknown_provider")
 
     # Function-local for the same reason as the POST above: the boot path must not

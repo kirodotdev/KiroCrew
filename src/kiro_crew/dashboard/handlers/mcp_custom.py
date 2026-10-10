@@ -342,6 +342,22 @@ def _load_kirocrew_config_strict() -> dict | None:
     return data
 
 
+async def _record_owner_servers(entries: dict[str, dict]) -> None:
+    """Record the owner's remote servers so the dashboard sign-in can reach them.
+
+    Best effort: a failed write leaves the server added and working, just not
+    offered an in-place sign-in, and is logged rather than failing the request.
+    """
+    from kiro_crew.config.loader import update_config_locked
+    from kiro_crew.connections.owner_servers import record
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
+    try:
+        await run_config_write(update_config_locked, mutate=lambda cfg: record(cfg, entries))
+    except Exception:  # noqa: BLE001 -- the add itself already landed
+        logger.warning("could not record owner MCP servers %s", sorted(entries), exc_info=True)
+
+
 async def _rebuild_agent_config() -> None:
     """Best-effort agent-config rebuild so changes load on the next session."""
     try:
@@ -442,6 +458,7 @@ async def api_mcp_custom_add(request: web.Request) -> web.Response:
         # Windows — blocking filesystem work kept off the event loop.
         await _mcp._offload_config_write(_mcp._atomic_write, _mcp._kirocrew_mcp_json(), data)
 
+    await _record_owner_servers(cleaned)
     await _rebuild_agent_config()
 
     added = sorted(cleaned)
@@ -610,6 +627,7 @@ async def api_mcp_custom_update(request: web.Request) -> web.Response:
     if not replaced:
         return web.json_response({"error": f"server '{name}' not found"}, status=404)
 
+    await _record_owner_servers({name: spec})
     await _rebuild_agent_config()
 
     sel().log_api_access(

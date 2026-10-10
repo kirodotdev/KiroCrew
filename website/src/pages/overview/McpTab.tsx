@@ -22,7 +22,7 @@ function isToday(epochSecs: number): boolean {
 }
 import SortableHeader from '../../components/SortableHeader'
 import { connectionProviderForServer } from '../connections/registry'
-import McpRowSignIn from './McpRowSignIn'
+import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
 import { i18nT } from '../../i18n/t'
@@ -318,6 +318,27 @@ function mcpAuthState(s: McpServer): McpAuthState {
   if (s.authGrantPresent === true) return 'signed_in'
   if (s.authGrantPresent === false) return 'sign_in_required'
   return 'unknown'
+}
+
+/**
+ * The in-place sign-in this row can start, or undefined when it can start none.
+ *
+ * A curated provider signs in by its registry slug. Any other remote server
+ * signs in by its exact name only when the gateway reports `ownerSignIn`: the
+ * owner added it from the dashboard at this url. A server an agent, a session
+ * or a hand edit added keeps the chat guidance, and the gateway refuses its
+ * mint regardless. The gateway never sets `ownerSignIn` on a name it would
+ * refuse to mint for, so this check is the whole rule here.
+ */
+function signInTargetFor(
+  s: McpServer,
+  managedProvider: { slug: string } | undefined,
+  connectionsUi: boolean,
+): McpSignInTarget | undefined {
+  if (!connectionsUi) return undefined
+  if (managedProvider) return { slug: managedProvider.slug }
+  if (s.ownerSignIn !== true) return undefined
+  return { server: s.name }
 }
 
 /**
@@ -703,6 +724,7 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
             const base = s.presence || DEFAULT_PRESENCE
             const hasToolOverrides = pendingTools[s.name] && Object.keys(pendingTools[s.name]).length > 0
             const managedProvider = connectionProviderForServer(s)
+            const signInTarget = signInTargetFor(s, managedProvider, connectionsUi)
             // Greyed like a pending uninstall, but not AS a pending uninstall: the
             // row is inert because its config lives elsewhere. The reason is SAID
             // on the row -- one line in the Tools cell naming the file to edit --
@@ -939,28 +961,33 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                            the raw failure over the remedy. */
                         <span className="block text-warn mt-0.5">{i18nT('pages.overview.mcpTab.oauth_not_a_static_token')}</span>
                       )}
+                      {/* A server that advertised OAuth and failed may be holding a grant
+                          that stopped working (expired, revoked, or minted for other
+                          scopes). Signing in again is the remedy the row can offer. */}
+                      {!!s.authChallenge && !s.headers && signInTarget && (
+                        <span className="flex flex-col items-start gap-1 mt-1">
+                          <McpRowSignIn target={signInTarget} serverName={s.name} again />
+                          <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_hint')}</span>
+                        </span>
+                      )}
                     </span>
                   ) : mcpAuthState(s) === 'sign_in_required' ? (
-                    /* Two paths, split on whether the row resolves to a curated
-                       Connections provider (`managedProvider`, computed at row top)
-                       AND the Connections UI is unlocked (`connectionsUi`).
+                    /* Two paths, split on whether the row has a sign-in target
+                       (`signInTarget`, computed at row top): a curated Connections
+                       provider, or a remote server in the owner's own config, AND the
+                       Connections UI is unlocked.
 
-                       RESOLVABLE + FLAG ON: the panel now CAN start the sign-in in
-                       place — it reuses the SAME headless mint engine the Connections
-                       cards drive (mint → poll for the approval URL → authorize →
-                       paste-back relay). Minting is fenced to registry providers
-                       only; arbitrary URLs are never minted (parked maintainer
-                       decision #4286).
+                       WITH A TARGET: the panel starts the sign-in in place on the SAME
+                       headless mint engine the Connections cards drive (mint → poll for
+                       the approval URL → authorize → paste-back relay).
 
-                       EITHER FALSE (non-registry row, OR the gallery still held
-                       behind `connections_ui`): unchanged chat guidance. Nothing the
-                       dashboard can call starts a sign-in for a user-added/self-hosted
-                       server, and while the flag is closed the mint engine is not a
-                       released surface either — so the cell stays a sentence that
-                       routes the user to chat (a link, because navigating IS something
-                       the panel can do) and names the probe step that repaints the row. */
-                    managedProvider && connectionsUi ? (
-                      <McpRowSignIn slug={managedProvider.slug} serverName={s.name} />
+                       WITHOUT ONE (a server the gateway cannot sign in to from here, OR
+                       the gallery held behind `connections_ui`): the cell stays a
+                       sentence that routes the user to chat (a link, because navigating
+                       IS something the panel can do) and names the probe step that
+                       repaints the row. */
+                    signInTarget ? (
+                      <McpRowSignIn target={signInTarget} serverName={s.name} />
                     ) : (
                       <span className="text-warn text-[12px]">
                         <Trans
@@ -969,6 +996,15 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                         />
                       </span>
                     )
+                  ) : mcpAuthState(s) === 'signed_in' && signInTarget && !s.tools?.length ? (
+                    /* A held grant the probe cannot verify. The control checks it
+                       first and asks for consent only when it no longer works, and
+                       the line beside it says so: a bare button on a row that reads
+                       Signed in looks like it would undo the sign-in. */
+                    <div className="flex flex-col items-start gap-1">
+                      <McpRowSignIn target={signInTarget} serverName={s.name} again />
+                      <span className="text-muted text-[12px]">{i18nT('pages.overview.mcpTab.sign_in_again_no_tools_hint')}</span>
+                    </div>
                   ) : s.tools?.length ? (<div>
                     <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
                     <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {

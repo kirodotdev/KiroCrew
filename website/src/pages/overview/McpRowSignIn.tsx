@@ -57,14 +57,15 @@ function relayStrings(): RelayStrings {
 }
 
 /**
- * In-place sign-in for a registry-managed OAuth MCP server, shown in the MCP
- * Servers table when a row resolves to a curated Connections provider AND needs
- * a sign-in. It reuses the SAME headless mint machinery the Connections cards
- * use (`connectionsMint` starts a one-server approval flow, `connectionsMintState`
- * feeds the approval URL) plus the shared paste-back relay for remote gateways.
+ * In-place sign-in for an OAuth MCP server, shown in the MCP Servers table when
+ * a remote row needs a sign-in or its held grant may have stopped working. It
+ * reuses the SAME headless mint machinery the Connections cards use (a mint
+ * starts a one-server approval flow, the mint state feeds the approval URL) plus
+ * the shared paste-back relay for remote gateways.
  *
- * It NEVER mints for arbitrary URLs — the caller gates on `connectionProviderForServer`
- * resolving, which is fenced by parked maintainer decision #4286. It also never
+ * It never mints for a caller-supplied URL: a provider target is bounded by the
+ * registry, and a server target names an entry in the owner's own config, whose
+ * URL the gateway reads itself. It also never
  * claims the server is signed in: the row's status badge stays the single source
  * of truth, so on a successful relay this only invalidates ['mcp-servers'] so the
  * next probe repaints the row.
@@ -75,7 +76,30 @@ function relayStrings(): RelayStrings {
  * component's `error` phase (a real "Try again" control), via `onDeadEnd`,
  * instead of the banner's inline "click X" copy that has no such control here.
  */
-export default function McpRowSignIn({ slug, serverName }: { slug: string; serverName: string }) {
+/** What the row signs in to: a curated Connections provider by its registry
+ *  slug, or a remote server the owner configured, by its exact name. Both run on
+ *  the same mint engine; only the request that names the target differs. */
+export type McpSignInTarget = { slug: string } | { server: string }
+
+function mintFor(target: McpSignInTarget) {
+  return 'slug' in target ? api.connectionsMint(target.slug) : api.connectionsMintServer(target.server)
+}
+
+function mintStateFor(target: McpSignInTarget) {
+  return 'slug' in target ? api.connectionsMintState(target.slug) : api.connectionsMintServerState(target.server)
+}
+
+export default function McpRowSignIn({
+  target,
+  serverName,
+  again = false,
+}: {
+  target: McpSignInTarget
+  serverName: string
+  /** The row already holds a grant: the control reads "Sign in again". The mint
+   *  checks the held grant first and asks for consent only when it does not work. */
+  again?: boolean
+}) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [oauthUrl, setOauthUrl] = useState('')
   const [error, setError] = useState('')
@@ -91,7 +115,7 @@ export default function McpRowSignIn({ slug, serverName }: { slug: string; serve
     setError('')
     setOauthUrl('')
     try {
-      await api.connectionsMint(slug)
+      await mintFor(target)
     } catch {
       if (attemptRef.current !== attempt) return
       setPhase('error')
@@ -105,7 +129,7 @@ export default function McpRowSignIn({ slug, serverName }: { slug: string; serve
       if (attemptRef.current !== attempt) return
       let state
       try {
-        state = await api.connectionsMintState(slug)
+        state = await mintStateFor(target)
       } catch {
         continue
       }
@@ -150,7 +174,7 @@ export default function McpRowSignIn({ slug, serverName }: { slug: string; serve
       if (attemptRef.current !== attempt) return
       let state
       try {
-        state = await api.connectionsMintState(slug)
+        state = await mintStateFor(target)
       } catch {
         continue
       }
@@ -184,10 +208,14 @@ export default function McpRowSignIn({ slug, serverName }: { slug: string; serve
       <button
         type="button"
         onClick={() => void startSignIn()}
-        className="inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] leading-5 font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity"
+        className={
+          again
+            ? 'inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] leading-5 font-semibold border border-border bg-transparent text-text cursor-pointer hover:bg-bg-hover transition-colors'
+            : 'inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[13px] leading-5 font-semibold bg-accent text-accent-fg cursor-pointer hover:opacity-90 transition-opacity'
+        }
       >
         <KeyRound className="lucide-inline" size={13} aria-hidden="true" />
-        {i18nT('pages.overview.mcpTab.sign_in')}
+        {i18nT(again ? 'pages.overview.mcpTab.sign_in_again' : 'pages.overview.mcpTab.sign_in')}
       </button>
     )
   }

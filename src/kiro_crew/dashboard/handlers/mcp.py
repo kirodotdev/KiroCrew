@@ -1238,6 +1238,7 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     # both absent on the surface a user actually lands on.
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
 
     # Decide AND arm the re-probe here, at the very end, all synchronously.
     #
@@ -1397,6 +1398,7 @@ async def api_mcp_probe(request: web.Request) -> web.Response:
     if result:
         await asyncio.to_thread(_record_probe_verdicts, result)
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
     _mcp_probe_cache[:] = result
     _mcp_probe_ts = time.time()
     return web.json_response(result)
@@ -1548,6 +1550,7 @@ async def api_mcp_probe_cached(request: web.Request) -> web.Response:
     # to completion before this handler returns.
     if result:
         await asyncio.to_thread(_annotate_quarantine, result)
+        await asyncio.to_thread(_annotate_owner_sign_in, result)
     # Decided and armed after the last await -- same three constraints as the
     # servers endpoint.
     edited = _edited_since_probe(servers)
@@ -2117,6 +2120,54 @@ async def api_mcp_toggle_all(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "enabled": enabled, "count": len(servers)})
 
 
+def _annotate_owner_sign_in(rows: list[dict]) -> None:
+    """Stamp ``ownerSignIn`` on each row the owner recorded for the dashboard sign-in.
+
+    True only when the row's URL equals the URL recorded for its name in the
+    sealed owner record (:mod:`kiro_crew.connections.owner_servers`). The mint
+    re-checks the same record against the agent spec, so this flag only decides
+    which rows the table offers the control on. Every row with a URL gets an
+    explicit boolean, so a row served from a cache never keeps a stale True. An
+    unreadable record clears any flag already on a row and stamps nothing, which
+    leaves every row on the chat guidance.
+    """
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.owner_servers import is_owner_server, is_signable_name
+
+    for row in rows:
+        if "ownerSignIn" in row:
+            row["ownerSignIn"] = False
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- no record read means no row is offered
+        return
+    for row in rows:
+        name, url = row.get("name"), row.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        row["ownerSignIn"] = (
+            isinstance(name, str)
+            and is_signable_name(name)
+            and is_owner_server(config, name, {"url": url})
+        )
+
+
+async def _forget_owner_servers(names: list[str]) -> None:
+    """Drop the owner sign-in records for servers the owner removed.
+
+    Best effort, like the record on add: the removal already landed, and a stale
+    record only matters if an entry with the same name AND URL comes back.
+    """
+    from kiro_crew.config.loader import update_config_locked
+    from kiro_crew.connections.owner_servers import forget
+    from kiro_crew.dashboard.chat_utils import run_config_write
+
+    try:
+        await run_config_write(update_config_locked, mutate=lambda cfg: forget(cfg, names))
+    except Exception:  # noqa: BLE001 -- the removal itself already landed
+        logger.warning("could not forget owner MCP servers %s", sorted(names), exc_info=True)
+
+
 async def api_mcp_remove(request: web.Request) -> web.Response:
     """POST /api/mcp/remove — uninstall an MCP server.
 
@@ -2196,6 +2247,7 @@ async def api_mcp_remove(request: web.Request) -> web.Response:
                 # refusal it is, like every other write failure in this handler.
                 return _agent_home_not_owned_response(name)
 
+    await _forget_owner_servers([name])
     return web.json_response({"ok": True, "name": name, "removed": removed})
 
 
@@ -3435,6 +3487,7 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                         purged_names.add(name)
                         return _agent_home_not_owned_response(name)
                     purged_names.add(name)
+                    await _forget_owner_servers([name])
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
                     if name in capability_results:

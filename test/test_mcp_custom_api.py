@@ -1226,3 +1226,53 @@ class TestServersListSurfacesCustomAdds:
             assert row["kirocrewManaged"] is True
         finally:
             await client.close()
+
+
+# ---------------------------------------------------------------------------
+# Owner sign-in record: only the owner's dashboard add makes a server eligible
+# ---------------------------------------------------------------------------
+
+
+def _owner_record() -> dict:
+    from kiro_crew.config.loader import read_config_for_update
+
+    return read_config_for_update().get("connections", {}).get("owner_mcp_servers", {})
+
+
+@pytest.mark.asyncio
+class TestOwnerSignInRecord:
+    async def test_a_remote_add_records_the_server_at_its_url(self, sandbox, fake_sel):
+        client = await _client()
+        try:
+            resp = await client.post(
+                "/api/mcp/custom", json={"servers": {"remote": _REMOTE, "weather": _STDIO}}
+            )
+            assert resp.status == 200
+        finally:
+            await client.close()
+        # The local server has no OAuth flow, so only the remote one is recorded.
+        assert _owner_record() == {"remote": {"url": _REMOTE["url"]}}
+
+    async def test_an_owner_edit_rerecords_the_new_url(self, sandbox, fake_sel):
+        client = await _client()
+        try:
+            assert (
+                await client.post("/api/mcp/custom", json={"servers": {"remote": _REMOTE}})
+            ).status == 200
+            moved = {"url": "https://mcp.example.com/v2"}
+            resp = await client.put("/api/mcp/custom/remote", json={"spec": moved})
+            assert resp.status == 200
+        finally:
+            await client.close()
+        assert _owner_record() == {"remote": {"url": "https://mcp.example.com/v2"}}
+
+    async def test_a_server_written_straight_to_the_store_is_never_recorded(
+        self, sandbox, fake_sel
+    ):
+        # What an agent's shell can do: write the store file directly. Nothing
+        # records it, so the gateway never offers or mints its sign-in.
+        sandbox.kirocrew_json.write_text(
+            json.dumps({"mcpServers": {"agentServer": {"url": "https://agent.example.com/mcp"}}}),
+            encoding="utf-8",
+        )
+        assert _owner_record() == {}
