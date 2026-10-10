@@ -55,6 +55,7 @@ from kiro_crew.history import (
     _safe_mtime,
     transcript_sort_key,
 )
+from kiro_crew.history_projection import DISPLAY_ONLY_ROLES
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -100,7 +101,7 @@ def _orphan_target_stem(stem: str) -> str:
     if not stem.startswith(_DASHBOARD_STEM_PREFIX):
         return ""
     while stem.startswith(_DASHBOARD_STEM_PREFIX):
-        stem = stem[len(_DASHBOARD_STEM_PREFIX):]
+        stem = stem[len(_DASHBOARD_STEM_PREFIX) :]
     return stem if is_channel_session_key(stem) else ""
 
 
@@ -198,6 +199,21 @@ def _merged_metadata(channel_meta: dict, orphan_meta: dict) -> dict:
     return meta
 
 
+def _rendered_head(messages: list[dict], offset: int) -> dict | None:
+    """The first message at or after *offset* that a consolidation prompt renders.
+
+    Display-only rows (``DISPLAY_ONLY_ROLES`` -- a ``notice`` such as an
+    AutoNudge) are carried inside a chunk but never sliced, so the character
+    sub-offset describes the first NON-display-only row at or after the marker,
+    not the raw ``messages[offset]``. Returns ``None`` when no rendered row
+    remains, which compares unequal to any dict and so is treated as a move.
+    """
+    for message in messages[offset:]:
+        if message.get("role") not in DISPLAY_ONLY_ROLES:
+            return message
+    return None
+
+
 def _invalidate_consolidation_offset(
     meta: dict, channel_messages: list[dict], merged: list[dict]
 ) -> None:
@@ -222,15 +238,99 @@ def _invalidate_consolidation_offset(
     The generation bump is for a consolidator in ANOTHER process that snapshotted
     its offset before this merge — its own generation check then fires and it
     discards the stale offset instead of writing it back.
+
+    An in-flight sub-offset is the SAME hazard one message deeper, and it bites
+    even when ``last_consolidated`` is 0. ``consolidation_sub_offset`` is a
+    CHARACTER position inside the first unconsolidated message —
+    ``messages[offset]``, the oversized head being extracted a slice at a time
+    (see :func:`history_consolidation._slice_head_for_budget`). The merge sorts
+    chronologically, so an older orphan message lands at or before that index and
+    the message now at ``messages[offset]`` is a DIFFERENT one. Resuming the
+    slice at the retained character position then marks the new head's unread
+    prefix consolidated — the data loss this whole path exists to prevent — and
+    the index-shift test above never catches it at ``offset == 0`` because both
+    ``[:0]`` slices are empty and compare equal. So whenever the message at the
+    marker moved, drop any sub-offset by bumping the generation (which is exactly
+    how ``_sub_offset_for_generation`` and ``advance_consolidation_sub_offset``
+    discard a stale sub-offset).
+
+    The head-moved bump fires on the rendered head moving ALONE — it does not
+    require a sub-offset to be persisted yet. A consolidator in another process
+    can have written its final snapshot (setting ``last_consolidated``) but not
+    yet its first ``consolidation_sub_offset``: gating the bump on an already-live
+    sub-offset would leave the generation it captured unchanged, and its first
+    ``advance_consolidation_sub_offset`` — whose generation guard still matches —
+    would write a character offset into the replacement head it never read. The
+    unconditional bump makes that write's generation guard reject the stale
+    sub-offset, closing the window.
     """
+    generation = meta.get("rotation_generation")
+    gen = generation if isinstance(generation, int) else 0
+
+    def _bump() -> None:
+        meta["rotation_generation"] = gen + 1
+
     offset = meta.get("last_consolidated") or 0
-    if not isinstance(offset, int) or offset <= 0:
+    if not isinstance(offset, int):
+        offset = 0
+
+    # Whether the first ``offset`` messages are unchanged by the merge. A pure
+    # append leaves them untouched, and zeroing then would re-consolidate a
+    # whole conversation for nothing. Computed once because both the sub-offset
+    # branch and the plain index-shift branch below need it.
+    prefix_changed = offset > 0 and merged[:offset] != channel_messages[:offset]
+
+    # The sub-offset is a character position inside the first message the
+    # extraction prompt actually renders -- the first NON-display-only row at or
+    # after the marker, because ``_consolidation_chunk`` carries display-only
+    # rows (a ``notice`` such as an AutoNudge) inside the prefix but never slices
+    # one. Comparing the raw ``messages[offset]`` would miss a replacement of the
+    # rendered head whenever a display-only notice sits at the marker: the notice
+    # is unchanged, so the raw compare says "same" while the oversized head
+    # behind it was swapped for an older orphan. So locate the first rendered row
+    # at or after the marker in each transcript and compare THOSE.
+    #
+    # The bump fires on ANY head move, NOT only when a sub-offset is already
+    # persisted. A consolidator in another process can be mid-way through the
+    # first slice of the over-budget head -- it has written its final snapshot
+    # (so ``last_consolidated`` is set) but not yet its first
+    # ``consolidation_sub_offset``. If this merge replaced that head with an
+    # older orphan and only bumped the generation when a sub-offset was already
+    # live, nothing would invalidate the generation the racing consolidator
+    # captured, and its first ``advance_consolidation_sub_offset`` would write a
+    # character offset into content it never read -- the new head's prefix lost.
+    # Bumping whenever the rendered head moves makes that write's generation
+    # guard reject the stale sub-offset. The reset-to-0 for a rewritten prefix is
+    # kept exactly as before.
+    #
+    # The move only counts when the ORIGINAL transcript had a rendered head at
+    # the marker (``original_head is not None``): that is the head a racing
+    # consolidator could be slicing. When the original had no rendered row at or
+    # after the marker -- every message is already consolidated -- an orphan
+    # appended there is a pure append, not a displacement, so it must not bump
+    # (re-slicing a head that never existed would be wasted work).
+    original_head = _rendered_head(channel_messages, offset)
+    if offset < len(merged) and original_head is not None:
+        if _rendered_head(merged, offset) != original_head:
+            # The head at the marker now holds different content, so any live or
+            # about-to-be-written sub-offset describes the wrong message: drop it
+            # by bumping the generation. If the merge also rewrote the
+            # consolidated prefix (an older orphan landed strictly before the
+            # marker), the marker itself is stale too and must reset to 0 so the
+            # unread orphan is extracted: a bump alone leaves the marker pointing
+            # past a displaced message, which would re-consolidate a row and
+            # silently drop the orphan.
+            if prefix_changed:
+                meta["last_consolidated"] = 0
+            _bump()
+            return
+
+    if offset <= 0:
         return
-    if merged[:offset] == channel_messages[:offset]:
+    if not prefix_changed:
         return
     meta["last_consolidated"] = 0
-    generation = meta.get("rotation_generation")
-    meta["rotation_generation"] = (generation if isinstance(generation, int) else 0) + 1
+    _bump()
 
 
 def _write_merged(path: Path, meta: dict, messages: list[dict]) -> None:

@@ -63,7 +63,7 @@ class TestMarkConsolidatedOffloaded:
 
         log = MagicMock()
         log.snapshot_for_consolidation.return_value = (
-            [{"role": "user", "content": "hi"}], 1, 0
+            [{"role": "user", "content": "hi"}], 1, 0, 0
         )
         log.get_metadata.return_value = {}
         # A fresh span is eligible; _consolidate's inner gate reads this.

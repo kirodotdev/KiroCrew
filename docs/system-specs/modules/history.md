@@ -1759,6 +1759,88 @@ for a bounded attempt. Without that, a permanently over-budget head message in a
 session still receiving turns would reset its attempts on every idle window and
 never reach the cap that abandons it.
 
+**Sub-chunking an over-budget head.** A single message can alone exceed the
+prompt budget (the "prompted anyway" case above): prompting it whole is rejected
+by any provider with a context ceiling, so the span would only ever reach the
+abandon path and lose the whole message. Instead the head is sliced into
+budget-sized, stable-boundary windows (`_slice_head_for_budget` /
+`_slice_boundary`) and only one window is prompted per pass. The durable
+`last_consolidated` marker does NOT move until the LAST slice succeeds; a
+non-final slice advances a durable *character* offset into the head instead, so
+the next pass resumes where this one stopped and the attempt cap can abandon at
+most one slice rather than the whole message. Four metadata keys carry this
+state:
+
+- `consolidation_sub_offset` — the character offset extraction has reached in
+  the head message now sitting at `last_consolidated`. The next pass slices from
+  here.
+- `consolidation_sub_offset_generation` — the `rotation_generation` the
+  sub-offset was recorded under. The sub-offset is honoured ONLY while this
+  equals the live generation (see the invalidation rule below).
+- `consolidation_attempts_sub_offset` — the sub-offset the current retry
+  accounting is charged against, so a failed slice is scoped to
+  `(offset, sub_offset)` and growth BEHIND the head cannot release a bounded
+  sub-slice's attempt cap.
+- `consolidation_attempts_sub_bounded` — records that the charged attempt was a
+  bounded sub-slice, so `_attempts_describe_current_span` keeps the cap through
+  message growth behind the head rather than reading it as new content.
+
+The head is sliced against its image-ref-STRIPPED content
+(`_consolidation_head_content`), stripped once over the whole message before any
+slice is cut. `strip_image_refs` masks fenced code spans, so a raw `content[start:end]`
+cut landing inside a fence would flip the fence parity the slice presents and
+either strip a reference the whole-head scan would mask or leave a real one to be
+inlined into a prompt the sub-chunking path exists to keep image-free. Resolving
+references once over the whole head removes that ambiguity. The slice is then
+rendered with its image references already resolved (`_fmt_message(...,
+prestripped=True)`): a second `strip_image_refs` over a slice that begins inside
+a fence would see a different fence parity than the whole head and could still
+corrupt a reference the whole-head scan deliberately preserved, so the sub-slice
+render skips it and quotes the already-resolved content verbatim. The slice-size
+measurement uses the same `prestripped=True`, so a slice's raw width predicts its
+rendered width directly.
+
+**Per-head slice ceiling.** A head near the transcript cap
+(`_SESSION_MAX_BYTES`, 10 MB) would slice into ~160 budget-sized pieces — ~160
+sequential consolidation LLM calls, each holding up every message behind it, the
+per-head cost scaling with the message's size unbounded. Once the durable
+sub-offset has advanced `_CONSOLIDATION_MAX_HEAD_SLICES` (8) whole slice spans
+into the head AND more than one slice of content still remains, the head is
+retired: its remainder is marked consolidated the same bounded, FAIL-SAFE way the
+attempt cap retires an unprocessable span — the marker advances past the whole
+chunk, a warning is logged, and the user-facing abandon notice fires naming the
+dropped remainder. A head whose remainder fits in one more slice is NEVER retired;
+it drains in full, so no span that would fit a single extra slice is dropped
+unread. The retire is NEVER silent; silently marking unread content consolidated
+is the exact data-loss bug the sub-offset machinery exists to prevent. The
+already-sliced prefix keeps whatever it extracted, and the tail behind the head
+consolidates on the next pass with a fresh budget. The bound is on CHARACTERS, so
+a near-span head is prompted about `N` times (≈ 512 KB of one message) and
+content whose lines advance well under a span can take up to roughly `2 * N` — a
+small constant either way, far past any genuine conversation turn.
+
+**Every rewrite must drop a live sub-offset.** `consolidation_sub_offset`
+describes a character position inside ONE specific message — the head at
+`last_consolidated`. Anything that changes which message sits there, or changes
+that message's content, makes the offset describe a different (or shifted)
+string, and resuming a slice at a stale character position would seek into
+unrelated content and mark its unread prefix consolidated — silent loss. Two
+mechanisms enforce the drop:
+
+- `mark_consolidated` always clears both sub-offset keys in the same locked
+  write that moves (or resets) `last_consolidated`. It is reached in exactly the
+  two cases that make the sub-offset meaningless: the marker advanced past that
+  head (its last slice succeeded, or a whole-message prefix was marked), or it
+  was reset to 0 by a rotation/edit — neither leaves a partially-extracted head
+  to resume.
+- `rotation_generation` gates the sub-offset: a rotation, a transcript edit
+  (regenerate / rewind / fork save), or a channel-transcript migration that
+  changes the partially-extracted head bumps the generation, so
+  `consolidation_sub_offset_generation` no longer matches the live generation
+  and the stale sub-offset is dropped — the head is re-sliced from its start
+  rather than resumed at a character position that now describes different
+  content.
+
 **Draining.** One history pass consolidates one budget's worth, so a tail larger
 than the budget needs several. In the gateway the rate is one budget per history
 pass: the idle sweep (once per `history_idle_secs` idle window, behind its own
