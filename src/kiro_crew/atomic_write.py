@@ -19,6 +19,7 @@ import tempfile
 import threading
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -285,6 +286,61 @@ def _write_all(fd: int, data: bytes, path: Path) -> None:
                 f"{len(view)} of {len(data)} still pending"
             )
         view = view[written:]
+
+
+def append_line(
+    path: Path | str,
+    line: str,
+    *,
+    fsync: bool = False,
+    opener: Callable[[str, int], int] | None = None,
+) -> None:
+    """Append *line* and a line ending to *path*, or leave the file as it was.
+
+    A full disk keeps the bytes a failed ``write`` already accepted, so a bare
+    ``open(path, "a")`` leaves the start of the line with no newline, and the next
+    append lands on that same line: a line-per-record reader cannot parse it and
+    drops both records. This helper prevents that in two ways:
+
+    - On any failure it truncates the file back to its size before the write and
+      re-raises, so the caller still sees the error and the file holds whole lines.
+    - When the file does not end in a newline (a tail torn by a kill, where no
+      handler ran), it starts the new record on a fresh line.
+
+    The bytes are the ones ``open(path, "a")`` writes: UTF-8, with ``\\n``
+    translated to ``os.linesep``. The caller must serialize appends to *path*
+    (each caller holds a per-file lock), because the truncate would otherwise
+    cut a row a concurrent writer appended. *opener* replaces ``os.open`` the
+    way ``open(..., opener=)`` does; without it a new file gets ``0o666``
+    masked by the umask, as the builtin gives it.
+    """
+    target = Path(path)
+    data = _encode(line + "\n", newline=None)
+    flags = os.O_RDWR | os.O_CREAT | os.O_APPEND | getattr(os, "O_BINARY", 0)
+    if opener is not None:
+        fd = opener(os.fspath(target), flags)
+    else:
+        fd = os.open(target, flags, 0o666)
+    try:
+        size = os.fstat(fd).st_size
+        if size:
+            os.lseek(fd, size - 1, os.SEEK_SET)
+            if os.read(fd, 1) != b"\n":
+                data = _encode("\n", newline=None) + data
+        try:
+            _write_all(fd, data, target)
+            if fsync:
+                os.fsync(fd)
+        except BaseException:
+            try:
+                os.ftruncate(fd, size)
+            except OSError:
+                logger.warning(
+                    "append_line: could not take back a failed append to %s", target, exc_info=True
+                )
+            raise
+    finally:
+        os.close(fd)
 
 
 #: Bytes of randomness in a pinned-parent temp name. tempfile.mkstemp uses eight

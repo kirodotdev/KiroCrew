@@ -32,9 +32,10 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import replace_with_retry
+from kiro_crew.atomic_write import append_line, replace_with_retry
 from kiro_crew.config import live
 from kiro_crew.config.paths import config_dir
+from kiro_crew.owner_only_files import owner_only_opener
 
 logger = logging.getLogger(__name__)
 
@@ -584,12 +585,14 @@ class CronHistoryStore:
         fd = self._lock()
         try:
             job_path = self._job_path(record.job_id)
-            wfd = os.open(str(job_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(wfd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(include_trace=True)) + "\n")
-            ifd = os.open(str(self._index_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(ifd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(record.to_dict(include_trace=False)) + "\n")
+            append_line(
+                job_path, json.dumps(record.to_dict(include_trace=True)), opener=owner_only_opener
+            )
+            append_line(
+                self._index_path,
+                json.dumps(record.to_dict(include_trace=False)),
+                opener=owner_only_opener,
+            )
             # The caps are enforced on the write path, not only by ``rotate_all``.
             # That runs once per process, from ``CronService.start``, so it bounds
             # the history a gateway INHERITS, never the history the gateway itself

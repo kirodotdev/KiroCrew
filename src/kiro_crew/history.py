@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Literal, overload
 
 from kiro_crew import platform_compat
-from kiro_crew.atomic_write import atomic_write, atomic_write_at
+from kiro_crew.atomic_write import append_line, atomic_write, atomic_write_at
 from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 
@@ -2697,8 +2697,9 @@ class ConversationLog:
 
             # Session transcripts are intentionally local plaintext JSONL (the
             # documented storage format), not a credential/secret store.
-            with open(path, "a", encoding="utf-8", opener=owner_only_opener) as f:
-                f.write(json.dumps(msg) + "\n")  # lgtm[py/clear-text-storage-sensitive-data]
+            append_line(  # lgtm[py/clear-text-storage-sensitive-data]
+                path, json.dumps(msg), opener=owner_only_opener
+            )
 
             # Invalidate cache since file changed
             self._invalidate_cache(key)
