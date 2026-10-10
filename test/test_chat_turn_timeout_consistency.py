@@ -10,20 +10,18 @@ cron injection path (handlers/messaging.py), the Slack/dashboard nudge path
 the inner ACP _DEFAULT_PROMPT_TIMEOUT (14400s) instead.
 
 This module verifies the cap value is correct AND that all helper-visible
-dispatch sites in the source tree are wrapped with ``asyncio.wait_for(...,
-timeout=CHAT_TURN_TIMEOUT)``. The structured dashboard monitor invokes
-``_run_chat`` inside an authorization coroutine that is itself passed to
-``spawn_guarded_turn``; its owning monitor tests pin that nested path.
+dispatch sites in the source tree use ``spawn_guarded_turn`` or the owner-aware
+``bounded_chat_turn(..., state=..., slot=...)`` wrapper. The structured
+dashboard monitor invokes ``_run_chat`` inside an authorization coroutine that
+is itself passed to ``spawn_guarded_turn``; its owning monitor tests pin that
+nested path.
 
-Why source-level checks (not behavioral): a behavioral test that mocks
-``_run_chat`` and patches ``CHAT_TURN_TIMEOUT`` to a tiny value can prove
-``asyncio.wait_for`` raises ``TimeoutError`` — but that's stdlib behavior, not
-verification of the application code. To test the wrap behaviorally would
-require invoking each real handler entry point with a fully-mocked aiohttp
-request, dashboard state, and slot — fragile, coupled to mock setup, and
-still indirect. The source-level static checks below directly verify the
-property we care about (every ``_run_chat`` dispatch is wrapped) and fail
-loudly when a future contributor adds a new bare dispatch site.
+Why source-level checks (not behavioral): the central helpers own the timeout,
+native cancellation ordering, and visible outcome. Driving every real handler
+would require a fully mocked request, dashboard state, and slot. The source-level
+checks below verify that each dispatch reaches one of those helpers, that an
+off-loop wrapper carries the state and slot needed for owner-fenced cancellation,
+and that its outer task retrieves exceptions.
 """
 
 from __future__ import annotations
@@ -88,9 +86,10 @@ def _find_create_task_dispatches(path: Path) -> list[tuple[int, str]]:
     * ``spawn_guarded_turn(state, slot, _run_chat(...))`` — the preferred form.
       The helper owns the ceiling AND retrieves the resulting exception, so a
       turn that hits the ceiling renders a card instead of vanishing.
-    * ``asyncio.create_task(asyncio.wait_for(_run_chat(...), timeout=...))`` —
-      the older inline form, still used by the two gateway sites that attach
-      their own done-callback to consume the exception.
+    * ``asyncio.create_task(bounded_chat_turn(_run_chat(...), state=..., slot=...))`` —
+      the off-loop form used where publishing ``slot.task`` before config
+      resolution closes an injection-order race. Its caller owns the done
+      callback that consumes the exception; the wrapper renders the timeout card.
 
     Why a hand-rolled balanced-paren scan instead of regex: nested call
     expressions go three levels deep with embedded commas, which regex does not
@@ -155,11 +154,10 @@ def test_no_bare_run_chat_dispatch_in_source() -> None:
 def test_every_run_chat_dispatch_is_ceiling_bounded() -> None:
     """Positive guard: every dispatch is bounded by the shared ceiling.
 
-    A dispatch qualifies either by going through ``spawn_guarded_turn`` (which
-    resolves the ceiling itself, clamps it against the transport timeout, and
-    consumes the exception so a ceiling hit is visible) or by an inline
-    ``wait_for`` that references ``CHAT_TURN_TIMEOUT`` rather than a
-    hard-coded number.
+    A dispatch qualifies by going through ``spawn_guarded_turn`` or through
+    ``bounded_chat_turn`` with both ``state`` and ``slot``. Those arguments are
+    what let the deadline cancel only the exact session-lease owner. A legacy
+    inline ``wait_for`` must still reference the shared configured ceiling.
 
     This complements ``test_no_bare_run_chat_dispatch_in_source``: that test
     ensures no dispatch is bare, while this one ensures the bound is the shared
@@ -174,6 +172,10 @@ def test_every_run_chat_dispatch_is_ceiling_bounded() -> None:
         for line_no, body in _find_create_task_dispatches(path):
             if "_run_chat(" not in body:
                 continue
+            if "bounded_chat_turn(" in body:
+                if "state=" not in body or "slot=" not in body:
+                    offenders.append(f"{rel_path}:{line_no}")
+                continue
             # spawn_guarded_turn bodies do not name the constant; the helper
             # resolves it. Identify them by the absence of an inner wait_for.
             if "asyncio.wait_for(" not in body:
@@ -181,17 +183,14 @@ def test_every_run_chat_dispatch_is_ceiling_bounded() -> None:
             # Two accepted bounds: the config-resolved ceiling (preferred —
             # follows agent.chat_turn_timeout_secs above the 2h default) or the
             # legacy shared constant.
-            if (
-                "chat_turn_timeout_secs(" not in body
-                and "CHAT_TURN_TIMEOUT" not in body
-            ):
+            if "chat_turn_timeout_secs(" not in body and "CHAT_TURN_TIMEOUT" not in body:
                 offenders.append(f"{rel_path}:{line_no}")
 
     assert not offenders, (
         "Found _run_chat dispatch(es) wrapped without the shared ceiling:\n  "
         + "\n  ".join(offenders)
-        + "\n\nUse spawn_guarded_turn(...), or "
-        "wait_for(..., timeout=chat_turn_timeout_secs())."
+        + "\n\nUse spawn_guarded_turn(...), or owner-aware "
+        "bounded_chat_turn(..., state=..., slot=...)."
     )
 
 
@@ -204,10 +203,10 @@ def test_dispatch_sites_consume_their_exception() -> None:
     and no log the user would find — it surfaced only as a
     garbage-collection-time "Task exception was never retrieved" line.
 
-    ``spawn_guarded_turn`` satisfies this by construction. An inline
-    ``create_task`` site must attach its own callback that calls
-    ``.exception()``; a site whose sole callback is the bare ``discard`` is the
-    exact shape of the original defect.
+    ``spawn_guarded_turn`` satisfies this by construction. A
+    ``create_task(bounded_chat_turn(...))`` site must attach its own callback
+    that calls ``.exception()``; a site whose sole callback is the bare
+    ``discard`` is the exact shape of the original defect.
 
     Uses the AST rather than a line window because a done-callback may be
     defined either above or below the dispatch it is attached to — a
@@ -222,15 +221,12 @@ def test_dispatch_sites_consume_their_exception() -> None:
         # dispatch can see a callback defined in an outer scope.
         for func in _iter_functions(tree):
             inline_sites = [
-                node
-                for node in ast.walk(func)
-                if _is_inline_wrapped_run_chat_dispatch(node)
+                node for node in ast.walk(func) if _is_create_task_wrapped_run_chat_dispatch(node)
             ]
             if not inline_sites:
                 continue
             consumes = any(
-                isinstance(n, ast.Attribute) and n.attr == "exception"
-                for n in ast.walk(func)
+                isinstance(n, ast.Attribute) and n.attr == "exception" for n in ast.walk(func)
             )
             if not consumes:
                 offenders.extend(f"{rel_path}:{s.lineno}" for s in inline_sites)
@@ -266,18 +262,21 @@ def _calls_named(node: ast.AST, name: str) -> bool:
     return False
 
 
-def _is_inline_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
-    """True for ``create_task(wait_for(_run_chat(...)))`` — the inline form.
+def _is_create_task_wrapped_run_chat_dispatch(node: ast.AST) -> bool:
+    """True for a ``create_task`` wrapping a bounded ``_run_chat`` turn.
 
     ``spawn_guarded_turn`` sites are excluded: the helper consumes the
-    exception itself, which is the whole point of routing through it.
+    exception itself. ``bounded_chat_turn`` and legacy ``wait_for`` sites leave
+    exception retrieval to their outer task's done callback.
     """
     if not _calls_named(node, "create_task"):
         return False
     subtree = list(ast.walk(node))
     has_run_chat = any(_calls_named(n, "_run_chat") for n in subtree)
-    has_wait_for = any(_calls_named(n, "wait_for") for n in subtree)
-    return has_run_chat and has_wait_for
+    has_wrapper = any(
+        _calls_named(n, "bounded_chat_turn") or _calls_named(n, "wait_for") for n in subtree
+    )
+    return has_run_chat and has_wrapper
 
 
 def test_dispatch_site_count_matches_expectation() -> None:

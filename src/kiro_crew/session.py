@@ -990,6 +990,32 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     return res is True
 
 
+def _provider_turn_is_known_terminal(provider: LLMProvider) -> bool:
+    """True only when *provider* explicitly reports no unfinished native turn.
+
+    Missing, raising, or awaitable stand-ins are unknown rather than terminal.
+    The deadline path may treat ``no_turn`` as settled only with this independent
+    done-boundary proof; collapsing unknown to False would recreate the original
+    false-success race on minimal providers and test doubles.
+    """
+    fn = getattr(provider, "has_unfinished_turn", None)
+    if not callable(fn):
+        return False
+    try:
+        res = fn()
+    except Exception:
+        return False
+    if inspect.isawaitable(res):
+        close = getattr(res, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        return False
+    return res is False
+
+
 StopOutcome = Literal["soft", "hard", "idle", "compacting"]
 
 
@@ -1367,6 +1393,9 @@ class SessionManager:
             get_claude_code_provider_type=lambda: ClaudeCodeProvider,
             provider_label=lambda provider: _provider_label(provider),
             provider_has_unfinished_turn=lambda provider: _provider_has_unfinished_turn(provider),
+            provider_turn_is_known_terminal=lambda provider: (
+                _provider_turn_is_known_terminal(provider)
+            ),
             provider_uses_kiro_identity_store=lambda provider: (
                 _provider_uses_kiro_identity_store(provider)
             ),
@@ -3779,6 +3808,20 @@ class SessionManager:
         """Cancel the in-flight operation without destroying its session."""
         return await self._lifecycle_boundary().cancel_current(
             key,
+            wait_ack_timeout=wait_ack_timeout,
+        )
+
+    async def cancel_owned_turn(
+        self,
+        key: str,
+        owner_task: Any,
+        *,
+        wait_ack_timeout: float = 0.0,
+    ) -> CancelOutcome | None:
+        """Cancel only if *owner_task* still owns the session's turn lease."""
+        return await self._lifecycle_boundary().cancel_owned_turn(
+            key,
+            owner_task,
             wait_ack_timeout=wait_ack_timeout,
         )
 

@@ -1664,8 +1664,8 @@ applier — a raised turn budget is in force on the next prompt.
 1. Record the Stop: `stop_requests[key] += 1` (per folded key, on
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the
    dashboard runner's end-of-turn gates -- which may run the moment the
-   provider's cancel lands -- already see it; `prev_turn_cancelled` is set only
-   after the ack and is too late for them.
+   provider's cancel lands -- already see it; `stop_turn()` sets
+   `prev_turn_cancelled` only after the ack, which is too late for them.
 2. `clear_queue(key)` — queue drop is unconditional on first press (skipped
    with `preserve_queue=True`). Passing no ownership predicate is what makes the
    drop whole-session, which is what a Stop button press means. A per-sender
@@ -1703,13 +1703,51 @@ the way a Stop does.
 
 ### Cancelled-turn context restore
 
-`_Session.prev_turn_cancelled` is a one-shot flag set on soft-cancel
-success. The next prompt handler (dashboard `_run_chat`, Slack
+`_Session.prev_turn_cancelled` is a one-shot flag with two writers. `stop_turn()`
+sets it only on an `acked` soft cancel (step 4 above). `cancel_owned_turn()` sets
+it before the provider cancel starts, so every outcome it attempts (`acked`,
+`timeout`, `error`, `no_turn`) leaves the flag set; see "Owner-fenced deadline
+cancel" below. The next prompt handler (dashboard `_run_chat`, Slack
 `handle_message`) reads and clears it, then calls
 `context.build_cancelled_turn_preamble(conversation_log, session_key)` to
 re-inject the cancelled user prompt and partial assistant output. This is
 necessary because kiro-cli discards cancelled turns from its own ACP
 conversation log, so the LLM has no memory of the interrupted request.
+
+### Owner-fenced deadline cancel: `cancel_owned_turn`
+
+`SessionManager.cancel_owned_turn(key, owner_task, wait_ack_timeout=...)` is the
+native cancel the dashboard's wall-clock turn ceiling (`_bounded_turn`) sends
+before it unwinds the Python stream. It is not a Stop surface and does not go
+through `stop_turn()`. It returns the provider's `CancelOutcome`, or `None` when
+it sends nothing. Sequence:
+
+1. Exact-owner fence: fold the key and return `None` unless the session exists
+   and `session.turn_owner is owner_task`. A deadline left over from an earlier
+   turn, or a turn still waiting behind another owner, cannot cancel the turn
+   that holds the lease now.
+2. Known-terminal skip: if `provider_turn_is_known_terminal(session.provider)`
+   proves the native turn already reached its done boundary (the Python owner is
+   only finishing transcript teardown), return `None`. No cancel is sent and
+   replay is not armed. A bare `no_turn` is not that proof, and a provider that
+   cannot prove it stays on the cancel path.
+3. Arm replay: set `session.prev_turn_cancelled = True` before the first await.
+   No await sits between the owner check and entering `provider.cancel`, so a
+   successor cannot take the lease first, and an ack cannot release the lease
+   before the interrupted context is marked. The flag is set for every outcome
+   step 4 can return (`acked`, `timeout`, `error`, `no_turn`). This is
+   fail-closed on purpose: on an unacknowledged outcome the dashboard warns that
+   the session must not resume until idle, and a successor that runs anyway
+   still gets the cancelled prompt and partial output re-injected.
+4. Send `session/cancel` via `provider.cancel(wait_ack_timeout=...)` on the exact
+   provider object read in step 1, and return its outcome.
+
+Unlike `stop_turn()`, no outcome leads to `reset()`, a hard kill, or an eager
+respawn; an unacknowledged cancel leaves the runtime as it is. The caller bounds
+the whole call at `max(0.1, agent.soft_stop_budget_secs) + 0.5` seconds and maps
+an overrun to `timeout` and an exception to `error`. A Stop or shutdown that
+arrives while that bounded window is open waits for it to settle, and the turn
+then ends with the timeout error rather than a plain cancellation.
 
 ### Interrupted-turn context restore
 

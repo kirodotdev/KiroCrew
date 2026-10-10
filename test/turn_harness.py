@@ -617,6 +617,10 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "aflush": None,
     "allocation_requested_model": "",
     "begin_turn": None,
+    # The healthy session cuts its turn cleanly at the ceiling: the native
+    # cancel is acknowledged, so the deadline reports the acknowledged outcome
+    # and the slot shows the ordinary (not the "did not acknowledge") card.
+    "cancel_owned_turn": "acked",
     "commit_provider_switch_replay_sid": False,
     "compact_wait_budget_secs": 60.0,
     "consume_first_turn_history_owed": False,
