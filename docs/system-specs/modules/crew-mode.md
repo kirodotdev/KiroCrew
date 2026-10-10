@@ -815,10 +815,9 @@ renders in the offering chat as a row of the conversation, and nothing moves unt
 user presses Start. The `/members?create=1&name=<encoded-name>&goal=<encoded-goal>` link
 to an editable UI draft remains for a user who wants to fill it in; opening a draft
 never creates a member or starts a schedule.
-The first-run host retains Meet CrewMates automatic entry at tour completion or the first
-Crewmates visit. The page-owned embedded flow listens only for explicit creation; the
-first-run host does not consume that event. Both completion and dismissal persist
-`crewmates_onboarded`, so the automatic flow is not replayed after either outcome.
+Creating a crewmate is never a first-run chapter: neither the end of the tour nor
+a Crewmates visit opens anything by itself, and the page's New crewmate card is
+the one place a crewmate is created on the Crewmates page.
 Explicitly created members own unique V2 stores identified by an immutable persisted `member_id`, independent of their editable label.
 Automatically discovered agents start on Global V1 without member allocation.
 Missing, unreadable, shared or mismatched member identity makes memory operations
@@ -925,16 +924,23 @@ endpoint has confirmed Mate's pinned thread, with the Crewmates preview on, the 
 calls `POST /api/members/{slug}/greet` (owner-only; app tokens get 404), once per
 thread per tab (`pages/members/useFirstGreeting.ts`). A failed request shows
 nothing: the chat works without the greeting, and the next open of the thread asks
-again. A crewmate the user creates on
-the dashboard greets through the create flow's own seeded first turn, so each create
-path has one greeting. The server (`dashboard/mate_welcome.py`) starts a welcome only
+again. A crewmate the user creates on the Crewmates page's New crewmate card
+greets through the same route and the same dispatch (see the goal welcome below),
+and the page asks for it on every dashboard-created row (`dashboard_created`), so
+each create path has one greeting. The server (`dashboard/mate_welcome.py`) starts a welcome only
 when the slug's DM binding names a configured crewmate other than the reserved
 `default` member, the live slot is that member's pinned (`mode="member"`) local
 thread, it holds no rows or queued entries, no turn is running, and the member owes a
-welcome. Only the first-crewmate creation records that debt, at creation, in
-`members/<slug>/welcome_owed.json` (`members.mark_welcome_owed`, naming the member).
-A member that reached the roster any other way (a create form, the CLI, discovery,
-an import, an app, a hand edit) has no record and never greets here (`not_owed`). It
+welcome. Two creations record that debt, at creation, in
+`members/<slug>/welcome_owed.json` (`members.mark_welcome_owed`, naming the member):
+the first-crewmate creation (Mate's welcome, no `kind`), and a `POST /api/agents`
+whose body carries `first_greeting: true` (exactly `true`; any other value owes
+nothing), which records `kind: "goal"` after the record is published. A member
+that reached the roster any other way (the crew manager's create, the CLI,
+discovery, an import, an app, a hand edit) has no record and never greets here
+(`not_owed`), and neither does a record whose `kind` this gateway does not know.
+A failed record write is logged and leaves the create successful, with a chat
+that simply opens empty. It
 then claims the once-only marker `members/<slug>/welcome_claimed.json` with
 `O_CREAT|O_EXCL` before dispatch, so two tabs, a reload or a retry after a failed
 turn never greet twice; a declined request leaves the marker unclaimed. The welcome
@@ -969,39 +975,71 @@ or host name. The route answers `{"outcome": ...}` (`started`, `already_greeted`
 fails surfaces through the ordinary turn error path once; the marker is already
 claimed, so it never loops, and the composer stays usable.
 
-The primary New crewmate action and a crewmate's proposal link open the same embedded
-`MeetCrewmatesFlow`: goal, name, schedule and confirmation in the chapter shell's
-split-panel layout. The embedded shell retains the original 760px height and
-6xl width caps and the same four-mascot composition. From `xl` its aside takes the
-original shell's widest 415px and shows all four mascots; narrower asides show
-none, since the page navigation leaves no room for them beside the copy.
-No modal, viewport scrim or focus trap is added. The current
-chat stays mounted while hidden, preserving its draft and reading position.
-Back returns to it and retains the unfinished creation draft; navigation away
-warns before losing that draft. A proposal cannot replace an edited draft.
-Completion offers a return to the originating conversation with a host-rendered
-creation receipt, or an explicit link to the new member's chat. Receipts are
-shape-checked records in this browser tab's sessionStorage, keyed by originating
-member; they survive a page return in that tab but are not server-side transcript
-entries or cross-device history. The receipt is
-not an AI message and does not start an agent turn. Schedule failures are reported
-separately from successful member creation. Timing and write reconciliation are
-specified in [config](config.md#meet-crewmates-first-run-state).
+A crewmate created on the New crewmate card owes a goal welcome (`kind: "goal"`).
+Its first turn runs the same once-only claim, emptiness and busy checks and the
+same "no transcript row" dispatch, with the hidden kickoff
+`mate_welcome.goal_kickoff` (`GOAL_WELCOME`): in two or three short sentences of
+plain words the crewmate introduces itself by its label and asks what the user
+wants it to do, the goal it should own and look after, without starting work or
+proposing a plan until they answer. The user chose a name and a look, not a
+template, so the kickoff also tells it not to name its template, role or agent
+type and not to describe how it works. When the record carries a `description`,
+the kickoff appends it as a first draft of the goal, which the crewmate restates
+and asks the user to confirm or change. Once the goal is clear, a crewmate whose
+work should run on its own may offer a schedule in plain words, and sets one up
+with its schedule tool only after the user says yes.
 
-The explicit Advanced entry preserves the full create form's workspace, model,
-routing and colour controls, also embedded in the page. That full form is the ONE
-"New crewmate" dialog (`website/src/pages/members/NewCrewmateDialog.tsx`): it is
+The primary New crewmate action (the header **+** menu's one row, the empty
+roster's hero and the switcher's New crewmate) opens the embedded
+`NewCrewmateDialog`: one card headed **New crewmate** with a **Name** field, an
+**Avatar** preview with **Try another look**, an **Advanced settings** row, a
+one-line hint that the crewmate will ask what it should do (or confirm the job
+written under Advanced settings), and **Cancel** / **Create**. Create builds the
+crewmate from `kirocrew`, and the folded card does not name that template. The
+look is a name-seeded ghost (`seededTraits`), re-rolled by appending `#<n>` to the
+seed, and is pinned on the record as `avatar: {kind: 'ghost', traits}`, so the
+face shown is the face kept. The **Advanced settings** row unfolds inline below
+the avatar, in the same card: Built from, What it looks after, and the crew
+editor fields (workspace, model, triggers, session colour), ending with a second
+Create. It is folded by default; `startExpanded` opens it unfolded, which is what
+the hero's Advanced link and the crew manager's door pass. Folding unmounts those
+fields but keeps their values, and every create sends them. The "+" menu holds no
+Advanced row of its own.
+
+The card is the page's one creation surface. A drafted proposal (a crewmate's
+create link `/members?create=1&name=…&goal=…`, clicked in its chat or reached by
+address, or the `crewmate.create` guide, whose enter step is that link) opens the
+same card with the proposal filled in: the name in **Name**, the goal in **What it
+looks after**, with Advanced settings unfolded when a goal is proposed so it is in
+view (`initialDraft`). The page strips the link's parameters once read and keeps
+the chat the link was followed from as the one behind the card. A proposal left as
+proposed is not the user's draft: it leaves without asking, and a later proposal
+replaces it at once; a card the user changed is replaced only once its own leave
+guard agrees, or when the guide that brought the proposal already asked. No
+modal, viewport scrim or focus trap is added. The current chat stays mounted while
+hidden, preserving its draft and reading position, and closing the card returns to
+it. The guided door (`guided`) carries the guide's anchor on its Create button,
+and its create request carries the guide headers so the gateway credits the
+guide's one commit step from the crewmate it actually created. When the crewmate
+runs is not asked on the card: its goal welcome settles that in conversation.
+
+That card is the ONE "New crewmate" dialog
+(`website/src/pages/members/NewCrewmateDialog.tsx`): it is
 also mounted by the crew manager's "New crewmate" tile / header button and its
 dashed roster card (`pages.kiroCrewAgentsPage.add_crew_member` in
 `website/src/pages/KiroCrewAgentsPage.tsx`, the Crewmates tab of Customize), which
-has no separate create sheet. Both forms use the
+has no separate create sheet. Both doors use the
 existing owner-gated `POST /api/agents`; editing an existing member still uses
-the crew manager. What happens after a create from the full form depends on the
-door. On the Crewmates page the post-create greeting follows the existing
-verified-thread and composer-send path, with failures retaining their retry. From
+the crew manager. The crew manager's door opens with Advanced settings unfolded
+and `kirocrew` as the default **Built from** (labelled as the default), and shows
+no first-greeting hint, since it asks for none. What happens after a create
+depends on the door. On the Crewmates page the card sends `first_greeting`, the
+page re-reads the roster and opens the new crewmate's verified thread (a failed
+re-read keeps its retry), and that open's greeting request starts the hidden goal
+welcome; nothing is sent in the user's name. From
 the crew manager the door is CONFIG mode: the dialog closes and the crew manager
 re-reads its roster so the new card appears in place; it does NOT navigate to the
-crewmate's chat and seeds no greeting. The dialog's own success path (cache
+crewmate's chat and asks for no greeting. The dialog's own success path (cache
 invalidation, the post-failure reconcile, "what it looks after" stored as
 `description`) is identical on both doors; only the caller's `onCreated`
 differs. `NewCrewmateDialog` imports its field frame and field components from
@@ -1056,10 +1094,8 @@ opens Mate while no message has been exchanged with it (`resolveMateLanding`:
 Mate's row has neither `has_dm_message` nor a live `last_message`), ahead of the
 last-chatted, a remembered or a more recently used crewmate, at most once per
 page mount; once Mate's thread holds anything, that rule answers nothing and the
-rules above apply unchanged. While that landing applies, the page does not announce
-the visit (`mc-crewmates-page-entered`), so Meet CrewMates does not also open on top
-of Mate's welcome; a later visit, once Mate has history, announces as before and the
-host decides whether the flow is still due.
+rules above apply unchanged. A create link followed while a chat is open lands
+on that chat, never on this rule.
 
 Deleting a crewmate is available on this page: the crewmate's edit controls
 open the shared `CrewEditorDialog` in place, and its Danger pane deletes the

@@ -569,12 +569,13 @@ describe('crew editor — opening', () => {
     await renderRoster()
     const sheet = await openCreate()
     // The create door opens the Crewmates page's own dialog, not the full
-    // editor sheet: it asks for a Name, a "Built from" template and "what it
-    // looks after", with everything else behind an Advanced fold.
+    // editor sheet. This door asks for every setting up front, so its
+    // Advanced settings are already unfolded in the same card.
     expect(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot')).toBeInTheDocument()
-    expect(within(sheet).getByRole('button', { name: 'Create crewmate' })).toBeInTheDocument()
-    // Advanced is folded, so the workspace/model bindings are not shown up front.
-    expect(within(sheet).queryByRole('combobox', { name: 'Workspace' })).not.toBeInTheDocument()
+    // Unfolded, the card ends its Advanced settings with a second Create too.
+    expect(within(sheet).getAllByRole('button', { name: 'Create crewmate' })).toHaveLength(2)
+    expect(within(sheet).getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
+    expect(within(sheet).getByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
   })
 })
 
@@ -1418,7 +1419,7 @@ describe('avatar editor entry — discoverability (issue #9103)', () => {
     const user = userEvent.setup()
     await user.type(within(sheet).getByPlaceholderText('e.g. Radar or Dr. Eggbot'), 'staging')
     // "Built from" defaults to the built-in kirocrew template; no pick needed.
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Create crewmate' }))
+    fireEvent.click(within(sheet).getByTestId('crewmate-create-submit'))
     await waitFor(() => expect(mockApi.createKirocrewAgent).toHaveBeenCalled())
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     // Config mode: no navigation to the Crewmates page or anywhere else.

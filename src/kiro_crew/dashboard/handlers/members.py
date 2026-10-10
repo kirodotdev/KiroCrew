@@ -1657,10 +1657,12 @@ async def api_member_greet(request: web.Request) -> web.Response:
     """POST /api/members/{slug}/greet — a crewmate's once-only first welcome.
 
     The dashboard calls this after opening a member thread. It starts a turn
-    only for a crewmate's own pinned thread, only while that thread is empty, and
-    at most once ever (see :mod:`kiro_crew.dashboard.mate_welcome`). Every
-    other case answers 200 with the outcome that declined it, so the caller
-    never has to branch on errors for an ordinary "nothing to do".
+    only for a crewmate's own pinned thread whose creation recorded a welcome
+    (Mate's, or the goal question of a crewmate made on the New crewmate card),
+    only while that thread is empty, and at most once ever (see
+    :mod:`kiro_crew.dashboard.mate_welcome`). Every other case answers 200 with
+    the outcome that declined it, so the caller never has to branch on errors
+    for an ordinary "nothing to do".
     """
     from kiro_crew.dashboard.mate_welcome import maybe_start_first_greeting
 

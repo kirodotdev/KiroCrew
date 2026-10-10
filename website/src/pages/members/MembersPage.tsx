@@ -45,9 +45,8 @@
  * phone's two-level list rule) -- except Mate's first-visit landing (see
  * `resolveMateLanding`), which applies at every width.
  *
- * Creating a crewmate happens in place of the chat: the guided flow (the
- * embedded Meet CrewMates flow) or the full form (Advanced), one at a time,
- * with the chat and side panel hidden but still MOUNTED. See `openGuided`.
+ * Creating a crewmate happens in place of the chat, on the New crewmate card,
+ * with the chat and side panel hidden but still MOUNTED. See `openCreate`.
  */
 import { Fragment, lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
@@ -57,8 +56,7 @@ import { PREVIEW_CREW, PREVIEW_DASHBOARD } from '../../utils/previewFlags'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { Btn } from '../../components/ui'
 import { CrewMemberMark } from '../../components/CrewMemberMark'
-import NewCrewmateDialog, { type CreatedCrewmate } from './NewCrewmateDialog'
-import { sendTurn } from '../../chat-core/transport/sendTurn'
+import NewCrewmateDialog, { type CreatedCrewmate, type CrewmateDraft } from './NewCrewmateDialog'
 import { useTranslation } from 'react-i18next'
 import { api, type CrewTeam, type MemberRosterRow } from '../../api/client'
 import { crewDisplayName, type KiroCrewAgent } from '../../components/AgentSelector'
@@ -140,8 +138,6 @@ import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
-import MeetCrewmatesFlow, { CREWMATES_PAGE_ENTERED_EVENT, START_MEET_CREWMATES_EVENT, type CrewmateCreatedReceipt, type MeetCrewmatesDraft } from '../../components/MeetCrewmatesFlow'
-import { hasNoCrewmates, useMeetCrewmatesGate } from '../../hooks/useMeetCrewmatesGate'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { useGuidePredicate, useGuideSelection } from '../../guide/guidePredicates'
@@ -153,7 +149,7 @@ import { sessionTitleRoster } from '../../utils/sessionRoster'
 import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FilterMenuLabel, FilterMenuContent } from '../../components/SearchFilterBar'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
 import {
-  countByFilter, listedByDefault, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows,
+  countByFilter, hasNoCrewmates, listedByDefault, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows,
   rosterPopulation, sortRoster,
   SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
   type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
@@ -183,7 +179,7 @@ import TeamGroupHeader from './TeamGroupHeader'
 import TeamView, { type TeamMemberInput } from './TeamView'
 import TeamDialog from './TeamDialog'
 import { TEAM_COLLAPSED_KEY, TEAM_PARAM, groupRosterByTeam, parseCollapsedTeams, serializeCollapsedTeams } from './teamGroups'
-import { safeGetItem, safeGetSessionItem, safeSetItem, safeSetSessionItem } from '../../utils/safeStorage'
+import { safeGetItem, safeSetItem } from '../../utils/safeStorage'
 import { useMemberProjection, useMemberRosterViews } from '../../state/useMemberProjection'
 import type { RosterView } from '../../state/memberProjectionTypes'
 import type { CrewmateIdentity } from '../chat/CrewmateMessage'
@@ -192,11 +188,14 @@ import { uiLocation } from '../../uiLocations/uiLocation'
 import { guidePick } from '../../uiLocations/targetRegistry'
 
 /** Creating a crewmate happens IN this page, in place of the chat: the header
- *  "+" New crewmate and the empty-state hero open the
- *  guided flow (`MeetCrewmatesFlow`, embedded); the "+" menu's Advanced row and
- *  the hero's Advanced link open the full form (`NewCrewmateDialog`, embedded).
- *  Both perform the same `POST /api/agents` write as the crew manager's create
- *  form (one write path, several front doors).
+ *  "+" New crewmate, the empty-state hero and the switcher's New crewmate open
+ *  `NewCrewmateDialog` (embedded) with its Advanced settings folded; the
+ *  hero's Advanced link opens the same card with Advanced settings already
+ *  unfolded. A drafted proposal (a crewmate's proposal link carrying a name and
+ *  goal, a guide) opens the same card with that name and goal filled in. All
+ *  perform the same `POST /api/agents` write as the crew manager's create form
+ *  (one write path, several front doors); this page's card also asks for the
+ *  crewmate's first greeting.
  *  Editing an existing crewmate also happens IN this page now (CREW-18688): the
  *  Profile card's edit controls open `CrewEditorDialog` as a modal, driven by the
  *  shared `useCrewEditor` state machine — the SAME editor the crew manager
@@ -870,7 +869,7 @@ function MemberRow({
  *  avatar IS the subject (what a crewmate looks like), not decoration. */
 function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
   onCreate: () => void
-  /** Opens the full New crewmate form (the header menu's Advanced row). */
+  /** Opens the New crewmate card with its Advanced settings unfolded. */
   onAdvanced: () => void
   /**
    * Why the CTA is held, or `null` when it is live. Set while a just-created
@@ -900,8 +899,8 @@ function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
         <Plus size={15} className="lucide-inline" aria-hidden="true" />
         {t('pages.membersPage.add_member')}
       </Btn>
-      {/* The full form stays reachable on an empty roster, where the header
-          "+" menu (and its Advanced row) is hidden behind this hero. */}
+      {/* Every setting stays one click away on an empty roster, where the header
+          "+" menu is hidden behind this hero. */}
       <button
         type="button"
         onClick={onAdvanced}
@@ -916,50 +915,9 @@ function CrewmateEmptyHero({ onCreate, onAdvanced, held }: {
   )
 }
 
-/** Browser-session record of the crewmate-created receipts, keyed by the
- *  member whose chat the creation was started from. sessionStorage: it
- *  survives a reload or a page change in this tab, never another tab or a
- *  new browser session. It is NOT a server record -- no backend holds it. */
-export const CREATED_RECEIPTS_KEY = 'mc-members-created-receipts'
-const RECEIPT_SCHEDULES = new Set<CrewmateCreatedReceipt['schedule']>(['saved', 'refused', 'unknown', 'none'])
-/** At most this many origins are kept; one receipt per origin (the latest). */
-const MAX_RECEIPTS = 20
-
-function isReceipt(v: unknown): v is CrewmateCreatedReceipt {
-  if (!v || typeof v !== 'object') return false
-  const r = v as Record<string, unknown>
-  return typeof r.name === 'string' && r.name !== '' && typeof r.goal === 'string'
-    && (r.key === undefined || (typeof r.key === 'string' && r.key !== ''))
-    && RECEIPT_SCHEDULES.has(r.schedule as CrewmateCreatedReceipt['schedule'])
-}
-
-export function readCreatedReceipts(): Record<string, CrewmateCreatedReceipt> {
-  try {
-    const raw = safeGetSessionItem(CREATED_RECEIPTS_KEY)
-    if (!raw) return {}
-    const parsed: unknown = JSON.parse(raw)
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
-    const out: Record<string, CrewmateCreatedReceipt> = Object.create(null)
-    for (const [origin, receipt] of Object.entries(parsed as Record<string, unknown>).slice(-MAX_RECEIPTS)) {
-      if (origin && isReceipt(receipt)) {
-        out[origin] = { name: receipt.name, goal: receipt.goal, schedule: receipt.schedule, ...(receipt.key ? { key: receipt.key } : {}) }
-      }
-    }
-    return out
-  } catch {
-    return {}
-  }
-}
-
-function writeCreatedReceipts(receipts: Record<string, CrewmateCreatedReceipt>) {
-  // Storage full or blocked: the receipt still shows for this page's life.
-  const entries = Object.entries(receipts).slice(-MAX_RECEIPTS)
-  safeSetSessionItem(CREATED_RECEIPTS_KEY, JSON.stringify(Object.fromEntries(entries)))
-}
-
 /** A same-origin `/members?create=1` link's draft, or null for anything else
  *  -- including an href the URL parser refuses, which must never throw. */
-export function createDraftFromHref(href: string | null, base: string): MeetCrewmatesDraft | null {
+export function createDraftFromHref(href: string | null, base: string): CrewmateDraft | null {
   if (!href) return null
   let url: URL
   try {
@@ -1319,133 +1277,98 @@ export default function MembersPage() {
   // '' — no thread opened). The remembered-member fallback never sets it —
   // there the user named nobody. Cleared once a different member opens.
   const [gone, setGone] = useState<{ name: string; shown: string } | null>(null)
-  // The full New crewmate form (Advanced: the "+" menu row and the hero's
-  // link), shown in place of the chat. Only one creation surface at a time.
+  // The New crewmate card, shown in place of the chat.
   const [createOpen, setCreateOpen] = useState(false)
-  const guided = useMeetCrewmatesGate({ automatic: false })
-  const [creationDraft, setCreationDraft] = useState<MeetCrewmatesDraft>()
-  // Receipts, keyed by the member the creation started from; see
-  // CREATED_RECEIPTS_KEY. Seeded from this tab's session record.
-  const [createdReceipts, setCreatedReceipts] = useState<Record<string, CrewmateCreatedReceipt>>(readCreatedReceipts)
-  const creationOrigin = useRef('')
+  // Whether the card opens with Advanced settings unfolded: folded for New
+  // crewmate, unfolded for the empty-state hero's Advanced link.
+  // A proposal carrying a goal unfolds it too (the card's own rule), so the
+  // goal is in view.
+  const [createExpanded, setCreateExpanded] = useState(false)
+  // The proposal an opening starts from (a create link's name and goal), or
+  // none. A NEW object per opening: the card re-fills from it by identity.
+  const [createDraft, setCreateDraft] = useState<CrewmateDraft>()
   const mayLeave = useMayLeaveForNavigation()
-  // Only one creation surface is ever on screen, and only one holds a draft:
-  // the guided flow stays MOUNTED (its draft survives while hidden), the full
-  // form (Advanced) is opened only while the guided draft is untouched.
-  const guidedEditedRef = useRef(false)
-  const guidedBusyRef = useRef(false)
-  const onDraftStateChange = useCallback(({ edited, busy }: { edited: boolean; busy: boolean }) => {
-    guidedEditedRef.current = edited
-    guidedBusyRef.current = busy
+  // The card's own report of whether the user changed what it opened with,
+  // and whether a create is in flight.
+  const createEditedRef = useRef(false)
+  const createBusyRef = useRef(false)
+  const onCreateDraftState = useCallback(({ edited, busy }: { edited: boolean; busy: boolean }) => {
+    createEditedRef.current = edited
+    createBusyRef.current = busy
   }, [])
-  // The flow kept the user's edited draft over a new proposal: say so.
-  const [draftKept, setDraftKept] = useState(false)
   const createOpenRef = useRef(false)
   createOpenRef.current = createOpen
-  const openGuided = useCallback((draft?: MeetCrewmatesDraft, leaveGranted = false) => {
-    if (guidedBusyRef.current) return
-    // The full form is up: leaving it is the form's own guard's question
-    // (it asks only when that form holds a draft). Refused, it stays. A guide
-    // that brought us here has already asked it (`leaveGranted`).
-    if (createOpenRef.current) {
-      if (!leaveGranted && !mayLeave()) return
-      setCreateOpen(false)
-    }
-    creationOrigin.current = activeNameRef.current
-    setDraftKept(false)
-    // Handed to the flow as a proposal. The flow, not the page, decides
-    // whether it applies: a draft the user has edited is kept and the new
-    // proposal is not written over it (MeetCrewmatesFlow `onDraftKept`).
-    if (draft) setCreationDraft(draft)
-    window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))
+  /** Every door to the New crewmate card: the "+" menu, the hero and the
+   *  switcher (no draft), and a create link or guide (a proposed name and
+   *  goal). A card already open is left only if its guard agrees, which asks
+   *  only when the user changed it (a guide that brought us here already
+   *  asked: `leaveGranted`); refused, it stays as it is. The chat behind the card
+   *  stays mounted, so its unsent draft is there again on the way back. */
+  const openCreate = useCallback((expanded: boolean, draft?: CrewmateDraft, leaveGranted = false) => {
+    // A create in flight keeps its card as sent: nothing re-fills it.
+    if (createOpenRef.current && createBusyRef.current) return
+    if (createOpenRef.current && !leaveGranted && !mayLeave()) return
+    createEditedRef.current = false
+    setCreateDraft(draft ? { ...draft } : undefined)
+    setCreateExpanded(expanded)
+    setCreateOpen(true)
   }, [mayLeave])
   const draftRequest = searchParams.get('create') === '1'
-  // Set below, once `closeGuided` exists: records the guide that opened the flow.
+  // Set below, once the card's close exists: records the guide that opened it.
   const markGuideOpenedRef = useRef<() => void>(() => {})
   useEffect(() => {
     if (!draftRequest) return
     const granted = (location.state as { leaveGranted?: boolean } | null)?.leaveGranted === true
     markGuideOpenedRef.current()
-    openGuided({ name: searchParams.get('name') ?? '', goal: searchParams.get('goal') ?? '' }, granted)
+    openCreate(false, { name: searchParams.get('name') ?? '', goal: searchParams.get('goal') ?? '' }, granted)
     const next = new URLSearchParams(searchParams)
     next.delete('create'); next.delete('name'); next.delete('goal')
-    setSearchParams(next, { replace: true })
-  }, [draftRequest, searchParams, setSearchParams, openGuided, location.state])
-  const recordCreated = (receipt: CrewmateCreatedReceipt) => {
-    guidedEditedRef.current = false
-    const origin = creationOrigin.current || activeNameRef.current
-    if (origin) {
-      setCreatedReceipts((prev) => {
-        const next = { ...prev }
-        delete next[origin]
-        next[origin] = receipt
-        writeCreatedReceipts(next)
-        return next
-      })
+    // A create link names no member, so the chat it was followed from stays
+    // the one behind the card (and the one its close returns to), rather than
+    // whatever the page's own landing would pick for a bare `/members`.
+    if (!next.get(MEMBER_PARAM) && !next.get(TEAM_PARAM) && activeNameRef.current) {
+      next.set(MEMBER_PARAM, activeNameRef.current)
     }
-    guided.onCreated()
-  }
-  const guidedOpen = guided.open
-  const guidedDone = guided.onDone
-  /** Hiding the guided flow preserves its form-owned draft state. */
-  const closeGuided = useCallback((outcome: 'completed' | 'dismissed') => {
-    if (guidedBusyRef.current) return
-    setDraftKept(false)
-    guidedDone(outcome)
-  }, [guidedDone])
-  // A guide that opened the flow and was then called off steps it aside so the
+    setSearchParams(next, { replace: true })
+  }, [draftRequest, searchParams, setSearchParams, openCreate, location.state])
+  // A guide that opened the card and was then called off steps it aside so the
   // chat (with the guide's result line) shows again -- only while the user has
   // not touched the draft. An edited draft is theirs and stays open.
   markGuideOpenedRef.current = useGuideOpenedSurface('crewmate.create', {
-    open: guidedOpen,
-    isPristine: () => !guidedEditedRef.current && !guidedBusyRef.current,
-    close: () => closeGuided('dismissed'),
+    open: createOpen,
+    isPristine: () => !createEditedRef.current && !createBusyRef.current,
+    close: () => setCreateOpen(false),
   })
-  // Choosing a chat or a team while a creation surface is up means "show me
-  // that": the guided flow steps aside (its draft stays mounted and resumes
-  // on the next open); the full form is left only if its own guard agrees.
-  const leaveGuided = useCallback((): boolean => {
-    if (guidedBusyRef.current) return false
+  // Choosing a chat or a team while the card is up means "show me that": the
+  // card is left only if its own guard agrees (a create in flight asks too).
+  // A card whose create just succeeded has already been stood down by
+  // `handleCreated`, so opening the new crewmate passes straight through.
+  const leaveCreate = useCallback((): boolean => {
     if (createOpenRef.current) {
       if (!mayLeave()) return false
       setCreateOpen(false)
     }
-    if (guidedOpen) closeGuided('dismissed')
     return true
-  }, [guidedOpen, closeGuided, mayLeave])
-  /** The Advanced door. Never abandons a guided draft the user worked on:
-   *  that draft is shown again instead of a second, competing one. */
-  const openAdvanced = useCallback(() => {
-    if (guidedBusyRef.current) return
-    if (guidedEditedRef.current) {
-      if (!guidedOpen) {
-        creationOrigin.current = activeNameRef.current
-        window.dispatchEvent(new Event(START_MEET_CREWMATES_EVENT))
-      }
-      return
-    }
-    if (guidedOpen) guidedDone('dismissed')
-    setDraftKept(false)
-    setCreateOpen(true)
-  }, [guidedOpen, guidedDone])
+  }, [mayLeave])
+  const openAdvanced = useCallback(() => openCreate(true), [openCreate])
+  const openQuick = useCallback(() => openCreate(false), [openCreate])
   /** The DM column, the containing block of the modal profile card. */
   const threadColumnRef = useRef<HTMLElement>(null)
-  // The crewmate just created here, until its chat has opened and its greeting has
-  // been seeded. A ref: it is a note between the create and the thread POST's answer.
-  // Greetings waiting for their crewmate's chat to be confirmed, keyed by
-  // NAME: two creates can race inside one thread round trip, and a single
-  // slot would let the second overwrite the first's greeting. An entry lives
-  // until its own thread answers — consumed on a confirmed slot, evicted on a
-  // collision or a failed open — so nothing outlives the open it waits for.
-  const pendingGreets = useRef(new Map<string, CreatedCrewmate>())
-  // The post-create follow-up (`openCreated` → roster re-read → thread open →
-  // seeded greeting) spans several awaits, and nothing above cancels them
-  // when the user leaves the page mid-way: a route change unmounts this
-  // component, but the roster refetch still resolves and `openThread`'s
-  // `onSuccess` still runs. Continuing would `setSearchParams` the page they
-  // navigated to back to `/members?member=<new name>`, or send the greeting
-  // into a chat nobody is looking at. Every post-await step checks this ref
-  // and, when the page is gone, drops the follow-up with its greeting.
+  // Crewmates just created here whose first chat open has not answered yet,
+  // keyed by NAME: two creates can race inside one thread round trip. An
+  // entry lives until its own thread answers (confirmed, collision or failed
+  // open) and is what lets that answer release the create hold. The first
+  // greeting itself is not the page's: the server owes it to the crewmate
+  // (`first_greeting` on the create) and the greeting request every member
+  // thread open makes (`useFirstGreeting`) starts it, hidden.
+  const pendingOpens = useRef(new Set<string>())
+  // The post-create follow-up (`openCreated` → roster re-read → thread open)
+  // spans several awaits, and nothing above cancels them when the user leaves
+  // the page mid-way: a route change unmounts this component, but the roster
+  // refetch still resolves and `openThread`'s `onSuccess` still runs.
+  // Continuing would `setSearchParams` the page they navigated to back to
+  // `/members?member=<new name>`. Every post-await step checks this ref and,
+  // when the page is gone, drops the follow-up.
   const pageMounted = useRef(true)
   useEffect(() => {
     pageMounted.current = true
@@ -1453,22 +1376,20 @@ export default function MembersPage() {
       pageMounted.current = false
     }
   }, [])
-  // A step AFTER a successful create that failed: the roster re-read, or the
-  // seeded greeting's send. The record is what the retry needs and the notice
-  // above the chat column says which step it was; the create itself is never
-  // in doubt here (the server has the crewmate), so the dialog does not reopen.
+  // A step AFTER a successful create that failed: the roster re-read. The
+  // record is what the retry needs and the notice above the chat column says
+  // so; the create itself is never in doubt here (the server has the
+  // crewmate), so the dialog does not reopen.
   const [postCreateError, setPostCreateError] = useState<
     | { kind: 'roster'; created: CreatedCrewmate }
-    | { kind: 'greeting'; created: CreatedCrewmate; slot: string; message: string }
     | null
   >(null)
   // Mirror for the thread mutation's callbacks, which must read the CURRENT
   // record, not the one of the render that armed them.
   const postCreateErrorRef = useRef(postCreateError)
   postCreateErrorRef.current = postCreateError
-  // Whether the post-create notice may be closed without its retry. A
-  // greeting failure always can: its chat is already open under it. A roster
-  // failure can only when the CACHED roster is non-empty — below md the
+  // Whether the post-create notice may be closed without its retry: only
+  // when the CACHED roster is non-empty — below md the
   // notice column replaces the roster, so an undismissable notice over a
   // roster that has other crewmates would lock every existing chat behind a
   // server that keeps failing (Opus, round 36). Closing it leaves the old
@@ -1479,20 +1400,17 @@ export default function MembersPage() {
   // predicate (`hasNoCrewmates`), so the two can never disagree about what
   // counts as empty.
   const postCreateDismissable =
-    postCreateError !== null && (postCreateError.kind !== 'roster' || !hasNoCrewmates(members))
-  // The crewmate whose follow-up (roster re-read, chat open, greeting send)
-  // is still in flight. One at a time, by design: `postCreateError` holds
-  // ONE record, so a second create started inside the first one's window
-  // could see both greetings refused and keep only the last failure — the
-  // first greeting would then have no retry. While this is set the header
-  // "+" is held (the hero is already gone once a crewmate exists), so the
-  // window cannot be entered; it clears at every terminal point of the
-  // follow-up, whether the greeting landed, was refused, or never got sent —
-  // a failed chat open included, where the greeting is parked (per name, in
-  // `pendingGreets`) for that crewmate's next successful open.
+    postCreateError !== null && !hasNoCrewmates(members)
+  // The crewmate whose follow-up (roster re-read, chat open) is still in
+  // flight. One at a time, by design: `postCreateError` holds ONE record, so a
+  // second create started inside the first one's window could overwrite the
+  // first one's retry. While this is set the header "+" is held (the hero is
+  // already gone once a crewmate exists), so the window cannot be entered; it
+  // clears at every terminal point of the follow-up, a failed chat open
+  // included.
   const [followUp, setFollowUp] = useState<CreatedCrewmate | null>(null)
   // Mirror for the thread mutation's callbacks (same reason as
-  // `postCreateErrorRef`): a parked greeting must read the follow-up that is
+  // `postCreateErrorRef`): an open's answer must read the follow-up that is
   // in flight NOW, not the one of the render that armed the callback.
   const followUpRef = useRef(followUp)
   followUpRef.current = followUp
@@ -1500,7 +1418,7 @@ export default function MembersPage() {
   // `null` when creating is open. The failed-step record wins the wording:
   // it is the one with a retry the user can act on.
   const createHeld: string | null = postCreateError
-    ? postCreateError.kind === 'roster' && !postCreateDismissable
+    ? !postCreateDismissable
       // A roster notice over an EMPTY cached roster has no dismiss (see its
       // `onDismiss`), so its hold names only the retry; "retry or dismiss"
       // is every dismissable notice's.
@@ -2064,25 +1982,17 @@ export default function MembersPage() {
   // Mate's first-visit landing happens at most once per page mount, so a phone
   // Back to the roster is never bounced into Mate's chat again.
   const mateLandedRef = useRef(false)
-  // Mate speaks first: once its confirmed thread is open, ask the gateway for
-  // its first welcome. The server greets only an empty, never-greeted thread
-  // that still owes one, so this is a no-op on every later open. A crewmate
-  // created on this page greets through the create flow's own seeded turn.
-  useFirstGreeting(active?.slug, activeSlot, crewPreview && isAssistantMember(active))
-  // Ask the host to show Meet CrewMates on the first visit, once the roster
-  // says whether Mate's first-visit landing applies: that landing is the first
-  // visit then, so the flow is not also announced over it. The host decides
-  // whether the flow is still due (whether this workspace has seen it), so a
-  // later visit, once Mate has history, still announces; the empty-state
-  // button stays the on-demand entry.
-  const entryAnnouncedRef = useRef(false)
-  useEffect(() => {
-    if (entryAnnouncedRef.current || !loaded) return
-    entryAnnouncedRef.current = true
-    const mate = crewPreview && !loadError ? resolveMateLanding(members) : undefined
-    if (mate && (!urlMember || urlMember === mate.name)) return
-    window.dispatchEvent(new Event(CREWMATES_PAGE_ENTERED_EVENT))
-  }, [loaded, loadError, crewPreview, members, urlMember])
+  // Mate, and a crewmate just created here, speak first: once the confirmed
+  // thread is open, ask the gateway for the first greeting. The server greets
+  // only an empty, never-greeted thread that still owes one (Mate's welcome,
+  // or the goal question of a crewmate created with `first_greeting`), so this
+  // is a no-op on every later open. Asked only for Mate (with the preview on)
+  // and dashboard-created crewmates: no other row can be owed one.
+  useFirstGreeting(
+    active?.slug,
+    activeSlot,
+    !!active && ((crewPreview && isAssistantMember(active)) || active.dashboard_created === true),
+  )
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
   // failed POST is a transport error. Both render through ErrorNotice so
@@ -2113,12 +2023,10 @@ export default function MembersPage() {
   // late answer for another member is that member's newest, so it lands).
   const threadReqSeq = useRef<Record<string, number>>({})
   // The "+" hold (`followUp`) is released by an open's outcome ONLY when the
-  // hold belongs to the crewmate that open was for. A parked greeting outlives
-  // its create's hold, so re-clicking crewmate A while crewmate B's greeting
-  // is still in flight lands A's collision / failure here; clearing
-  // unconditionally would drop B's hold mid-send, let a create C start, and
-  // leave two refusals racing for the one `postCreateError` record. A's own
-  // hold (if any) is the one this open may release.
+  // hold belongs to the crewmate that open was for: re-clicking crewmate A
+  // while crewmate B's follow-up is still in flight lands A's answer here, and
+  // clearing unconditionally would drop B's hold mid-follow-up. A's own hold
+  // (if any) is the one this open may release.
   const releaseFollowUp = useCallback((name: string) => {
     if (followUpRef.current?.name === name) setFollowUp(null)
   }, [])
@@ -2141,38 +2049,12 @@ export default function MembersPage() {
         // first-bound-wins). Mounting it would be a silent misroute — the
         // defining failure for a page whose premise is identity.
         setThreadOutcome(m.name, () => ({ slot_key: '', collision: r.member }))
-        if (pendingGreets.current.delete(m.name)) releaseFollowUp(m.name)
+        if (pendingOpens.current.delete(m.name)) releaseFollowUp(m.name)
         return
       }
       setThreadOutcome(m.name, () => ({ slot_key: r.slot_key }))
-      // The crewmate created moments ago: its first chat turn is seeded on the user's
-      // behalf so the chat opens with the crewmate's own greeting rather than an
-      // empty transcript. Once, on the first confirmed slot; the same send path the
-      // composer uses (chat-core `sendTurn`), so receipt/auth handling is shared.
-      // A greeting is NOT seeded while ANOTHER crewmate's follow-up is still
-      // live — its failure notice up, or its own greeting send still in
-      // flight: `postCreateError` holds one record, and a refused send here
-      // would overwrite (or race) that one's retry. The window is real: a
-      // parked greeting outlives its create's hold (a failed first open frees
-      // the "+"), so a second crewmate can be mid-greeting when the first is
-      // re-clicked. It stays parked and rides the next open of this crewmate
-      // instead, once the other follow-up is over. This crewmate's OWN
-      // follow-up (the create's first open) is not "another".
-      const greet = pendingGreets.current.get(m.name)
-      const otherFollowUp = followUpRef.current !== null && followUpRef.current.name !== m.name
-      if (greet && !postCreateErrorRef.current && !otherFollowUp) {
-        pendingGreets.current.delete(m.name)
-        if (pageMounted.current) {
-          // Greet the crewmate by the name it shows: a crewmate made from a
-          // free-form name is keyed by a derived id (`launch-notes`) and shows
-          // the typed text as its label.
-          const shown = m.display_name?.trim() || greet.name
-          const message = greet.job
-            ? t('pages.membersPage.greeting_seed_with_job', { name: shown, job: greet.job })
-            : t('pages.membersPage.greeting_seed', { name: shown })
-          void seedGreeting(greet, r.slot_key, message)
-        }
-      }
+      // The crewmate created moments ago has its chat: the follow-up is over.
+      if (pendingOpens.current.delete(m.name)) releaseFollowUp(m.name)
       if (m.slot_key !== r.slot_key) {
         queryClient.setQueryData<MemberRosterRow[]>(MEMBERS_ROSTER_QUERY_KEY, (rows) =>
           rows?.map((row) => (row.name === m.name ? { ...row, slot_key: r.slot_key, bound: true } : row)),
@@ -2181,13 +2063,11 @@ export default function MembersPage() {
     },
     onError: (error, m, seq) => {
       if (seq !== threadReqSeq.current[m.name]) return
-      // The hold comes down — the failure notice under this line is the
-      // user's surface now — but a parked greeting STAYS parked: a transient
-      // thread POST failure right after a successful create is ordinary, and
-      // the next successful open of this crewmate (the re-click repair
-      // gesture, the reconnect re-POST) seeds it then. Deleting it here made
-      // that reopen an empty chat with no way to get the greeting back.
-      if (pendingGreets.current.has(m.name)) releaseFollowUp(m.name)
+      // The hold comes down: the failure notice under this line is the
+      // user's surface now. The greeting the server owes this crewmate is
+      // still owed, so its next successful open (the re-click repair gesture,
+      // the reconnect re-POST) asks for it then.
+      if (pendingOpens.current.delete(m.name)) releaseFollowUp(m.name)
       setThreadOutcome(m.name, (prev) => ({
         slot_key: prev?.slot_key ?? '',
         failed: true,
@@ -2854,9 +2734,9 @@ export default function MembersPage() {
       window.removeEventListener('blur', onVis)
     }
   }, [])
-  // A creation surface (guided flow or Advanced form) hides the chat while it
+  // The New crewmate card hides the chat while it
   // stays mounted: hidden is not viewed, so it neither reads nor suppresses.
-  const threadShown = pageVisible && !guided.open && !createOpen
+  const threadShown = pageVisible && !createOpen
   useEffect(() => {
     // Viewing the thread is the read — but only a VISIBLE view is a view. A
     // hidden member tab neither clears its own badge nor relays one; on
@@ -3111,13 +2991,13 @@ export default function MembersPage() {
 
   /** Opens `m`, or answers `false` when the Schedules guard refuses to let go of a
    *  dirty draft. A caller that parked state on this open HAPPENING must read that
-   *  answer: `openCreated` holds the create button and parks a greeting on the open
-   *  releasing them, and a refused guard opens no thread to do it. Everything but the
+   *  answer: `openCreated` holds the create button on the open releasing it, and a
+   *  refused guard opens no thread to do it. Everything but the
    *  guard's own await runs synchronously, so a switch with nothing at stake still
    *  lands in one tick. */
   const openMember = useCallback(
     async (m: MemberRosterRow): Promise<boolean> => {
-      if (!leaveGuided()) return false
+      if (!leaveCreate()) return false
       // Re-clicking the open member is the repair gesture (re-POST); the URL
       // is unchanged so the sync effect would not fire — call through. It is
       // also an explicit choice of that member, so a swap notice still
@@ -3158,36 +3038,13 @@ export default function MembersPage() {
       if (ok) go()
       return ok
     },
-    [activeName, urlMember, isMobile, activate, setSearchParams, leaveGuided],
+    [activeName, urlMember, isMobile, activate, setSearchParams, leaveCreate],
   )
 
-  // The seeded first turn of a just-created crewmate's chat. The receipt is
-  // read, not dropped — but only a REFUSED send is said and retried: the
-  // server answered no, nothing ran, so re-sending the same text to the same
-  // slot cannot duplicate a turn. `transport-error` and `response-late` are
-  // INDETERMINATE by the transport's own contract (sendTurn.ts: the request
-  // may well have started a turn and the reply is merely late), and `unknown`
-  // proves a 2xx was received; a retry on any of those is the duplicate
-  // greeting the contract names the seeder as the caller that must not cause.
-  // The chat is open under this line, so whether the greeting landed is
-  // visible there; the transcript is the honest surface for an indeterminate
-  // send, a notice offering a resend is not.
-  const seedGreeting = useCallback(async (created: CreatedCrewmate, slot: string, message: string) => {
-    setFollowUp(created)
-    try {
-      const receipt = await sendTurn({ message, slot })
-      if (receipt.status === 'refused') {
-        setPostCreateError({ kind: 'greeting', created, slot, message })
-      }
-    } finally {
-      setFollowUp(null)
-    }
-  }, [])
-
-  // A crewmate was just created in this page's dialog: close it, note the
-  // greeting to seed once its chat is confirmed (openThread.onSuccess), and
-  // open its chat. The roster is re-read BEFORE the URL names the new crewmate,
-  // so the URL sync effect finds it — a name not yet on the roster would read
+  // A crewmate was just created in this page's dialog: close it and open its
+  // chat; the hold rides that open (openThread's outcome releases it). The
+  // roster is re-read BEFORE the URL names the new crewmate, so the URL sync
+  // effect finds it — a name not yet on the roster would read
   // as "gone" and open someone else in its place. A FAILED re-read must not
   // take that path either: react-query keeps the stale roster as `res.data`
   // on error, so the name would be missing for the wrong reason. It is
@@ -3195,30 +3052,19 @@ export default function MembersPage() {
   const openCreated = useCallback(async (created: CreatedCrewmate) => {
     setPostCreateError(null)
     setFollowUp(created)
-    pendingGreets.current.set(created.name, created)
     // A re-read that did not actually land is a failed re-read. The star
     // mutation's `cancelQueries` (above) can cut this refetch short, and a
     // cancelled query REVERTS to its previous successful state: `refetch()`
     // then resolves without `isError`, carrying the pre-create roster, and
-    // the new name would read as absent — greeting dropped, someone else's
-    // chat opened. Only a response newer than what we had counts as fresh.
+    // the new name would read as absent and someone else's chat opened. Only
+    // a response newer than what we had counts as fresh.
     const before = queryClient.getQueryState(MEMBERS_ROSTER_QUERY_KEY)?.dataUpdatedAt ?? 0
     const res = await rosterQuery.refetch()
     // The user left while the roster was re-reading: nothing below may run.
-    // The URL write would drag the page they chose back here, and the chat
-    // open would seed a greeting into a page that is gone.
-    if (!pageMounted.current) {
-      pendingGreets.current.delete(created.name)
-      return
-    }
+    // The URL write would drag the page they chose back here.
+    if (!pageMounted.current) return
     const fresh = !res.isError && res.dataUpdatedAt > before
     if (!fresh) {
-      // The greeting STAYS parked. The notice's retry repeats this step and
-      // re-parks the same record, but the notice can also be DISMISSED (over
-      // a roster with other rows), and the next roster read that does land
-      // then lists the new crewmate: its first open must still seed the
-      // greeting, once, through openThread's parked-greeting path. Deleting
-      // it here made that open an empty chat with nothing left to send.
       setFollowUp(null)
       setPostCreateError({ kind: 'roster', created })
       return
@@ -3226,36 +3072,25 @@ export default function MembersPage() {
     const hit = res.data?.find((r) => r.name === created.name)
     if (hit) {
       // The hold now rides the thread open: released by openThread's
-      // onSuccess (collision, or the greeting send's own end) or onError.
+      // onSuccess or onError.
+      pendingOpens.current.add(created.name)
       if (await openMember(hit)) return
+      pendingOpens.current.delete(created.name)
       // The Schedules guard refused: the user kept a dirty draft, so no thread
       // opens and nothing is left to release the hold — the create button would
-      // stay disabled for the rest of the page's life. Drop the hold here and
-      // leave the greeting PARKED, the same shape as the failed-re-read branch
-      // above: the crewmate IS on the roster now, so its first open seeds the
-      // greeting once through openThread's parked-greeting path.
+      // stay disabled for the rest of the page's life. Drop the hold here; the
+      // crewmate IS on the roster now, and its first open asks for the
+      // greeting the server owes it.
       setFollowUp(null)
       return
     }
     // The re-read landed without the name (the server accepted a name the
     // roster's read does not list). The URL write below lets the URL sync
-    // effect say "gone"; no chat of this name exists to greet, so the
-    // greeting is dropped with the hold rather than parked for a row that is
-    // not coming.
-    pendingGreets.current.delete(created.name)
+    // effect say "gone"; the hold is dropped rather than kept for a row that
+    // is not coming.
     setFollowUp(null)
     setSearchParams({ [MEMBER_PARAM]: created.name }, { replace: true })
   }, [rosterQuery, openMember, setSearchParams, queryClient])
-
-  /** Opens a crewmate created here by its member KEY (never the display
-   *  name), through the same guards as any switch. Not on the roster yet (its
-   *  re-read is in flight): the URL names it once the page's guards agree,
-   *  and the URL sync opens it when the roster lands. */
-  const openCreatedMember = useCallback((key: string) => {
-    const target = members.find((m) => m.name === key)
-    if (target) void openMember(target)
-    else leave(() => setSearchParams({ [MEMBER_PARAM]: key }, { replace: true }))
-  }, [members, openMember, leave, setSearchParams])
 
   const handleCreated = useCallback((created: CreatedCrewmate) => {
     // The form's work is done: the open that follows must not ask to leave it.
@@ -3268,9 +3103,8 @@ export default function MembersPage() {
     const failed = postCreateError
     if (!failed) return
     setPostCreateError(null)
-    if (failed.kind === 'roster') void openCreated(failed.created)
-    else void seedGreeting(failed.created, failed.slot, failed.message)
-  }, [postCreateError, openCreated, seedGreeting])
+    void openCreated(failed.created)
+  }, [postCreateError, openCreated])
 
   // URL -> open crewmate. Once the roster is in: a URL that names a crewmate
   // opens it; a URL that names none (a fresh visit, the sidebar entry, a
@@ -3291,6 +3125,9 @@ export default function MembersPage() {
   // per page mount, so the phone's Back to the roster stays on the roster.
   useEffect(() => {
     if (!loaded || loadError) return
+    // A create link's URL is rewritten by its own effect in this same commit
+    // (keeping the chat it was followed from); land on what that leaves.
+    if (draftRequest) return
     if (urlMember) {
       const hit = members.find((m) => m.name === urlMember)
       if (hit) {
@@ -3423,14 +3260,14 @@ export default function MembersPage() {
     }
     restoredRef.current = target.name
     setSearchParams({ [MEMBER_PARAM]: target.name }, { replace: true })
-  }, [loaded, loadError, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers, crewPreview])
+  }, [loaded, loadError, draftRequest, urlMember, urlTeam, teamsQ.data, members, listedMembers, activeName, isMobile, activate, setSearchParams, rosterQuery.isFetching, defaultAgentSettled, orderedMembers, crewPreview])
 
   // Team open: the header row's click. Same history rule as openMember -- one
   // entry above md or while something is already open, a PUSHED step from the
   // bare roster below md so the back button pops.
   const openTeam = useCallback(
     (id: string) => {
-      if (!leaveGuided()) return
+      if (!leaveCreate()) return
       const go = () => {
         if (urlMember || urlTeam || !isMobile) {
           // The replace keeps the entry's own state: below md this branch is
@@ -3449,7 +3286,7 @@ export default function MembersPage() {
       if (!schedAtStakeRef.current()) { go(); return }
       void schedGuardRef.current().then((ok) => { if (ok) go() })
     },
-    [urlMember, urlTeam, isMobile, setSearchParams, location.state, leaveGuided],
+    [urlMember, urlTeam, isMobile, setSearchParams, location.state, leaveCreate],
   )
   const closeTeamView = useCallback(() => {
     if ((location.state as { fromRoster?: boolean } | null)?.fromRoster) navigate(-1)
@@ -3486,77 +3323,41 @@ export default function MembersPage() {
       })
   }, [activeTeam, orderedMembers, slotKeyOf, isRunning, liveNeedsYou, collidingSlugs])
 
-  // The post-create notice (a failed roster re-read, or a refused greeting)
-  // with its retry, rendered ONCE in whichever column is on screen: the chat
-  // column at md and up, or whenever a chat is open. Below md with no chat
-  // open, a GREETING notice goes into the roster column instead: that column
-  // is the whole screen there, the "+" the notice holds sits in its header,
-  // and the notice's own dismiss is the one control that releases the hold —
-  // rendering it only in the hidden chat column left a phone with a held "+"
-  // and no visible reason or way out (Opus, round 43). A ROSTER notice below
-  // md already brings the chat column on screen (see the two `className`s).
-  // An open team view is the screen below md the way an open chat is (the
-  // roster is hidden under it), so the notice stays in the main column then.
-  const greetingNoticeInRoster =
-    isMobile && !activeName && !activeTeam && postCreateError !== null && postCreateError.kind !== 'roster'
+  // The post-create notice (a failed roster re-read) with its retry, rendered
+  // ONCE, in the chat column: below md a roster notice brings that column on
+  // screen (see the two `className`s).
   const postCreateNotice = postCreateError && (
     /* No hand-off: a chat may already be mounted under this line with
        a draft in its composer (ChatPane keeps it in local state), and
        the hand-off navigates away, unmounting it. The retry repeats the
        one step that failed; the create itself already succeeded. */
     <div
-      // A roster failure with no chat open is the whole column's
-      // content: centred like the hero it replaced, so the empty pane
-      // reads as intended, not broken. A greeting failure sits as a bar
-      // above the chat that is already open under it.
-      className={postCreateError.kind === 'roster' && !active
+      // With no chat open the notice is the whole column's content: centred
+      // like the hero it replaced, so the empty pane reads as intended, not
+      // broken.
+      className={!active
         ? 'flex flex-1 flex-col items-center justify-center gap-3 px-6 py-10 text-center animate-rise'
         : 'flex flex-wrap items-center gap-2 px-4 py-2'}
       data-testid="member-post-create-error"
     >
       {/* The retry sits right after the text, not at the far edge of a
           stretched notice: the two read as one sentence, and its label
-          names the one step it repeats ("Refresh your crewmates" / "Send
-          it again") so it cannot read as "create Radar again"; it names
-          the crewmates, not "the list", because below md the roster is
-          follows `postCreateDismissable`: a ROSTER failure over an
-          empty cached roster has none — closing it would put "No
-          crewmates yet" under a crewmate that exists, and the retry is
-          the only honest way off it; over a roster with other rows it
-          can be closed, so the existing chats stay reachable below md.
-          A GREETING failure can always be dismissed: its chat is already
-          open, or (below md, with none open) the roster is the screen. */}
+          names the one step it repeats ("Refresh your crewmates") so it
+          cannot read as "create Radar again". The dismiss follows
+          `postCreateDismissable`: over an empty cached roster there is
+          none — closing it would put "No crewmates yet" under a crewmate
+          that exists, and the retry is the only honest way off it; over a
+          roster with other rows it can be closed, so the existing chats
+          stay reachable below md. */}
       <ErrorNotice
-        message={t(
-          postCreateError.kind === 'roster'
-            ? 'pages.membersPage.create_roster_failed'
-            : 'pages.membersPage.create_greeting_failed',
-          { name: postCreateError.created.name },
-        )}
+        message={t('pages.membersPage.create_roster_failed', { name: postCreateError.created.name })}
         variant="inline"
         onDismiss={postCreateDismissable ? () => setPostCreateError(null) : undefined}
-        // Closing a GREETING notice is the only way to lose "Send it
-        // again" (the refused turn lives nowhere else), so the dismiss
-        // says so up front; a roster notice's dismiss costs nothing the
-        // list itself does not offer back, so it keeps the plain label.
-        dismissLabel={postCreateError.kind === 'greeting' ? t('pages.membersPage.create_greeting_dismiss') : undefined}
         className="min-w-0"
       />
       <Btn onClick={retryPostCreate} className="shrink-0" data-testid="member-post-create-retry">
-        {t(postCreateError.kind === 'roster' ? 'pages.membersPage.create_retry_roster' : 'pages.membersPage.create_retry_greeting')}
+        {t('pages.membersPage.create_retry_roster')}
       </Btn>
-      {/* The text "Send it again" would send, quoted: it lives only in
-          this record (the refused turn never reached the transcript),
-          and a resend of words the user cannot see is a consent-shaped
-          hesitation. */}
-      {postCreateError.kind !== 'roster' && (
-        <blockquote
-          className="basis-full m-0 pl-3 border-l-2 border-border text-[12.5px] text-muted italic"
-          data-testid="member-post-create-greeting-preview"
-        >
-          {postCreateError.message}
-        </blockquote>
-      )}
     </div>
   )
 
@@ -3600,7 +3401,7 @@ export default function MembersPage() {
         className={`${
           activeName && !activeTeam && !rosterPinned
             ? 'hidden'
-            : activeName || activeTeam || guided.open || createOpen || postCreateError?.kind === 'roster'
+            : activeName || activeTeam || createOpen || postCreateError
               ? 'hidden md:flex'
               : 'flex'
         } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
@@ -3633,10 +3434,9 @@ export default function MembersPage() {
               "crewmates", and a person-figure here would be the one Lucide
               person on a page whose crewmates are drawn as ghosts. */}
           {/* The crewmate item is held while a create's follow-up step
-              (roster re-read, greeting) is still in flight or failed:
+              (roster re-read, chat open) is still in flight or failed:
               `openCreated` starts by clearing that record, so a second
-              create here would silently drop the first one's retry — the
-              greeting would stay unsent with nothing left to say so. The
+              create here would silently drop the first one's retry. The
               notice above the chat column names the step; its retry or
               dismissal is what re-enables the item. The hold is the ITEM's,
               not the menu's, so a second door added here is unaffected. */}
@@ -3669,7 +3469,7 @@ export default function MembersPage() {
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end" data-testid="member-add-menu">
               <DropdownMenuItem
-                onSelect={() => openGuided()}
+                onSelect={openQuick}
                 disabled={createHeld !== null}
                 // A disabled Radix item takes no pointer events, so a `title`
                 // would never show; the hold reason is written under the label
@@ -3686,9 +3486,6 @@ export default function MembersPage() {
                     </span>
                   )}
                 </span>
-              </DropdownMenuItem>
-              <DropdownMenuItem onSelect={openAdvanced} disabled={createHeld !== null} data-testid="member-add-advanced" {...uiLocation('members.add-menu.advanced')}>
-                {t('pages.membersPage.create_advanced')}
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -3733,7 +3530,6 @@ export default function MembersPage() {
                 })
               : t('pages.membersPage.member_count', { count: shownMembers.length })}
         </div>
-        {greetingNoticeInRoster && postCreateNotice}
         {/* A failed registry read blanks EVERY roster badge at once. That is
             not "no member has a patrol" — it is a page-level unknown, so it
             is said here, on the roster the badges live on, not only inside
@@ -3950,7 +3746,7 @@ export default function MembersPage() {
             // instead (see the DM thread section), so the two panes never
             // show the same hero twice on a wide viewport.
             <li className="md:hidden">
-              <CrewmateEmptyHero onCreate={() => openGuided()} onAdvanced={openAdvanced} held={createHeld} />
+              <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} />
             </li>
           )}
           {loadError && (
@@ -4067,10 +3863,8 @@ export default function MembersPage() {
         // Below md the column shows only while a chat or a team view is open —
         // except while a ROSTER post-create notice is up: a failed re-read
         // opens no chat, and hiding the column would hide the one place the
-        // failure and its retry are said. A greeting notice sits over its
-        // chat; once that chat is closed the roster is the screen and the
-        // notice waits for the reopen.
-        className={`${activeName || activeTeam || postCreateError?.kind === 'roster' ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0 relative`}
+        // failure and its retry are said.
+        className={`${activeName || activeTeam || postCreateError ? 'flex' : 'hidden md:flex'} flex-1 min-w-0 flex-col min-h-0 relative`}
         ref={threadColumnRef}
         // The page's main column: the thread (or the team view, or an empty
         // state), and never the side panel, which is a sibling of this section.
@@ -4078,7 +3872,7 @@ export default function MembersPage() {
         // panel's own copy — the two surfaces share several sentences, "Opening
         // the conversation…" among them, and each says it about itself.
         data-testid="member-main-column"
-        style={guided.open || createOpen ? { display: 'none' } : undefined}
+        style={createOpen ? { display: 'none' } : undefined}
         onClickCapture={(event) => {
           if (!isAssistantMember(active) || event.button !== 0 || event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return
           const anchor = event.target instanceof Element ? event.target.closest('a[href]') : null
@@ -4087,10 +3881,10 @@ export default function MembersPage() {
           if (!draft) return
           event.preventDefault()
           event.stopPropagation()
-          openGuided(draft)
+          openCreate(false, draft)
         }}
       >
-        {!greetingNoticeInRoster && postCreateNotice}
+        {postCreateNotice}
         {/* The hero yields to a post-create notice: after the FIRST create a
             failed re-read leaves the cached roster at [] while the crewmate
             exists, and "No crewmates yet" under "Radar was created" would be
@@ -4098,7 +3892,7 @@ export default function MembersPage() {
             team view too: a team can exist before its first crewmate does,
             and the pane is the team's then. */}
         {!active && !activeTeam && !postCreateError && loaded && !loadError && hasNoCrewmates(members) && (
-          <CrewmateEmptyHero onCreate={() => openGuided()} onAdvanced={openAdvanced} held={createHeld} />
+          <CrewmateEmptyHero onCreate={openQuick} onAdvanced={openAdvanced} held={createHeld} />
         )}
         {/* A failed roster read at md and up: the roster column shows its own
             notice, but this column would otherwise be blank — no chat can
@@ -4215,7 +4009,7 @@ export default function MembersPage() {
                     const m = orderedMembers.find((row) => row.name === name)
                     if (m) void openMember(m)
                   }}
-                  onCreate={createHeld ? undefined : () => openGuided()}
+                  onCreate={createHeld ? undefined : openQuick}
                   rosterShown={rosterPinned}
                   onToggleRoster={() => setRosterPinned((v) => !v)}
                 />
@@ -4636,37 +4430,6 @@ export default function MembersPage() {
                     composerInput={CrewComposer}
                     frameless
                     followContentWidth
-                    crewmateCreated={Object.prototype.hasOwnProperty.call(createdReceipts, active.name) ? (() => {
-                      const receipt = createdReceipts[active.name]
-                      return (
-                        <section className="mx-4 mb-4 rounded-xl border border-border bg-card text-text p-4" role="status" data-testid="member-created-receipt">
-                          <h2 className="text-sm font-semibold">{t('components.meetCrewmatesFlow.step4_title', { name: receipt.name })}</h2>
-                          <p className="mt-2 text-sm whitespace-pre-wrap break-words">{receipt.goal}</p>
-                          {receipt.schedule === 'none' && (
-                            <p className="mt-2 text-[13px] text-muted">
-                              <span className="font-medium text-text">{t('components.meetCrewmatesFlow.when_label')}</span>{' '}
-                              <span>{t('components.meetCrewmatesFlow.when_ask')}</span>
-                            </p>
-                          )}
-                          {/* No hand-off: the receipt sits above the crewmate's composer, whose unsent draft the hand-off navigation would discard. */}
-                          {(receipt.schedule === 'refused' || receipt.schedule === 'unknown') && (
-                            <ErrorNotice message={t(receipt.schedule === 'refused' ? 'components.meetCrewmatesFlow.ready_no_schedule' : 'components.meetCrewmatesFlow.ready_schedule_unknown', { name: receipt.name })} />
-                          )}
-                          <Btn
-                            className="mt-3"
-                            onClick={() => {
-                              // Through the page's own exit guards (an open
-                              // Profile's Schedules draft asks first), like
-                              // every other member switch.
-                              openCreatedMember(receipt.key ?? receipt.name)
-                            }}
-                            data-testid="member-created-receipt-open"
-                          >
-                            {t('components.meetCrewmatesFlow.open_chat', { name: receipt.name })}
-                          </Btn>
-                        </section>
-                      )
-                    })() : undefined}
                     // The failure notice above owns the verdict on this thread
                     // while a repair has failed; the pane's own "Session
                     // ready" would contradict it one line down.
@@ -4697,42 +4460,21 @@ export default function MembersPage() {
           </>
         )}
       </section>
-      <div className={guided.open || createOpen ? 'flex flex-1 min-w-0 min-h-0 flex-col overflow-y-auto' : 'hidden'} data-testid="member-create-pane">
-        {guided.open && draftKept && (
-          <p role="status" className="mx-4 mt-3 mb-0 rounded-lg border border-border bg-card px-3 py-2 text-[13px] text-text" data-testid="member-draft-kept">
-            {t('components.meetCrewmatesFlow.draft_kept')}
-          </p>
-        )}
-        {/* Always mounted: an unfinished guided draft survives while hidden.
-            Below sm the chapter stacks and must GROW past the pane so the pane
-            scrolls (sticky footer); clamping it with min-h-0 there clipped the
-            goal examples with nothing able to scroll. From sm up the chapter's
-            own section scrolls inside the clamped height. */}
-        <div className={guided.open ? 'flex flex-1 min-w-0 sm:min-h-0' : 'hidden'} data-testid="member-create-guided">
-          <MeetCrewmatesFlow
-            embedded
-            open={guided.open}
-            initialDraft={creationDraft}
-            onCreated={recordCreated}
-            persistFailed={guided.persistFailed}
-            onDone={closeGuided}
-            onDraftKept={() => setDraftKept(true)}
-            onDraftStateChange={onDraftStateChange}
-            // The shell's leave registry is synchronous, so this page's own
-            // `window.confirm` asks, as its other guards here do.
-            confirmLeave={(message) => window.confirm(message)}
-            onOpenMember={(key) => {
-              closeGuided('completed')
-              openCreatedMember(key)
-            }}
-            onReturnToChat={() => {
-              if (creationOrigin.current) setSearchParams({ [MEMBER_PARAM]: creationOrigin.current }, { replace: true })
-            }}
-          />
-        </div>
-        {/* The full form (Advanced), in place of the chat like the flow. */}
+      <div className={createOpen ? 'flex flex-1 min-w-0 min-h-0 flex-col overflow-y-auto' : 'hidden'} data-testid="member-create-pane">
+        {/* The New crewmate card, in place of the chat. */}
         <div className={createOpen ? 'flex flex-1 min-w-0 min-h-0 justify-center p-4' : 'hidden'} data-testid="member-create-advanced">
-          <NewCrewmateDialog embedded open={createOpen} onClose={() => setCreateOpen(false)} onCreated={handleCreated} existingNames={existingNames} />
+          <NewCrewmateDialog
+            embedded
+            open={createOpen}
+            startExpanded={createExpanded}
+            initialDraft={createDraft}
+            guided
+            onDraftStateChange={onCreateDraftState}
+            firstGreeting
+            onClose={() => setCreateOpen(false)}
+            onCreated={handleCreated}
+            existingNames={existingNames}
+          />
         </div>
       </div>
       </div>
@@ -4747,7 +4489,7 @@ export default function MembersPage() {
           taking the gesture back while it is hidden; narrow ones make it an
           overlay the header button opens, with the same close control, on the
           chat page's dock motion. */}
-      <div className={guided.open || createOpen ? 'hidden' : 'contents'}>
+      <div className={createOpen ? 'hidden' : 'contents'}>
       {active && (() => {
           // Notes — the crewmate's own standing notes, read-only (no editor:
           // see CrewNotesTab). Its briefing read is gated on the tab being on

@@ -9,13 +9,13 @@
  * **Built from** field is "the default agent or a custom agent" — a default,
  * not a required pick. So converging both doors on this dialog retires that
  * guard: a crew created without touching **Built from** is built from the
- * default `kirocrew` agent, exactly as the Crewmates page already behaved.
+ * default template, the built-in `kirocrew` agent.
  *
  * This pins that shipped behaviour (the positive inverse of the deleted guard):
  * creating with only a name issues the POST — it is NOT blocked — and sends
  * `kiro_agent: 'kirocrew'`. If someone restored a required-template refusal in
  * the dialog, `createKirocrewAgent` would never be called and the first
- * assertion fails; if the `builtFrom || BUILTIN_AGENT` fallback were dropped,
+ * assertion fails; if the `builtFrom || DEFAULT_CREWMATE_TEMPLATE` fallback were dropped,
  * the `kiro_agent` assertion fails.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
@@ -77,6 +77,15 @@ describe('NewCrewmateDialog — Built from is a default, not a required pick', (
     expect(mockApi.createKirocrewAgent).toHaveBeenCalledWith(
       expect.objectContaining({ name: 'researcher', kiro_agent: 'kirocrew' }),
     )
+  })
+
+  it('the folded card never names the template; unfolding Advanced settings shows kirocrew as the default', async () => {
+    renderDialog()
+    const form = screen.getByTestId('crewmate-create-form')
+    expect(screen.queryByRole('combobox', { name: 'Built from' })).toBeNull()
+    expect(form).not.toHaveTextContent(/kirocrew/i)
+    fireEvent.click(screen.getByTestId('crewmate-create-advanced-toggle'))
+    expect(await screen.findByRole('combobox', { name: 'Built from' })).toHaveTextContent('kirocrew')
   })
 
   it('still refuses a BLANK name — client-side name validation is independent of the retired template guard', async () => {

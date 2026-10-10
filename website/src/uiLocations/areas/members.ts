@@ -68,6 +68,8 @@ export const LOCATIONS = {
   'members.add-menu': {
     kind: 'button',
     label: { from: 'attr', attr: 'aria-label' },
+    // Its New crewmate opens the card whose Advanced settings unfold in place.
+    terms: ADVANCED_TERMS,
     placements: [{
       ...ON_PAGE, entry: 'toolbar',
       requires: [
@@ -128,11 +130,6 @@ export const LOCATIONS = {
     kind: 'menu-item',
     terms: CREATE_TERMS,
     placements: [{ surface: 'members', parent: 'members.switcher', entry: 'menu' }],
-  },
-  'members.add-menu.advanced': {
-    kind: 'menu-item',
-    terms: ADVANCED_TERMS,
-    placements: [{ surface: 'members', parent: 'members.add-menu', entry: 'menu' }],
   },
   // The identity pill in the open crewmate's header. Its text (and accessible
   // name) is the crewmate's name; what the click does is the tooltip.

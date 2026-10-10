@@ -1,8 +1,9 @@
 """Mate's first welcome: once-only, crewmate threads only, a hidden kickoff.
 
 Each guard in :mod:`kiro_crew.dashboard.mate_welcome` has a test here that
-fails when the guard is removed: the owed record the first-crewmate step writes
-(a member that arrived any other way never greets), the marker claim (two calls
+fails when the guard is removed: the owed record a create writes (Mate's
+first-crewmate step, or a ``first_greeting`` create; a member that arrived any
+other way never greets), the marker claim (two calls
 start one turn), the crewmate check (the reserved ``default`` member and an
 unknown member never greet), the emptiness and busy checks, and the "no
 transcript row" property of the dispatch itself. The welcome travels in the
@@ -24,6 +25,7 @@ from kiro_crew.agent_files import ASSISTANT_MEMBER_NAME
 from kiro_crew.dashboard import mate_welcome as cg
 from kiro_crew.members import (
     DM_SLOT_MODE,
+    WELCOME_KIND_GOAL,
     mark_welcome_owed,
     member_slot_key,
     write_dm_binding,
@@ -33,10 +35,14 @@ MATE_SLUG = "mate"
 OTHER_SLUG = "code-reviewer"
 
 
-def _owe(slug: str, member: str) -> None:
-    """What the first-crewmate step records for *member*, whose slug is *slug*."""
+def _owe(slug: str, member: str, kind: str = "") -> None:
+    """What a create records for *member*, whose slug is *slug*.
+
+    No *kind* is the first-crewmate step's record for Mate; ``goal`` is a
+    New crewmate card's create (``first_greeting``).
+    """
     config = SimpleNamespace(agents={member: SimpleNamespace(member_id=slug)})
-    assert mark_welcome_owed(member, config=config)
+    assert mark_welcome_owed(member, config=config, kind=kind)
 
 
 def _bind_thread(state, slug: str, member: str, *, owed: bool = True):
@@ -123,14 +129,6 @@ class TestGreetingGuards:
         assert dispatched.kickoffs == [cg.FIRST_WELCOME_WITH_CREW.format(name="Mate")]
 
     @pytest.mark.asyncio
-    async def test_another_created_crewmate_owes_nothing_here(self, tmp_path, dispatched):
-        """A crewmate made on the dashboard greets through its create flow's seeded turn."""
-        state = _make_state(tmp_path)
-        _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
-        assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.NOT_OWED
-        assert dispatched.slots == []
-
-    @pytest.mark.asyncio
     async def test_a_member_no_create_path_recorded_never_greets(self, tmp_path, dispatched):
         """An imported or auto-registered crewmate has no owed record."""
         state = _make_state(tmp_path)
@@ -200,6 +198,59 @@ class TestGreetingGuards:
         assert dispatched.slots == []
 
 
+class TestGoalWelcome:
+    """A crewmate made on the New crewmate card opens by asking for its goal."""
+
+    @pytest.mark.asyncio
+    async def test_owed_crewmate_greets_once_with_the_goal_question(self, tmp_path, dispatched):
+        state = _make_state(tmp_path)
+        _owe(OTHER_SLUG, "code-reviewer", WELCOME_KIND_GOAL)
+        slot = _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
+        assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.STARTED
+        assert dispatched.slots == [slot.key]
+        assert dispatched.kickoffs == [cg.goal_kickoff(_ROWS["code-reviewer"], "code-reviewer")]
+        assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.ALREADY_GREETED
+        assert dispatched.slots == [slot.key]
+
+    @pytest.mark.asyncio
+    async def test_an_owed_crewmate_with_messages_never_greets(self, tmp_path, dispatched):
+        state = _make_state(tmp_path)
+        _owe(OTHER_SLUG, "code-reviewer", WELCOME_KIND_GOAL)
+        slot = _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
+        slot.append("user", "hi", "msg msg-u")
+        assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.NOT_EMPTY
+        assert dispatched.slots == []
+        assert not cg.greeting_marker_path(OTHER_SLUG).exists()
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_welcome_kind_owes_nothing(self, tmp_path, dispatched):
+        state = _make_state(tmp_path)
+        _owe(OTHER_SLUG, "code-reviewer", "something-newer")
+        _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
+        assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.NOT_OWED
+        assert dispatched.slots == []
+
+    def test_the_kickoff_names_the_crewmate_and_asks_for_its_goal(self):
+        row = SimpleNamespace(display_name="Scout", description="")
+        kickoff = cg.goal_kickoff(row, "scout")
+        assert kickoff.startswith("[First welcome]")
+        assert "introduce yourself by your name, Scout," in kickoff
+        assert "ask them what they want you to do" in kickoff
+        assert "Do not name your template, role or agent type" in kickoff
+        assert "never create a schedule without asking" in kickoff
+        assert "described as" not in kickoff
+        # An unlabelled crewmate is named by its key.
+        unlabelled = cg.goal_kickoff(SimpleNamespace(display_name="", description=""), "scout")
+        assert "introduce yourself by your name, scout," in unlabelled
+
+    def test_a_written_goal_is_confirmed_rather_than_asked(self):
+        row = SimpleNamespace(display_name="Scout", description="  Review open PRs ")
+        kickoff = cg.goal_kickoff(row, "scout")
+        assert kickoff.startswith(cg.GOAL_WELCOME.format(name="Scout"))
+        assert "described as: 'Review open PRs'" in kickoff
+        assert "restate it in your own words" in kickoff
+
+
 class TestHiddenKickoff:
     @pytest.mark.asyncio
     async def test_dispatch_runs_the_kickoff_without_a_transcript_row(self, tmp_path):
@@ -222,6 +273,25 @@ class TestHiddenKickoff:
         roles = [(m["role"], m["content"]) for m in slot.messages]
         assert roles == [("assistant", "Hi, I'm Mate. What should I call you?")]
         assert all(kickoff not in m["content"] for m in slot.messages)
+
+    @pytest.mark.asyncio
+    async def test_a_goal_kickoff_runs_without_a_transcript_row(self, tmp_path):
+        state = _make_state(tmp_path)
+        _owe(OTHER_SLUG, "code-reviewer", WELCOME_KIND_GOAL)
+        slot = _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
+        seen: list[tuple[str, dict]] = []
+
+        async def fake_run_chat(_state, _slot, message, **kwargs):
+            seen.append((message, kwargs))
+            _slot.append("assistant", "I'm Reviewer. Review your PRs, right?", "msg")
+
+        with patch("kiro_crew.dashboard.chat._run_chat", fake_run_chat):
+            assert await cg.maybe_start_first_greeting(state, OTHER_SLUG) == cg.STARTED
+            await slot.task
+        kickoff = cg.goal_kickoff(_ROWS["code-reviewer"], "code-reviewer")
+        assert seen == [(kickoff, {"_synthetic_payload": True, "_turn_actor": "gateway"})]
+        assert "Review my PRs" in kickoff
+        assert [m["role"] for m in slot.messages] == ["assistant"]
 
     def test_a_renamed_first_crewmate_is_welcomed_by_its_new_name(self):
         renamed = SimpleNamespace(display_name="Skipper", description="")
@@ -256,6 +326,20 @@ class TestGreetRoute:
             assert first.status == 200 and (await first.json()) == {"outcome": cg.STARTED}
             assert (await second.json()) == {"outcome": cg.ALREADY_GREETED}
         assert len(dispatched.slots) == 1
+
+    @pytest.mark.asyncio
+    async def test_route_greets_a_crewmate_its_create_owed_a_goal_welcome(
+        self, tmp_path, dispatched
+    ):
+        state = _make_state(tmp_path)
+        _bind_thread(state, OTHER_SLUG, "code-reviewer", owed=False)
+        async with TestClient(TestServer(_greet_app(state))) as client:
+            before = await client.post(f"/api/members/{OTHER_SLUG}/greet")
+            assert (await before.json()) == {"outcome": cg.NOT_OWED}
+            _owe(OTHER_SLUG, "code-reviewer", WELCOME_KIND_GOAL)
+            after = await client.post(f"/api/members/{OTHER_SLUG}/greet")
+            assert (await after.json()) == {"outcome": cg.STARTED}
+        assert dispatched.kickoffs == [cg.goal_kickoff(_ROWS["code-reviewer"], "code-reviewer")]
 
     @pytest.mark.asyncio
     async def test_app_token_is_refused(self, tmp_path, dispatched):

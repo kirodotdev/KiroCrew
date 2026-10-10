@@ -1,12 +1,32 @@
 """Guide ownership and server-only mutation completion, with no live gateway."""
 
+import dataclasses
+
 import pytest
 
+from kiro_crew import guide_catalog
 from kiro_crew.dashboard.guide_runs import GuideError, GuideStore
 
 
 @pytest.fixture
-def rig():
+def rig(monkeypatch):
+    # The store walks whatever steps the catalog declares. The shipped
+    # ``crewmate.create`` is a single commit step; this rig gives it two UI
+    # steps ahead of the commit so moves around a commit (forward into it,
+    # back out of it, never across a pending save) stay covered.
+    action = guide_catalog.ACTIONS["crewmate.create"]
+    monkeypatch.setitem(
+        guide_catalog.ACTIONS,
+        "crewmate.create",
+        dataclasses.replace(
+            action,
+            steps=(
+                guide_catalog.StepDef("first", guide_catalog.STEP_UI),
+                guide_catalog.StepDef("second", guide_catalog.STEP_UI),
+                *action.steps,
+            ),
+        ),
+    )
     now = [1000.0]
     store = GuideStore(clock=lambda: now[0])
     guide = store.start(

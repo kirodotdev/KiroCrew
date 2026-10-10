@@ -677,22 +677,34 @@ def member_dir(slug: str) -> Path:
     return target
 
 
-#: Written into a member's directory when the first-crewmate step creates Mate:
-#: that member owes its user a first welcome. A member that arrived any other
-#: way (a create form, discovery, an import, an app) has no such file and never
-#: greets through it.
+#: Written into a member's directory when the member owes its user a first
+#: welcome: Mate, created by the first-crewmate step, and a crewmate the
+#: Crewmates page's New crewmate card creates. A member that arrived any other
+#: way (discovery, an import, an app, an API create without ``first_greeting``)
+#: has no such file and never greets through it.
 WELCOME_OWED_FILENAME = "welcome_owed.json"
 
+#: The owed record's ``kind`` for Mate's welcome (no ``kind`` key at all).
+WELCOME_KIND_MATE = ""
 
-def mark_welcome_owed(name: str, *, config=None) -> bool:
+#: The owed record's ``kind`` for a created crewmate: its first message asks
+#: the user what it should work on.
+WELCOME_KIND_GOAL = "goal"
+
+
+def mark_welcome_owed(name: str, *, config=None, kind: str = WELCOME_KIND_MATE) -> bool:
     """Record that the just-created member *name* owes a first welcome.
 
-    Called by the first-crewmate step after the member is published. Best
-    effort: a failure is logged and the member simply never greets, which is the
-    safe direction. The record names the member, so a directory a different
-    member later reaches under the same slug is not mistaken for this one's.
-    Blocking IO.
+    Called after the member is published: by the first-crewmate step for Mate,
+    and by ``POST /api/agents`` with ``first_greeting`` (*kind*
+    :data:`WELCOME_KIND_GOAL`). Best effort: a failure is logged and the member
+    simply never greets, which is the safe direction. The record names the
+    member, so a directory a different member later reaches under the same slug
+    is not mistaken for this one's. Blocking IO.
     """
+    record: dict[str, str] = {"member": name}
+    if kind:
+        record["kind"] = kind
     try:
         path = member_dir(member_slug(name, config)) / WELCOME_OWED_FILENAME
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -700,25 +712,34 @@ def mark_welcome_owed(name: str, *, config=None) -> bool:
         # chain this creates is tightened here (members/ and members/<slug>/).
         for _dir in (path.parent, path.parent.parent):
             platform_compat.restrict_dir_to_owner(_dir)
-        atomic_write(path, json.dumps({"member": name}) + "\n")
+        atomic_write(path, json.dumps(record) + "\n")
     except Exception:
         logger.warning("Could not record the first welcome owed by %r", name, exc_info=True)
         return False
     return True
 
 
-def welcome_owed(slug: str, member: str) -> bool:
-    """Whether *member* (at *slug*) owes a first welcome.
+def owed_welcome_kind(slug: str, member: str) -> str | None:
+    """The kind of first welcome *member* (at *slug*) owes, ``None`` for none.
 
     Only a record written for this exact member counts; a missing, unreadable or
-    foreign record owes nothing. Blocking IO.
+    foreign record owes nothing. A record whose ``kind`` is not one this
+    gateway knows owes nothing either. Blocking IO.
     """
     try:
         raw = read_bytes_with_retry(member_dir(slug) / WELCOME_OWED_FILENAME, max_bytes=4096)
         record = json.loads(raw)
     except (OSError, ValueError, MemberSlugError):
-        return False
-    return isinstance(record, dict) and record.get("member") == member
+        return None
+    if not isinstance(record, dict) or record.get("member") != member:
+        return None
+    kind = record.get("kind", WELCOME_KIND_MATE)
+    return kind if kind in (WELCOME_KIND_MATE, WELCOME_KIND_GOAL) else None
+
+
+def welcome_owed(slug: str, member: str) -> bool:
+    """Whether *member* (at *slug*) owes a first welcome of any kind. Blocking IO."""
+    return owed_welcome_kind(slug, member) is not None
 
 
 class SelfRenameError(ValueError):

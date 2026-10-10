@@ -17,14 +17,15 @@ export function resetFirstGreetingRequests(): void {
 }
 
 /**
- * Ask the gateway for Mate's first greeting once its pinned thread is open.
+ * Ask the gateway for a crewmate's first greeting once its pinned thread is open.
  *
- * `enabled` is true only on Mate's thread (with the Crewmates preview on), and
+ * `enabled` is true only for a crewmate that can be owed one (Mate, with the
+ * Crewmates preview on, and a crewmate created on the dashboard), and
  * `slotKey` only once the thread endpoint has confirmed it, so the request
  * never races the thread's creation. The server decides: it starts a real turn
- * only for the Mate row the first-crewmate step created while it still owes
- * its welcome, and only while that thread is empty; every other answer is a
- * no-op here.
+ * only for a crewmate whose creation recorded the welcome it owes (Mate's
+ * first-crewmate step, or a create that sent `first_greeting`), and only while
+ * that thread is empty; every other answer is a no-op here.
  *
  * A failure says nothing: the greeting is a courtesy, the chat below works
  * without it, and the person can simply write. The request is forgotten, so the

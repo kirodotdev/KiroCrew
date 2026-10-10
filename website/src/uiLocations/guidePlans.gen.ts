@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:98366f31a2aa7737ee5224d799c268c34959e54369a03a8e3c0afc5840c344fc"
+export const GUIDE_BUILD_DIGEST = "sha256:7fff42bc1243b4b5edc5f0fa91b6bcb4b0bb74a6a6c3c2ca668b3da42f7b3e37"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -75,7 +75,6 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "mcp.add-server",
   "mcp.probe",
   "members.add-menu",
-  "members.add-menu.advanced",
   "members.add-menu.new",
   "members.back",
   "members.details",
@@ -1820,86 +1819,6 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "requires": [
               "has_crewmates"
             ]
-          }
-        ]
-      }
-    ]
-  },
-  "members.add-menu.advanced": {
-    "version": 2,
-    "label_key": "pages.membersPage.create_advanced",
-    "placements": [
-      {
-        "id": "desktop",
-        "route": "/members",
-        "viewport": "desktop",
-        "steps": [
-          {
-            "id": "desktop:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
-          },
-          {
-            "id": "desktop:members.switcher",
-            "location": "members.switcher",
-            "label_key": "pages.membersPage.switch_crewmate",
-            "scope": "menu:members.switcher"
-          },
-          {
-            "id": "desktop:members.switcher.show-roster",
-            "location": "members.switcher.show-roster",
-            "label_key": "pages.membersPage.roster_show",
-            "when": "crewmate_roster_folded",
-            "scope": "members.roster"
-          },
-          {
-            "id": "desktop:members.add-menu",
-            "location": "members.add-menu",
-            "label_key": "pages.membersPage.add_menu",
-            "scope": "menu:members.add-menu",
-            "requires": [
-              "has_crewmates"
-            ]
-          },
-          {
-            "id": "desktop:members.add-menu.advanced",
-            "location": "members.add-menu.advanced",
-            "label_key": "pages.membersPage.create_advanced"
-          }
-        ]
-      },
-      {
-        "id": "mobile",
-        "route": "/members",
-        "viewport": "mobile",
-        "steps": [
-          {
-            "id": "mobile:gate:preview_flag:mc-preview-crew",
-            "kind": "gate",
-            "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates"
-          },
-          {
-            "id": "mobile:members.back",
-            "location": "members.back",
-            "label_key": "pages.membersPage.back_to_roster",
-            "when": "crewmate_chat_open_phone",
-            "scope": "members.roster-phone"
-          },
-          {
-            "id": "mobile:members.add-menu",
-            "location": "members.add-menu",
-            "label_key": "pages.membersPage.add_menu",
-            "scope": "menu:members.add-menu",
-            "requires": [
-              "has_crewmates"
-            ]
-          },
-          {
-            "id": "mobile:members.add-menu.advanced",
-            "location": "members.add-menu.advanced",
-            "label_key": "pages.membersPage.create_advanced"
           }
         ]
       }
