@@ -100,7 +100,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
-from kiro_crew import pipeline_board_contract, platform_compat
+from kiro_crew import conductor_board_contract, pipeline_board_contract, platform_compat
 from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.config.paths import data_home
 from kiro_crew.platform_compat import release_lock, try_acquire_lock
@@ -816,6 +816,17 @@ def publish(
             pipeline_board_contract.validate_judgment(data)
         except pipeline_board_contract.JudgmentError as exc:
             raise PanelError("judgment_rejected", f"panel data rejected -- {exc}") from exc
+    # The conductor board reads a fixed set of fields. Data naming none of them would
+    # be stored and render an empty board while the tool said "Published", so it is
+    # refused here, with the fields the board reads.
+    if template == conductor_board_contract.BOARD_TEMPLATE_ID:
+        board_keys = tuple(conductor_board_contract.ConductorBoardPanel.__annotations__)
+        if not any(key in board_keys for key in data):
+            raise PanelError(
+                "no_known_keys",
+                f"template {template!r} reads none of the published fields, so the panel "
+                f"would render empty; it reads: {', '.join(board_keys)}",
+            )
     data_json = _validate_data(_scrub_published(data))
     template_html = resolve_template(template)
     # Composed eagerly and thrown away: this is the validation that the pair

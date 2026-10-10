@@ -3273,3 +3273,20 @@ async def test_the_field_list_carries_the_shape_and_the_current_values(vetted, m
     assert rows["items"]["summary"] == "3 items, latest 2026-10-03T00:00:00Z"
     assert "value" not in rows["items"], "a fold field's data is summarised, never returned"
     assert "mistakes" in body, "the mistake book stays in this read"
+
+
+async def test_a_publish_the_template_cannot_read_is_refused_with_its_keys(vetted):
+    app = _mounted()
+    async with TestClient(TestServer(app)) as c:
+        resp = await c.post(
+            "/api/agent-panel/publish",
+            json={"template": "kirocrew-conductor", "data": {"cycle": 47}},
+            headers={"X-Session-Key": "dashboard:chat-1"},
+        )
+        body = await resp.json()
+    assert resp.status == 400
+    assert body["code"] == "no_known_keys"
+    from kiro_crew.conductor_board_contract import ConductorBoardPanel
+
+    for field in ConductorBoardPanel.__annotations__:
+        assert field in body["error"], f"the refusal does not name {field!r}"

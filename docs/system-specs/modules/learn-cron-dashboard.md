@@ -2449,6 +2449,11 @@ reads it through GET `/api/members/{slug}/panel`.
   `pipeline_board_contract.BOARD_TEMPLATE_ID`, the data must pass
   `validate_judgment`, or the publish is refused with `judgment_rejected`; the
   caller is still present to fix the call there, and the reader is not.
+- **The conductor board refuses data it cannot show.** When the template is
+  `conductor_board_contract.BOARD_TEMPLATE_ID`, data naming none of the
+  `ConductorBoardPanel` fields is refused with `no_known_keys`, and the message
+  lists those fields. Data with at least one of them is stored whole. Every other
+  template without a contract accepts any object.
 - **The read derives the board from the log.** For a contract-template record the
   read route folds the member's own DM slot and adds a derived `board`, which the
   composer renders in preference to the published `data`. A free-shape payload is

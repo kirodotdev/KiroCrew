@@ -337,6 +337,12 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'dashboard_value_written', data: { slug: 'ada' } },
     { type: 'dashboard_value_written', data: {} },
   ]],
+  // A crewmate's dashboard PAGE changed (a template applied or rolled back).
+  // Same effect as a value write: the tab re-reads; no slug, nothing happens.
+  ['dashboard_instance_changed', [], [
+    { type: 'dashboard_instance_changed', data: { slug: 'ada' } },
+    { type: 'dashboard_instance_changed', data: {} },
+  ]],
   ['chat_message user row in the active slot', [], [{ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'hi', ts: TS } }]],
   ['chat_message assistant row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'assistant', content: 'done', ts: TS } }]],
   ['chat_message permission row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'permission', content: '[agent] shell', ts: TS } }]],
@@ -1079,6 +1085,9 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "dashboard_value_written": [
     "query invalidateQueries [\"member-dashboard\",\"ada\"]",
   ],
+  "dashboard_instance_changed": [
+    "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+  ],
   "chat_message user row in the active slot": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"user","content":"hi","ts":"2026-09-01T00:00:00.000Z"}',
     'send {"type":"slot_read","slot":"slot-a","read_ts":"2026-09-01T00:00:00.000Z"}',
@@ -1440,6 +1449,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
+    'query invalidateQueries ["member-panel"]',
     'query removeQueries ["member-thread"]',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
@@ -1490,6 +1500,7 @@ const EXPECTED_LIFECYCLE: Record<string, string[]> = {
     'query invalidateQueries ["chat-thread"]',
     'query invalidateQueries ["chat-threads"]',
     'query invalidateQueries ["guide-pending"]',
+    'query invalidateQueries ["member-panel"]',
     'query removeQueries ["member-thread"]',
     'query fetchQuery ["automation-seed","legacy"] {"staleTime":0,"retry":false}',
     'query fetchQuery ["automation-seed","structured"] {"staleTime":0,"retry":false}',
