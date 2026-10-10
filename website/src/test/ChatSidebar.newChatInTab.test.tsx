@@ -1,17 +1,17 @@
 /**
  * ChatSidebar → the New button's "open as a tab" gestures.
  *
- * Session rows honour Cmd/Ctrl-click and middle-click as "open this session as
- * a BACKGROUND tab" (ChatSidebar.openInTab.test). The New button did not: it
- * read no modifier, so a Ctrl-click created and ACTIVATED the session, and the
- * tab strip's invariant then swapped the tab the user was on for the new one —
- * the opposite of what the gesture asks. These pin the fixed contract:
+ * A plain click creates and activates the session, and the tab strip's
+ * invariant then swaps the tab the user was on for the new one. The tab
+ * gestures keep that tab. These pin the contract:
  *
  *   (1) a plain click still creates WITH activation and opens no tab;
- *   (2) Ctrl-click (non-mac) creates with `activate: false` — the store's
- *       active slot must NOT move — and hands the new key to
- *       `onOpenSlotInNewTab` in background mode;
- *   (3) middle-click does the same;
+ *   (2) Ctrl-click (non-mac) creates with `activate: false`, so the create
+ *       itself does not move the active slot and the old tab is not replaced,
+ *       and hands the new key to `onOpenSlotInNewTab` in FOREGROUND mode, which
+ *       adds the tab and then switches to it (ChatPage.sessionTabs.test);
+ *   (3) middle-click creates the same way but opens a BACKGROUND tab, as on
+ *       a session row;
  *   (4) the platform split holds: Cmd on mac opens a tab, Ctrl on mac does not
  *       (Ctrl+click IS a right-click there);
  *   (5) without an `onOpenSlotInNewTab` (embedded hosts have no tab strip) the
@@ -133,14 +133,31 @@ describe('ChatSidebar – New button open-as-tab gestures', () => {
     expect(onOpen).not.toHaveBeenCalled()
   })
 
-  it('Ctrl-click creates WITHOUT activating and opens the new session as a background tab', async () => {
+  it('Ctrl-click creates WITHOUT activating and opens the new session as a foreground tab', async () => {
     const onOpen = vi.fn()
     const store = renderSidebar(onOpen)
     fireEvent.click(newButton(), { ctrlKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
-    // The whole point: the user is still on the session they were reading.
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    // The create did not activate: the switch is the tab opener's job, after
+    // the tab exists, so the tab the user was on is kept rather than replaced.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
+  })
+
+  it('Ctrl-click whose create resolves after the user moved to another session opens a BACKGROUND tab', async () => {
+    // A foreground open switches the view. If the user picked another session
+    // while the create was in flight, switching would take them off it, so the
+    // tab still opens but stays in the background.
+    let resolveCreate: (v: unknown) => void = () => {}
+    mocks.createChatSlot.mockReset().mockReturnValue(new Promise(r => { resolveCreate = r }))
+    const onOpen = vi.fn()
+    const store = renderSidebar(onOpen)
+    fireEvent.click(newButton(), { ctrlKey: true })
+    await created()
+    store.dispatch({ type: 'chat/setActiveSlot', payload: 'elsewhere' })
+    resolveCreate({ key: NEW_KEY })
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+    expect(onOpen).not.toHaveBeenCalledWith(NEW_KEY, { background: false })
   })
 
   it('middle-click creates WITHOUT activating and opens a background tab', async () => {
@@ -152,13 +169,13 @@ describe('ChatSidebar – New button open-as-tab gestures', () => {
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 
-  it('on mac, Cmd-click opens a background tab', async () => {
+  it('on mac, Cmd-click opens a foreground tab', async () => {
     platform.mac = true
     const onOpen = vi.fn()
     const store = renderSidebar(onOpen)
     fireEvent.click(newButton(), { metaKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 

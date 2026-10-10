@@ -5,7 +5,8 @@
  * header "+" (`col-<col>-folder-<id>-new-chat`) and the column empty-folder row
  * (`col-<col>-folder-<id>-empty-new-chat`) honour the same contract as the
  * header New button -- plain click creates and activates; Ctrl/Cmd-click and
- * middle-click create with `activate: false` and open a background tab.
+ * middle-click create with `activate: false`, then Ctrl/Cmd-click opens a
+ * foreground tab and middle-click a background one.
  *
  * Board-specific invariant also pinned here: the column drop
  * (`dropSlotToColumn`) still runs for the tab gesture -- column membership is
@@ -167,13 +168,14 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     expect(onOpen).not.toHaveBeenCalled()
   })
 
-  it('Ctrl-click on the column folder "+" creates WITHOUT activating, opens a background tab, and still drops into the column', async () => {
+  it('Ctrl-click on the column folder "+" creates WITHOUT activating, opens a foreground tab, and still drops into the column', async () => {
     const onOpen = vi.fn()
     const { container, store } = renderSidebar(onOpen)
     fireEvent.click(colPlus(container), { ctrlKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
-    // The whole point: the user is still on the session they were reading.
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
+    // The create did not activate, so the tab the user was on is kept; the
+    // tab opener does the switch.
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
     // Column membership is independent of focus: the drop still runs.
     await waitFor(() => expect(mocks.dropSlotToColumn).toHaveBeenCalledWith(NEW_KEY, COL_A))
@@ -199,13 +201,13 @@ describe('ChatSidebar - board-view folder create open-as-tab gestures', () => {
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 
-  it('Ctrl-click on the column empty-folder row opens a background tab', async () => {
+  it('Ctrl-click on the column empty-folder row opens a foreground tab', async () => {
     const onOpen = vi.fn()
     const { container, store } = renderSidebar(onOpen)
     expect(colEmptyRow(container)).toBeTruthy()
     fireEvent.click(colEmptyRow(container), { ctrlKey: true })
     await created()
-    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: true }))
+    await waitFor(() => expect(onOpen).toHaveBeenCalledWith(NEW_KEY, { background: false }))
     expect(store.getState().chat.activeSlot).toBe(ORIGIN)
   })
 
