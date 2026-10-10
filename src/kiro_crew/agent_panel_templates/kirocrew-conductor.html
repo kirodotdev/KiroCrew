@@ -258,7 +258,9 @@
   var nx = str(d.next);
   if (nx){
     var np = el("p", "next");
-    np.appendChild(el("span", "k", "Next: "));
+    /* an agent-written line older than the ledger says when it was written */
+    var from = str(d.next_from);
+    np.appendChild(el("span", "k", from ? "Next (from " + from + "): " : "Next: "));
     np.appendChild(document.createTextNode(nx));
     page.appendChild(np);
   }

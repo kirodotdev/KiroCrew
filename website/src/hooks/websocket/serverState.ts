@@ -271,6 +271,20 @@ export function handleDashboardMoved(queryClient: QueryClient, data: FrameData):
   }
 }
 
+/** A crewmate's published panel may have moved: refetch its drawer read.
+ *
+ *  Invalidated by SLUG PREFIX, so it reaches the ['member-panel', slug, member]
+ *  key without the frame having to carry the crew's name; the refetch re-asks the
+ *  server, which re-checks ownership. Two frames reach here: `panel_published`
+ *  (the crew republished) and `member_projection` (a fold advanced -- a
+ *  conductor's board is rebuilt from its work ledger on every read). */
+export function invalidateMemberPanel(queryClient: QueryClient, data: FrameData): void {
+  const slug = String(((data ?? {}) as { slug?: unknown }).slug || '')
+  if (slug) {
+    queryClient.invalidateQueries({ queryKey: ['member-panel', slug] })
+  }
+}
+
 /** Sent once per connection before any member_projection frame: the server's
  *  authoritative lastSeq per slug. Truncate held rows that ran ahead of it (a
  *  torn tail rolled back after a restart). */

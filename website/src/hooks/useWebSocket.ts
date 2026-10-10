@@ -52,6 +52,7 @@ import {
   handleMembersSubscribed,
   handleSourceStatus,
   handleThreadReply,
+  invalidateMemberPanel,
   invalidateRefreshQueries,
 } from './websocket/serverState'
 import { useChatStream } from './websocket/chatStream'
@@ -346,10 +347,7 @@ export function useWebSocket() {
             // member] key without the frame having to carry the crew's name. The
             // frame is slug-only on purpose: the ownership digest must not reach a
             // client, and the refetch re-asks the server, which re-checks ownership.
-            const slug = String((data as { slug?: unknown }).slug || '')
-            if (slug) {
-              queryClient.invalidateQueries({ queryKey: ['member-panel', slug] })
-            }
+            invalidateMemberPanel(queryClient, data)
             break
           }
           case 'dashboard_value_written':
@@ -445,6 +443,9 @@ export function useWebSocket() {
             // agentic writes comes from a fold, so this is the other half of the
             // tab's liveness -- see `handleDashboardMoved`.
             handleDashboardMoved(queryClient, data)
+            // The published panel reads the same folds: a conductor's board is
+            // rebuilt from its work ledger on every read.
+            invalidateMemberPanel(queryClient, data)
             break
           case 'members_subscribed':
             handleMembersSubscribed(queryClient, data)
