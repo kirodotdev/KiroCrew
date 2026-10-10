@@ -52,6 +52,7 @@ from kiro_crew.mcp_cleanup import (
     warn_invalid_disabled,
 )
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
+from kiro_crew.mcp_gateway.secret_uri import remote_header_secret_ref_error
 from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
@@ -2039,6 +2040,16 @@ async def _probe_remote(
     # required" for a server that never asked for one.
     server.auth_challenge = False
     server.auth_grant_present = None
+    refusal = remote_header_secret_ref_error(server.headers)
+    if refusal:
+        # Not contacted: the header would reach the server as the literal
+        # reference, and the authorization error that comes back names neither
+        # the header nor the cause.
+        server.sent_headers, server.resolved_header_values = None, []
+        server.status = "error"
+        server.error = refusal
+        _cache_probe(server)
+        return server
     try:
         init_body = {
             "jsonrpc": "2.0",

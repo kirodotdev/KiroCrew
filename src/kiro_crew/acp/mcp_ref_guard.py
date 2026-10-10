@@ -15,10 +15,17 @@ finding differently.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Any
 
 from kiro_crew.acp.mcp_session_report import NAME_CAP, sanitize_sink_text
+from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
 from kiro_crew.agent_sdk.mcp_refs import unresolved_server_refs
+from kiro_crew.mcp_gateway.secret_uri import (
+    REMOTE_HEADER_ALTERNATIVE,
+    display_header_names,
+    header_secret_refs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -152,3 +159,77 @@ def warn_unresolved_server_refs(
         "on" if gateway_enabled else "off",
     )
     return unresolved
+
+
+def _remote_entries(spec: Any, wire_servers: Any, *, backend: str) -> list[tuple[str, Any]]:
+    """``(server name, headers)`` for every remote server this session is handed.
+
+    kiro-cli reads the spec's own servers from ``--agent``, headers included, so
+    it is judged on the spec's definitions; every other host only sees what the
+    array carries. KAS also mounts spec servers off the wire, but its projection
+    drops every declared header, so a reference there is never sent and is not
+    reported.
+    """
+    out: list[tuple[str, Any]] = []
+    if backend == ACP_BACKEND_KIRO:
+        servers = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                if isinstance(entry, Mapping) and entry.get("url"):
+                    out.append((str(name), entry.get("headers")))
+    for entry in wire_servers if isinstance(wire_servers, (list, tuple)) else ():
+        if isinstance(entry, Mapping) and entry.get("url") and isinstance(entry.get("name"), str):
+            out.append((entry["name"], entry.get("headers")))
+    return out
+
+
+def warn_remote_header_secret_refs(
+    spec: Any,
+    wire_servers: Any,
+    *,
+    backend: str,
+    agent: str,
+) -> tuple[list[str], int]:
+    """Log ONE line naming remote servers whose headers carry ``secret://``.
+
+    Only an MCP server's ``env`` is resolved against the vault; a remote server's
+    headers reach it as written. Without this line the only symptom is an
+    authorization failure from the server that names neither the header nor the
+    cause. Changes nothing about the session.
+
+    Returns ``(entries, omitted)``: one sanitized ``server (header, ...)`` entry
+    per affected server, at most :data:`_REPORT_CAP` of them, with the header
+    list bounded by :func:`display_header_names`; and how many affected servers
+    did not fit. The caller records both on the session's MCP report.
+    """
+    found: list[str] = []
+    logged: list[str] = []
+    seen: set[str] = set()
+    omitted = 0
+    for name, headers in _remote_entries(spec, wire_servers, backend=backend):
+        server = sanitize_sink_text(name, NAME_CAP)
+        cleaned = (sanitize_sink_text(h, NAME_CAP) for h in header_secret_refs(headers))
+        names = [h for h in cleaned if h]
+        if not names or not server or server in seen:
+            continue
+        seen.add(server)
+        if len(found) >= _REPORT_CAP:
+            omitted += 1
+            continue
+        found.append(f"{server} ({display_header_names(names)})")
+        logged.append(
+            f"{_log_safe(server)} ({display_header_names([_log_safe(h) for h in names])})"
+        )
+    if not found:
+        return [], 0
+    servers = "; ".join(logged) + (f" (+{omitted} more servers)" if omitted else "")
+    logger.warning(
+        "remote MCP server headers use a secret:// reference, which is not resolved: "
+        "backend=%r agent=%r servers=%s. Secret references are resolved only in a "
+        "stdio server's env, so these servers receive the reference as written. %s.",
+        backend,
+        _log_safe(sanitize_sink_text(agent, NAME_CAP)),
+        servers,
+        REMOTE_HEADER_ALTERNATIVE,
+    )
+    return found, omitted
