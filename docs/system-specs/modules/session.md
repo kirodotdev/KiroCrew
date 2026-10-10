@@ -650,31 +650,77 @@ An incomplete sweep records what it is waiting on (`identity_sweep_waiting_on`:
 session keys tagged `busy` or `channel member`, or the runtime that stayed up),
 and the turn gate logs it at WARNING so an operator can find the holdout.
 
-**Live-children deferral** (`spare_children`, inside the sweep): an idle parent
-whose stamp does NOT match the live account but which still has live or queued
-`spawn_run` children is not retired on the per-turn sweep — it is deferred the
-way a busy session is (flagged `retire_on_identity_change`, kept in the map, and
-recorded `<key> (subagents)` so the sweep reports incomplete). The per-turn gate
-fires on every chat turn, so without the deferral an idle parent with running
-children was retired and its children cancelled as `AcpProcessDied ... (provider
-shutdown)` on every turn (#17360). The deferred parent is refused its next turn
-by session allocation (`retire_on_identity_change`) and evicted by
-`_evict_stale_session`, which shuts the parent's provider down WITHOUT
-`_cancel_parent_children`, so the children survive and their completions reach
-the successor under the key. The probe is the side-effect-free
-`has_live_or_queued_children` (not the teardown `snapshot_teardown_children`,
-which arms the delivery gate, clears follow-ups and cancels follow-up watchers).
-The deferral is SCOPED to a proven switch between two real accounts:
-`spare_children` defaults to False, so the sign-out path
+**Live-children deferral** (`spare_children`, decided at the async teardown): an
+idle parent whose stamp does NOT match the live account but which still has a
+child — live or queued in memory, admitted into the teardown fence since it
+opened, or a durable-only row in the task store — is not retired on the per-turn
+sweep. It is deferred the way a busy session is (flagged
+`retire_on_identity_change`, kept in the map, old-account sid cleared, recorded
+`<key> (subagents)` so the sweep reports incomplete). The per-turn gate fires on
+every chat turn, so without the deferral an idle parent with running children was
+retired and its children cancelled as `AcpProcessDied ... (provider shutdown)` on
+every turn (#17360). The deferred parent is refused its next turn by session
+allocation (`retire_on_identity_change`) and evicted by `_evict_stale_session`,
+which shuts the parent's provider down WITHOUT `_cancel_parent_children`, so the
+children survive and their completions reach the successor under the key.
+
+The decision is made at the ASYNC teardown, not from a probe taken earlier: under
+the registry lock a `spare_children` candidate is NOT retired — its teardown
+fence is opened (the `_teardown_fence_lock` the admission path records a new child
+into before its store write) and it is left registered, so nothing irreversible
+happens for it under the lock. Off the loop the sweep asks whether a child still
+exists (in memory, in the fence, or in the store); a child, or a failed store
+read, defers it, and the next sweep re-checks. Only a childless parent is retired,
+under a re-taken lock that leaves a successor registered under the key alone and
+defers again if a turn took the parent's semaphore during the read. The probe is
+side-effect-free (not the teardown `snapshot_teardown_children`, which arms the
+delivery gate, clears follow-ups and cancels follow-up watchers).
+
+**Cost of an incomplete deferral.** A deferred parent keeps the sweep incomplete
+(it is recorded `<key> (subagents)` and the pending fingerprint is NOT cleared),
+so the per-turn gate re-runs `retire_kiro_identity_sessions` on the next chat turn
+from any session — the incomplete sweep is its own trigger — and re-checks that
+parent. That re-check runs inside the start-permit barrier
+(`owner._start_sem.drain()`): the barrier makes the registry scan authoritative
+over cold starts, and the off-loop `_parent_has_sparable_child` read for each
+deferred candidate is awaited while it is held, so each cold start waits behind
+that read until the candidates resolve. The deferral is intended to be
+SHORT-LIVED relative to a `spawn_run` child: it clears the moment the parent is
+either genuinely childless (committed and retired) or takes a turn itself (which
+retires it through the `retire_on_identity_change` eviction path). It is NOT bounded
+by a timeout — a parent with a long-running (hours-long) child stays deferred, and
+re-checked each turn, for the child's whole life, and the account change is not
+reconciled for that key until then. This is accepted because the alternative the
+deferral replaces is worse: without it the parent is retired and its children are
+cancelled as `provider shutdown` on EVERY turn, not deferred on every turn. The
+per-check cost is kept small — the in-memory and fence checks are synchronous, the
+store read is `limit=1` and runs on the writer thread, and a childless or
+turn-taking parent drops out of the candidate set — but it is a real per-turn cost
+on a host that holds a long deferral, and the barrier is held across it. A caller
+that wants the account reconciled sooner retires the parent itself (its next turn,
+or an explicit close); the sweep does not force the issue while children run.
+
+The deferral is SCOPED by the live fingerprint AND by the parent's own spawn
+stamp. `spare_children` defaults to False, so the sign-out path
 (`_retire_runtimes_after_sign_out`, which sweeps with no fingerprint) keeps the
 cancel behaviour — on sign-out the account is gone, so an idle parent and its
 children MUST be retired, or the children keep running on the signed-out
 account's in-memory credential. `chat_runner`'s per-turn identity-change sweep
-passes `spare_children=bool(live)`: an empty live fingerprint is an external
-`kiro-cli logout` (which never reaches the sign-out handler, so the per-turn
-sweep is the only path that catches it) or an unreadable store, and there the
-children are cancelled for the same reason — only a non-empty live fingerprint
-(a real A→B switch) defers.
+passes `spare_children=bool(live) and not service.identity_component_dropped(live)`:
+an empty live fingerprint is an external `kiro-cli logout` (which never reaches
+the sign-out handler, so the per-turn sweep is the only path that catches it) or
+an unreadable store, and `identity_component_dropped` additionally forces the
+cancel path on a PARTIAL loss — a credential source present in the retire
+baseline but gone from `live` (a logout that leaves the Crew vault populated, so
+the combined fingerprint is still non-empty). Inside the sweep a second,
+per-holder check uses the parent's OWN spawn stamp: a parent whose spawn identity
+lost a component (`identity_component_dropped(spawn_identity_of(provider), live)`)
+is retired and its children cancelled, because the baseline advances only on a
+complete sweep and so lags a source added-then-removed inside an incomplete one,
+while the spawn stamp is the identity the children actually loaded. So children
+are cancelled on sign-out, an empty/unreadable fingerprint, a dropped baseline
+component, OR a dropped spawn-stamp component; only a whole switch between two
+real accounts defers.
 
 **Per-turn stamp gate** (`flag_identity_stamp_mismatches`, before the
 unchanged early-return in the turn gate): a session whose stamp provably

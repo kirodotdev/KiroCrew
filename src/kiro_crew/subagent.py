@@ -3546,6 +3546,12 @@ class SubagentManager:
         # A snapshot whose cancel never ran is replaced by the next one.
         self._teardown_store_fences: dict[str, set[str]] = {}
         self._teardown_store_sweeps: list[tuple[str, set[str]]] = []
+        # TENTATIVE admission fences the identity sweep opens before it decides
+        # retire-vs-defer: they record admissions (so a concurrent /api/spawn is
+        # seen by the retire-vs-defer re-check) but do NOT drive delivery
+        # suppression, because the parent may be SPARED. Only a committed teardown
+        # fence (``_teardown_store_fences``) suppresses an expiring row's delivery.
+        self._identity_sweep_fences: dict[str, set[str]] = {}
         # Sweeps whose store read was refused: ``(key, fence, verb)``. Each fence
         # stays in ``_teardown_store_sweeps`` (recording, and gating an expiry of
         # the retired rows) until a reaper sweep's retry has read the store.
@@ -6287,6 +6293,67 @@ class SubagentManager:
         """
         return self._cancellation.has_live_or_queued_children_impl(parent_session_key)
 
+    async def has_pending_store_children(self, parent_session_key: str) -> bool:
+        """Whether *parent_session_key* owns a waiting child only the store holds.
+
+        The off-loop companion to :meth:`has_live_or_queued_children`: it reads the
+        task store on the writer thread, so the identity-retire deferral can count a
+        durable-only or window-held child (which the teardown cancels) without a
+        synchronous store read on the event loop. Routed through
+        ``taskq_pending_ids_for_async(include_window=True)`` -- the SAME reading the
+        teardown's own store sweep uses (window rows kept, admitted rows left out,
+        raises when the store is unavailable) -- so the decision and the cancel can
+        never disagree about which rows count. A read failure propagates, so the
+        caller can defer rather than read an accepted child as absent.
+        """
+        rows = await self._admission.taskq_pending_ids_for_async(
+            parent_session_key, include_window=True
+        )
+        return bool(rows)
+
+    def open_teardown_fence(self, parent_session_key: str) -> "set[str] | None":
+        """Open the teardown fence for *parent_session_key* WITHOUT snapshotting.
+
+        The identity sweep opens the fence while it still holds the registry lock,
+        then decides retire-vs-defer at the async teardown. From the moment the
+        fence opens, the admission path records every child it accepts for this
+        parent into it (``note_teardown_store_accept`` under
+        ``_teardown_fence_lock``), so a child admitted between the open and the
+        off-loop read is seen by :meth:`has_fenced_children` rather than raced.
+        Unlike :meth:`snapshot_teardown_children` this takes NO in-memory snapshot:
+        it arms no delivery gate and tears down no follow-ups, so a parent that is
+        then spared keeps its children's completion path intact.
+
+        Returns the fence set, so a sweep that DEFERS can release exactly its own
+        fence (:meth:`release_teardown_fence`) and never one a concurrent teardown
+        opened. ``None`` when there is no store.
+        """
+        return self._cancellation.open_identity_sweep_fence_inner(parent_session_key)
+
+    def has_fenced_children(self, parent_session_key: str) -> bool:
+        """Whether any child was recorded in this parent's OPEN teardown fence.
+
+        Synchronous and cheap (a set read under ``_teardown_fence_lock``): the
+        admissions that landed since :meth:`open_teardown_fence`. Combined with
+        :meth:`has_live_or_queued_children` (in memory) and
+        :meth:`has_pending_store_children` (off-loop, pre-existing rows), it is the
+        third source the retire-vs-defer decision reads.
+        """
+        return self._cancellation.has_fenced_children_impl(parent_session_key)
+
+    def release_teardown_fence(
+        self, parent_session_key: str, expected: "AbstractSet[str] | None" = None
+    ) -> None:
+        """Discard this parent's teardown fence when the decision was to DEFER.
+
+        A spared parent runs no cancel sweep, so its fence has no consumer; drop it
+        so a later real teardown of the same key opens a fresh one. *expected* is
+        the fence the sweep opened; the drop happens only when the stored fence IS
+        it, so a concurrent ``destroy``'s fence is never dropped out from under its
+        own cancel.
+        """
+        self._cancellation.release_teardown_fence_impl(parent_session_key, expected)
+
     def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
         """Run ids under *parent_session_key*, taken with no await. Parent-end use.
 
@@ -6303,6 +6370,30 @@ class SubagentManager:
         selected = self._cancellation.snapshot_teardown_children_impl(parent_session_key)
         self._cancellation.note_teardown_snapshot(parent_session_key)
         return selected
+
+    def commit_identity_sweep_retire(
+        self, parent_session_key: str, expected: "AbstractSet[str]"
+    ) -> bool:
+        """Atomically decide the identity sweep's final commit-vs-defer.
+
+        Returns True (commit) only when *expected* (the sweep's tentative fence)
+        recorded no child since it opened; it then becomes this key's COMMITTED
+        teardown fence, so the cancel's store sweep inherits any concurrent
+        admission. False means a child arrived (or a newer sweep owns the key) and
+        the caller must defer and release. Removes the F1 window between the final
+        fenced-child check and the committed fence opening.
+        """
+        return self._cancellation.commit_identity_sweep_retire_inner(parent_session_key, expected)
+
+    def snapshot_teardown_children_only(self, parent_session_key: str) -> tuple[str, ...]:
+        """Select the run ids to cancel WITHOUT opening a fresh committed fence.
+
+        The identity sweep's commit path has already promoted its tentative fence
+        to the committed one (:meth:`commit_identity_sweep_retire`), so re-opening
+        a fresh fence here would discard the promoted set and the concurrent
+        admissions it carries. This takes only the selection half.
+        """
+        return self._cancellation.snapshot_teardown_children_impl(parent_session_key)
 
     async def cancel_for_teardown(
         self,

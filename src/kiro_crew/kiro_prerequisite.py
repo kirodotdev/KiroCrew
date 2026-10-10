@@ -1504,6 +1504,33 @@ def spawn_identity_of(holder: Any) -> str:
     )
 
 
+def identity_component_dropped(reference: str, live: str) -> bool:
+    """Whether a credential source present in *reference* is now EMPTY in *live*.
+
+    *reference* is an identity the children provably loaded -- the retire
+    baseline, or a holder's own spawn stamp -- and *live* is a fresh read. A
+    source present in *reference* but gone from *live* is a credential LOSS, not
+    a switch: the combined fingerprint can stay nonempty while one source
+    disappears (an external ``kiro-cli logout`` with the Crew vault still
+    populated), so ``bool(live)`` alone cannot see it. A loss means the children
+    may be running on a credential that is gone, so the sweep must retire the
+    parent and cancel them rather than spare it.
+
+    Compared per component (store, API key, Crew vault) so a drop in any one is
+    caught, unlike :func:`identity_stamp_mismatch`, which can only PROVE a change
+    when a component is nonempty on both sides and so deliberately ignores a
+    component that went empty. An empty *reference* answers False -- nothing was
+    there to drop.
+    """
+
+    if not reference:
+        return False
+    return any(
+        was and not now
+        for now, was in zip(_identity_components(live), _identity_components(reference))
+    )
+
+
 def spawned_under(holder: Any, live: str) -> bool:
     """Whether *holder*'s child PROVABLY authenticated as the live account.
 
@@ -3634,6 +3661,37 @@ class KiroPrerequisiteService:
             # completes. See _maybe_latch_interim_identity.
             return (True, live)
         return (live != self._session_identity, live)
+
+    def identity_component_dropped(self, live: str) -> bool:
+        """Whether a credential source present in the baseline is now EMPTY in *live*.
+
+        The retire path spares an idle parent's live children only while its
+        credential is still valid. ``bool(live)`` alone cannot tell a switch
+        between two real accounts from a partial credential LOSS: an external
+        ``kiro-cli logout`` while the Crew vault stays populated leaves the
+        combined fingerprint nonempty (``_combine_identity_fingerprints`` appends
+        each present source), so the children would be spared and keep running on
+        the logged-out store's in-memory credential. A dropped component is that
+        loss, and the sweep must then retire the parent and cancel the children,
+        exactly as the sign-out path does.
+
+        Pure and side-effect-free: it compares the *live* fingerprint the caller
+        already read against the retire baseline ``self._session_identity`` per
+        component (store, API key, Crew vault), so it adds no second store read.
+        A component that is PRESENT in the baseline and EMPTY in *live* dropped; a
+        component that merely appeared or changed is a switch, not a loss, and does
+        not count. An unset baseline answers False -- nothing was there to drop,
+        and that case already sweeps once on its own.
+
+        This catches the simple logout where the baseline is current. The sweep
+        ALSO checks each holder's own spawn stamp (see
+        ``_identity_change_sweep``), because the baseline advances only on a
+        complete sweep and so lags a source added-then-removed inside an
+        incomplete one.
+        """
+        if self._session_identity is None:
+            return False
+        return identity_component_dropped(self._session_identity, live)
 
     @property
     def identity_observation_generation(self) -> int:

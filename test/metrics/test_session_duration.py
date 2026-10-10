@@ -1103,7 +1103,12 @@ class TestReviewFixes:
         from kiro_crew import session_lifecycle
 
         found = TestTeardownPathsAreWired._reasons_recorded_by("retire_kiro_identity_sessions")
-        assert found == ["END_REASON_RETIRED"]
+        # The retire path has exactly TWO commit points, each recording
+        # END_REASON_RETIRED under its own lock hold: the keys retired under the
+        # selection lock, and the spare_children candidates committed at the async
+        # teardown. Pinned exactly (not a set) so a third recorder, or dropping one,
+        # trips this.
+        assert found == ["END_REASON_RETIRED", "END_REASON_RETIRED"]
         assert session_lifecycle.END_REASON_RETIRED in sess.END_REASONS
 
     def test_the_compaction_recycle_path_records_an_end(self):
