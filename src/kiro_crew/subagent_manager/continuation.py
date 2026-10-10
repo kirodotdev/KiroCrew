@@ -969,12 +969,21 @@ class ContinuationCoordinator(ManagerComponent):
         completion event through the normal ``_on_done`` path — the parent
         must not wait forever on an event that is not coming.
 
-        Hard-bounded and manager-owned: gives up at the manager's run timeout
+        Hard-bounded and manager-owned: gives up at the run's captured timeout
         plus a margin, and the task is registered in ``_followup_watchers`` so
         ``cancel_all()`` cancels it — a watcher must never dispatch a fresh
         run into a shutting-down gateway.
         """
-        deadline = time.monotonic() + self._manager._default_timeout + 300
+        # A follow-up can be queued before `_run_impl` captures this run's
+        # deadline, while spawn approval or a queued start still holds the run.
+        # Timing from the manager default at that point starts this clock ahead
+        # of the run's own and can expire the message while the run is still
+        # inside its deadline. Polling is already this watcher's ownership
+        # model; shutdown cancels the manager-owned task, and a terminal run
+        # needs no capture to dispatch.
+        while info.timeout_secs == 0 and not info.done and self._manager._default_timeout > 0:
+            await asyncio.sleep(self._manager._FOLLOWUP_POLL_SECS)
+        deadline = time.monotonic() + (info.timeout_secs or self._manager._default_timeout) + 300
         while time.monotonic() < deadline:
             if info.done and info.id not in self._manager._tasks:
                 break

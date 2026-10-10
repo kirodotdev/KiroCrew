@@ -154,13 +154,26 @@ class LLMProvider(ABC):
         """Gracefully shut down."""
 
     @abstractmethod
-    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+    async def stream(
+        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+    ) -> AsyncIterator[LLMEvent]:
         """Send a message and yield events.
 
+        ``timeout`` is an optional transport budget captured by an outer owner;
+        ``None`` keeps the provider's normal live-config resolution.
         ``allow_image=False`` sends *message* as text only: no image path in it
         is read or inlined as an image block.
         """
         yield LLMEvent(kind=EVENT_COMPLETE)  # pragma: no cover
+
+    def prompt_timeout_for_deadline(self, deadline: float) -> float | None:
+        """Transport budget for an immutable outer deadline, if supported.
+
+        ``None`` preserves the legacy ``stream(message)`` call shape. Providers
+        that can honor an explicit immutable budget override this method; callers
+        resolve it through ``kiro_crew.agent_sdk.capture_prompt_timeout``.
+        """
+        return None
 
     @abstractmethod
     async def approve_tool(self, request_id: str | int, *, always: bool = False) -> bool:

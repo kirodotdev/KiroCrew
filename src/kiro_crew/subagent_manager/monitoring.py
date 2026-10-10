@@ -1006,7 +1006,6 @@ class OrphanStallMonitor(ManagerComponent):
             for agent_id, info in list(self._manager._agents.items()):
                 if info.done or info._ending_claimed:
                     continue
-                elapsed = now - info.started
                 # Startup watchdog: a subagent that entered execution but is
                 # still on turn 0 with no runtime PID after the startup window
                 # is wedged in startup (e.g. a hung provider/ACP handshake that
@@ -1081,12 +1080,28 @@ class OrphanStallMonitor(ManagerComponent):
                 # (users close it from the UX), so we always fall through to
                 # the wall-clock check below.
                 await self._manager._maybe_flag_stall(agent_id, info, now)
-                if elapsed <= self._manager._default_timeout:
+                exec_started = info._exec_started
+                if exec_started is None:
+                    # Not executing: parked at spawn approval, approved and
+                    # waiting to be admitted into startup, or between the two
+                    # attempts of a context-overflow cancel recovery, which
+                    # clears the clock before the replacement waits for capacity.
+                    # The clock is the registration age. A run parked before its
+                    # first start has captured no deadline and is bounded by the
+                    # live default; a run between attempts keeps the deadline it
+                    # captured, so a reload during that wait cannot cut it.
+                    # ``_force_reap`` words a parked reap as the parked state it
+                    # is, not as an execution deadline.
+                    elapsed = now - info.started
+                else:
+                    elapsed = now - exec_started
+                deadline = info.timeout_secs or self._manager._default_timeout
+                if elapsed <= deadline:
                     continue
                 logger.warning(
                     "Reaper: subagent %s exceeded %ds (ran %.0fs), force-killing",
                     agent_id,
-                    self._manager._default_timeout,
+                    deadline,
                     elapsed,
                 )
                 try:

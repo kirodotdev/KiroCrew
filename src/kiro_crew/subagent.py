@@ -2844,6 +2844,10 @@ class SubagentInfo:
     reaped: bool = False
     streaming_text: str = ""
     elapsed: float = 0.0
+    # Deadline captured when execution starts (``0`` until then). A config
+    # reload changes the manager default for future runs only; it never
+    # rewrites this run's deadline.
+    timeout_secs: int = 0
     # Cumulative across every attempted turn, including transient retries that
     # consumed credits before failing. Providers that do not bill in credits
     # report zero through the shared TurnUsage contract.
