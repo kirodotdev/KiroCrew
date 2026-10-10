@@ -178,6 +178,7 @@ from kiro_crew.hook_runtime.tool_identity import (  # noqa: F401
     set_builtin_app_agents,
     set_builtin_app_mcp_servers,
     set_builtin_app_names,
+    untruncated_shell_title,
 )
 from kiro_crew.hook_runtime.windows_paths import (  # noqa: F401
     _fold_extended_length_local,
@@ -1085,6 +1086,21 @@ class HookManager:
         """
         return resolve_denied_notes(self._config)
 
+    def operator_denied_regexes(self) -> list[str]:
+        """The operator's own enabled ``user_added`` regexes, and nothing else.
+
+        The part of :meth:`effective_denied_regexes` the operator authored: no
+        shipped built-in and no governance pin. Always a list, never ``None``,
+        because ``security.is_denied`` reads ``None`` as "every built-in". These
+        are the regex-tier patterns the file-search synthesized target meets, and
+        they judge the title kiro-cli sent when ``untruncated_shell_title`` rebuilt
+        it -- in the gate's deny-rules tier and in
+        ``llm_helpers._resolve_permission`` -- where a shipped rule only misreads
+        the cut but an operator's rule may have been written against exactly that
+        text.
+        """
+        return [p.pattern for p in self._config.denied_commands_user_added if p.enabled]
+
     def effective_denied_regexes(self, *, include_governance_pins: bool = True) -> list[str]:
         """Public accessor for the effective regex-tier denied set.
 
@@ -1223,6 +1239,10 @@ def _cu_read_only_auto_approve(tool_name: str) -> bool:
 
 # Display prefixes that kiro-cli ACP adds to tool titles
 _TOOL_TITLE_PREFIXES = ("Running: ", "Reading ")
+
+# The marker kiro-cli appends when it cuts a long shell call's title (today
+# after the command's first 197 characters; see ``untruncated_shell_title``).
+_TITLE_TRUNCATION_MARKER = "..."
 
 # ACP semantic tool kind for a file write/edit (fs_write / code). The kind that
 # carries a real target path in ``raw_params['path']`` and maps to the

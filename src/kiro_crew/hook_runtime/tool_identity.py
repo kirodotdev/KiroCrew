@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         _HOST_READ_ONLY_BUILTIN_TOOLS,
         _TITLE_ONLY_GRANT_NOTED,
         _TITLE_ONLY_GRANT_NOTED_CAP,
+        _TITLE_TRUNCATION_MARKER,
         _TOOL_TITLE_PREFIXES,
         CORE_MCP_SERVER,
         TOOL_AUTO_APPROVE,
@@ -504,6 +505,50 @@ def _normalize_tool_name(tool_name: str) -> str:
         if tool_name.startswith(prefix):
             return tool_name[len(prefix) :]
     return tool_name
+
+
+def untruncated_shell_title(tool_name: str, command: str | None) -> str:
+    """The title the deny tiers judge for a call whose raw *command* is known.
+
+    kiro-cli titles a shell call ``Running: <command>`` and cuts a long command
+    to its first 197 characters plus ``...``. The cut lands wherever character
+    197 falls, and a structural rule reads the end of what is left as the end of
+    the command: a push whose branch starts past the cut, its title ending
+    inside a ``--force-with-lease`` value, reads as a push that names no branch,
+    and the git-publish floor refuses a push that names one.
+
+    Only a cut-shaped title is rebuilt: without its display prefix it must be a
+    non-empty leading slice of *command*, shorter than *command*, followed by
+    ``...``. The slice length is not pinned to kiro-cli's 197, so a release that
+    moves the cut does not silently bring the over-block back. Such a title is
+    returned uncut -- the same display prefix followed by the whole command --
+    so a long command is judged exactly as a short one already is, and the
+    prefixed form still meets a deny glob written against it
+    (``Running: git push*``). Every character the cut title shows is in the
+    command, which the tiers judge anyway, so the only verdict the rebuild
+    removes is one that the cut's own end earns. The callers also judge the
+    title as sent, by the operator's own rules only
+    (``HookManager.operator_denied_regexes``), since an operator may have
+    written a rule against exactly the cut text kiro-cli displayed.
+
+    Every other title is returned unchanged and keeps its own verdict, including
+    one that begins the command without the marker (a model-authored
+    ``terraform apply`` over ``terraform apply -auto-approve``) and a slice
+    taken from anywhere but the start: judging it verbatim is what keeps a
+    dangerous title from hiding behind a benign command and keeps a rule that
+    matches the title alone firing. Without a recovered *command* -- a non-shell
+    tool, whose identifier is the title -- the title is returned unchanged too.
+    """
+    if not command:
+        return tool_name
+    shown = _normalize_tool_name(tool_name)
+    if not shown.endswith(_TITLE_TRUNCATION_MARKER):
+        return tool_name
+    kept = shown[: -len(_TITLE_TRUNCATION_MARKER)]
+    if not kept or len(kept) >= len(command) or not command.startswith(kept):
+        return tool_name
+    display_prefix = tool_name[: len(tool_name) - len(shown)]
+    return display_prefix + command
 
 
 def _context_matches(matcher: str, mode: str, context: str) -> bool:

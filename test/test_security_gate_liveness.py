@@ -217,7 +217,15 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#:
+#: Raised again, from 28,665, for ``_deny_pattern_passes``: ``is_denied``'s
+#: whole-string and per-segment passes moved, unchanged, into one helper so that
+#: ``is_denied_synthesized_target(..., segments=True)`` can run them over the
+#: operator's own rules for a shell title kiro-cli cut short -- a rule anchored to
+#: one chained command of that title would otherwise stop firing. No new rule, no new
+#: matching logic and no floor change: the growth is the helper's signature, the flag
+#: and its docstring.
+_PACKAGE_LINE_BUDGET = 28_699
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

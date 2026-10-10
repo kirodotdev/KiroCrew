@@ -40,6 +40,7 @@ from kiro_crew.hooks import (
     fire_tool_hooks,
     get_global_hook_store,
     hook_gate_kwargs,
+    untruncated_shell_title,
 )
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.messaging.link import canonical_key
@@ -63,6 +64,7 @@ from kiro_crew.providers.base import (
 from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     is_denied,
+    is_denied_synthesized_target,
     is_sensitive_bash_command,
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
@@ -1307,6 +1309,7 @@ def _title_denial(
     denied_regexes: list[str] | None,
     *,
     exempt_command: str | None = None,
+    bash_subject: str | None = None,
 ) -> tuple[str, str] | None:
     """Return the always-enforced denial for the tool *title*, or ``None``.
 
@@ -1318,6 +1321,11 @@ def _title_denial(
     a hop that offloaded only the tool_input strings left the crash path in
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
+
+    *bash_subject*, when given, is what the bash tier scans instead of *title*:
+    a title rebuilt around the whole command (``untruncated_shell_title``) is
+    scanned there without its display prefix, so the prefix cannot carry a
+    command that fits the size ceiling past it.
     """
     # The path tier reads a PATH. A shell tool's recovered COMMAND is command text,
     # which the gate deliberately does not match paths in (``hooks.on_tool_call``
@@ -1335,7 +1343,7 @@ def _title_denial(
         if is_unverifiable_path_refusal(path_refusal):
             return ("path", path_refusal)
         return ("path", f"Blocked: sensitive path: {title}")
-    bash_reason = is_sensitive_bash_command(title)
+    bash_reason = is_sensitive_bash_command(title if bash_subject is None else bash_subject)
     if bash_reason:
         return ("bash", bash_reason)
     deny_reason = is_denied(title, denied_regexes=denied_regexes)
@@ -3004,6 +3012,14 @@ async def _resolve_permission(
         )
         await provider.reject_tool(event.request_id)
         return False
+    # The title tier judges a shell title in kiro-cli's cut shape (a leading
+    # slice of the recovered command plus ``...``) in its uncut form,
+    # exactly as ``hooks.on_tool_call`` does (``untruncated_shell_title``); any
+    # other title is judged verbatim.
+    _shell_command = getattr(event, "shell_command", None)
+    judged_title = untruncated_shell_title(
+        normalized, _shell_command if isinstance(_shell_command, str) else None
+    )
     # Honor the user's Settings>Security opt-out + governance pins on this
     # surface too (cron / Slack / workflow / heartbeat). Without threading the
     # effective set, is_denied() fails closed to ALL built-ins here, which would
@@ -3169,10 +3185,29 @@ async def _resolve_permission(
         # the strings. Title first, so a request denied on its title
         # reports the title-tier reason and mechanism exactly as before.
         title_hit = _title_denial(
-            normalized, _denied_regexes, exempt_command=_path_tier_exempt(event)
+            judged_title,
+            _denied_regexes,
+            exempt_command=_path_tier_exempt(event),
+            bash_subject=(
+                _normalize_tool_name(judged_title) if judged_title != normalized else None
+            ),
         )
         if title_hit is not None:
-            return (title_hit[0], title_hit[1], normalized, "always_deny")
+            return (title_hit[0], title_hit[1], judged_title, "always_deny")
+        if judged_title != normalized and hooks is not None:
+            # The operator's own regexes judge the title as SENT when it was
+            # rebuilt, as ``hooks.on_tool_call`` does and through the same
+            # floor-free tier, whole string and per segment: a rule written
+            # against the cut text kiro-cli displayed keeps firing, including one
+            # anchored to a single chained command, and no shipped rule sees that
+            # text. Without a HookManager no operator rule is known.
+            operator_regexes = hooks.operator_denied_regexes()
+            if operator_regexes:
+                shown_reason = is_denied_synthesized_target(
+                    normalized, operator_regexes, segments=True
+                )
+                if shown_reason:
+                    return ("regex", shown_reason, normalized, "always_deny")
         if _edit_target_gated:
             edit_hit = _edit_target_denial(_edit_params, event.diff_path)
             if edit_hit is not None:
