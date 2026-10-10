@@ -11014,7 +11014,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "実行中のターンをリダイレクトしています — まだ確認されていません。",
         "turn_ended_before_this_applied_runs_as_its_own_message": "適用される前にターンが終了したため、別のメッセージとして実行されます。",
         "quote_message": "メッセージを引用",
-        "more_actions": "その他の操作"
+        "more_actions": "その他の操作",
+        "edit_replaces_below": "送信すると下の返信が置き換わります"
       },
       "workflowCompletionCard": {
         "hide_result": "結果を非表示",
@@ -11407,10 +11408,8 @@
         "close": "クルーチャットを閉じる",
         "load_failed": "{{name}} からこのセッションを読み込めませんでした。",
         "empty": "まだメッセージはありません。",
-        "rewind": "ここまで巻き戻す",
         "interrupted": "ターンが中断されました",
         "continue": "続行",
-        "regenerate": "再生成",
         "action_failed": "{{name}} がその操作を拒否しました。もう一度試すか、クルー自身のダッシュボードを開いてください。",
         "offline": "{{name}} は接続されていません。送信するには再接続してください。",
         "rewinding": "巻き戻し中: 送信すると、このメッセージ以降の会話が置き換わります。",
