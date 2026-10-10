@@ -842,10 +842,17 @@ def read_within_reports(path: Path, root: Path | None = None,
 
 
 def generate(root: Path | None = None, slug: str | None = None,
-             run_id: str | None = None) -> dict:
-    """Read all result records, build + render + persist the report."""
+             run_id: str | None = None, records: list[dict] | None = None) -> dict:
+    """Build + render + persist the report.
+
+    ``records`` are the records the caller already accepted. A run passes them in
+    because its results directory stays writable by every dispatched worker, so a
+    re-read there would render whatever a worker wrote after acceptance. Without
+    them (the CLI), the stored records are read.
+    """
     cfg = store.load_config(root)
-    records = results.list_results(root, run_id)
+    if records is None:
+        records = results.list_results(root, run_id)
     report = build_report(records, cfg)
     html_body = render_html(report)
     index = write_outputs(report, html_body, root, slug, run_id)

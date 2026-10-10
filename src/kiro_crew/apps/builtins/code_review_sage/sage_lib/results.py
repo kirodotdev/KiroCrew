@@ -2,14 +2,13 @@
 """Local result-record store.
 
 One JSON file per reviewed change under ``data/results/``. This is the loop's
-output and the Focus Report's input — the durable source of truth. Writes are
+output and standalone report input; automatic runs retain accepted snapshots. Writes are
 atomic (temp + ``os.replace``) and mode ``0600`` (results may quote private
 diff snippets). Records follow the findings JSON contract in the skill.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 from pathlib import Path
@@ -154,9 +153,9 @@ def validate_result(record: dict) -> list[str]:
                 and p1.get("gate_verdict") not in VALID_VERDICTS:
             errs.append(f"phase1.gate_verdict must be one of {sorted(VALID_VERDICTS)}")
     findings = record.get("findings", [])
-    if findings and not isinstance(findings, list):
+    if not isinstance(findings, list):
         errs.append("findings must be a list")
-    elif isinstance(findings, list):
+    else:
         # Every entry is dereferenced as an object downstream (`_redact_finding`,
         # then `f.get("severity"/"file"/"line"/...)` when rendering), so a
         # non-object entry raises AttributeError mid-report rather than being
@@ -231,12 +230,17 @@ def write_result(record: dict, root: Path | None = None,
     errs = validate_result(record)
     if errs:
         raise ValueError("invalid result record: " + "; ".join(errs))
+    data = json.dumps(record, indent=2).encode("utf-8")
+    if len(data) > _RECORD_MAX_BYTES:
+        raise ValueError(
+            f"serialized result record ({len(data)} bytes) exceeds durable reader limit "
+            f"({_RECORD_MAX_BYTES} bytes)"
+        )
     if run_id:
         store.ensure_run_layout(run_id, root)
     else:
         store.ensure_layout(root)
     path = result_path(record["change_id"], root, run_id)
-    data = json.dumps(record, indent=2).encode("utf-8")
     store.atomic_write_locked(path, data)
     return path
 
@@ -305,62 +309,8 @@ def clear_results(root: Path | None = None, run_id: str | None = None) -> int:
     return removed
 
 
-# --- Bridging the worker's write path to the run's read path ------------------
-# The reviewing worker writes ``data/results/<change-id>.json`` — that path is
-# part of the prompt contract and of the `sage-review` skill, and the worker has
-# no notion of a run id. The DRIVER owns run scoping, so it moves each record
-# into the run's private dir once the turn ends.
-#
-# The shared dir is safe as a staging area despite concurrent runs: records are
-# keyed by change id, and the backend's in-flight claim registry guarantees two
-# live runs never hold the same change.
-
-def clear_staged(change_ids, root: Path | None = None) -> int:
-    """Remove the SHARED staging records for the given changes.
-
-    The shared dir is the worker's write path and the driver's adoption source, so
-    a record left there by a crashed run is indistinguishable from one the current
-    worker just wrote. Callers sweep their own keys before dispatch; only the keys
-    named here are touched, so a concurrent run's staging is left alone.
-
-    Takes change IDS (the caller owns the link -> id derivation; deriving it here
-    would import the driver and close an import cycle).
-    """
-    shared = results_dir(root, None)
-    removed = 0
-    for cid in change_ids or ():
-        p = shared / f"{safe_change_id(str(cid))}.json"
-        try:
-            p.unlink()
-            removed += 1
-        except OSError:
-            pass
-    return removed
-
-
-def stake_shared(change_id: str, root: Path | None = None) -> bool:
-    """Clear this change's shared slot. True == it is now empty and safe to adopt from.
-
-    Adoption cannot tell WHO wrote the file it adopts: the payload check only proves the
-    record names this change, and any reviewer worker can write any change's path in the
-    shared dir. So a record present before this change's own reviewer is dispatched has no
-    claim to be this change's findings -- it is a leftover from an earlier run or a plant
-    from another worker, and adopting it would attribute someone else's text to this pull
-    request.
-
-    Unlinked with ``os.unlink``, which removes a link without following it, so a symlink
-    planted at the path is discarded rather than dereferenced. Returning False (the slot
-    could not be cleared) tells the driver not to trust whatever turns up there.
-    """
-    path = result_path(change_id, root, None)
-    try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass                      # already empty, which is the state we want
-    except OSError:
-        return False              # still occupied by something we cannot remove
-    return True
-
+# Posters use the shared path named in their prompt. Adoption transports their
+# delivery metadata; it does not authenticate review findings.
 
 def adopt_from_shared(change_id: str, root: Path | None = None,
                       run_id: str | None = None) -> bool:

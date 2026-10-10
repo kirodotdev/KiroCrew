@@ -8,6 +8,16 @@
 2. Error strings at CLI boundaries (never expose tracebacks to users)
 3. Graceful degradation — partial output returned on timeout
 
+## Sage automatic posting confirmation
+
+When automatic posting carries a driver-accepted review snapshot, the driver
+restores that snapshot to the durable result after adopting delivery metadata
+and before confirming the draft. A failed confirmation preserves the accepted
+findings for manual retry and does not advance the posted-key ledger. A failed
+restoration write returns a per-item posting failure with a redacted error; the
+batch continues and generates its report from accepted snapshots. It does not
+claim that the durable record is safe for retry.
+
 ## Exception Hierarchy
 
 Two independent families. `AcpError` covers protocol and prompt-level failures;

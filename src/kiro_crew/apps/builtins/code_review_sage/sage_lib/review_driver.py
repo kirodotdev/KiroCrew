@@ -35,11 +35,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
+import hmac
 import inspect
 import json
 import logging
 import os
 import re
+import secrets
 import sys
 import threading
 import time
@@ -128,6 +131,10 @@ DEFAULT_TASK_TIMEOUT = 5400  # 90 min per review turn (the governing cap — pas
 #   Stays under the runtime's 2h prompt default.
 _REPORT_ARTIFACT_TAG = "sage-report"  # tags every per-run report artifact
 DEFAULT_REPORT_RETENTION = 20  # keep the N most-recent report artifacts; prune older
+_RESPONSE_SCHEMA = "code-review-sage-response"
+_RESPONSE_VERSION = 1
+_MAX_RESPONSE_BYTES = 1_000_000
+_MAX_ENVELOPE_CANDIDATES = 64
 
 
 def _api_request(method: str, path: str, body: dict | None = None, timeout: int = 30) -> dict:
@@ -226,8 +233,8 @@ def _resolve_concurrency(explicit: int | None = None) -> int:
 def _cid(link: str) -> str:
     """Derive the change id from a GitHub PR link — filesystem-safe. A PR URL ->
     ``GH-<owner>-<repo>-<n>`` (matching the id ``adapters.parse_github_payload``
-    records, so the worker's written record and the driver's read hit the same
-    file); otherwise a sanitized fallback (never a raw URL, which is not a valid
+    records, so the response and the driver's destination name the same change);
+    otherwise a sanitized fallback (never a raw URL, which is not a valid
     filename)."""
     try:
         host, owner, repo, number = pipeline.adapters.github_pr_ref(link)
@@ -411,9 +418,9 @@ def _accepts_activity(dispatch: Callable[..., Any]) -> bool:
     return _accepts_kwarg(dispatch, "on_activity")
 
 
-def build_review_task(change_link: str) -> str:
+def build_review_task(change_link: str, *, change_id: str = "", capability: str = "") -> str:
     """Single-pass review prompt: ONE isolated session does the WHOLE review —
-    design reasoning AND every code-level dimension — in a single turn, and writes
+    design reasoning AND every code-level dimension — in a single turn, and returns
     the complete result record (phase1 design fields + findings + counts +
     ship_summary + a coverage signal). Design is one dimension of the review, not a
     separate gated stage; the driver runs neither a gate turn nor a convergence
@@ -467,7 +474,18 @@ def build_review_task(change_link: str) -> str:
         "actually reviewed, and `coverage_complete` to true ONLY if that list covers "
         "every changed file — otherwise set it false (the driver will run ONE "
         "targeted follow-up on the remainder). Do not pad the list; report honestly.\n"
-        "  7. RECORD ONLY — do NOT post any comments. Write data/results/<id>.json: "
+        "  7. RECORD ONLY — do NOT post any comments. Do NOT write any result file. "
+        "Your final response MUST be one JSON object and nothing else (no Markdown fence or "
+        'prose): {"schema": "'
+        + _RESPONSE_SCHEMA
+        + '", "version": '
+        + str(_RESPONSE_VERSION)
+        + ', "capability": "'
+        + capability
+        + '", "change_id": "'
+        + change_id
+        + '", "record": {...}}. The exact capability and change_id above are '
+        "driver-issued and must be echoed exactly. Put the complete result record in `record`: "
         "phase1 (gate_verdict, design_risk, criticality, design_headline, problem, "
         "why_it_matters, solution_assessment) + blast_radius; `findings` (each with "
         "file, line, severity 🔴/🟡, dimension, headline, observation, consequence, "
@@ -491,17 +509,26 @@ def build_review_task(change_link: str) -> str:
     )
 
 
-def build_review_followup_task(change_link: str) -> str:
+def build_review_followup_task(
+    change_link: str,
+    *,
+    change_id: str = "",
+    capability: str = "",
+    base_digest: str = "",
+    base_record: dict | None = None,
+) -> str:
     """Bounded coverage backstop — dispatched AT MOST ONCE, and only when the single
     review reported ``coverage_complete=false``. It reviews the STILL-UNCOVERED
     changed files and APPENDS only net-new findings (never repeats/removes existing
     ones), then marks coverage complete. It runs at most one targeted pass,
     signal-driven, not count-delta-driven."""
     py = python_command()
+    base_record_json = json.dumps(base_record or {}, sort_keys=True, separators=(",", ":"))
     return (
         "You are a Code Review Sage reviewer running in an ISOLATED, CLEAN session. "
         "A prior pass reviewed EXACTLY ONE change: " + change_link + " but reported "
-        "INCOMPLETE file coverage (coverage_complete=false) in data/results/<id>.json.\n"
+        "INCOMPLETE file coverage (coverage_complete=false). The immutable prior-record "
+        "digest is `" + base_digest + "`; its authoritative JSON is `" + base_record_json + "`.\n"
         "Run every `sage_lib/...` command — the ones below AND the ones the skill "
         "writes as `<python> ...` — with this interpreter: `" + py + "`. Use that "
         "absolute path verbatim (quote it as YOUR shell requires if it contains "
@@ -515,8 +542,8 @@ def build_review_followup_task(change_link: str) -> str:
         + py
         + " sage_lib/pipeline.py prepare --link "
         + change_link
-        + " --payload-file <file>`. READ the existing record: its `findings` and "
-        "`files_covered`.\n"
+        + " --payload-file <file>`. The driver retains the prior record; do not read or "
+        "write a result file.\n"
         "  4. Review ONLY the changed files NOT already in `files_covered`, against "
         "ALL 9 code dimensions AND the design lenses, with the same three-tier "
         "severity (🔴/🟡, drop nice-to-haves) and the description<->diff fidelity + "
@@ -528,10 +555,196 @@ def build_review_followup_task(change_link: str) -> str:
         "conclusion in ONE sentence under about 100 characters; recompute `counts` "
         "{red,yellow} over "
         "the FULL list; refresh `ship_summary`; extend `files_covered` to include "
-        "every changed file and set `coverage_complete=true`; keep deep_reviewed=true "
-        "and PRESERVE the phase1 block. You MUST NOT call any comment tool.\n"
+        "every changed file and set `coverage_complete=true`; preserve every first-pass "
+        "metadata field, including revision. You MUST NOT call any comment tool.\n"
+        "  6. Your final response MUST be one JSON object and nothing else (no Markdown "
+        'fence or prose): {"schema": "'
+        + _RESPONSE_SCHEMA
+        + '", "version": '
+        + str(_RESPONSE_VERSION)
+        + ', "capability": "'
+        + capability
+        + '", "change_id": "'
+        + change_id
+        + '", "base_digest": "'
+        + base_digest
+        + '", "record": {...}}. '
+        "Echo the exact driver-issued capability, change_id, and base_digest. `record` must "
+        "retain every prior finding unchanged and append only new findings.\n"
         "Do NOT spawn further subagents. Execute; do not ask questions."
     )
+
+
+def _record_digest(record: dict) -> str:
+    """Stable digest binding a follow-up response to the first-pass record."""
+    encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _finding_counts(findings: list[dict]) -> dict[str, int]:
+    """Return the result-contract severity tallies for accepted findings."""
+    return {
+        "red": sum(finding.get("severity") == "red" for finding in findings),
+        "yellow": sum(finding.get("severity") == "yellow" for finding in findings),
+    }
+
+
+def _decode_worker_envelope(response: str, change_id: str, capability: str) -> dict | None:
+    """Find a dispatch-bound envelope within bounded candidate parsing."""
+    decoder = json.JSONDecoder()
+    depth = 0
+    in_string = False
+    end = len(response)
+    candidates = 0
+    fallback = None
+    for start in range(len(response) - 1, -1, -1):
+        if candidates >= _MAX_ENVELOPE_CANDIDATES:
+            break
+        char = response[start]
+        if depth == 0:
+            if char == "}":
+                end = start + 1
+                depth = 1
+            continue
+        if char == '"':
+            backslash = start - 1
+            while backslash >= 0 and response[backslash] == "\\":
+                backslash -= 1
+            if (start - backslash - 1) % 2 == 0:
+                in_string = not in_string
+        if in_string:
+            continue
+        if char == "}":
+            depth += 1
+        elif char == "{":
+            depth -= 1
+        if depth:
+            continue
+        candidates += 1
+        if end - start > _MAX_RESPONSE_BYTES:
+            continue
+        candidate = response[start:end]
+        if len(candidate.encode("utf-8")) > _MAX_RESPONSE_BYTES:
+            continue
+        try:
+            envelope, decoded_end = decoder.raw_decode(candidate)
+        except (ValueError, RecursionError):
+            continue
+        if decoded_end != len(candidate):
+            continue
+        if response[end:].lstrip().startswith(("}", "]", ",")):
+            continue
+        if not isinstance(envelope, dict):
+            continue
+        fallback = envelope
+        received = envelope.get("capability")
+        if (
+            envelope.get("schema") == _RESPONSE_SCHEMA
+            and envelope.get("version") == _RESPONSE_VERSION
+            and envelope.get("change_id") == change_id
+            and isinstance(received, str)
+            and received.isascii()
+            and hmac.compare_digest(received, capability)
+        ):
+            return envelope
+    return fallback
+
+
+def _persist_worker_response(
+    response: object,
+    *,
+    change_id: str,
+    capability: str,
+    root: Path | None,
+    run_id: str | None,
+    base_record: dict | None = None,
+) -> tuple[dict | None, str]:
+    """Validate a bound worker envelope, publish its record, and return it.
+
+    The accepted record is returned rather than left for the caller to read
+    back: the run-scoped path stays writable by every dispatched worker, so a
+    re-read is an unauthenticated second chance for a sibling to substitute
+    its own file for the one this envelope authorised.
+    """
+    if not isinstance(response, str):
+        return None, "worker response is missing"
+    try:
+        envelope = _decode_worker_envelope(response, change_id, capability)
+    except UnicodeEncodeError:
+        return None, "worker response is not valid UTF-8"
+    except RecursionError:
+        # A payload nested past the JSON parser's depth fails THIS change
+        # alone; it must never abort the whole batch through `pool.map`.
+        return None, "worker response is not valid JSON"
+    if envelope is None:
+        return None, "worker response is not valid JSON"
+    if envelope.get("schema") != _RESPONSE_SCHEMA or envelope.get("version") != _RESPONSE_VERSION:
+        return None, "worker response has an unsupported envelope schema"
+    received_capability = envelope.get("capability")
+    if not isinstance(received_capability, str):
+        return None, "worker response capability is missing or invalid"
+    try:
+        capabilities_match = hmac.compare_digest(
+            received_capability.encode("ascii"), capability.encode("ascii")
+        )
+    except UnicodeEncodeError:
+        return None, "worker response capability is missing or invalid"
+    if not capabilities_match:
+        return None, "worker response capability is missing or invalid"
+    if envelope.get("change_id") != change_id:
+        return None, "worker response names a different change"
+    record = envelope.get("record")
+    if not isinstance(record, dict):
+        return None, "worker response record must be an object"
+    if record.get("change_id") != change_id:
+        return None, "worker response record names a different change"
+    errors = results.validate_result(record)
+    if errors:
+        # The validator interpolates the record's own key names (phase1.<k>,
+        # findings[i].<k>, counts.<band>), and those keys are worker-written.
+        # This string is surfaced and logged, so it goes through the same
+        # scrub every other boundary carrying model-written text uses.
+        return None, store.redact_text("worker response record is invalid: " + "; ".join(errors))
+    if base_record is not None:
+        if envelope.get("base_digest") != _record_digest(base_record):
+            return None, "worker follow-up is not bound to the first-pass record"
+        base_findings = base_record.get("findings", [])
+        candidate_findings = record.get("findings", [])
+        if not isinstance(base_findings, list) or not isinstance(candidate_findings, list):
+            return None, "worker response record is invalid: findings must be a list"
+        if candidate_findings[: len(base_findings)] != base_findings:
+            return None, "worker follow-up removed or changed an existing finding"
+        if record.get("phase1") != base_record.get("phase1"):
+            return None, "worker follow-up changed the first-pass design assessment"
+        # A coverage pass can extend findings and coverage, but it has no authority
+        # over the first pass's change identity or review metadata. Reusing its
+        # complete record let it replace the revision that anchors comment payloads.
+        covered = record.get("files_covered", base_record.get("files_covered", []))
+        if not isinstance(covered, list):
+            return None, "worker response record is invalid: files_covered must be a list"
+        accepted_record = json.loads(json.dumps(base_record))
+        accepted_record["findings"] = candidate_findings
+        accepted_record["counts"] = _finding_counts(candidate_findings)
+        # A coverage pass reports the files IT read. Taking that answer whole
+        # drops every path the first pass already covered, so the record would
+        # claim less coverage than was reviewed -- and `coverage_complete` would
+        # assert completeness over the smaller list.
+        base_covered = base_record.get("files_covered", [])
+        merged = list(base_covered) if isinstance(base_covered, list) else []
+        merged += [name for name in covered if name not in merged]
+        accepted_record["files_covered"] = merged
+        for key in ("coverage_complete", "ship_summary"):
+            if key in record:
+                accepted_record[key] = record[key]
+        record = accepted_record
+    try:
+        results.write_result(record, root, run_id)
+    except (OSError, ValueError, RecursionError) as exc:
+        # RecursionError: a worker record nested past the JSON encoder's depth
+        # (a hostile or corrupted `record.extra`) fails THIS change alone; it
+        # must never abort the whole batch through `pool.map`.
+        return None, store.redact_text(f"could not persist worker response: {exc}")
+    return record, ""
 
 
 def build_post_task(change_link: str) -> str:
@@ -757,6 +970,7 @@ def post_recorded(
     timeout: float = DEFAULT_TASK_TIMEOUT,
     keys: list[str] | None = None,
     confirm=None,
+    accepted_record: dict | None = None,
 ) -> dict:
     """Publish an ALREADY-RECORDED review to its pull request.
 
@@ -778,7 +992,11 @@ def post_recorded(
     on GitHub, so re-sending one would duplicate it on the pull request. Omitting
     ``keys`` posts everything not yet posted.
     """
-    cur = results.read_result(change_id, root, run_id)
+    cur = (
+        json.loads(json.dumps(accepted_record))
+        if accepted_record is not None
+        else results.read_result(change_id, root, run_id)
+    )
     if not cur:
         # No record means no review to publish. Without this the always-on
         # ship-readiness comment would be built from an empty record and posted as
@@ -866,7 +1084,18 @@ def post_recorded(
     # reason; this is the sibling that did not.
     cur["posted_comments"] = 0
     cur["design_comment_posted"] = False
-    results.write_result(cur, root, run_id)
+    try:
+        results.write_result(cur, root, run_id)
+    except (OSError, ValueError, RecursionError) as exc:
+        return {
+            "post_ok": False,
+            "post_error": store.redact_text(f"could not persist poster record: {exc}"),
+            "posted_comments": 0,
+            "design_comment_posted": False,
+            "pending": len(pending),
+            "expected_units": 0,
+            "posted_keys": list(already),
+        }
     # The poster reads github_review_payload from the shared path named in its
     # prompt, and writes posted_comments back there.
     #
@@ -879,7 +1108,18 @@ def post_recorded(
     # Without a run_id the record already IS the shared one: publishing is a no-op
     # that also reports False, and treating that as refusal would abort every
     # unscoped post. The guard therefore applies only where a copy was required.
-    if run_id and not results.publish_to_shared(change_id, root, run_id):
+    staged_ok = True
+    if accepted_record is not None:
+        # The shared path is worker-writable: anything can sit there (a
+        # directory, a link), and a failed staging write is this change's post
+        # failure, never an exception that aborts the rest of the batch.
+        try:
+            results.write_result(cur, root, None)
+        except (OSError, ValueError):
+            staged_ok = False
+    elif run_id and not results.publish_to_shared(change_id, root, run_id):
+        staged_ok = False
+    if not staged_ok:
         staged = "could not stage the review record for the poster"
         cur["post_ok"] = False
         cur["post_error"] = staged
@@ -917,6 +1157,24 @@ def post_recorded(
     spawn = dispatch(post_prompt, timeout)
     results.adopt_from_shared(change_id, root, run_id)
     after = results.read_result(change_id, root, run_id) or {}
+    if accepted_record is not None:
+        delivery = {
+            key: after[key] for key in ("posted_comments", "design_comment_posted") if key in after
+        }
+        after = json.loads(json.dumps(cur))
+        after.update(delivery)
+        try:
+            results.write_result(after, root, run_id)
+        except (OSError, ValueError, RecursionError) as exc:
+            return {
+                "post_ok": False,
+                "post_error": store.redact_text(f"could not restore accepted review record: {exc}"),
+                "posted_comments": 0,
+                "design_comment_posted": False,
+                "pending": len(pending),
+                "expected_units": 0,
+                "posted_keys": list(already),
+            }
     ok = bool(spawn.get("ok", False))
     # The poster writes the count it actually delivered. That write is the ONLY
     # evidence of delivery — a spawn that merely returned cleanly proves nothing,
@@ -1355,24 +1613,13 @@ def run_review(
     # behaving exactly as before.
     report.reset(root, run_id)
     results.clear_results(root, run_id)
-    # Also sweep the SHARED staging path for the changes this run will review.
-    #
-    # The worker writes its record to the shared dir and the driver adopts it into
-    # the run dir; a crash between those two steps leaves an orphan that nothing
-    # reaps (`_reap_orphan_run_dirs` only walks `data/runs/`). Without this sweep,
-    # the next review of that change whose worker completes but records nothing
-    # would adopt the residue and report a stale review as a fresh success — and
-    # `_record_reviewed` would then durably mark the change reviewed at the NEW
-    # head. The legacy whole-run flow got this for free by clearing the whole
-    # shared dir at run start; a run-scoped run has to clear its own keys.
-    results.clear_staged([_cid(c) for c in changes], root)
-
     # Mark everything queued upfront so the page renders all rows at once.
     for _link in changes:
         progress(_cid(_link), "queued", {})
 
     concurrency = _resolve_concurrency(concurrency)
     per_change: list[dict] = []
+    accepted_records: dict[str, dict] = {}
 
     def _post_pending(change_id: str, link: str) -> dict:
         return post_recorded(
@@ -1383,6 +1630,7 @@ def run_review(
             run_id=run_id,
             timeout=timeout,
             confirm=confirm,
+            accepted_record=accepted_records[change_id],
         )
 
     def _one(link: str) -> dict:
@@ -1434,19 +1682,14 @@ def run_review(
             except Exception:
                 pass
 
-        # Nothing may be sitting at this change's shared path when its reviewer starts.
-        # Adoption proves only that a record NAMES this change, not who wrote it, and every
-        # worker can write any change's path in the shared dir -- so a record present
-        # beforehand is a leftover or another worker's plant, and adopting it would put
-        # someone else's findings on this pull request. If the slot cannot be cleared, skip
-        # adoption rather than trust it.
-        # Build the prompt BEFORE staking the shared slot: the builder FAILS
+        # Build the response-bound prompt before dispatch. The builder FAILS
         # CLOSED (raises) when the link's host does not revalidate against
         # `allowed_hosts()`, and a fetch instruction with an unconfirmed host
         # would route the worker at public github.com — reviewing (and later
         # posting about) a same-slug public PR instead of the intended one.
+        capability = secrets.token_urlsafe(32)
         try:
-            review_prompt = build_review_task(link)
+            review_prompt = build_review_task(link, change_id=change_id, capability=capability)
         except pipeline.adapters.AdapterError as exc:
             refused = f"refusing to review: {exc}"
             progress(change_id, "failed", {"error": refused, "reason": "review_failed"})
@@ -1465,7 +1708,6 @@ def run_review(
                 "deep_rounds": 0,
                 "skipped_reason": "review_failed",
             }
-        slot_clear = results.stake_shared(change_id, root)
         # Keep THIS session (the deep review) resumable: the findings' reasoning
         # is in its context, so it is the only one worth asking about. The
         # gate/follow-up/post sessions are not kept.
@@ -1475,13 +1717,22 @@ def run_review(
         if _accepts_kwarg(dispatch, "keep_session_key"):
             review_kwargs["keep_session_key"] = followup.chat_key(run_id or "", change_id)
         review_spawn = dispatch(review_prompt, timeout, **review_kwargs)
-        # The worker writes the shared data/results/<id>.json its prompt names;
-        # move it into this run's private dir before reading. Without this the
-        # run's dir stays empty and a completed review reports no findings.
-        if slot_clear:
-            results.adopt_from_shared(change_id, root, run_id)
-        rev_rec = results.read_result(change_id, root, run_id)
+        # The accepted record comes back from the persist call, never from a
+        # re-read. `read_result` validates the result contract, not who authored
+        # the file, and every dispatched worker holds file tools reaching
+        # `data/runs/<id>/` -- so a sibling reviewing another change can plant or
+        # overwrite this change's file. Reading that path here would give an
+        # unauthenticated second answer precedence over the authorised one.
+        rev_rec, response_error = _persist_worker_response(
+            review_spawn.get("output"),
+            change_id=change_id,
+            capability=capability,
+            root=root,
+            run_id=run_id,
+        )
         verdict = str(((rev_rec or {}).get("phase1") or {}).get("gate_verdict", "")).upper()
+        if rev_rec is not None:
+            accepted_records[change_id] = json.loads(json.dumps(rev_rec))
 
         # The gate_*/deep_* keys are kept for downstream compatibility — the run
         # summary, _record_reviewed, and the dashboard read them; with the
@@ -1524,7 +1775,10 @@ def run_review(
                 progress(
                     change_id,
                     "failed",
-                    {"error": "review produced no result record", "reason": "no_review_recorded"},
+                    {
+                        "error": response_error or "review produced no result record",
+                        "reason": "no_review_recorded",
+                    },
                 )
             else:
                 # A record landed but never marked the review complete: the
@@ -1547,36 +1801,48 @@ def run_review(
         # recorded.
         if (rev_rec or {}).get("coverage_complete") is False:
             progress(change_id, "reviewing", {"coverage": "followup"})
-            # The follow-up turn UPDATES the record, so it needs the current one
-            # visible at the path its prompt names, and re-adopted afterwards. A
-            # failed publish means the record there is not ours, and the follow-up
-            # would adopt whatever replaced it -- skip the turn instead.
-            published = results.publish_to_shared(change_id, root, run_id)
-            # Same fail-closed contract as the first pass: no confirmed host, no
-            # follow-up turn. A failed follow-up keeps the first pass's record.
+            base_record = json.loads(json.dumps(rev_rec))
+            followup_capability = secrets.token_urlsafe(32)
             try:
-                followup_prompt: str | None = build_review_followup_task(link)
-            except pipeline.adapters.AdapterError:
+                followup_prompt: str | None = build_review_followup_task(
+                    link,
+                    change_id=change_id,
+                    capability=followup_capability,
+                    base_digest=_record_digest(base_record),
+                    base_record=base_record,
+                )
+            except pipeline.adapters.AdapterError as exc:
                 followup_prompt = None
+                followup_error = str(exc)
             second_pass = (
                 dispatch(followup_prompt, timeout)
-                if followup_prompt and (published or not run_id)
-                else {"ok": False}
+                if followup_prompt
+                else {"ok": False, "output": ""}
             )
+            if followup_prompt:
+                followup_error = second_pass.get("error") or "coverage follow-up failed"
             if second_pass.get("ok", False):
-                results.adopt_from_shared(change_id, root, run_id)
-                rev_rec = results.read_result(change_id, root, run_id) or rev_rec
-                rec["deep_rounds"] = 2
-                rec["deep_reviewed"] = bool((rev_rec or {}).get("deep_reviewed"))
-                # The kept transcript is the FIRST pass's session, and this
-                # follow-up just added findings for files that pass never saw.
-                # Asking it about one of those would get a confident answer
-                # reconstructed from nothing — worse than having no follow-up at
-                # all. The follow-up pass's own session is no better (it only
-                # covered the remainder), so neither holds the whole record: drop
-                # the kept transcript and let the panel offer nothing rather than
-                # something wrong.
-                _forget_followup(run_id or "", change_id)
+                accepted, followup_error = _persist_worker_response(
+                    second_pass.get("output"),
+                    change_id=change_id,
+                    capability=followup_capability,
+                    root=root,
+                    run_id=run_id,
+                    base_record=base_record,
+                )
+                if not followup_error:
+                    rev_rec = accepted or base_record
+                    accepted_records[change_id] = json.loads(json.dumps(rev_rec))
+                    rec["deep_rounds"] = 2
+                    rec["deep_reviewed"] = bool((rev_rec or {}).get("deep_reviewed"))
+                    _forget_followup(run_id or "", change_id)
+            if followup_error:
+                rec["followup_error"] = store.redact_text(followup_error)
+                progress(
+                    change_id,
+                    "reviewing",
+                    {"error": rec["followup_error"], "coverage": "followup_rejected"},
+                )
 
         counts = (rev_rec or {}).get("counts") or {}
         red, yellow = counts.get("red", 0), counts.get("yellow", 0)
@@ -1660,19 +1926,18 @@ def run_review(
         "per_change": per_change,
     }
     if generate_report and result_records > 0:
-        # Runs AFTER all tasks complete (each dispatch call blocks until its
-        # worker session ends its turn and the record is on disk), so the report
-        # reflects this run's records. Then archive it as a NEW artifact (one
-        # report per run) and, only if that archive succeeds, delete the now-
-        # redundant result records — their content lives in the archived report
-        # summary and as draft CR comments. Guarded on result_records > 0 so a
-        # fully-failed run can't clobber the last good report. Never fails the run.
+        # Worker-writable files cannot authenticate findings. Both the report
+        # and its archive must use the same accepted in-memory snapshots.
         #
         # The report is written to the run's own dir FIRST and kept there
         # regardless of whether the artifact archive succeeds — the in-app report
         # view reads that file, so a failed archive does not mean "no report".
         try:
-            rep = report.generate(root, run_id=run_id)
+            rep = report.generate(
+                root,
+                run_id=run_id,
+                records=[accepted_records[cid] for cid in sorted(accepted_records)],
+            )
             summary["report"] = rep["index"]
             slug = archiver(rep.get("html", ""), root)
             if slug:
@@ -1730,6 +1995,7 @@ def apply_post_outcome(rec: dict, post: dict) -> None:
     rec["posted_comments"] = int(post.get("posted_comments") or 0)
     rec["posting_expected"] = int(post.get("expected_units") or 0)
     rec["post_ok"] = bool(post.get("post_ok"))
+    rec["post_error"] = str(post.get("post_error") or "")
     rec["design_comment_posted"] = bool(post.get("design_comment_posted"))
     rec["posted_keys"] = list(post.get("posted_keys") or [])
     rec["posted_review_id"] = str(post.get("posted_review_id") or "")
