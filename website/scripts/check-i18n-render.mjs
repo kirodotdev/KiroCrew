@@ -68,7 +68,7 @@
  * Exit codes: 0 clean · 1 regression · 2 cannot run (build missing, no browser,
  * pseudolocale not active).
  */
-import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync, symlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, rmSync, mkdirSync } from 'node:fs'
 import { spawnSync, execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -77,6 +77,7 @@ import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-api.mjs'
 import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP, FIXTURE_DETAIL_DESCRIPTION, partitionBaseSurfaces } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
+import { baseUiAutoArgs, linkNodeModulesView } from './lib/base-node-modules.mjs'
 import {
   SETTLE_POLL_MS,
   SETTLE_TIMEOUT_MS,
@@ -683,10 +684,17 @@ function resolveBaseScope() {
  * cross-tree import, every base build died with `Could not resolve …` and the gate
  * exited 2 on EVERY pull request, because the breakage lived in the base tree
  * rather than in anyone's diff. Archiving the commit costs a few seconds of tar
- * next to two ~45s vite builds and cannot rot. `node_modules` is symlinked rather
+ * next to two ~45s vite builds and cannot rot. `node_modules` is linked rather
  * than installed — a second `npm ci` would cost minutes, and the base's dependency
  * set only matters if the lockfile changed, which a render gate is not the right
  * place to police.
+ *
+ * Linked per entry, never as one directory link, because `node_modules/.cache`
+ * holds build outputs rather than packages, and one of them is the auto stamp
+ * manifest the base's `vite.config.ts` reads. HEAD's manifest describes HEAD's
+ * text, so sharing it fails the base build on every branch that edits a stamped
+ * file. The base gets an empty `.cache` and its own generator fills it (see
+ * scripts/lib/base-node-modules.mjs).
  */
 function buildBaseBundle(sha) {
   const dir = join(tmpdir(), `i18n-render-base-${sha.slice(0, 12)}`)
@@ -722,19 +730,37 @@ function buildBaseBundle(sha) {
   if (!existsSync(join(baseWeb, 'package.json'))) {
     die(`base tree ${sha} has no website/ — cannot render it`)
   }
-  // `junction`, not `dir`, on Windows: creating a directory SYMLINK there needs
-  // elevated privileges or Developer Mode, so a plain `dir` link fails with EPERM on
-  // a stock Windows dev box and takes the whole gate down with exit 2. A junction
-  // needs no privilege. It requires an absolute target, which this already is.
-  symlinkSync(
-    NODE_MODULES,
-    join(baseWeb, 'node_modules'),
-    process.platform === 'win32' ? 'junction' : 'dir',
-  )
+  // HEAD's packages, but the base's own `.cache` and auto stamp manifest. The view
+  // links directories as junctions on Windows, where a directory symlink needs
+  // elevated privileges and would take the whole gate down with EPERM.
+  linkNodeModulesView(NODE_MODULES, join(baseWeb, 'node_modules'))
+  writeBaseUiAuto(baseWeb, dir, sha)
 
   runViteDevBuild(baseWeb, 'dist-dev', `base ${sha.slice(0, 8)}`)
   TEMP_DIRS.push(dir)
   return { dist: join(baseWeb, 'dist-dev'), baseWeb }
+}
+
+/**
+ * Write the base tree's OWN auto stamp manifest and auto tier, with the base
+ * tree's own generator, into the empty `.cache` its `node_modules` view has.
+ *
+ * Without them the base build would stamp nothing and still pass, but it would
+ * no longer be the bundle the base commit ships: the comparison must measure the
+ * same kind of build on both sides. A base from before the auto tier existed has
+ * no stamp plugin to feed, so there is nothing to write.
+ */
+function writeBaseUiAuto(baseWeb, dir, sha) {
+  if (!existsSync(join(baseWeb, 'scripts', 'lib', 'ui-auto-stamp.mjs'))) return
+  const res = spawnSync(
+    process.execPath,
+    [join('scripts', 'gen-ui-index.mjs'), ...baseUiAutoArgs(join(dir, 'ui-index.scratch.json'))],
+    { cwd: baseWeb, encoding: 'utf-8' },
+  )
+  if (res.status !== 0) {
+    out(`${res.stdout || ''}\n${res.stderr || ''}`.trim().split('\n').slice(-25).join('\n'))
+    die(`[base ${sha.slice(0, 8)}] could not write the base tree's auto stamp manifest (exit ${res.status})`)
+  }
 }
 
 /**
