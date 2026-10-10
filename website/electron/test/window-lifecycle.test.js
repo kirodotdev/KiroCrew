@@ -1004,7 +1004,10 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
         onBeforeSendHeaders() { log.push("view.session.onBeforeSendHeaders"); },
       },
     },
-    setWindowOpenHandler() { log.push("view.setWindowOpenHandler"); },
+    setWindowOpenHandler(handler) {
+      log.push("view.setWindowOpenHandler");
+      this.windowOpenHandler = handler;
+    },
     insertCSS(css) { log.push(`view.insertCSS:${firstLine(css)}`); return Promise.resolve(); },
     executeJavaScript(script) {
       log.push(`view.executeJavaScript:${firstLine(script)}`);
@@ -1033,6 +1036,7 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
     setTitleBarOverlay() { log.push("win.setTitleBarOverlay"); },
   };
   const panelViews = [];
+  const openedExternally = [];
   class WebContentsView {
     constructor(options) {
       if (options.webPreferences.partition) {
@@ -1063,7 +1067,7 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
       WebContentsView,
       BaseWindow: { getAllWindows: () => [win], getFocusedWindow: () => null },
       Menu: { buildFromTemplate: () => ({ popup() {} }) },
-      shell: { openExternal() {} },
+      shell: { openExternal(url) { openedExternally.push(url); return Promise.resolve(); } },
       nativeTheme: { shouldUseDarkColors: false, themeSource: "system" },
       app: { getPath: () => "/virtual/logs", getVersion: () => "0.8.0", name: "Kiro Crew" },
     },
@@ -1071,7 +1075,7 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
     platform,
     env: {},
   }));
-  return { lifecycle, win, viewContents, log, panelViews };
+  return { lifecycle, win, viewContents, log, panelViews, openedExternally };
 }
 
 async function wireDashboardWindow(t, options) {
@@ -1122,6 +1126,7 @@ describe("dashboard window wiring order", () => {
       "win.on:focus",
       "win.on:focus",
       "view.setWindowOpenHandler",
+      "view.on:did-create-window",
       "view.session.onBeforeSendHeaders",
     ]);
     assert.deepEqual(onLoad, [
@@ -1167,6 +1172,25 @@ describe("dashboard window wiring order", () => {
       "view.executeJavaScript:JSON.stringify({pref: document.documentElement.dataset.modePref || \"\",mode: document.documentElement.dataset.mode || \"\"})",
     ]);
     assert.equal(win._mcLinuxMaximizeSyncArmed, true);
+  });
+
+  it("a pop-out child window, and its own child, send external links to the OS browser", async (t) => {
+    const { viewContents, openedExternally } = await wireDashboardWindow(t, { platform: "darwin" });
+    const childContents = () => ({
+      ...recordingEmitter("child", []),
+      setWindowOpenHandler(handler) { this.windowOpenHandler = handler; },
+    });
+    // The session pop-out: a same-origin window.open the dashboard allows in-app.
+    assert.deepEqual(viewContents.windowOpenHandler({ url: "http://localhost:5476/chat/x" }), { action: "allow" });
+    const popout = { webContents: childContents() };
+    viewContents.emit("did-create-window", popout);
+    const nested = { webContents: childContents() };
+    popout.webContents.emit("did-create-window", nested);
+    for (const contents of [popout.webContents, nested.webContents]) {
+      const verdict = contents.windowOpenHandler({ url: "https://example.com/docs" });
+      assert.deepEqual(verdict, { action: "deny" }, "no in-app window for an external link");
+    }
+    assert.deepEqual(openedExternally, ["https://example.com/docs", "https://example.com/docs"]);
   });
 
   it("a framed window injects neither the drag band nor caption controls", async (t) => {

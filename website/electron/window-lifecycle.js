@@ -530,13 +530,19 @@ function createWindowLifecycle(options) {
 
     // Same-origin windows remain in-app. Cross-origin web URLs and the audited
     // custom-scheme allowlist go to the OS; every other target fails closed.
-    view.webContents.setWindowOpenHandler(
-      createWindowOpenHandler({
-        openExternal: (url) => shell.openExternal(url),
-        getAppOrigin: () => windowBackendUrl,
-        log: glog,
-      }),
-    );
+    const windowOpenHandler = createWindowOpenHandler({
+      openExternal: (url) => shell.openExternal(url),
+      getAppOrigin: () => windowBackendUrl,
+      log: glog,
+    });
+    // An allowed same-origin window.open (the session pop-out) is a child window
+    // Electron creates on its own. Give it, and each of its own children, the
+    // same handler, or its external links open yet another in-app window.
+    const armWindowOpen = (contents) => {
+      contents.setWindowOpenHandler(windowOpenHandler);
+      contents.on("did-create-window", (child) => armWindowOpen(child.webContents));
+    };
+    armWindowOpen(view.webContents);
 
     // Do not leak the dashboard URL/token as a Referer to resources it embeds.
     // This listener remains attached at the same per-window setup point; moving
