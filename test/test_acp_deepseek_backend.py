@@ -2298,6 +2298,7 @@ async def test_the_effort_push_uses_this_harness_own_option_id(tmp_path) -> None
     provider._client = MagicMock()
     provider._client.backend = ACP_BACKEND_DEEPSEEK
     provider._client.supports_config_option = MagicMock(return_value=True)
+    provider._client.get_valid_effort_levels = MagicMock(return_value=["high"])
     provider._client.set_config_option = AsyncMock()
     provider._client._model = "deepseek-v4-flash"
 
@@ -3223,3 +3224,257 @@ def test_a_blank_signed_out_signature_is_refused() -> None:
     declaration = host_auth.declaration_for(ACP_BACKEND_DEEPSEEK)
     with pytest.raises(ValueError, match="blank signed-out signature"):
         dataclasses.replace(declaration, signed_out_signature="  ")
+
+
+# ── The effort control, answered by the option this harness advertises ───────
+
+#: The model id the committed handshake recorded: one the operator's own catalog
+#: serves and Crew's model registry does not carry.
+_DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+#: The levels the base comment in ``agent_sdk/backends.py`` names for this
+#: harness's ``reasoning_effort`` select. The committed handshake prunes that
+#: select to ONE level, so the full list is stated here once rather than read from
+#: the capture -- and nothing below depends on it being exhaustive, because the
+#: control follows whatever a session actually advertises.
+_DEEPSEEK_LEVELS = ["off", "low", "high", "max"]
+
+
+def _deepseek_effort_option(levels: list[str] | None = None) -> dict:
+    """The ``reasoning_effort`` select off the committed ``session/new`` result.
+
+    *levels* replaces its options while keeping the captured shape, so a test that
+    needs the full vocabulary still runs against the harness's own option record.
+    """
+    for frame in _fixture_frames("handshake-live.jsonl"):
+        for option in (frame.get("result") or {}).get("configOptions") or []:
+            if option.get("id") == "reasoning_effort":
+                option = dict(option)
+                if levels is not None:
+                    option["options"] = [{"value": v, "name": v.title()} for v in levels]
+                return option
+    raise AssertionError("no reasoning_effort option in the deepseek handshake capture")
+
+
+def _deepseek_provider(tmp_path, *, levels: list[str] | None = _DEEPSEEK_LEVELS, options=None):
+    """An ``AcpProvider`` on deepseek with a session's config options already stored."""
+    from kiro_crew.providers.acp import AcpProvider
+
+    provider = AcpProvider(
+        acp_backend=ACP_BACKEND_DEEPSEEK, work_dir=tmp_path, model=_DEEPSEEK_MODEL
+    )
+    provider._client._acp_config_options = (
+        [_deepseek_effort_option(levels)] if options is None else options
+    )
+    provider._client._model = _DEEPSEEK_MODEL
+    return provider
+
+
+class TestTheDeepseekEffortControlIsOffered:
+    """The registry's name test answers "no effort" for every ordinary session here.
+
+    ``model_supports_effort`` recognises the Claude and GPT families only, and this
+    harness serves the operator's own model ids -- so all four effort verbs declined
+    while the harness advertised the option on every ``session/new``.
+    """
+
+    def test_the_registry_does_not_recognise_the_model_this_harness_serves(self) -> None:
+        """The premise, stated so the tests below cannot pass for the wrong reason."""
+        from kiro_crew.effort import model_supports_effort
+
+        assert model_supports_effort(_DEEPSEEK_MODEL) is False
+
+    def test_the_advertised_option_answers_for_this_harness(self) -> None:
+        from kiro_crew.agent_sdk.backends import ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+
+        assert ACP_BACKEND_DEEPSEEK in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+
+    def test_the_committed_capture_carries_the_select(self) -> None:
+        """Membership rests on the capture, not on prose."""
+        option = _deepseek_effort_option()
+
+        assert option["type"] == "select"
+        assert option["category"] == "thought_level"
+        assert [o["value"] for o in option["options"]] == ["high"]
+
+    def test_the_control_is_offered_on_the_ordinary_session(self, tmp_path) -> None:
+        provider = _deepseek_provider(tmp_path)
+
+        assert provider.supports_effort() is True
+        assert provider.get_valid_effort_levels() == _DEEPSEEK_LEVELS
+
+    def test_the_control_follows_what_the_session_advertised(self, tmp_path) -> None:
+        """The committed capture's one level is all a session advertising it offers."""
+        provider = _deepseek_provider(tmp_path, levels=None)
+
+        assert provider.supports_effort() is True
+        assert provider.get_valid_effort_levels() == ["high"]
+        assert provider.accepts_effort_level("high") is True
+        assert provider.accepts_effort_level("max") is False
+
+    def test_a_session_advertising_no_option_is_still_refused(self, tmp_path) -> None:
+        provider = _deepseek_provider(tmp_path, options=[{"id": "model", "options": []}])
+
+        assert provider.supports_effort() is False
+
+
+class TestTheUnmappedLevelsAreHidden:
+    """``medium`` and ``xhigh`` have no counterpart here, so they are hidden.
+
+    Not folded onto a neighbour (the session would run a level the user did not
+    pick while the UI reports the one they did), and not written unmapped (the
+    harness never advertised them).
+    """
+
+    def test_no_fold_row_exists_for_this_harness(self) -> None:
+        from kiro_crew.agent_sdk.backends import effort_config_option_value
+        from kiro_crew.effort import EFFORT_LEVELS
+
+        for level in EFFORT_LEVELS:
+            assert effort_config_option_value(ACP_BACKEND_DEEPSEEK, level) == level
+
+    @pytest.mark.parametrize("level", ["medium", "xhigh"])
+    def test_an_unadvertised_crew_level_is_not_accepted(self, tmp_path, level) -> None:
+        provider = _deepseek_provider(tmp_path)
+
+        assert level not in provider.get_valid_effort_levels()
+        assert provider.accepts_effort_level(level) is False
+
+    @pytest.mark.parametrize("level", _DEEPSEEK_LEVELS)
+    def test_every_advertised_level_is_accepted(self, tmp_path, level) -> None:
+        assert _deepseek_provider(tmp_path).accepts_effort_level(level) is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level", ["medium", "xhigh"])
+    async def test_change_effort_refuses_a_hidden_level_before_it_persists(
+        self, tmp_path, level
+    ) -> None:
+        provider = _deepseek_provider(tmp_path)
+        provider._client.set_config_option = AsyncMock()
+
+        with pytest.raises(ValueError, match="not offered"):
+            await provider.change_effort(level)
+
+        assert _DEEPSEEK_MODEL not in provider._effort_per_model
+        provider._client.set_config_option.assert_not_awaited()
+
+    @pytest.mark.parametrize("level", ["medium", "xhigh"])
+    def test_a_stored_hidden_level_is_not_applied_at_startup(self, tmp_path, level) -> None:
+        provider = _deepseek_provider(tmp_path)
+        provider._effort_per_model = {_DEEPSEEK_MODEL: level}
+
+        assert provider._resolve_effort() is None
+
+    def test_other_harnesses_accept_every_level(self, tmp_path) -> None:
+        """Only an advertised-option harness can hide a level."""
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = AcpProvider(acp_backend=ACP_BACKEND_CLAUDE, work_dir=tmp_path)
+        provider._client._acp_config_options = [_deepseek_effort_option(["low"])]
+
+        assert provider.accepts_effort_level("max") is True
+
+
+class TestADeepseekLevelSurvivesAColdStart:
+    """The factory carries the level; the advertised list judges it on ``session/new``."""
+
+    def _factory_kwargs(self, level: str) -> dict:
+        from unittest.mock import patch
+
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agent.provider = "acp"
+        cfg.agent.acp_backend = ACP_BACKEND_DEEPSEEK
+        with patch("kiro_crew.providers.acp.AcpProvider") as mock_provider:
+            mock_provider.return_value = MagicMock()
+            factory = cfg.create_provider_factory()
+            factory(
+                session_key="dashboard:1",
+                model_override=_DEEPSEEK_MODEL,
+                reasoning_effort_override=level,
+            )
+            assert mock_provider.called, "factory did not construct AcpProvider"
+            return mock_provider.call_args.kwargs
+
+    @pytest.mark.parametrize("level", ["low", "high", "max", "off"])
+    def test_a_stored_advertised_level_is_what_the_session_applies(self, tmp_path, level) -> None:
+        carried = self._factory_kwargs(level)
+        assert carried.get("effort_per_model") == {_DEEPSEEK_MODEL: level}
+
+        provider = _deepseek_provider(tmp_path)
+        provider._effort_per_model = dict(carried["effort_per_model"])
+
+        assert provider._resolve_effort() == level
+
+    def test_a_workspace_default_takes_the_same_route(self, tmp_path) -> None:
+        provider = _deepseek_provider(tmp_path)
+        provider._effort_defaults = {_DEEPSEEK_MODEL: "max"}
+
+        assert provider._resolve_effort() == "max"
+
+
+class TestTheDeepseekPushNeverNeedsARefusal:
+    """Every value the push can emit for this harness is one it advertised.
+
+    ``_is_config_value_rejection`` makes the joining harness's ``-32602`` semantics
+    a precondition, and no deepseek config-value refusal is recorded. The descent
+    is therefore restricted to advertised rungs, and a target outside them is not
+    written, so the adapter is never asked for a value it did not offer.
+    """
+
+    async def _emitted(self, tmp_path, level: str, *, refuse: bool) -> list[str]:
+        """Every value written for *level*; with *refuse*, each write is refused."""
+        from kiro_crew.acp.client import AcpError
+
+        provider = _deepseek_provider(tmp_path)
+        written: list[str] = []
+
+        async def write(option_id: str, value: str) -> None:
+            assert option_id == "reasoning_effort"
+            written.append(value)
+            if refuse:
+                raise AcpError("Invalid value for config option reasoning_effort: " + value)
+
+        provider._client.set_config_option = write
+        try:
+            await provider._set_effort_config_option(level)
+        except AcpError:
+            pass
+        return written
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("refuse", [False, True])
+    async def test_every_crew_and_advertised_level_emits_only_advertised_values(
+        self, tmp_path, refuse
+    ) -> None:
+        from kiro_crew.effort import EFFORT_LEVELS
+
+        for level in dict.fromkeys([*EFFORT_LEVELS, *_DEEPSEEK_LEVELS]):
+            emitted = await self._emitted(tmp_path, level, refuse=refuse)
+            unknown = [value for value in emitted if value not in _DEEPSEEK_LEVELS]
+            assert unknown == [], f"{level} would send deepseek {unknown}"
+
+    @pytest.mark.asyncio
+    async def test_the_descent_skips_a_rung_the_session_did_not_advertise(self, tmp_path) -> None:
+        """``max`` refused walks max, high, low -- never xhigh or medium."""
+        assert await self._emitted(tmp_path, "max", refuse=True) == ["max", "high", "low"]
+
+    @pytest.mark.asyncio
+    async def test_an_advertised_level_is_written_once(self, tmp_path) -> None:
+        assert await self._emitted(tmp_path, "high", refuse=False) == ["high"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("level", ["medium", "xhigh"])
+    async def test_a_hidden_level_writes_nothing(self, tmp_path, level) -> None:
+        assert await self._emitted(tmp_path, level, refuse=False) == []
+
+
+@pytest.mark.asyncio
+async def test_a_model_switch_does_not_reset_over_a_hidden_level(tmp_path) -> None:
+    """The in-place switch re-applies the slot level; a hidden one is a no-op there."""
+    provider = _deepseek_provider(tmp_path)
+    provider._client.set_config_option = AsyncMock()
+
+    assert await provider.reapply_live_effort("medium") is True
+    provider._client.set_config_option.assert_not_awaited()

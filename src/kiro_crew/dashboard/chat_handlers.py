@@ -7522,6 +7522,17 @@ async def api_chat_slot_reasoning_effort(request: web.Request) -> web.Response:
         denied = _app_cancel_denied(request, slot, "chat.slot_reasoning_effort", session_key)
         if denied is not None:
             return denied
+        _live = state.sessions.get_provider(session_key)
+        if effort and isinstance(_live, AcpProvider) and not _live.accepts_effort_level(effort):
+            # A level the live session's own vocabulary hides: refused here, so
+            # it neither persists nor falls through to a session reset.
+            return web.json_response(
+                {
+                    "error": f"reasoning_effort {effort!r} is not offered by this session",
+                    "code": "effort_level_not_offered",
+                },
+                status=400,
+            )
         try:
             await asyncio.to_thread(_remember_reasoning_effort_for_restore, effort)
         except (OSError, ValueError) as exc:

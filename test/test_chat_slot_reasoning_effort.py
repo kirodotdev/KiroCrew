@@ -676,6 +676,33 @@ class TestChatSlotReasoningEffortLiveProvider:
             state.sessions.reset.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_a_level_the_live_session_hides_is_refused_without_a_reset(self):
+        # A harness that is the authority on its own vocabulary hides a Crew level
+        # it has no value for. Refused up front: nothing persists, nothing is
+        # pushed, and the session is not reset into re-reading it.
+        from kiro_crew.providers.acp import AcpProvider
+
+        provider = MagicMock(spec=AcpProvider)
+        provider.supports_effort = MagicMock(return_value=True)
+        provider.has_active_turn = MagicMock(return_value=False)
+        provider.accepts_effort_level = MagicMock(return_value=False)
+        provider.change_effort = AsyncMock(return_value=True)
+        slot = _ChatSlot("test")
+        slot.reasoning_effort = "high"
+        state = _mock_state(slot, provider=provider)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/slots/test/reasoning-effort",
+                json={"reasoning_effort": "medium"},
+            )
+            assert resp.status == 400
+            assert (await resp.json())["code"] == "effort_level_not_offered"
+            assert slot.reasoning_effort == "high"
+            provider.accepts_effort_level.assert_called_once_with("medium")
+            provider.change_effort.assert_not_awaited()
+            state.sessions.reset.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_live_clear_that_changed_nothing_commits_nothing_and_does_not_reset(self):
         # clear_effort's third outcome: the workspace overlay was locked, so
         # NOTHING changed -- the file still holds the level and the provider put

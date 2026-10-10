@@ -2365,13 +2365,11 @@ class TestTheEffortControlIsReachableOnThisHarness:
 
     def test_the_advertised_option_answers_for_this_harness(self) -> None:
         """Written out per harness, so a silently granted authority names its own."""
-        assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset({ACP_BACKEND_PI})
+        assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset(
+            {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI}
+        )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
-        # deepseek is the near miss and stays out on purpose: its own vocabulary
-        # omits two of Crew's levels and no fold row covers them, so membership
-        # would light a write path whose gap nothing here measures.
-        assert ACP_BACKEND_DEEPSEEK not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
 
     def test_the_dropdown_is_offered_on_the_ordinary_pi_session(self, tmp_path) -> None:
         """The user-visible half: the control appears on a model the registry rejects."""

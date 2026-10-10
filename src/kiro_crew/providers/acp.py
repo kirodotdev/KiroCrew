@@ -1753,6 +1753,22 @@ class AcpProvider(LLMProvider):
             return None
         return self._client.get_valid_effort_levels()
 
+    def accepts_effort_level(self, level: str) -> bool:
+        """False when this session's advertised vocabulary has no spelling of *level*.
+
+        Only a harness in ``ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION`` can answer
+        False, and only once it has advertised a non-empty option: there a Crew
+        level the harness has no value for -- after its own spelling is applied --
+        is HIDDEN rather than mapped onto a neighbour, so a write of it is refused
+        before it reaches the session. Everywhere else the model registry and the
+        step-down in :meth:`_set_effort_config_option` stay the authority, and this
+        answers True.
+        """
+        advertised = self._advertised_effort_levels()
+        if not advertised:
+            return True
+        return effort_config_option_value(self._client.backend, level) in advertised
+
     def supports_effort(self) -> bool:
         """True when this session accepts a reasoning-effort level.
 
@@ -1946,12 +1962,28 @@ class AcpProvider(LLMProvider):
             )
         # Descend from the requested level through lower levels (e.g.
         # max → xhigh → high). Never escalate above what was asked.
+        #
+        # On a harness that is the authority on its own vocabulary, the descent
+        # walks only the rungs that session advertised, and a target it never
+        # advertised is not written at all: such a level is hidden there, not
+        # stepped onto a neighbour, and every value this sends is one the harness
+        # offered -- so no refusal shape has to be recognised for it.
+        advertised = self._advertised_effort_levels()
+        if advertised and target not in advertised:
+            logger.info(
+                "effort %r is not advertised by backend %s; skipping effort push",
+                level,
+                self._client.backend,
+            )
+            return
         try:
             start = EFFORT_LEVELS.index(target)
         except ValueError:
             await self._client.set_config_option(effort_option, target)
             return
         ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
+        if advertised:
+            ladder = [lvl for lvl in ladder if lvl in advertised]
         last_exc: Exception | None = None
         for candidate in ladder:
             try:
@@ -2029,6 +2061,12 @@ class AcpProvider(LLMProvider):
 
         if not level or level not in get_reasoning_effort_values():
             raise ValueError(f"invalid effort level {level!r}")
+        if not self.accepts_effort_level(level):
+            # A level this session's own vocabulary hides is refused before
+            # anything persists, so no override re-pushes it on a respawn.
+            raise ValueError(
+                f"effort level {level!r} is not offered by backend {self._client.backend!r}"
+            )
         # Snapshot so a failed live push doesn't leave a poisoned override/
         # overlay that would re-push the rejected level on every respawn.
         _prev = self._effort_per_model.get(model)
@@ -2114,6 +2152,10 @@ class AcpProvider(LLMProvider):
             # capable one, the same "persisted no-op" the effort endpoint applies.
             return True
         if level:
+            if not self.accepts_effort_level(level):
+                # Hidden by this session's own vocabulary: the same persisted
+                # no-op, since a cold start drops it too and a reset gains nothing.
+                return True
             return bool(await self.change_effort(level))
         # No override: re-resolve so a workspace default reaches the new model. A
         # False here only means there was no default to push, so nothing is stale.

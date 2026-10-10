@@ -1792,14 +1792,18 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # no name heuristic carries, while the ``thought_level`` select sits on the same
 # ``session/new`` result for all of them.
 #
-# deepseek is NOT a member, though its model ids are equally foreign to the
-# registry and it advertises its own ``reasoning_effort`` select. Membership here
-# would light a write path whose vocabulary gap is unmeasured: deepseek advertises
-# off, low, high and max, so Crew's ``medium`` and ``xhigh`` land on nothing it
-# offers, and ``EFFORT_CONFIG_OPTION_VALUES`` carries no deepseek row to fold them
-# onto. A member whose stored level is silently dropped at its own cold start is
-# the defect this set exists to remove, so deepseek waits for its own fold rows
-# and its own round-trip coverage rather than riding in on pi's.
+# deepseek is a member for the same reason: its model ids are equally foreign to
+# the registry, and its own ``reasoning_effort`` select sits on every
+# ``session/new`` result. Its vocabulary omits two of Crew's levels -- it offers
+# off, low, high and max, so ``medium`` and ``xhigh`` have no counterpart -- and
+# those two are HIDDEN rather than folded: the dropdown is filled from what the
+# session advertised, so it never offers them, the dashboard refuses either one
+# before it reaches the session (``AcpProvider.accepts_effort_level``), and the
+# push's step-down skips any rung the session did not advertise. Folding them
+# onto a neighbour would apply a level the user did not pick while the UI reports
+# the one they did; offering them unmapped would write a value the harness never
+# advertised. The levels it does share with Crew are spelled identically, so
+# ``EFFORT_CONFIG_OPTION_VALUES`` carries no deepseek row.
 #
 # The kiro family and claude are NOT members, and that is the split this set
 # exists for: there the level rides the MODEL. kiro-cli refuses effort with
@@ -1807,7 +1811,7 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 # claude-agent-acp rebuilds its effort options per model from
 # ``supportedEffortLevels`` -- so the registry, which knows which model families
 # take a level, is the right authority for them.
-ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset({ACP_BACKEND_PI})
+ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset({ACP_BACKEND_DEEPSEEK, ACP_BACKEND_PI})
 
 
 def effort_config_option_id(backend: str) -> str:
