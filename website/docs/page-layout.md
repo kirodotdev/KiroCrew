@@ -269,6 +269,29 @@ candidate changes, until the card reports it for that prompt — the host hands
 the card the candidate's identity as `promptKey`, so a card that stays mounted
 across the change re-measures and reports too.
 
+That overlay also needs the mirror reserve at the TOP, for the same reason the
+dock has one at the bottom: an absolute overlay beside the scroller reserves
+nothing in the scroller's own flow, so without this the first readable row
+paints UNDER the card (#15993 — the "N agents queued" card sliced under the
+bar). So while a prompt is pinned, `usePinnedPrompt` gives the scroller back the
+card's strip from its TOP — `computePinnedTopReserve(bannerH)` = the card's
+`ROW_PAD_Y` offset below the fold, its settled resting height, and a clearance —
+and the row begins below the card. This is a VIEWPORT-ANCHORED inset: a top
+MARGIN that shrinks the scroller's box from the top, applied by the hook (which
+owns the scroller) because the card pins only once a prompt has scrolled above
+the fold, i.e. at `scrollTop > 0`. Do NOT reserve this with `padding-top` on the
+scroll CONTENT: content padding reserves only at `scrollTop === 0`, the one
+position the card is never pinned at, so it has already scrolled off exactly when
+the overlap happens — [#16021](https://github.com/kirodotdev/KiroCrew/pull/16021)
+did that and was closed. The hook sizes the reserve from the SETTLED resting
+height (never the live fold/peek/expansion, which only grow the card downward)
+and COMPENSATES `scrollTop` by the change in the reserve in the same layout pass,
+so the content holds against the fold and no row crosses it when the pin toggles
+— without that compensation the shift would unpin the prompt, drop the reserve
+and re-pin it (a feedback loop the bottom `padding-bottom` never had, since it
+does not move content relative to the viewport). The reserve is 0 when nothing
+is pinned, so an unpinned transcript is byte-for-byte the prior layout.
+
 | What moves the scroller | Owner (`website/src/hooks/virtualizer/`) |
 |---|---|
 | Following the live turn, the jump-to-latest pill, scrolling to a row | `followPolicy.ts` (every write goes through its `writeScrollTop`) |

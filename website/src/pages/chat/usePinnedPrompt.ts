@@ -1,4 +1,4 @@
-import { type RefObject, useCallback, useEffect, useRef, useState } from 'react'
+import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { DisplayItem } from './types'
 import type { PasteBlock } from '../../utils/pasteTokens'
@@ -7,6 +7,7 @@ import {
   ROW_PAD_Y,
   computeLiveCardH,
   computePinnedCardMaxH,
+  computePinnedTopReserve,
   computePinPush,
   findNextPromptIdx,
   findPinnedPromptIdx,
@@ -443,6 +444,58 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     if (scrollerRef.current) observer.observe(scrollerRef.current)
     return () => observer.disconnect()
   }, [pinned?.idx, pinned?.ts, updatePinnedPrompt, scrollerRef])
+  // The TOP-edge reserve — the mirror of the dock reserve (#15820) that pays for
+  // the strip the composer covers at the BOTTOM. The pinned card is a
+  // `position: absolute` overlay beside the scroller, so the scroller's flow
+  // knows nothing of its footprint and the first readable row paints under it
+  // (#15993). This gives the scroller back the card's strip from its TOP so the
+  // row starts below the card.
+  //
+  // Applied as a top MARGIN on the scroller, NOT as `padding-top` on its
+  // content — that was #16021, rejected because content padding only reserves at
+  // `scrollTop === 0`, the one position the card is never pinned at (it pins only
+  // once a prompt has scrolled above the fold, i.e. `scrollTop > 0`), so the
+  // reserve had already scrolled off screen exactly when the overlap happens. A
+  // top margin shrinks the scroller's VIEWPORT from the top instead, so the
+  // reserve is present at every scroll position the card is pinned at.
+  //
+  // Sized from the SETTLED resting height (`pinCollapsedHRef`), consumed here
+  // rather than re-measured — the push and hand-off geometry already read it, and
+  // the fold/peek/expansion only grow the card DOWNWARD, so the reserve never
+  // moves while the card is live. `maxH` already keeps the card's own bottom off
+  // the dock, so the two reserves never fight.
+  //
+  // `scrollTop` is COMPENSATED by the change in the reserve, in the same layout
+  // pass, before paint: shrinking the scroller from the top moves every row down
+  // by the delta relative to the viewport, and the pin decision reads row rects
+  // against the viewport-fixed fold — so without compensation a row could cross
+  // the fold, unpin, drop the reserve and re-pin (the feedback loop #16021 had no
+  // defence against). Adding the delta to `scrollTop` holds the content still
+  // against the fold, so the same rows stay above it and the pin is stable. The
+  // applied reserve is tracked in a ref so only the DELTA is compensated, never
+  // the whole value on an unrelated re-render.
+  const appliedReserveRef = useRef(0)
+  const reserve = pinned ? computePinnedTopReserve(pinned.bannerH) : 0
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const prevReserve = appliedReserveRef.current
+    if (reserve === prevReserve) return
+    el.style.marginTop = reserve > 0 ? `${reserve}px` : ''
+    // Hold the transcript still against the fold: a larger reserve pushed the
+    // rows down, so scroll the content up by the same amount to put them back.
+    el.scrollTop = Math.max(0, el.scrollTop + (reserve - prevReserve))
+    appliedReserveRef.current = reserve
+  }, [reserve, scrollerRef])
+  // Release the inset when the hook unmounts, so a scroller reused by another
+  // mount (a host that swaps panes on one ref) does not inherit a stale margin.
+  useEffect(() => () => {
+    const el = scrollerRef.current
+    if (el && appliedReserveRef.current !== 0) {
+      el.style.marginTop = ''
+      appliedReserveRef.current = 0
+    }
+  }, [scrollerRef])
   // rAF-throttle the per-scroll recompute: updatePinnedPrompt does a
   // querySelectorAll + getBoundingClientRect loop (a forced layout read), and a
   // fling fires scroll dozens of times/sec. Coalesce to at most once per frame,
@@ -562,5 +615,6 @@ export function usePinnedPrompt({ scrollerRef, requiresMountedHandoff = false }:
     onScrollPin,
     pinnedJumpChrome,
     jumpToPinnedPromptInPlace,
+    pinnedReserve: reserve,
   }
 }
