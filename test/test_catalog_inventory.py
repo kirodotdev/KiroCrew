@@ -479,7 +479,7 @@ class TestPinnedFetchNeverEatsUserData:
             return _P()
 
         monkeypatch.setattr(reg, "create_subprocess_limited", flaky)
-        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None: (argv, None))
+        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None, **_kwargs: (argv, None))
         monkeypatch.setattr(reg, "cgroup_scope_argv", lambda argv: argv)
 
         with pytest.raises(OSError):
@@ -509,7 +509,7 @@ class TestPinnedFetchNeverEatsUserData:
             return _P()
 
         monkeypatch.setattr(reg, "create_subprocess_limited", cancelling)
-        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None: (argv, None))
+        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None, **_kwargs: (argv, None))
         monkeypatch.setattr(reg, "cgroup_scope_argv", lambda argv: argv)
 
         with pytest.raises(asyncio.CancelledError):
@@ -1392,7 +1392,7 @@ class TestRestorationIsScopedToSameRepositoryMoves:
             return _P()
 
         monkeypatch.setattr(reg, "create_subprocess_limited", fake_clone)
-        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None: (argv, None))
+        monkeypatch.setattr(reg, "wrap_argv", lambda argv, mode=None, **_kwargs: (argv, None))
         monkeypatch.setattr(reg, "cgroup_scope_argv", lambda argv: argv)
         pending: list[pathlib.Path] = []
         restorable: list[pathlib.Path] = []

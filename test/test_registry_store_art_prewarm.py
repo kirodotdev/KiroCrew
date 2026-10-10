@@ -2034,7 +2034,7 @@ class TestFetchRefHooksNeutralizer:
             spawned.append(list(args))
             return _Proc()
 
-        async def _wrap(argv, *, mode, _prepare):
+        async def _wrap(argv, *, mode, _prepare, **_kwargs):
             return list(argv), None
 
         monkeypatch.setattr(co, "wrap_argv_async", _wrap)
