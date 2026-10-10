@@ -594,6 +594,29 @@ class TestEffortControl:
         provider._client.set_config_option.assert_awaited_once_with("effort", "max")
 
     @pytest.mark.asyncio
+    async def test_claude_start_pushes_effort_keyed_by_configured_model_spelling(self):
+        # The factory keys the level by the configured spelling; startup records
+        # the advertised one on the client.
+        with patch("kiro_crew.providers.acp.AcpClient"):
+            provider = AcpProvider(
+                acp_backend=ACP_BACKEND_CLAUDE,
+                model="claude-opus-5.5",
+                effort_per_model={"claude-opus-5.5": "max"},
+            )
+        client = provider._client
+        client.backend = ACP_BACKEND_CLAUDE
+        client._model = "claude-opus-5.5"
+        client.supports_config_option = MagicMock(return_value=True)
+        client.set_config_option = AsyncMock()
+
+        async def _ensure_ready():
+            client._model = "claude-opus-5-5[1m]"
+
+        client.ensure_ready = AsyncMock(side_effect=_ensure_ready)
+        await provider.start()
+        client.set_config_option.assert_awaited_once_with("effort", "max")
+
+    @pytest.mark.asyncio
     async def test_apply_initial_effort_noop_on_kiro_backend(self):
         # kiro gets effort from the spawn-time overlay, not a live push.
         provider = self._effort_provider(backend="", model="claude-opus-4.7")

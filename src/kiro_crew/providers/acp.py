@@ -558,6 +558,8 @@ class AcpProvider(LLMProvider):
         # backend applies it live via session/set_config_option (no overlay).
         self._effort_per_model: dict[str, str] = dict(effort_per_model or {})
         self._effort_defaults = effort_defaults
+        # The spelling the factory keyed ``effort_per_model`` under.
+        self._configured_model: str = model or ""
         # MCP Tool Search toggle (kiro-cli backend only). None = caller did not
         # specify (e.g. claude_code factory), so leave the overlay untouched.
         # True/False = write the kiro settings overlay deterministically so the
@@ -2251,6 +2253,12 @@ class AcpProvider(LLMProvider):
         else:
             # ── CC path: legacy AcpClient (unchanged) ──
             await self._client.ensure_ready()
+            # Startup records the advertised spelling of the pin, or the backend
+            # default when every spelling was refused; the level follows a pin.
+            running = self._client._model
+            if running != DEFAULT_MODEL and self._configured_model in self._effort_per_model:
+                level = self._effort_per_model.pop(self._configured_model)
+                self._effort_per_model.setdefault(running, level)
 
         await self._apply_initial_effort()
 
