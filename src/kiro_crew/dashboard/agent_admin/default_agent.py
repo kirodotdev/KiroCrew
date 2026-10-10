@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         KiroCrewConfig,
         _foreign_private_copy_owner,
         _ForeignPrivateCopy,
+        _lineage_unverifiable_error,
         _name_would_be_masked,
         _refresh_session_defaults,
         _require_owner,
@@ -355,10 +356,10 @@ async def api_default_agent(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except _UnverifiableLineage:
+        except _UnverifiableLineage as exc:
             return web.json_response(
                 {
-                    "error": f"Cannot verify whether {name!r} is a private copy; retry.",
+                    "error": _lineage_unverifiable_error(name, exc),
                     "code": "lineage_unverifiable",
                 },
                 status=409,
