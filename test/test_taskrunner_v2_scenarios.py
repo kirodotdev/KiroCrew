@@ -630,6 +630,9 @@ class TestScenarioReplanWithGitState:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
         run.branch_name = "kirocrew/task/test"
+        # A git run always records its own worktree; a path that does not exist keeps
+        # every git call failing here, so no test step can reach a real repository.
+        run.work_dir = run.worktree_path = str(tmp_path / "no-such-worktree")
         run.tasks = [
             Step(index=1, title="Done", description="d", status=StepStatus.PASSED),
         ]
@@ -1086,6 +1089,9 @@ class TestScenarioProcessCrashWithGit:
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
         run = TaskRun(spec_path=str(tmp_path / "t.md"), spec_content="s", status="running")
         run.branch_name = "kirocrew/task/crash_test"
+        # A git run always records its own worktree; a nonexistent path keeps git off
+        # any real repository.
+        run.work_dir = run.worktree_path = str(tmp_path / "no-such-worktree")
         step = Step(index=1, title="Crashy", description="d")
         run.tasks = [step]
 

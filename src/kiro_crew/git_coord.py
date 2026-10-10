@@ -46,15 +46,41 @@ async def init_workspace(run: Project) -> None:
     """
     orig_dir = run.work_dir
     branch = f"kirocrew/task/{run.task_id}"
+    # Git stays disabled until this run's own worktree exists. Both callers
+    # treat an exception from here as "continue without git coordination", so
+    # a failure anywhere below must leave the run unable to run git in the
+    # user's checkout -- the default ``git_enabled = True`` would otherwise
+    # survive the failure with ``work_dir`` still naming that checkout.
+    run.git_enabled = False
 
     if not await _is_git_repo(orig_dir):
         # General coding task on a non-git folder — run directly in it, no git.
-        run.git_enabled = False
         return
 
     run.base_branch = (await _git(orig_dir, "rev-parse", "--abbrev-ref", "HEAD")).strip()
     repo_root = (await _git(orig_dir, "rev-parse", "--show-toplevel")).strip()
     wt_dir = str(Path(repo_root).parent / ".kirocrew-work" / run.task_id)
+    if await _branch_exists(repo_root, branch):
+        # This run's own branch already exists: an earlier start created the
+        # worktree and stopped before the run recorded it. A plain re-add with
+        # ``-b`` would fail on the existing branch, so recover through the same
+        # ownership checks a retry uses. The fields are tentative until recovery
+        # succeeds: on a refusal, an error or a cancellation they are cleared
+        # again, so ``finalize()`` -- which removes ``run.worktree_path`` with
+        # ``--force`` -- cannot act on a directory recovery did not claim.
+        run.repo_root = repo_root
+        run.branch_name = branch
+        run.worktree_path = wt_dir
+        recovered = False
+        try:
+            recovered = await reinit_workspace_for_retry(run)
+        finally:
+            if not recovered:
+                run.repo_root = run.branch_name = run.worktree_path = ""
+                run.git_enabled = False
+        if recovered:
+            return
+        raise RuntimeError(f"could not recover this run's leftover worktree at {wt_dir}")
     await _git(orig_dir, "worktree", "add", wt_dir, "-b", branch)
     run.work_dir = wt_dir
     run.worktree_path = wt_dir
@@ -63,12 +89,44 @@ async def init_workspace(run: Project) -> None:
     run.git_enabled = True
 
 
+async def _branch_exists(repo_root: str, branch: str) -> bool:
+    """True when ``refs/heads/<branch>`` resolves in ``repo_root``."""
+    try:
+        await _git(repo_root, "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}")
+    except (RuntimeError, OSError):
+        return False
+    return True
+
+
+def _git_runs_in_own_worktree(run: Project) -> bool:
+    """True when a step may run git in ``run.work_dir``.
+
+    Git must be enabled AND ``work_dir`` must be the run's own worktree:
+    ``init_workspace`` and ``reinit_workspace_for_retry`` set ``work_dir`` and
+    ``worktree_path`` to the same path together, so any other state means the
+    directory may be the user's own checkout, where ``git add -A`` would commit
+    their uncommitted work and ``reset --hard`` would discard it. A pure string
+    comparison, so it costs no filesystem call on the event loop.
+    """
+    if not run.git_enabled:
+        return False
+    if run.worktree_path and os.path.normpath(run.work_dir) == os.path.normpath(run.worktree_path):
+        return True
+    logger.warning(
+        "refusing to run git for run %s in %s: it is not the run's own worktree",
+        run.task_id,
+        run.work_dir,
+    )
+    return False
+
+
 async def commit_step(run: Project, step: Task) -> str:
     """Stage all changes and commit. Returns sha or empty string.
 
-    No-op (returns "") when the run has no git workspace.
+    No-op (returns "") when the run has no git workspace, or when ``work_dir``
+    is not the run's own worktree (see :func:`_git_runs_in_own_worktree`).
     """
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     await _git(run.work_dir, "add", "-A")
     head_tree = (await _git(run.work_dir, "rev-parse", "HEAD^{tree}")).strip()
@@ -135,7 +193,7 @@ async def revert_step(run: Project) -> None:
     swallowed at debug, so an operator at default log levels can tell "reverted"
     from "revert refused" instead of silently proceeding on an un-reverted tree.
     """
-    if not run.git_enabled or not run.commit_hashes:
+    if not run.commit_hashes or not _git_runs_in_own_worktree(run):
         return
     for attempt in range(_REVERT_MAX_ATTEMPTS):
         try:
@@ -167,7 +225,7 @@ async def revert_step(run: Project) -> None:
 
 async def get_state_summary(run: Project) -> str:
     """Build context from git log + diff stat. Empty when git-disabled."""
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     try:
         log = await _git(run.work_dir, "log", "--oneline", f"{run.base_branch}..HEAD")
@@ -184,7 +242,7 @@ async def get_state_summary(run: Project) -> str:
 
 async def get_step_diff(run: Project) -> str:
     """Get the diff of the last commit (for review). Empty when git-disabled."""
-    if not run.git_enabled:
+    if not _git_runs_in_own_worktree(run):
         return ""
     try:
         return await _git(run.work_dir, "diff", "HEAD~1")

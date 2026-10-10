@@ -5155,6 +5155,7 @@ class TestGitCoord:
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.git_enabled = True
         run.work_dir = "/w"
+        run.worktree_path = "/w"
         run.commit_hashes = ["aaa", "bbb"]
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
@@ -5195,6 +5196,7 @@ class TestGitCoord:
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.git_enabled = True
         run.work_dir = "/w"
+        run.worktree_path = "/w"
         run.commit_hashes = ["aaa", "bbb"]
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
@@ -5235,6 +5237,7 @@ class TestGitCoord:
         run = TaskRun(spec_path="/t.md", spec_content="s")
         run.git_enabled = True
         run.work_dir = "/w"
+        run.worktree_path = "/w"
         run.commit_hashes = ["aaa"]
 
         with caplog.at_level(logging.WARNING, logger="kiro_crew.git_coord"):
