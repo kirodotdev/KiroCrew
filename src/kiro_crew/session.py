@@ -2789,6 +2789,10 @@ class SessionManager:
         """Whether an automatic compaction is in flight on *key* right now."""
         return self._compaction.is_compacting(key)
 
+    def compaction_waits_for_turn(self, key: str) -> bool:
+        """Whether *key*'s compaction still waits for the turn holding the session."""
+        return self._compaction.compaction_waits_for_turn(key)
+
     def mark_needs_reinjection(self, key: str) -> None:
         """Mark a live session for one-shot context reinjection."""
         self._compaction.mark_needs_reinjection(key)

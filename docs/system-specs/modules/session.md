@@ -1661,6 +1661,10 @@ applier — a raised turn budget is in force on the next prompt.
    anything below runs. Cancelling that turn would fail the compaction and recycle
    the session, so nothing is recorded and nothing is cleared; the caller tells the
    user and the compaction finishes on its own. `force=True` is never declined.
+   A compaction still waiting for the turn permit does not hold the session yet:
+   while a live task other than the compaction holds the permit
+   (`compaction_waits_for_turn`), the Stop goes to that turn as usual, and
+   `compaction_in_flight` gives the same answer.
 1. Record the Stop: `stop_requests[key] += 1` (per folded key, on
    `SessionLifecycleState`). This runs BEFORE anything is awaited so the
    dashboard runner's end-of-turn gates -- which may run the moment the

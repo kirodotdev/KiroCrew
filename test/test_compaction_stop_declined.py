@@ -35,6 +35,7 @@ from kiro_crew.session_compaction import (
     COMPACT_OUTCOME_CANCELLED,
     COMPACT_OUTCOME_RECYCLED,
 )
+from kiro_crew.session_lifecycle import compaction_in_flight
 
 KEY = "dashboard:chat-14841"
 
@@ -221,6 +222,68 @@ async def test_stop_turn_is_unchanged_when_nothing_is_compacting():
     # No compaction and a mock provider that acks: the ordinary soft path.
     assert await mgr.stop_turn(KEY, force=False) == "soft"
     assert mgr.stop_generation(key) == 1
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_on_the_turn_a_compaction_waits_behind_is_a_soft_cancel():
+    """The threshold trigger commits a compaction while the turn it was triggered
+    from still holds the turn permit, and the compaction then waits for it. Until
+    it has the permit that turn owns the session, so a cooperative Stop cancels it
+    as usual, and the probe every channel runs first agrees."""
+    mgr, key, compact, order, notices = await _setup()
+    await mgr.get_or_create(KEY)  # the user's turn takes the permit
+    session = mgr._sessions[key]
+    session.provider.context_usage_pct = lambda: 95.0
+    session.provider.cancel = AsyncMock(return_value="acked")
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    async with asyncio.timeout(5):
+        while not session.semaphore._waiters:  # the compaction parks on the permit
+            await asyncio.sleep(0)
+    assert mgr.is_compacting(KEY) is True
+    assert not compact.started.is_set(), "premise: /compact has not started"
+
+    # What a channel reads first, then the Stop itself.
+    probe = compaction_in_flight(mgr, KEY)
+    outcome = await mgr.stop_turn(KEY, force=False)
+    observed = (probe, outcome, session.provider.cancel.await_count)
+    assert observed == (False, "soft", 1), (
+        "a cooperative Stop on the turn the compaction waits behind was declined: "
+        f"(compaction_in_flight, stop_turn, cancels) = {observed}"
+    )
+    assert mgr.stop_generation(key) == before + 1
+
+    mgr.release(key)
+    compact.release.set()
+    async with asyncio.timeout(5):
+        while mgr.is_compacting(KEY):
+            await asyncio.sleep(0.01)
+    await mgr.close_all()
+
+
+@pytest.mark.asyncio
+async def test_a_stop_once_the_triggered_compaction_holds_the_session_is_still_declined():
+    """Control: once the triggered compaction has the permit and runs ``/compact``,
+    a cooperative Stop is declined and not recorded, as before."""
+    mgr, key, compact, order, notices = await _setup()
+    session = mgr._sessions[key]
+    session.provider.context_usage_pct = lambda: 95.0
+    before = mgr.stop_generation(key)
+
+    mgr.check_context_usage(key, session.provider)
+    await asyncio.wait_for(compact.started.wait(), timeout=5)
+    assert compaction_in_flight(mgr, KEY) is True
+
+    assert await mgr.stop_turn(KEY, force=False) == "compacting"
+    session.provider.cancel.assert_not_called()
+    assert mgr.stop_generation(key) == before
+
+    compact.release.set()
+    async with asyncio.timeout(5):
+        while mgr.is_compacting(KEY):
+            await asyncio.sleep(0.01)
     await mgr.close_all()
 
 

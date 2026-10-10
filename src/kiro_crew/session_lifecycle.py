@@ -476,8 +476,28 @@ def compaction_in_flight(sessions: Any, key: str) -> bool:
     Builder's Pause. Fail-soft
     to False and ``is True`` rather than truthiness: a manager double without the
     method, or one answering a truthy Mock, keeps the ordinary stop path.
+
+    A compaction that is still waiting for the turn permit does not hold the
+    session yet: the turn holding the permit does, and the Stop is aimed at it
+    (``_compaction_waits_for_turn``). ``stop_turn`` reads the same answer, so the
+    probe and the decline cannot disagree.
     """
     probe = getattr(sessions, "is_compacting", None)
+    if not callable(probe):
+        return False
+    try:
+        return probe(key) is True and not _compaction_waits_for_turn(sessions, key)
+    except Exception:
+        return False
+
+
+def _compaction_waits_for_turn(sessions: Any, key: str) -> bool:
+    """Whether *key*'s compaction still waits for the turn that holds the session.
+
+    Narrows the Stop decline only: anything but an explicit True (a double
+    without the method, a truthy Mock, a raise) answers False, which keeps it.
+    """
+    probe = getattr(sessions, "compaction_waits_for_turn", None)
     if not callable(probe):
         return False
     try:
@@ -2989,8 +3009,15 @@ class SessionLifecycleService:
         # the turn saw, and recording it would make the compaction path below
         # read its own later failure as user-cancelled. ``getattr`` because the
         # owner protocol does not declare the compacting set; a double without it
-        # keeps the old behaviour.
-        if not force and session is not None and key in getattr(owner, "_compacting", ()):
+        # keeps the old behaviour. Not while the compaction still waits for the
+        # turn permit: the turn holding it owns the session, and this Stop is aimed
+        # at that turn (the same answer ``compaction_in_flight`` gives).
+        if (
+            not force
+            and session is not None
+            and key in getattr(owner, "_compacting", ())
+            and not _compaction_waits_for_turn(owner, key)
+        ):
             logger.info("stop_turn outcome=compacting session=%s (cooperative stop declined)", key)
             return "compacting"
         # Record the Stop against the session key before anything is awaited:

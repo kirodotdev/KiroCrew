@@ -88,6 +88,11 @@ class CompactionState:
     """Mutable state owned exclusively by the compaction boundary."""
 
     compacting: set[str] = field(default_factory=set)
+    #: The task running each in-flight compaction, keyed like ``compacting`` and
+    #: kept in step with it by ``_set_compacting``. ``compaction_waits_for_turn``
+    #: compares it with ``turn_owner`` to tell the compaction holding the turn
+    #: permit from the turn it is still waiting behind.
+    compaction_tasks: dict[str, asyncio.Task[Any]] = field(default_factory=dict)
     #: Keys whose in-flight recycle is happening because NOTHING could compact them,
     #: as opposed to because a compaction failed. Written by ``_recycle_held`` and
     #: consumed by ``_fire_compact_callback`` at the end of the same recycle, so it
@@ -336,6 +341,9 @@ class CompactionCoordinator:
         # There is deliberately no await between the membership check in the
         # gate and this commit; that is the event-loop dedup handshake.
         self._set_compacting(key, True)
+        current = asyncio.current_task()
+        if current is not None:
+            self.state.compaction_tasks[key] = current
         return await owner._compact_session(key, pct)
 
     def set_compact_callback(self, cb: CompactCallback | None) -> None:
@@ -354,6 +362,28 @@ class CompactionCoordinator:
         """Whether a compaction is in flight on *key* (folded or not)."""
         return key in self.state.compacting or self._owner._fold_key(key) in self.state.compacting
 
+    def compaction_waits_for_turn(self, key: str) -> bool:
+        """Whether *key*'s compaction is still waiting for a turn that holds the session.
+
+        A trigger commits the compaction (``is_compacting``) before its task has
+        the turn permit, and the task then waits up to ``compact_wait_timeout_secs``
+        for it. Until then the turn holding the permit owns the session, so a Stop
+        pressed in that window is aimed at that turn, not at a ``/compact`` turn.
+        True only when the permit is held by a live task other than the
+        compaction's own. Every other state answers False, including a compaction
+        with no recorded task, so the Stop decline keeps its old reach there.
+        """
+        folded = self._owner._fold_key(key)
+        task = self.state.compaction_tasks.get(folded)
+        session = self._owner._sessions.get(folded)
+        if task is None or session is None or folded not in self.state.compacting:
+            return False
+        semaphore = getattr(session, "semaphore", None)
+        holder = getattr(session, "turn_owner", None)
+        if semaphore is None or not semaphore.locked() or holder is task:
+            return False
+        return isinstance(holder, asyncio.Task) and not holder.done()
+
     def _set_compacting(self, key: str, on: bool) -> None:
         """The ONE writer of ``state.compacting``: commit, then tell the observer.
 
@@ -367,6 +397,7 @@ class CompactionCoordinator:
             self.state.compacting.add(key)
         else:
             self.state.compacting.discard(key)
+            self.state.compaction_tasks.pop(key, None)
             # The markers this compaction's declines armed die with it, under
             # every spelling of the key a channel may have pressed with: the
             # next compaction, even one starting inside the window, owes its
@@ -594,6 +625,7 @@ class CompactionCoordinator:
         # a second attempt in the same event-loop turn.
         self._set_compacting(key, True)
         task = asyncio.create_task(owner._compact_session(key, pct))
+        self.state.compaction_tasks[key] = task
         owner._background_tasks.add(task)
         task.add_done_callback(owner._background_tasks.discard)
         return None
