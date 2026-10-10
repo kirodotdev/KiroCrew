@@ -6,6 +6,8 @@ Where the launcher wraps the child the seal holds and the workspace is free."""
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from kiro_crew import sandbox as sandbox_mod
@@ -119,3 +121,30 @@ class TestDelegatedWorkspaceExposesAgentsDir:
         fresh = agents_dir.parent / "crew" / "not-yet"
         assert not fresh.exists()
         assert sandbox_mod.delegated_workspace_exposes_sealed_target(fresh) is None
+
+    def test_windows_mixed_case_workspace_on_case_sensitive_share_is_allowed(
+        self, monkeypatch, agents_dir, tmp_path
+    ):
+        # A \\wsl.localhost share is case-sensitive while ntpath.normcase lowercases.
+        # Emulate both on POSIX: the lexical layers compare folded spellings, but
+        # the identity layer must stat the spelling that exists on disk.
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_mod.os.path, "normcase", lambda p: os.fspath(p).lower())
+        workspace = tmp_path / "WSL" / "Ubuntu" / "Projects"
+        workspace.mkdir(parents=True)
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(workspace) is None
+        inside = agents_dir / "Mixed"
+        inside.mkdir()
+        reason = sandbox_mod.delegated_workspace_exposes_sealed_target(inside)
+        assert reason is not None and "(path)" in reason
+
+    def test_windows_mixed_case_alias_into_agents_dir_is_still_refused(
+        self, monkeypatch, agents_dir, tmp_path
+    ):
+        # Identity layer with case folding on: a mixed-case link whose target
+        # resolves into the agents tree is caught.
+        monkeypatch.setattr(sandbox_mod.sys, "platform", "win32")
+        monkeypatch.setattr(sandbox_mod.os.path, "normcase", lambda p: os.fspath(p).lower())
+        link = tmp_path / "WS-Link"
+        link.symlink_to(agents_dir, target_is_directory=True)
+        assert sandbox_mod.delegated_workspace_exposes_sealed_target(link) is not None

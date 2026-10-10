@@ -8186,6 +8186,14 @@ def delegated_workspace_exposes_sealed_target(
         # Lexical first, canonical second; de-duplicated when they coincide.
         return tuple(dict.fromkeys((_norm(path), _norm(os.path.realpath(path)))))
 
+    def _disk_spellings(path: str) -> tuple[str, ...]:
+        # The same two spellings WITHOUT case folding, for the identity layer: a
+        # case-sensitive share (\\wsl.localhost) reached from Windows does not
+        # resolve the lowercased spelling that normcase produces.
+        absolute = os.path.normpath(os.path.abspath(path))
+        canonical = os.path.normpath(os.path.abspath(os.path.realpath(path)))
+        return tuple(dict.fromkeys((absolute, canonical)))
+
     def _lexically_overlaps(a: str, b: str) -> bool:
         try:
             return os.path.commonpath([a, b]) in (a, b)
@@ -8207,11 +8215,13 @@ def delegated_workspace_exposes_sealed_target(
     try:
         raw_work = os.fspath(work_dir)
         work_spellings = _spellings(raw_work)
+        work_disk = _disk_spellings(raw_work)
     except Exception:
         return _reason(targets[0], "workspace path could not be resolved")
     for target in targets:
         try:
             agents_spellings = _spellings(target)
+            agents_disk = _disk_spellings(target)
         except Exception:
             return _reason(target, "sealed target path could not be resolved")
         # Layer 1+2: every spelling of one side against every spelling of the other.
@@ -8225,16 +8235,16 @@ def delegated_workspace_exposes_sealed_target(
         try:
             if not os.path.exists(raw_work):
                 continue
-            work_ids = {(s.st_dev, s.st_ino) for s in (os.stat(p) for p in work_spellings)}
+            work_ids = {(s.st_dev, s.st_ino) for s in (os.stat(p) for p in work_disk)}
             for work_id in work_ids:
-                for agents in agents_spellings:
+                for agents in agents_disk:
                     if os.path.exists(agents) and _identity_in_ancestor_chain(work_id, agents):
                         return _reason(target, "alias")
-            for agents in agents_spellings:
+            for agents in agents_disk:
                 if not os.path.exists(agents):
                     continue
                 agents_stat = os.stat(agents)
-                for work in work_spellings:
+                for work in work_disk:
                     if _identity_in_ancestor_chain((agents_stat.st_dev, agents_stat.st_ino), work):
                         return _reason(target, "alias")
         except OSError as exc:
