@@ -3089,6 +3089,30 @@ class TestProbeRemote:
         assert result.status == "error"
         assert "401" in result.error
 
+    @pytest.mark.asyncio
+    async def test_probe_remote_secret_header_is_refused_without_contact(self) -> None:
+        """A ``secret://`` header is reported by name and the server is not called.
+
+        Only a server's env is resolved against the vault, so the header would
+        reach the server as the literal reference.
+        """
+        server = McpServerInfo(
+            name="remote",
+            url="https://example.com/mcp",
+            headers={"x-api-key": "secret://MY_TOKEN", "X-Other": "plain"},
+        )
+
+        with patch("kiro_crew.mcp_discovery.aiohttp.ClientSession") as session_cls:
+            result = await _probe_remote(server)
+
+        session_cls.assert_not_called()
+        assert result.status == "error"
+        assert "'x-api-key'" in result.error
+        assert "X-Other" not in result.error
+        assert "${env:NAME}" in result.error
+        assert "MY_TOKEN" not in result.error
+        assert "MY_TOKEN" not in json.dumps(result.to_dict())
+
     def test_needs_authorization_predicate(self) -> None:
         """Unit-level truth table for _needs_authorization."""
         from kiro_crew.mcp_discovery import _needs_authorization

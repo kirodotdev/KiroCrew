@@ -492,6 +492,14 @@ class McpSessionReport:
     #: spec asked for a server nothing configured -- so there is no row for it to
     #: be missing FROM, which is exactly why the defect was invisible three times.
     unresolved_refs: tuple[str, ...] = ()
+    #: Remote servers whose headers carry a ``secret://`` reference, each as
+    #: ``server (header, ...)``. Only a server's ``env`` is resolved against the
+    #: vault, so these headers reach the server as written. Set by
+    #: :meth:`record_header_secret_refs`.
+    header_secret_refs: tuple[str, ...] = ()
+    #: Affected servers past the guard's or this report's cap, counted rather
+    #: than dropped without a word.
+    header_secret_refs_omitted: int = 0
     #: Servers that started and that the spec grants, yet gave this session no
     #: tool (see :func:`servers_exposing_no_tools`). Usually a tool-name clash
     #: with another server: the backend kept the other server's tools and
@@ -525,6 +533,8 @@ class McpSessionReport:
         """
         self.configured = roster_names(servers)
         self.unresolved_refs = ()
+        self.header_secret_refs = ()
+        self.header_secret_refs_omitted = 0
         self.no_tools = ()
         self.no_tools_omitted = 0
         self._started = True
@@ -564,6 +574,24 @@ class McpSessionReport:
             if ref and ref not in seen:
                 seen.append(ref)
         self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
+
+    def record_header_secret_refs(self, entries: Any, omitted: int = 0) -> None:
+        """Record the remote servers whose headers carry a ``secret://`` reference.
+
+        Set rather than accumulated, like :meth:`record_unresolved_refs`: the
+        guard reads the whole roster in one pass. Strings only, each sanitized and
+        bounded at :data:`_ERROR_CAP`. *omitted* is the guard's own count of
+        servers it did not list; the guard caps its entries below the bucket.
+        """
+        seen: list[str] = []
+        for raw in entries if isinstance(entries, (list, tuple)) else ():
+            if not isinstance(raw, str):
+                continue
+            entry = sanitize_sink_text(raw, _ERROR_CAP)
+            if entry and entry not in seen:
+                seen.append(entry)
+        self.header_secret_refs = tuple(seen[:_BUCKET_CAP])
+        self.header_secret_refs_omitted = omitted if isinstance(omitted, int) and omitted > 0 else 0
 
     def record_no_tools(self, names: Any) -> bool:
         """Record the servers that started but gave this session no tool.
@@ -746,6 +774,7 @@ class McpSessionReport:
         return not (
             self.configured
             or self.unresolved_refs
+            or self.header_secret_refs
             or self.no_tools
             or self._ready
             or self._failed
@@ -802,6 +831,17 @@ class McpSessionReport:
             parts.append(
                 "declared by the agent spec but not configured: "
                 + _joined(list(self.unresolved_refs))
+            )
+        if self.header_secret_refs:
+            parts.append(
+                "remote server headers use a secret:// reference, which is resolved "
+                "only for a stdio server's env: "
+                + _joined(list(self.header_secret_refs))
+                + (
+                    f" (+{self.header_secret_refs_omitted} not listed)"
+                    if self.header_secret_refs_omitted
+                    else ""
+                )
             )
         if self.no_tools:
             parts.append(

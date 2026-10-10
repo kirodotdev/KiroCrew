@@ -71,7 +71,10 @@ from kiro_crew.acp.kas_transport import (
     METHOD_KAS_AUTH_GET_ACCESS_TOKEN,
 )
 from kiro_crew.acp.launch import LaunchRequest, LaunchTools, launch
-from kiro_crew.acp.mcp_ref_guard import warn_unresolved_server_refs
+from kiro_crew.acp.mcp_ref_guard import (
+    warn_remote_header_secret_refs,
+    warn_unresolved_server_refs,
+)
 from kiro_crew.acp.mcp_session_report import (
     NAME_CAP,
     active_custom_agent,
@@ -7324,6 +7327,14 @@ class AcpRuntime:
                 handle.mcp_session_report().record_unresolved_refs(unresolved)
         except Exception:
             logger.debug("unresolved-ref guard: evaluation failed", exc_info=True)
+        try:
+            header_refs, omitted = warn_remote_header_secret_refs(
+                spec, wire_servers, backend=self.acp_backend, agent=agent or ""
+            )
+            if header_refs:
+                handle.mcp_session_report().record_header_secret_refs(header_refs, omitted)
+        except Exception:
+            logger.debug("remote-header guard: evaluation failed", exc_info=True)
 
     async def _finish_create_session(
         self,

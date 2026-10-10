@@ -124,6 +124,46 @@ entry exists it uses the same `.env` value it always has, so existing setups
 keep working without change — run `kirocrew secrets import --apply` to move the
 Jira token into the vault when you are ready.
 
+### Remote (URL) servers: headers are not resolved
+
+A `secret://` reference is resolved only in a **stdio** server's `env`. A remote
+server (`"url": ...`) authenticates with `headers`, and the session runtime reads
+those as written, so a reference such as
+`"headers": { "x-api-key": "secret://MY_TOKEN" }` would reach the server as the
+literal text `secret://MY_TOKEN`.
+
+Kiro Crew does not send it silently:
+
+- The MCP server probe (the dashboard's MCP server status) reports the server as
+  an error naming the header, and does not contact the server.
+- At session start the launch log has one warning naming the server and header,
+  and the session's MCP problem summary lists it.
+
+On the kiro-cli backend, use an environment reference in the header and set the
+variable in `~/.kiro/crew/.env`. kiro-cli expands `${VAR}` and `${env:VAR}` in a
+remote server's headers at session time (see the `headers` example in
+[kiro-cli MCP configuration](../reference/kiro-cli/mcp/configuration.md)):
+
+```jsonc
+{
+  "mcpServers": {
+    "my-remote": {
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "x-api-key": "${env:MY_TOKEN}" }
+    }
+  }
+}
+```
+
+The value then lives in `.env` rather than the encrypted vault, with the
+limits described under [What NOT to do](#what-not-to-do).
+
+Other backends (Claude, Codex, OpenCode, Goose, DeepSeek) receive a remote
+server's headers from Kiro Crew as written, and Kiro Crew does not rely on them
+expanding `${env:}`; the KAS backend does not receive declared headers. On those
+backends there is no documented way to supply a header value from the vault or
+from `.env` yet.
+
 ---
 
 ## Why service-level environment variables are not an MCP-only fallback

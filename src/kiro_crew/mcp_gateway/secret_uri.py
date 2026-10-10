@@ -130,3 +130,87 @@ def resolve_secret_uris(
         secret_keys.add(key)
 
     return resolved, secret_keys
+
+
+def header_secret_refs(headers: object) -> list[str]:
+    """Names of the headers whose value carries a ``secret://`` reference.
+
+    Only an MCP server's ``env`` is resolved against the vault. A remote server's
+    ``headers`` are read by the session runtime as written, so a reference there
+    reaches the server as literal text. Callers use this to say so instead of
+    letting the request fail with an authorization error that names nothing.
+
+    Accepts both shapes a header block takes in this codebase: the config mapping
+    (``{"X-Api-Key": "secret://NAME"}``) and the ACP wire list
+    (``[{"name": "X-Api-Key", "value": "secret://NAME"}]``). Anything else yields
+    no names. Matches the prefix anywhere in the value, because a value such as
+    ``Bearer secret://NAME`` is just as unresolved as a bare reference. Never
+    returns a value or a secret name -- only the header names, in first-seen
+    order and de-duplicated.
+    """
+    pairs: list[tuple[object, object]] = []
+    if isinstance(headers, dict):
+        pairs = list(headers.items())
+    elif isinstance(headers, (list, tuple)):
+        pairs = [
+            (item.get("name"), item.get("value")) for item in headers if isinstance(item, dict)
+        ]
+    out: list[str] = []
+    seen: set[str] = set()
+    for name, value in pairs:
+        if (
+            isinstance(name, str)
+            and name
+            and isinstance(value, str)
+            and _SECRET_URI_PREFIX in value
+            and name not in seen
+        ):
+            seen.add(name)
+            out.append(name)
+    return out
+
+
+#: The supported way to supply a remote server's header today, named in every
+#: refusal so the reader has the fix and not only the fault. Limited to kiro-cli
+#: on purpose: kiro-cli expands ``${VAR}`` / ``${env:VAR}`` in a remote server's
+#: headers itself, while Crew hands the other backends their headers as written.
+REMOTE_HEADER_ALTERNATIVE = (
+    "On the kiro-cli backend, use ${env:NAME} in the header value and set NAME in "
+    "the Kiro Crew .env file; kiro-cli expands it at session time. Other backends "
+    "receive the header as written"
+)
+
+#: Bounds on the header names one refusal spells out. A header name is
+#: config-derived text bound for a log line and a dashboard row.
+_HEADER_NAME_CAP = 64
+_HEADER_NAMES_SHOWN = 8
+
+
+def display_header_names(names: list[str]) -> str:
+    """Header names for a message: printable characters only, bounded, quoted."""
+    shown = []
+    for name in names[:_HEADER_NAMES_SHOWN]:
+        clean = "".join(ch for ch in name if ch.isprintable())[:_HEADER_NAME_CAP]
+        shown.append(repr(clean or "?"))
+    text = ", ".join(shown)
+    if len(names) > _HEADER_NAMES_SHOWN:
+        text += f" (+{len(names) - _HEADER_NAMES_SHOWN} more)"
+    return text
+
+
+def remote_header_secret_ref_error(headers: object) -> str:
+    """One sentence explaining why a remote server's header will not authenticate.
+
+    Empty when no header carries a ``secret://`` reference. Names the headers,
+    never their values or the referenced secret names.
+    """
+    names = header_secret_refs(headers)
+    if not names:
+        return ""
+    noun = "Header" if len(names) == 1 else "Headers"
+    return (
+        f"{noun} {display_header_names(names)} use{'s' if len(names) == 1 else ''} a "
+        "secret:// reference, which is not resolved for a remote server: secret "
+        "references are resolved only in a stdio server's env, so the server would "
+        f"receive the reference as written. {REMOTE_HEADER_ALTERNATIVE}."
+    )

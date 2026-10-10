@@ -328,6 +328,10 @@ static header — or one whose reference did not resolve, because a missing or
 credential-filtered variable supplies nothing — is the `needs_auth` /
 "Sign-in required" path described above.
 
+A `secret://` vault reference is not resolved in a remote server's headers. The
+probe reports such a header as an error and does not contact the server; see
+[Remote (URL) servers: headers are not resolved](secrets-env.md#remote-url-servers-headers-are-not-resolved).
+
 For an OAuth server, an optional internal `scopes` list maps to the wire
 `oauthScopes` field (`mcp_utils._wire_scopes`). It is all-or-nothing: the field
 is **dropped whole** when it is absent, empty, or malformed. When it is dropped,
