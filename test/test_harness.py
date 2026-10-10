@@ -41,6 +41,7 @@ from kiro_crew.testing.harness import (
     _resolve_workspace_src,
     _terminate_process_group,
     _wait_for_ready_line,
+    crash_dump_diagnostic,
     harness_environment,
     parse_ready_line,
     spawn_feature_gateway,
@@ -728,6 +729,105 @@ def test_drain_stderr_accumulates() -> None:
     _drain_stderr(stream, buffer)
 
     assert b"".join(buffer) == b"first chunk\nsecond chunk\n"
+
+
+# ── crash_dump_diagnostic: the loop-stall stack reaches the failure text ──
+
+_DUMP_HEADER = (
+    "# loop-stall crash dump — opened 20261010T034911Z\n"
+    "# PID: 2407 @ runner/pid:[1] start=1\n"
+    "# If thread stacks appear below, the event loop wedged and faulthandler fired.\n"
+    "\n"
+)
+
+
+def _write_dump(home: Path, name: str, body: str) -> Path:
+    dumps = home / "logs" / "crash-dumps"
+    dumps.mkdir(parents=True, exist_ok=True)
+    path = dumps / name
+    path.write_text(_DUMP_HEADER + body, encoding="utf-8")
+    return path
+
+
+def test_crash_dump_diagnostic_is_empty_without_a_stalled_gateway(tmp_path: Path) -> None:
+    """No dump directory, and the header-only sentinel every boot opens, both say
+    nothing: the diagnostic must not invent a stall."""
+    assert crash_dump_diagnostic(tmp_path) == ""
+    _write_dump(tmp_path, "loopstall-20261010T034911Z.txt", "")
+    assert crash_dump_diagnostic(tmp_path) == ""
+
+
+def test_crash_dump_diagnostic_carries_the_newest_stack(tmp_path: Path) -> None:
+    """A dump with thread stacks is folded in whole, newest first, under a header
+    that names the file -- the frame the alarm caught is what a reader needs."""
+    _write_dump(
+        tmp_path,
+        "loopstall-20261010T030000Z.txt",
+        'Thread 0x01 (most recent call first):\n  File "old.py", line 1 in older\n',
+    )
+    older = tmp_path / "logs" / "crash-dumps" / "loopstall-20261010T030000Z.txt"
+    os.utime(older, (1_000_000, 1_000_000))
+    _write_dump(
+        tmp_path,
+        "loopstall-20261010T034911Z.txt",
+        "Thread 0x7f (most recent call first):\n" '  File "memory.py", line 42 in wedged_frame\n',
+    )
+    text = crash_dump_diagnostic(tmp_path)
+    assert text.startswith("\n--- loop-stall crash dump (loopstall-20261010T034911Z.txt) ---\n")
+    assert "wedged_frame" in text
+    assert "older" not in text
+
+
+def test_crash_dump_diagnostic_keeps_the_wedged_thread_under_the_cap(tmp_path: Path) -> None:
+    """``faulthandler`` writes the main thread LAST, behind every idle worker. The
+    diagnostic replays the wedged thread first, so a dump past the cap keeps the
+    stack that explains the stall and drops workers."""
+    workers = "".join(
+        f"Thread 0x{n:04x} (most recent call first):\n"
+        '  File "threading.py", line 1 in _bootstrap\n'
+        '  File "queue.py", line 2 in get\n'
+        for n in range(400)
+    )
+    body = (
+        "Timeout (0:00:25)!\n" + workers + "Thread 0xffff (most recent call first):\n"
+        '  File "memory.py", line 42 in wedged_frame\n'
+    )
+    _write_dump(tmp_path, "loopstall-20261010T034911Z.txt", body)
+    text = crash_dump_diagnostic(tmp_path)
+    assert text.endswith("... (dump truncated; wedged thread shown first)")
+    assert "wedged_frame" in text
+    assert text.index("wedged_frame") < text.index("_bootstrap")
+    # dump_replay_lines caps at 120 lines / 8192 bytes of stack text; the header
+    # line and the joining newlines ride on top.
+    assert len(text) < 8192 + 120 + 200
+
+
+def test_gateway_diagnostics_include_the_crash_dump() -> None:
+    """``GatewayHandle.diagnostics()`` on a spawned gateway reports the dump its
+    watchdog left behind, next to the stderr and stdout tails."""
+    fake_proc = _make_fake_proc_with_ready(
+        '{"port": 51234, "token": "t-abc", "pid": 9876, "home": "/tmp/x"}'
+    )
+    with (
+        patch("kiro_crew.testing.harness.subprocess.Popen", return_value=fake_proc),
+        patch("kiro_crew.testing.harness._terminate_process_group", return_value=True),
+        patch(
+            "kiro_crew.testing.harness.platform_compat.process_descendants",
+            return_value=[],
+        ),
+    ):
+        with spawn_feature_gateway(fixture="empty") as handle:
+            assert "loop-stall crash dump" not in handle.diagnostics()
+            _write_dump(
+                handle.home,
+                "loopstall-20261010T034911Z.txt",
+                "Thread 0x7f (most recent call first):\n"
+                '  File "memory.py", line 42 in wedged_frame\n',
+            )
+            text = handle.diagnostics()
+    assert "--- stderr (last) ---" in text
+    assert "--- loop-stall crash dump (loopstall-20261010T034911Z.txt) ---" in text
+    assert "wedged_frame" in text
 
 
 # ── spawn_feature_gateway: orchestration with mocked Popen ──────────────

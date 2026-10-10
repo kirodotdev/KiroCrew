@@ -65,6 +65,7 @@ from pathlib import Path
 from typing import IO, Any, Callable, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.dashboard.crash_dump_store import dump_replay_lines, newest_dump_with_stacks
 from kiro_crew.kiro_prerequisite import FAKE_ACP_TEST_MODE_ENV
 from kiro_crew.testing import fake_acp_backend
 
@@ -98,6 +99,42 @@ SHIM_ENCODING = "oem"
 # Sentinel prefix the gateway prints to stdout once the dashboard is bound.
 # Owned by ``slack/gateway.py``; if you change it there, update here too.
 READY_PREFIX = "KIROCREW_READY:"
+
+
+def crash_dump_diagnostic(home: Path) -> str:
+    """The gateway's loop-stall stack dump, if its watchdog wrote one into *home*.
+
+    The watchdog's dump-then-exit (``dashboard/loop_watchdog.py``) writes every
+    thread's stack into ``<home>/logs/crash-dumps/`` and never into stderr, so a
+    gateway the alarm ended shows up in the captured stderr as silence followed
+    by ``exit=-14``. The harness removes the HOME right after, which makes this
+    file the one place the blocking frame can be read from: it is folded into
+    :meth:`GatewayHandle.diagnostics` so the frame reaches the test's failure
+    message instead of a directory nobody uploads.
+
+    The stacks come through :func:`~kiro_crew.dashboard.crash_dump_store.dump_replay_lines`
+    at its journal-replay caps: ``faulthandler`` writes threads newest-first,
+    which puts the main thread LAST behind every idle worker, and that reader
+    replays the wedged thread first, so the caps only ever drop workers.
+
+    Empty when no dump with stacks exists -- a header-only file is the sentinel
+    every boot opens and says nothing. Never raises: a missing or unreadable
+    directory is a gateway that produced no dump, and the diagnostic it would
+    decorate must still be reported.
+    """
+    try:
+        dump = newest_dump_with_stacks(home / "logs" / "crash-dumps")
+        if dump is None:
+            return ""
+        lines, truncated = dump_replay_lines(dump)
+    except Exception:  # noqa: BLE001 - diagnostics must never mask the failure
+        return ""
+    if not lines:
+        return ""
+    text = "\n".join(lines)
+    if truncated:
+        text += "\n... (dump truncated; wedged thread shown first)"
+    return f"\n--- loop-stall crash dump ({dump.name}) ---\n{text}"
 
 
 @dataclass(frozen=True)
@@ -1183,7 +1220,7 @@ def spawn_feature_gateway(
                 return (
                     f"gateway pid {proc.pid} exit={proc.poll()!r}\n"
                     f"--- stderr (last) ---\n{err}\n"
-                    f"--- stdout after READY (last) ---\n{out}"
+                    f"--- stdout after READY (last) ---\n{out}" + crash_dump_diagnostic(home)
                 )
 
             def _restart(skip_model_download: Optional[bool] = None) -> GatewayHandle:
