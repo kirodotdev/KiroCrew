@@ -385,10 +385,13 @@ def migration_notice(
 ) -> str:
     """The words a startup logs when a DEPRECATED ``config.json`` declaration is in use.
 
-    The config key still grants (First-Principles ruling: it is not retired and platforms
-    are not narrowed), so this notice tells the operator the key is deprecated and names
-    the keystone to migrate to for the secure, mask-protected home. Returned rather than
-    logged here so the two startup paths that establish the declared grant (the
+    Which words depends on the mask. Where the keystone mask is UNAVAILABLE the config key
+    still grants (platforms the keystone cannot cover are not narrowed), so the notice
+    tells the operator the key is deprecated and that nothing need change on this host.
+    Where the mask HOLDS the config key is refused -- it is agent-reachable, so
+    honouring it would reopen the route the keystone closes -- so the notice tells the
+    operator to move the declaration to the keystone, which is available there. Returned
+    rather than logged here so the two startup paths that establish the declared grant (the
     dashboard's and Slack's) word it identically, and so a test can assert on the text an
     operator actually sees instead of on a log call.
 
@@ -442,11 +445,12 @@ def migration_notice(
             "this host; the config key keeps working."
         )
     preamble = (
-        "agent.dangerously_skip_permissions is set in config.json. It still grants the "
-        "standing auto-approve, but it is DEPRECATED: the standing declaration should "
-        f"move to the operator-owned keystone {path}, which an agent sandbox cannot open "
-        "(the config key is an agent-readable document that can be reached through a second "
-        "name, which is why it is being replaced). "
+        "agent.dangerously_skip_permissions is set in config.json. On THIS host it is "
+        "refused: it is DEPRECATED and the key is an agent-readable document that "
+        "can be reached through a second name, so honouring it would let a sandboxed "
+        "process grant itself the standing auto-approve -- which is exactly what the "
+        f"operator-owned keystone {path} prevents (an agent sandbox cannot open it). The "
+        "standing declaration must move to the keystone, which is available here. "
     )
     # Deliberately NOT a runnable redirection command. The crew data-home root is
     # agent-writable, so a symlink could sit at ``path``, and an operator who copy-pastes a

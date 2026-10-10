@@ -203,24 +203,54 @@ def test_apply_startup_yolo_noop_when_nothing_is_declared() -> None:
     assert safety_override().is_active() is False
 
 
-def test_the_deprecated_config_key_alone_still_grants_and_warns(caplog) -> None:
-    """First-Principles ruling: the config key is a DEPRECATED ALIAS, not retired. It
-    STILL grants on its own (so no operator loses the grant on upgrade) and logs a
-    one-line deprecation warning.
+def test_the_deprecated_alias_is_refused_on_a_masked_host(monkeypatch, caplog) -> None:
+    """On a host where the keystone IS masked, the deprecated ``config.json`` alias is
+    refused.
+
+    The alias is agent-reachable, so honouring it on a masked host would reopen the
+    ``link(2)`` route the keystone closes. The keystone is available there as the
+    replacement, so refusing the alias leaves nobody unable to grant. The grant must NOT
+    activate, and the warning must say the key is refused and name the keystone.
+
+    Discriminating: the keystone is NOT declared (no ``_declare``), so the only path that
+    could grant is the alias; it does not, purely because the mask holds.
+    """
+    monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: True)
+    state = _make_state()
+    with patch("kiro_crew.safety_override.sel"), caplog.at_level("WARNING"):
+        _apply_startup_yolo(state, _cfg(yolo=True))
+
+    assert safety_override().is_active() is False
+    assert "DEPRECATED" in caplog.text
+    assert "is refused on this host" in caplog.text
+
+
+def test_the_deprecated_alias_still_grants_where_the_mask_is_unavailable(
+    monkeypatch, caplog
+) -> None:
+    """Where the keystone mask is UNAVAILABLE (Windows, kiro-cli-delegated macOS,
+    ``sandbox: off``) the deprecated alias STILL grants, so no operator on those
+    platforms loses the grant on upgrade and no platform is narrowed.
 
     Control beside it: the keystone path grants too, with NO deprecation warning, so the
-    warning above is specific to the config-key alias and not the harness.
+    warning here is specific to the config-key alias and not the harness.
     """
+    monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: False)
     state = _make_state()
     with patch("kiro_crew.safety_override.sel"), caplog.at_level("WARNING"):
         _apply_startup_yolo(state, _cfg(yolo=True))
 
     assert safety_override().is_active() is True
     assert "DEPRECATED" in caplog.text
-    assert "no longer grants" not in caplog.text
+    assert "is refused on this host" not in caplog.text
 
-    reset_singleton()
-    caplog.clear()
+
+def test_the_keystone_grants_at_startup_with_no_deprecation_warning(caplog) -> None:
+    """Control beside the alias tests: the keystone path grants with NO deprecation
+    warning, so the DEPRECATED wording is specific to the config-key alias, not the
+    harness. ``_keystone_is_masked`` is pinned True by the module fixture, so ``_declare``
+    grants."""
+    state = _make_state()
     _declare()
     with patch("kiro_crew.safety_override.sel"), caplog.at_level("WARNING"):
         _apply_startup_yolo(state, _cfg(yolo=False))

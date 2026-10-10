@@ -64,11 +64,14 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     ``yolo_duration`` governance scope), in which case it falls back to the ad-hoc
     duration. Picking another approval mode still clears it immediately.
 
-    ``agent.dangerously_skip_permissions`` in ``config.json`` is a DEPRECATED ALIAS: it
-    still grants on every platform, so no operator loses the grant on upgrade and no
-    platform is narrowed. When it is set, the operator is told once, at WARNING, that the
-    key is deprecated and names the keystone to move to; the grant is still made. Retiring
-    it would be a product-shape change the First-Principles review blocks.
+    ``agent.dangerously_skip_permissions`` in ``config.json`` is a DEPRECATED ALIAS. On
+    hosts where the keystone mask is UNAVAILABLE (Windows, kiro-cli's delegated macOS
+    sandbox, ``sandbox: off``) it still grants, so no operator on those platforms loses
+    the grant on upgrade and no platform is narrowed. On a MASKED host it is refused: the
+    key is agent-reachable, so honouring it would reopen the ``link(2)`` route the keystone
+    exists to close, and the keystone is available there as the replacement. Either way the
+    operator is told once, at WARNING, that the key is deprecated and named the keystone to
+    move to.
 
     Ad-hoc grants are untouched: Slack, the dashboard picker and the API all expire on
     the single ``agent.yolo_duration`` value (default 6h).
@@ -94,23 +97,44 @@ def _apply_startup_yolo(state: DashboardState, cfg: Any) -> None:
     # Two paths grant the standing override, in order of preference:
     #   1. the keystone -- the SECURE path, honoured only where the sandbox masks the
     #      leaf away from the agent (``is_declared``);
-    #   2. ``agent.dangerously_skip_permissions`` in config.json -- a DEPRECATED ALIAS
-    #      kept working so no operator loses their standing grant on upgrade, and so the
-    #      grant is NOT narrowed off platforms the keystone cannot cover yet (Windows,
-    #      kiro-cli-delegated macOS, ``sandbox: off``). Retiring it, or refusing it on
-    #      those platforms, would be a product-shape change the First-Principles review
-    #      blocks; this keeps today's behaviour and warns instead.
+    #   2. ``agent.dangerously_skip_permissions`` in config.json -- a DEPRECATED ALIAS,
+    #      honoured ONLY where the keystone mask is UNAVAILABLE (Windows, kiro-cli-
+    #      delegated macOS, ``sandbox: off``). On a masked host the key is refused: it is
+    #      agent-reachable, so honouring it there would reopen the ``link(2)`` route the
+    #      keystone closes, and the keystone is available as the replacement. This keeps
+    #      the grant on the platforms the keystone cannot cover (no narrowing) while
+    #      closing the hole where it exists.
     # The config key is the agent-writable surface the keystone exists to replace, so the
-    # deprecation warning tells the operator to migrate -- but it still GRANTS until they
-    # do, which is the backwards-compatible, non-narrowing behaviour.
+    # deprecation warning tells the operator to migrate -- on an unmasked host it still
+    # GRANTS until they do (backwards-compatible), and on a masked host it is refused
+    # because the agent-reachable route must not stand.
     source_desc: str
     if standing_approval.is_declared(sandbox_mode):
         source_desc = "standing-approval keystone"
     elif cfg.agent.dangerously_skip_permissions:
-        # Deprecated alias: still honoured, with a one-line migration warning and the
-        # keystone path/line to move to. This path is reachable on every platform,
-        # including those where the keystone mask is unavailable, so nobody loses the
-        # grant they have today.
+        # Deprecated alias. The whole point of the keystone is that an agent can give the
+        # agent-READABLE ``config.json`` inode a second name in the writable data home and
+        # write the standing grant through it, so honouring this key hands the population
+        # the grant governs the very ``link(2)`` route the keystone exists to close. The
+        # alias is therefore refused on exactly the hosts where the keystone CAN replace
+        # it -- those where ``_keystone_is_masked`` holds -- and the operator is told to
+        # move the grant to the keystone, which is available there, so nobody is left
+        # without a way to grant. Where the mask is UNAVAILABLE (Windows, kiro-cli's
+        # delegated macOS sandbox, ``sandbox: off``) the keystone cannot help, so the alias
+        # still grants there -- today's behaviour, no platform narrowed -- with the same
+        # deprecation warning. This closes the agent-writable hole on the masked hosts
+        # where it exists, without retiring the alias off the hosts the keystone cannot
+        # cover.
+        if standing_approval._keystone_is_masked(sandbox_mode):
+            logger.warning(
+                "agent.dangerously_skip_permissions in config.json is a DEPRECATED "
+                "standing auto-approve switch and is refused on this host: the "
+                "key is agent-reachable, so honouring it would let a sandboxed process "
+                "grant itself a standing skip of every approval. Move the grant to the "
+                "keystone, which is available here. %s",
+                standing_approval.migration_notice(sandbox_mode),
+            )
+            return
         logger.warning(
             "agent.dangerously_skip_permissions in config.json is DEPRECATED as a "
             "standing auto-approve switch and will stop granting in a future release. "

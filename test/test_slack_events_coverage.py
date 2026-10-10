@@ -775,15 +775,36 @@ class TestInitSocketMode:
         sp.setters["set_yolo_mode"].assert_called_once_with(True)
 
     @pytest.mark.asyncio
-    async def test_the_deprecated_config_key_alone_still_enables_yolo(self):
-        """First-Principles ruling: the config key is a DEPRECATED ALIAS, not retired, so
-        it STILL enables yolo on its own (and logs a deprecation warning) rather than
-        being announced-but-refused."""
+    async def test_the_deprecated_alias_is_refused_on_a_masked_host(self, caplog):
+        """On a masked host the deprecated ``config.json`` alias is refused. The key is
+        agent-reachable, so honouring it would reopen the ``link(2)`` route the keystone
+        closes; the keystone is available here as the replacement, so refusing it leaves
+        nobody unable to grant. ``_keystone_is_masked`` is pinned True by the class
+        fixture, and the keystone is NOT declared, so the only path that could grant is
+        the alias -- and it does not."""
         orch = _socket_orch()
         orch._cfg.agent.dangerously_skip_permissions = True
-        with _SocketPatches() as sp:
+        with _SocketPatches() as sp, caplog.at_level("WARNING"):
+            await ev.init_socket_mode(orch, ev.SeenCache())
+        sp.setters["set_yolo_mode"].assert_not_called()
+        assert "DEPRECATED" in caplog.text
+        assert "is refused on this host" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_the_deprecated_alias_still_enables_yolo_where_mask_unavailable(
+        self, monkeypatch, caplog
+    ):
+        """Where the keystone mask is UNAVAILABLE (Windows, kiro-cli-delegated macOS,
+        ``sandbox: off``) the deprecated alias STILL enables yolo, so no operator on those
+        platforms loses the grant on upgrade and no platform is narrowed."""
+        monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: False)
+        orch = _socket_orch()
+        orch._cfg.agent.dangerously_skip_permissions = True
+        with _SocketPatches() as sp, caplog.at_level("WARNING"):
             await ev.init_socket_mode(orch, ev.SeenCache())
         sp.setters["set_yolo_mode"].assert_called_once_with(True)
+        assert "DEPRECATED" in caplog.text
+        assert "is refused on this host" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_a_sandbox_flip_before_init_leaves_the_grant_suspended(self, monkeypatch):

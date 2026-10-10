@@ -485,17 +485,27 @@ class TestConfigKeyIsADeprecatedAlias:
         )
         assert standing_approval.is_declared("auto") is False
 
-    def test_the_migration_notice_names_the_path_and_the_document(self):
+    def test_the_migration_notice_names_the_path_and_the_document(self, monkeypatch):
+        # Unmasked host: the key still grants, so the notice says so and names the keystone.
+        monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: False)
         notice = standing_approval.migration_notice("auto")
         assert loader.STANDING_APPROVAL_DIRNAME in notice
         assert loader.STANDING_APPROVAL_FILENAME in notice
         assert "dangerously_skip_permissions" in notice
-        # First-Principles ruling: the key is DEPRECATED, not retired -- it STILL grants.
-        # The notice must say so (names the keystone to migrate to) and must NOT claim the
-        # key stopped granting.
         assert "DEPRECATED" in notice
         assert "still grants" in notice
-        assert "no longer grants" not in notice
+        assert "it is refused" not in notice
+
+    def test_the_migration_notice_on_a_masked_host_says_the_key_is_refused(self, monkeypatch):
+        # Masked host: the key is refused, so the notice must NOT claim it still grants and
+        # must tell the operator to move to the keystone available there.
+        monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: True)
+        notice = standing_approval.migration_notice("auto")
+        assert loader.STANDING_APPROVAL_DIRNAME in notice
+        assert loader.STANDING_APPROVAL_FILENAME in notice
+        assert "DEPRECATED" in notice
+        assert "it is refused" in notice
+        assert "still grants" not in notice
 
     def test_the_notice_is_ascii_so_every_log_sink_renders_it(self):
         standing_approval.migration_notice("auto").encode("ascii")
@@ -539,16 +549,32 @@ class TestStartupHonoursOnlyTheKeystone:
         monkeypatch.setattr(_live, "current", lambda fallback, **_k: fallback)
         return server, calls
 
-    def test_a_deprecated_config_key_still_grants_and_warns(self, startup, caplog):
-        """First-Principles ruling: the config key is a DEPRECATED ALIAS, not retired. It
-        STILL grants (on every platform, so nobody loses the grant on upgrade), and logs a
-        one-line deprecation warning naming the keystone to migrate to."""
+    def test_the_deprecated_alias_is_refused_on_a_masked_host(self, startup, caplog, monkeypatch):
+        """On a masked host the config key is refused -- it is agent-reachable, so
+        honouring it would reopen the ``link(2)`` route the keystone closes, and the
+        keystone is available there as the replacement."""
         server, calls = startup
+        monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: True)
+        with caplog.at_level("WARNING"):
+            server._apply_startup_yolo(object(), self._cfg(declared=True))
+        assert calls == []
+        assert "DEPRECATED" in caplog.text
+        assert "is refused on this host" in caplog.text
+
+    def test_the_deprecated_alias_still_grants_where_the_mask_is_unavailable(
+        self, startup, caplog, monkeypatch
+    ):
+        """Where the keystone mask is UNAVAILABLE (Windows, kiro-cli-delegated macOS,
+        ``sandbox: off``) the config key STILL grants, so nobody on those platforms loses
+        the grant on upgrade, and logs a one-line deprecation warning naming the keystone
+        to migrate to."""
+        server, calls = startup
+        monkeypatch.setattr(standing_approval, "_keystone_is_masked", lambda *_a, **_k: False)
         with caplog.at_level("WARNING"):
             server._apply_startup_yolo(object(), self._cfg(declared=True))
         assert calls == ["granted"]
         assert "DEPRECATED" in caplog.text
-        assert "no longer grants" not in caplog.text
+        assert "is refused on this host" not in caplog.text
 
     def test_the_keystone_grants_and_logs_no_migration_warning(self, startup, caplog, crew_home):
         server, calls = startup
