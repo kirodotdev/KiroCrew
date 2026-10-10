@@ -15104,6 +15104,8 @@
         "confirm_before_closing_session": "セッション終了前に確認",
         "compact_empty_folders": "空のフォルダーをコンパクトにする",
         "a_folder_with_no_chats_takes_one_row_instead_of": "チャットのないフォルダーは 2 行ではなく 1 行になり、新しいチャットのボタンはフォルダーの行に移ります",
+        "full_titles_on_scroll": "スクロール中にタイトル全体を表示",
+        "full_titles_on_scroll_description": "セッションリストをスクロールしている間、切れたタイトルを上に重ねて全文表示します。ポインターが離れるか、スクロールが止まって少しすると消えます",
         "content_width": "コンテンツ幅",
         "context": "コンテキスト",
         "context_usage_at_which_auto_compaction_triggers": "自動圧縮がトリガーされるコンテキスト使用率 %。低いほど圧縮頻度が高く、セッションが長くなります",

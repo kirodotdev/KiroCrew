@@ -1321,6 +1321,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.show-full-titles-while-scrolling",
+    "label": "Show Full Titles While Scrolling",
+    "labelKey": "pages.settings.chatPanel.full_titles_on_scroll",
+    "description": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.show-pasted-text-in-full",
     "label": "Show Pasted Text in Full",
     "labelKey": "pages.settings.chatPanel.show_pasted_text_in_full",

@@ -5569,6 +5569,14 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
           // the chip — see canStageSessionRef for why this is a named predicate.
           chatDropTarget={canStageSessionRef ? chatPaneEl : null}
           onDropSessionRef={stageSessionRef}
+          // Desktop-only by design (the narrow-viewport-required exemption):
+          // the scroll peek draws a clipped title in full past the sidebar's
+          // edge, over the chat beside it. On a phone the sessions pane is a
+          // near-full-width drawer with no chat beside it, so titles are not
+          // clipped by a narrow sidebar and there is nothing to draw over; the
+          // full title stays reachable there through the row's title tooltip
+          // and the rename box.
+          scrollPeek={!isMobile}
         />
         )
         return isMobile && mobileNavRail ? (

@@ -15104,6 +15104,8 @@
         "confirm_before_closing_session": "关闭会话前确认",
         "compact_empty_folders": "紧凑显示空文件夹",
         "a_folder_with_no_chats_takes_one_row_instead_of": "没有会话的文件夹只占一行而不是两行，新建会话按钮移到文件夹所在的那一行",
+        "full_titles_on_scroll": "滚动时显示完整标题",
+        "full_titles_on_scroll_description": "滚动会话列表时，被截断的标题会在列表上方完整显示；指针离开或停止滚动片刻后隐藏",
         "content_width": "内容宽度",
         "context": "上下文",
         "context_usage_at_which_auto_compaction_triggers": "触发自动压缩的上下文使用率 %。越低 = 压缩越频繁，会话越长",

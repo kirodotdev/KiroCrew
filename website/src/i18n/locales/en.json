@@ -8783,6 +8783,8 @@
         "confirm_before_closing_session": "Confirm Before Closing Session",
         "compact_empty_folders": "Compact Empty Folders",
         "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
+        "full_titles_on_scroll": "Show Full Titles While Scrolling",
+        "full_titles_on_scroll_description": "While you scroll the session list, titles cut off by the sidebar show in full over it; they hide when the pointer leaves or shortly after scrolling stops",
         "content_width": "Content Width",
         "context": "Context",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",

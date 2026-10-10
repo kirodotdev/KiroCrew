@@ -15584,6 +15584,8 @@
         "confirm_before_closing_session": "Conferma prima di chiudere la sessione",
         "compact_empty_folders": "Cartelle vuote compatte",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una cartella senza chat occupa una riga invece di due, e il pulsante per una nuova chat passa sulla riga della cartella",
+        "full_titles_on_scroll": "Mostra i titoli completi durante lo scorrimento",
+        "full_titles_on_scroll_description": "Mentre scorri l'elenco delle sessioni, i titoli troncati vengono mostrati per intero sopra di esso; scompaiono quando il puntatore esce o poco dopo la fine dello scorrimento",
         "content_width": "Larghezza del contenuto",
         "context": "Contesto",
         "context_usage_at_which_auto_compaction_triggers": "Percentuale di utilizzo del contesto che attiva la compattazione automatica. Più bassa = compattazione più frequente, sessioni più lunghe",

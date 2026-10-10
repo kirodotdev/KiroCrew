@@ -15584,6 +15584,8 @@
         "confirm_before_closing_session": "Confirmar antes de fechar a sessão",
         "compact_empty_folders": "Pastas vazias compactas",
         "a_folder_with_no_chats_takes_one_row_instead_of": "Uma pasta sem conversas ocupa uma linha em vez de duas, e o botão de nova conversa passa para a linha da pasta",
+        "full_titles_on_scroll": "Mostrar títulos completos ao rolar",
+        "full_titles_on_scroll_description": "Ao rolar a lista de sessões, os títulos cortados aparecem completos sobre ela; somem quando o ponteiro sai ou logo depois que a rolagem para",
         "content_width": "Largura do conteúdo",
         "context": "Contexto",
         "context_usage_at_which_auto_compaction_triggers": "% de uso do contexto em que a compactação automática é acionada. Menor = compactação mais frequente, sessões mais longas",
