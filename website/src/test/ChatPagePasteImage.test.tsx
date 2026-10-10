@@ -42,7 +42,7 @@ vi.mock('../api/client', () => ({
     spawnList: vi.fn().mockResolvedValue({ agents: [] }),
     uploadFiles: vi.fn().mockResolvedValue({ paths: ['/uploads/x.png'] }),
     // The composer pre-checks a paste against the served limit once this answers.
-    dashboardConfig: vi.fn().mockResolvedValue({}),
+    dashboardConfig: vi.fn().mockResolvedValue({ upload_max_mb: 100 }),
     screenshot: vi.fn().mockResolvedValue({ path: null }),
     createChatSlot: vi.fn().mockResolvedValue({ key: 'new-slot', title: 'new-slot', messages: 0, running: false }),
     setSlotColor: vi.fn().mockResolvedValue({ ok: true }),
@@ -118,7 +118,7 @@ const pasteImage = (input: HTMLElement, file: File) =>
     },
   })
 
-/** A File whose reported size exceeds the default 100 MB cap without allocating it. */
+/** A File whose reported size exceeds the served 100 MB cap without allocating it. */
 function oversizeImage(): File {
   const f = new File(['px'], 'huge.png', { type: 'image/png' })
   Object.defineProperty(f, 'size', { value: 101 * 1024 * 1024 })

@@ -42,7 +42,7 @@ describe('SourcesList upload limit copy', () => {
     renderList()
     await openLocalFile()
     expect(await screen.findByText(/Max 100 MB per file\./)).toBeInTheDocument()
-    expect(screen.queryByTestId('sources-upload-limit-error')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('sources-upload-limit-notice')).not.toBeInTheDocument()
   })
 
   it('shows a fractional Knowledge ceiling as served', async () => {
@@ -52,13 +52,14 @@ describe('SourcesList upload limit copy', () => {
     expect(await screen.findByText(/Max 0\.5 MB per file\./)).toBeInTheDocument()
   })
 
-  it('reports a failed settings read and shows no figure rather than a default', async () => {
+  it('reports a failed settings read through the error notice and shows no figure rather than a default', async () => {
     vi.mocked(clientApi.dashboardConfig).mockRejectedValue(new Error('HTTP 502'))
     renderList()
     await openLocalFile()
-    expect(await screen.findByTestId('sources-upload-limit-error')).toHaveTextContent(
-      /per-file size limit can't be shown/,
-    )
+    // A failed request is an error (ErrorNotice); the copy says uploads are
+    // still checked by the server, so it does not read as a blocked upload.
+    const notice = await screen.findByTestId('sources-upload-limit-notice')
+    expect(notice).toHaveTextContent("Couldn't load the size limit; the server still checks each file on upload.")
     expect(screen.queryByText(/Max \d+ MB per file/)).not.toBeInTheDocument()
   })
 })

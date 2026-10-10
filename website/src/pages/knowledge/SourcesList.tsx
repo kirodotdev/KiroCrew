@@ -277,10 +277,11 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
   // The advertised per-file ceiling is the gateway's `knowledge_upload_max_mb`
   // (the smaller of `dashboard.upload_max_mb` and `knowledge.max_ingest_file_mb`),
   // the same value the ingest handler enforces (shared config query key). A
-  // failed read shows no figure at all: the default is not what the gateway
-  // enforces when the operator changed it, so it is never presented as loaded.
+  // failed read shows no figure at all, even a cached one beside the failure
+  // notice: the default is not what the gateway enforces when the operator
+  // changed it, so it is never presented as loaded.
   const { data: dashCfg, error: dashCfgError } = useQuery<{ knowledge_upload_max_mb?: number }>({ queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000 })
-  const maxUploadMb = servedUploadMb(dashCfg?.knowledge_upload_max_mb)
+  const maxUploadMb = dashCfgError ? null : servedUploadMb(dashCfg?.knowledge_upload_max_mb)
   const [showAdd, setShowAdd] = useState(false)
   const [addType, setAddType] = useState<'local_file' | 'local_folder'>('local_file')
   const [addUri, setAddUri] = useState('')
@@ -469,8 +470,8 @@ export default function SourcesList({ onIngest, uploadNamespace, setUploadNamesp
               {/* No hand-off: the add-source panel holds the unsaved namespace choice and the folder name and path drafts. */}
               <ErrorNotice
                 variant="inline"
-                testId="sources-upload-limit-error"
-                message={dashCfgError && maxUploadMb === null ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
+                testId="sources-upload-limit-notice"
+                message={dashCfgError ? i18nT('pages.knowledge.sourcesList.max_file_size_unavailable') : ''}
               />
             </>
           ) : (

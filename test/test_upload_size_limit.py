@@ -126,8 +126,9 @@ async def test_zip_over_the_configured_cap_is_413_naming_the_limit(
     status, body = await _post_upload(_zip_bytes(pad=MB + 1024), "project.zip")
     assert status == 413, body
     assert body["code"] == "file_too_large"
-    assert body["max_mb"] == 1
+    assert "max_mb" not in body
     assert "(max 1 MB)" in body["error"]
+    assert "Type @ and the file's path to share it without uploading." in body["error"]
     assert "project.zip" in body["error"]
     assert list(upload_dir.glob("*")) == []
 
@@ -145,6 +146,45 @@ async def test_zip_over_the_old_50_mb_line_is_accepted_under_the_new_default(
     status, body = await _post_upload(payload, "project.zip")
     assert status == 200, body
     assert Path(body["paths"][0]).read_bytes() == payload
+
+
+@pytest.mark.asyncio
+async def test_upload_diagnostic_hashes_off_the_event_loop(
+    cfg_file, upload_dir, files_sel, monkeypatch
+) -> None:
+    """A ZIP near the raised ceiling must not be hashed and read back on the
+    gateway's event loop: every sha256 the handler takes runs on a worker
+    thread, and the diagnostic still compares the received and stored bytes."""
+    import hashlib
+    import sys
+    import threading
+
+    from kiro_crew.dashboard.file_api import uploads as uploads_owner
+    from kiro_crew.dashboard.handlers import files as files_mod
+
+    real_sha256 = hashlib.sha256
+    loop_thread = threading.get_ident()
+    calls: list[bool] = []
+
+    def recording_sha256(*args, **kwargs):
+        # Only the upload handler's own hashing is judged, not a library's.
+        if sys._getframe(1).f_code.co_filename == uploads_owner.__file__:
+            calls.append(threading.get_ident() == loop_thread)
+        return real_sha256(*args, **kwargs)
+
+    monkeypatch.setattr(hashlib, "sha256", recording_sha256)
+    payload = _zip_bytes(pad=4096)
+    with patch.object(files_mod.logger, "info") as info:
+        status, body = await _post_upload(payload, "project.zip")
+    assert status == 200, body
+    assert calls, "the diagnostic took no hash"
+    assert not any(calls), "a sha256 ran on the event loop thread"
+    diag = [c for c in info.call_args_list if "upload.file diagnostic" in str(c.args[0])]
+    assert len(diag) == 1
+    args = diag[0].args
+    assert args[3] == args[4] == len(payload)  # sent_size, disk_size
+    assert args[5] == args[6] == real_sha256(payload).hexdigest()
+    assert args[7] is True
 
 
 @pytest.mark.asyncio

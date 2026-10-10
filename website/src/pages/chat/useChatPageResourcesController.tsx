@@ -29,7 +29,7 @@ import { openActivityPanel } from '../../store/chatSlice'
 import type { ChatMessage } from '../../types'
 import { mergeIntoDraft, setDraft } from '../../utils/chatDrafts'
 import { classifyDrop } from '../../utils/dropClassify'
-import { spliceDirTokens, uploadMaxMb, VIDEO_EXT } from '../../utils/fileTokens'
+import { servedUploadMb, spliceDirTokens, VIDEO_EXT } from '../../utils/fileTokens'
 import {
   adoptSourceSelections,
   commitSourceSelection,
@@ -697,8 +697,9 @@ export function useChatPageResourcesController({
     // the real cap and surfaces through the `upload_failed_error` branch below,
     // the same route every other server-side rejection already takes. The cap
     // is the gateway's `dashboard.upload_max_mb` (same shared config query);
-    // until that query has answered, the server's own 413 is the only check.
-    const maxMb = sourceHostCfg ? uploadMaxMb(sourceHostCfg) : null
+    // until that query has served a usable figure, the server's own 413 is
+    // the only check.
+    const maxMb = servedUploadMb(sourceHostCfg?.upload_max_mb)
     const big = maxMb === null ? undefined : files.find(f => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
     if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
     setUploading(true)

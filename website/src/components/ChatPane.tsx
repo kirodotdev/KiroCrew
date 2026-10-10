@@ -88,7 +88,7 @@ import { api } from '../api/client'
 import { slotMessagesQueryKey } from '../api/slotMessagesQuery'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
 import { classifyDrop } from '../utils/dropClassify'
-import { parseDirTokens, spliceDirTokens, uploadMaxMb, VIDEO_EXT } from '../utils/fileTokens'
+import { parseDirTokens, spliceDirTokens, servedUploadMb, VIDEO_EXT } from '../utils/fileTokens'
 import { Composer, type ComposerHandle, type ComposerVoiceOptions } from '../chat-core/composer/Composer'
 import { displayModel, modelChipMarker } from '../lib/model'
 import { useSettingsDefaultModel } from '../hooks/useSettingsDefaultModel'
@@ -1009,9 +1009,9 @@ export default function ChatPane({
     // An over-cap recording's own 413 carries the real cap and surfaces
     // through the res.error branch above -- the route every other server-side
     // refusal already takes. The cap is the gateway's `dashboard.upload_max_mb`;
-    // until the config has answered there is no figure to check against, so
-    // the server's own 413 is the only check.
-    const maxMb = dashCfg ? uploadMaxMb(dashCfg) : null
+    // until the config has served a usable figure there is nothing to check
+    // against, so the server's own 413 is the only check.
+    const maxMb = servedUploadMb(dashCfg?.upload_max_mb)
     const big = maxMb === null ? undefined : files.find((f) => !VIDEO_EXT.test(f.name) && f.size > maxMb * 1024 * 1024)
     if (big) { setUploadHint(i18nT('pages.chatPage.file_too_large', { name: big.name, max: maxMb })); return }
     const controller = new AbortController()
@@ -2074,14 +2074,13 @@ export default function ChatPane({
           message={uploadError}
           onDismiss={() => setUploadError('')}
         />
-        {/* No hand-off: same composer draft. The settings read retries in place.
-            Shown only while no answer is held: a failed refetch keeps the last
-            answer, and the pre-check still runs against it. */}
+        {/* No hand-off: same composer draft. A failed settings read leaves the
+            size limit unknown here; the server still checks every upload. */}
         <ErrorNotice
           variant="inline"
           className="mx-4 mt-2"
           testId="chat-pane-upload-limit-error"
-          message={dashCfgError && !dashCfg ? i18nT('pages.chatPage.upload_limit_unavailable') : ''}
+          message={dashCfgError ? i18nT('pages.chatPage.upload_limit_unavailable') : ''}
         />
         {/* No hand-off: same composer draft. The shared notice toast (App.tsx)
             is transient; a per-slot setting write that did not persist must

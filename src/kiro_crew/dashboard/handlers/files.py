@@ -214,6 +214,7 @@ from kiro_crew.dashboard.file_api.transfer import (  # noqa: F401
 from kiro_crew.dashboard.file_api.uploads import (  # noqa: F401
     _content_matches_ext,
     _content_mismatch_message,
+    _log_upload_diagnostic,
     _resolve_raster_ext,
     _sniff_media_type,
     _stream_media_part,
