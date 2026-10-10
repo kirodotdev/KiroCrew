@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import functools
 import hashlib
 import logging
@@ -930,6 +931,38 @@ _PROMPT_SCOPES = ("global", "local")
 MAX_PROMPT_NAME_BYTES = 200
 
 
+#: Windows errors that name a too-long path: ``ERROR_FILENAME_EXCED_RANGE`` (206),
+#: which CPython files under ``errno.ENOENT``, and ``ERROR_BUFFER_OVERFLOW`` (111),
+#: which it files under ``EINVAL`` -- so ``errno`` alone names neither.
+_WINERROR_FILENAME_EXCED_RANGE = 206
+_WINERROR_BUFFER_OVERFLOW = 111
+_WINERRORS_TOO_LONG = frozenset({_WINERROR_FILENAME_EXCED_RANGE, _WINERROR_BUFFER_OVERFLOW})
+
+
+def _is_path_too_long_error(exc: BaseException) -> bool:
+    """True when *exc* is the filesystem refusing a path for its LENGTH.
+
+    ``MAX_PROMPT_NAME_BYTES`` bounds the NAME, but the create is handed the name
+    joined onto its root, and whether that whole string is accepted is a property
+    of the HOST, not of the string: a Windows host without long-path support caps
+    it at ``MAX_PATH`` while a host with ``LongPathsEnabled`` takes the same path
+    without complaint. No pre-flight length can be right on both, so neither
+    create guesses; each performs the write and maps the filesystem's own refusal
+    onto the coded 400 the name bound already returns. The prompts create and the
+    skills create classify through this one predicate so the two cannot drift.
+    Every other ``OSError`` keeps its current handling -- including a code that
+    MIGHT mean the length but names something else too, which is left to say what
+    it says rather than re-read.
+
+    POSIX reports ``ENAMETOOLONG``; Windows reports one of the codes above.
+    """
+    if not isinstance(exc, OSError):
+        return False
+    if exc.errno == errno.ENAMETOOLONG:
+        return True
+    return getattr(exc, "winerror", None) in _WINERRORS_TOO_LONG
+
+
 def _linked_prompt_root(d: Path) -> bool:
     """True when the prompt directory itself is a link, so writes would land
     outside the tree the caller named.
@@ -1353,7 +1386,7 @@ async def api_prompts_create(request: web.Request) -> web.Response:
     session_key = _read_session_key(request)
     project_dir = _prompt_local_project(request, state, session_key)
 
-    def _write() -> str | None:
+    def _write_inner() -> str | None:
         target_dir, err = _resolve_prompt_dir(scope, project_dir)
         if target_dir is None:
             return err
@@ -1607,6 +1640,18 @@ async def api_prompts_create(request: web.Request) -> web.Response:
             os.close(dir_fd)
         return None
 
+    def _write() -> str | None:
+        # The name fit its budget, but the JOINED path handed to the filesystem
+        # may still be too long for THIS host (a Windows install without
+        # long-path support). Map that one refusal onto a coded 400 sentinel; let
+        # every other OSError keep the generic write-failure handling below.
+        try:
+            return _write_inner()
+        except OSError as exc:
+            if _is_path_too_long_error(exc):
+                return "path_too_long"
+            raise
+
     # A filesystem refusal (EACCES, ENOSPC, a name the FS still rejects) must
     # leave an audit trail and a coded answer, not escape as a bare 500 from
     # inside the executor. Caught on Exception rather than OSError — as the
@@ -1631,6 +1676,13 @@ async def api_prompts_create(request: web.Request) -> web.Response:
         _refuse(op, "blocked", "linked_prompt_root", scope=scope)
         return web.json_response(
             {"error": "prompt directory is a link", "code": "linked_prompt_root"}, status=403
+        )
+    if err == "path_too_long":
+        # A request-shape refusal, answered and audited like the name bound's.
+        _refuse(op, "bad_request", "name_too_long", name=safe_name, scope=scope)
+        return web.json_response(
+            {"error": "prompt name is too long for its destination path", "code": "name_too_long"},
+            status=400,
         )
     if err == "exists":
         _refuse(op, "conflict", "prompt_exists", name=safe_name, scope=scope)
@@ -3475,21 +3527,37 @@ async def api_skills_create(request: web.Request) -> web.Response:
             status=400,
         )
     skills = _get_skills(state)
+
+    def _audit(outcome: str, **extra: str) -> None:
+        try:
+            _sel().log_tool_invocation(
+                session_key="",
+                agent="api",
+                source="dashboard",
+                tool_name="api_skills_create",
+                tool_kind="skill",
+                outcome=outcome,
+                metadata={"name": safe_name, **extra},
+            )
+        except Exception:  # noqa: BLE001 — the outcome is decided; never 500 on an audit write
+            logger.debug("Could not audit skill create outcome", exc_info=True)
+
     # Off the loop for the same reason api_skill_detail offloads its two calls:
     # create_skill walks a pinned parent chain and writes the SKILL.md.
-    ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
     try:
-        _sel().log_tool_invocation(
-            session_key="",
-            agent="api",
-            source="dashboard",
-            tool_name="api_skills_create",
-            tool_kind="skill",
-            outcome="ok" if ok else "rejected",
-            metadata={"name": safe_name},
+        ok = await asyncio.to_thread(skills.create_skill, safe_name, content)
+    except OSError as exc:
+        if not _is_path_too_long_error(exc):
+            raise
+        # The name fit its budget but ``<root>/<name>/SKILL.md`` did not fit this
+        # host: a request-shape refusal, answered like the name bound's, and
+        # audited because the write reached the filesystem.
+        _audit("rejected", code="name_too_long")
+        return web.json_response(
+            {"error": "skill name is too long for its destination path", "code": "name_too_long"},
+            status=400,
         )
-    except Exception:  # noqa: BLE001 — the mutation is committed; never 500 on an audit write
-        logger.debug("Could not audit skill create outcome", exc_info=True)
+    _audit("ok" if ok else "rejected")
     if not ok:
         return web.json_response(
             {"error": f"skill '{safe_name}' already exists", "code": "skill_exists"}, status=409
