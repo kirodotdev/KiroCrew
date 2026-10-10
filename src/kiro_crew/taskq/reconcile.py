@@ -41,9 +41,14 @@ from .store import TaskStore, TaskStoreUnavailable
 
 logger = logging.getLogger(__name__)
 
-#: ``artifact_probe(record) -> "done" | "failed" | "cancelled" | None``.
+#: ``artifact_probe(record) -> "done" | "failed" | "cancelled" | "started" | None``.
 #: None means the artifacts say nothing about how the run ended.
 ArtifactProbe = Callable[[TaskRecord], "str | None"]
+
+#: A probe verdict that is not a task state: the run's own artifacts show it
+#: began and record no ending. It decides one thing, that an ``admitted`` row
+#: whose start mark was lost in a crash is not "claimed but never started".
+STARTED = "started"
 
 #: Kinds the running gateway can re-dispatch from a stored row today.
 DEFAULT_RECOVERY_ADAPTERS: frozenset[str] = frozenset({KIND_SUBAGENT})
@@ -145,9 +150,16 @@ def _settle_one(
         if store.cancel(rec.id, reason="reconciled: tombstone") is not None:
             report.settled_cancelled += 1
         return
-    if rec.state == ADMITTED:
+    if rec.state == ADMITTED and not (
+        verdict == STARTED and rec.side_effect_class == SIDE_EFFECT_UNKNOWN
+    ):
         # Claimed but never started: no runtime, no side effect. Back to the
-        # queue whatever the class, exactly as an expired admit wait does.
+        # queue whatever the class, exactly as an expired admit wait does. A run
+        # the artifacts show STARTED (its start mark posted and lost in the
+        # crash) did run: with an ``unknown`` class it falls through and is
+        # parked below like any other started run of that class. A class that
+        # makes a fresh run safe is still requeued, since ``admitted`` has no
+        # edge to ``recovering``.
         if store.transition(rec.id, QUEUED, detail={"reconciled": "lost_owner"}):
             report.requeued += 1
         return

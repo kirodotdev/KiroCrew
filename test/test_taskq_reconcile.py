@@ -670,10 +670,13 @@ _UNREADABLE = object()
     "tombstone, complete, expected",
     [
         (None, True, model.DONE),
-        (None, False, None),
+        # A run folder without a whole result: the run began and recorded no
+        # ending, which is what keeps an ``admitted`` row from reading as never
+        # started.
+        (None, False, "started"),
         ({"cause": "gateway_restart"}, True, model.DONE),
         ({"cause": "gateway_restart", "outcome": "completed"}, True, model.DONE),
-        ({"cause": "gateway_restart"}, False, None),
+        ({"cause": "gateway_restart"}, False, "started"),
         ({"cause": "cancelled"}, True, model.CANCELLED),
         # The shape the cancel arm writes: its error makes the outcome failed,
         # which is also what the live settle recorded for it.
@@ -737,6 +740,137 @@ def test_an_admitted_row_whose_run_delivered_is_settled_not_rerun(
         assert s.state_of("adm00001") == model.DONE
     finally:
         s.close()
+
+
+def _crash_with_an_admitted_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, folder: bool, side_effect: str
+) -> Path:
+    """A gateway that claimed ``adm00002`` and died before its start mark landed.
+
+    The claim leaves the row ``admitted``. With *folder*, the run had begun: the
+    spawn gate writes the run folder before it posts the ``starting`` mark, and
+    the run streamed part of its answer before the crash.
+    """
+    import kiro_crew.subagent_persistence as sp
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    if folder:
+        run = tmp_path / "subagents" / "adm00002"
+        _write_json(
+            run / "state.json",
+            {
+                "id": "adm00002",
+                "task": "push the release branch and open the pull request",
+                "parent_session": "chat-7-1234567890",
+                "pid": 999999,
+                "turns": 4,
+            },
+        )
+        (run / "result.txt").write_text(
+            "Pushed the release branch; opening the PR", encoding="utf-8"
+        )
+    path = tmp_path / "tasks.db"
+    s = TaskStore(path, network_fs=False).open()
+    s.accept([_rec("adm00002", side_effect_class=side_effect)])
+    s.claim("adm00002")
+    s.close()
+    return path
+
+
+def test_subagent_probe_says_nothing_without_a_run_folder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No run folder, no proof the run began: the probe stays silent."""
+    import kiro_crew.subagent_persistence as sp
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    monkeypatch.setattr(sp, "_SUBAGENTS_DIR", tmp_path / "subagents")
+    assert _TaskqBridgeMixin.taskq_artifact_probe(_rec("never00")) is None
+
+
+def test_an_admitted_row_whose_run_started_is_parked_not_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A row still ``admitted`` whose run folder shows the run began (its start
+    mark posted and lost in the crash) is a started run of class ``unknown``, so
+    it is parked: requeueing it would run the task again from scratch."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    path = _crash_with_an_admitted_row(
+        tmp_path, monkeypatch, folder=True, side_effect=model.SIDE_EFFECT_UNKNOWN
+    )
+    s = TaskStore(path, network_fs=False).open()
+    try:
+        report = reconcile_on_boot(s, artifact_probe=_TaskqBridgeMixin.taskq_artifact_probe)
+        assert s.state_of("adm00002") == model.UNKNOWN_SIDE_EFFECT
+        assert (report.unknown_side_effect, report.requeued) == (1, 0)
+        assert s.claim("adm00002") is None
+    finally:
+        s.close()
+
+
+@pytest.mark.parametrize(
+    "folder, side_effect",
+    [
+        (False, model.SIDE_EFFECT_UNKNOWN),
+        (True, model.SIDE_EFFECT_NONE),
+        (True, model.SIDE_EFFECT_IDEMPOTENT_KEY),
+    ],
+)
+def test_an_admitted_row_is_requeued_when_nothing_ran_or_its_class_allows_a_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, folder: bool, side_effect: str
+) -> None:
+    """With no run folder nothing ran, so the row goes back to the queue whatever
+    its class. A started run whose class makes a fresh run safe goes back too:
+    ``admitted`` has no edge to ``recovering``, and a requeue is the re-run that
+    class permits."""
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    path = _crash_with_an_admitted_row(
+        tmp_path, monkeypatch, folder=folder, side_effect=side_effect
+    )
+    s = TaskStore(path, network_fs=False).open()
+    try:
+        report = reconcile_on_boot(s, artifact_probe=_TaskqBridgeMixin.taskq_artifact_probe)
+        assert s.state_of("adm00002") == model.QUEUED
+        assert report.requeued == 1
+    finally:
+        s.close()
+
+
+@pytest.mark.asyncio
+async def test_a_run_cut_off_before_its_start_mark_is_reported_cut_off_and_not_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Both boot paths read the run folder for one run: the orphan reconcile tells
+    the parent it was cut off mid-turn, and the queue does not run it again."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew.subagent import SubagentManager
+    from kiro_crew.subagent_manager.admission.taskq_bridge import _TaskqBridgeMixin
+
+    path = _crash_with_an_admitted_row(
+        tmp_path, monkeypatch, folder=True, side_effect=model.SIDE_EFFECT_UNKNOWN
+    )
+    s = TaskStore(path, network_fs=False).open()
+    try:
+        reconcile_on_boot(s, artifact_probe=_TaskqBridgeMixin.taskq_artifact_probe)
+        rerun = s.claim("adm00002") is not None
+    finally:
+        s.close()
+
+    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    notices: list[str] = []
+    with (
+        patch.object(manager, "_is_pid_alive", return_value=False),
+        patch.object(manager, "_send_orphan_slack_dm", AsyncMock(side_effect=notices.append)),
+        patch("kiro_crew.subagent.has_dashboard_surface", return_value=False),
+        patch("kiro_crew.subagent.sel"),
+    ):
+        await manager._reconcile_orphans()
+
+    assert len(notices) == 1 and "cut off mid-turn by gateway restart" in notices[0]
+    assert not rerun, "the queue claimed the run again after the parent was told it was cut off"
 
 
 def test_every_tombstone_cause_has_a_terminal_state() -> None:

@@ -378,9 +378,15 @@ class _TaskqBridgeMixin(ManagerComponent):
         unreadable one says nothing. With no tombstone, or one whose cause
         proves nothing (``gateway_restart``), the run is done when its result is
         whole by ``result_is_whole``, the rule the orphan reconcile announces it
-        with, so the row and the parent's notice agree.
+        with, so the row and the parent's notice agree. A run folder whose
+        result is not whole is ``STARTED``: the spawn gate writes the folder
+        before it posts the ``starting`` mark, so the folder is the record that
+        a run began even when the row still says ``admitted``, and it is the
+        same record the orphan reconcile reports the run from. No folder says
+        nothing.
         """
         from kiro_crew import taskq as _taskq
+        from kiro_crew.taskq.reconcile import STARTED
 
         if rec.kind != _taskq.KIND_SUBAGENT:
             return None
@@ -400,7 +406,10 @@ class _TaskqBridgeMixin(ManagerComponent):
                     return tombstone_terminal_state(cause, str(tombstone.get("outcome") or ""))
             elif present:
                 return None
-            return _taskq.DONE if result_is_whole(_read_state_at(folder) or {}) else None
+            state = _read_state_at(folder)
+            if state is None:
+                return None
+            return _taskq.DONE if result_is_whole(state) else STARTED
         except (ValueError, OSError):
             return None
 

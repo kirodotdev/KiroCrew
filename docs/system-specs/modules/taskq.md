@@ -765,7 +765,8 @@ change can falsify).
 
 `admitted` is the store's statement that **no executor has ever held the row**,
 and the boot reconciler spends that statement: it requeues an `admitted` row
-without asking the side-effect class (§ Reconcile-first boot). So the
+without asking the side-effect class (§ Reconcile-first boot), unless the row's
+artifacts show the run started (the subagent run folder, below). So the
 `admitted → starting` write is not bookkeeping, it is the fence the requeue
 rests on, and a caller may execute only once it has COMMITTED:
 
@@ -808,9 +809,15 @@ rests on, and a caller may execute only once it has COMMITTED:
   retry_wait` is not an edge either) — three `rejected_transition` events, a LIVE
   run on a dependency backoff, and a row the next boot requeues blind
   (`test_subagent_dependency_mark.py`).
-  Its residual is one crash window — a row whose start mark was refused AND that
-  never reached a later mark — which closes only with a durable pre-start marker
-  (RFC §4.4 `start_attempt`).
+  Its residual is one crash window — a row whose start mark was refused or lost
+  AND that never reached a later mark. On this path the run folder is the durable
+  pre-start marker: `_log_spawned` writes its `state.json` before the run's first
+  step, and that is the record the orphan reconcile reports the run from. The
+  subagent artifact probe answers `started` for a folder whose result is not
+  whole, and reconcile parks such an `admitted` row of class `unknown` in
+  `unknown_side_effect` instead of requeueing it, so the queue never re-runs a
+  run its parent is told was cut off (`test_taskq_reconcile.py`). A runner row
+  has no such folder; RFC §4.4 `start_attempt` would give it one.
 
 Lease: `LEASE_SECS` = 60. The subagent adapter renews at the `running` mark
 (written at the run's first stream event); the runner adapters renew through
