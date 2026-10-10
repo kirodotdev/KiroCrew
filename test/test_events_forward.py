@@ -197,6 +197,49 @@ class TestExtractBlocksText:
         result = _extract_blocks_text(blocks)
         assert len(result) == _MAX_RECOVERED_TEXT_CHARS
 
+    def test_table_block_extraction(self):
+        blocks = [
+            {
+                "type": "table",
+                "rows": [
+                    ["Header 1", "Header 2"],
+                    ["Row 1, Cell 1", "Row 1, Cell 2"],
+                    ["Row 2, Cell 1", "Row 2, Cell 2"],
+                ],
+            }
+        ]
+        result = _extract_blocks_text(blocks)
+        assert result == "Header 1 | Header 2\nRow 1, Cell 1 | Row 1, Cell 2\nRow 2, Cell 1 | Row 2, Cell 2"
+
+    def test_table_block_rich_and_number_cells(self):
+        blocks = [
+            {
+                "type": "table",
+                "rows": [
+                    [
+                        {
+                            "type": "rich_text",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Item"}],
+                                }
+                            ],
+                        },
+                        {"type": "raw_text", "text": "Qty"},
+                        {"type": "raw_text", "text": "Price"},
+                    ],
+                    [
+                        {"type": "raw_text", "text": "Apple"},
+                        {"type": "raw_number", "value": 5},
+                        {"type": "raw_number", "text": "2.50"},
+                    ],
+                ],
+            }
+        ]
+        result = _extract_blocks_text(blocks)
+        assert result == "Item | Qty | Price\nApple | 5 | 2.50"
+
 
 class TestExtractBlocksTextDefensive:
     """Adversarial/negative tests: malformed input must not raise."""
@@ -521,6 +564,110 @@ class TestRouteMessageFallbackRecovery:
             all_args_str = str(call_args)
             assert "Real user content" in all_args_str
             assert "This message contains interactive elements." not in all_args_str
+
+    @pytest.mark.asyncio
+    async def test_table_block_with_accompanying_text(self):
+        """When event text accompanies a table block, the table rows are appended to text."""
+        from kiro_crew.slack.events import _route_message
+
+        event = {
+            "user": "U123",
+            "channel": "C456",
+            "text": "read this table",
+            "ts": "1234.5678",
+            "team": "T789",
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [
+                        ["Col1", "Col2"],
+                        ["Val1", "Val2"],
+                    ],
+                }
+            ],
+        }
+
+        from unittest.mock import MagicMock
+
+        mock_orch = AsyncMock()
+        ch_cfg = MagicMock()
+        ch_cfg.activation = "mention"
+        ch_cfg.thread_follow = True
+        mock_cfg = MagicMock()
+        mock_cfg.channel_config.return_value = ch_cfg
+        mock_orch._cfg = mock_cfg
+        mock_orch.channel_history = None
+        mock_orch.sessions = None
+        mock_orch.conv_log = None
+        mock_orch.slack = None
+        mock_orch._session_tasks = {}
+        mock_seen = MagicMock()
+        mock_seen.check_and_add = lambda x: False
+        mock_seen.check = lambda x: False
+        mock_seen.add = lambda x: None
+
+        with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+             patch("kiro_crew.slack.events.sel") as mock_sel, \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.is_owner", return_value=True), \
+             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+            mock_sel.return_value.log_api_access = lambda **kw: None
+            await _route_message(mock_orch, event, mock_seen, is_mention=True)
+            assert mock_handle.called
+            passed_text = mock_handle.call_args[0][3]
+            assert passed_text == "read this table\n\nCol1 | Col2\nVal1 | Val2"
+
+    @pytest.mark.asyncio
+    async def test_table_block_with_empty_text(self):
+        """When event text is empty, the table block is extracted as message text."""
+        from kiro_crew.slack.events import _route_message
+
+        event = {
+            "user": "U123",
+            "channel": "C456",
+            "text": "",
+            "ts": "1234.5678",
+            "team": "T789",
+            "blocks": [
+                {
+                    "type": "table",
+                    "rows": [
+                        ["A", "B"],
+                        ["1", "2"],
+                    ],
+                }
+            ],
+        }
+
+        from unittest.mock import MagicMock
+
+        mock_orch = AsyncMock()
+        ch_cfg = MagicMock()
+        ch_cfg.activation = "mention"
+        ch_cfg.thread_follow = True
+        mock_cfg = MagicMock()
+        mock_cfg.channel_config.return_value = ch_cfg
+        mock_orch._cfg = mock_cfg
+        mock_orch.channel_history = None
+        mock_orch.sessions = None
+        mock_orch.conv_log = None
+        mock_orch.slack = None
+        mock_orch._session_tasks = {}
+        mock_seen = MagicMock()
+        mock_seen.check_and_add = lambda x: False
+        mock_seen.check = lambda x: False
+        mock_seen.add = lambda x: None
+
+        with patch("kiro_crew.slack.enterprise.check_message_origin", return_value=True), \
+             patch("kiro_crew.slack.events.sel") as mock_sel, \
+             patch("kiro_crew.slack.events.is_allowed_user", return_value=True), \
+             patch("kiro_crew.slack.events.is_owner", return_value=True), \
+             patch("kiro_crew.slack.events.handle_message", new_callable=AsyncMock) as mock_handle:
+            mock_sel.return_value.log_api_access = lambda **kw: None
+            await _route_message(mock_orch, event, mock_seen, is_mention=True)
+            assert mock_handle.called
+            passed_text = mock_handle.call_args[0][3]
+            assert passed_text == "A | B\n1 | 2"
 
     @pytest.mark.asyncio
     async def test_interceptor_redirect_audits_dedups_and_short_circuits(self):
