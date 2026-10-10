@@ -11565,6 +11565,7 @@
       "could_not_generate_title": "제목을 생성할 수 없습니다",
       "could_not_open_side_chat": "사이드 채팅을 열 수 없습니다",
       "side_command_not_run": "/side 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",
+      "command_not_available_here": "{{command}}은(는) 메인 채팅에서만 작동합니다. 메시지는 입력창에 그대로 있습니다.",
       "could_not_send_to_side_chat": "사이드 채팅에 보낼 수 없습니다",
       "could_not_switch_agent": "에이전트를 전환할 수 없습니다",
       "agent_command_not_run": "/agent 명령이 실행되지 않았습니다. 메시지는 입력창에 그대로 있습니다.",

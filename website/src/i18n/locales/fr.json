@@ -11897,6 +11897,7 @@
       "could_not_generate_title": "Impossible de générer un titre",
       "could_not_open_side_chat": "Impossible d’ouvrir le chat annexe",
       "side_command_not_run": "La commande /side n’a pas été exécutée. Votre message est toujours dans le champ de saisie.",
+      "command_not_available_here": "{{command}} ne fonctionne que dans le chat principal. Ton message est toujours dans le champ de saisie.",
       "could_not_send_to_side_chat": "Impossible d’envoyer au chat annexe",
       "could_not_switch_agent": "Impossible de changer d’agent",
       "agent_command_not_run": "La commande /agent n’a pas été exécutée. Ton message est toujours dans le champ de saisie.",

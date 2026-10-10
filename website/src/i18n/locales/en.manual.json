@@ -5306,6 +5306,7 @@
       "could_not_generate_title": "Couldn't generate a title",
       "could_not_open_side_chat": "Couldn't open the side chat",
       "side_command_not_run": "The /side command was not run. Your message is still in the composer.",
+      "command_not_available_here": "{{command}} only works in the main chat. Your message is still in the chat box.",
       "could_not_send_to_side_chat": "Couldn't send to the side chat",
       "could_not_switch_agent": "Couldn't switch agent",
       "agent_command_not_run": "The /agent command was not run. Your message is still in the composer.",

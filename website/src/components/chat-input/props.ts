@@ -410,6 +410,9 @@ export interface ChatInputProps {
    * plain text.
    */
   typedCommandMenus?: boolean
+  /** Slash commands this host refuses, left out of the '/' menu so it never
+   *  offers one a send would turn down (a pane has no knowledge picker). */
+  hiddenCommands?: readonly string[]
   /**
    * The slot's approval chrome (tool-approval bar, spawn-approval banner).
    * Defaults on. These are store-driven for the composer's slot, so a second

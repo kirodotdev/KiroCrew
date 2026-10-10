@@ -11897,6 +11897,7 @@
       "could_not_generate_title": "No se pudo generar un título",
       "could_not_open_side_chat": "No se pudo abrir el chat lateral",
       "side_command_not_run": "El comando /side no se ejecutó. Tu mensaje sigue en el editor.",
+      "command_not_available_here": "{{command}} solo funciona en el chat principal. Tu mensaje sigue en el editor.",
       "could_not_send_to_side_chat": "No se pudo enviar al chat lateral",
       "could_not_switch_agent": "No se pudo cambiar de agente",
       "agent_command_not_run": "El comando /agent no se ejecutó. Tu mensaje sigue en el editor.",

@@ -11565,6 +11565,7 @@
       "could_not_generate_title": "タイトルを生成できませんでした",
       "could_not_open_side_chat": "サイドチャットを開けませんでした",
       "side_command_not_run": "/side コマンドは実行されませんでした。メッセージは入力欄に残っています。",
+      "command_not_available_here": "{{command}} はメインチャットでのみ使えます。メッセージは入力欄に残っています。",
       "could_not_send_to_side_chat": "サイドチャットに送信できませんでした",
       "could_not_switch_agent": "エージェントを切り替えられませんでした",
       "agent_command_not_run": "/agent コマンドは実行されませんでした。メッセージは入力欄に残っています。",
