@@ -5898,10 +5898,10 @@ class GatewayOrchestrator:
                 # Unattributable, or a runtime this job was alone on: counted
                 # exactly as before.
                 _job_owns_failure = runtime_death.caused_by_this_session(_run_provider)
-                # Set only when the substitute bound reaches its limit below, and
-                # consumed only beside record_failure(), so the three steps of the
-                # hand-over stay contiguous.
-                _hand_over_streak = False
+                # The limit the substitute bound reached, set only when it reaches
+                # it below and consumed only beside record_failure(), so the three
+                # steps of the hand-over stay contiguous.
+                _hand_over_at: int | None = None
 
                 def _charge_failure() -> None:
                     """Charge this run's failure, performing any pending hand-over first.
@@ -5916,9 +5916,10 @@ class GatewayOrchestrator:
                     counter and the streak disagreeing with no writer left to
                     reconcile them.
                     """
-                    if _hand_over_streak:
+                    if _hand_over_at is not None:
                         job.consecutive_failures = max(
-                            job.consecutive_failures, _AUTO_PAUSE_THRESHOLD - 1
+                            job.consecutive_failures,
+                            _hand_over_at - 1,
                         )
                         runtime_death.clear_shared_deaths(f"cron:{job.id}")
                     job.record_failure()
@@ -5940,7 +5941,19 @@ class GatewayOrchestrator:
                     # need it. A substitute bound is keyed to whatever owns the
                     # counter it replaces.
                     _shared_streak = runtime_death.note_shared_death(f"cron:{job.id}")
-                    if _shared_streak >= _AUTO_PAUSE_THRESHOLD:
+                    # Hand over at the job's own limit when that is at or below
+                    # the default, else at the default. A job set to 0 or above
+                    # the default still gets its counter charged to the default,
+                    # which starts the failure backoff without pausing it;
+                    # handing over only at its own limit would leave such a job
+                    # firing at full rate forever on this path.
+                    _job_limit = job.auto_pause_limit()
+                    _pause_limit = (
+                        _AUTO_PAUSE_THRESHOLD
+                        if _job_limit is None
+                        else min(_job_limit, _AUTO_PAUSE_THRESHOLD)
+                    )
+                    if _shared_streak >= _pause_limit:
                         # At the limit the substitute bound HANDS OVER its
                         # accumulated value to the counter it stood in for,
                         # instead of adding a single charge to a counter still at
@@ -5968,10 +5981,10 @@ class GatewayOrchestrator:
                         # threshold. So the decision is recorded now and the move
                         # happens beside record_failure(), where the three steps
                         # are contiguous and cannot be torn apart.
-                        _hand_over_streak = True
+                        _hand_over_at = _pause_limit
                         logger.warning(
                             "Cron '%s': the runtime it shares has died %d times running — "
-                            "handing the streak to the job's own counter so it pauses now",
+                            "handing the streak to the job's own counter",
                             job.name,
                             _shared_streak,
                         )

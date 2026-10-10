@@ -23,7 +23,48 @@ from kiro_crew.cron_service.schedule import _job_tz
 logger = logging.getLogger("kiro_crew.cron")
 
 _JOB_TIMEOUT_SECS = 1800  # 30 min per job
-_AUTO_PAUSE_THRESHOLD = 5  # consecutive failures before a script/command cron auto-pauses
+_AUTO_PAUSE_THRESHOLD = 5  # default consecutive failures before a cron auto-pauses
+# Upper bound on a per-job ``auto_pause_after_failures``. 0 (never pause) is the
+# way to ask for "unlimited"; the cap only keeps a typo from reading as intent.
+_AUTO_PAUSE_MAX = 10000
+# A job that has not paused by the default limit, because its limit is 0 or
+# above the default, is not left firing at full rate while it keeps failing.
+# From the failure that would have paused it at the default limit, each further
+# run waits at least this long after the previous run, doubling per failure up
+# to the cap, so such a job runs at most about once an hour instead of on its
+# own schedule. A success resets the counter and with it the backoff.
+_NEVER_PAUSE_BACKOFF_BASE_SECS = 300
+_NEVER_PAUSE_BACKOFF_MAX_SECS = 3600
+
+
+def _lifts_default_pause(limit: object) -> bool:
+    """Whether *limit* lets a job keep failing past the default limit (0 or above it)."""
+    if isinstance(limit, bool) or not isinstance(limit, int):
+        return False
+    return limit == 0 or limit > _AUTO_PAUSE_THRESHOLD
+
+
+def validate_auto_pause_after_failures(value: Any) -> int:
+    """Return *value* as a per-job auto-pause limit, or raise ``ValueError``.
+
+    ``0`` means the job never auto-pauses; ``1.._AUTO_PAUSE_MAX`` pauses it after
+    that many consecutive failed runs. ``bool`` is refused even though it is an
+    ``int`` subclass, so ``true`` cannot silently mean "pause after one failure".
+    """
+    if isinstance(value, bool):
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}")
+    try:
+        limit = int(value)
+    except (TypeError, ValueError, OverflowError) as e:
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}") from e
+    if isinstance(value, float) and value != limit:
+        raise ValueError(f"auto_pause_after_failures must be an integer, got {value!r}")
+    if not 0 <= limit <= _AUTO_PAUSE_MAX:
+        raise ValueError(
+            f"auto_pause_after_failures must be within 0..{_AUTO_PAUSE_MAX} "
+            f"(0 = never auto-pause), got {limit}"
+        )
+    return limit
 
 
 @dataclass
@@ -178,6 +219,11 @@ class CronJob:
     last_failure_hash: str = ""  # hash of last failure notification (dedup crashes)
     last_failure_at: float = 0.0  # epoch of last failure Slack alert (dedup reminder)
     consecutive_failures: int = 0  # consecutive failed runs (any error); drives auto-pause
+    # How many consecutive failed runs auto-pause this job. 0 = never auto-pause
+    # (the job keeps firing on schedule however often it fails). Read it through
+    # :meth:`auto_pause_limit`, never directly, so every threshold comparison
+    # shares one meaning of 0.
+    auto_pause_after_failures: int = _AUTO_PAUSE_THRESHOLD
     skip_dates: list[str] = field(default_factory=list)  # ISO dates to skip ["YYYY-MM-DD"]
     timezone: str = ""  # IANA timezone for skip evaluation
     persistent_session: bool = True  # False → fresh ephemeral session per run
@@ -353,6 +399,88 @@ class CronJob:
         except Exception:
             logger.debug("SEL logging failed in cron auto-pause transition", exc_info=True)
 
+    def auto_pause_limit(self) -> int | None:
+        """Consecutive failures that auto-pause this job, or ``None`` for never.
+
+        A value no writer can produce (out of range, non-integer) falls back to
+        the default rather than disabling the safety net.
+        """
+        limit = self.auto_pause_after_failures
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 0 <= limit <= _AUTO_PAUSE_MAX
+        ):
+            return _AUTO_PAUSE_THRESHOLD
+        return limit or None
+
+    def failure_backoff_until(self) -> float | None:
+        """Epoch before which a failing job must not fire, or ``None``.
+
+        Every job still enabled once its streak reaches the default limit backs
+        off, whatever limit it carries: 0 and any limit above the default alike,
+        so raising the limit buys the same bounded retry rate as turning
+        auto-pause off. A job at or below the default pauses before it gets
+        here. Below the default streak a job fires on schedule.
+
+        The delay counts from ``last_run_ts``. For an ``every`` job that is the
+        start of the last run, because ``close_run`` restores the start time;
+        for a cron-expression job it is the last run's completion.
+        """
+        limit = self.auto_pause_limit()
+        if limit is not None and limit <= _AUTO_PAUSE_THRESHOLD:
+            return None
+        failures = self.consecutive_failures
+        if isinstance(failures, bool) or not isinstance(failures, int):
+            return None
+        excess = failures - _AUTO_PAUSE_THRESHOLD
+        last = self.last_run_ts
+        if excess < 0 or not isinstance(last, (int, float)) or isinstance(last, bool) or not last:
+            return None
+        # min() on the exponent first, so a huge streak cannot build a huge int.
+        delay = min(
+            _NEVER_PAUSE_BACKOFF_BASE_SECS * 2 ** min(excess, 16),
+            _NEVER_PAUSE_BACKOFF_MAX_SECS,
+        )
+        return float(last) + delay
+
+    def audit_auto_pause_limit_change(self, previous: int | None) -> None:
+        """Emit a SEL audit event when a write moves the limit past the default.
+
+        ``previous`` is the limit before the write, or ``None`` for a new job.
+        A limit of 0 or above the default lets the job keep failing past the
+        point where it would otherwise pause, so setting one, changing one, or
+        returning to the default must be auditable. Best-effort, like
+        :meth:`_audit_pause_change`: an audit failure never undoes the write it
+        describes.
+        """
+        new = self.auto_pause_after_failures
+        if new == previous or not (_lifts_default_pause(new) or _lifts_default_pause(previous)):
+            return
+        if new == 0:
+            outcome = "never_pause_set"
+        elif previous == 0:
+            outcome = "never_pause_cleared"
+        else:
+            outcome = "limit_changed"
+        from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
+
+        try:
+            seams.sel.sel().log_tool_invocation(
+                session_key=f"cron:{self.id}",
+                tool_name=self.script or self.command or "cron_job",
+                tool_kind="cron_auto_pause_limit",
+                outcome=outcome,
+                metadata={
+                    "job_id": self.id,
+                    "created_by": self.created_by,
+                    "previous_limit": previous,
+                    "auto_pause_after_failures": new,
+                },
+            )
+        except Exception:
+            logger.debug("SEL logging failed for a cron auto-pause limit change", exc_info=True)
+
     def record_failure(self) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
@@ -364,7 +492,8 @@ class CronJob:
         """
         self.consecutive_failures += 1
         self.failure_recorded = True
-        if self.consecutive_failures >= _AUTO_PAUSE_THRESHOLD and not self.auto_paused:
+        limit = self.auto_pause_limit()
+        if limit is not None and self.consecutive_failures >= limit and not self.auto_paused:
             self.enabled = False
             self.auto_paused = True
             self._audit_pause_change("auto_paused")

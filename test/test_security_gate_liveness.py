@@ -217,7 +217,10 @@ def _url_payload_command(n: int) -> str:
 #: subcommand. It is a security-deciding predicate, so it cannot leave the package,
 #: and no dead code remains to offset it. Its first word is split on space and tab
 #: only, the way bash splits, so a Unicode space cannot pose as a word break.
-_PACKAGE_LINE_BUDGET = 28_665
+#: Raised from 28,665 by 14 for one catalog row, ``self-protection-cron-never-pause``:
+#: the agent-shell twin of the MCP cron tools' refusal of an auto-pause limit of 0,
+#: on the ``self-protection-cron-adopt`` pattern. No existing row or gate changed.
+_PACKAGE_LINE_BUDGET = 28_679
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

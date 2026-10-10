@@ -69,6 +69,96 @@ def _runtime(
     return rt
 
 
+def _run_shared_cron_deaths(*, limit: int, deaths: int):
+    """Drive shared process deaths through the real gateway cron callback."""
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from kiro_crew.cron import CronJob, CronSchedule
+    from kiro_crew.slack.gateway import GatewayOrchestrator
+
+    gateway = GatewayOrchestrator.__new__(GatewayOrchestrator)
+    gateway.sessions = MagicMock()
+    gateway.sessions.get_pid.return_value = None
+    gateway.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
+    gateway.sessions.release = MagicMock()
+    gateway.sessions.reset = AsyncMock()
+    gateway.ctx_builder = MagicMock()
+    gateway.ctx_builder.build_message.return_value = ("msg", None)
+    gateway.ctx_builder.hooks = MagicMock()
+    gateway.slack = None
+    gateway.conv_log = None
+    gateway.dashboard_state = None
+    gateway._owner_id = "U000"
+    gateway.subagent_mgr = None
+    gateway._cron_injecting = {}
+    gateway._no_crons = False
+    gateway._interactive_approval = MagicMock(return_value="interactive_cb")
+
+    callback = None
+
+    async def capture_cron(*, on_job=None, **_kwargs):
+        nonlocal callback
+        callback = on_job
+        service = MagicMock()
+        service.start = AsyncMock()
+        return service
+
+    job = CronJob(
+        id="shared-limit",
+        name="shared-limit",
+        message="run",
+        schedule=CronSchedule(kind="every", every_secs=60),
+        auto_pause_after_failures=limit,
+    )
+
+    async def fail(*_args, **_kwargs):
+        raise RuntimeError("shared runtime died")
+
+    async def run() -> None:
+        await gateway._init_cron()
+        assert callback is not None
+        for _ in range(deaths):
+            with pytest.raises(RuntimeError, match="shared runtime died"):
+                await callback(job)
+
+    with (
+        patch(
+            "kiro_crew.slack.gateway.CronService.create", new=AsyncMock(side_effect=capture_cron)
+        ),
+        patch("kiro_crew.slack.gateway.stream_and_collect", side_effect=fail),
+        patch(
+            "kiro_crew.slack.gateway.build_cron_session_context", return_value=("cron:run", "run")
+        ),
+        patch("kiro_crew.slack.gateway.runtime_death.caused_by_this_session", return_value=False),
+    ):
+        asyncio.run(run())
+
+    return job
+
+
+def test_cron_shared_deaths_pause_at_the_jobs_custom_limit():
+    job = _run_shared_cron_deaths(limit=2, deaths=2)
+    assert job.consecutive_failures == 2
+    assert job.auto_paused is True and job.enabled is False
+
+
+@pytest.mark.parametrize("limit", [0, 6, 10000])
+def test_cron_shared_deaths_charge_a_never_or_raised_limit_job_to_the_default(limit):
+    """A job set to 0 or above the default must not escape the backoff here.
+
+    Handing over only at the job's own limit left such a job's counter at 0, so
+    ``failure_backoff_until`` (which reads that counter) never engaged and the job
+    fired at full rate forever. It is charged at the default instead, which
+    starts the backoff without pausing it.
+    """
+    from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
+
+    job = _run_shared_cron_deaths(limit=limit, deaths=_AUTO_PAUSE_THRESHOLD)
+    assert job.consecutive_failures == _AUTO_PAUSE_THRESHOLD
+    assert runtime_death.shared_deaths(f"cron:{job.id}") == 0
+    assert job.auto_paused is False and job.enabled is True
+
+
 # ───────────────────────── the death reason (item d) ─────────────────────────
 
 

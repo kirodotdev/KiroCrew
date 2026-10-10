@@ -52,6 +52,7 @@ def _add_job_kwargs(**overrides):
         minimal_context=False,
         timeout=0,
         timeout_secs=0,
+        auto_pause_after_failures=None,
     )
     kwargs.update(overrides)
     return kwargs
@@ -682,6 +683,36 @@ class TestUpdateFailures:
 
 
 class TestCronCli:
+    @pytest.mark.parametrize("action", ["add", "update"])
+    def test_auto_pause_after_help_documents_default_and_zero(self, action, monkeypatch, capsys):
+        from kiro_crew.cli import main
+        from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
+
+        monkeypatch.setattr(sys, "argv", ["kirocrew", "cron", action, "--help"])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+        help_text = capsys.readouterr().out
+        assert "--auto-pause-after" in help_text
+        # The copy is derived from the model's constants, so a change to either
+        # constant must show up here rather than leave the help text stale.
+        # argparse wraps long help at column width; collapse whitespace so the
+        # assertion does not depend on where the wrap falls.
+        flat = " ".join(help_text.split())
+        assert (
+            f"(0..{_AUTO_PAUSE_MAX}, default {_AUTO_PAUSE_THRESHOLD}; 0 = never auto-pause. "
+            f"With 0 or a limit above {_AUTO_PAUSE_THRESHOLD}, from the "
+            f"{_AUTO_PAUSE_THRESHOLD}th consecutive failure the job backs off to at most one "
+            "run an hour until it succeeds; agents cannot set 0 through MCP)" in flat
+        )
+
+    def test_auto_pause_after_omitted_builds_job_with_model_default(self):
+        from kiro_crew.cron import build_job
+        from kiro_crew.cron_service.model import _AUTO_PAUSE_THRESHOLD
+
+        job = build_job("j", "msg", every_secs=60)
+        assert job.auto_pause_after_failures == _AUTO_PAUSE_THRESHOLD
+
     def test_cron_add_with_channel(self, tmp_path):
         with (
             patch("kiro_crew.cli_commands.CronService") as mock_svc_cls,

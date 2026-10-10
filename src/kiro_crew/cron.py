@@ -1763,6 +1763,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        auto_pause_after_failures: int | None = None,
     ) -> CronJob:
         """Add a new job. Provide one of ``every_secs``, ``at_ts``, or ``cron_expr``.
 
@@ -1824,6 +1825,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            auto_pause_after_failures=auto_pause_after_failures,
         )
         self._persist_add_locked(job)
         self._arm_timer()
@@ -1927,6 +1929,7 @@ class CronService:
             self._drop_owner_if_parent_gone(job)
             self._jobs.append(job)
             self._save()
+        job.audit_auto_pause_limit_change(None)
         return True
 
     def _drop_owner_if_parent_gone(self, job: CronJob) -> None:
@@ -1981,6 +1984,7 @@ class CronService:
             self._drop_owner_if_parent_gone(job)
             self._jobs.append(job)
             self._save()
+        job.audit_auto_pause_limit_change(None)
 
     async def add_job_async(
         self,
@@ -2014,6 +2018,7 @@ class CronService:
         minimal_context: bool = False,
         timeout: int = 0,
         timeout_secs: int = 0,
+        auto_pause_after_failures: int | None = None,
         source_preset: str = "",
         source_template_prompt: str = "",
     ) -> CronJob:
@@ -2065,6 +2070,7 @@ class CronService:
             minimal_context=minimal_context,
             timeout=timeout,
             timeout_secs=timeout_secs,
+            auto_pause_after_failures=auto_pause_after_failures,
         )
         # Dashboard-only template provenance. Set on the freshly-built job
         # BEFORE the off-loop persist -- the object has no other reference yet,
@@ -2086,7 +2092,8 @@ class CronService:
 
         Accepted kwargs: name, message, every_secs, cron_expr, agent_id, channel,
         approval_mode, silent, skip_dates, timezone, thread_ts, model,
-        timeout_secs (per-wake execution budget, 1..86400).
+        timeout_secs (per-wake execution budget, 1..86400),
+        auto_pause_after_failures (0..10000; 0 = never auto-pause).
 
         Raises :class:`CronStoreBusy` if the store lock is contended past the
         timeout; see :meth:`update_job_async` for the event-loop-safe variant.
@@ -2165,8 +2172,10 @@ class CronService:
                     raise CronPendingMismatch("active grant changed concurrently")
                 if expect_active_pin is not None and job.secret_env_pin != expect_active_pin:
                     raise CronPendingMismatch("active grant pin changed concurrently")
+                previous_limit = job.auto_pause_after_failures
                 apply_job_update(job, kwargs, chat_folder_out)
                 self._save()
+                job.audit_auto_pause_limit_change(previous_limit)
                 logger.info("Updated cron job %s", job_id)
                 return job
         return None

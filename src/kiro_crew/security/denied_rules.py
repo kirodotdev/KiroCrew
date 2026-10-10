@@ -1386,6 +1386,20 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     DeniedCommandRule(
+        id="self-protection-cron-never-pause",
+        pattern=(
+            ".*kiro.?crew\\b(?:(?!&&)[^;|])*?\\bcron\\b(?:(?!&&)[^;|])*?"
+            "--auto-pause-after(?:=|\\s+)['\"]?0+['\"]?(?![\\w.]).*"
+        ),
+        category="self-protection",
+        description=(
+            "Blocks 'kirocrew cron add/update --auto-pause-after 0', which turns off a job's "
+            "auto-pause, so that owner-only choice cannot be made from the agent's shell; the "
+            "MCP cron tools refuse 0 too. Gaps between the words follow "
+            "'self-protection-cron-adopt'."
+        ),
+    ),
+    DeniedCommandRule(
         id="self-protection-kill",
         # Scoped to the KILL TARGET, not to co-occurrence anywhere in the command.
         # The alternation is wrapped in a non-capturing group deliberately: a

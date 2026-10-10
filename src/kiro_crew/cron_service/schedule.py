@@ -380,6 +380,13 @@ def compute_next_run_ts(job: CronJob, now: float | None = None) -> float | None:
     RESULT, covering every arithmetic route at the serialize site.
     """
     result = _compute_next_run_ts_raw(job, now)
+    # A failing job past the default limit: its next fire is the first slot after its backoff.
+    backoff_until = job.failure_backoff_until() if result is not None else None
+    if result is not None and backoff_until is not None and result < backoff_until:
+        if job.schedule.kind == "cron":
+            result = _compute_next_run_ts_raw(job, backoff_until)
+        else:
+            result = backoff_until
     # Float-gated like every non-finite check in this module: a bignum int
     # result serializes as digits (valid JSON) and math.isfinite(huge_int)
     # raises OverflowError -- the exact escape this guard exists to prevent.
@@ -558,6 +565,10 @@ def is_due(job: CronJob, now: float) -> bool:
     """Whether ``job`` is due at ``now``: its schedule has arrived and ``now`` is not a skip date."""
     from kiro_crew import cron as seams  # the facade holds the patched names; it imports us
 
+    # A failing job past the default limit waits out its backoff whatever its schedule says.
+    backoff_until = job.failure_backoff_until()
+    if backoff_until is not None and now < backoff_until:
+        return False
     if job.schedule.kind == "every" and job.schedule.every_secs:
         last = job.last_run_ts or job.created_ts
         if now < last + job.schedule.every_secs:
@@ -607,6 +618,12 @@ def next_wake_secs(jobs: Iterable[CronJob], claimed: Container[str], now: float)
         if job.schedule.kind == "every" and job.schedule.every_secs:
             last = job.last_run_ts or job.created_ts
             next_run = last + job.schedule.every_secs
+            # Wake when the backoff ends, not on each skipped interval. A cron
+            # job keeps its boundary wakes: one landing inside the backoff is
+            # the same cheap no-op as a skip date.
+            backoff_until = job.failure_backoff_until()
+            if backoff_until is not None:
+                next_run = max(next_run, backoff_until)
             delays.append(max(0.0, next_run - now))
         elif job.schedule.kind == "at" and job.schedule.at_ts:
             delays.append(max(0.0, job.schedule.at_ts - now))

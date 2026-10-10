@@ -116,7 +116,9 @@ class TestCatalog:
         # Then: the sandbox-escape ssh-to-self row was added (111 -> 112). The
         # flagged-file delivery self-protection floor added no row: it is an
         # ungated argv-floor subcommand (see ``_UNGATED_TEMPLATES``), not a catalog rule.
-        assert len(BUILTIN_DENIED_RULES) == 112
+        # Then: self-protection-cron-never-pause was added (112 -> 113), so the
+        # owner-only auto-pause limit of 0 cannot be set from the agent's shell.
+        assert len(BUILTIN_DENIED_RULES) == 113
         ids = [r.id for r in BUILTIN_DENIED_RULES]
         assert len(set(ids)) == len(BUILTIN_DENIED_RULES)
 
@@ -307,6 +309,9 @@ class TestSelfProtectionFlagInterposition:
         # regex: it has no argv-floor twin, and the ownership grab it refuses is
         # real (see ``mcp_cron`` and the cron-store keystone notes).
         "self-protection-cron-adopt": "kirocrew {flags} cron adopt",
+        # Same tempered gaps as cron-adopt; the token it keys on is the flag
+        # with a literal 0, which an interposed flag cannot separate.
+        "self-protection-cron-never-pause": "kirocrew {flags} cron update j1 --auto-pause-after 0",
         # Keys on the flag LITERAL itself (plain substring), so interposed
         # flags anywhere in the command cannot separate the anchor from the
         # token the rule matches — the flag IS the token.

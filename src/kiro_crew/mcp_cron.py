@@ -57,6 +57,7 @@ from kiro_crew.cron_script import (
     resolve_script_path,
     validate_secret_env_grant,
 )
+from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
 from kiro_crew.cron_trigger import _JOB_ID_RE, trigger_cron_job
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import current_caller
@@ -96,6 +97,57 @@ from kiro_crew.validation import (
 )
 
 logger = logging.getLogger(__name__)
+
+# ``auto_pause_after_failures`` description for the ``cron_add`` and ``cron_update``
+# tools. The cap and the default come from the cron model so the copy cannot drift.
+_AUTO_PAUSE_AFTER_DESCRIPTION = (
+    "Consecutive failed runs before this job auto-pauses "
+    f"(1..{_AUTO_PAUSE_MAX}, default {_AUTO_PAUSE_THRESHOLD}). 0 (never auto-pause) is "
+    "refused here: only the owner can set it, from a terminal with "
+    "`kirocrew cron update <id> --auto-pause-after 0`."
+)
+
+
+def _is_never_pause(value: object) -> bool:
+    """Whether an ``auto_pause_after_failures`` argument asks for 0 (never pause).
+
+    Matches every form the validator would read as 0 (``0``, ``0.0``, ``"0"``),
+    so the refusal cannot be stepped around by changing the argument's type.
+    ``bool`` is excluded: the validator refuses it on its own terms.
+    """
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        return float(str(value).strip()) == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _never_pause_refusal(tool: str) -> str:
+    """The answer, and its SEL audit row, when an MCP caller asks for limit 0.
+
+    A never-pause job keeps firing however often it fails, and an agent job pays
+    for a model turn on every run, so turning the safety net off is the owner's
+    decision. The owner makes it from a terminal; an agent session cannot make it
+    for them.
+    """
+    try:
+        sel().log_api_access(
+            caller="mcp",
+            operation=f"{tool.replace('_', '.', 1)}.never_pause",
+            outcome="denied",
+            source="mcp",
+            error="auto_pause_after_failures=0 is owner-only",
+        )
+    except Exception:
+        logger.debug("SEL logging failed for a refused never-pause request", exc_info=True)
+    return (
+        "Error: auto_pause_after_failures=0 (never auto-pause) is owner-only and cannot "
+        "be set from an agent session. A job that never pauses keeps running, and "
+        "spending, however often it fails. Pass a limit from 1 to "
+        f"{_AUTO_PAUSE_MAX}, or ask the user to run "
+        "`kirocrew cron update <job id> --auto-pause-after 0` in their terminal."
+    )
 
 
 def _sub_floor_timeout_note(timeout_secs_val: object) -> str:
@@ -2119,6 +2171,10 @@ def _list_tools() -> list[dict[str, Any]]:
                         "bounds only script/command subprocesses. Raise it for "
                         "agents whose single wake legitimately outgrows 30 min.",
                     },
+                    "auto_pause_after_failures": {
+                        "type": "integer",
+                        "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
+                    },
                 },
                 "required": ["name"],
             },
@@ -2147,6 +2203,10 @@ def _list_tools() -> list[dict[str, Any]]:
                         "job, default 1800). Distinct from 'timeout', which "
                         "bounds only script/command subprocesses. Raise it for "
                         "jobs whose single run legitimately outgrows 30 min.",
+                    },
+                    "auto_pause_after_failures": {
+                        "type": "integer",
+                        "description": _AUTO_PAUSE_AFTER_DESCRIPTION,
                     },
                     "agent": {"type": "string", "description": "New agent name"},
                     "channel": {"type": "string", "description": "New channel ID"},
@@ -3484,6 +3544,9 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         strict_schedule = args.get("strict_schedule")
         timeout_val = args.get("timeout", 0)
         timeout_secs_val = args.get("timeout_secs", 0)
+        auto_pause_val = args.get("auto_pause_after_failures")
+        if _is_never_pause(auto_pause_val):
+            return _never_pause_refusal("cron_add")
         # Resolve the folder BEFORE add_job so an unresolvable reference never
         # leaves an orphaned job behind (same position as the model check
         # above). A folder auto-created here that a subsequent add_job failure
@@ -3522,6 +3585,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
                 minimal_context=minimal_context if isinstance(minimal_context, bool) else False,
                 timeout=timeout_val or 0,
                 timeout_secs=timeout_secs_val or 0,
+                auto_pause_after_failures=auto_pause_val,
             )
         except CronStoreBusy:
             return "Error: cron store busy, please retry"
@@ -3641,6 +3705,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             kwargs["timeout"] = args["timeout"]
         if "timeout_secs" in args:
             kwargs["timeout_secs"] = args["timeout_secs"]
+        if "auto_pause_after_failures" in args:
+            if _is_never_pause(args["auto_pause_after_failures"]):
+                return _never_pause_refusal("cron_update")
+            kwargs["auto_pause_after_failures"] = args["auto_pause_after_failures"]
         if not kwargs:
             return "Error: no fields to update"
         try:

@@ -61,6 +61,7 @@ from kiro_crew.constants import (
     parse_node_version,
 )
 from kiro_crew.crash_guard import install as _install_crash_guard
+from kiro_crew.cron_service.model import _AUTO_PAUSE_MAX, _AUTO_PAUSE_THRESHOLD
 from kiro_crew.env import git_build_info
 from kiro_crew.gateway_lock import LIVE_HOLDER_EXIT_CODE, GatewayLock, GatewayLockError
 from kiro_crew.history import ConversationLog, HistoryConsolidator
@@ -83,6 +84,16 @@ from kiro_crew.session import SessionManager
 from kiro_crew.skills import SkillsLoader
 
 logger = logging.getLogger(__name__)
+
+# ``--auto-pause-after`` help for ``cron add`` and ``cron update``. The cap and
+# the default are read from the cron model so this copy cannot drift from them.
+_AUTO_PAUSE_AFTER_HELP = (
+    f"Consecutive failed runs before the job auto-pauses (0..{_AUTO_PAUSE_MAX}, "
+    f"default {_AUTO_PAUSE_THRESHOLD}; 0 = never auto-pause. With 0 or a limit "
+    f"above {_AUTO_PAUSE_THRESHOLD}, from the {_AUTO_PAUSE_THRESHOLD}th consecutive "
+    "failure the job backs off to at most one run an hour until it succeeds; "
+    "agents cannot set 0 through MCP)"
+)
 
 # Markers that uniquely identify the KiroCrew repo root for project-dir
 # auto-detection. ``skills/`` + ``src/kiro_crew/`` is the stable signature:
@@ -1840,6 +1851,13 @@ Examples:
         "the store's per-kind default when --timeout is omitted -- plus 5s cleanup.",
     )
     cron_add.add_argument(
+        "--auto-pause-after",
+        type=int,
+        dest="auto_pause_after_failures",
+        default=None,
+        help=_AUTO_PAUSE_AFTER_HELP,
+    )
+    cron_add.add_argument(
         "--model",
         dest="model",
         default="",
@@ -1908,6 +1926,13 @@ Examples:
         dest="timeout_secs",
         default=None,
         help="Per-wake execution budget in seconds (1..86400, default 1800)",
+    )
+    cron_update.add_argument(
+        "--auto-pause-after",
+        type=int,
+        dest="auto_pause_after_failures",
+        default=None,
+        help=_AUTO_PAUSE_AFTER_HELP,
     )
     cron_update.add_argument("--cron", dest="cron_expr", help="New cron expression")
     cron_update.add_argument("--channel", help="New channel ID")

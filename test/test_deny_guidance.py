@@ -233,6 +233,7 @@ class TestRuleIdentityRoutesTheRegexTier:
             ("data-exfil-curl-file-body", dg.DENY_CLASS_EXFIL_SHAPE),
             ("self-protection-kill", dg.DENY_CLASS_SELF_PROTECTION),
             ("self-protection-cron-adopt", dg.DENY_CLASS_SELF_PROTECTION),
+            ("self-protection-cron-never-pause", dg.DENY_CLASS_SELF_PROTECTION),
         ],
     )
     def test_each_pairing(self, rule_id, expected):
