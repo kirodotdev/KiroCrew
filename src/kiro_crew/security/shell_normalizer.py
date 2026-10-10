@@ -404,7 +404,7 @@ def _glob_to_regex(pattern: str, depth: int = 0, budget: "list[int] | None" = No
 
 # Programs whose ``-c`` argument is a shell script: its text is a COMMAND, so a
 # self-protection check has to look inside it rather than treat it as an operand.
-_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "ash", "busybox"})
+_NESTED_SHELL_PROGRAMS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "mksh", "ash", "busybox"})
 
 
 _NESTED_SHELL_VERBS = frozenset({"eval", "source", "."})

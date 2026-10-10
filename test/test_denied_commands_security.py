@@ -8865,6 +8865,72 @@ class TestSandboxEscapeSshSelf:
     def test_other_hosts_and_mentions_stay_allowed(self, cmd):
         assert _denied_by(cmd) is None, cmd
 
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # A remote command's own ``-R`` flag whose value is NOT a forward
+            # spec. ``gh ... -R owner/repo`` names a GitHub repo, not a
+            # ``[bind:]port`` -- OpenSSH rejects it as a port -- so it dials
+            # nothing from here and the connection to the REMOTE host stays
+            # allowed. The 1-2 field reverse-SOCKS branch fails closed only when
+            # the port field is port-shaped (a number or an /etc/services name).
+            "ssh far-host.example.com gh issue list -R owner/repo",
+            "ssh far-host.example.com gh issue list -R o/r",
+            "ssh far-host.example.com gh pr list -R o/r --limit 30",
+            "ssh 198.51.100.9 gh pr view -R kirodotdev/kirocrew",
+            "ssh -o batchmode=yes far-host.example.com gh pr view -R o/r",
+            "ssh far-host.example.com gh issue develop -R a/b/c",
+            "ssh far-host.example.com 'gh issue list -R o/r'",
+            "scp -R o/r file far-host.example.com:/tmp/x",
+        ],
+    )
+    def test_remote_command_nonport_forward_value_is_allowed(self, cmd):
+        # A non-port ``-R`` value is not a self reverse-SOCKS, so it is allowed.
+        assert _denied_by(cmd) is None, cmd
+
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            # Accepted residual (interim tier): a remote command's own
+            # ``-R``/``-J``/``-o`` whose value DOES name this host stays refused.
+            # ssh parses options only up to the destination, so semantically
+            # these belong to the remote command -- but a text-only floor cannot
+            # prove the far side won't re-enter this host, so it fails CLOSED.
+            # A port-shaped reverse-SOCKS port, a self ProxyJump, and a self
+            # Hostname override are each a self dial if read as an option; the
+            # OS network fence is the real close for these.
+            "ssh far-host.example.com gh x -R 2222:localhost:22",
+            "ssh far-host.example.com gh x -R localhost:2222",
+            "ssh far-host.example.com gh x -R 8080",
+            "ssh far-host.example.com gh x -J localhost",
+            "ssh far-host.example.com gh x -o proxyjump=localhost",
+            # A ``-R`` port field must fail CLOSED unless it provably cannot be a
+            # port: OpenSSH accepts remote port ``0`` (the server assigns it) and
+            # service names, and the shell expands ``{8080,}``, ``$P``, ``~`` or a
+            # glob to a port before ssh runs. None may be trusted as "not a port".
+            "ssh -R0 far-host.example.com",
+            "ssh -R localhost:0 far-host.example.com",
+            "ssh -o remoteforward=0 far-host.example.com",
+            "ssh -R 9pfs far-host.example.com",
+            # A 2-field -R value can be a LOCAL SOCKET path, a real reverse
+            # forward into this host, so a `/` in the last field never exempts it.
+            "ssh -R 2222:/var/run/docker.sock far-host.example.com",
+            "ssh -R /tmp/r.sock:/var/run/docker.sock far-host.example.com",
+            "ssh -o 'remoteforward=2222 /var/run/docker.sock' far-host.example.com",
+            # A `/` inside a shell parameter-expansion operator is not a literal
+            # path: bash rewrites `${p%/}` to a port before ssh runs.
+            "p=8080; ssh -R ${p%/} far-host.example.com",
+            'p=8080; ssh -R "${p#/}" far-host.example.com',
+            # An extended glob carries `/` but expands to a port: only a token
+            # drawn from literal path characters takes the exemption.
+            "bash -O extglob -c 'cd /proc/self/fd; ssh -R @(/|0) far-host.example.com'",
+        ],
+    )
+    def test_portshaped_self_forward_in_remote_command_stays_refused(self, cmd):
+        # These are false denials on the fail-closed side -- a documented
+        # residual of the text tier that the OS network fence closes.
+        assert _denied_by(cmd) == self._RULE, cmd
+
     def test_floor_spawns_no_dns_resolver_thread(self):
         # With the own-host cache pinned by the autouse fixture, evaluating a
         # representative allow case through the floor must NOT spawn the real
