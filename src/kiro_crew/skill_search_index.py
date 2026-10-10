@@ -654,17 +654,25 @@ class SkillSearchIndex:
                     is None
                 ):
                     return False
+                # Bound every projected column in SQLite, before it reaches Python:
+                # ``substr`` caps what is fetched, and the ``over`` flag refuses the
+                # whole snapshot when any stored value was longer than the cap. An
+                # oversized forged row therefore never allocates past the cap here.
+                cap = _MAX_CATALOG_FIELD_CHARS
                 cursor = db.execute(
-                    "SELECT key, path, confine_root FROM skill_catalog "
-                    "WHERE scope = ? ORDER BY ordinal LIMIT ?",
-                    (scope, _MAX_CATALOG_ROWS + 1),
+                    "SELECT substr(key, 1, ?), substr(path, 1, ?), substr(confine_root, 1, ?),"
+                    " (length(key) > ? OR length(path) > ? OR length(confine_root) > ?)"
+                    " FROM skill_catalog WHERE scope = ? ORDER BY ordinal LIMIT ?",
+                    (cap, cap, cap, cap, cap, cap, scope, _MAX_CATALOG_ROWS + 1),
                 )
                 seen = 0
-                for key, path, confine_root in cursor:
+                for key, path, confine_root, over in cursor:
                     seen += 1
                     fields = (str(key), str(path), str(confine_root))
-                    if seen > _MAX_CATALOG_ROWS or any(
-                        len(field) > _MAX_CATALOG_FIELD_CHARS for field in fields
+                    if (
+                        seen > _MAX_CATALOG_ROWS
+                        or over
+                        or any(len(field) > _MAX_CATALOG_FIELD_CHARS for field in fields)
                     ):
                         logger.warning("skill-search-index: refusing a catalog over its limits")
                         return False

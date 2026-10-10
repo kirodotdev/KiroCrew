@@ -761,6 +761,62 @@ def test_metadata_snapshot_bounds_path_and_fingerprint_in_sqlite(loader):
         assert all(len(path) < wide for path in snapshot)
 
 
+def test_catalog_scan_bounds_every_column_in_sqlite(loader, monkeypatch):
+    import sqlite3
+    from contextlib import closing
+
+    from kiro_crew import skill_search_index as skill_search_index_module
+
+    loader.create_skill("live-a", "---\nname: live-a\ndescription: trusted\n---\n")
+    loader.list_skills()  # builds and stores the catalog snapshot
+    index = loader._search_index
+    if index is None:
+        pytest.skip("search index unavailable on this host")
+    cap = skill_search_index_module._MAX_CATALOG_FIELD_CHARS
+    wide = cap * 8
+    with closing(sqlite3.connect(loader._dir.parent / "skill_search_index.sqlite3")) as db:
+        with db:
+            scope, ordinal = db.execute(
+                "SELECT scope, max(ordinal) FROM skill_catalog GROUP BY scope LIMIT 1"
+            ).fetchone()
+            db.execute(
+                "INSERT INTO skill_catalog(scope, ordinal, key, path, confine_root)"
+                " VALUES (?, ?, ?, ?, '')",
+                (scope, ordinal + 1, "k" * wide, "/forged"),
+            )
+
+    # Record every value the database hands to Python for this scan.
+    fetched: list[int] = []
+    real_db = index._db
+
+    class _Cursor:
+        def __init__(self, cursor):
+            self._cursor = cursor
+
+        def fetchone(self):
+            return self._cursor.fetchone()
+
+        def __iter__(self):
+            for row in self._cursor:
+                fetched.extend(len(v) for v in row if isinstance(v, str))
+                yield row
+
+    class _Conn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, *args):
+            return _Cursor(self._conn.execute(*args))
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(index, "_db", lambda: _Conn(real_db()))
+
+    assert index.scan_catalog_snapshot(scope, lambda *_row: True) is False
+    assert fetched and max(fetched) <= cap
+
+
 def test_pending_slug_that_looks_like_a_credential_is_redacted(loader):
     _stage(loader, "pypi-publish-checklist")
 
