@@ -204,6 +204,12 @@ from kiro_crew.platform.governance import (
 # are defined). Imported here so ``hooks.TARGET_PATH_KEYS`` / ``hooks.TargetPaths``
 # / ``hooks.target_paths`` (and the work caps) stay importable at their historic
 # names; hooks keeps its HARD-DENY reading of ``TargetPaths.truncated``.
+# The KAS-id -> kiro-cli policy-name fold is read by the composed gate tiers
+# (``hook_runtime.gate_tiers``) and by ``hook_runtime.tool_identity``.
+from kiro_crew.platform.tool_names import (  # noqa: F401 - read by the owners
+    policy_alias_split,
+    policy_aliases,
+)
 from kiro_crew.platform.tool_paths import (  # noqa: F401  (re-exported for callers)
     _TARGET_PATH_MAX_NODES,
     _TARGET_PATH_MAX_PATHS,

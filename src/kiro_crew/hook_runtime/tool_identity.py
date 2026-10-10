@@ -29,6 +29,7 @@ if TYPE_CHECKING:
         ToolHookResult,
         _bounded_pattern_search,
         logger,
+        policy_aliases,
     )
 
 
@@ -291,7 +292,18 @@ def _is_host_read_only_builtin(
     if mcp_server_name or not mcp_tool_name:
         return False
     name = _HOST_READ_ONLY_BUILTIN_ALIASES.get(mcp_tool_name, mcp_tool_name)
-    return name in _HOST_READ_ONLY_BUILTIN_TOOLS
+    if name in _HOST_READ_ONLY_BUILTIN_TOOLS:
+        return True
+    # A KAS built-in arrives under its own id (``read_file``, ``grep_search``;
+    # ``platform.tool_names``), and this allowlist is spelled in kiro-cli's.
+    # Read the id under its kiro-cli policy name, the same fold the deny tier
+    # applies -- but only for a name the table knows to be the SAME work: the
+    # aliases are the read/search family of a kiro-cli read tool, so a KAS
+    # ``read_file`` is proven read-only exactly where ``fs_read`` is, and a
+    # write alias (``str_replace`` -> ``fs_write``) resolves to a name this
+    # allowlist does not carry. Without this a ``--approval reads`` gateway
+    # prompted for every KAS read it would have auto-approved on kiro-cli.
+    return any(alias in _HOST_READ_ONLY_BUILTIN_TOOLS for alias in policy_aliases(mcp_tool_name))
 
 
 def _app_owns_mcp_server(mcp_server_name: str, app: str) -> bool:

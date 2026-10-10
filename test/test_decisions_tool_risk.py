@@ -900,6 +900,27 @@ class TestTheCautionConfidenceThreshold:
 
         assert record is None
 
+    @pytest.mark.asyncio
+    async def test_a_delete_is_not_the_workspace_edit_the_carve_out_describes(self, home):
+        """``delete`` is on the gates' write-plane routing (``is_edit_call``); if
+        the badge carve-out read that same predicate, a KAS ``delete_file`` would
+        lose its ``caution`` badge on exactly the auto-approving sessions where
+        the badge is the only signal. The carve-out's ground is a workspace edit
+        "easy to put back"; a deletion is not, so it keeps the badge
+        (``is_workspace_edit_call``)."""
+        with _answering(tr.TIER_CAUTION, 0.99):
+            record = await tr.risk_record(
+                tool="Delete File",
+                arguments='{"targetFile": "notes.md"}',
+                policy="trust",
+                session_key="chat-1",
+                tool_kind="delete",
+                diff_path="",
+            )
+
+        assert record is not None
+        assert record["tier"] == tr.TIER_CAUTION
+
 
 # ── the point's own identity ──────────────────────────────────────────────────
 

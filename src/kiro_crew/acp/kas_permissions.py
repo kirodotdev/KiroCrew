@@ -51,6 +51,8 @@ import logging
 from collections.abc import Callable, Iterable
 from typing import Any
 
+from kiro_crew.platform.tool_names import KIRO_CLI_NAME_BY_KAS_TOOL
+
 logger = logging.getLogger(__name__)
 
 #: Marks an MCP server (or one of its tools) in a Crew ``tools``/``allowedTools``
@@ -131,7 +133,14 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 
 #: kiro-cli tool name -> the KAS tool ids that do the same job.
 #:
-#: This is the one kiro-cli <-> KAS tool-name table. A matcher in an agent
+#: DERIVED, not hand-kept: the kiro-cli <-> KAS relationship has ONE table,
+#: :data:`kiro_crew.platform.tool_names.KIRO_CLI_NAME_BY_KAS_TOOL` (the policy
+#: direction: each KAS built-in id -> the kiro-cli name a rule about it is
+#: written under, pinned to the recorded engine registry). This mapping is its
+#: inverse, grouped per kiro-cli name, plus the rows only the hook vocabulary
+#: needs: ``fs_write`` is a KAS id as well as the kiro-cli name (a file create
+#: states it on a permission request), and ``web_fetch`` / ``web_search`` /
+#: ``use_subagent`` reach KAS tools no gate policy names. A matcher in an agent
 #: spec's ``hooks`` names tools in kiro-cli's vocabulary (``execute_bash``,
 #: ``fs_write``). KAS names its own tools differently, and the name it states for
 #: a call is the ``toolId`` of the permission request's ``_meta.kiro``
@@ -148,16 +157,23 @@ WITHHELD_FROM_AUTO_APPROVE: frozenset[str] = frozenset(
 #: (``use_aws``) meets no KAS call. Read it through
 #: :func:`kas_tool_match_names` and :data:`KAS_TOOL_MATCH_VOCABULARY`; the rows
 #: themselves are for a caller that must go from a kiro-cli name to KAS ids.
-KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = {
-    "execute_bash": ("run_command",),
-    "fs_read": ("read_file", "list_directory"),
-    "fs_write": ("fs_write", "fs_append", "str_replace", "delete_file"),
-    "grep": ("grep_search",),
-    "glob": ("file_search",),
+_HOOK_ONLY_ROWS: dict[str, tuple[str, ...]] = {
     "web_fetch": ("web_fetch",),
     "web_search": ("remote_web_search",),
     "use_subagent": ("invoke_sub_agent",),
 }
+
+
+def _rows_from_policy_table() -> dict[str, tuple[str, ...]]:
+    grouped: dict[str, list[str]] = {"fs_write": ["fs_write"]}
+    for kas_id, kiro_cli_name in KIRO_CLI_NAME_BY_KAS_TOOL.items():
+        grouped.setdefault(kiro_cli_name, []).append(kas_id)
+    rows = {name: tuple(ids) for name, ids in grouped.items()}
+    rows.update(_HOOK_ONLY_ROWS)
+    return rows
+
+
+KAS_TOOL_IDS_BY_KIRO_TOOL: dict[str, tuple[str, ...]] = _rows_from_policy_table()
 
 #: Other spellings of a kiro-cli tool that a spec may use, onto the name in
 #: :data:`KAS_TOOL_IDS_BY_KIRO_TOOL`: kiro-cli's legacy ``shell`` key, and the

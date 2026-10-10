@@ -66,6 +66,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.acp_backends import ACP_BACKENDS_META_IDENTITY
 from kiro_crew.metrics.tool_calls import note_tool_call_started, record_tool_call_finished
+from kiro_crew.platform.tool_paths import WRITE_PLANE_KINDS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.security.credential_sources import tool_output_fingerprints
 
@@ -1668,23 +1669,33 @@ _MAX_HARNESS_TOOL_ID_LEN = 128
 _HARNESS_TOOL_ID_RE = re.compile(r"[A-Za-z0-9_.\-/@:]+")
 
 
+def _harness_identifier(value: object) -> str:
+    """*value* as a harness-authored identifier, or "" when absent or malformed.
+
+    Only an identifier is kept: word characters, ``.``, ``-`` and the ``/``, ``@``
+    and ``:`` separators an MCP tool's spelling uses, at most
+    ``_MAX_HARNESS_TOOL_ID_LEN`` of them. No glob metacharacter or whitespace
+    survives, so the value is matched as a name and logged unescaped. Shared by
+    the two places a permission request names a built-in by id.
+    """
+    if (
+        not isinstance(value, str)
+        or len(value) > _MAX_HARNESS_TOOL_ID_LEN
+        or not _HARNESS_TOOL_ID_RE.fullmatch(value)
+    ):
+        return ""
+    return value
+
+
 def _permission_tool_id(params: dict[str, Any]) -> str:
     """``_meta.kiro.toolId`` of a permission request, or "" when absent or malformed.
 
-    Only an identifier is kept: word characters, ``.``, ``-`` and the ``/``, ``@``
-    and ``:`` separators an MCP tool's spelling uses. No glob metacharacter or
-    whitespace survives, so the value is matched as a name and logged unescaped.
+    Bounded by :func:`_harness_identifier`.
     """
     meta = params.get("_meta")
     kiro = meta.get("kiro") if isinstance(meta, dict) else None
     tool_id = kiro.get("toolId") if isinstance(kiro, dict) else None
-    if (
-        not isinstance(tool_id, str)
-        or len(tool_id) > _MAX_HARNESS_TOOL_ID_LEN
-        or not _HARNESS_TOOL_ID_RE.fullmatch(tool_id)
-    ):
-        return ""
-    return tool_id
+    return _harness_identifier(tool_id)
 
 
 def harness_tool_name(update: dict[str, Any]) -> str:
@@ -1727,6 +1738,7 @@ def build_permission_event(
     tool_name_cache: dict[str, str] | None = None,
     cache_scope: str = "",
     diff_path_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
     gate_envelope_nonce: str | None = None,
     kas_consent_meta: bool = False,
     harness_tool_name_cache: dict[str, str] | None = None,
@@ -1799,10 +1811,15 @@ def build_permission_event(
     raw_title = tool_call.get("title", "unknown")
     title = _redact(raw_title if isinstance(raw_title, str) else "")
     # The ACP toolCall carries a `kind` ("execute" for Bash, "read"/"edit"/…).
-    # Carry it onto the event as display/telemetry metadata only — the is_shell
-    # length-cap exemption resolves from shell_cache below, never this field.
-    raw_tool_kind = tool_call.get("kind", "")
-    tool_kind = raw_tool_kind if isinstance(raw_tool_kind, str) else ""
+    # The gate keys two tiers on it (the read-only proof as an ALLOW-list, the
+    # write-plane routing for edit/delete); the is_shell length-cap exemption
+    # resolves from shell_cache below, never this field. Filled from the
+    # tool_call cache below when this frame omits it (KAS). A non-string value
+    # is read as absent: the field is an unvalidated frame value from the
+    # harness subprocess, and a list or number reaching the kind-keyed set
+    # membership downstream would raise rather than classify.
+    _frame_kind = tool_call.get("kind", "")
+    tool_kind = _frame_kind if isinstance(_frame_kind, str) else ""
 
     # ACP spec uses optionId/name + kind ("allow_once"|"allow_always"|
     # "reject_once"|"reject_always"); kiro-cli uses id/label with id
@@ -1879,6 +1896,24 @@ def build_permission_event(
     # same-origin repeat frames (re-ask after reject_once, mode-change
     # re-prompt) still find their entry.
     _ck = scoped_tool_cache_key(cache_scope, tool_call_id)
+    # A permission frame that names no ``kind`` takes the one its preceding
+    # ``tool_call`` frame carried, under the same origin-scoped id. KAS sends
+    # ``toolCall: {toolCallId, status, title}`` here and puts ``kind`` on the
+    # tool_call only, so every KAS call otherwise reached the gate's kind-keyed
+    # tiers as ``""`` -- and the write-plane routing that makes a KAS
+    # ``delete_file`` of a write-protected config refusable never fired on the
+    # one harness that has ``delete_file``. The cache holds ONLY write-plane
+    # kinds (``edit``/``delete``; the writer in ``_build_tool_call_event``
+    # retains nothing else), so this carries exactly that routing and never a
+    # ``search`` -- which KAS stamps on ``grep_search``/``file_search``/
+    # ``list_directory`` and which would veto the host read-only proof -- nor a
+    # ``read`` that would widen the interactive allow-list on a field the
+    # frame never stated. Fallback ONLY: a kind the frame does state is never
+    # overridden. The cache is passed by ``AcpSessionHandle`` on the KAS
+    # backend ONLY (``ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL``); ``None``
+    # here means "not this harness", and the kiro-cli path is unchanged.
+    if not tool_kind and tool_call_id and tool_kind_cache is not None:
+        tool_kind = tool_kind_cache.get(_ck, "") or ""
     tool_input = ""
     tool_input_redacted = False
     if tool_call_id and tool_input_cache is not None and _ck in tool_input_cache:
@@ -1999,6 +2034,68 @@ def build_permission_event(
     # governance ceiling are asked about it and not about its title alone. It
     # does NOT set ``_mcp_identity_trusted`` below: that flag records a cache hit.
     _tool_name = _cached_tool or _kas_tool
+    # KAS stamps the running tool's identity on the permission request itself and
+    # NO ``toolName`` on its preceding tool_call -- that frame carries a display
+    # title ("Read File") and ``toolOrigin`` only (captured live, kiro-cli 2.24.0).
+    # Two frame fields, both harness-authored (the model cannot reach ``_meta``),
+    # the same trust class as ``toolName``:
+    #
+    # * ``_meta.kiro.mcpTool.identity.{serverName, toolName}`` -- an MCP-served
+    #   call's canonical pair. Read FIRST. The server half never FILLS the
+    #   cached server: a KAS MCP tool_call names its server as
+    #   ``_meta.kiro.serverName`` (the second ``kiro`` channel), so a request
+    #   about that call agrees with the cache, and agreement is a no-op. A
+    #   server the preceding tool_call did NOT name -- the cache holds "" for a
+    #   built-in, or a different server -- is a disagreement between two
+    #   harness-authored frames about one call and is ignored: the trust flag
+    #   below records the CACHE hit, and a built-in's tool_call wrote a hit with
+    #   an empty server, so a server taken from the request would inherit that
+    #   trust and reach the server-keyed grants (the app-own MCP auto-approve)
+    #   for a call that is not that server's.
+    # * ``_meta.kiro.toolId`` -- the built-in's id (``read_file``,
+    #   ``run_command``), or ``mcp_<server>_<tool>`` for an MCP tool.
+    #
+    # The frame id becomes ``tool_name`` and so reaches every reader keyed on it.
+    # ``mcp_identity_trusted`` stays derived from the cache hits below, and a KAS
+    # built-in's tool_call writes a hit with EMPTY names, so the flag is True
+    # with no server: the id therefore feeds (1) the deny tier and governance,
+    # (2) the host read-only proof in ``hooks._is_host_read_only_builtin`` --
+    # deliberately, so a KAS ``read_file`` is free under ``--approval reads``
+    # exactly where ``fs_read`` is, and only ids on that read-only allowlist can
+    # gain from it -- and (3) ``is_document_writing_tool``'s field scoping when
+    # the id is a write tool's. Same trust class as ``toolName`` (harness-authored
+    # ``_meta``); what it cannot do is name a SERVER, so every server-keyed grant
+    # (the spawn rung, the identified-MCP-call reader) still sees none and does
+    # not fire.
+    #
+    # Read only when the preceding tool_call WROTE the identity cache (a KAS
+    # built-in's tool_call writes a hit with an empty name, which the frame id
+    # then fills). A request no tool_call preceded -- a sub-agent spawn, whose
+    # synthetic toolCallId misses every cache -- is classified by
+    # ``kas_consent_tool`` above and by nothing else: its identity is the Crew
+    # name rules are written against, given only when every consent field
+    # agrees, and a raw spawn-family id or a disagreeing block must not name
+    # the request by a spelling no rule carries. The built-in ``toolId`` is
+    # bounded by ``_harness_identifier`` like ``_permission_tool_id``.
+    _frame_meta = params.get("_meta") if _cached_tool is not None else None
+    _frame_kiro = _frame_meta.get("kiro") if isinstance(_frame_meta, dict) else None
+    if isinstance(_frame_kiro, dict):
+        _mcp_tool = _frame_kiro.get("mcpTool")
+        _identity = _mcp_tool.get("identity") if isinstance(_mcp_tool, dict) else None
+        if isinstance(_identity, dict):
+            _id_server = _identity.get("serverName")
+            _id_tool = _identity.get("toolName")
+            if (
+                isinstance(_id_server, str)
+                and _id_server
+                and _id_server == _mcp_server_name
+                and not _tool_name
+                and isinstance(_id_tool, str)
+                and _id_tool
+            ):
+                _tool_name = _id_tool
+        if not _tool_name:
+            _tool_name = _harness_identifier(_frame_kiro.get("toolId"))
     # Explicit identity-provenance flag (mirrors _raw_params_trusted): True iff
     # BOTH cache reads above actually HIT — a written entry may legitimately be
     # "" for a non-MCP tool, so the hit is distinguished from a miss by the
@@ -2076,6 +2173,7 @@ def _build_tool_call_event(
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
     harness_tool_name_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
 ) -> AcpEvent:
     """Build an ``EVENT_TOOL_CALL`` from a ``tool_call`` update (with redaction)."""
     title = update.get("title", "unknown")
@@ -2187,6 +2285,18 @@ def _build_tool_call_event(
     # a later frame without one cannot clobber a real target with "".
     if tool_call_id and _diff_path and diff_path_cache is not None:
         diff_path_cache[_ck] = _diff_path
+    # Cache the harness-classified ``kind`` for the permission event. KAS's
+    # ``session/request_permission`` carries a ``toolCall`` of id, status and
+    # title only -- no ``kind`` (recorded: ``test/fixtures/acp_frames/kas/
+    # session.jsonl``) -- so without this the gate's write-plane delete routing
+    # saw ``""`` for every KAS call. Only membership in the closed write-plane
+    # vocabulary is retained: the stored value is one of the ``WRITE_PLANE_KINDS``
+    # literals. Any other kind (``read``/``search``/``execute``/``fetch``/
+    # ``other``, the placeholder ``"unknown"``, a non-string) is not written: the
+    # reader carries nothing else. Cleared per turn with the sibling caches.
+    if tool_call_id and tool_kind_cache is not None:
+        if isinstance(kind, str) and kind in WRITE_PLANE_KINDS:
+            tool_kind_cache[_ck] = kind
     # Fallback when no diff content block was present: derive from the edit
     # args themselves (strReplace pair, create/insert content). Gated on the
     # EDIT kind — "content"-shaped args exist on many non-edit tools, and a
@@ -2711,6 +2821,12 @@ class _MetaIdentityChannel(NamedTuple):
     #: server field reads as "an MCP server served this" on a shell command. Matching it
     #: means two things at once: the call is a shell command, and it has no MCP server.
     builtin_shell: tuple[str, str] | None = None
+    #: Answer only when the block carries this channel's ``server_field``. The two
+    #: ``kiro`` rows share the ``toolName`` field: without the gate the KAS row,
+    #: consulted first, would take every kiro-cli frame's ``toolName`` under a
+    #: spelling that names no server; consulted second it would never see a KAS
+    #: MCP frame's tool half.
+    requires_server_field: bool = False
 
 
 #: Harness ``_meta`` channels that carry a trusted tool identity, in read order.
@@ -2726,6 +2842,21 @@ class _MetaIdentityChannel(NamedTuple):
 #: security gate needs to tell a genuine MCP tool from a shell command whose stdout the
 #: model authored.
 _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
+    # KAS (kiro-agent) spells the MCP server on a tool_call as ``_meta.kiro.serverName``
+    # and stamps NO tool name on that frame -- captured live on kiro-cli 2.24.0 against a
+    # stdio server: ``{"kiro": {"serverName": "probefs", "toolOrigin": "client"}}``. The
+    # tool half arrives later, on the permission request, as
+    # ``_meta.kiro.mcpTool.identity.{serverName,toolName}`` (``build_permission_event``
+    # reads that). Without this row a KAS MCP call read as a BUILT-IN: no server, so the
+    # built-in-only readers (the kiro-cli-name alias fold, the host read-only proof)
+    # treated a server's ``read_file`` as the engine's own. First, and gated on its own
+    # ``serverName`` being present (see ``requires_server_field``).
+    _MetaIdentityChannel(
+        key="kiro",
+        server_field="serverName",
+        tool_field="toolName",
+        requires_server_field=True,
+    ),
     _MetaIdentityChannel(
         key="kiro",
         server_field="mcpServerName",
@@ -2779,6 +2910,8 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool]:
             block = block.get(channel.nested)
             if not isinstance(block, dict):
                 continue
+        if channel.requires_server_field and channel.server_field not in block:
+            continue
         server = block.get(channel.server_field)
         tool = block.get(channel.tool_field)
         if not isinstance(tool, str):
@@ -3086,6 +3219,7 @@ def parse_session_update(
     tool_input_redacted_cache: dict[str, bool] | None = None,
     diff_path_cache: dict[str, str] | None = None,
     harness_tool_name_cache: dict[str, str] | None = None,
+    tool_kind_cache: dict[str, str] | None = None,
 ) -> list[AcpEvent]:
     """Parse one ``session/update`` inner ``update`` dict into ``AcpEvent``s.
 
@@ -3125,6 +3259,7 @@ def parse_session_update(
                 tool_input_redacted_cache=tool_input_redacted_cache,
                 diff_path_cache=diff_path_cache,
                 harness_tool_name_cache=harness_tool_name_cache,
+                tool_kind_cache=tool_kind_cache,
             )
         )
         return events
