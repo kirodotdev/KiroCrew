@@ -55,6 +55,7 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.credential_patterns import AWS_KEY_ID_PREFIXES
+from kiro_crew.executors import subprocess_executor
 
 logger = logging.getLogger(__name__)
 
@@ -387,6 +388,7 @@ _MAX_ARG_LEN = 500
 # read so read-after-write stays consistent.
 _QUEUE_DRAIN_BATCH = 256  # max events appended per open() in the writer loop
 _FLUSH_TIMEOUT_SECS = 5.0  # bound on flush() so a stuck writer can't hang reads
+_HARD_EXIT_FLUSH_TIMEOUT_SECS = 3.0  # seconds allowed for the audit tail at hard exit
 
 
 def _redact_deep(obj: object, redactor: Callable[[str], str]) -> object:
@@ -3780,6 +3782,32 @@ def _trust_root_key_loads(path: Path) -> bool:
     except OSError:
         return False
     return stat.S_ISREG(st.st_mode) and st.st_size >= _HMAC_KEY_MIN_BYTES
+
+
+def flush_audit_queue(timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS) -> None:
+    """Drain an existing singleton without creating a trust root during exit."""
+    inst = SecurityEventLog._instance
+    if inst is None:
+        return
+    try:
+        inst.flush(timeout=timeout)
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
+
+
+async def flush_audit_queue_before_hard_exit(
+    timeout: float = _HARD_EXIT_FLUSH_TIMEOUT_SECS,
+) -> None:
+    """Offload the bounded drain to the teardown pool with an outer deadline."""
+    try:
+        await asyncio.wait_for(
+            asyncio.get_running_loop().run_in_executor(
+                subprocess_executor(), flush_audit_queue, timeout
+            ),
+            timeout=timeout + 1.0,
+        )
+    except Exception:
+        logger.debug("SEL flush before hard exit failed", exc_info=True)
 
 
 def sel_hmac_key_path() -> Path:
