@@ -19181,7 +19181,12 @@ async def _run_chat(
         # being recorded as an unnamed failure.
         _crew_log_error = "SessionClosingError"
     except Exception as exc:
-        logger.exception("Dashboard chat error in slot %s", slot.key)
+        if _is_pre_spawn_refusal(exc):
+            # An expected refusal before any agent process ran: the reason is
+            # the whole story, and a traceback would read as a crash (#18876).
+            logger.warning("Dashboard chat refused in slot %s: %s", slot.key, exc)
+        else:
+            logger.exception("Dashboard chat error in slot %s", slot.key)
         _crew_log_error = type(exc).__name__
         _err_text, _ = redact_exfiltration_urls(str(exc))
         _err_text, _ = redact_credentials(_err_text)
@@ -19202,6 +19207,19 @@ async def _run_chat(
                 "change and save it, then start a new chat."
             )
             _err_meta = {"code": "materialization_changed", "member": exc.member}
+        elif (
+            isinstance(exc, CapabilityStartupError) and str(exc) == "capability_harness_unsupported"
+        ):
+            # The bare code names neither the setting nor the saved spec, and
+            # changing agent.acp_backend does nothing for a member chat.
+            _err_text = (
+                "capability_harness_unsupported: This crew member has saved "
+                "capabilities, and the backend its chats run on "
+                "(agent.member_acp_backend, not agent.acp_backend) cannot load "
+                "them. Set agent.member_acp_backend to kas or kiro-cli, or reset "
+                "the member's Capabilities page, then start a new chat."
+            )
+            _err_meta = _terminal_error_meta(exc)
         else:
             # A session start on the SHARED runtime lands here (see the sibling
             # note below), and its ``session_start_failed`` tag is what lets the

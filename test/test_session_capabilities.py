@@ -383,6 +383,16 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
             assert not state.sessions.has_session(key)
             assert view["status"] == "failed"
             assert "capability_harness_unsupported" in caplog.text
+            # An expected pre-spawn refusal: a warning, never a traceback (#18876).
+            refusals = [
+                r for r in caplog.records if "capability_harness_unsupported" in r.getMessage()
+            ]
+            assert refusals and all(r.levelname == "WARNING" for r in refusals)
+            assert not [r for r in caplog.records if "Dashboard chat error" in r.getMessage()]
+            # The row names the setting that decides, and the saved spec.
+            row = next(m for m in slot.messages if m.get("role") == "error")
+            assert "agent.member_acp_backend" in row["content"]
+            assert "saved capabilities" in row["content"]
     finally:
         await _close_capability_dashboards(world)
 
@@ -592,11 +602,14 @@ async def test_governance_change_during_startup_is_not_applied(world):
 
 @pytest.mark.parametrize("backend", sorted(ACP_BACKENDS_KNOWN))
 def test_real_provider_support_is_explicit_and_unstarted_is_unverified(tmp_path, backend):
-    from kiro_crew.acp.types import ACP_BACKEND_KIRO
+    from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
     from kiro_crew.providers.acp import AcpProvider
 
     provider = AcpProvider(work_dir=tmp_path, acp_backend=backend)
-    assert provider.member_capabilities_supported is (backend == ACP_BACKEND_KIRO)
+    # KAS is the default member backend, so a saved spec must load there (#18876).
+    assert provider.member_capabilities_supported is (
+        backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS)
+    )
     assert provider.loaded_capability_template == ""
 
 
@@ -605,12 +618,15 @@ def test_real_session_provider_member_support_is_explicit(tmp_path, backend):
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.acp.session_handle import AcpSessionHandle, WatchdogSettings
     from kiro_crew.acp.session_provider import AcpSessionProvider
-    from kiro_crew.acp.types import ACP_BACKEND_KIRO
+    from kiro_crew.acp.types import ACP_BACKEND_KAS, ACP_BACKEND_KIRO
 
     runtime = AcpRuntime(work_dir=tmp_path, acp_backend=backend)
     handle = AcpSessionHandle("member", asyncio.Queue(), runtime, watchdog=WatchdogSettings())
     provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
-    assert provider.member_capabilities_supported is (backend == ACP_BACKEND_KIRO)
+    # KAS is the default member backend, so a saved spec must load there (#18876).
+    assert provider.member_capabilities_supported is (
+        backend in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS)
+    )
     assert provider.loaded_capability_template == ""
 
 
