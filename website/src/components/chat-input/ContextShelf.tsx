@@ -213,11 +213,15 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   const readout = shelfCompact
     ? composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: !!showContextTokens && !showContextPct })
     : composeContextReadout(contextPct, used, win, { approx, showPct: showContextPct, showTokens: showContextTokens })
+  // Opens on the mouse press (usePressActivation); keyboard and touch on click.
+  // `useContextPopover`'s outside-press dismiss skips `ctxWrapRef`, which holds
+  // this button, so a press while open toggles it closed.
+  const bindPress = usePressActivation()
   return (
   <div ref={ctxWrapRef} className="relative flex items-center">
     <button
       className={`inline-flex items-center h-7 px-2.5 rounded-md transition-colors border-none cursor-pointer ${ctxPopoverOpen ? 'bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]' : 'bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))]'}`}
-      onClick={() => setCtxPopoverOpen(o => !o)}
+      {...bindPress(() => setCtxPopoverOpen(o => !o))}
       title={contextTip(contextPct)}
       aria-label={i18nT('components.chatInput.context_usage')}
       {...uiLocation('composer.context-usage')}

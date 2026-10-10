@@ -22,6 +22,7 @@ import { useComposerInlineMarkdown } from '../hooks/useComposerInlineMarkdown'
 import { useComposerSendMode } from '../hooks/useComposerSendMode'
 import TrustDropdown from './TrustDropdown'
 import { useIsMobile } from '../hooks/useIsMobile'
+import { usePressActivation } from '../hooks/usePressActivation'
 import { isTouchDevice } from '../utils/isTouchDevice'
 import { focusComposerAfterPick as pickerFocusAfterPick } from './chat-input/pickerFocus'
 import ErrorNotice from './ErrorNotice'
@@ -383,6 +384,11 @@ function ChatInput({
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
   }, [project, projectBranch, projectDetached])
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
+  // The project chip opens its picker on the mouse press (usePressActivation);
+  // keyboard and touch stay on click. ProjectPicker's outside-press dismiss
+  // skips the anchor rect, so a press on the chip while open is a toggle. The
+  // picker autofocuses its search box, so the chip must not take focus back.
+  const bindProjectPress = usePressActivation()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
   // Client-side `accept` is a UX hint only (input-validation guidance: server enforces type via
@@ -1385,7 +1391,7 @@ function ChatInput({
           <div className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted">
           <button
             className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted hover:text-text px-2.5 rounded-md bg-transparent hover:bg-[color-mix(in_srgb,var(--bg-elevated)_84%,var(--text))] transition-colors border-none cursor-pointer disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-muted"
-            onClick={e => onProjectClick(e.currentTarget.getBoundingClientRect(), e.currentTarget)}
+            {...bindProjectPress<HTMLButtonElement>(el => onProjectClick(el.getBoundingClientRect(), el), { keepFocusOffTrigger: true })}
             disabled={isRunning}
             title={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
             aria-label={isRunning ? i18nT('components.chatInput.stop_the_current_response_to_switch_project') : projectChipTitle}
