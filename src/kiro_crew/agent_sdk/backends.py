@@ -1192,12 +1192,24 @@ ACP_BACKENDS_STEERING_REQUEST = frozenset({ACP_BACKEND_CODEX})
 # logs a WARNING naming the memberships it lacks, instead of being told its harness
 # manages compaction itself on no evidence at all.
 #
-# kas and deepseek are the other two non-members, and none of the four is the same
-# case.
-# :data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` carries the difference and the
-# consequence: KAS compacts on its own initiative AND says so on the wire, so
-# declining its ``/compact`` costs nothing, while deepseek says nothing at all, so a
-# decline leaves its context unbounded.
+# kas is a member on a LIVE drive against kiro-cli 2.29.0's relay (``--agent-engine
+# v3``), and it is the one member that is not handed the ``/compact`` prompt. Sent
+# as prompt text, ``/compact`` makes the model WRITE a summary as its answer and
+# the meter does not move (5.57% -> 5.61%). What compacts is the engine's own
+# verb, ``_kiro/session/compact``, advertised in ``initialize``'s
+# ``_meta.kiro.extensionMethods``: driven after three large turns, it answered
+# ``{"success": true}`` after 13.8s, sent ``summarization_completed`` before
+# the answer, and the next ordinary turn read 5.64% where the last one read
+# 18.21%, with the model still naming the three words it was told to keep. The
+# same verb answers ``{"success": false}`` while a turn is running. So
+# ``AcpSessionHandle.prompt`` sends the verb for a KAS ``/compact``, and the
+# outcome arrives as a compaction status inside that turn. KAS stays in
+# :data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` too: membership here opens the
+# MANUAL command, and the threshold still leaves KAS to its own summarization.
+#
+# deepseek is the other non-member, and it is not the same case as pi:
+# :data:`ACP_BACKENDS_CONTEXT_RECYCLE` carries the consequence, because deepseek
+# reports no compaction at all, so a decline leaves its context unbounded.
 ACP_BACKENDS_COMPACT = frozenset(
     {
         ACP_BACKEND_KIRO,
@@ -1205,6 +1217,7 @@ ACP_BACKENDS_COMPACT = frozenset(
         ACP_BACKEND_CODEX,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_GOOSE,
+        ACP_BACKEND_KAS,
     }
 )
 
@@ -1213,7 +1226,10 @@ ACP_BACKENDS_COMPACT = frozenset(
 #
 # This is the set that makes a decline HONEST. A backend outside
 # :data:`ACP_BACKENDS_COMPACT` cannot be handed a ``/compact`` prompt, and the
-# question that remains is what happens instead. A member answers it: KAS runs
+# question that remains is what happens instead. A member of this set is also
+# left alone at ``session.autocompact_pct`` when it IS in that set, which is
+# KAS's case: its manual ``/compact`` is served, and its threshold is its own.
+# A member answers the question: KAS runs
 # auto-summarization and emits ``summarization_started`` /
 # ``summarization_completed``, which ``acp.kas_wire`` maps to a compaction status and
 # which calls ``reset_after_compaction()`` on the meter
@@ -1295,7 +1311,9 @@ ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 # non-member it is done leaves the user's ``/compact`` silently unacknowledged.
 #
 # A STRICT SUBSET of ``ACP_BACKENDS_COMPACT``, which answers the earlier question
-# "is a manual /compact offered at all". kas and deepseek are in neither. kiro-cli
+# "is a manual /compact offered at all". deepseek is in neither. kas is in that
+# set and not this one: its compaction is a separate request, not a prompt, and
+# its outcome is a compaction status the turn carries. kiro-cli
 # is in ``ACP_BACKENDS_COMPACT`` but not here: it ACKs the prompt and then emits
 # ``_kiro.dev/compaction/status``, which is exactly the asynchronous result this
 # set says a non-member has. codex-acp IS a member, and its evidence is the same

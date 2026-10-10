@@ -1030,6 +1030,16 @@ class AcpSessionProvider(LLMProvider):
         return backend in ACP_BACKENDS_COMPACT or backend in ACP_BACKENDS_HARNESS_MANAGED
 
     @property
+    def harness_managed_compaction_backend(self) -> str | None:
+        """Same membership answer as
+        ``AcpProvider.harness_managed_compaction_backend``, for the bare
+        shared-subagent shape handed out without the wrapper."""
+        backend = self.backend
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_HARNESS_MANAGED:
+            return None
+        return backend
+
+    @property
     def compaction_unmanaged_backend(self) -> str | None:
         """Backend id when neither Crew nor the harness compacts, else ``None``.
 

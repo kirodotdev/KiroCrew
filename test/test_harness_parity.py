@@ -1038,6 +1038,12 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     "own ``model`` select does not list, onto an id that select does list.",
     (
         "src/kiro_crew/acp/session_handle.py",
+        "_kas_compact_request",
+    ): "``_kiro/session/compact`` is KAS's own extension verb, advertised in its "
+    "``initialize`` extensionMethods. Every other ``ACP_BACKENDS_COMPACT`` member "
+    "compacts on the ``/compact`` prompt, so the positive test keeps them on it.",
+    (
+        "src/kiro_crew/acp/session_handle.py",
         "_handle_update",
     ): "KAS emits its own notification discriminants. The positive gate restores those "
     "displays without touching the kiro parser, and returns None for anything not "

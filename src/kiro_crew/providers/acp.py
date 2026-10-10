@@ -844,11 +844,11 @@ class AcpProvider(LLMProvider):
 
         Answered from ``ACP_BACKENDS_COMPACT`` membership (harness-parity H6):
         kiro-cli answers the ``/compact`` prompt with
-        ``_kiro.dev/compaction/status`` and claude-agent-acp compacts natively
-        in-prompt, while KAS treats the prompt as ordinary text and never emits
-        a status — its ``summarization_*`` frames fire only for KAS-initiated
-        auto-summarization — so an ungated dispatch strands
-        ``wait_for_compaction()`` for the full ``COMPACT_WAIT_TIMEOUT_SECS``.
+        ``_kiro.dev/compaction/status``, claude-agent-acp compacts natively
+        in-prompt, and on KAS the session handle sends the engine's
+        ``_kiro/session/compact`` verb instead of the prompt. A non-member
+        dispatched anyway strands ``wait_for_compaction()`` for the full
+        ``COMPACT_WAIT_TIMEOUT_SECS``.
         Read off the backend STRING, not the ``is_*_backend``
         properties, matching ``provider_label``'s MagicMock caution; a
         non-``str`` value answers ``None`` so a spec'd double never reads as a
@@ -874,6 +874,18 @@ class AcpProvider(LLMProvider):
         if not isinstance(backend, str):
             return True
         return backend in ACP_BACKENDS_COMPACT or backend in ACP_BACKENDS_HARNESS_MANAGED
+
+    @property
+    def harness_managed_compaction_backend(self) -> str | None:
+        """Backend id when the harness compacts on its own, else ``None``.
+
+        Membership in ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, with the same
+        ``str`` caution as :attr:`manual_compact_unsupported_backend`.
+        """
+        backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_HARNESS_MANAGED:
+            return None
+        return backend
 
     @property
     def compaction_unmanaged_backend(self) -> str | None:

@@ -167,9 +167,10 @@ class TestTheHarnessThatWasDrivenAndProved:
 
 
 class TestTheTwoHarnessesThatDoNot:
-    def test_kas_is_declined_because_it_manages_itself(self) -> None:
-        """The one exclusion with evidence, stated as a positive claim."""
-        assert ACP_BACKEND_KAS not in ACP_BACKENDS_COMPACT
+    def test_kas_manages_itself_and_takes_a_manual_compact(self) -> None:
+        """Both claims hold for KAS: its engine summarizes on its own, and it
+        serves a manual ``/compact`` through ``_kiro/session/compact``."""
+        assert ACP_BACKEND_KAS in ACP_BACKENDS_COMPACT
         assert ACP_BACKEND_KAS in _harness_managed_set()
 
     def test_deepseek_claims_neither(self) -> None:
@@ -178,10 +179,10 @@ class TestTheTwoHarnessesThatDoNot:
         assert ACP_BACKEND_DEEPSEEK not in ACP_BACKENDS_COMPACT
         assert ACP_BACKEND_DEEPSEEK not in _harness_managed_set()
 
-    def test_the_two_sets_are_disjoint(self) -> None:
-        """A harness Crew can hand ``/compact`` to has no need of the claim, and
-        holding both would make the gate's two arms reachable at once."""
-        assert not (ACP_BACKENDS_COMPACT & _harness_managed_set())
+    def test_kas_is_the_only_backend_in_both_sets(self) -> None:
+        """Holding both means: manual ``/compact`` is served, and the threshold
+        is the harness's own. Any other overlap is a deliberate edit."""
+        assert ACP_BACKENDS_COMPACT & _harness_managed_set() == {ACP_BACKEND_KAS}
 
     def test_subset_of_known_backends(self) -> None:
         """H8: a capability cannot be granted to an identifier nothing knows."""
@@ -312,12 +313,11 @@ class TestCompactionUnmanagedBackend:
     def test_a_compacting_backend_claims_nothing(self, backend: str) -> None:
         assert _unmanaged_of(AcpProvider(acp_backend=backend)) is None
 
-    def test_kas_claims_nothing_although_crew_cannot_compact_it(self) -> None:
-        """The whole point of the second property: KAS answers a backend id to
-        the FIRST question and ``None`` to this one.  Collapsing the two would
-        recycle the one session that was about to shrink on its own."""
+    def test_kas_claims_nothing(self) -> None:
+        """KAS compacts both ways: Crew can hand it ``/compact`` and it
+        summarizes on its own, so nothing here may recycle it."""
         provider = AcpProvider(acp_backend=ACP_BACKEND_KAS)
-        assert provider.manual_compact_unsupported_backend == ACP_BACKEND_KAS
+        assert provider.manual_compact_unsupported_backend is None
         assert _unmanaged_of(provider) is None
 
     def test_deepseek_names_itself(self) -> None:
@@ -398,6 +398,9 @@ def _provider_factory(*, backend: str, pct: float = 92.0):
         m.context_usage_pct = lambda: 0.0 if state["compacted"] else pct
         m.context_usage_unknown = lambda: False
         m.manual_compact_unsupported_backend = unsupported
+        m.harness_managed_compaction_backend = (
+            backend if backend in _harness_managed_set() else None
+        )
         setattr(m, _PROP_NAME, unmanaged)
         # The real record, so ``capabilities_of`` answers this backend's own
         # inline verdict instead of the fail-closed unknown one.

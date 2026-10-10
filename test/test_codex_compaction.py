@@ -69,6 +69,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INLINE_COMPACTION,
@@ -162,14 +163,13 @@ class TestMembership:
         assert capabilities_for(ACP_BACKEND_CODEX).compacts_inline is True
 
     def test_no_other_harness_was_granted_anything(self) -> None:
-        """One membership edit, not a widening: KAS in particular stays out.
+        """One membership edit, not a widening.
 
         Every member is named, opencode and goose included (their evidence lives in
         ``test_compaction_other_backends``), which is what the pin is FOR: a member
         is here by a deliberate edit carrying a capture, so a widening cannot
         arrive unannounced.
         """
-        assert ACP_BACKEND_KAS not in ACP_BACKENDS_COMPACT
         assert ACP_BACKENDS_COMPACT == frozenset(
             {
                 ACP_BACKEND_KIRO,
@@ -177,6 +177,7 @@ class TestMembership:
                 ACP_BACKEND_CODEX,
                 ACP_BACKEND_OPENCODE,
                 ACP_BACKEND_GOOSE,
+                ACP_BACKEND_KAS,
             }
         )
         assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
@@ -387,8 +388,8 @@ class TestTheManualCommandIsOffered:
 
     def test_a_non_member_still_refuses(self) -> None:
         """The gate is not disabled, only widened."""
-        provider = AcpProvider(acp_backend=ACP_BACKEND_KAS)
-        assert compact_unsupported_backend(provider) == ACP_BACKEND_KAS
+        provider = AcpProvider(acp_backend=ACP_BACKEND_PI)
+        assert compact_unsupported_backend(provider) == ACP_BACKEND_PI
 
 
 class TestCrewsOwnThresholdCompactionRuns:
@@ -400,8 +401,8 @@ class TestCrewsOwnThresholdCompactionRuns:
         assert _compact_unsupported_backend(provider) is None
 
     def test_the_gate_still_declines_a_non_member(self) -> None:
-        provider = AcpProvider(acp_backend=ACP_BACKEND_KAS)
-        assert _compact_unsupported_backend(provider) == ACP_BACKEND_KAS
+        provider = AcpProvider(acp_backend=ACP_BACKEND_PI)
+        assert _compact_unsupported_backend(provider) == ACP_BACKEND_PI
 
 
 # --------------------------------------------------------------------------- #

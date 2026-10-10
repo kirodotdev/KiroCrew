@@ -48,7 +48,7 @@ from kiro_crew.acp_backends import (
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.providers.acp import AcpProvider
 from kiro_crew.session import SessionManager
-from kiro_crew.session_compaction import _compact_unsupported_backend
+from kiro_crew.session_compaction import _compact_unsupported_backend, _harness_managed_backend
 
 KEY = "dashboard:auto-compact-gate"
 
@@ -373,10 +373,11 @@ class TestMemberBackendsUnchanged:
             assert _compact_unsupported_backend(AcpProvider(acp_backend=backend)) is None
 
     def test_gate_declines_a_real_kas_provider(self) -> None:
-        """The other half of the same read: a non-member real provider names
-        itself, so the rung is reachable for exactly the backend that needs it."""
+        """The other half of the same rung: KAS can be handed a manual
+        ``/compact``, and the threshold still names it as compacting itself."""
         provider = AcpProvider(acp_backend=ACP_BACKEND_KAS)
-        assert _compact_unsupported_backend(provider) == ACP_BACKEND_KAS
+        assert _compact_unsupported_backend(provider) is None
+        assert _harness_managed_backend(provider) == ACP_BACKEND_KAS
 
 
 class TestCapabilityReadContract:

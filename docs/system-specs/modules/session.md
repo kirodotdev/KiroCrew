@@ -1003,11 +1003,11 @@ against sweep completeness, and are torn down at `close_all`.
   membership so that an unclassified harness cannot fall into a claim by
   accident:
 
-  - `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS) is **declined**
-    (`"compact_unsupported"`, see the gate ladder below). KAS never answers the
-    `/compact` prompt with a compaction status, so an ungated dispatch stranded
-    the status wait for the whole budget WHILE HOLDING the turn semaphore and
-    then recycled the session, losing the live conversation (#7812) — it
+  - `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS) is **declined** at the
+    threshold (`"compact_unsupported"`, see the gate ladder below), read through
+    `harness_managed_compaction_backend`. KAS is also in `ACP_BACKENDS_COMPACT`,
+    so a user's manual `/compact` is served (the session handle sends KAS's
+    `_kiro/session/compact` verb), but Crew's own threshold leaves it alone: it
     summarizes on its own initiative and its `summarization_completed` frame
     resets the meter, so declining leaves nothing unmanaged.
   - `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled**. Its ACP surface

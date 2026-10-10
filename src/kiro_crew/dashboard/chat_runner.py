@@ -9959,10 +9959,15 @@ async def _run_chat(
     # refuses _kiro.dev/commands/execute itself, so that verb is no way out.
     # Answer here instead, before any session work: /clear takes the same discard
     # reset_conversation queues, and every other command gets a notice rather
-    # than reaching the model. /compact never gets here: its gate above already
-    # answers for such a backend, and a /todos that got past its own gate is on
-    # a harness that runs it natively.
-    if is_slash and not _is_cc_provider and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS:
+    # than reaching the model. /compact passes through: on KAS the session handle
+    # sends it as the engine's own compaction verb, not as prompt text. A /todos
+    # that got past its own gate is on a harness that runs it natively.
+    if (
+        is_slash
+        and not _is_cc_provider
+        and first_word != "/compact"
+        and first_word not in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
+    ):
         if await _slash_command_backend(state, session_key) == ACP_BACKEND_KAS:
             turn_exit.local_command = first_word
             await _answer_slash_without_channel(state, slot, session_key, first_word)

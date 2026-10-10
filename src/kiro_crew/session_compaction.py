@@ -232,6 +232,18 @@ def _compaction_unmanaged_backend(provider: LLMProvider) -> str | None:
     return backend if isinstance(backend, str) and backend else None
 
 
+def _harness_managed_backend(provider: LLMProvider) -> str | None:
+    """Backend id this provider names as compacting on its own initiative.
+
+    The threshold leaves such a harness alone even when Crew could hand it a
+    manual ``/compact``: its own summarization bounds the context, and a
+    Crew compaction at ``session.autocompact_pct`` would only move that
+    point earlier. Same ``str`` contract as its siblings.
+    """
+    backend = getattr(provider, "harness_managed_compaction_backend", None)
+    return backend if isinstance(backend, str) and backend else None
+
+
 def _compaction_harness_managed(provider: LLMProvider) -> bool:
     """True when the harness POSITIVELY claims it bounds its own context.
 
@@ -501,7 +513,7 @@ class CompactionCoordinator:
             return "cc_managed"
         if pct < self.effective_autocompact_pct(key):
             return "below_threshold"
-        unsupported = _compact_unsupported_backend(provider)
+        unsupported = _compact_unsupported_backend(provider) or _harness_managed_backend(provider)
         if unsupported is not None and _compaction_unmanaged_backend(provider) is None:
             # Declining, not recycling, and ONLY for a harness that positively
             # claims the other side of the bargain. A member of
@@ -536,7 +548,7 @@ class CompactionCoordinator:
             if _compaction_harness_managed(provider):
                 self._deps.logger.info(
                     "Session %s context at %.0f%% -- %s manages compaction itself; "
-                    "skipping the /compact dispatch it cannot answer",
+                    "skipping Crew's /compact dispatch",
                     key,
                     pct,
                     unsupported,

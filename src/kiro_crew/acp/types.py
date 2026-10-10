@@ -150,6 +150,13 @@ METHOD_SESSION_TERMINATE = "_kiro.dev/session/terminate"
 #: ``terminate`` exists for, and the record is what would otherwise accumulate.
 #: Takes the same ``{"sessionId": ...}`` params and is idempotent.
 METHOD_KAS_SESSION_DELETE = "_kiro/session/delete"
+#: KAS's manual compaction verb. A REQUEST with ``{"sessionId": ...}`` params,
+#: answered ``{"success": bool}`` once the summary is committed; a successful run
+#: emits ``summarization_completed`` before the answer. It is how a user's
+#: ``/compact`` reaches KAS: sent as ``session/prompt`` text the model just writes a
+#: summary and the context does not shrink. Advertised in ``initialize``'s
+#: ``_meta.kiro.extensionMethods`` and forwarded by kiro-cli's relay.
+METHOD_KAS_SESSION_COMPACT = "_kiro/session/compact"
 #: The STANDARD ACP evict verb, for a host that implements it. codex-acp does: it
 #: drops the session from its local map and unsubscribes the Codex thread, so the
 #: sessionId stops answering while the thread's own record survives on the Codex

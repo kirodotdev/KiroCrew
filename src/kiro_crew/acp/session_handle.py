@@ -143,6 +143,7 @@ from kiro_crew.acp.types import (
     METHOD_CANCEL,
     METHOD_COMMANDS_EXECUTE,
     METHOD_KAS_MCP_STATUS,
+    METHOD_KAS_SESSION_COMPACT,
     METHOD_MCP_OAUTH_REQUEST,
     METHOD_PROMPT,
     METHOD_REQUEST_PERMISSION,
@@ -1535,6 +1536,13 @@ class AcpSessionHandle:
         """
 
         async def _build() -> tuple[str, dict[str, Any]]:
+            if self._kas_compact_request(message):
+                # The engine's own compaction verb, not prompt text: KAS reads a
+                # ``/compact`` prompt as a request to write a summary, and the
+                # context does not shrink. The verb takes no instructions, so any
+                # text after ``/compact`` is not sent.
+                self._kas_compact_turn = True
+                return METHOD_KAS_SESSION_COMPACT, {"sessionId": self._session_id}
             # Offloaded: the builder stats and reads image files (up to
             # MAX_IMAGE_BYTES each) and base64-encodes them. Inline, that
             # blocking I/O runs on the gateway loop and pauses every other
@@ -1687,6 +1695,10 @@ class AcpSessionHandle:
         # "end_turn" making a timed-out cancel look acked, or "" → a spurious
         # hard kill of the shared runtime). Mirrors AcpClient.
         self._last_stop_reason = ""
+        # Set by prompt()'s builder when this turn is a KAS compaction request;
+        # the terminal flag records that the engine already reported its outcome.
+        self._kas_compact_turn = False
+        self._compaction_terminal_seen = False
         self._stale_eligible = False
         # Set when a genuine stale turn is probed via session/cancel; read by the
         # unresponsive-cancel branch to distinguish a confirmed wedge (signal
@@ -3472,7 +3484,9 @@ class AcpSessionHandle:
         fine). The prompt transport matches the dashboard's manual /compact
         and Slack's !compact: kiro ACKs the prompt (end_turn) and then emits
         ``_kiro.dev/compaction/status``, which ``wait_for_compaction()``
-        picks up from the session queue.
+        picks up from the session queue. On KAS :meth:`prompt` sends the
+        engine's ``_kiro/session/compact`` instead, and its outcome arrives
+        inside the turn.
         """
         cmd = "/compact"
         if context:
@@ -3491,6 +3505,46 @@ class AcpSessionHandle:
                     "type": event.text,
                     "summary": event.title or "",
                 }
+
+    def _kas_compact_request(self, message: str) -> bool:
+        """Whether *message* is a ``/compact`` that goes to KAS's compaction verb.
+
+        Only on KAS, and only for a message whose first word is ``/compact``.
+        Every other backend keeps the ``/compact`` prompt it already answers.
+        """
+        runtime = getattr(self, "_runtime", None)
+        if getattr(runtime, "acp_backend", None) == ACP_BACKEND_KAS and message.strip().startswith(
+            "/"
+        ):
+            name, _args = parse_slash_command(message)
+            return name == "compact"
+        return False
+
+    def _settle_kas_compaction(self, result: Any) -> AcpEvent | None:
+        """The compaction status a KAS compaction answer still owes, or None.
+
+        A run that commits a summary has already sent ``summarization_completed``,
+        which reset the meter, so the answer adds nothing. Two answers come
+        with no frame, and each gets its status here so no caller waits for one:
+
+        * ``success: true`` with nothing summarized (an empty history, an empty
+          summary, or a commit after the session moved on) is ``completed``.
+          The meter is NOT reset, because the context did not change.
+        * ``success: false`` is ``failed``. KAS refuses while a turn or another
+          compaction is running, and on a timeout or model error, and does not
+          say which. Not marked transient and no failure budget is armed, for
+          the reasons on :meth:`_settle_codex_compaction`.
+        """
+        if getattr(self, "_compaction_terminal_seen", False):
+            return None
+        if isinstance(result, dict) and result.get("success") is True:
+            return AcpEvent(kind=EVENT_COMPACTION_STATUS, text="completed", title="")
+        self.last_compaction_transient = False
+        return AcpEvent(
+            kind=EVENT_COMPACTION_STATUS,
+            text="failed",
+            title="KAS did not compact the session; it may be busy, so try again shortly",
+        )
 
     def _inline_turn_finished_cleanly(self) -> bool:
         """Whether the last turn reached its own end boundary uncancelled.
@@ -3665,6 +3719,11 @@ class AcpSessionHandle:
         Returns True when the poison sentinel was consumed, so a sharing
         caller re-queues it after the single restore.
         """
+        if getattr(self, "_kas_compact_turn", False):
+            # The last turn was a KAS compaction request. KAS sends no
+            # ``_kiro.dev/metadata``; its next context reading arrives with the
+            # next turn, so waiting here would only spend the whole grace.
+            return False
         own_buffer = buffered is None
         frames: list[JsonRpcMessage] = [] if buffered is None else buffered
         deadline = time.monotonic() + grace
@@ -5010,6 +5069,13 @@ class AcpSessionHandle:
                     reason = ""
                     if isinstance(result, dict):
                         reason = result.get("stopReason", "") or ""
+                    if getattr(self, "_kas_compact_turn", False):
+                        # ``_kiro/session/compact`` answers ``{success}`` with no
+                        # stopReason; the answer IS the end of this turn.
+                        _kas_status = self._settle_kas_compaction(result)
+                        if _kas_status is not None:
+                            yield _kas_status
+                        reason = STOP_REASON_END_TURN
                     self._track_prompt_usage(result)
                     if self._stale_probe and reason == STOP_REASON_CANCELLED:
                         # Probe-ack reclassification (the non-lethal harness for
@@ -6514,6 +6580,8 @@ class AcpSessionHandle:
                 self.last_compaction_transient = compaction_failure_is_transient(kiro)
             else:
                 status_type = "started"
+            if status_type != "started":
+                self._compaction_terminal_seen = True
             # conversationSummary is backend-echoed, LLM-influenced text that
             # reaches the dashboard — redact exfil URLs/credentials first.
             summary = redact_text(str(kiro.get(kas_wire.FIELD_CONVERSATION_SUMMARY, "") or ""))
