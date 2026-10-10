@@ -7248,14 +7248,15 @@ class TestAdaptiveHomeTargetsExpiry:
 
 
 class TestEnvDumpGrepAwsNarrowing:
-    """The env-dump-piped-to-grep deny fires on a credential dump and nothing else.
+    """The env-dump filter rules distinguish grep's text selectors from awk and sed.
 
-    The same regex backs two tiers -- the always-on keystone
+    Each regex backs two tiers -- the always-on keystone
     (``_ENV_CRED_SHARED_RULE_IDS``, checked here through
     ``is_sensitive_bash_command``) and the disableable
-    ``credential-exfil-env-grep-aws`` catalog rule (checked through its real
-    ``_DenyMatcher``). Both are asserted so a fix on one tier cannot leave the block
-    standing on the other under a different message. The direct-``printenv`` sibling
+    ``credential-exfil-env-grep-aws`` / ``credential-exfil-env-awk-sed-aws`` catalog rules
+    (checked through their real ``_DenyMatcher``). Both are asserted so a fix on one
+    tier cannot leave the block standing on the other under a different message.
+    The direct-``printenv`` sibling
     rule is pinned alongside, and every case is also run through the FULL gate: a
     shape one rule stops refusing while a sibling still refuses it is not fixed.
 
@@ -7281,7 +7282,21 @@ class TestEnvDumpGrepAwsNarrowing:
         "export -p | grep AWS_",
         "env | sort | grep AWS_",
         "env | awk '/AWS_/'",
+        # Awk evaluates these as code, not as literal hyphenated text selectors.
+        "env | awk 'AWS-length(\"x\") {print}'",
+        "env | awk 'AWS+0'",
+        "env | awk 'AWS<1'",
+        "env | gawk 'AWS-x'",
+        "env | mawk 'AWS-x'",
+        "env | nawk 'AWS-x'",
+        "printenv | awk 'aws-account-id=5'",
         "env | sed -n '/AWS_SECRET/p'",
+        # sed lets any character delimit an address or an ``s`` command, so the
+        # ``-`` after ``AWS`` here is a delimiter and the regex sed runs is ``AWS``.
+        "env | sed -n '\\-AWS-p'",
+        "env | sed -n '\\,AWS,p'",
+        "env | sed -n 's-AWS-x-p'",
+        "printenv | sed -n '\\-aws-Ip'",
         # An alternation inside the grep pattern, with the prefix on either side.
         "/bin/sh -c 'env | grep -E \"^(AWS_|SANDBOX|AIM)\"'",
         "env | grep -E '^(SANDBOX|AWS_)'",
@@ -7303,6 +7318,19 @@ class TestEnvDumpGrepAwsNarrowing:
         "env | grep AWS_SECU",
         "printenv | grep AWS_A",
         "env | grep -i aws_s",
+        # A hyphen the operand can make OPTIONAL is not a literal ``AWS-``: each of
+        # these selects every ``AWS_`` variable, so only a hyphen followed by a name
+        # character ends the bare-prefix branch. A ``.`` is the any-character
+        # wildcard, so it selects ``AWS_`` exactly as ``_`` does.
+        "env | grep -E 'AWS-?'",
+        "env | grep 'AWS-*'",
+        "env | grep 'AWS-\\?'",
+        "env | grep -E 'AWS-{0,1}'",
+        "env | grep 'AWS.'",
+        "env | grep AWS.SECRET",
+        # A hyphenated token beside a real selector does not excuse the selector.
+        "env | grep -e aws-vault -e AWS_SECRET",
+        "printenv | grep -E 'aws-cli|AWS_SESSION_TOKEN'",
         # The selecting stage is not the first stage after the dump.
         "env | grep -v PATH | grep AWS_SECRET",
         "env | tr ' ' '\\n' | grep AWS_SECRET",
@@ -7361,6 +7389,9 @@ class TestEnvDumpGrepAwsNarrowing:
         "env | mawk /AWS_/",
         "env | nawk /AWS_/",
         "env | gsed -n /AWS_/p",
+        # The prefixed sed spellings keep sed's boundary: the hyphen is a delimiter.
+        "env | gsed -n '\\-AWS-p'",
+        "env | ssed -n '\\-AWS-p'",
         "env | /usr/bin/grep AWS_",
         "env | /usr/bin/gawk /AWS_/",
         "env | xargs grep AWS_",
@@ -7374,6 +7405,14 @@ class TestEnvDumpGrepAwsNarrowing:
     # match to one statement would allow each of them -- and would also allow the
     # quoted-separator dumps in ``DENIED``, which is the direction that matters.
     RESIDUAL_OVER_BLOCK = (
+        # A line regex cannot tell an awk regex literal from an expression.
+        "env | awk '/aws-vault/'",
+        "env | awk '{print}' | grep aws-vault",
+        # Nor a sed ``-`` that is a literal from one that is a delimiter, so sed
+        # keeps main's boundary and the sed form of the CloudFront case stays
+        # refused, as it is on main; the grep form is the one narrowed.
+        "env | sed -n '/aws-vault/p'",
+        "set -o pipefail; aws s3 ls s3://bucket/ --recursive | sed -n '/aws-account-id=/p'",
         # A later pipeline stage's text read as the filter's operand (``echo``
         # ignores stdin, so nothing from the dump is actually selected).
         "env | grep PATH | echo AWS_SECRET",
@@ -7407,6 +7446,18 @@ class TestEnvDumpGrepAwsNarrowing:
         # ``AWS_1``, so selecting one cannot print a credential.
         "env | grep AWS1",
         "env | grep AWS_1",
+        # A hyphen followed by a name character is a literal ``AWS-`` in the operand,
+        # which no secret-bearing name or credential value contains. The first is a
+        # CloudFront/S3 access-log key (``AWSLogs/aws-account-id=<id>/CloudFront/``)
+        # filtered out of a recursive listing under a ``set -o pipefail`` prologue.
+        "set -o pipefail; aws s3 ls s3://bucket/ --recursive"
+        " | grep AWSLogs/aws-account-id=123456789012/CloudFront/",
+        "env | grep -i aws-vault",
+        # The prefixed grep spellings read the operand as text too.
+        "env | egrep aws-vault",
+        "printenv | zgrep 'aws-account-id='",
+        "printenv | grep aws-cli",
+        "env | grep AWS-1",
         # No filter at all.
         "env | cut -d= -f1 | sort",
         "docker exec kirocrew printenv KIROCREW_PORT",
@@ -7493,16 +7544,24 @@ class TestEnvDumpGrepAwsNarrowing:
         return security._deny_matcher(rule.pattern)
 
     @classmethod
-    def _catalog_matcher(cls):
-        return cls._rule_matcher("credential-exfil-env-grep-aws")
-
-    def test_catalog_rule_and_keystone_share_one_regex(self) -> None:
-        from kiro_crew import security
-
-        rule = next(
-            r for r in security.BUILTIN_DENIED_RULES if r.id == "credential-exfil-env-grep-aws"
+    def _catalog_matches(cls, cmd: str) -> bool:
+        return any(
+            cls._rule_matcher(rule_id).match(cmd)
+            for rule_id in ("credential-exfil-env-grep-aws", "credential-exfil-env-awk-sed-aws")
         )
-        assert rule.pattern == security._ENV_DUMP_GREP_AWS_PATTERN
+
+    @pytest.mark.parametrize(
+        "rule_id, pattern_name",
+        [
+            ("credential-exfil-env-grep-aws", "_ENV_DUMP_GREP_AWS_PATTERN"),
+            ("credential-exfil-env-awk-sed-aws", "_ENV_DUMP_AWK_SED_AWS_PATTERN"),
+        ],
+    )
+    def test_catalog_rule_and_keystone_share_one_regex(self, rule_id, pattern_name) -> None:
+        from kiro_crew.security import denied_rules
+
+        rule = next(r for r in security.BUILTIN_DENIED_RULES if r.id == rule_id)
+        assert rule.pattern == getattr(denied_rules, pattern_name)
         # The keystone names the CATALOG RULE, so there is no parallel pattern
         # constant it could be edited away from -- and it resolves from
         # ``BUILTIN_DENIED_RULES``, not the user's effective set, so opting the
@@ -7548,7 +7607,12 @@ class TestEnvDumpGrepAwsNarrowing:
         assert seen[:1] == [security._ENV_DUMP_GREP_AWS_PATTERN]
 
     @pytest.mark.parametrize(
-        "rule_id", ["credential-exfil-env-grep-aws", "credential-exfil-printenv-aws"]
+        "rule_id",
+        [
+            "credential-exfil-env-grep-aws",
+            "credential-exfil-env-awk-sed-aws",
+            "credential-exfil-printenv-aws",
+        ],
     )
     def test_catalog_rule_is_published_not_silently_disabled(self, rule_id: str) -> None:
         # ``_DenyMatcher`` disables a pattern that fails ``is_safe_user_regex`` with
@@ -7567,7 +7631,7 @@ class TestEnvDumpGrepAwsNarrowing:
     @pytest.mark.parametrize("cmd", DENIED)
     def test_credential_dumps_are_denied_on_both_tiers(self, cmd: str) -> None:
         assert self._keystone(cmd), cmd
-        assert self._catalog_matcher().match(cmd), cmd
+        assert self._catalog_matches(cmd), cmd
         assert is_sensitive_bash_command(cmd) is not None, cmd
 
     @pytest.mark.parametrize("cmd", RESIDUAL_OVER_BLOCK)
@@ -7577,12 +7641,12 @@ class TestEnvDumpGrepAwsNarrowing:
         # later attempt to reclaim them has to argue with the quoted-separator dumps
         # in ``DENIED`` rather than delete a comment.
         assert self._keystone(cmd), cmd
-        assert self._catalog_matcher().match(cmd), cmd
+        assert self._catalog_matches(cmd), cmd
 
     @pytest.mark.parametrize("cmd", ALLOWED)
     def test_benign_commands_pass_both_tiers(self, cmd: str) -> None:
         assert not self._keystone(cmd), cmd
-        assert not self._catalog_matcher().match(cmd), cmd
+        assert not self._catalog_matches(cmd), cmd
 
     # A markdown body handed to a non-shell MCP tool is scanned with the command
     # rules, so prose that reads as a filter would refuse the whole call.
@@ -7640,7 +7704,7 @@ class TestEnvDumpGrepAwsNarrowing:
         # the value ``grep`` would then print is the same credential.
         cmd = f"env | grep AWS_{truncation}"
         assert self._keystone(cmd), cmd
-        assert self._catalog_matcher().match(cmd), cmd
+        assert self._catalog_matches(cmd), cmd
 
     @pytest.mark.parametrize("letter", ["B", "C", "D", "E", "M", "P", "R", "T"])
     def test_a_non_secret_initial_is_not_a_truncation(self, letter: str) -> None:
@@ -7648,7 +7712,7 @@ class TestEnvDumpGrepAwsNarrowing:
         # word makes a one-character selector a credential read.
         cmd = f"env | grep AWS_{letter}"
         assert not self._keystone(cmd), cmd
-        assert not self._catalog_matcher().match(cmd), cmd
+        assert not self._catalog_matches(cmd), cmd
 
     def test_selector_boundaries_admit_digits(self) -> None:
         # ``(?![A-Za-z_])`` would end the bare prefix at a digit and deny a selector no

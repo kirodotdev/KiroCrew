@@ -49,9 +49,15 @@
   },
   {
     "id": "credential-exfil-env-grep-aws",
-    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?<![\\w-])(?:[a-z0-9]{0,5}grep|[gmn]?awk|g?sed|ssed)(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?<![\\w-])[a-z0-9]{0,5}grep(?!\\w).*AWS(?:(?![A-Za-z0-9_]|-[A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
     "category": "credential-exfil",
-    "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep/awk/sed for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+    "description": "Blocks piping an environment dump (`env`, `printenv`, `set`, `export -p`, `typeset`, `/proc/<pid>/environ`) through grep for the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation of one such as `AWS_S`, which leaks any credentials stored there. Selecting a named non-secret variable such as `AWS_REGION` or `AWS_SDK_LOAD_CONFIG` is allowed."
+  },
+  {
+    "id": "credential-exfil-env-awk-sed-aws",
+    "pattern": "(?<![\\w-])(?:environ|printenv|typeset|export\\s+-p|env|set)(?!\\w).*\\|.*(?<![\\w-])(?:[gmn]?awk|g?sed|ssed)(?!\\w).*AWS(?:(?![A-Za-z0-9_])|_(?![A-Za-z0-9])|_(?:SECRET|SESSION|SECURITY|ACCESS)|_(?:SECURIT|SECURI|SESSIO|ACCES|SECRE|SECUR|SESSI|ACCE|SECR|SECU|SESS|ACC|SEC|SES|AC|SE|A|S)(?![A-Za-z0-9_]))",
+    "category": "credential-exfil",
+    "description": "Blocks piping an environment dump through awk (including gawk/mawk/nawk) or sed with the bare `AWS`/`AWS_` prefix, a secret-bearing AWS variable, or a truncation such as `AWS_S`. Awk evaluates code and sed lets any character delimit an address (`\\-AWS-p`), so `AWS-x` keeps the bare `AWS` boundary rather than counting as a harmless hyphenated text selector."
   },
   {
     "id": "credential-exfil-python-boto3-get-credentials",
@@ -399,7 +405,7 @@
     "id": "iac-teardown-cdk-destroy",
     "pattern": "cdk destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `cdk destroy`, which tears down an entire AWS CDK stack and all its provisioned cloud resources — irreversible infrastructure and data loss."
   },
   {
     "id": "local-destructive-chmod-777",
@@ -579,7 +585,7 @@
     "id": "iac-teardown-kubectl-delete-namespace",
     "pattern": "kubectl delete namespace.*",
     "category": "iac-teardown",
-    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it \u2014 irreversible cluster-wide teardown."
+    "description": "Blocks `kubectl delete namespace`, which deletes a Kubernetes namespace and cascades to every workload, service, and volume inside it — irreversible cluster-wide teardown."
   },
   {
     "id": "local-destructive-mkfs",
@@ -603,7 +609,7 @@
     "id": "iac-teardown-pulumi-destroy",
     "pattern": "pulumi destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack \u2014 irreversible infrastructure teardown."
+    "description": "Blocks `pulumi destroy`, which deletes all cloud resources managed by a Pulumi stack — irreversible infrastructure teardown."
   },
   {
     "id": "local-destructive-rm-rf-root",
@@ -621,7 +627,7 @@
     "id": "iac-teardown-terraform-destroy",
     "pattern": "terraform destroy.*",
     "category": "iac-teardown",
-    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state \u2014 irreversible infrastructure and data loss."
+    "description": "Blocks `terraform destroy`, which destroys every resource tracked in the Terraform state — irreversible infrastructure and data loss."
   },
   {
     "id": "sql-truncate-table",
