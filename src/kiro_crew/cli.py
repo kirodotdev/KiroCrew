@@ -2121,6 +2121,17 @@ Examples:
             "rather than run with a destination an ancestor swap could redirect."
         ),
     )
+    rest_parser.add_argument(
+        "--allow-omissions",
+        action="store_true",
+        dest="allow_omissions",
+        help=(
+            "With --mode replace, restore a bundle whose MANIFEST.json records entries "
+            "the snapshot could not read. Live files at those paths are removed and kept "
+            "only in the pre-restore rollback directory. Without this, such a replace is "
+            "refused."
+        ),
+    )
 
     # security
     sec_parser = cli_help.add_command(sub, "security")

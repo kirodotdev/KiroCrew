@@ -253,6 +253,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew restore <file>` | Restore from a snapshot (auto-detects replace vs merge) |
 | `kirocrew restore <file> --mode replace\|merge` | Force restore mode; merge skips malformed incoming or local cron JSON with a file-specific warning, and never overwrites a `config` file the destination already has -- it names each settings file it kept (`↩️ <file>: kept the existing file ...`, pointing at `--mode replace --components config`) instead of printing `✅ config`, while host state (`session_map.json`, `project_dir`, `workspace_dir`) keeps this machine's copy silently; a bundle `ui-prefs.json` / `notification_settings.json` its own reader would refuse stops a replace before anything is installed, and stops a merge only where the destination has no such file (otherwise the destination's file is kept); a bundle's `config.local.json` is never installed even where the destination has none (`↩️ config.local.json: not applied ...`), since that overlay outranks `config.json` |
 | `kirocrew restore <file> --components X,Y` | Selective component restore |
+| `kirocrew restore <file> --mode replace --allow-omissions` | Replace even though `MANIFEST.json` `skipped` records entries the snapshot could not read; refused without it |
 | `kirocrew restore <file> --dry-run` | Preview restore without writing |
 | `kirocrew restore --list-components` | Show available component names |
 | `kirocrew snapshot --allow-unpinned-staging` | Stage by path name where a directory cannot be pinned by descriptor |
@@ -287,6 +288,21 @@ pin, **not** a switch that turns pinning off where it works.
 alias, a symlink, an entry that vanished mid-walk, or an entry present but refused for
 permission -- `unreadable_entry`) with its reason, so an incomplete archive says so in
 its own record instead of only in the console output of whoever ran the command.
+
+`kirocrew restore --mode replace` reads that record. Replace clears each component's
+live files before installing the bundle's copy, so a path the bundle omitted would leave
+the live data home and survive only in `pre-restore-<ts>/`. A replace whose selected
+components cover any omission that `pinned_fs.omits_wanted_data` classes as missing data
+(every reason except `symlink` and `not_regular`, an unknown reason included) is refused
+with `state_restore_rejected reason=bundle_has_omissions`, under `--dry-run` too, unless
+`--allow-omissions` is given. An omitted path no component claims, an omitted directory
+that is an ancestor of a restored tree, or a `skipped` field that is not a list of objects,
+counts as an omission. An omission with nothing at that path in the live data home is
+ignored, since replace has nothing there to remove; a path that cannot be placed under
+the data home (empty, absolute, drive-qualified or containing `..`) is never treated as
+absent. Merge clears nothing and does not
+check. With the flag, replace keeps its clear-then-install meaning and prints how many
+omitted paths it may remove.
 
 `unreadable_entry` is the one reason that is a TOLERANCE rather than a screen, and it is
 narrow in three ways. It belongs to snapshot creation only -- restore and merge still

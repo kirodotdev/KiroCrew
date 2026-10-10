@@ -514,6 +514,7 @@ rather than reporting a silent success. These are human debug/diagnostic twins o
 | `kirocrew restore --components memory,crons` | Restore specific components only |
 | `kirocrew restore --list-components` | List restorable components |
 | `kirocrew restore --force` | Restore even if gateway is running |
+| `kirocrew restore --mode replace --allow-omissions` | Replace even though the snapshot left out files it could not read (refused otherwise when live files exist at those paths) |
 
 ## Slack Commands
 

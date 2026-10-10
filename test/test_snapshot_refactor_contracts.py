@@ -306,6 +306,18 @@ def test_the_restore_command_line_is_unchanged() -> None:
             "destination an ancestor swap could redirect.",
             "_StoreTrueAction",
         ),
+        (
+            ("--allow-omissions",),
+            "allow_omissions",
+            0,
+            True,
+            False,
+            None,
+            "With --mode replace, restore a bundle whose MANIFEST.json records entries the "
+            "snapshot could not read. Live files at those paths are removed and kept only in "
+            "the pre-restore rollback directory. Without this, such a replace is refused.",
+            "_StoreTrueAction",
+        ),
     ]
 
 

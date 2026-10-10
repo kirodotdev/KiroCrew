@@ -359,6 +359,18 @@ as they are and prints a line saying so, while the rest of `memory` is replaced.
 | `--list-components` | Show the component names and what each covers |
 | `--force` | Restore even though a gateway is listening |
 | `--allow-unpinned-staging` | Permit path-based restore when descriptor-pinned traversal is unavailable. |
+| `--allow-omissions` | With `--mode replace`, restore a snapshot that left out files it could not read (see below). |
+
+### Snapshots that left files out
+
+A snapshot that could not read a file skips it and lists it in `MANIFEST.json`
+under `skipped`; `restore` prints each one as `⚠️  Omitted (<reason>): <path>`.
+`--mode replace` clears a component's live files before installing the snapshot's
+copy, so a live file at an omitted path would be removed and kept only in
+`pre-restore-<timestamp>/`. Replace therefore refuses such a snapshot, `--dry-run`
+included, when a live file exists at an omitted path inside the components being
+restored. Use `--mode merge`, which removes nothing, or pass `--allow-omissions` to
+replace anyway. On a machine that has nothing at those paths, replace runs normally.
 
 After a restore, run `kirocrew restart` so the gateway picks up the new state.
 

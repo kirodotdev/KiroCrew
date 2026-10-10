@@ -166,6 +166,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _do_replace_mutations,
     _drop_derived_indexes_absent_from_bundle,
     _install_locked_document,
+    _live_path_absent,
     _lock_down_restored,
     _refuse_corrupt_source_databases,
     _refuse_dropped_entries,
@@ -174,6 +175,7 @@ from kiro_crew.snapshot_restore import (  # noqa: F401 - facade re-exports
     _refuse_unless_valid_tree_document,
     _refuse_unsafe_destination_roots,
     _remove_locked_document,
+    _replace_omissions,
     _restore_everything_from_rollback,
     _restore_locked_document,
     _save_locked_document_to,
@@ -1596,9 +1598,21 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
                 "rather than run with a destination an ancestor swap could redirect."
             ),
         )
+        p.add_argument(
+            "--allow-omissions",
+            action="store_true",
+            dest="allow_omissions",
+            help=(
+                "With --mode replace, restore a bundle whose MANIFEST.json records entries "
+                "the snapshot could not read. Live files at those paths are removed and kept "
+                "only in the pre-restore rollback directory. Without this, such a replace "
+                "is refused."
+            ),
+        )
         parsed = p.parse_args(argv)
     args = parsed
     allow_unpinned = bool(getattr(args, "allow_unpinned", False))
+    allow_omissions = bool(getattr(args, "allow_omissions", False))
 
     if args.list_components:
         _list_components()
@@ -1939,6 +1953,38 @@ def restore_main(argv: list[str] | None = None, *, parsed: argparse.Namespace | 
         if components:
             print(f"🔧 Components: {','.join(components)}")
         _warn_if_transcripts_left_behind(mc, components)
+
+        # A bundle that recorded omissions is refused for replace unless the operator says
+        # otherwise. Replace clears each component's live tree before installing
+        # the bundle's copy, so every file the snapshot could not read and left out would
+        # leave the live data home and survive only in the rollback directory -- and the
+        # run would report success. Merge clears nothing and is unaffected. Checked before
+        # the dry run so a preview gives the same answer the real run would.
+        if mode == "replace":
+            omitted = _replace_omissions(snap, components, mc)
+            if omitted and not allow_omissions:
+                shown = ", ".join(_safe_name(p) for p in omitted[:3])
+                more = f", +{len(omitted) - 3} more" if len(omitted) > 3 else ""
+                print(
+                    f"❌ This bundle omits {len(omitted)} entr"
+                    f"{'y' if len(omitted) == 1 else 'ies'} it was asked to carry "
+                    f"({shown}{more}).\n"
+                    "   --mode replace clears each component's live files before installing "
+                    "the bundle's copy, so live files at those paths would be removed and "
+                    "kept only in the pre-restore-<timestamp>/ rollback directory.\n"
+                    "   Nothing was restored. Use --mode merge, which removes nothing, or "
+                    "re-run with --allow-omissions to replace anyway."
+                )
+                _audit(
+                    "state_restore_rejected",
+                    f"reason=bundle_has_omissions from={snap_path.name}",
+                )
+                return 1
+            if omitted:
+                print(
+                    f"⚠️  --allow-omissions: {len(omitted)} omitted path(s) will be removed "
+                    "from live state if present; the rollback directory keeps the only copy."
+                )
 
         if args.dry_run:
             print(f"\n🔍 Dry run — would restore to {mc} in {mode} mode")
