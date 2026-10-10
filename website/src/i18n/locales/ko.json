@@ -10773,6 +10773,7 @@
         "context_only_tools_unavailable": "읽기 전용 · 여기서는 조회만 가능하고 변경은 할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "context_only_tools_unavailable_backend": "컨텍스트 전용 · 이 에이전트 백엔드에서는 여기서 도구를 사용할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "context_only_config_unavailable": "에이전트 구성을 불러올 수 없어 사이드 채팅이 도구 없이 실행됩니다. 작업은 기본 채팅에서 요청하세요.",
+        "context_only_tools_unknown": "이 에이전트 백엔드가 여기서 허용하는 도구를 확인할 수 없습니다. 작업은 기본 채팅에서 요청하세요.",
         "question_too_long": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}})",
         "question_too_long_with_paste": "질문이 너무 깁니다 — 약 {{max}} 글자 이내로 줄여 주세요 (현재: {{current}}, 접은 붙여넣기 포함). 붙여넣기 칩을 선택하고 Backspace 를 눌러 지우거나, 더 짧게 발췌해서 붙여넣어 주세요.",
         "queue_cancel_failed": "대기열에 있는 해당 질문을 취소할 수 없습니다",

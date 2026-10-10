@@ -2189,6 +2189,21 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # unavailable there. A harness joins by demonstrating that every tool call it
 # serves reaches ``session/request_permission`` under the derived spec.
 #
+# KAS is a member on measurement. It takes the derived spec over the wire
+# (``acp.kas_agents`` projects ``<agent>--readonly`` into ``customAgents``), and
+# the derivation empties its ``permissions`` block with the other grants, so the
+# projected agent carries no allow rule. Captured on kiro-cli 2.29.0
+# (``--agent-engine v3``): ``read_file``, ``run_command``, ``grep_search`` and
+# ``fs_write`` each raised ``session/request_permission`` under it, and a rejected
+# write left no file. An ``allow_always`` answer does not outlive its session: on
+# one process, after a normal session's ``run_command`` and ``fs_write`` were
+# answered ``allow_always``, the same calls from a ``--readonly`` side session, from
+# a second normal session, and from a fresh process each asked again. What the
+# READ_ONLY gate can then PROVE on KAS is narrower
+# than on kiro-cli: a shell command is judged from the ``_meta.kiro.command`` the
+# engine states, so a read-only one is approved, while ``read_file`` and
+# ``grep_search`` frames carry no ``_meta.kiro.toolName`` and stay refused.
+#
 # opencode is NOT a member. Its tool calls do reach ``session/request_permission``
 # (captured live), but that is by way of its own ``permission`` setting, not the
 # derived ``<agent>--readonly`` spec this allowance is built on -- the harness reads
@@ -2205,7 +2220,7 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # see: that posture is enforced by the harness's own sandbox, which denies rather
 # than asks, so no call reaches the host gate and no SEL row is written. A side turn
 # on it runs ``REJECT_ALL``.
-ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO})
+ACP_BACKENDS_SIDE_READONLY = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends whose process answers ``session/new``, ``session/load`` and
 # ``session/set_mode`` one at a time, so a session start sent while one of those is

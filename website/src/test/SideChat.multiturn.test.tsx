@@ -16,7 +16,8 @@ vi.mock('../api/client', () => ({
           : prop === 'sideTurn' ? { ok: true, run_id: 'r1', messages: 1 }
             : prop === 'sideClose' ? { ok: true, was_open: true }
               : prop === 'chatSlotDetail' ? { messages: [], has_more: false, total: 0 }
-                : {},
+                : prop === 'acpBackends' ? { backends: [{ id: '', capabilities: [{ id: 'side_chat_tools', available: true }] }] }
+                  : {},
       )
       Object.defineProperty(_t, prop, { value: fn, writable: true, configurable: true })
       return fn

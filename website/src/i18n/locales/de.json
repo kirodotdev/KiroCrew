@@ -10923,6 +10923,7 @@
         "context_only_tools_unavailable": "Nur Lesezugriff · Nachschlagen geht hier, Änderungen nicht. Nutze den Hauptchat, um Aktionen auszuführen.",
         "context_only_tools_unavailable_backend": "Nur Kontext · Mit diesem Agenten-Backend sind hier keine Tools verfügbar. Nutze den Hauptchat, um Aktionen auszuführen.",
         "context_only_config_unavailable": "Die Agenten-Konfiguration konnte nicht geladen werden, daher läuft der Seitenchat ohne Tools. Nutze den Hauptchat, um Aktionen auszuführen.",
+        "context_only_tools_unknown": "Es konnte nicht geprüft werden, welche Tools dieses Agenten-Backend hier zulässt. Nutze den Hauptchat, um etwas umzusetzen.",
         "question_too_long": "Frage zu lang — kürze sie auf unter etwa {{max}} Zeichen (deine: {{current}})",
         "question_too_long_with_paste": "Frage zu lang — kürze sie auf unter etwa {{max}} Zeichen (deine: {{current}}, eingeklappte Einfügung mitgezählt). Wähle die Einfüge-Pille aus und drücke die Rücktaste, um sie zu entfernen, oder füge einen kürzeren Ausschnitt ein.",
         "queue_cancel_failed": "Diese Frage in der Warteschlange konnte nicht abgebrochen werden",

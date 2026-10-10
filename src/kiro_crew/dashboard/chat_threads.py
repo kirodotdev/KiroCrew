@@ -12,7 +12,7 @@ Posting a reply runs the crewmate's turn in an isolated ``thread:<slot>:<mid>``
 session with the parent message, the main-chat context around it and the
 thread so far as its envelope; the crewmate's answer lands in the same thread.
 The turn runs under the side chat's tool posture -- read-only on the kiro
-harness, no tools elsewhere -- because the thread panel has no approval card
+and KAS harnesses, no tools elsewhere -- because the thread panel has no approval card
 to fall back to. Actions still go through the main chat.
 """
 
@@ -99,7 +99,9 @@ THREAD_INSTRUCTIONS = (
 THREAD_BOUNDARY_PROMPT = (
     "This thread is read-only: lookups work here, but changes don't. Reading "
     "files, searching, fetching pages and read-only shell commands run without "
-    "asking, so use them when a reply needs them. Writing or editing files, "
+    "asking, so use them when a reply needs them. If a file-read, search or "
+    "fetch tool is refused, use a read-only shell command (cat, grep, ls) "
+    "instead rather than retrying it. Writing or editing files, "
     "shell commands that modify anything, and MCP tools are refused here, even "
     "when the user asks for them. Never claim that a tool is unconfigured or "
     "suggest enabling it. If the user wants a change made, tell them to ask in "

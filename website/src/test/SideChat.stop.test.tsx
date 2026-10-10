@@ -14,6 +14,7 @@ vi.mock('../api/client', () => ({
     sideClose: vi.fn().mockResolvedValue({ ok: true, was_open: true }),
     sideStop: vi.fn().mockResolvedValue({ ok: true }),
     kirocrewConfig: vi.fn().mockResolvedValue({ agent: { acp_backend: '' } }),
+    acpBackends: vi.fn().mockResolvedValue({ backends: [] }),
   },
 }))
 

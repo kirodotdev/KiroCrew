@@ -11073,6 +11073,7 @@
         "context_only_tools_unavailable": "Sola lettura · Qui si possono consultare informazioni, ma non fare modifiche. Usa la chat principale per eseguire azioni.",
         "context_only_tools_unavailable_backend": "Solo contesto · Con questo backend dell'agente, gli strumenti non sono disponibili qui. Usa la chat principale per eseguire azioni.",
         "context_only_config_unavailable": "Impossibile caricare la configurazione dell'agente, quindi la chat laterale funziona senza strumenti. Usa la chat principale per eseguire azioni.",
+        "context_only_tools_unknown": "Impossibile verificare quali strumenti consente qui questo backend dell'agente. Usa la chat principale per agire.",
         "question_too_long": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}})",
         "question_too_long_with_paste": "Domanda troppo lunga — riducila a meno di circa {{max}} caratteri (la tua: {{current}}, testo incollato compresso incluso). Seleziona il chip dell'incolla e premi Backspace per rimuoverlo, oppure incolla un estratto più breve.",
         "queue_cancel_failed": "Impossibile annullare quella domanda in coda",
