@@ -31,6 +31,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.skills import SkillsLoader, _ScopedSkillEntry
 
 logger = logging.getLogger("kiro_crew.skills")
@@ -417,18 +419,32 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
     before its first read: a stored row is never vetted
     (see :meth:`_vet_unconfined_path`).
     """
-    from kiro_crew import skills as sk  # circular import: the facade imports this module
-
     if loader._search_index is None or loader._closed:
         return None
     stored = loader._search_index.catalog_snapshot(loader._catalog_scope_id(project_key))
     if stored is None:
         return None
+    check = loader._snapshot_row_checker(project_key)
+    rows: list[tuple[str, Path, str | None]] = []
+    for key, path, confine_root in stored.rows:
+        row = check(key, path, confine_root)
+        if row is None:
+            return None
+        rows.append(row)
+    return _StoredCatalog(rows, stored.built_at, stored.epoch)
+
+
+def _snapshot_row_checker(
+    loader: SkillsLoader, project_key: str
+) -> Callable[[str, str, str], tuple[str, Path, str | None] | None]:
+    """Return the common screen for full and bounded stored-catalog reads."""
+    from kiro_crew import skills as sk  # circular import: the facade imports this module
+
     admitted_roots = loader._snapshot_admitted_roots()
     own_roots = (loader._dir, *loader._extra_paths)
     provider_roots = sk._trusted_skill_roots()
-    rows: list[tuple[str, Path, str | None]] = []
-    for key, path, confine_root in stored.rows:
+
+    def check(key: str, path: str, confine_root: str) -> tuple[str, Path, str | None] | None:
         absolute = os.path.abspath(path)
         if confine_root:
             # A confined row's root decides which directory its body is read
@@ -447,16 +463,16 @@ def _load_catalog_snapshot(loader: SkillsLoader, project_key: str) -> _StoredCat
             ):
                 logger.warning("skill catalog: refusing a stored row with a foreign root")
                 return None
-            rows.append((key, Path(path), confine_root))
-            continue
+            return (key, Path(path), confine_root)
         if not sk._within_any(absolute, admitted_roots):
             logger.warning("skill catalog: refusing a stored row outside every root")
             return None
         if not loader._key_denotes_path(key, absolute, own_roots, provider_roots):
             logger.warning("skill catalog: refusing a stored row whose key is not its path")
             return None
-        rows.append((key, Path(path), None))
-    return _StoredCatalog(rows, stored.built_at, stored.epoch)
+        return (key, Path(path), None)
+
+    return check
 
 
 def _vet_unconfined_path(loader: SkillsLoader, path: Path) -> bool:

@@ -27,7 +27,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from sqlite3 import Error as StdlibSQLiteError
-from typing import NoReturn
+from typing import Any, NoReturn
 from zoneinfo import ZoneInfo
 
 from kiro_crew import (
@@ -112,7 +112,7 @@ from kiro_crew.embeddings import (
 from kiro_crew.eval.judge import LLMJudge
 from kiro_crew.eval.runner import EvalRunner, format_results, score_by_dimension
 from kiro_crew.eval.scenario import AssertionType, load_scenario, load_scenarios
-from kiro_crew.external_text import external_text_requires_redaction
+from kiro_crew.external_text import external_text_requires_redaction, scrub_untrusted_text
 from kiro_crew.history import ConversationLog
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
@@ -158,6 +158,7 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
+from kiro_crew.skills import SkillsLoader
 from kiro_crew.subagent_wait_reasons import queued_wait_text
 from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
@@ -3041,6 +3042,176 @@ _LEARN_EMBED_NOTE = (
     "  gateway's re-embed sweep after it next starts, once its embedding backend\n"
     "  is ready."
 )
+
+
+def _skills_fail(code: str, message: str) -> NoReturn:
+    print(f"{code}: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _skills_terminal_line(value: object) -> str:
+    """Redact, strip terminal escapes, and bound one terminal line.
+
+    The pass order is the dashboard's, from ``scrub_untrusted_text``; the
+    terminal drops whole escape sequences rather than single control bytes.
+    """
+    text = scrub_untrusted_text(str(value), strip=lambda s: _TERMINAL_CTRL_RE.sub("", s))
+    return safe_terminal_line(text)
+
+
+def _skills_terminal_value(value: object) -> Any:
+    """Sanitize and redact every untrusted string before terminal rendering."""
+    if isinstance(value, str):
+        return _skills_terminal_line(value)
+    if isinstance(value, dict):
+        safe: dict[str, Any] = {}
+        for key, item in value.items():
+            name = _skills_terminal_line(key)
+            # Two keys that differ only in a stripped character must both
+            # print, so a collision gets a numbered suffix.
+            unique, n = name, 2
+            while unique in safe:
+                unique, n = f"{name} ({n})", n + 1
+            safe[unique] = _skills_terminal_value(item)
+        return safe
+    if isinstance(value, list):
+        return [_skills_terminal_value(item) for item in value]
+    return value
+
+
+def _skills_multiline(value: object) -> str:
+    """Frame each sanitized candidate-body line as untrusted terminal text."""
+    return "\n".join(f"| {_skills_terminal_line(line)}" for line in str(value).split("\n"))
+
+
+def _skills(args: argparse.Namespace) -> None:
+    """List and inspect skill candidates without changing them."""
+
+    action = getattr(args, "skills_action", None)
+    slug = getattr(args, "slug", "")
+    try:
+        loader = SkillsLoader(install_builtins=False)
+    except OSError:
+        _skills_fail("skills_unreadable", "the skills directory could not be read")
+
+    if action == "list":
+        include_live = bool(getattr(args, "live", False) or getattr(args, "all", False))
+        include_pending = bool(getattr(args, "all", False) or not include_live)
+        payload: dict[str, Any] = {}
+        catalog_status = "complete"
+        try:
+            if include_pending:
+                rows, omitted = loader.list_pending_skills_bounded()
+                payload["pending"] = rows
+                if omitted:
+                    payload["pending_omitted"] = omitted
+            if include_live:
+                rows, omitted = loader.list_skills_bounded()
+                payload["live"] = rows
+                if omitted:
+                    payload["live_omitted"] = omitted
+                # A cold catalog whose build outlasts the wait returns [] and
+                # reports "building": say so instead of "No live skills."
+                catalog_status = loader.catalog_status()
+                payload["live_catalog_status"] = catalog_status
+        except UnicodeDecodeError:
+            _skills_fail("invalid_skill_encoding", "a SKILL.md is not valid UTF-8")
+        except OSError:
+            _skills_fail("skills_unreadable", "the skills directory could not be read")
+        safe_payload = _skills_terminal_value(payload)
+        if getattr(args, "json", False):
+            print(json.dumps(safe_payload, indent=2, sort_keys=True))
+            return
+        if include_pending:
+            pending = safe_payload["pending"]
+            if not pending:
+                print("No pending skill candidates.")
+            else:
+                for row in pending:
+                    print(
+                        f"PENDING  {row['slug']}  [{row.get('kind', 'new')}]  "
+                        f"{row.get('description', '')}".rstrip()
+                    )
+                if safe_payload.get("pending_omitted"):
+                    print(
+                        f"[{safe_payload['pending_omitted']} more pending candidate(s) not shown]"
+                    )
+        if include_live:
+            live = safe_payload["live"]
+            if catalog_status == "building":
+                print("Live skills are still being discovered; try again shortly.")
+            if not live:
+                if catalog_status != "building":
+                    print("No live skills.")
+            else:
+                for row in live:
+                    print(f"LIVE     {row['key']}  {row.get('description', '')}".rstrip())
+                if safe_payload.get("live_omitted"):
+                    print(f"[{safe_payload['live_omitted']} more live skill(s) not shown]")
+        return
+
+    if action == "show":
+        try:
+            detail = loader.get_pending_skill(slug)
+            staged = detail is not None or loader.pending_candidate_is_staged(slug)
+        except OSError:
+            _skills_fail(
+                "candidate_unreadable",
+                f"pending skill '{_skills_terminal_line(slug)}' could not be read",
+            )
+        if detail is None:
+            if staged:
+                # The pinned detail read refuses a link, a non-regular file, a
+                # file over its byte cap, text that is not UTF-8 or a tree over
+                # its entry budget. It refuses the whole candidate, so nothing
+                # prints that could look like a complete preview.
+                _skills_fail(
+                    "candidate_unreadable",
+                    f"pending skill '{_skills_terminal_line(slug)}' is staged but is not a"
+                    " plain, readable tree of files, so it cannot be shown",
+                )
+            _skills_fail(
+                "not_found",
+                f"pending skill '{_skills_terminal_line(slug)}' was not found",
+            )
+        content = _skills_multiline(detail.get("content", "")).rstrip()
+        meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+        script_items = detail.get("scripts")
+        scripts = script_items if isinstance(script_items, list) else []
+        loader_validation = detail.get("script_validation")
+        if isinstance(loader_validation, dict) and isinstance(loader_validation.get("ok"), bool):
+            validation = {
+                "ok": loader_validation["ok"],
+                "scripts": loader_validation.get("report", {}),
+            }
+        else:
+            validation = {"status": "unavailable", "scripts": {}}
+        # Render both JSON sections before printing anything, so a nesting too
+        # deep to serialize fails with a coded error instead of a traceback.
+        try:
+            meta_text = json.dumps(_skills_terminal_value(meta), indent=2, sort_keys=True)
+            validation_text = json.dumps(
+                _skills_terminal_value(validation), indent=2, sort_keys=True
+            )
+        except RecursionError:
+            _skills_fail("candidate_unreadable", "the candidate metadata is nested too deeply")
+        print("--- SKILL.md (untrusted; each line is prefixed with '| ') ---")
+        print(content)
+        print("\n--- .meta.json ---")
+        print(meta_text)
+        for script in scripts:
+            if not isinstance(script, dict):
+                continue
+            filename = _skills_terminal_line(script.get("filename", "<unnamed>"))
+            body = _skills_multiline(script.get("content", "")).rstrip()
+            print(f"\n--- scripts/{filename} (untrusted; each line is prefixed with '| ') ---")
+            print(body)
+        print("\n--- validation ---")
+        print(validation_text)
+        return
+
+    _skills_fail("missing_action", "choose list or show")
+
 
 # INSERTED only. An enrichment resolves against the ONE existing row it rewrites
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over

@@ -23,6 +23,7 @@ import difflib
 import errno
 import functools
 import hashlib
+import heapq
 import hmac
 import json
 import logging
@@ -58,6 +59,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names  # noqa: F401
 from kiro_crew.dep_sync import normalize as normalize_distribution_name
 from kiro_crew.deploy import _SKILLS_DIR as _DEPLOY_SKILLS_DIR
+from kiro_crew.external_text import scrub_untrusted_text
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
 from kiro_crew.hooks import (  # noqa: F401
     FileTooLargeError,
@@ -119,6 +121,9 @@ from kiro_crew.skill_runtime.read_credit import (  # noqa: F401
 )
 from kiro_crew.skill_runtime.search import SkillSearchReport, _body_term_hits  # noqa: F401
 from kiro_crew.skill_search_index import (  # noqa: F401
+    LISTING_ROW_MAX_FILE_BYTES as _LIST_ROW_MAX_FILE_BYTES,
+)
+from kiro_crew.skill_search_index import (  # noqa: F401
     SKILL_SEARCH_INDEX_FILENAME,
     SkillSearchIndex,
     body_fingerprint,
@@ -164,6 +169,9 @@ _PENDING_SCRIPT_MAX_DEPTH = 8
 _VALIDATION_REPORT_MAX_FINDINGS = 16
 _VALIDATION_REPORT_MAX_STRING_CHARS = 1024
 _VALIDATION_REPORT_TRUNCATION_KEY = "<truncated>"
+# Largest agent-written ``.meta.json`` read; a bigger one reads as empty
+# metadata for display and refuses approval.
+_PENDING_META_MAX_BYTES = 64 * 1024
 #: Re-exported from ``trigger_match``, which owns the value and the grammar
 #: it belongs to. Kept as a module name because tests and call sites here
 #: reference it.
@@ -311,6 +319,12 @@ _PROJECT_SKILL_MAX_DEPTH = 64
 # route all read through this one cap, so an oversized project SKILL.md is
 # skipped rather than loaded whole.
 PROJECT_SKILL_BODY_CAP = 24_750
+# Bounds for the ``*_bounded`` listings: each section keeps at most
+# ``_LIST_MAX_ROWS`` rows and counts the rest; a live SKILL.md over the byte cap
+# is listed by name without being read; each retained string field is
+# scrubbed, then cut.
+_LIST_MAX_ROWS = 500
+_LIST_ROW_MAX_FIELD_CHARS = 4096
 PINNED_SKILL_BODIES_CAP = 99_000
 # What one exact-key read may deliver, in UTF-8 bytes. A tool response is cut at
 # ``validation.MAX_RESPONSE_LEN`` characters and the cut takes the TAIL, so a body
@@ -435,6 +449,72 @@ def _page_skill_body(
 def _skill_body_line_count(body: str) -> int:
     """Lines in ``body`` as a file reader counts them: a final unterminated line counts."""
     return body.count("\n") + (1 if body and not body.endswith("\n") else 0)
+
+
+def _bounded_display_fields(row: dict) -> dict:
+    """Scrub every string field of a listing row, then cut it to the field bound.
+
+    Scrubbing first is the property: ``scrub_untrusted_text`` joins a credential
+    split by an invisible character before redacting, and a cut taken earlier
+    would leave it a fragment too short for any pattern to match. Identity fields
+    are not exempt: a slug or key that looks like a secret is safer redacted.
+    """
+    return {
+        k: (scrub_untrusted_text(v)[:_LIST_ROW_MAX_FIELD_CHARS] if isinstance(v, str) else v)
+        for k, v in row.items()
+    }
+
+
+def _is_link_stat(st: os.stat_result) -> bool:
+    """A POSIX symlink, or any Windows reparse point (symlink, junction, UNC link)."""
+    if stat.S_ISLNK(st.st_mode):
+        return True
+    attrs = getattr(st, "st_file_attributes", 0)
+    return bool(attrs & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _pending_candidate_shape(child: Path) -> str | None:
+    """Classify a pending entry without following any link: ``"plain"``, ``"link"`` or ``None``.
+
+    A candidate directory the agent turned into a symlink or reparse point (a
+    UNC target would make Windows authenticate to that host) is ``"link"``:
+    still listed, so the dashboard can show its failing verdict and dismiss it,
+    but nothing is opened through it. A real directory is ``"plain"`` when an
+    entry named ``SKILL.md`` exists in it, whatever its type; the verdict
+    reports a linked or non-regular one.
+
+    The ``SKILL.md`` probe never re-resolves ``child`` by name: the directory
+    could be swapped for a link between the two checks. It is opened once with
+    ``O_NOFOLLOW``, its identity is matched against the first ``lstat``, and the
+    probe runs relative to that descriptor. A platform without descriptor-relative
+    stat (Windows) skips the probe: a real directory is ``"plain"`` and the
+    pinned verdict reports a missing ``SKILL.md``, because any by-name probe there
+    would traverse whatever reparse point sits at ``child``.
+    """
+    try:
+        dir_st = os.lstat(child)
+    except OSError:
+        return None
+    if _is_link_stat(dir_st):
+        return "link"
+    if not stat.S_ISDIR(dir_st.st_mode):
+        return None
+    if not pinned_fs.supports_pinned_tree_walk():
+        return "plain"
+    try:
+        fd = os.open(child, pinned_fs.dir_flags())
+    except OSError:
+        # ELOOP/ENOTDIR: the name became a link or a non-directory after the lstat.
+        return "link"
+    try:
+        held = os.fstat(fd)
+        if (held.st_dev, held.st_ino) != (dir_st.st_dev, dir_st.st_ino):
+            return "link"
+        return "plain" if pinned_fs.stat_at(fd, "SKILL.md") is not None else None
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
 
 
 class SkillContextCapacityError(ValueError):
@@ -2812,7 +2892,8 @@ class PendingApprovalRefused(Exception):
     (``report`` carries the redacted ``{filename: [findings]}`` map from
     ``validate_scripts``), ``target_missing`` (an update candidate whose live
     target is gone), ``stale_base`` (an update merged against an older live
-    version), ``invalid_layout`` (symlink / unexpected candidate entry),
+    version), ``invalid_layout`` (symlink / unexpected candidate entry, or a
+    ``.meta.json`` that is present but refused or unparseable),
     ``redaction_failed``, or ``promotion_failed`` (an OS-level I/O failure —
     a read or write, a refused read of the live skill's metadata included).
     Raised by the ``*_checked`` approve variants so
@@ -3265,6 +3346,12 @@ class SkillsLoader:
         """Read this scope's stored enumeration, or ``None`` when there is none."""
         return _catalog._load_catalog_snapshot(self, project_key)
 
+    def _snapshot_row_checker(
+        self, project_key: str
+    ) -> Callable[[str, str, str], tuple[str, Path, str | None] | None]:
+        """The common per-row screen for full and bounded stored catalogs."""
+        return _catalog._snapshot_row_checker(self, project_key)
+
     def _vet_unconfined_path(self, path: Path) -> bool:
         """May *path* be read unconfined? Checks it once unless a walk returned it."""
         return _catalog._vet_unconfined_path(self, path)
@@ -3418,7 +3505,19 @@ class SkillsLoader:
             #
             # A direct read also keeps the failure policy intact for free: an
             # unreadable file raises OSError here, which writers must hear.
-            return path.read_bytes()
+            if max_bytes is None:
+                return path.read_bytes()
+            # A bounded caller gets the cap on the read itself: a size taken
+            # earlier (a stat, a walk's fingerprint) says nothing about the file
+            # this open reaches, so at most one byte past the cap is ever read.
+            with path.open("rb") as handle:
+                bounded = handle.read(max_bytes + 1)
+            if len(bounded) > max_bytes:
+                if refusal_reasons is not None:
+                    refusal_reasons.append("size_cap")
+                logger.warning("Skipping oversized skill file: %s", path)
+                return None
+            return bounded
         try:
             confined_max = (
                 hooks_module.MAX_FILE_BYTES
@@ -3456,6 +3555,8 @@ class SkillsLoader:
         within: str | None,
         canonical_root: str | None = None,
         for_write: bool = False,
+        max_bytes: int | None = None,
+        refusal_reasons: list[str] | None = None,
     ) -> dict[str, str]:
         """Parse frontmatter with mtime-based caching.
 
@@ -3497,7 +3598,13 @@ class SkillsLoader:
         # containment, no O_NOFOLLOW, no regular-file check and no size cap --
         # so an out-of-project `description` reached the injected skills index
         # verbatim and attacker-set `triggers`/`always` decided what auto-loaded.
-        raw = self._read_enumerated_skill_bytes(path, within, canonical_root=canonical_root)
+        raw = self._read_enumerated_skill_bytes(
+            path,
+            within,
+            max_bytes=max_bytes,
+            refusal_reasons=refusal_reasons,
+            canonical_root=canonical_root,
+        )
         if raw is None:
             if for_write:
                 raise PermissionError(f"refusing to read skill metadata for a rewrite: {path}")
@@ -3520,6 +3627,8 @@ class SkillsLoader:
         within: str | None,
         mtime: float | None = None,
         canonical_root: str | None = None,
+        max_bytes: int | None = None,
+        refusal_reasons: list[str] | None = None,
     ) -> dict[str, str] | None:
         """Frontmatter for a READER, or ``None`` when the row must be dropped.
 
@@ -3533,6 +3642,8 @@ class SkillsLoader:
             within=within,
             mtime=mtime,
             canonical_root=canonical_root,
+            max_bytes=max_bytes,
+            refusal_reasons=refusal_reasons,
         )
 
     def _confined_frontmatter_and_size(self, path: Path, within: str) -> tuple[dict[str, str], int]:
@@ -3566,13 +3677,186 @@ class SkillsLoader:
         project_dir: str | Path | None = None,
         *,
         _entries: list[_ScopedSkillEntry] | None = None,
+        _max_file_bytes: int | None = None,
+        _refused: dict[str, str] | None = None,
     ) -> list[dict]:
         """Return per-skill metadata for the dashboard's Skills page.
 
         Blocking filesystem and SQLite work: async callers must offload it. Contract and
         rationale: ``skill_runtime.listing.list_skills``.
         """
-        return _listing.list_skills(self, project_dir, _entries=_entries)
+        return _listing.list_skills(
+            self,
+            project_dir,
+            _entries=_entries,
+            _max_file_bytes=_max_file_bytes,
+            _refused=_refused,
+        )
+
+    def list_skills_bounded(self, project_dir: str | Path | None = None) -> tuple[list[dict], int]:
+        """Return rows for the first ``_LIST_MAX_ROWS`` visible skills, and how many more exist.
+
+        Entries come from :meth:`_bounded_catalog_entries`, which holds only the
+        admitted ones and counts the rest. An empty answer with the scope marked
+        building (see :meth:`catalog_status`) means no trustworthy catalog exists
+        yet.
+        """
+        key = self._catalog_scope_key(project_dir)
+        found = self._bounded_catalog_entries(key)
+        if found is None:
+            with self._catalog_lock:
+                self._catalog_incomplete.add(key)
+            return [], 0
+        admitted, omitted = found
+        readable: list[_ScopedSkillEntry] = []
+        # Why an admitted entry was not read, recorded only when it was measured.
+        skipped: dict[str, str] = {}
+        for entry in admitted:
+            reason = self._list_row_skip_reason(entry)
+            if reason is None:
+                readable.append(entry)
+            else:
+                skipped[entry.key] = reason
+        by_key = {
+            row["key"]: row
+            for row in self.list_skills(
+                project_dir,
+                _entries=readable,
+                _max_file_bytes=_LIST_ROW_MAX_FILE_BYTES,
+                _refused=skipped,
+            )
+        }
+        rows: list[dict] = []
+        for entry in admitted:
+            # A file over the byte cap is listed by name without being read.
+            row = by_key.get(entry.key)
+            if row is None:
+                # ``oversized``/``unreadable`` only when that was measured; a row
+                # ``list_skills`` itself refused carries no size claim.
+                row = {"key": entry.key, "name": entry.key}
+                if entry.key in skipped:
+                    row[skipped[entry.key]] = True
+            rows.append(_bounded_display_fields(row))
+        return rows, omitted
+
+    def _bounded_catalog_entries(self, key: str) -> tuple[list[_ScopedSkillEntry], int] | None:
+        """The first ``_LIST_MAX_ROWS`` visible entries of scope *key*, and how many more.
+
+        The stored catalog snapshot is streamed one row at a time, so only the
+        admitted entries are ever held and the rest are counted; nothing
+        proportional to the whole catalog is built for the listing. Every row
+        passes the screen :meth:`_load_catalog_snapshot` applies, and a refused
+        row refuses the listing.
+
+        With no trustworthy snapshot, the loader's own background build is what
+        writes one for every surface, so this waits for it on the budget a cold
+        ``_iter`` waits and streams what it stored. If persistence is unavailable,
+        an already-published in-memory catalog is bounded through the same entry
+        path instead. ``None`` means there is still nothing to serve.
+        """
+        disabled_apps = self._get_disabled_app_names()
+
+        def cached_entries() -> tuple[list[_ScopedSkillEntry], int] | None:
+            with self._catalog_lock:
+                cached = self._iter_cache.get(key)
+                if cached is None:
+                    return None
+                # The published list is replaced whole, never edited in place
+                # (``catalog.py`` assigns a fresh tuple), so iterating it
+                # outside the lock is safe and builds no full-catalog copy.
+                entries = cached[1]
+            admitted: list[_ScopedSkillEntry] = []
+            omitted = 0
+            for name, path, confine_root in entries:
+                entry = _ScopedSkillEntry(name, path, confine_root)
+                if disabled_apps and self._owning_app(name, path) in disabled_apps:
+                    continue
+                if len(admitted) < _LIST_MAX_ROWS:
+                    admitted.append(entry)
+                else:
+                    omitted += 1
+            return admitted, omitted
+
+        index = None if self._closed else self._search_index
+        if index is None:
+            cached = cached_entries()
+            if cached is not None or self._closed:
+                return cached
+            done = self._request_catalog_refresh(key)
+            if done is not None:
+                done.wait(timeout=_COLD_CATALOG_WAIT_SECS)
+            return cached_entries()
+        check = self._snapshot_row_checker(key)
+        scope_id = self._catalog_scope_id(key)
+        admitted: list[_ScopedSkillEntry] = []
+        omitted = 0
+
+        def visit(name: str, path: str, confine_root: str) -> bool:
+            nonlocal omitted
+            row = check(name, path, confine_root)
+            if row is None:
+                return False
+            if disabled_apps and self._owning_app(row[0], row[1]) in disabled_apps:
+                return True
+            if len(admitted) < _LIST_MAX_ROWS:
+                admitted.append(_ScopedSkillEntry(*row))
+            else:
+                omitted += 1
+            return True
+
+        streamed = index.scan_catalog_snapshot(scope_id, visit)
+        if streamed is None:
+            cached = cached_entries()
+            if cached is not None:
+                return cached
+        if streamed is not True:
+            admitted.clear()
+            omitted = 0
+            done = self._request_catalog_refresh(key)
+            if done is not None:
+                done.wait(timeout=_COLD_CATALOG_WAIT_SECS)
+            streamed = index.scan_catalog_snapshot(scope_id, visit)
+        if streamed is None:
+            return cached_entries()
+        if not streamed:
+            return None
+        return admitted, omitted
+
+    def _list_row_skip_reason(self, entry: _ScopedSkillEntry) -> str | None:
+        """``None`` when a bounded listing may read *entry*, else why not.
+
+        A confined or mapped entry is sized only through the pinned reader: a
+        by-name stat of a path an agent can swap could resolve a link to a UNC
+        share, which is itself an outbound SMB authentication. An unconfined
+        operator-installed entry takes the same stat ``list_skills`` takes for
+        it. That size is only a pre-screen: the file can grow after it, so
+        ``list_skills`` enforces the same cap on the read itself.
+        """
+        if entry.project_root is not None or entry.mapping_root is not None:
+            reasons: list[str] = []
+            try:
+                raw = self._read_enumerated_skill_bytes(
+                    entry.path,
+                    entry.project_root,
+                    max_bytes=_LIST_ROW_MAX_FILE_BYTES,
+                    refusal_reasons=reasons,
+                    canonical_root=entry.mapping_root,
+                )
+            except OSError:
+                return "unreadable"
+            if raw is None:
+                return "oversized" if "size_cap" in reasons else "unreadable"
+            return None
+        # Take the same admission the reader requires before the stat. Walked
+        # paths are free through ``_walk_vetted``; snapshot rows are checked and
+        # cached through ``_read_vetted``.
+        if not self._vet_unconfined_path(entry.path):
+            return "unreadable"
+        try:
+            size = entry.path.stat().st_size
+        except OSError:
+            return "unreadable"
+        return "oversized" if size > _LIST_ROW_MAX_FILE_BYTES else None
 
     def _owning_app(self, name: str, skill_file: Path) -> str | None:
         """The app whose bundle this skill came from, or ``None``."""
@@ -4133,22 +4417,51 @@ class SkillsLoader:
         )
 
     def _read_pending_meta(self, slug: str) -> dict:
+        return self._read_pending_meta_checked(slug) or {}
+
+    def _approval_meta(self, slug: str) -> dict:
+        """Metadata for an approval decision; a present but unreadable file refuses.
+
+        Treating a refused ``.meta.json`` as empty would route an update
+        candidate through new-skill approval, so both approve paths fail closed.
+        """
+        meta = self._read_pending_meta_checked(slug)
+        if meta is None:
+            raise PendingApprovalRefused("invalid_layout")
+        return meta
+
+    def _read_pending_meta_checked(self, slug: str) -> dict | None:
+        """Return the redacted metadata, ``{}`` when absent, ``None`` when refused."""
         mf = self._pending_root() / slug / ".meta.json"
+        if not os.path.lexists(mf):
+            return {}
         # Never follow an LLM-planted symlink (could point at a sensitive file).
         if mf.is_symlink():
-            return {}
+            return None
         try:
-            data = json.loads(mf.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return {}
+            # Pinned, no-link, size-capped read: the file is agent-written, so a
+            # hard link, FIFO or oversized file is refused rather than read.
+            raw = safe_read_file_bytes_nolink(
+                str(mf),
+                within_root=str(self._pending_root()),
+                max_bytes=_PENDING_META_MAX_BYTES,
+            )
+            if raw is None:
+                return None
+            data = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError, RecursionError, FileTooLargeError):
+            return None
         if not isinstance(data, dict):
-            return {}
+            return None
         # Recursively redact secrets from LLM-produced metadata before it can
         # surface via the pending list/detail API. The crystallize skill writes
         # .meta.json directly, bypassing the consolidation redaction path, so a
         # credential in ANY (incl. nested) value must be scrubbed here.
-        redacted = self._redact_deep(data)
-        return redacted if isinstance(redacted, dict) else {}
+        try:
+            redacted = self._redact_deep(data)
+        except RecursionError:
+            return None
+        return redacted if isinstance(redacted, dict) else None
 
     def list_pending_skills(self) -> list[dict]:
         """Return ``{slug, name, description, triggers, has_scripts, created_at, path}``
@@ -4158,49 +4471,89 @@ class SkillsLoader:
         if not root.is_dir():
             return out
         for child in sorted(root.iterdir()):
-            if not child.is_dir() or not (child / "SKILL.md").exists():
-                continue
-            # Only surface canonical slugs. A crystallize direct-write could name
-            # the pending dir with credential-shaped text; anything that isn't a
-            # canonical single-segment slug is skipped so it can't be serialized
-            # to the dashboard as a "slug" (and can't be approved/dismissed by
-            # the slug-keyed handlers, which apply the same guard).
-            if not _AUTO_NAME_PATTERN.match(child.name):
-                continue
-            meta = self._read_pending_meta(child.name)
-            # Same verdict the approve path will reach, so the card can carry a
-            # warning badge WITHOUT the user expanding the row first. The
-            # verdict walk is self-defending — descriptor-pinned, budgeted,
-            # fail-closed (see _pending_scripts_verdict) — so no candidate-wide
-            # pre-walk runs here: an unbudgeted os.walk before the budgeted one
-            # would itself be the unbounded per-poll traversal the budgets
-            # exist to prevent. ``None`` means the platform cannot compute a
-            # trustworthy verdict; the field is omitted rather than serving a
-            # false all-clear.
-            verdict = self._pending_scripts_verdict(child)
-            entry = {
-                "slug": child.name,
-                "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
-                "description": meta.get("description", ""),
-                "triggers": meta.get("triggers", ""),
-                "has_scripts": bool(meta.get("has_scripts")),
-                "created_at": meta.get("created_at", ""),
-                "source": meta.get("source", ""),
-                "kind": meta.get("kind", "new"),
-                "target": meta.get("target"),
-                "base_version": meta.get("base_version"),
-                # NB: no on-disk ``path`` — this dict is API-facing (feeds
-                # /api/skills/-/pending) and must not leak the server's home
-                # / directory layout to dashboard clients.
-            }
-            if verdict is not None:
-                v_ok, v_report = verdict
-                entry["script_validation"] = {
-                    "ok": v_ok,
-                    "report": self._redact_validation_report(v_report),
-                }
-            out.append(entry)
+            entry = self._pending_entry(child)
+            if entry is not None:
+                out.append(entry)
         return out
+
+    def list_pending_skills_bounded(self) -> tuple[list[dict], int]:
+        """Return the first ``_LIST_MAX_ROWS`` candidates in slug order, and how many more exist.
+
+        Only that many names are kept while the directory is scanned, and only
+        those candidates are read and validated; the rest are counted.
+        """
+        root = self._pending_root()
+        if not root.is_dir():
+            return [], 0
+        seen = 0
+
+        def names() -> Iterator[str]:
+            nonlocal seen
+            with os.scandir(root) as it:
+                for item in it:
+                    if not _AUTO_NAME_PATTERN.match(item.name):
+                        continue
+                    if _pending_candidate_shape(root / item.name) is not None:
+                        seen += 1
+                        yield item.name
+
+        kept = heapq.nsmallest(_LIST_MAX_ROWS, names())
+        out = [e for e in (self._pending_entry(root / name) for name in kept) if e is not None]
+        return out, seen - len(kept)
+
+    def _pending_entry(self, child: Path) -> dict | None:
+        """Build one pending row, or ``None`` when ``child`` is not a candidate."""
+        shape = _pending_candidate_shape(child)
+        if shape is None:
+            return None
+        # Only surface canonical slugs. A crystallize direct-write could name
+        # the pending dir with credential-shaped text; anything that isn't a
+        # canonical single-segment slug is skipped so it can't be serialized
+        # to the dashboard as a "slug" (and can't be approved/dismissed by
+        # the slug-keyed handlers, which apply the same guard).
+        if not _AUTO_NAME_PATTERN.match(child.name):
+            return None
+        # A linked candidate directory is listed for its failing verdict, but
+        # its metadata is never read: that read would resolve through the link.
+        meta = {} if shape == "link" else self._read_pending_meta(child.name)
+        # Same verdict the approve path will reach, so the card can carry a
+        # warning badge WITHOUT the user expanding the row first. The
+        # verdict walk is self-defending — descriptor-pinned, budgeted,
+        # fail-closed (see _pending_scripts_verdict) — so no candidate-wide
+        # pre-walk runs here: an unbudgeted os.walk before the budgeted one
+        # would itself be the unbounded per-poll traversal the budgets
+        # exist to prevent. ``None`` means the platform cannot compute a
+        # trustworthy verdict; the field is omitted rather than serving a
+        # false all-clear.
+        verdict = self._pending_scripts_verdict(child)
+        entry = {
+            "slug": child.name,
+            "name": meta.get("name", f"{AUTO_SKILL_NAMESPACE}/{child.name}"),
+            "description": meta.get("description", ""),
+            "triggers": meta.get("triggers", ""),
+            # Only a JSON ``true`` counts: the file is agent-written, and
+            # ``bool("false")`` is True.
+            "has_scripts": meta.get("has_scripts") is True,
+            "created_at": meta.get("created_at", ""),
+            "source": meta.get("source", ""),
+            "kind": meta.get("kind", "new"),
+            "target": meta.get("target"),
+            "base_version": meta.get("base_version"),
+            # NB: no on-disk ``path`` — this dict is API-facing (feeds
+            # /api/skills/-/pending) and must not leak the server's home
+            # / directory layout to dashboard clients.
+        }
+        # The metadata is already redacted; scrub again (which also joins a
+        # split credential) before cutting each retained string to the same
+        # per-field bound the live listing uses.
+        entry = _bounded_display_fields(entry)
+        if verdict is not None:
+            v_ok, v_report = verdict
+            entry["script_validation"] = {
+                "ok": v_ok,
+                "report": self._redact_validation_report(v_report),
+            }
+        return entry
 
     @staticmethod
     def _redact_text(text: object) -> str:
@@ -4433,7 +4786,7 @@ class SkillsLoader:
             meta: dict = {}
             if ".meta.json" in names:
                 try:
-                    raw = pinned.read_text(".meta.json", max_bytes=MAX_SCRIPT_BYTES)
+                    raw = pinned.read_text(".meta.json", max_bytes=_PENDING_META_MAX_BYTES)
                 except (OSError, UnicodeDecodeError):
                     # Unreadable THROUGH THE PIN is a fence signal, not bad content:
                     # the name is not the plain file it screened as, which is the same
@@ -4446,12 +4799,19 @@ class SkillsLoader:
                     # Malformed JSON is the agent writing nonsense, not a swap. The
                     # reviewer still sees SKILL.md and the scripts.
                     parsed = None
+                except RecursionError:
+                    # Nesting too deep to parse is refused whole, the way the
+                    # checked metadata read refuses it, so detail and approve agree.
+                    return None
                 if isinstance(parsed, dict):
                     # Recursively redact secrets from LLM-produced metadata before it
                     # can surface via the pending detail API: the crystallize skill
                     # writes ``.meta.json`` directly, bypassing the consolidation
                     # redaction path, so a credential in ANY nested value is scrubbed.
-                    scrubbed = self._redact_deep(parsed)
+                    try:
+                        scrubbed = self._redact_deep(parsed)
+                    except RecursionError:
+                        return None
                     meta = scrubbed if isinstance(scrubbed, dict) else {}
             scripts: list[dict] = []
             if "scripts" in names:
@@ -4793,9 +5153,7 @@ class SkillsLoader:
         if not self._is_pending_slug_safe(slug):
             return None
         pdir = self._pending_root() / slug
-        if not (pdir / "SKILL.md").exists():
-            # The ordinary "no such candidate" answer. Not a security check -- the
-            # pinned read below is -- so probing by name here costs nothing.
+        if _pending_candidate_shape(pdir) is None:
             return None
         # ONE descriptor-pinned traversal both validates and reads: the body, the
         # metadata and every script come back from opens that refuse a link AT THE
@@ -5145,7 +5503,7 @@ class SkillsLoader:
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
             raise PendingApprovalRefused("not_found")
-        meta = self._read_pending_meta(slug)
+        meta = self._approval_meta(slug)
         if meta.get("kind") != "update":
             raise PendingApprovalRefused("not_found")
         target = meta.get("target")
@@ -5466,7 +5824,7 @@ class SkillsLoader:
         # candidate exists and is approvable via its own path, and the
         # not-found recovery copy ("approved or dismissed elsewhere") would be
         # a lie for a still-pending candidate.
-        if self._read_pending_meta(slug).get("kind") == "update":
+        if self._approval_meta(slug).get("kind") == "update":
             logger.warning(
                 "Refusing to approve %s as a NEW skill: candidate metadata marks it an update",
                 slug,
