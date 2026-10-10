@@ -1386,6 +1386,46 @@ class TestInlineKeyboard:
         assert len(kb["inline_keyboard"][0]) == 2
         assert len(kb["inline_keyboard"][1]) == 1
 
+    def test_long_labels_get_one_button_per_row(self) -> None:
+        # Labels that differ only late in the text would be cut to the same
+        # visible prefix on a half-width phone button.
+        opts = ["Samstag 10:00 Uhr buchen", "Sonntag 10:00 Uhr buchen"]
+        kb = build_inline_keyboard(opts, self._SESSION_KEY)
+        assert kb is not None
+        rows = kb["inline_keyboard"]
+        assert [len(row) for row in rows] == [1, 1]
+        assert [row[0]["text"] for row in rows] == opts
+
+    def test_one_long_label_puts_every_button_on_its_own_row(self) -> None:
+        opts = ["Yes", "No", "Show me the full diff first", "Skip"]
+        kb = build_inline_keyboard(opts, self._SESSION_KEY)
+        assert kb is not None
+        rows = kb["inline_keyboard"]
+        assert [len(row) for row in rows] == [1, 1, 1, 1]
+        tag = session_provenance_tag(self._SESSION_KEY)
+        assert [row[0]["callback_data"] for row in rows] == [
+            f"opt:{i}:{tag}" for i in range(len(opts))
+        ]
+
+    def test_label_at_half_width_limit_keeps_two_per_row(self) -> None:
+        opts = ["x" * 16, "y" * 16]
+        kb = build_inline_keyboard(opts, self._SESSION_KEY)
+        assert kb is not None
+        assert [len(row) for row in kb["inline_keyboard"]] == [2]
+        kb = build_inline_keyboard(["x" * 17, "y"], self._SESSION_KEY)
+        assert kb is not None
+        assert [len(row) for row in kb["inline_keyboard"]] == [1, 1]
+
+    def test_cjk_label_is_measured_by_display_width(self) -> None:
+        # Eight ideographs fill 16 cells; nine overflow a half-width button
+        # even though they are only nine code points.
+        kb = build_inline_keyboard(["显示完整差异然后", "跳过"], self._SESSION_KEY)
+        assert kb is not None
+        assert [len(row) for row in kb["inline_keyboard"]] == [2]
+        kb = build_inline_keyboard(["显示完整差异然后再", "跳过"], self._SESSION_KEY)
+        assert kb is not None
+        assert [len(row) for row in kb["inline_keyboard"]] == [1, 1]
+
 
 class TestExtractOptions:
     def test_trailing_options_extracted(self) -> None:

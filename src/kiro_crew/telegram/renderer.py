@@ -80,6 +80,7 @@ from kiro_crew.messaging.split import (
     repaired_for_delivery,
     split_markdown_safe,
 )
+from kiro_crew.messaging.tables import display_width
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.sel import sel
 from kiro_crew.telegram.client import (
@@ -371,6 +372,13 @@ def _strip_hr(text: str) -> str:
     return out.strip()
 
 
+# Widest label that still shows whole on a half-width inline button on a
+# narrow phone, in display cells: a CJK ideograph or fullwidth form counts as
+# two, a combining mark as none. Still approximate, since proportional fonts
+# vary by phone.
+_HALF_WIDTH_LABEL_CELLS = 16
+
+
 def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     """Build an InlineKeyboardMarkup from ``[OPTIONS:]`` labels.
 
@@ -378,7 +386,16 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     the payload because Telegram caps it at 64 bytes and a multi-byte CJK/emoji
     label could overflow. The compact deterministic tag binds a later press to
     the session that posted the keyboard; the label is recovered from the button
-    text at callback time. Two buttons per row keeps the keyboard mobile-friendly.
+    text at callback time.
+
+    Rows hold two buttons while every label fits a half-width button, and one
+    button each as soon as any label is wider than ``_HALF_WIDTH_LABEL_CELLS``
+    display cells: a phone truncates a half-width button mid-label, so two
+    choices that differ late in their text would read the same. Width is
+    measured with ``display_width``, so a CJK label counts its rendered width,
+    not its code points. The rule covers the whole keyboard, not one row, so
+    the buttons stay a uniform width. Keyboard height is bounded by the
+    25-button ceiling, not by this rule.
 
     A label is MODEL-authored text that Telegram renders, so it is a display sink
     like the answer body: the driver's byte-level scan can see a credential as
@@ -392,12 +409,16 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     if not options:
         return None
     origin_tag = session_provenance_tag(session_key)
+    labels: list[str] = []
+    for opt in options:
+        safe, _ = redact_for_display(opt, _default_redactor)
+        labels.append(safe[:64])
+    per_row = 1 if any(display_width(label) > _HALF_WIDTH_LABEL_CELLS for label in labels) else 2
     buttons: list[list[dict]] = []
     row: list[dict] = []
-    for i, opt in enumerate(options):
-        safe, _ = redact_for_display(opt, _default_redactor)
-        row.append({"text": safe[:64], "callback_data": f"opt:{i}:{origin_tag}"})
-        if len(row) == 2:
+    for i, label in enumerate(labels):
+        row.append({"text": label, "callback_data": f"opt:{i}:{origin_tag}"})
+        if len(row) == per_row:
             buttons.append(row)
             row = []
     if row:
