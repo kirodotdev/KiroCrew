@@ -3128,6 +3128,10 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         tool_search_min_pct=section.read("tool_search_min_pct", _safe_int),
         tool_search_min_tokens=section.read("tool_search_min_tokens", _safe_int),
         session_sharing=bool(section.get("session_sharing")),
+        chat_runtime_sharing=section.read("chat_runtime_sharing", _safe_bool),
+        chat_runtime_sharing_max_sessions=section.read(
+            "chat_runtime_sharing_max_sessions", _safe_int, 1
+        ),
         max_subagents=section.read("max_subagents", _safe_int, 0, SUBAGENT_AUTO_MAX_CEILING),
         max_stop_hook_nudges=section.read("max_stop_hook_nudges", _safe_int, 0),
         subagent_mem_buffer_pct=section.read("subagent_mem_buffer_pct", _safe_int),

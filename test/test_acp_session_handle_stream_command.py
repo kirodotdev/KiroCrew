@@ -215,6 +215,34 @@ async def test_agent_switch_not_duplicated_when_notification_arrived():
     assert len(switches) == 1
 
 
+@pytest.mark.asyncio
+async def test_a_command_turn_switch_is_owned_even_when_the_notification_fans_out():
+    """The issuer's own ``/agent`` switch must be emitted OWNED (not
+    ``runtime_global``) even when the runtime fanned its ``session/update`` out
+    ownerless because a second queue is registered.
+
+    ``fanout_no_owner`` means "nobody can tell", not "a peer's". On a
+    ``commands/execute`` turn THIS handle is provably the issuer, so the switch
+    is taken from the OWNED command result and the ownerless notification is not
+    surfaced -- otherwise the consumer, which gates its persistence/reset/spec-
+    hooks bookkeeping on ``not runtime_global``, would strand the issuer's own
+    switch on the old agent (GPT 6.1 W14 F1).
+    """
+    notification = JsonRpcMessage(
+        method=METHOD_AGENT_SWITCHED,
+        params={"agentName": "kirocrew"},  # no sessionId -> fanned out
+    )
+    notification.fanout_no_owner = True
+    handle, _ = _make(
+        response_result={"data": {"agent": {"name": "kirocrew"}}},
+        updates=[notification],
+    )
+    events = await _collect(handle, "/agent kirocrew")
+    switches = [ev for ev in events if ev.kind == EVENT_AGENT_SWITCHED]
+    assert [ev.text for ev in switches] == ["kirocrew"]
+    assert switches[0].runtime_global is False, "the issuer's own switch must be owned"
+
+
 # ── Event draining ───────────────────────────────────────────────────────────
 
 

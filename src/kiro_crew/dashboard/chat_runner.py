@@ -15120,6 +15120,26 @@ async def _run_chat(
                     _refusal_notices[:] = _still_pending
             elif event.kind == EVENT_COMPACTION_STATUS:
                 logger.debug("Main loop: compaction event text=%r", event.text)
+                # A shared runtime fans a compaction echo to every co-tenant runner
+                # and marks it ``runtime_global`` with NO issuer (and this runner
+                # marks its OWN compaction ownerless whenever a subagent is
+                # registered), so the flag means "nobody can tell", not "a peer's".
+                #   * ``started`` is admitted UNCONDITIONALLY. It only sets this
+                #     session's own in-flight marker and shows the compacting UI;
+                #     a peer's ``started`` admitted here is self-healing, because
+                #     the peer's matching TERMINAL is then admitted too and clears
+                #     what it set. Gating ``started`` is NOT recoverable -- an
+                #     AUTOMATIC mid-turn compaction has no typed command to identify
+                #     its issuer, so a gate would strand the real case in the
+                #     compacting role forever.
+                #   * the DURABLE half -- dropping ``assistant_text`` at the segment
+                #     boundary -- runs only on a REAL (``not event.synthesized``)
+                #     terminal, the one site that scans the accumulator then clears
+                #     it. That window shape is locked by two source ratchets
+                #     (``test_leaked_toolcall_notice`` and
+                #     ``test_post_compaction_continuation``): the scan must precede
+                #     the reset, and the reset must sit under ``not
+                #     event.synthesized`` with nothing between them but the scan.
                 if event.text == "started":
                     # Show the compacting state (input disabled, hourglass) for
                     # an AUTOMATIC mid-turn compaction too, not only from the
@@ -15174,18 +15194,27 @@ async def _run_chat(
                 # replaying the persisted Kiro Crew history afterwards would undo
                 # the user's clear. Retire either an unconsumed slash lease or the
                 # consumed-turn marker before any terminal can re-arm it.
-                if _replay_pending or _replay_accepted_this_turn:
-                    state.sessions.commit_provider_switch_replay_sid(session_key)
-                if _replay_pending:
-                    state.sessions.consume_provider_switch_replay(session_key)
-                    _replay_pending = False
-                _replay_accepted_this_turn = False
+                #
+                # On a SHARED runtime the clear echo is fanned to every co-tenant
+                # runner (``runtime_global``) with no issuer; ignore an ownerless
+                # clear unless THIS runner's own command this turn is ``/clear``, so
+                # a peer's clear never wipes this session's history (a founder marks
+                # its own frame ownerless when a subagent is registered, so the
+                # turn's command, not frame ownership, tells the typer apart).
+                if event.runtime_global and not _this_turn_is_clear:
+                    continue
                 # The FRESH first-turn history debt is armed before the slash
                 # branch, and a slash turn never reaches the context-assembly
                 # settle, so retire it here too: a fresh `/clear` otherwise leaves
                 # the debt armed and the next ordinary prompt rebuilds the very
                 # history the user asked to drop.
                 state.sessions.consume_first_turn_history_owed(session_key)
+                if _replay_pending or _replay_accepted_this_turn:
+                    state.sessions.commit_provider_switch_replay_sid(session_key)
+                if _replay_pending:
+                    state.sessions.consume_provider_switch_replay(session_key)
+                    _replay_pending = False
+                _replay_accepted_this_turn = False
                 # Advance the durable POSITION base by the rows this clear
                 # evicts, exactly as the trim path does (`_ChatSlot.append`)
                 # and as every restore path recomputes it. The base plus the
@@ -15231,6 +15260,21 @@ async def _run_chat(
                     state, slot, "assistant", "🗑️ Conversation cleared.", "msg msg-a"
                 )
             elif event.kind == EVENT_AGENT_SWITCHED:
+                # A shared runtime fans an agent-switch echo to every co-tenant
+                # runner and marks it ``runtime_global`` with NO issuer, and this
+                # runner also marks its OWN switch ownerless whenever a subagent is
+                # registered -- so the flag means "nobody can tell", not "a peer's".
+                # The two error directions are NOT equal, so the two halves of this
+                # branch are gated differently (per GPT 6.1 / Opus review on W14):
+                #   * the member-pin VETO runs UNCONDITIONALLY -- skipping it on
+                #     this session's own switch would leave a pinned member thread
+                #     silently running the switched-to agent with no audit record
+                #     (a security regression), while running it on a peer's switch
+                #     only emits a recoverable spurious notice. Fail toward running.
+                #   * the non-member ``elif new_agent:`` bookkeeping (record the
+                #     provider switch, reset the session) is gated on the frame NOT
+                #     being an ownerless fan-out: recording a peer's switch would
+                #     reset this session onto an agent it never chose.
                 new_agent, _ = redact_credentials(event.text)
                 new_agent, _ = redact_exfiltration_urls(new_agent)
                 if new_agent and (
@@ -15294,7 +15338,7 @@ async def _run_chat(
                     # down, the same way the tool-rejection paths above bail
                     # out of a turn that must not continue.
                     break
-                elif new_agent:
+                elif new_agent and not event.runtime_global:
                     # A live provider event can change a template selection.
                     # Restore cannot infer that authority from a different
                     # transcript name, including a partially persisted switch.

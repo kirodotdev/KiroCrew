@@ -742,12 +742,25 @@ async def test_the_shared_runtimes_cold_start_is_classified(crew_wrap, layer):
 
 
 def test_every_shared_runtime_startup_site_consults_the_latch():
-    """Wiring, asserted on the source: three sites, all three converted.
+    """Wiring, asserted on the source: every startup site, all converted.
 
     A behavioural test per site would need the whole ``start()`` preamble; what
     can go wrong here is a site left behind, and that is a property of the file.
-    Counted against the auth latch it sits beside, so adding a fourth startup
-    path without the sandbox check fails here.
+    Counted against the auth latch it sits beside, so adding a startup path
+    without the sandbox check fails here.
+
+    Two sites, pinned exactly. The count is a property of how many times the spawn
+    is spelled out, and one ``_spawn_chat_runtime`` now serves the cold start, the
+    lease table's miss and the respawn after a death during resume -- so the copies
+    that classified separately became one, and the true count is 2. It is pinned as
+    an equality rather than a floor because a floor lets a third paired startup
+    site arrive unreviewed, and the match is what catches one that reports a
+    sandbox refusal as a generic death -- which would have the caller respawn into
+    the same wall.
+
+    Matched on either receiver name, because the spawn helper holds its own
+    runtime under a local name while the post-``session/new`` arm reads the one it
+    was handed.
     """
     import re
     from pathlib import Path
@@ -755,13 +768,15 @@ def test_every_shared_runtime_startup_site_consults_the_latch():
     import kiro_crew.providers.acp as provider_mod
 
     source = Path(provider_mod.__file__).read_text()
-    auth_sites = len(re.findall(r"runtime\.saw_not_logged_in\(\)", source))
-    sandbox_sites = len(re.findall(r"sandbox_init_failure_for_runtime\(runtime\)", source))
-    assert auth_sites == 3, f"the auth latch is read at {auth_sites} sites, not 3"
+    auth_sites = len(re.findall(r"(?:runtime|fresh)\.saw_not_logged_in\(\)", source))
+    sandbox_sites = len(
+        re.findall(r"sandbox_init_failure_for_runtime\((?:runtime|fresh)\)", source)
+    )
+    assert auth_sites == 2, f"the auth latch is read at {auth_sites} sites, not 2"
     assert sandbox_sites == auth_sites, (
         f"{sandbox_sites} of {auth_sites} shared-runtime startup sites classify a "
         "sandbox refusal; a site left behind reports it as a generic death and the "
-        "pool respawns into the same wall"
+        "caller respawns into the same wall"
     )
 
 

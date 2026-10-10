@@ -411,6 +411,90 @@ class TestRssThresholdCheck:
         assert manager.reset.await_count == 2
 
     @pytest.mark.asyncio
+    async def test_shared_runtime_ceiling_scales_with_its_tenant_count(self) -> None:
+        """A shared runtime's ceiling is per TENANT, not per process.
+
+        ``watchdog_rss_max_mb`` budgets ONE session's runtime. Four sessions on
+        one process all read that process's whole tree, so comparing it against a
+        single budget charges one session's allowance for four sessions' memory:
+        the tree crosses as soon as sharing packs it, and every sweep recycles a
+        healthy session. Four tenants may hold four budgets.
+        """
+        manager = _make_manager(rss_max_mb=1000)
+        for name in ("a", "b", "c", "d"):
+            manager._sessions[f"dashboard:{name}"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)  # one runtime, four tenants
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=3900
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_not_awaited()  # 3900 is under 4 x 1000
+
+    @pytest.mark.asyncio
+    async def test_shared_runtime_past_its_scaled_ceiling_is_still_recycled(self) -> None:
+        """Scaling raises the ceiling; it does not remove it.
+
+        A shared tree that outgrows every tenant's budget combined is still a
+        runaway, and one of its sessions is still recycled.
+        """
+        manager = _make_manager(rss_max_mb=1000)
+        for name in ("a", "b", "c", "d"):
+            manager._sessions[f"dashboard:{name}"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=4100
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_awaited_once()  # 4100 is over 4 x 1000
+
+    @pytest.mark.asyncio
+    async def test_ineligible_co_tenants_still_raise_the_ceiling(self) -> None:
+        """A co-tenant this sweep may not recycle still occupies the tree.
+
+        A busy or channel-owned session holds its share of the memory being
+        measured, so counting only the recyclable sessions would charge them for
+        it and recycle them for a neighbour's footprint.
+        """
+        from kiro_crew.session import _CHANNEL_PREFIX
+
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:a"] = _session_stub(busy=False)
+        manager._sessions["dashboard:mid-turn"] = _session_stub(busy=True)
+        manager._sessions[f"{_CHANNEL_PREFIX}team-eng"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)  # all three on one runtime
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=2900
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_not_awaited()  # 2900 is under 3 x 1000
+
+    @pytest.mark.asyncio
+    async def test_unshared_runtime_keeps_the_configured_ceiling(self) -> None:
+        """One session on its own runtime is measured against one budget.
+
+        The scaling must not relax the 1:1 case: a lone session whose tree is
+        just past the configured figure is recycled exactly as before sharing
+        existed.
+        """
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:solo"] = _session_stub(busy=False)
+        manager._sessions["dashboard:elsewhere"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(
+            side_effect={"dashboard:solo": 11, "dashboard:elsewhere": 22}.get
+        )
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree",
+            side_effect=lambda pid, child_map: 1001 if pid == 11 else 10,
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:solo"
+
+    @pytest.mark.asyncio
     async def test_a_skipped_co_tenant_lets_the_next_one_be_recycled(self) -> None:
         """The budget is one SUCCESSFUL reset per runtime, not one attempt.
 

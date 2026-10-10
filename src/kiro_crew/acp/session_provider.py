@@ -19,9 +19,9 @@ import functools
 import logging
 import time
 from collections.abc import AsyncIterator
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -94,6 +94,8 @@ class AcpSessionProvider(LLMProvider):
         runtime: AcpRuntime,
         *,
         owns_runtime: bool = False,
+        runtime_lease: str | None = None,
+        shared_runtime: bool = False,
         session_key: str = "",
         channel_id: str | None = None,
     ) -> None:
@@ -111,12 +113,42 @@ class AcpSessionProvider(LLMProvider):
         # non-owning killer -- the dashboard's reset-all fallback, a pid sweep --
         # be refused instead of taking a co-tenant's runtime with it.
         #
-        # Only an OWNING provider takes one. A session-sharing subagent is handed
-        # a runtime it did not spawn and must not kill, and at ``cap=1`` no entry
-        # holding a lease has room for a second, so having subagents acquire
-        # would either refuse them or change which process they land on. Their
-        # co-tenancy becomes a lease in the change that raises the cap.
-        self._runtime_lease: str | None = None
+        # A session-sharing SUBAGENT never takes one. It is handed a runtime it
+        # did not spawn and must not kill, and its co-tenancy is a TENANCY rather
+        # than a lease: scoped to the turn, so it neither consumes the cap nor
+        # changes which process a chat session lands on (see
+        # ``_claim_shared_turn``).
+        #
+        # A CHAT session's lease may arrive here already taken. The chat start
+        # decides whether to join an existing process before it spawns one, and
+        # that decision IS the acquisition -- so it holds a lease before this
+        # provider exists and hands it over, rather than this object taking a
+        # second one for a process already leased to this session. With sharing
+        # off nothing is handed in and ``acquire_runtime_lease`` takes the lease
+        # at the registration point, exactly as it did before a cap existed.
+        self._runtime_lease: str | None = runtime_lease
+        # Whether this session's runtime may be serving OTHER chat sessions, which
+        # is the case neither value of ``_owns_runtime`` can express.
+        #
+        # Both of that flag's arms are wrong for a shared chat session, in opposite
+        # directions. The owning arm kills without destroying the handle for a
+        # persistent session -- correct while one session is one process, but a
+        # session that leaves a process its co-tenants keep using has to destroy
+        # its handle or its context stays allocated there for that process's whole
+        # life. The subagent arm destroys and never kills, which leaks the process
+        # when the session leaving happens to be the last holder. Which of those
+        # two a given shutdown is cannot be read off this object at all: it is the
+        # lease table's answer, given by whether the release hands the runtime
+        # back.
+        #
+        # True for the FOUNDER as well as a joiner. Which one this is cannot be
+        # told apart at teardown time -- by then a joiner may have arrived, or may
+        # not have -- so both take the same arm and the table decides.
+        self._shared_runtime = shared_runtime
+        # The task currently holding this process's chat turn gate through THIS
+        # provider, for the reentrant acquire in ``_chat_turn_gate`` (lets a
+        # ``/compact`` turn hold the gate across the deferred compaction receipt).
+        self._chat_gate_holder: "asyncio.Task[Any] | None" = None
         self._resumed_flag: bool = False
         self._resume_session_id: str = ""
         # The session this provider serves. ``rekey()`` sets it on a warm-pool
@@ -156,11 +188,21 @@ class AcpSessionProvider(LLMProvider):
         -- a failed ``start``, a failed identity stamp, a discarded pool provider
         -- authorized without exception, because none of them has a tenant yet.
 
+        This is the UNSHARED acquisition, and it stays at ``CHAT_RUNTIME_CAP``
+        keyed by the runtime OBJECT rather than reading the configured cap. A
+        session that may share takes its lease where the join decision is made --
+        before the spawn, because deciding afterwards could only register a
+        process that already exists -- and hands it in through ``runtime_lease``,
+        so this method finds one held and returns. What reaches here is therefore
+        a start that is not sharing, and for it identity is the right key: no two
+        entries can ever compare equal, so no cap above 1 would place anything
+        differently and a larger number would only misdescribe the table.
+
         The runtime is passed in already spawned, so the ``spawn`` callback hands
         the existing one back rather than making a second. At ``cap=1`` no entry
         that holds a lease has room, so this always founds its own entry with
         exactly one lease -- one process per owning session, which is what the
-        unpooled path already did.
+        unshared path already did.
         """
         if not self._owns_runtime or self._runtime_lease is not None:
             return
@@ -276,6 +318,71 @@ class AcpSessionProvider(LLMProvider):
             )
         except Exception:
             logger.debug("_end_shared_turn: orphaned runtime teardown failed", exc_info=True)
+
+    @asynccontextmanager
+    async def _chat_turn_gate(self) -> "AsyncIterator[None]":
+        """Serialize this turn against co-tenant chat turns on the shared process.
+
+        Only a SHARED chat session (``shared_runtime=True``, founder or joiner)
+        enters the runtime's per-process turn gate — so at most one chat turn is
+        in flight at a time and an ownerless session-control frame (compaction /
+        clear / agent switch) the reader loop routes by active turn has exactly
+        one possible owner. A sole-owner unshared session and a subagent
+        (``shared_runtime=False``) skip the gate: a subagent runs while its
+        parent's turn is still open, so contending for the same lock would
+        deadlock the parent→subagent await, and it produces none of these
+        user-control frames.
+
+        REENTRANT for the current task: a ``/compact`` turn holds the gate across
+        the whole compaction — the ``stream_command`` turn AND the deferred
+        ``wait_for_compaction`` receipt that follows it (see
+        ``hold_chat_turn_gate``) — so the inner ``stream_command`` /
+        ``wait_for_compaction`` acquisitions this same task makes are no-ops that
+        neither re-take nor release the lock. Without this the gate would drop
+        between ``stream_command`` and the deferred wait, letting a co-tenant
+        start a turn into which this session's ownerless compaction terminal is
+        then broadcast — clearing the co-tenant's already-streamed answer.
+
+        Read defensively: the unit tests of this class substitute a fake runtime
+        without the gate, and a session assembled without ``__init__`` (the
+        exception-translation tests) has no ``_shared_runtime`` — either falls
+        back to no gating rather than raising into a turn.
+        """
+        gate = None
+        if getattr(self, "_shared_runtime", False):
+            gate = getattr(self._runtime, "chat_turn_gate", None)
+        if gate is None:
+            yield
+            return
+        # Already held by THIS task (an outer hold_chat_turn_gate, or a nested
+        # call within the same turn): re-entering is a no-op, so the single
+        # outermost hold spans the whole compaction continuously.
+        current = asyncio.current_task()
+        if self._chat_gate_holder is not None and self._chat_gate_holder is current:
+            yield
+            return
+        async with gate():
+            self._chat_gate_holder = current
+            try:
+                yield
+            finally:
+                self._chat_gate_holder = None
+
+    @asynccontextmanager
+    async def hold_chat_turn_gate(self) -> "AsyncIterator[None]":
+        """Hold the per-process chat turn gate across a whole compaction.
+
+        The compaction coordinator wraps the deferred-compaction sequence —
+        ``stream_command('/compact')`` then, when no inline terminal arrived, the
+        ``wait_for_compaction`` receipt and its post-compaction metadata drain —
+        in this, so the gate is held CONTINUOUSLY through both. The inner
+        ``stream_command`` and ``wait_for_compaction`` re-enter ``_chat_turn_gate``
+        on the same task, which is a no-op while this hold is active, so there is
+        no self-deadlock and no release-reacquire gap for a co-tenant to slip a
+        turn into.
+        """
+        async with self._chat_turn_gate():
+            yield
 
     async def new_conversation(self) -> None:
         """Reset to a fresh conversation on the SAME warm runtime (kiro path).
@@ -450,13 +557,124 @@ class AcpSessionProvider(LLMProvider):
         self._runtime_lease = None
         await RUNTIME_OWNERSHIP.release(lease)
 
+    async def _shutdown_shared(self) -> None:
+        """Leave a process that may still be serving other chat sessions.
+
+        This session drops its lease and kills the process only when the table
+        hands the runtime back, which it does for the LAST holder alone. The handle
+        is destroyed either way, and that is the half the sole-owner arm does not
+        need: a session leaving a process its co-tenants keep using has to be
+        evicted from it, or its context stays allocated on that process for the
+        rest of the process's life. It is also the only RSS this path reclaims on a
+        runtime it may not kill.
+
+        The in-flight turn is cancelled FIRST, for the reason the subagent arm
+        gives: ``destroy`` unregisters this session's queue without telling the
+        host to stop a running prompt, so an abandoned prompt keeps running on a
+        process nothing here may kill, its frames are dropped as unknown-session,
+        and it can wedge the next prompt on that sessionId. Bounded, so an
+        unresponsive runtime cannot turn a shutdown into a hang.
+
+        Everything after the cancel is in a ``finally``, for the reason the
+        subagent arm states and pays for: the cancel can be left through a door
+        ``except Exception`` does not cover, because ``asyncio.CancelledError`` is
+        a ``BaseException``. Here that exit is delivered by the restart path's own
+        ``asyncio.wait_for(p.shutdown(), timeout=...)``, whose budget is larger
+        than the cancel budget below -- so a slow cancel is exactly where the
+        cancellation lands. Sequentially that skipped the release, and a lease that
+        is never returned keeps its entry alive: the runtime is reclaimed by
+        neither the dead-entry drop nor the reconciler's own accounting, the
+        session stays resident on it, and nothing retries, because every caller
+        drops the provider afterwards.
+
+        The release is read for its RETURN VALUE rather than done through
+        ``release_runtime_lease``, which discards it. That value is the whole
+        decision this arm exists to make, and asking the table twice -- once to
+        release, once to count -- would straddle another session's arrival.
+        """
+        cancel_hooks = getattr(self._handle, "_cancel_hook_tasks", None)
+        if callable(cancel_hooks):
+            cancel_hooks()
+        last: AcpRuntime | None = None
+        try:
+            try:
+                if self._handle.is_turn_active:
+                    try:
+                        await asyncio.wait_for(self._handle.cancel(), timeout=5.0)
+                    except Exception:
+                        logger.debug(
+                            "AcpSessionProvider.shutdown: shared session cancel failed",
+                            exc_info=True,
+                        )
+            except Exception:
+                logger.debug(
+                    "AcpSessionProvider.shutdown: shared turn-active probe failed",
+                    exc_info=True,
+                )
+        finally:
+            lease = self._runtime_lease
+            cancelled: BaseException | None = None
+            if lease is not None:
+                # Run the release as ONE task this frame only WAITS on, absorbing a
+                # cancellation delivered into the wait until the release settles.
+                # A bare ``await asyncio.shield(...)`` lets the inner release finish
+                # but RE-RAISES the cancellation in the waiter, so the next
+                # statement never runs: the ``last`` handoff the release returns is
+                # discarded, the handle is never destroyed, and the runtime the
+                # release handed back for teardown leaks -- the very leak this arm
+                # exists to prevent. Waiting on the task in a loop keeps its RESULT,
+                # so the last-runtime kill below still fires; the cancellation is
+                # re-raised at the end, after the teardown is complete.
+                release_task = asyncio.ensure_future(RUNTIME_OWNERSHIP.release(lease))
+                while not release_task.done():
+                    try:
+                        await asyncio.shield(release_task)
+                    except asyncio.CancelledError as exc:
+                        cancelled = exc
+                self._runtime_lease = None
+                try:
+                    last = cast("AcpRuntime | None", release_task.result())
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: shared release failed", exc_info=True
+                    )
+            # The transcript is this session's resume material, and ``destroy``
+            # unlinks it unless told otherwise. The sole-owner arm keeps it by
+            # never reaching ``destroy`` for a persistent session; this arm MUST
+            # ask, because it has to destroy the handle to leave the shared
+            # process. The setter already refuses for a non-persistent mode, which
+            # is the one case whose files are meant to go.
+            self.set_keep_transcript(True)
+            try:
+                await self._handle.destroy()
+            except Exception:
+                logger.debug(
+                    "AcpSessionProvider.shutdown: shared handle destroy failed", exc_info=True
+                )
+            if last is not None:
+                try:
+                    await last.kill(expected=True, reason="provider shutdown (last shared session)")
+                except Exception:
+                    logger.debug(
+                        "AcpSessionProvider.shutdown: shared runtime kill failed", exc_info=True
+                    )
+            if cancelled is not None:
+                # The teardown is complete; now honour the cancellation that
+                # arrived mid-release rather than swallowing it.
+                raise cancelled
+
     async def shutdown(self) -> None:
         """Destroy the session and optionally kill the runtime.
 
-        - Parent sessions (owns_runtime=True): kill the entire runtime.
+        - Shared chat sessions (shared_runtime=True): destroy the handle, and kill
+          the runtime only when the lease table says this was its last holder.
+        - Sole-owner sessions (owns_runtime=True): kill the entire runtime.
         - Subagent sessions (owns_runtime=False): cancel any in-flight turn,
           then destroy the handle only.
         """
+        if self._shared_runtime:
+            await self._shutdown_shared()
+            return
         if self._owns_runtime:
             # A runtime kill cancels only its reader tasks, so the handle's own
             # in-flight hook executions are stopped here first.
@@ -600,31 +818,36 @@ class AcpSessionProvider(LLMProvider):
             self.reclaim()
         except Exception:
             logger.debug("stream: stub re-claim failed", exc_info=True)
-        claim = self._claim_shared_turn()
-        send = self._handle.prompt
-        if not allow_image:
-            send = functools.partial(send, allow_image=False)
-        try:
-            async with aclosing(
-                self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
-            ) as events:
-                async for event in events:
-                    yield event
-        except AcpRuntimeDead as exc:
-            # Translate the shared-runtime death into the exception types
-            # chat_runner handles (parity with AcpClient) — see _translate_dead.
-            # Without this, AcpRuntimeDead (an AcpRuntimeError, NOT an AcpError)
-            # escapes both the AcpProcessDied and AcpError handlers and surfaces
-            # as an unhandled crash.
-            raise self._translate_dead(exc) from exc
-        except AcpRuntimeError as exc:
-            # Base AcpRuntimeError (e.g. prompt()'s "turn already active"
-            # concurrent-prompt guard) is also OUTSIDE the AcpError hierarchy;
-            # keep the provider surface within AcpError so chat_runner catches
-            # it instead of hitting its generic `except Exception`.
-            raise AcpError(str(exc)) from exc
-        finally:
-            await self._end_shared_turn(claim)
+        # Serialize against co-tenant chat turns for the whole turn (shared chat
+        # sessions only — see _chat_turn_gate). Held around _claim_shared_turn so
+        # the tenancy claim and every event yield fall inside the one-turn-at-a-
+        # time window that makes an ownerless control frame unambiguously ours.
+        async with self._chat_turn_gate():
+            claim = self._claim_shared_turn()
+            send = self._handle.prompt
+            if not allow_image:
+                send = functools.partial(send, allow_image=False)
+            try:
+                async with aclosing(
+                    self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
+                ) as events:
+                    async for event in events:
+                        yield event
+            except AcpRuntimeDead as exc:
+                # Translate the shared-runtime death into the exception types
+                # chat_runner handles (parity with AcpClient) — see _translate_dead.
+                # Without this, AcpRuntimeDead (an AcpRuntimeError, NOT an AcpError)
+                # escapes both the AcpProcessDied and AcpError handlers and surfaces
+                # as an unhandled crash.
+                raise self._translate_dead(exc) from exc
+            except AcpRuntimeError as exc:
+                # Base AcpRuntimeError (e.g. prompt()'s "turn already active"
+                # concurrent-prompt guard) is also OUTSIDE the AcpError hierarchy;
+                # keep the provider surface within AcpError so chat_runner catches
+                # it instead of hitting its generic `except Exception`.
+                raise AcpError(str(exc)) from exc
+            finally:
+                await self._end_shared_turn(claim)
 
     async def steer(self, message: str) -> bool:
         """Forward a mid-turn steer to the session handle (kiro _session/steer).
@@ -673,21 +896,26 @@ class AcpSessionProvider(LLMProvider):
         # so the next warm turn resends the complete snapshot even when the
         # status receipt is missing or arrives late.
         self.essential_delivery.prepare_command(command)
-        claim = self._claim_shared_turn()
-        try:
-            async with aclosing(
-                self.essential_delivery.stream(
-                    command, self._handle.stream_command, lambda: self.context_incarnation
-                )
-            ) as events:
-                async for event in events:
-                    yield event
-        except AcpRuntimeDead as exc:
-            raise self._translate_dead(exc) from exc
-        except AcpRuntimeError as exc:
-            raise AcpError(str(exc)) from exc
-        finally:
-            await self._end_shared_turn(claim)
+        # Same serialization as stream(): /compact and /clear here are the very
+        # ownerless-control-frame producers the gate exists to disambiguate, so a
+        # shared chat session holds the per-process turn gate around the whole
+        # command turn (see _chat_turn_gate).
+        async with self._chat_turn_gate():
+            claim = self._claim_shared_turn()
+            try:
+                async with aclosing(
+                    self.essential_delivery.stream(
+                        command, self._handle.stream_command, lambda: self.context_incarnation
+                    )
+                ) as events:
+                    async for event in events:
+                        yield event
+            except AcpRuntimeDead as exc:
+                raise self._translate_dead(exc) from exc
+            except AcpRuntimeError as exc:
+                raise AcpError(str(exc)) from exc
+            finally:
+                await self._end_shared_turn(claim)
 
     def _translate_dead(
         self, exc: AcpRuntimeDead, *, own_write_only: bool = False

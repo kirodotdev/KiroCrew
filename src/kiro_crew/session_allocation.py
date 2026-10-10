@@ -32,7 +32,7 @@ from kiro_crew.metrics.sessions import (
 from kiro_crew.runtime_ownership import (
     PidRefcount,
     acquire_session_lease,
-    release_session_lease,
+    holds_runtime_lease,
 )
 from kiro_crew.session_lifecycle import adopt_parked_queue
 from kiro_crew.start_priority import (
@@ -2431,6 +2431,13 @@ class SessionAllocationService:
             cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).member_context = member_context
+                # WHICH member, beside WHETHER this is a member session. The
+                # chat-runtime key needs the id so two members never share one
+                # process, and this is the only layer that has read the execution
+                # record. Empty for a session that is not a member's.
+                cast(Any, provider).member_id = (
+                    "" if execution is None or execution.member_id is None else execution.member_id
+                )
             try:
                 if self._deps.is_acp_provider(provider):
                     claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -2581,6 +2588,13 @@ class SessionAllocationService:
             cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
                 cast(Any, provider).member_context = member_context
+                # WHICH member, beside WHETHER this is a member session. The
+                # chat-runtime key needs the id so two members never share one
+                # process, and this is the only layer that has read the execution
+                # record. Empty for a session that is not a member's.
+                cast(Any, provider).member_id = (
+                    "" if execution is None or execution.member_id is None else execution.member_id
+                )
             if memory_mode != "persistent":
                 resume_sid = None
             provider_switched = False
@@ -2641,6 +2655,31 @@ class SessionAllocationService:
                     pre_spawn = await pre_spawn_identity(
                         getattr(owner, "spawn_identity_reader", None)
                     )
+                    # The chat runtime's compatibility key carries the account era,
+                    # so a session starting after a credential change cannot join a
+                    # process that authenticated before it. This is the read it
+                    # keys on -- handed over rather than taken again, so keying on
+                    # it adds no identity-store read and no audit event to the
+                    # start path. Best-effort like the stamp below: a provider that
+                    # will not carry it simply keys on an empty era, which is the
+                    # placement it had before the key had the field.
+                    # ``setattr`` because the static type here is ``LLMProvider``,
+                    # the interface every backend implements, and the slot belongs
+                    # to the one that spawns chat runtimes.
+                    with contextlib.suppress(Exception):
+                        setattr(provider, "pre_spawn_identity", pre_spawn)
+                        # Hand the SAME reader over so the placement can RE-READ the
+                        # account era AFTER it takes a lease: the acquisition wait
+                        # (a founding spawn under the registry lock) is exactly the
+                        # window a credential change can land in, and the pre-read
+                        # alone cannot see one that arrives during it. Best-effort:
+                        # a provider that will not carry it keeps only the pre-read,
+                        # the behaviour before the confirm re-read existed.
+                        setattr(
+                            provider,
+                            "spawn_identity_reader",
+                            getattr(owner, "spawn_identity_reader", None),
+                        )
                     await provider.start()
                 except (asyncio.CancelledError, Exception):
                     if preparation.revision:
@@ -2672,7 +2711,41 @@ class SessionAllocationService:
                         pre_spawn=pre_spawn,
                     )
                 except BaseException:
-                    owner._dispatch_hard_kill(provider)
+                    # ``start()`` RETURNED. A chat-share provider is already
+                    # holding the lease its own placement took before the spawn,
+                    # and its native session + queue are resident on the (possibly
+                    # shared) process. For it, releasing the lease alone would leave
+                    # that session, its queue and its MCP children on a runtime a
+                    # co-tenant keeps alive -- a leak no later pass reclaims -- so
+                    # run the provider's own shutdown, which DESTROYS this session's
+                    # handle (evicting it), releases the lease, and kills the
+                    # runtime only when this was its last holder.
+                    #
+                    # A NON-SHARING provider (a subagent, a spec-resume prefetch, a
+                    # cron/task session) holds no lease, owns its own process, and
+                    # is torn down by the executor hard kill -- never inline, since
+                    # ``_sync_kill_provider`` blocks the loop. ``holds_runtime_lease``
+                    # tells the two apart.
+                    #
+                    # As a TASK under ``shield``: the exception in flight here is
+                    # usually ``CancelledError``, and a bare await would take the
+                    # next cancellation and re-raise before the shutdown settled --
+                    # stranding the session and the lease this arm exists to clean
+                    # up. A hard kill is the fallback only when the graceful
+                    # shutdown itself fails.
+                    if holds_runtime_lease(provider):
+                        _shutdown = asyncio.ensure_future(provider.shutdown())
+                        while not _shutdown.done():
+                            try:
+                                await asyncio.shield(_shutdown)
+                            except asyncio.CancelledError:
+                                continue
+                        try:
+                            _shutdown.result()
+                        except Exception:
+                            owner._dispatch_hard_kill(provider)
+                    else:
+                        owner._dispatch_hard_kill(provider)
                     if starting_pid is not None:
                         self._starting_pids.discard(starting_pid)
                     raise
@@ -2866,14 +2939,42 @@ class SessionAllocationService:
         except BaseException:
             if preparation.revision:
                 self._remember_capability_failure(key, preparation)
-            # The ONE of these cleanup paths that can be past registration: this
-            # handler spans the lock section that registers the session, so a
-            # failure after it leaves a tenant holding a lease. Release before the
-            # kill or the gate refuses it and the process leaks -- the cleanup
-            # would be refusing its own teardown. Every earlier hard-kill site in
-            # this file is pre-registration and holds no lease.
-            await release_session_lease(provider)
-            owner._dispatch_hard_kill(provider)
+            # The cleanup path that spans registration: this handler covers the
+            # lock section that registers the session, so a failure after it
+            # leaves a tenant holding a lease. Release before the kill or the gate
+            # refuses it and the process leaks -- the cleanup would be refusing
+            # its own teardown.
+            #
+            # Registration is not the only line that makes a lease outstanding. An
+            # eligible chat-share start takes its lease BEFORE the spawn, so the
+            # post-``start()`` stamp handler above holds one too and cleans up for
+            # the same reason. A hard-kill site EARLIER than that start is
+            # pre-lease and kills unconditionally.
+            #
+            # Run the provider's own shutdown rather than release-then-maybe-kill
+            # for a CHAT-SHARE provider: a failure after registering a session that
+            # JOINED a shared process must EVICT that session -- destroy its handle
+            # so its native session, queue and MCP children leave the surviving
+            # runtime -- while killing the process only when this was its last
+            # holder. Releasing the lease alone would leave the abandoned session
+            # resident on a runtime a co-tenant keeps alive. A NON-SHARING provider
+            # holds no lease, owns its process, and is torn down by the executor
+            # hard kill (never inline). ``holds_runtime_lease`` tells them apart.
+            # Cancellation-drained via a shielded task; a hard kill is the fallback
+            # only when the graceful shutdown itself fails.
+            if holds_runtime_lease(provider):
+                _shutdown = asyncio.ensure_future(provider.shutdown())
+                while not _shutdown.done():
+                    try:
+                        await asyncio.shield(_shutdown)
+                    except asyncio.CancelledError:
+                        continue
+                try:
+                    _shutdown.result()
+                except Exception:
+                    owner._dispatch_hard_kill(provider)
+            else:
+                owner._dispatch_hard_kill(provider)
             raise
         finally:
             if starting_pid is not None:
