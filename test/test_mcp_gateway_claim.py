@@ -16,7 +16,8 @@ verify:
 * the PID index is populated at register and cleaned up at teardown,
 * the stub Register payload carries the ``ancestor_pids`` chain, and
 * the ``claim`` sender module (``mcp_gateway.claim``) round-trips against a
-  real unix socket and no-ops safely without its preconditions.
+  real unix socket, treats ``claimed`` and ``claim-noop`` as acknowledged and
+  every other reply as a failure, and no-ops safely without its preconditions.
 """
 from __future__ import annotations
 
@@ -977,7 +978,7 @@ def _endpoint_dir() -> str | None:
 @pytest.mark.asyncio
 async def test_send_claim_roundtrip(short_sock_dir) -> None:
     """The sender round-trips a claim frame over a real unix socket and treats
-    a ``claimed`` ack as success, anything else as failure."""
+    a ``claimed`` ack as success."""
     received: list[dict[str, Any]] = []
     sock = short_sock_dir / "gw.sock"
 
@@ -998,6 +999,83 @@ async def test_send_claim_roundtrip(short_sock_dir) -> None:
     assert received[0]["type"] == "claim" and received[0]["pid"] == 777
     assert received[0]["caller"]["session_key"] == "dashboard:chat-RT-1"
     assert received[0]["caller"]["session_type"] == "dashboard"
+
+
+async def _serve_one_reply(sock: Path, reply: bytes) -> Any:
+    """A gatewayd stand-in that reads one claim frame and answers ``reply``
+    verbatim (``b""`` closes without answering, the empty-reply shape)."""
+
+    async def _serve(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await reader.readline()
+        if reply:
+            writer.write(reply)
+            await writer.drain()
+        writer.close()
+
+    return await transport.serve(sock, _serve, limit=1 << 16)
+
+
+def _sender_records(caplog: pytest.LogCaptureFixture) -> list[Any]:
+    return [r for r in caplog.records if r.name == "kiro_crew.mcp_gateway.claim"]
+
+
+@pytest.mark.asyncio
+async def test_send_claim_noop_is_acknowledged_pending_at_info(
+    short_sock_dir, caplog: pytest.LogCaptureFixture
+) -> None:
+    """``claim-noop`` is gatewayd's answer when the claim arrives before the
+    session's stubs register (the usual ordering): the binding is kept for the
+    register that follows, so the sender treats it as acknowledged and logs it
+    at INFO. A WARNING here fires on every healthy session start and buries the
+    one case that matters (every claim on the host answering noop)."""
+    sock = short_sock_dir / "noop.sock"
+    reply = json.dumps({"type": "claim-noop", "updated": 0, "connections": 0}).encode() + b"\n"
+    server = await _serve_one_reply(sock, reply)
+    try:
+        with caplog.at_level("INFO", logger="kiro_crew.mcp_gateway.claim"):
+            ok = await claim_mod.send_claim(str(sock), 7, "dashboard:x")
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert ok is True
+    records = _sender_records(caplog)
+    assert [r.levelname for r in records] == ["INFO"]
+    assert "claim-push acknowledged, pending" in records[0].message
+    assert "session token binding" in records[0].message
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply",
+    [
+        pytest.param(
+            json.dumps({"type": "claim-rejected", "reason": "test"}).encode() + b"\n",
+            id="claim-rejected",
+        ),
+        pytest.param(b"", id="empty-reply"),
+        pytest.param(json.dumps({"updated": 0}).encode() + b"\n", id="no-type"),
+        pytest.param(json.dumps(["claimed"]).encode() + b"\n", id="non-dict"),
+        pytest.param(json.dumps({"type": "claim-later"}).encode() + b"\n", id="unknown-type"),
+    ],
+)
+async def test_send_claim_non_ack_replies_return_false_at_warning(
+    short_sock_dir, caplog: pytest.LogCaptureFixture, reply: bytes
+) -> None:
+    """A rejection, an empty reply and every malformed shape stay a failure:
+    ``send_claim`` returns False and logs ONE ``not acknowledged`` WARNING, so
+    the noop downgrade never widens into swallowing a real refusal."""
+    sock = short_sock_dir / "nak.sock"
+    server = await _serve_one_reply(sock, reply)
+    try:
+        with caplog.at_level("INFO", logger="kiro_crew.mcp_gateway.claim"):
+            ok = await claim_mod.send_claim(str(sock), 7, "dashboard:x")
+    finally:
+        server.close()
+        await server.wait_closed()
+    assert ok is False
+    records = _sender_records(caplog)
+    assert [r.levelname for r in records] == ["WARNING"]
+    assert "claim-push not acknowledged" in records[0].message
 
 
 @pytest.mark.asyncio

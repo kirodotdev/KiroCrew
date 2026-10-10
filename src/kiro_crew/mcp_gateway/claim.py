@@ -164,18 +164,34 @@ async def _send_claim_inner(
         await writer.drain()
         raw = await reader.readline()
         resp = json.loads(raw.decode("utf-8")) if raw else {}
-        ok = isinstance(resp, dict) and resp.get("type") == "claimed"
-        if ok:
+        kind = resp.get("type") if isinstance(resp, dict) else None
+        if kind == "claimed":
             logger.info(
                 "claim-push acknowledged: pid=%d session_key=%s updated=%s",
                 pid, session_key, resp.get("updated"),
             )
-        else:
-            logger.warning(
-                "claim-push not acknowledged: pid=%d session_key=%s resp=%r",
-                pid, session_key, resp,
+            return True
+        if kind == "claim-noop":
+            # gatewayd accepted the claim and recorded the session token
+            # binding, but no stub connection is indexed under the pid yet.
+            # That is the normal ordering (the claim is pushed before the
+            # session's stubs launch, and the register that follows resolves
+            # through the kept binding), so it is an acknowledgement, not a
+            # fault. A wedged pid index answers the same way; the two differ
+            # in aggregate (every claim on the host answering noop, none ever
+            # "claimed"), which is why the line is kept at INFO.
+            logger.info(
+                "claim-push acknowledged, pending: pid=%d session_key=%s matched "
+                "no stub connection yet; gatewayd keeps the session token binding "
+                "for the stubs that register next",
+                pid, session_key,
             )
-        return ok
+            return True
+        logger.warning(
+            "claim-push not acknowledged: pid=%d session_key=%s resp=%r",
+            pid, session_key, resp,
+        )
+        return False
     finally:
         writer.close()
         try:
@@ -192,6 +208,14 @@ async def send_claim(
     stub_session_token: str = "",
 ) -> bool:
     """Send one claim frame to gatewayd. Returns True when acknowledged.
+
+    gatewayd answers one of three ways. ``claimed`` means live stub connections
+    were retargeted. ``claim-noop`` means the claim was accepted and the session
+    token binding recorded, but no stub connection is indexed under the pid yet
+    (the claim is pushed before the session's stubs register, so this is the
+    usual first answer); both count as acknowledged and log at INFO.
+    ``claim-rejected`` (a malformed frame), an empty reply or an unrecognised
+    one return False and log at WARNING.
 
     The whole round-trip (connect + write + read-ack) runs under a single
     aggregate ``asyncio.wait_for`` bound of ``_CLAIM_TIMEOUT_SECS`` — a wedged
