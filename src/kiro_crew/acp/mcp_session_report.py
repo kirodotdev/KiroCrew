@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (
     JsonRpcMessage,
 )
 from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+from kiro_crew.agent_sdk.tool_search import TOOL_SEARCH_LOADER_TOOL
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -402,18 +403,31 @@ def servers_exposing_no_tools(
 ) -> tuple[str, ...]:
     """Servers that started and that the spec grants, yet gave the session no tool.
 
-    Reads kiro-cli's native ``/mcp`` result (each server's status after its
-    ``tools/list``) and its ``/tools`` result (the tools the session actually
-    exposes, each tagged ``mcp:<server>``). A server that is ``running`` and
-    contributes no exposed tool is the visible trace of a dropped tool-name
-    clash: when two servers publish the same name, kiro-cli keeps one and drops
-    the other's whole set without a word.
+    Reads kiro-cli's native ``/mcp`` result (each server's status and advertised
+    ``toolCount`` after its ``tools/list``) and its ``/tools`` result (the tools
+    the session actually exposes, each tagged ``mcp:<server>``). A server that is
+    ``running`` and contributes no exposed tool is the visible trace of a dropped
+    tool-name clash: when two servers publish the same name, kiro-cli keeps one
+    and drops the other's whole set without a word.
 
     The spec is read so a server the agent never asked for is not reported: a
     ``tools`` list that does not grant the server (``*``, ``@server`` or
     ``@server/tool``) hides it on purpose, and so does an ``excludedTools`` entry
     or a per-server ``disabledTools``. Anything unreadable answers empty, so the
     caller warns only on evidence.
+
+    MCP Tool Search, on by default, is the other reason a running server is
+    absent from ``/tools``: it holds every MCP tool out of the session until the
+    model loads one with the ``tool_search`` loader, so at session start a
+    healthy server has no ``/tools`` row at all. Whether a GIVEN session defers
+    cannot be read from configuration -- kiro-cli defers only once its
+    ``minPct``/``minTokens`` thresholds are crossed -- so this reads the evidence
+    the session itself produces: the loader tool is in ``/tools`` exactly when
+    deferral is active. When it is, absence from ``/tools`` is expected, so a
+    server is reported only when ``/mcp`` proves it empty (``toolCount == 0``); a
+    positive or unreadable count is a deferred-vs-clash ambiguity the detector
+    resolves in silence. With no loader present, nothing is deferred, so absence
+    from ``/tools`` is the clash signal as before and ``toolCount`` is not read.
     """
     mcp_data = _command_data(mcp_result)
     tools_data = _command_data(tools_result)
@@ -436,6 +450,7 @@ def servers_exposing_no_tools(
         and isinstance(row.get("source"), str)
         and row["source"].startswith("mcp:")
     }
+    deferring = _tool_search_active(tools)
     out: list[str] = []
     for server in servers:
         if not isinstance(server, dict) or server.get("status") != "running":
@@ -448,12 +463,50 @@ def servers_exposing_no_tools(
         entry = declared.get(name)
         if isinstance(entry, dict) and entry.get("disabledTools"):
             continue
+        if deferring and not _reports_zero_tools(server):
+            # Tool Search is deferring in this session, so this server's absence
+            # from /tools is expected rather than a lost clash. Only a /mcp
+            # toolCount of exactly 0 proves it gave the session nothing; a
+            # positive or unreadable count is a deferred-vs-clash ambiguity the
+            # detector resolves in silence rather than a false warning.
+            continue
         clean = sanitize_sink_text(name, _NAME_CAP)
         if clean and clean not in out:
             out.append(clean)
     # Not capped here: :meth:`McpSessionReport.record_no_tools` owns the bound
     # and counts what it drops, so a long answer is never silently shortened.
     return tuple(out)
+
+
+def _tool_search_active(tools: list[Any]) -> bool:
+    """Whether this session's ``/tools`` shows MCP Tool Search is deferring.
+
+    The ``tool_search`` loader is in ``/tools`` exactly when the session defers
+    its MCP tools -- the model needs it to load them -- so its presence is the
+    one per-session, backend-independent signal that a server's absence from
+    ``/tools`` is deferral rather than a dropped clash. Matched on the tool name
+    kiro-cli publishes it under, not on a ``source`` tag, which released versions
+    spell differently. A built-in tool carries no ``mcp:`` source.
+    """
+    return any(
+        isinstance(row, dict)
+        and row.get("name") == TOOL_SEARCH_LOADER_TOOL
+        and not (isinstance(row.get("source"), str) and row["source"].startswith("mcp:"))
+        for row in tools
+    )
+
+
+def _reports_zero_tools(server: dict[str, Any]) -> bool:
+    """True only when the ``/mcp`` row proves the server advertised no tool.
+
+    A ``toolCount`` of exactly ``0`` is that proof. A missing, non-integer or
+    negative count -- and the ``bool`` that ``int`` would accept as ``0``/``1``
+    -- is unreadable, so it is NOT proof of emptiness and the server is left
+    unreported. Mirrors :func:`kiro_crew.connections.tool_test` reading of the
+    same field.
+    """
+    count = server.get("toolCount")
+    return isinstance(count, int) and not isinstance(count, bool) and count == 0
 
 
 def _joined(names: list[str]) -> str:
