@@ -2213,7 +2213,24 @@ state a close compensates is not all scoped the same way.
   metadata, its flush stamps no id and its save retires nothing, so a
   downgrade-deliver-reupgrade cycle replays already-delivered notes as
   duplicates — bounded harm, and the chosen at-least-once direction, but the
-  invariant silently does not hold across versions.) The pre-save
+  invariant silently does not hold across versions.) A close flushes the hold before
+  its archive save, so each held note's visible row reaches the transcript a History
+  resume reads; that path does not read `deferred_notes`, so before the flush a note
+  the DELETE had answered 200 for left no row there. A note with no context half is
+  retired by its row's `meta.noteId` in the same write. A note that still owes a
+  context half is flushed differently while the slot is closing (`slot._closing`):
+  its row carries `meta.noteRowFor` instead of `noteId`, so no save retires the
+  durable entry, and the note stays in the hold marked `rowCommitted` with its context
+  intact. The entry is the same `deferred_notes` entry the `/note` POST wrote; no new
+  entry type is added. A restore that finds a `noteRowFor` row for an entry marks it
+  `rowCommitted` (`drop_committed_restored_notes`), and a later non-closing flush
+  delivers only its context to `_pending_context`, appends no second row, and records
+  the id in `_dropped_note_ids` so the next full save retires it. An aborted close
+  keeps the marked note, so the next turn's flush delivers its context. The archival flush a close runs after the pop appends its rows
+  with `broadcast=False`: live delivery routes by slot name, and by then a
+  replacement may hold the name. When the archive save then fails and the slot takes
+  its name back, the restore arm delivers those rows live, since the tab never saw
+  them. The pre-save
   exits need no store failure to reach it either; they return before the save is
   attempted, in a window that opens while a turn is in flight. So every hand-over
   exit routes through `_persist_handover_tail(state, name, slot)`, which flushes

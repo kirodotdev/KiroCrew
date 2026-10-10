@@ -538,6 +538,15 @@ async def close_slot(
             slot.cancel_close()
 
 
+def _emit_archived_rows(slot: "_ChatSlot", appended: int) -> None:
+    """Deliver the rows a broadcast-free archival flush appended, once the slot owns its key again."""
+    if appended <= 0 or not slot._on_message or slot._has_reader:
+        return
+    for msg in slot.messages[-appended:]:
+        if msg.get("role") not in ("chunk", "done", "user"):
+            slot._on_message(slot.key, msg)  # type: ignore[operator]
+
+
 async def _close_slot(
     state: DashboardState,
     slot: "_ChatSlot",
@@ -841,7 +850,12 @@ async def _close_slot(
         # Committed, so the conductor may be told now and not before.
         await _wake_conductor_for_closed_worker(name)
         return
+    rows_before = slot.total_messages
     try:
+        # A turn that outlived the cancel wait has not run its own teardown flush,
+        # and this frame is the last one that can commit the hold before the pop.
+        # The key may already name a replacement, so nothing is delivered live.
+        slot.flush_deferred_notes(broadcast=False)
         await save_slot_off_loop(state, slot, closed=True, closed_at=closed_at, best_effort=False)
     except Exception:
         # Save failed — restore slot so data isn't lost
@@ -854,6 +868,7 @@ async def _close_slot(
         restored = _slot_still_ours(state, name, slot)
         if restored:
             state._slots[name] = slot
+            _emit_archived_rows(slot, slot.total_messages - rows_before)
         else:
             # Not restored means not referenced: the periodic flush that would have
             # retried this write only visits `_slots`, so without this the failure
@@ -1191,6 +1206,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
                 # archived, and something was lost" rather than "nothing to do".
                 failed.append(name)
             continue
+        rows_before = removed.total_messages
         try:
             # Order is unchanged and load-bearing: the cancel above, then the
             # flush, then the save. What the guard adds is failure handling, and
@@ -1205,7 +1221,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # restart and reported as success. Sharing the arm restores the
             # slot with its notes still held and reports the key in ``failed``
             # instead.
-            removed.flush_deferred_notes()
+            removed.flush_deferred_notes(broadcast=False)
             await save_slot_off_loop(
                 state, removed, closed=True, closed_at=closed_at, best_effort=False
             )
@@ -1221,6 +1237,7 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             # original object we hold.
             if _slot_still_ours(state, name, removed):
                 state._slots[name] = removed
+                _emit_archived_rows(removed, removed.total_messages - rows_before)
                 # The slot is live under its own name again, so its close is
                 # over: release the admission fence or the restored tab refuses
                 # every regenerate, edit-resend and rewind for good.

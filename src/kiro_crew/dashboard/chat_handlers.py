@@ -80,6 +80,7 @@ from kiro_crew.dashboard.chat_api.slot_detail import (  # noqa: F401
 from kiro_crew.dashboard.chat_api.slot_lifecycle import (  # noqa: F401
     _await_guarded_history_write,
     _close_slot,
+    _emit_archived_rows,
     _NudgeRetireFailed,
     _pending_guarded_history_writes,
     _release_closed_execution,
@@ -2770,6 +2771,7 @@ async def _persist_handover_tail(
     a change to what a durable metadata line MEANS for a key two slots share;
     the write stays as it is, and the loss is reported rather than silent.
     """
+    notes_lost = False
     try:
         tightening = _tighten_replacement_to_restricted_original(state, name, slot)
     except UnknownMemoryStore:
@@ -2796,6 +2798,9 @@ async def _persist_handover_tail(
             len(slot._deferred_notes),
             exc_info=True,
         )
+        # A held note IS a row owed that did not reach disk, which the contract above
+        # answers False. Logging alone let both callers report the close as clean.
+        notes_lost = True
     # ``_disk_window_len`` is how much of the current window the last committed save
     # covered, so the difference is exactly what has never reached disk. ``_dirty``
     # covers the other shape of unsaved state: an in-place edit to a row already
@@ -2815,7 +2820,7 @@ async def _persist_handover_tail(
         lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
         if lost:
             _report_lost_queued_prompts(state, name, lost, history_key)
-        return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+        return _HandoverDrainResult(rows_committed=not notes_lost, prompts_lost=lost)
     try:
         committed = await save_slot_off_loop(
             state,
@@ -2893,7 +2898,7 @@ async def _persist_handover_tail(
     lost = await _owed_prompts_lost_on_line(state, name, slot, history_key)
     if lost:
         _report_lost_queued_prompts(state, name, lost, history_key)
-    return _HandoverDrainResult(rows_committed=True, prompts_lost=lost)
+    return _HandoverDrainResult(rows_committed=not notes_lost, prompts_lost=lost)
 
 
 def _unblock_pending_waits(state: DashboardState, slot: _ChatSlot) -> None:

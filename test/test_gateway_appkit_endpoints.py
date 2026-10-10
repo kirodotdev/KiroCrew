@@ -3045,7 +3045,12 @@ class TestCleanupPersistsHeldNotes:
         assert drained == [], (
             "the doomed turn drained the note's context half before cancellation"
         )
-        assert any(mark in (e.get("content") or "") for e in slot._pending_context), (
+        held_contexts = [
+            (n.get("context") or {}).get("content") or ""
+            for n in slot._deferred_notes
+            if n.get("rowCommitted")
+        ]
+        assert any(mark in c for c in held_contexts), (
             "the note's context half was consumed and is now owed to nobody"
         )
         # Regression: the visible row still reaches the archived record.

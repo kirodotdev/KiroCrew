@@ -5182,9 +5182,9 @@ class _ChatSlot:
         """Held notes whose context half has not reached the queue yet."""
         return self._buffers.deferred_context_count(self)
 
-    def flush_deferred_notes(self) -> int:
+    def flush_deferred_notes(self, *, broadcast: bool = True) -> int:
         """Flush held notes in order, restoring the unwritten suffix on failure."""
-        return self._buffers.flush_deferred_notes(self, logger=logger)
+        return self._buffers.flush_deferred_notes(self, logger=logger, broadcast=broadcast)
 
     def register_approval(
         self, request_id: str, future: asyncio.Future[str], permission_row: dict
