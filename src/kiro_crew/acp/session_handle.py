@@ -1594,8 +1594,9 @@ class AcpSessionHandle:
           compaction flow (session.py, Slack !compact) depends on watching
           ``compaction/status`` on the prompt stream.
         - a non-kiro backend (KAS) — ``_kiro.dev/commands/execute`` is
-          kiro-cli-specific; KAS sessions keep degrading softly through
-          session/prompt instead of erroring on an unimplemented method.
+          kiro-cli-specific, so KAS takes session/prompt instead of an
+          unimplemented method. The dashboard chat path answers KAS harness
+          commands itself before reaching here (``_answer_slash_without_channel``).
 
         The native turn is bounded at ``_COMMAND_TURN_TIMEOUT_SECS`` (matching
         send_command's RPC wait) because neither turn watchdog arms on a

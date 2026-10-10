@@ -4917,23 +4917,29 @@ async def _answer_slash_without_channel(
     if command.lower() == "/clear":
         await _reset_conversation(slot, session_key, {})
         torn_down = await _consume_pending_reset(state, slot, allow_discard=True)
-        outcome = "discarded" if torn_down else "queued"
+        # The consumer's True also covers a queued project reset; only a spent
+        # discard flag means THIS conversation was dropped.
+        cleared = torn_down and not slot._pending_discard_conversation_key
+        outcome = "discarded" if cleared else "queued"
         if torn_down:
             schedule_eager_spawn(state, slot)
+        if cleared:
             # The plan goes with the conversation, as on kiro's native /clear:
             # a kept pill would be rebuilt into the fresh one at its cold start.
             if slot.set_todo(None):
                 state.broadcast_ws("todo_update", {"slot": slot.key, "todo": None})
-            text = "🗑 Conversation cleared. Earlier messages stay visible here."
+            text = (
+                "🗑 Conversation cleared. Earlier messages stay visible, but the agent "
+                "no longer remembers them."
+            )
         else:
             text = (
-                "🗑 Conversation reset queued. It lands at the end of a later turn, once "
-                "no turn is in flight and sub-agents have finished. Until then, replies "
-                "still see this conversation."
+                "🗑 Clear queued. The agent is busy right now, so your next reply "
+                "may still remember this conversation."
             )
     else:
         outcome = "unsupported_backend"
-        text = f"⚠ `{command}` is not supported on this backend."
+        text = f"⚠ `{command}` doesn't work with KAS. It was not sent to the agent."
     sel().log_tool_invocation(
         session_key=session_key,
         agent=slot.agent or "kirocrew",
@@ -4968,7 +4974,10 @@ async def _consume_pending_reset(
     would hand the next turn a reconstruction of the conversation the caller
     discarded.
 
-    ``allow_discard`` IS THE BOUNDARY, and only the end-of-turn caller sets it.
+    ``allow_discard`` IS THE BOUNDARY. Two callers set it: the end-of-turn one,
+    and a no-channel ``/clear`` (``_answer_slash_without_channel``), which runs
+    before any session work and relies on ``skip_if_busy`` to refuse under a
+    streaming channel turn.
     The project reset is consumed at three points including the one just before
     ``get_or_create``, and that pre-acquire point is safe for it only in the
     narrow sense its own comment claims: no lock is held by THIS turn, so
@@ -7891,10 +7900,11 @@ async def _end_turn_tail(
     if outcome is not None:
         # End-of-turn fallback: catches set_project and reset_conversation calls
         # that fired mid-turn, after the start-of-turn consume already ran. This
-        # is the ONLY caller that may consume a queued conversation discard --
-        # the earlier consume points run just before a turn acquires the
-        # session, where a teardown can land under a channel turn already
-        # streaming on it. Guarded because a raise here would skip the queue
+        # is the only TURN-PATH caller that may consume a queued conversation
+        # discard -- the earlier consume points run just before a turn acquires
+        # the session, where a teardown can land under a channel turn already
+        # streaming on it. A no-channel /clear also consumes one, relying on
+        # skip_if_busy for that case. Guarded because a raise here would skip the queue
         # hand-off below, silently stranding queued work at the end of an
         # otherwise successful turn.
         try:

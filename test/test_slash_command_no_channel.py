@@ -115,6 +115,25 @@ class TestKasClear:
         assert any("queued" in t for t in _texts(slot)), _texts(slot)
         assert slot.todo_payload() is not None
 
+    @pytest.mark.asyncio
+    async def test_a_project_reset_alone_does_not_claim_the_clear(self, tmp_path) -> None:
+        """A queued project reset that tears down while the discard is refused
+        must not report the conversation cleared or drop the plan."""
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
+        state.sessions.reset = AsyncMock(return_value=True)
+        state.sessions.discard_conversation = AsyncMock(return_value=False)
+        slot._pending_reset_history_key = effective_session_key(slot)
+        slot.set_todo({"description": "plan", "tasks": [{"id": "1", "task_description": "a"}]})
+
+        await _run_chat(state, slot, "/clear")
+
+        dispatched.assert_not_called()
+        state.sessions.reset.assert_awaited()
+        assert slot._pending_discard_conversation_key == effective_session_key(slot)
+        assert not any("Conversation cleared" in t for t in _texts(slot)), _texts(slot)
+        assert any("queued" in t for t in _texts(slot)), _texts(slot)
+        assert slot.todo_payload() is not None
+
 
 class TestKasOtherCommands:
     @pytest.mark.asyncio
@@ -128,7 +147,9 @@ class TestKasOtherCommands:
         state.sessions.get_or_create.assert_not_called()
         state.sessions.discard_conversation.assert_not_awaited()
         first = command.split()[0]
-        assert any(f"`{first}`" in t and "not supported" in t for t in _texts(slot)), _texts(slot)
+        assert any(
+            f"`{first}`" in t and "doesn't work with KAS" in t for t in _texts(slot)
+        ), _texts(slot)
 
     @pytest.mark.asyncio
     async def test_blocked_command_stays_blocked(self, tmp_path) -> None:
@@ -148,7 +169,7 @@ class TestKasOtherCommands:
         await _run_chat(state, slot, "/my-prompt fix the build")
 
         assert dispatched.called
-        assert not any("not supported" in t for t in _texts(slot))
+        assert not any("doesn't work with KAS" in t for t in _texts(slot))
 
 
 class TestKiroUnchanged:
