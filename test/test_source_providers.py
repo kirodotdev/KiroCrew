@@ -5934,6 +5934,24 @@ def _app(
     return app
 
 
+def _pin_local_owner_gate(monkeypatch) -> None:
+    """Admit the request at the host-provenance gate ``api_token_local`` consults.
+
+    The real gate resolves the caller's PID from the kernel's live loopback
+    connection table (``platform_compat.get_tcp_peer_pid`` reads ``/proc/net/tcp``
+    and every ``/proc/<pid>/fd``) and fails closed with 403 whenever that table is
+    changing or ambiguous. Under xdist, sibling workers churn that table, so the
+    host is an input to the test. The tests below pin the token's subject and
+    claims, not provenance; the gate's own verdicts are pinned in
+    ``test_member_memory_auth.py`` and ``test_dashboard_handlers_core_coverage.py``.
+    Patched on its defining module, which the handler imports at call time.
+    """
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.local_owner_bootstrap_allowed",
+        lambda _request: True,
+    )
+
+
 @pytest.mark.asyncio
 async def test_local_token_uses_configured_owner_subject(monkeypatch) -> None:
     from kiro_crew.dashboard.handlers import core
@@ -5942,6 +5960,7 @@ async def test_local_token_uses_configured_owner_subject(monkeypatch) -> None:
     audit = MagicMock()
     monkeypatch.setattr(core, "generate_token", generate)
     monkeypatch.setattr(core, "_sel", lambda: audit)
+    _pin_local_owner_gate(monkeypatch)
     app = web.Application()
     app["local_secret"] = "local-secret"
     state = MagicMock()
@@ -5969,6 +5988,7 @@ async def test_local_token_carries_embed_parent_port_claim(monkeypatch) -> None:
     generate = MagicMock(return_value="owner-token")
     monkeypatch.setattr(core, "generate_token", generate)
     monkeypatch.setattr(core, "_sel", lambda: MagicMock())
+    _pin_local_owner_gate(monkeypatch)
     app = web.Application()
     app["local_secret"] = "local-secret"
     state = MagicMock()
@@ -5996,6 +6016,7 @@ async def test_local_token_uses_local_owner_subject_without_configured_owner(mon
     audit = MagicMock()
     monkeypatch.setattr(core, "generate_token", generate)
     monkeypatch.setattr(core, "_sel", lambda: audit)
+    _pin_local_owner_gate(monkeypatch)
     app = web.Application()
     app["local_secret"] = "local-secret"
     state = MagicMock()
