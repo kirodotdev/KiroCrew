@@ -894,6 +894,37 @@ class TestSpawnAdmissionGate:
         assert self._outcomes(mock_sel).count("never_started_memory_pressure") == 1
         assert any("for its whole wait" in r.getMessage() for r in caplog.records)
 
+    def test_a_root_start_restarts_a_held_rows_wait(self) -> None:
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel"):
+            assert mgr._memory_pressure_holds("r1", 2) == "held"
+            now = time.monotonic()
+            mgr._pressure_holds["r1"] = now - _HOLD_BOUND_SECS - 1
+            mgr._root_started_at = now - _HOLD_BOUND_SECS / 2
+            assert mgr._memory_pressure_holds("r1", 2) == "held"
+            mgr._root_started_at = now - _HOLD_BOUND_SECS - 1
+            assert mgr._memory_pressure_holds("r1", 2) == "expired"
+
+    @pytest.mark.parametrize(
+        ("parent", "stamped"),
+        [
+            pytest.param("sess-1", True, id="root"),
+            pytest.param("subagent:busy", False, id="nested-child"),
+        ],
+    )
+    def test_a_registered_start_stamps_root_progress(
+        self, monkeypatch: pytest.MonkeyPatch, parent: str, stamped: bool
+    ) -> None:
+        mgr = self._mgr()
+        self._busy(mgr)
+        self._level(monkeypatch, 1)
+        before = time.monotonic()
+        info, _events, _sel = self._spawn_capturing_queued(
+            mgr, memory=(True, 8.0), parent_session_key=parent
+        )
+        assert info is not None and info.id in mgr._agents
+        assert (mgr._root_started_at >= before) is stamped
+
     def test_an_expired_held_row_is_ended_never_started(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

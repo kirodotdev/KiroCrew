@@ -1192,7 +1192,8 @@ _RECOVERY_SLOT_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_WAIT_SECS = 60.0
 _DEDICATED_TOPUP_POLL_SECS = 2.0
 # The most one root start waits on the macOS kernel memory-pressure hold, clocked
-# from its first hold, is ``agent.subagent_queue_max_wait_secs`` (read live off
+# from its first hold or the last root start, whichever is later, is
+# ``agent.subagent_queue_max_wait_secs`` (read live off
 # the manager, 0 for no bound); past it the start is ended, never started.
 # A held row's clock older than this many times that bound (the key's default
 # when the bound is lower or off) belongs to a row that left without a
@@ -3749,6 +3750,7 @@ class SubagentManager:
         self._pressure_episode_spent = False
         self._pressure_episode_read_at = 0.0
         self._pressure_holds: dict[str, float] = {}
+        self._root_started_at = float("-inf")
         self._pressure_hold_expired: set[str] = set()
         # agent_id -> (closed parked time, current park's start, its planned
         # end), all integer ``time.monotonic_ns()`` nanoseconds, for a start

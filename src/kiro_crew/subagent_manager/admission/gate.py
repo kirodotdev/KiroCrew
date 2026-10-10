@@ -1533,6 +1533,8 @@ class _GateMixin(ManagerComponent):
         info._taskq_generation = taskq_generation
         self._manager._agents[agent_id] = info
         self._manager._forget_pending_start(agent_id)
+        if not _is_child:
+            self._manager._root_started_at = time.monotonic()
         self._record_crew_log_dispatch(info, from_queue=_from_queue, asked=_crew_log_asked)
         if not _dispatch_now:  # a ClaimPoint re-entry already holds its reservation
             self._manager._running_count += 1
@@ -1773,8 +1775,8 @@ class _GateMixin(ManagerComponent):
         """What the hold, applying at *level*, does with root start *agent_id*.
 
         ``"held"`` while it waits; ``"expired"`` once its own wait has run out
-        (``agent.subagent_queue_max_wait_secs`` from its first hold, read live;
-        0 is no bound) or the episode has
+        (``agent.subagent_queue_max_wait_secs`` from its first hold or the last
+        root start, whichever is later, read live; 0 is no bound) or the episode has
         outlived that bound (``_pressure_episode_spent``): the caller ends it,
         never started (``MEMORY_PRESSURE_NEVER_STARTED``). *available_gb* is the
         floor's figure when the caller read one (negative: unreadable), None
@@ -1790,7 +1792,7 @@ class _GateMixin(ManagerComponent):
         since = mgr._pressure_holds.setdefault(agent_id, now)
         name = platform_compat.memory_pressure_name(level)
         bound = mgr._admission.taskq_memory_wait_bound_secs()
-        own_wait_ran_out = bound > 0 and now - since >= bound
+        own_wait_ran_out = bound > 0 and now - max(since, mgr._root_started_at) >= bound
         if own_wait_ran_out or mgr._pressure_episode_spent:
             if commit_expiry and agent_id not in mgr._pressure_hold_expired:
                 mgr._pressure_hold_expired.add(agent_id)

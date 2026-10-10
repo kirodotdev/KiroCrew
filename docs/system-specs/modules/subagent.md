@@ -607,7 +607,12 @@ It keeps a start (`_memory_pressure_holds`) when, in addition:
   child would hold the parent on an episode only the child can end;
 - it is not a claim re-entry (`_dispatch_now`), which already holds its slot;
 - the start's own wait has not run out. A row's wait is clocked from the first
-  time it is held, and past `agent.subagent_queue_max_wait_secs` (read live off
+  time it is held or the last root start this gateway registered
+  (`_root_started_at`), whichever is later. A row behind a queue that keeps
+  starting is waiting for its turn, so its own wait runs out only after a
+  full bound with no root start. The clock is gateway-wide, so a busy
+  neighbouring chat's root starts also keep this chat's held rows waiting.
+  The episode bound (`_pressure_episode_spent`) is separate and unchanged. Past `agent.subagent_queue_max_wait_secs` (read live off
   the manager at each check through `taskq_memory_wait_bound_secs`, the bound
   the store deferrals use; `0` is no bound) it never proceeds
   into the pressure it waited on: it is ended, never started
