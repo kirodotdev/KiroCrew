@@ -1,5 +1,6 @@
-"""Tests that the dashboard Stop button and Interrupt handler cascade
-cancellation to in-flight subagents via ``cancel_for_parent``.
+"""Tests that the dashboard Stop button cascades cancellation to in-flight
+subagents via ``cancel_for_parent``, and that other callers of
+``stop_slot_turn`` (steer-containment, session-control, work-ledger) do NOT.
 
 Regression tests for https://github.com/kirodotdev/KiroCrew/issues/18625
 """
@@ -7,6 +8,7 @@ Regression tests for https://github.com/kirodotdev/KiroCrew/issues/18625
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -48,6 +50,7 @@ class _FakeSlot:
         self._dirty = False
         self.source_links_invalidated = 0
         self._lock = asyncio.Lock()
+        self._turn_generation = 0
 
     def append(self, role, content, cls_meta):
         self.messages.append({"role": role, "content": content, "cls": cls_meta})
@@ -59,7 +62,6 @@ class _FakeSlot:
         self.source_links_invalidated += 1
 
     def take_pending_subagent_deliveries(self, contents):
-        """Stub for hard-kill path that settles discarded stage deliveries."""
         return []
 
 
@@ -90,26 +92,55 @@ def _make_subagents_mock():
     return mock
 
 
+def _make_request(state, *, force=False):
+    """Build a minimal mock request for api_chat_slot_stop."""
+    from aiohttp import web
+
+    app = web.Application()
+    app["state"] = state
+
+    request = MagicMock()
+    # Dashboard user press, not an app token.
+    request.get = lambda key, default="": default
+    request.app = app
+    request.match_info = {"slot": "test-slot"}
+    request.query = {"force": "true"} if force else {}
+    return request
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-async def _call_stop_slot_turn(state, slot, *, force=False):
+async def _call_stop_slot_turn(state, slot, *, force=False, source="dashboard"):
+    """Call stop_slot_turn directly (the shared helper)."""
     from kiro_crew.dashboard.chat_handlers import stop_slot_turn
 
     with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
         mock_sel.return_value.log_tool_invocation = MagicMock()
         mock_sel.return_value.log = MagicMock()
         with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
-            return await stop_slot_turn(state, slot, force=force)
+            return await stop_slot_turn(state, slot, force=force, source=source)
+
+
+async def _call_api_chat_slot_stop(state, *, force=False):
+    """Call the HTTP route handler directly."""
+    from kiro_crew.dashboard.chat_handlers import api_chat_slot_stop
+
+    request = _make_request(state, force=force)
+    with patch("kiro_crew.dashboard.chat_handlers.sel") as mock_sel:
+        mock_sel.return_value.log_tool_invocation = MagicMock()
+        mock_sel.return_value.log = MagicMock()
+        with patch("kiro_crew.dashboard.chat_handlers._reject_pending_approvals"):
+            return await api_chat_slot_stop(request)
 
 
 # ---------------------------------------------------------------------------
-# Tests: stop_slot_turn — soft stop path
+# Tests: api_chat_slot_stop — the cascade lives HERE
 # ---------------------------------------------------------------------------
 
-class TestStopSlotTurnCancelsSubagents:
-    """stop_slot_turn must call cancel_for_parent after stopping the turn."""
+class TestStopButtonCascadesToSubagents:
+    """The dashboard Stop button route must call cancel_for_parent."""
 
     @pytest.mark.asyncio
     async def test_soft_stop_calls_cancel_for_parent(self):
@@ -119,40 +150,65 @@ class TestStopSlotTurnCancelsSubagents:
         state = _FakeState(slot, subagents=subs)
         state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        await _call_stop_slot_turn(state, slot)
+        resp = await _call_api_chat_slot_stop(state)
+        body = json.loads(resp.body)
 
+        assert body.get("ok") is True
         subs.cancel_for_parent.assert_awaited_once()
-        # The cancel_key should be the slot's effective session key
-        call_args = subs.cancel_for_parent.call_args
-        assert call_args is not None
 
     @pytest.mark.asyncio
-    async def test_soft_stop_no_subagents_manager(self):
-        """Gracefully handles state without a subagents attribute."""
+    async def test_idle_outcome_still_cascades(self):
+        """Even when the provider has no active turn, subagents are stopped.
+
+        Subagents may outlive the parent turn that spawned them.
+        """
+        subs = _make_subagents_mock()
         slot = _FakeSlot()
-        # _FakeState without subagents kwarg — subagents is None
+        state = _FakeState(slot, subagents=subs)
+        state.sessions.stop_turn = AsyncMock(return_value="idle")
+
+        await _call_api_chat_slot_stop(state)
+
+        subs.cancel_for_parent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_hard_stop_calls_cancel_for_parent(self):
+        """A hard kill (second press) cascades to subagents."""
+        subs = _make_subagents_mock()
+        slot = _FakeSlot()
+        slot._stop_state = "soft_pending"  # simulate first press already done
+        state = _FakeState(slot, subagents=subs)
+        state.sessions.stop_turn = AsyncMock(return_value="hard")
+
+        await _call_api_chat_slot_stop(state, force=True)
+
+        subs.cancel_for_parent.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_subagents_manager(self):
+        """Gracefully handles state.subagents being None."""
+        slot = _FakeSlot()
         state = _FakeState(slot, subagents=None)
         state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        # Should not raise
-        result = await _call_stop_slot_turn(state, slot)
-        assert result.get("ok") is True
+        resp = await _call_api_chat_slot_stop(state)
+        body = json.loads(resp.body)
+        assert body.get("ok") is True
 
     @pytest.mark.asyncio
-    async def test_soft_stop_no_subagents_attr(self):
+    async def test_no_subagents_attr(self):
         """Gracefully handles state object that lacks subagents entirely."""
         slot = _FakeSlot()
         state = _FakeState(slot, subagents=None)
-        # Remove the attribute entirely to simulate old _FakeState
         del state.subagents
         state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        # Should not raise (getattr guard)
-        result = await _call_stop_slot_turn(state, slot)
-        assert result.get("ok") is True
+        resp = await _call_api_chat_slot_stop(state)
+        body = json.loads(resp.body)
+        assert body.get("ok") is True
 
     @pytest.mark.asyncio
-    async def test_soft_stop_cancel_for_parent_exception_swallowed(self):
+    async def test_cancel_for_parent_exception_swallowed(self):
         """An exception in cancel_for_parent must not block the stop."""
         subs = _make_subagents_mock()
         subs.cancel_for_parent = AsyncMock(side_effect=RuntimeError("db gone"))
@@ -160,57 +216,77 @@ class TestStopSlotTurnCancelsSubagents:
         state = _FakeState(slot, subagents=subs)
         state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        # Should not raise despite the exception
-        result = await _call_stop_slot_turn(state, slot)
-        assert result.get("ok") is True
+        resp = await _call_api_chat_slot_stop(state)
+        body = json.loads(resp.body)
+        assert body.get("ok") is True
         subs.cancel_for_parent.assert_awaited_once()
 
-    @pytest.mark.asyncio
-    async def test_idle_outcome_still_cascades(self):
-        """Even when the provider has no active turn, subagents are stopped.
 
-        Subagents may outlive the parent turn that spawned them — a turn that
-        completes normally still has running subagents.
+# ---------------------------------------------------------------------------
+# Tests: stop_slot_turn — the shared helper must NOT cascade
+# ---------------------------------------------------------------------------
+
+class TestStopSlotTurnDoesNotCascade:
+    """stop_slot_turn is called by steer-containment, session-control, and
+    work-ledger board — none of which should cancel subagents.  The cascade
+    must only happen in api_chat_slot_stop."""
+
+    @pytest.mark.asyncio
+    async def test_steer_containment_stop_does_not_cancel_subagents(self):
+        """A steer-containment stop must NOT cancel subagents.
+
+        The steer-containment code says: 'Stopping now would cancel work that
+        never received this steer, which is worse than the exposure being
+        narrowed.'  If stop_slot_turn cascaded, steer containment would
+        violate that contract.
         """
         subs = _make_subagents_mock()
         slot = _FakeSlot()
         state = _FakeState(slot, subagents=subs)
-        state.sessions.stop_turn = AsyncMock(return_value="idle")
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        await _call_stop_slot_turn(state, slot)
+        await _call_stop_slot_turn(
+            state, slot, source="session_send_steer_containment"
+        )
 
-        subs.cancel_for_parent.assert_awaited_once()
-
-
-# ---------------------------------------------------------------------------
-# Tests: stop_slot_turn — hard kill escalation path
-# ---------------------------------------------------------------------------
-
-class TestHardStopCancelsSubagents:
-    """The escalation (second press / force) path must also cascade."""
+        subs.cancel_for_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_hard_stop_calls_cancel_for_parent(self):
-        """A hard kill cascades to subagents."""
+    async def test_session_control_stop_does_not_cancel_subagents(self):
+        """An agent-driven session_control stop must NOT cancel subagents."""
         subs = _make_subagents_mock()
         slot = _FakeSlot()
-        slot._stop_state = "soft_pending"  # simulate first press already done
         state = _FakeState(slot, subagents=subs)
-        state.sessions.stop_turn = AsyncMock(return_value="hard")
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        await _call_stop_slot_turn(state, slot)
+        await _call_stop_slot_turn(state, slot, source="session_control")
 
-        subs.cancel_for_parent.assert_awaited_once()
+        subs.cancel_for_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_hard_stop_cancel_exception_swallowed(self):
-        """An exception in cancel_for_parent must not block the hard kill."""
+    async def test_work_ledger_stop_does_not_cancel_subagents(self):
+        """A work-ledger board item stop must NOT cancel subagents."""
         subs = _make_subagents_mock()
-        subs.cancel_for_parent = AsyncMock(side_effect=RuntimeError("db gone"))
         slot = _FakeSlot()
-        slot._stop_state = "soft_pending"
         state = _FakeState(slot, subagents=subs)
-        state.sessions.stop_turn = AsyncMock(return_value="hard")
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
 
-        result = await _call_stop_slot_turn(state, slot)
-        assert result.get("ok") is True
+        await _call_stop_slot_turn(state, slot, source="work_ledger_board")
+
+        subs.cancel_for_parent.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_dashboard_source_stop_does_not_cascade_from_helper(self):
+        """Even a dashboard-source stop through the helper does not cascade.
+
+        The cascade lives in the HTTP route, not the helper — so a direct call
+        to stop_slot_turn(source="dashboard") does NOT trigger it.
+        """
+        subs = _make_subagents_mock()
+        slot = _FakeSlot()
+        state = _FakeState(slot, subagents=subs)
+        state.sessions.stop_turn = AsyncMock(return_value="soft")
+
+        await _call_stop_slot_turn(state, slot, source="dashboard")
+
+        subs.cancel_for_parent.assert_not_awaited()
