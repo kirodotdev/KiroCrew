@@ -583,6 +583,12 @@ jobs:
           # members of that table rather than top-level keys.
           sandbox_mode = "read-only"
 
+          # web_search is "disabled" because an absent key resolves to "cached",
+          # which offers the model a web-search tool this job's Bedrock identity
+          # is not allowed to call. The refused call ends the stream, and the
+          # pass fails closed with no verdict.
+          web_search = "disabled"
+
           # The credentials no longer live in the codex PROCESS environment at
           # all. codex talks to a loopback signing proxy that runs as a DIFFERENT
           # UID (`bedrock-signer`), holds the Bedrock credentials in its own

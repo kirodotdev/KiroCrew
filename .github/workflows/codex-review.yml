@@ -245,10 +245,16 @@ jobs:
           # task buys longer hypothetical attack chains, not better recall on
           # real defects — it was a measurable source of speculative findings.
           # The falsification pass is where accuracy now comes from.
+          #
+          # web_search is "disabled" because an absent key resolves to "cached",
+          # which offers the model a web-search tool this job's Bedrock identity
+          # is not allowed to call. The refused call ends the stream, and the
+          # pass fails closed with no verdict.
           cat > "$HOME/.codex/config.toml" <<'EOF'
           model_provider = "amazon-bedrock"
           model = "openai.gpt-6.1-sol"
           model_reasoning_effort = "medium"
+          web_search = "disabled"
           EOF
 
       - name: Write review prompt
