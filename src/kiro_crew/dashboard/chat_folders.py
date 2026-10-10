@@ -467,23 +467,32 @@ async def _unhide_folder(
     """
     if not folder_id:
         return True
+    return await state.mutate_folders(
+        lambda folders: engage_folder(folders, folder_id, claim_for_person=claim_for_person)
+    )
 
-    def _clear(folders: list[dict[str, Any]]) -> tuple[bool, bool]:
-        for f in folders:
-            if f["id"] == folder_id:
-                claimed = bool(claim_for_person and f.pop(CREATED_BY_SESSION, None))
-                if f.get("hidden"):
-                    f["hidden"] = False
-                    return True, True
-                if claimed:
-                    return True, True
-                # Present and already visible: report no change so the store is
-                # not rewritten. This runs on every session move, so a needless
-                # write here would be a write per move.
-                return False, True
-        return False, False
 
-    return await state.mutate_folders(_clear)
+def engage_folder(
+    folders: list[dict[str, Any]], folder_id: str, *, claim_for_person: bool
+) -> tuple[bool, bool]:
+    """Un-hide *folder_id* in *folders*, claiming it for the person when asked.
+
+    The :meth:`DashboardState.mutate_folders` step of :func:`_unhide_folder`, as
+    ``(changed, exists)``.
+    """
+    for f in folders:
+        if f["id"] == folder_id:
+            claimed = bool(claim_for_person and f.pop(CREATED_BY_SESSION, None))
+            if f.get("hidden"):
+                f["hidden"] = False
+                return True, True
+            if claimed:
+                return True, True
+            # Present and already visible: report no change so the store is
+            # not rewritten. This runs on every session move, so a needless
+            # write here would be a write per move.
+            return False, True
+    return False, False
 
 
 # The internal callers this module recognizes on ``X-Internal-Caller`` — the
@@ -2647,14 +2656,51 @@ async def _subagent_work_pending(subagents: Any, parent_session_key: str) -> boo
     return bool(subagents.has_pending_work_for(parent_session_key))
 
 
+def _slot_folder_session_gone(request: web.Request, name: str) -> web.Response:
+    """The folder-move path's audited 409 for a slot deleted, rebound or replaced."""
+    source, caller = _audit_origin(request)
+    sel().log_api_access(
+        caller=caller,
+        operation="chat.slot_folder",
+        outcome="denied",
+        source=source,
+        resources=name,
+        error="session was deleted or rebound",
+    )
+    return web.json_response(
+        {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
+    )
+
+
 async def api_chat_slot_folder(request: web.Request) -> web.Response:
     """PATCH /api/chat/slots/{slot}/folder — assign slot to a folder."""
 
-    state: DashboardState = request.app["state"]
-    name = request.match_info["slot"]
+    return await file_slot_into_folder(request, request.app["state"], request.match_info["slot"])
+
+
+async def file_slot_into_folder(
+    request: web.Request,
+    state: DashboardState,
+    name: str,
+    target: str | None = None,
+    *,
+    expected_slot: Any = None,
+) -> web.Response:
+    """File the slot registered under *name*, for *request*: the folder-move path.
+
+    Shared by ``PATCH /api/chat/slots/{slot}/folder``, which reads the folder from
+    the request body (*target* None), and a slot create that files its published
+    slot into *target*. The create passes its own slot object as
+    *expected_slot*: a different object registered under *name* (the create's
+    slot deleted and the key reused) is refused as ``session_gone``, never
+    filed. Every refusal, audit row, claim and push below is the route's own,
+    answered as the route answers it.
+    """
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found"}, status=404)
+    if expected_slot is not None and slot is not expected_slot:
+        return _slot_folder_session_gone(request, name)
     # App ownership (App Kit §5.2) — the same deny-by-default rule
     # api_chat_slot_mode applies, and it matters HERE because filing is a write
     # to a session's own state: refiling moves a foreign session in the sidebar
@@ -2694,11 +2740,16 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             request_app, "chat.slot_folder", slot.key, "app does not own this slot's transcript"
         )
         return slot_not_found()
-    try:
-        body = await request.json()
-    except Exception:
-        return web.json_response({"error": "invalid JSON"}, status=400)
-    folder_id = str(body.get("folder_id") or "")
+    if target is None:
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+        folder_id = str(body.get("folder_id") or "")
+        expected_created = str(body.get("expected_created") or "")
+    else:
+        # The creating request's own slot: the generation is the one it built.
+        folder_id, expected_created = target, slot.created_at
     if folder_id and not any(f["id"] == folder_id for f in state._folders):
         return web.json_response({"error": "folder not found"}, status=400)
     # Optional generation token. The identity re-check below covers THIS
@@ -2710,7 +2761,6 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
     # history pin alone cannot tell them apart. ``created_at`` is minted once
     # per slot object and persisted, so echoing it back is the caller's proof
     # that the slot it is filing is the one it resolved.
-    expected_created = str(body.get("expected_created") or "")
     # Filing into a hidden folder unhides it, which changes the folder tree the
     # full slots frame carries; only a placement that left the tree alone can
     # travel as a one-row patch.
@@ -2727,8 +2777,8 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         # Re-authorize after the awaits above (body parse, lock acquisition):
         # same slot OBJECT still registered under the name, routing still on
         # the transcript captured before the first await. No await between
-        # this check and the mutation below; the _unhide_folder and persist
-        # awaits after it are covered by the save's pin. The generation token
+        # this check and the mutation below; the object is checked again after
+        # the _unhide_folder await, and the save's pins cover the persist. The generation token
         # is checked in the same breath: a mismatch means the caller resolved a
         # slot that has since been replaced under its key.
         if (
@@ -2737,18 +2787,7 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
             or (expected_created and slot.created_at != expected_created)
             or not app_owns_transcript(state._slots, request_app, authorized_history_key)
         ):
-            source, caller = _audit_origin(request)
-            sel().log_api_access(
-                caller=caller,
-                operation="chat.slot_folder",
-                outcome="denied",
-                source=source,
-                resources=name,
-                error="session was deleted or rebound",
-            )
-            return web.json_response(
-                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
-            )
+            return _slot_folder_session_gone(request, name)
         previous = slot.folder_id
         previous_changed = slot._folder_changed
         if folder_id != slot.folder_id:
@@ -2758,49 +2797,65 @@ async def api_chat_slot_folder(request: web.Request) -> web.Response:
         # and here. _unhide_folder re-checks existence under the store lock, which
         # is the only place the answer cannot go stale — reject rather than persist a
         # placement into a folder that no longer exists.
-        if not await _unhide_folder(
-            state,
-            folder_id,
-            # The person filing a session INTO this folder claims it; a re-file
-            # into the folder it already sits in changes nothing.
-            claim_for_person=folder_id != previous and _audit_origin(request)[0] == "dashboard",
-        ):
-            slot.folder_id = previous
-            slot._folder_changed = previous_changed
-            return web.json_response(
-                {"error": "folder not found", "code": "folder_not_found"}, status=400
+        # Every raise from here to the claim (the folder store write in the
+        # un-hide, the save, the claim itself) leaves nothing durable that this
+        # request can vouch for, so the live field must not show the placement
+        # either: roll it back here, under the same lock, while it still holds
+        # THIS request's value, and mark the slot dirty so a flush that ran
+        # meanwhile reconverges the durable record. The caller sees the raise.
+        try:
+            unhid = await _unhide_folder(
+                state,
+                folder_id,
+                # The person filing a session INTO this folder claims it; a re-file
+                # into the folder it already sits in changes nothing.
+                claim_for_person=folder_id != previous and _audit_origin(request)[0] == "dashboard",
             )
-        if not await save_slot_off_loop(
-            state, slot, force=True, expected_history_key=authorized_history_key
-        ):
-            # Refused without writing: the session was permanently deleted or
-            # rebound mid-persist. Roll back the live fields — but only while
-            # they still hold THIS request's value: a non-endpoint writer may
-            # have committed a newer placement that an unconditional restore
-            # would erase (the same guard _restore_unfiled applies).
+            if not unhid:
+                slot.folder_id = previous
+                slot._folder_changed = previous_changed
+                return web.json_response(
+                    {"error": "folder not found", "code": "folder_not_found"}, status=400
+                )
+            # Same slot OBJECT after the un-hide await: a delete and a same-key open
+            # keep the transcript key, so the history pin alone cannot tell the
+            # replacement apart. The save below re-checks the object under its lock
+            # (``expected_slot_name``) for the same reason.
+            if state._slots.get(name) is not slot:
+                if slot.folder_id == folder_id:
+                    slot.folder_id = previous
+                    slot._folder_changed = previous_changed
+                return _slot_folder_session_gone(request, name)
+            if not await save_slot_off_loop(
+                state,
+                slot,
+                force=True,
+                expected_history_key=authorized_history_key,
+                expected_slot_name=name,
+            ):
+                # Refused without writing: the session was permanently deleted or
+                # rebound mid-persist. Roll back the live fields — but only while
+                # they still hold THIS request's value: a non-endpoint writer may
+                # have committed a newer placement that an unconditional restore
+                # would erase (the same guard _restore_unfiled applies).
+                if slot.folder_id == folder_id:
+                    slot.folder_id = previous
+                    slot._folder_changed = previous_changed
+                # The UNPINNED periodic flush may have persisted the provisional
+                # value while this save awaited (review-caught): mark dirty so the
+                # next flush reconverges the durable record to the live state.
+                slot._dirty = True
+                return _slot_folder_session_gone(request, name)
+            # The placement is durable from here, so it is safe to claim the row is
+            # occupied. Inside the lock, in the same span as the save it attests to:
+            # recorded outside it, a refused save could still leave the claim behind.
+            note_folder_filed(state, folder_id)
+        except BaseException:
             if slot.folder_id == folder_id:
                 slot.folder_id = previous
                 slot._folder_changed = previous_changed
-            # The UNPINNED periodic flush may have persisted the provisional
-            # value while this save awaited (review-caught): mark dirty so the
-            # next flush reconverges the durable record to the live state.
             slot._dirty = True
-            source, caller = _audit_origin(request)
-            sel().log_api_access(
-                caller=caller,
-                operation="chat.slot_folder",
-                outcome="denied",
-                source=source,
-                resources=name,
-                error="session was deleted or rebound",
-            )
-            return web.json_response(
-                {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
-            )
-        # The placement is durable from here, so it is safe to claim the row is
-        # occupied. Inside the lock, in the same span as the save it attests to:
-        # recorded outside it, a refused save could still leave the claim behind.
-        note_folder_filed(state, folder_id)
+            raise
     if state.folders_generation() == folders_generation_before:
         state.push_slot_patch(slot.key, ("folder_id",))
     else:

@@ -926,7 +926,9 @@ def test_the_dashboard_runner_allocates_at_the_turns_priority():
 @pytest.mark.parametrize(
     ("path", "function"),
     [
-        ("dashboard/chat_handlers.py", "api_chat_slot_create"),
+        # The create route's body; ``api_chat_slot_create`` only takes the
+        # per-name wait around it.
+        ("dashboard/chat_handlers.py", "_create_chat_slot"),
         ("dashboard/chat_handlers.py", "api_chat_slot_project"),
     ],
 )

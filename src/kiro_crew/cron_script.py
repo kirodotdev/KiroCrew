@@ -1209,7 +1209,9 @@ class ScriptContext:
         When ``agent.session_control`` is false the gateway refuses with
         ``session_control_disabled``, and this method raises RuntimeError
         carrying that code. Raises RuntimeError if the gateway refuses or
-        cannot be reached.
+        cannot be reached. A session the gateway opened but could not file into
+        *folder_id* is still returned (its ``folder_id`` differs from the one
+        asked for), and a WARNING says so.
         """
         body = {
             key: value
@@ -1226,6 +1228,10 @@ class ScriptContext:
         key = result.get("key") if isinstance(result, dict) else None
         if not isinstance(key, str) or not key or "error" in result:
             raise RuntimeError(f"open_session() failed: {self._reason(result)}")
+        if folder_id and result.get("folder_id") != folder_id:
+            # The session opened but was not filed into ``folder_id``: say so,
+            # and still return the open key. The gateway logs the cause.
+            logger.warning("open_session(): %s opened outside folder %s", key, folder_id)
         return key
 
     def send_to_session(self, slot: str, message: str) -> dict:

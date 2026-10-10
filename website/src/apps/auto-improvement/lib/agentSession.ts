@@ -267,7 +267,8 @@ export function useAgentSession(): UseAgentSession {
         }
         const record = await saveRecord(key, {
           slot_key: slot.key,
-          folder_id: folderId,
+          // A refused filing leaves the session outside the folder: record where it is.
+          folder_id: slot.folder_id || '',
           status: 'open',
           subject: String(id),
           title,

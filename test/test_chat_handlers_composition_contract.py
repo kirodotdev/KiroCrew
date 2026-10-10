@@ -771,6 +771,7 @@ _FACADE_DEFS = (
     "_has_conversation",
     "_persist_handover_tail",
     "api_chat_slot_create",
+    "_create_chat_slot",
     "api_chat_slot_reload",
     "reload_slot_session",
     "ResumeRefusal",

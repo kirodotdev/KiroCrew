@@ -180,6 +180,7 @@ from kiro_crew.dashboard.origin import (
     resolve_dashboard_host,
 )
 from kiro_crew.dashboard.sign_in_refresher import drain_sign_in_refresher, run_sign_in_refresher
+from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
 from kiro_crew.dashboard.stale_asset_watchdog import (
     run_stale_asset_watchdog,
     shutdown_exit_code,
@@ -5453,6 +5454,8 @@ class GatewayOrchestrator:
                             downstream_service="none",
                         )
                         # Still inject into dashboard slot even when Slack is suppressed
+                        if self.dashboard_state:
+                            await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
                         if (
                             self.dashboard_state
                             and job.persistent_session
@@ -5479,6 +5482,8 @@ class GatewayOrchestrator:
                         downstream_service="none",
                     )
                     # Still inject into dashboard slot even when silent
+                    if self.dashboard_state:
+                        await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
                     if (
                         self.dashboard_state
                         and job.persistent_session
@@ -5510,6 +5515,9 @@ class GatewayOrchestrator:
                     # paths above only re-inject into an already-existing slot via has_slot(), so
                     # they self-no-op when hide_in_chat is True.
                     if job.persistent_session and not job.hide_in_chat:
+                        # A dashboard create of the tab's key still building it:
+                        # wait (bounded) so the result lands on its slot.
+                        await wait_for_pending_create(self.dashboard_state, f"cron-{job.id}")
                         history = (
                             await asyncio.to_thread(
                                 self.dashboard_state.conversation_log.read_messages,

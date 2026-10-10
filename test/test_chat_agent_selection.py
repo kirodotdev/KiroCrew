@@ -409,7 +409,12 @@ async def _template_chat(tmp_path, monkeypatch, *, first_turn=True):
 
 @pytest.mark.asyncio
 async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, monkeypatch):
-    """A delayed template create cannot replace an explicit member selection."""
+    """A delayed template create cannot replace an explicit member selection.
+
+    The create's slot is not published until its selection is written, so a
+    member pick on its name finds no slot until then (404), and one made after
+    the create commits is the selection that stays.
+    """
     cfg = KiroCrewConfig.load()
     assert TEMPLATE not in cfg.agents
     cfg.save()
@@ -437,7 +442,8 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
     writer_started, release_writer, writer_finished = (threading.Event() for _ in range(3))
     later_lock_attempted = asyncio.Event()
     publications = {}
-    get_or_create = state.get_or_create_slot
+    prepare = state.prepare_slot
+    built: list = []
 
     class ObservedSlotLock(asyncio.Lock):
         async def acquire(self):
@@ -446,9 +452,11 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
             return await super().acquire()
 
     def create_with_observed_lock(*args, **kwargs):
-        slot = get_or_create(*args, **kwargs)
-        slot._lock = ObservedSlotLock()
-        return slot
+        existing, pending = prepare(*args, **kwargs)
+        if pending is not None:
+            pending.slot._lock = ObservedSlotLock()
+            built.append(pending.slot)
+        return existing, pending
 
     def gated_publication(session_key, agent_name, bindings, **kwargs):
         assert session_key == key
@@ -466,7 +474,7 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
             if kind == "template":
                 writer_finished.set()
 
-    monkeypatch.setattr(state, "get_or_create_slot", create_with_observed_lock)
+    monkeypatch.setattr(state, "prepare_slot", create_with_observed_lock)
     monkeypatch.setattr(chat_handlers, "record_agent_selection", gated_publication)
     app = _make_app_with_agent_routes(state)
     app.router.add_post("/api/agents/sync", agents.api_kirocrew_agents_sync)
@@ -477,7 +485,8 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
         later_task = None
         try:
             assert await asyncio.wait_for(asyncio.to_thread(writer_started.wait, 10), 11)
-            slot = state._slots["create-owner-race"]
+            slot = built[0]
+            assert "create-owner-race" not in state._slots
             creation_agent, creation_project = slot.agent, slot.project
             create_holds_lock = slot._lock.locked()
             response = await asyncio.wait_for(client.post("/api/agents/sync", json={}), 10)
@@ -493,25 +502,23 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
 
             private_store = await asyncio.to_thread(opt_in)
 
+            # The pending slot is not reachable by name: nothing can race it.
+            early = await asyncio.wait_for(
+                client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": TEMPLATE}), 10
+            )
+            assert early.status == 404, await early.text()
+            assert create_holds_lock
+            release_writer.set()
+            created = await asyncio.wait_for(create_task, 15)
+            assert created.status == 200, await created.text()
+            assert await asyncio.wait_for(asyncio.to_thread(writer_finished.wait, 10), 11)
+            assert state._slots["create-owner-race"] is slot
             later_task = asyncio.create_task(
                 client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": TEMPLATE})
             )
-            await asyncio.wait_for(later_lock_attempted.wait(), 10)
-            if not create_holds_lock:
-                # Prove the actual overwrite on the unlocked handler. A fixed
-                # create may serialize B; do not require B to finish then.
-                later_response = await asyncio.wait_for(asyncio.shield(later_task), 10)
-                assert later_response.status == 200, await later_response.text()
-                assert slot.agent == creation_agent
-                assert slot.agent is not creation_agent
-                assert slot.project == creation_project
-                assert (
-                    await asyncio.to_thread(session_agent_selection_kind, key, TEMPLATE) == "member"
-                )
-            release_writer.set()
-            responses = await asyncio.wait_for(asyncio.gather(create_task, later_task), 15)
+            later = await asyncio.wait_for(later_task, 15)
+            responses = [created, later]
             assert [response.status for response in responses] == [200, 200]
-            assert await asyncio.wait_for(asyncio.to_thread(writer_finished.wait, 10), 11)
             assert slot.agent == creation_agent == TEMPLATE
             assert slot.project == creation_project
             assert slot.memory_store == private_store

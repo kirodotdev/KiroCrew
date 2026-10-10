@@ -265,6 +265,7 @@ async def inject_bound_workflow_result(
 
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
     from kiro_crew.execution_context import (
         bind_session_execution,
         execution_from_record,
@@ -272,6 +273,9 @@ async def inject_bound_workflow_result(
         read_session_execution,
     )
 
+    # A dashboard create of the fallback key still building it: wait (bounded)
+    # so the fallback below finds its slot, or the key free.
+    await wait_for_pending_create(state, f"workflow-{run_id}")
     try:
         execution = execution_from_record(snapshot, required=False)
         if execution is None:

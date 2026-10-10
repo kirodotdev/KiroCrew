@@ -2146,7 +2146,8 @@ class TestPostAwaitOwnership:
 
 
 class TestAcquisitionRecheckPlacement:
-    @pytest.mark.parametrize("handler_name", ["api_chat", "api_chat_slot_create"])
+    # ``_create_chat_slot`` is the create route's body, run inside its per-name wait.
+    @pytest.mark.parametrize("handler_name", ["api_chat", "_create_chat_slot"])
     def test_no_await_between_final_recheck_and_acquisition(self, handler_name) -> None:
         import inspect
 
@@ -2162,7 +2163,8 @@ class TestAcquisitionRecheckPlacement:
         acquire = next(
             node
             for node in calls
-            if isinstance(node.func, ast.Attribute) and node.func.attr == "get_or_create_slot"
+            if isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("get_or_create_slot", "prepare_slot")
         )
         assert recheck.end_lineno is not None
         assert recheck.end_lineno < acquire.lineno

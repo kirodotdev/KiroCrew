@@ -811,6 +811,13 @@ async def resume_slot_from_history(
     # create path, which re-reads the transcript into the slot it should have
     # returned.
     name = _normalize_slot_key(name)
+    from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
+
+    if not request_app:
+        # A dashboard create of this key still building it: wait (bounded) so
+        # the live-slot probe below finds its slot, or the key free. An app is
+        # judged on the key as it stands (a key under construction is its 404).
+        await wait_for_pending_create(state, name)
     if history_key is None:
         history_key = name
     if request_app and history_key == name:

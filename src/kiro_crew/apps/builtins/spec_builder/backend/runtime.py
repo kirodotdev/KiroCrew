@@ -304,41 +304,45 @@ async def _teardown_worker_slot(
     # start the next queued prompt, so the agent would keep writing into a spec
     # directory this request is about to archive.
     _discard_queued_work(slot)
-    try:
-        state._slots.pop(slot_key, None)
-    except Exception:
-        logger.debug("slot registry pop failed for %s", slot_key, exc_info=True)
-    task = getattr(slot, "task", None)
-    if getattr(slot, "running", False) and task is not None:
-        task.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
-        except (asyncio.CancelledError, asyncio.TimeoutError):
-            pass
-        except Exception:
-            logger.debug("worker task raised during teardown of %s", slot_key, exc_info=True)
     # circular import (see module header): dashboard.server imports this module.
     from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+    from kiro_crew.dashboard.slot_create_transaction import close_holds_key
 
-    try:
-        await save_slot_off_loop(state, slot, closed=True, best_effort=not require_archive)
-    except Exception:
-        # The transcript is the user's data. A caller that is about to drop the
-        # spec from the index (delete) asks for require_archive, because reporting
-        # success here would discard a conversation that was never written. The
-        # slot is put back so the caller can restore the entry and the user can
-        # retry; callers that do not require the archive keep the old
-        # best-effort behaviour (an abort path has already lost the race).
-        logger.warning("closing save failed for %s", slot_key, exc_info=True)
-        if require_archive:
+    # The key stays this close's until it settles, so a create of it is refused
+    # and a failed archive puts the slot back into a key no create holds.
+    with close_holds_key(state, slot_key):
+        try:
+            state._slots.pop(slot_key, None)
+        except Exception:
+            logger.debug("slot registry pop failed for %s", slot_key, exc_info=True)
+        task = getattr(slot, "task", None)
+        if getattr(slot, "running", False) and task is not None:
+            task.cancel()
             try:
-                state._slots[slot_key] = slot
+                await asyncio.wait_for(asyncio.shield(task), timeout=2.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError):
+                pass
             except Exception:
-                logger.warning("could not restore slot %s after a failed archive", slot_key)
-            _audit("spec_slot_archive_failed", name, outcome="denied")
-            return False
-    _audit("spec_slot_teardown", name)
-    return True
+                logger.debug("worker task raised during teardown of %s", slot_key, exc_info=True)
+        try:
+            await save_slot_off_loop(state, slot, closed=True, best_effort=not require_archive)
+        except Exception:
+            # The transcript is the user's data. A caller that is about to drop the
+            # spec from the index (delete) asks for require_archive, because reporting
+            # success here would discard a conversation that was never written. The
+            # slot is put back so the caller can restore the entry and the user can
+            # retry; callers that do not require the archive keep the old
+            # best-effort behaviour (an abort path has already lost the race).
+            logger.warning("closing save failed for %s", slot_key, exc_info=True)
+            if require_archive:
+                try:
+                    state._slots[slot_key] = slot
+                except Exception:
+                    logger.warning("could not restore slot %s after a failed archive", slot_key)
+                _audit("spec_slot_archive_failed", name, outcome="denied")
+                return False
+        _audit("spec_slot_teardown", name)
+        return True
 
 
 async def _halt_active_turn(state: Any, name: str, *, only_slot: Any = _UNPINNED) -> bool:

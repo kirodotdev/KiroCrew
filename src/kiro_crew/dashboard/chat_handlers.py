@@ -195,6 +195,7 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     restore_replacement_if_handover_did_not_land,
+    run_to_completion,
     slot_history_key,
     slot_transcript_key,
     subagents_attached_async,
@@ -223,6 +224,19 @@ from kiro_crew.dashboard.slot_buffers import (
     DeferredHoldRebound,
     note_hold_durable,
     persist_deferred_notes_sync,
+)
+from kiro_crew.dashboard.slot_create_transaction import (  # noqa: F401
+    CreateDeadline,
+    PendingSlotCreate,
+    SlotKeyClosing,
+    acquire_by,
+    acquire_slot_create_name,
+    binding_before_write,
+    close_holds_key,
+    current_execution_record,
+    name_held_by_another,
+    refuse_create_while_closing,
+    wait_for_pending_create,
 )
 from kiro_crew.dashboard.slot_ownership import (  # noqa: F401
     SESSION_CONTROL_DENIED,
@@ -548,6 +562,8 @@ def _app_acquisition_conflict(
         and key not in getattr(state, "_slots_under_construction", ())
         and app_owns_slot_session(request_app, judged)
     ):
+        if isinstance(exc, SlotKeyClosing):
+            return web.json_response({"error": str(exc), "code": exc.code}, status=409)
         return web.json_response({"error": str(exc)}, status=409)
     return slot_not_found()
 
@@ -761,6 +777,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         )
         if denied is not None:
             return denied
+    elif _requested_key:
+        # A create of this key still building it: wait for it to publish or give
+        # up (bounded), so the send lands on its slot as it did when the create
+        # registered up front. An app was refused a key under construction above.
+        await wait_for_pending_create(state, _requested_key)
     existing = state._slots.get(_requested_key) if _requested_key else None
     # An app's auto-created slot must not land on a transcript it does not own:
     # its first save would stamp the app onto that transcript's metadata line.
@@ -1935,6 +1956,125 @@ _DEFERRED_PLAIN_CREATE_KNOWN_KEYS = frozenset(
 )
 
 
+#: The memory store a slot carries at birth, before any assignment pins one.
+_NEW_SLOT_MEMORY_STORE = ""
+
+
+async def _birth_default_project(cfg: KiroCrewConfig | None, workspace: str) -> str:
+    """The project a new slot gets when neither it nor its folder names one."""
+    cfg_proj = cfg.dashboard.default_project if cfg else ""
+    if isinstance(cfg_proj, str) and cfg_proj:
+        resolved = os.path.realpath(os.path.expanduser(cfg_proj))
+        eligible = os.path.isdir(resolved) and not is_sensitive_path(resolved)
+        if eligible:
+            # A configured default that overlaps the data home would be refused
+            # at spawn anyway — skip it here like a sensitive path, falling back
+            # to the workspace default instead of wedging every new slot. Off
+            # the loop, because the shared scan primes runtime paths
+            # (realpath/mkdir) on first use.
+            eligible = (await asyncio.to_thread(voice_runtime_workspace_conflict, resolved)) is None
+        cfg_proj = resolved if eligible else ""
+    else:
+        cfg_proj = ""
+    return cfg_proj or default_project_dir(workspace)
+
+
+async def _check_new_slot_assignment(
+    cfg: KiroCrewConfig, agent: str, agent_kind: str, project: str, memory_mode: str
+) -> None:
+    """Raise where the owner's member assignment of a new slot would refuse it.
+
+    The same resolution the assignment runs after the mint, and the same member
+    identity check ``_record_explicit_agent_selection`` makes before it writes,
+    with no write: a refusal here means the create mints nothing.
+    """
+    from kiro_crew.execution_context import resolve_member_execution
+
+    chosen = await asyncio.to_thread(
+        resolve_agent_bindings,
+        cfg,
+        agent,
+        project or None,
+        validate_memory_files=False,
+        selection_kind=agent_kind,
+    )
+    if chosen.selection_kind == "member":
+        await asyncio.to_thread(
+            resolve_member_execution,
+            cfg,
+            agent or chosen.resolved_alias,
+            memory_mode=memory_mode,
+            app="",
+            validate_memory_files=False,
+        )
+
+
+async def _pin_newborn_store(
+    state: DashboardState,
+    create: PendingSlotCreate,
+    session_key: str,
+    agent: str,
+    cfg: KiroCrewConfig,
+    memory_mode: str,
+) -> str:
+    """Pin a pending slot's member store and record its undo, even when cancelled.
+
+    The pin writes from a worker thread that a cancellation cannot stop, so the
+    pin and the read of what it wrote run to completion together
+    (``run_to_completion``), and the ``(prior, written)`` record is on the
+    create before the cancellation propagates.
+    """
+
+    async def pin_and_record() -> str:
+        before, legacy = await asyncio.to_thread(binding_before_write, session_key)
+        assigned_store = await pin_private_agent_store(
+            state, session_key, agent, cfg, memory_mode=memory_mode
+        )
+        if assigned_store:
+            pinned = await asyncio.to_thread(current_execution_record, session_key)
+            if pinned is not None:
+                create.binding_written(session_key, SelectionChange(before, pinned, legacy))
+        return assigned_store
+
+    return await run_to_completion(pin_and_record())
+
+
+async def _publish_pending_create(
+    state: DashboardState, create: PendingSlotCreate, deadline: CreateDeadline
+) -> web.Response | None:
+    """Publish *create*'s slot; the refusal to answer instead, or None once published.
+
+    A tag the slot inherited from its folder can be deleted while the create
+    awaits, and the deletion sweep cannot see a slot nobody registered. So the
+    tags are filtered again and the slot published under ``tags_write_lock``,
+    which is the lock the deletion holds. Nothing is written to a folder here:
+    filing runs after publication (:func:`_file_published_create`). Lock order:
+    the session-switch lock (held by the caller on the owner path), then
+    ``tags_write_lock``, never the reverse.
+    """
+    slot = create.slot
+    tags_lock = tags_write_lock(state) if slot.tags else None
+    if tags_lock is not None and not await acquire_by(tags_lock, deadline):
+        return _create_lock_wait_ran_out(slot.key)
+    try:
+        if tags_lock is not None:
+            kept = validate_folder_tag_ids(slot.tags, state)
+            if kept != slot.tags:
+                slot.tags[:] = kept
+                _bump_slot_tags_revision(slot)
+        create.publish()
+    except ValueError as exc:
+        # Unreachable while the key is reserved: no create registers a slot
+        # under it, and no close puts one back there (a close holding the key
+        # refuses the create). Answered as the constructor's own refusal is,
+        # and the exit gives the slot up.
+        return web.json_response({"error": str(exc), "code": "slot_under_construction"}, status=409)
+    finally:
+        if tags_lock is not None:
+            tags_lock.release()
+    return None
+
+
 async def api_chat_slot_create(request: web.Request) -> web.Response:
     """POST /api/chat/slots — create a new chat slot."""
     state: DashboardState = request.app["state"]
@@ -1942,6 +2082,113 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    raw_name = body.get("name")
+    name_key = _normalize_slot_key(str(raw_name)) if raw_name else ""
+    if not name_key:
+        return await _create_chat_slot(request, state, body, CreateDeadline())
+    request_app = request.get("app", "")
+    if request_app:
+        # An app learns nothing from the name wait: ownership is judged first,
+        # so a name it may not act on answers the one 404 at once, and a wait
+        # that runs out answers that same 404 below. The check runs again
+        # inside the wait, where it is authoritative.
+        denied, _judged = await _app_slot_acquisition_denial(
+            request,
+            state,
+            request_app,
+            str(raw_name),
+            "chat_slot_create",
+            session_grant_route=False,
+        )
+        if denied is not None:
+            return denied
+    # Creates of one name run one at a time, and every check the create makes
+    # about the name (app ownership, cron admission, whether it is new) runs
+    # inside this wait: a second create is judged against what the first one
+    # published or gave up, never against a view taken before it. Bounded, so
+    # a stuck create cannot hold the name forever.
+    #
+    # An app never waits behind another principal's create of the name: it gets
+    # the same 404 a name it may not use gets, at once, so the latency of its
+    # answer cannot tell it that a create is in flight. No await between this
+    # check and joining the gate.
+    if request_app and name_held_by_another(state, name_key, request_app):
+        return slot_not_found()
+    release_name = await acquire_slot_create_name(state, name_key, request_app)
+    if release_name is None:
+        logger.warning("slot create %s: another create of this name outlasted the wait", name_key)
+        if request_app:
+            return slot_not_found()
+        return web.json_response(
+            {
+                "error": f"slot {name_key} is still being built; retry once it is ready",
+                "code": "slot_under_construction",
+            },
+            status=409,
+        )
+    try:
+        return await _create_chat_slot(request, state, body, CreateDeadline())
+    finally:
+        release_name()
+
+
+async def _file_published_create(
+    request: web.Request, state: DashboardState, slot: _ChatSlot, folder_id: str
+) -> None:
+    """File a create's published slot into *folder_id*, or leave it unfiled.
+
+    The ordinary folder-move path (:func:`file_slot_into_folder`), run as its own
+    step after publication with that path's authorization, claim, un-hide,
+    audit and errors. A refusal leaves the slot published and unfiled, and the
+    response's ``folder_id`` says so: a new slot publishes with an empty
+    ``folder_id`` and only a successful filing sets it. The cause of a refusal
+    is logged here.
+
+    The create's own slot object is what gets filed. It is checked here, right
+    before the dispatch, and passed in so the move path re-checks it after each
+    of its awaits: the create awaits its birth save after publication, and a
+    delete plus a same-key open in that window registers a different slot under
+    the same key and transcript, which must not be filed in its place.
+    """
+    from kiro_crew.dashboard.chat_folders import file_slot_into_folder
+
+    if state._slots.get(slot.key) is not slot:
+        logger.info("slot create %s: not filed into %s, slot replaced", slot.key, folder_id)
+        return
+    try:
+        resp = await file_slot_into_folder(request, state, slot.key, folder_id, expected_slot=slot)
+    except Exception:
+        logger.warning("slot create %s: filing into %s failed", slot.key, folder_id, exc_info=True)
+        return
+    if resp.status >= 400:
+        logger.info(
+            "slot create %s: filing into %s refused (%s): %s",
+            slot.key,
+            folder_id,
+            resp.status,
+            (resp.text or "")[:200],
+        )
+
+
+def _create_lock_wait_ran_out(key: str) -> web.Response:
+    """The retryable 409 for a create whose own lock wait outlasted its deadline."""
+    logger.warning("slot create %s: a lock the create waits on outlasted its deadline", key)
+    return web.json_response(
+        {
+            "error": f"slot {key} is still being built; retry once it is ready",
+            "code": "slot_under_construction",
+        },
+        status=409,
+    )
+
+
+async def _create_chat_slot(
+    request: web.Request, state: DashboardState, body: dict[str, Any], deadline: CreateDeadline
+) -> web.Response:
+    """The create, run as the only create of its name (``api_chat_slot_create``).
+
+    *deadline* bounds the locks the create waits on after it holds its name.
+    """
     # A session on a connected crew is created ON that crew and opened here
     # through its window; this hub never mints or adopts a relay binding.
     # Refused before anything is read or written, so a stale client cannot stamp
@@ -2141,6 +2388,24 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 {"error": "slot changed during agent resolution", "code": "session_rebound"},
                 status=409,
             )
+    # The owner's member assignment below can refuse a new slot's agent. Ask the
+    # same question here, before anything is built, so the common refusal costs
+    # nothing. The assignment still runs before the slot is published, and a
+    # refusal there gives the private slot up (a project that changes because
+    # the folder went away, a store that changes while the create waits).
+    preflight_key = _normalize_slot_key(str(name)) if name else ""
+    if (
+        cfg is not None
+        and is_owner_dashboard_request(request)
+        and (not preflight_key or preflight_key not in state._slots)
+    ):
+        preflight_project = folder_project or await _birth_default_project(cfg, workspace)
+        try:
+            await _check_new_slot_assignment(cfg, agent, agent_kind, preflight_project, memory_mode)
+        except Exception as exc:
+            from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
+
+            return _store_unavailable_response(_NEW_SLOT_MEMORY_STORE, exc)
     # Resolved before the mint decision below: nothing may await between that
     # read and `get_or_create_slot`, and these are the two awaits this path adds.
     cron_creator = await cron_slot_creator(request)
@@ -2205,8 +2470,20 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         and memory_mode == "persistent"
         and not body.get("ephemeral")
     )
+    # A new slot's folder, filed after publication (``_file_published_create``).
+    file_after_publish = ""
+    filing: dict[str, Any] = {"ready": False}
+
+    async def file_once_published() -> None:
+        # Pushed right after the suspension, so it runs after every lock the
+        # create holds is released and before the coalesced frame goes out:
+        # that frame shows the slot filed when the filing succeeds.
+        if filing["ready"] and file_after_publish:
+            await _file_published_create(request, state, slot, file_after_publish)
+
     async with contextlib.AsyncExitStack() as creation_stack:
         request_deferred_flush = creation_stack.enter_context(state.suspend_slots_push())
+        creation_stack.push_async_callback(file_once_published)
         if request_app and _requested_key:
             denied = await _app_slot_acquisition_recheck(
                 state, request_app, _requested_key, acquisition_judged, "chat_slot_create"
@@ -2215,7 +2492,12 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 return denied
             is_new_slot = _requested_key not in state._slots
         try:
-            slot = state.get_or_create_slot(
+            if _requested_key:
+                # A key a close still holds is refused before the registry is
+                # read, so the slot the close is about to archive is never
+                # answered as this create's (no await before the reservation).
+                refuse_create_while_closing(state, _requested_key)
+            existing_or_none, pending = state.prepare_slot(
                 name,
                 agent=agent,
                 workspace=workspace,
@@ -2240,7 +2522,24 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     acquisition_judged,
                     exc,
                 )
+            if isinstance(exc, SlotKeyClosing):
+                return web.json_response({"error": str(exc), "code": exc.code}, status=409)
             return web.json_response({"error": str(exc)}, status=409)
+        # A new slot stays private until every step below that can refuse it
+        # has passed: built but not registered, its key reserved, so no other
+        # request can open or reach it (slot_create_transaction). Any way out
+        # before ``create.publish()`` (a refusal response, an exception, a
+        # cancellation) gives it up. ``settle`` is registered again under the
+        # session-switch lock below and runs once, inside the innermost lock.
+        create: PendingSlotCreate | None = None
+        if pending is not None:
+            create = PendingSlotCreate(state, pending)
+            creation_stack.push_async_callback(create.settle)
+            slot = create.slot
+        else:
+            assert existing_or_none is not None
+            slot = existing_or_none
+        is_new_slot = create is not None
         if reopening_persisted_cron:
             # The creator fence already loaded and authorized this metadata
             # snapshot. Reuse it so a closed-session reopen restores the user's
@@ -2324,9 +2623,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # breadcrumb fires regardless and the flag is consumed there.
             previous_folder = slot.folder_id
             previous_changed = slot._folder_changed
-            if folder_id != slot.folder_id:
-                slot._folder_changed = True
-            slot.folder_id = folder_id
+            if create is None:
+                if folder_id != slot.folder_id:
+                    slot._folder_changed = True
+                slot.folder_id = folder_id
             # Existence is only reliable inside the store lock. If the folder
             # went away, abandon THIS assignment and leave the slot as it was —
             # `name` can address an already-used slot, so clearing outright would
@@ -2335,14 +2635,25 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # failing the turn. A person opening a chat in the folder (no
             # internal secret: the browser) claims it, so an agent's
             # chat_folder_delete refuses it from then on.
-            if not await _unhide_folder(
-                state,
-                folder_id,
-                claim_for_person=(
-                    folder_id != previous_folder
-                    and request.headers.get("X-Internal-Secret") is None
-                ),
-            ):
+            claim_for_person = (
+                folder_id != previous_folder and request.headers.get("X-Internal-Secret") is None
+            )
+            if create is not None:
+                # A create writes nothing to the folder before it publishes, and
+                # files nothing itself: it publishes the slot unfiled, then files
+                # it through the folder-move path (``file_once_published``). Here
+                # it only reads that the folder exists, for the project and tags
+                # the newborn inherits from it.
+                folder_exists = await state.read_folders(
+                    lambda folders: any(f["id"] == folder_id for f in folders)
+                )
+                if folder_exists:
+                    file_after_publish = folder_id
+            else:
+                folder_exists = await _unhide_folder(
+                    state, folder_id, claim_for_person=claim_for_person
+                )
+            if not folder_exists:
                 slot.folder_id = previous_folder
                 slot._folder_changed = previous_changed
             else:
@@ -2355,8 +2666,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     # copy-by-value style.
                     #
                     # Gated on is_new_slot so re-opening an existing session inside
-                    # the folder never re-stamps tags, and confirmed only after
-                    # _unhide_folder reported the folder EXISTS (its read is under the
+                    # the folder never re-stamps tags, and confirmed only after the
+                    # folder store reported the folder EXISTS (its read is under the
                     # store lock, the only race-free place to look it up). Direct
                     # folder only: no ancestor/subfolder transitivity. Ids are
                     # re-validated against the live vocabulary and appended only when
@@ -2376,7 +2687,13 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     # otherwise stamp a stale tag set or resurrect a deleted id onto
                     # the new slot. Lock ordering (tags_write_lock → folder-store
                     # lock) matches the folder create/PATCH paths.
-                    async with tags_write_lock(state):
+                    # Bounded by the create's deadline, like its other lock waits.
+                    inherit_lock = tags_write_lock(state)
+                    if not await acquire_by(inherit_lock, deadline):
+                        return (
+                            slot_not_found() if request_app else _create_lock_wait_ran_out(slot.key)
+                        )
+                    try:
                         inherited = await state.read_folders(_read_folder_tags)
                         appended = False
                         for tid in validate_folder_tag_ids(inherited, state):
@@ -2389,6 +2706,8 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                         # the inherited list must not ship under that same one.
                         if appended:
                             _bump_slot_tags_revision(slot)
+                    finally:
+                        inherit_lock.release()
         # A slot with no project filed into a project-linked folder inherits
         # from the nearest configured ancestor before its first broadcast. The
         # server owns this fallback because the client folder cache can be
@@ -2398,41 +2717,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             slot.project = folder_project
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
-            cfg_proj = cfg.dashboard.default_project if cfg else ""
-            if isinstance(cfg_proj, str) and cfg_proj:
-                resolved = os.path.realpath(os.path.expanduser(cfg_proj))
-                eligible = os.path.isdir(resolved) and not is_sensitive_path(resolved)
-                if eligible:
-                    # A configured default that overlaps the data home
-                    # would be refused at spawn anyway — skip it here like
-                    # a sensitive path, falling back to the workspace
-                    # default instead of wedging every new slot. Off the
-                    # loop, because the shared scan primes runtime paths
-                    # (realpath/mkdir) on first use.
-                    eligible = (
-                        await asyncio.to_thread(voice_runtime_workspace_conflict, resolved)
-                    ) is None
-                cfg_proj = resolved if eligible else ""
-            else:
-                cfg_proj = ""
-            slot.project = cfg_proj or default_project_dir(workspace)
+            slot.project = await _birth_default_project(cfg, workspace)
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
                 assignment_agent = slot.agent
                 assignment_project = slot.project
-                await creation_stack.enter_async_context(_slot_switch_session_lock(assignment_key))
-                selection_change = None
+                switch_lock = _slot_switch_session_lock(assignment_key)
+                if not await acquire_by(switch_lock, deadline):
+                    return _create_lock_wait_ran_out(slot.key)
+                creation_stack.callback(switch_lock.release)
+                assert create is not None
+                # Runs while the session-switch lock is held, so no binding
+                # change interleaves with the undo.
+                creation_stack.push_async_callback(create.settle)
                 try:
-                    # An explicit template choice is the shared template even when
-                    # a member carries the same name: it never pins member memory.
-                    assigned_store = (
-                        ""
-                        if agent_kind == "template"
-                        else await pin_private_agent_store(
-                            state, assignment_key, agent, cfg, memory_mode=slot.memory_mode
-                        )
-                    )
+                    # Resolved before either write, so a refusal here writes nothing.
                     chosen = await asyncio.to_thread(
                         resolve_agent_bindings,
                         cfg,
@@ -2441,39 +2741,43 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                         validate_memory_files=False,
                         selection_kind=agent_kind,
                     )
+                    # An explicit template choice is the shared template even when
+                    # a member carries the same name: it never pins member memory.
+                    assigned_store = ""
+                    if agent_kind != "template":
+                        assigned_store = await _pin_newborn_store(
+                            state, create, assignment_key, agent, cfg, slot.memory_mode
+                        )
                     # Availability was settled before the mint; this records
                     # the namespace the pick was committed in.
                     slot.agent_kind = chosen.selection_kind
-                    selection_change = await _record_explicit_agent_selection(
+                    create.binding_written(
                         assignment_key,
-                        assignment_agent,
-                        chosen,
-                        config=cfg,
-                        memory_mode=slot.memory_mode,
-                        app=slot._app or "",
+                        await _record_explicit_agent_selection(
+                            assignment_key,
+                            assignment_agent,
+                            chosen,
+                            config=cfg,
+                            memory_mode=slot.memory_mode,
+                            app=slot._app or "",
+                        ),
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
 
                     return _store_unavailable_response(slot.memory_store, exc)
-                if (
-                    state._slots.get(slot.key) is not slot
-                    or effective_session_key(slot) != assignment_key
-                    or slot.agent != assignment_agent
-                    or slot.project != assignment_project
-                ):
-                    await drained_to_thread(
-                        restore_agent_selection, assignment_key, selection_change
-                    )
-                    return web.json_response(
-                        {
-                            "error": "Could not save the member assignment. Try again.",
-                            "code": "session_rebound",
-                        },
-                        status=409,
-                    )
                 if assigned_store:
                     slot.memory_store = assigned_store
+        if create is not None:
+            # The commit: every step that can refuse has passed. Registered
+            # with its indexes in one synchronous step, under the session-switch
+            # lock on the owner path; inside the suspension the push it owes is
+            # only marked, so the one coalesced frame below carries it.
+            refused = await _publish_pending_create(state, create, deadline)
+            if refused is not None:
+                # An app gets the one 404: a lock wait that ran out says nothing
+                # it may learn.
+                return slot_not_found() if request_app else refused
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
         # same ordering `session_control.py`'s create span uses ("the whole
@@ -2522,6 +2826,10 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 slot,
                 force=True,
                 expected_history_key=slot_history_key(slot),
+                # A delete plus a same-key open during this write keeps the
+                # transcript key; the object check stops this slot's metadata
+                # landing on the replacement's transcript.
+                expected_slot_name=slot.key,
             )
         # Guarantee a frame. get_or_create_slot pushes for a NEW slot, but
         # returns an existing named slot without pushing — and this handler is
@@ -2534,6 +2842,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         state.push_slots_update()
         if defer_plain_create_broadcast:
             request_deferred_flush(f"create slot {slot.key!r}")
+        filing["ready"] = True
     # Speculative session creation: overlap the ACP handshake with the user's
     # think-time before their first message. No-op unless session.eager_spawn.
     #
@@ -2541,6 +2850,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
     # idle until it timed out.
     if slot.executor != "remote":
         schedule_eager_spawn(state, slot, start_priority=owner_start_priority(request))
+    # Built after the filing ran: an unfiled slot answers with an empty folder_id.
     return web.json_response(state.serialize_slot(slot))
 
 
