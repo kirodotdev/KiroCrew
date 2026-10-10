@@ -100,7 +100,7 @@ const API_KEY_ORDER = [
   'mcpGatewaySetStub', 'mcpResolveRefresh', 'mcpMeasureStart', 'mcpMeasureProgress',
   'mcpGatewaySetStubMany', 'agentConfig', 'saveAgentConfig', 'defaultAgent',
   'setDefaultAgent', 'kirocrewConfig', 'saveKirocrewConfig', 'patchConfig',
-  'acpBackends', 'acpBackendRecheck', 'kiroUsage', 'capabilityMcpList',
+  'acpBackends', 'acpBackendRecheck', 'defaultMcpGrants', 'setDefaultMcpGrants', 'kiroUsage', 'capabilityMcpList',
   'capabilityMcpInstall', 'capabilityMcpUninstall', 'capabilitySkillsList', 'capabilitySkillsInstall',
   'capabilitySkillsUninstall', 'capabilityAgentsList', 'capabilityAgentsInstall', 'capabilityAgentsUninstall',
   'capabilityPluginsList', 'capabilityPluginsSync', 'capabilityMcpRegistry', 'sttConfig',

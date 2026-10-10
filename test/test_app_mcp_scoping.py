@@ -1477,7 +1477,7 @@ class TestKirocrewJsonHasOneSerializedWriter:
         )
         src = inspect.getsource(default_spec_commit.write_default_spec)
         assert "with _mcp_lock():" in src, "the kirocrew.json write must hold bridges' lock"
-        assert "_read_mcp_json_unlocked()" in src, "…and re-read app entries under it"
+        assert "_read_mcp_json_unlocked(strict=True)" in src, "…and re-read app entries under it"
         # The merge only re-adds app-namespaced servers the snapshot missed.
         assert '":" in _k' in src
 

@@ -11,12 +11,13 @@ atomic write and committed after it.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from kiro_crew import agent as agent_mod
-from kiro_crew.agent_materialization import auto_approve, mcp_aliases, mcp_sources
+from kiro_crew.agent_materialization import auto_approve, managed_mcp, mcp_aliases, mcp_sources
 from kiro_crew.config import config_dir
-from kiro_crew.mcp_cleanup import prune_dangling_tool_refs
+from kiro_crew.mcp_cleanup import _ref_server, prune_dangling_tool_refs
 from kiro_crew.mcp_utils import mcp_server_alias
 
 
@@ -88,6 +89,72 @@ def _apply_operator_oauth_client(name: str, entry: dict, *, managed: bool) -> di
         # only source of these three keys, so absence means removal.
         return strip_preregistered_oauth_client(entry)
     return apply_preregistered_oauth_client(entry, resolved)
+
+
+def _reconcile_opt_in_grants_from_disk(
+    config: dict, disk_spec: object, *, gated_off: frozenset[str]
+) -> None:
+    """Take each opt-in managed server's grant from the spec on disk, under the lock.
+
+    An opt-in set is granted by the spec alone: a rebuild keeps an existing grant
+    current and never adds or removes one. The rebuild merges onto a snapshot read
+    BEFORE this lock, so a grant added or removed since (Settings > Developer's
+    Add / Remove, ``kiro-cli mcp add``) would be undone by writing that snapshot
+    back. Whether the entry exists and which ``tools`` / ``allowedTools`` refs
+    name it therefore come from disk, and the disk entry is passed through
+    :func:`managed_mcp.refresh_managed_servers` exactly as the snapshot was. A
+    gated-off server is left to the gate's retract. Order of the other refs is
+    unchanged; a no-op when nothing moved.
+    """
+    if not isinstance(disk_spec, dict):
+        return
+    disk_mcp = disk_spec.get("mcpServers")
+    disk_mcp = disk_mcp if isinstance(disk_mcp, dict) else {}
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = config["mcpServers"] = {}
+    opt_in = [
+        name
+        for name, spec in agent_mod._MANAGED_MCP_SERVERS.items()
+        if isinstance(spec, dict) and spec.get("opt_in") and name not in gated_off
+    ]
+    # The disk copies go through the same managed refresh the rebuild ran over its
+    # snapshot, so the reconcile adds no merge rule of its own: invocation and env
+    # are re-pinned, stray keys are dropped, and owner fields such as autoApprove
+    # and timeout are kept as they are on disk.
+    fresh = {
+        name: json.loads(json.dumps(disk_mcp[name]))
+        for name in opt_in
+        if isinstance(disk_mcp.get(name), dict)
+    }
+    managed_mcp.refresh_managed_servers(
+        fresh, gated_off=gated_off, registry_mode=managed_mcp._mcp_registry_mode()
+    )
+    for name in opt_in:
+        if name in fresh:
+            servers[name] = fresh[name]
+        else:
+            servers.pop(name, None)
+        for key in ("tools", "allowedTools"):
+            disk_refs = disk_spec.get(key)
+            want = [
+                r
+                for r in (disk_refs if isinstance(disk_refs, list) else [])
+                if (isinstance(r, str) and r.startswith("@") and _ref_server(r) == name)
+            ]
+            refs = config.get(key)
+            refs = refs if isinstance(refs, list) else []
+            if [
+                r
+                for r in refs
+                if (isinstance(r, str) and r.startswith("@") and _ref_server(r) == name)
+            ] == want:
+                continue
+            config[key] = [
+                r
+                for r in refs
+                if not (isinstance(r, str) and r.startswith("@") and _ref_server(r) == name)
+            ] + want
 
 
 def write_default_spec(
@@ -407,7 +474,20 @@ def write_default_spec(
         is_kirocrew_json = False
     if is_kirocrew_json:
         with _mcp_lock():
-            on_disk = _read_mcp_json_unlocked().get("mcpServers", {})
+            # A non-clean rebuild reconciles the opt-in sets against this read,
+            # and the lenient reader's {} for an unreadable spec would delete
+            # every opt-in grant. Read strictly; on failure skip the reconcile
+            # (the rebuild keeps the opt-in entries it already has) and still
+            # write, so a corrupt spec is repaired as before.
+            reconcile = not clean
+            try:
+                disk_spec = _read_mcp_json_unlocked(strict=True)
+            except (ValueError, OSError):
+                agent_mod.logger.warning(
+                    "kirocrew.json unreadable under the lock; opt-in grants kept from the rebuild"
+                )
+                disk_spec, reconcile = {}, False
+            on_disk = disk_spec.get("mcpServers", {})
             if isinstance(on_disk, dict):
                 servers = config.setdefault("mcpServers", {})
                 # on_disk was written under THIS lock by the app register/deregister
@@ -454,6 +534,12 @@ def write_default_spec(
                     # otherwise the dead pre-rebuild URL is persisted.
                     if _k in on_disk_app:
                         servers[_k] = _v
+            if reconcile:
+                _reconcile_opt_in_grants_from_disk(config, disk_spec, gated_off=gated_off)
+                # The reconcile takes allowedTools refs from disk, after the
+                # rebuild's final ceiling pass ran, so an approval the ceiling
+                # now withholds would be written back. Filter the list again.
+                auto_approve.final_ceiling_pass(config)
             _finalize_and_write()
     else:
         _finalize_and_write()

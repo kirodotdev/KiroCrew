@@ -7009,6 +7009,32 @@
         "failed_to_load": "Couldn't load the crewmate settings.",
         "retry": "Retry"
       },
+      "defaultMcpGrantsSection": {
+        "title": "Agent MCP servers",
+        "intro": "Give the default agent two optional {{productName}} tool sets. Changes apply to new sessions; a session that is already running keeps the tools it started with. Worker sessions never get these. Add pre-approves nothing, and approvals you already wrote for these servers are kept.",
+        "dashboard_label": "Dashboard control tools",
+        "dashboard_desc": "kirocrew-dashboard: organize sidebar folders and tags, and open, read, send to or stop your other sessions.",
+        "debug_label": "Gateway debug tools",
+        "debug_desc": "kirocrew-debug: read which code the gateway runs, why a call was refused, and its process and recorded host state.",
+        "session_control_off": "Session Control is off, so the session tools in this set refuse every call. Folder and tag tools still work. Session Control is the agent.session_control setting in config.json.",
+        "backends_unreached": "Sessions on {{backends}} don't load the agent's MCP servers, so they won't get these tools.",
+        "failed_to_load": "Couldn't load the agent MCP settings.",
+        "retry": "Retry",
+        "state_mounted": "On the default agent",
+        "state_not_mounted": "Not on the default agent",
+        "add_button": "Add dashboard and debug MCPs to the default agent",
+        "remove_button": "Remove them",
+        "remove_confirm_title": "Remove both MCP sets?",
+        "remove_confirm_body": "This takes both servers and every reference to them out of the default agent config, including an entry you added by hand. New sessions will not get these tools.",
+        "add_done": "Added. New sessions on the default agent get both tool sets.",
+        "remove_done": "Removed. New sessions on the default agent no longer get these tool sets.",
+        "failed_add": "Couldn't add them. The step that failed was {{step}}. Try again.",
+        "failed_remove": "Couldn't remove them. The step that failed was {{step}}. Try again.",
+        "failed_request": "Couldn't reach the gateway. Try again.",
+        "step_write_spec": "writing the agent config",
+        "step_rebuild": "rebuilding the agent specs",
+        "step_verify": "checking the agent config on disk"
+      },
       "developerPanel": {
         "feature_previews": "Feature Previews",
         "feature_previews_desc": "Unreleased features and pages. The pages stay hidden from the sidebar and from Search Everywhere until you turn them on here; the switches themselves do show up in Settings search. Unpolished on purpose, and per-device unless a card says otherwise."

@@ -159,6 +159,26 @@ export interface AcpBackendProbe {
   }
 }
 
+/** One of the two opt-in MCP servers, as `GET /api/agent/default-mcp-grants` reports it. */
+export interface DefaultMcpGrantRow {
+  name: string
+  /** The default agent spec ON DISK mounts it: what a new session will load. */
+  mounted: boolean
+}
+
+export interface DefaultMcpGrants {
+  servers: DefaultMcpGrantRow[]
+  /** `agent.session_control`: off withdraws the dashboard set's session tools. */
+  session_control: boolean
+  /** Backends whose sessions never load the spec's MCP servers (e.g. `pi`). */
+  unreached_backends?: string[]
+}
+
+/** The POST reply: the new state, or on failure (HTTP 500) also the step that failed. */
+export interface DefaultMcpGrantResult extends DefaultMcpGrants {
+  failed_step?: string
+}
+
 export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTransport) {
   const settings = {
     // Agent config
@@ -179,6 +199,11 @@ export function createConfigEndpoints({ post, put, j, jfetch: fetch }: ClientTra
     // notion of a row. A POST, because it mutates spawn-path state; the GET above can
     // only report the divergence, which is what `restart_required` says.
     acpBackendRecheck: (backend: string) => post('/api/acp-backends/recheck', { backend }).then(j) as Promise<{ backend: AcpBackendProbe }>,
+    // The opt-in dashboard / debug MCP sets on the default agent (Settings >
+    // Developer). The POST is owner-only; `action` adds or removes both.
+    defaultMcpGrants: () => fetch('/api/agent/default-mcp-grants').then(j) as Promise<DefaultMcpGrants>,
+    setDefaultMcpGrants: (action: 'add' | 'remove') =>
+      post('/api/agent/default-mcp-grants', { action }).then(j) as Promise<DefaultMcpGrantResult>,
   }
 
   const dashboardRead = {

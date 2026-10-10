@@ -6,6 +6,7 @@ import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/
 import { useLocalGateway } from '../../hooks/useLocalGateway'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 import { CrewmatesSection } from './CrewmatesSection'
+import { DefaultMcpGrantsSection } from './DefaultMcpGrantsSection'
 
 import { i18nT } from '../../i18n/t'
 const DEV_MODE_KEY = 'mc-dev-mode'
@@ -77,6 +78,9 @@ export function DeveloperPanel() {
     {/* The crewmate feature switches, under the Crew Members preview card that
         is their one door (`CrewmatesSection.tsx`). */}
     <CrewmatesSection />
+    {/* The default agent's opt-in MCP sets (dashboard control, gateway debug):
+        server-side switches, like Crewmates above (`DefaultMcpGrantsSection.tsx`). */}
+    <DefaultMcpGrantsSection />
     {localGatewaySupported && (
       <SettingsSection title={i18nT('pages.settings.developerPanel.gateway')}>
         <SettingsCard>

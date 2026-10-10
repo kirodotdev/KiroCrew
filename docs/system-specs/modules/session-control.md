@@ -648,8 +648,9 @@ slot. A per-slot revoke that walks `created_by` is tracked in issue #8589.
 
 `kirocrew-dashboard` rather than `kirocrew-core`, because these tools are not a
 capability every session should carry. That server is an **assignable set**: it
-is absent from the default agent's spec and loads only for an agent whose own
-spec references it, so an ordinary session spends no context on tools it will
+is absent from the default agent's spec until Settings > Developer > Agent MCP
+servers adds it there, and otherwise loads only for an agent whose own spec
+references it, so an ordinary session spends no context on tools it will
 never call. The set already holds the chat-folder tools, and the two classes are
 granted together on purpose — an agent given the job of organizing sessions is
 the same agent that should be able to see what they are doing. A test pins that
@@ -1273,7 +1274,10 @@ user), so a CRON-origin descendant stays in the sidebar exactly as a cron tab do
 
 Capability remains bounded per agent, which the slot-key prefix could not see:
 `@kirocrew-dashboard` is an opt-in per-agent server, absent from the default
-agent's spec, so a job whose agent does not mount it never has the verbs at all.
+agent's spec unless Settings > Developer > Agent MCP servers added it, so a job
+whose agent does not mount it never has the verbs at all. That action writes no
+`allowedTools` or `autoApprove` of its own, so a call reaches the approval gate
+unless the owner already approved that verb, an approval Add keeps.
 A cron whose fan-out must run without an approval prompt needs the write verbs in
 its own agent's `allowedTools`; `_CONDUCTOR_DASHBOARD_GRANTS` deliberately
 withholds them, because a conductor agent also runs in dashboard sessions where

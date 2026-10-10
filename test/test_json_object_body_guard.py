@@ -347,6 +347,11 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/mcp.py::_do_mcp_apply": ("_MCP_APPLY_MAX_BODY_BYTES", _BOUNDED_EXPLICIT),
     "handlers/mcp.py::api_mcp_gateway_enable": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/mcp.py::api_mcp_gateway_set_stub": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # Settings opt-in MCP grant: one allowlisted server name and a bool.
+    "handlers/default_mcp_grants.py::api_default_mcp_grants_set": (
+        "<default>",
+        _BOUNDED_CONTROL_FIELDS,
+    ),
     # handlers/cron.py: create/update carry the job's full agent message,
     # whose MAX_CRON_MESSAGE character bound can exceed the shared 64 KB
     # default in multibyte UTF-8 -- so they take a per-route ceiling sized to
