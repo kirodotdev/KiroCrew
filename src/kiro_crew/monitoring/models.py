@@ -823,6 +823,13 @@ def resolve_probe_result(results: object, subject: str) -> MonitorProbeResult:
     return result
 
 
+#: Longest short-reading digest a loaded record may carry. The gate writes a
+#: 16-character hex digest; the bound is what holds when the record came off a store
+#: an agent shell can write. A longer value is dropped, which fails to match and so
+#: delivers.
+_MAX_SHORT_READING_DIGEST_CHARS = 64
+
+
 @dataclass
 class MonitorState:
     """Restart-durable state for one structured monitor."""
@@ -1003,6 +1010,23 @@ class MonitorState:
     #: that charges ``floor_ticks`` -- so a refusal and a death both leave it owed,
     #: and a retried delivery is charged exactly once.
     floor_fire_pending: bool = False
+    #: Pull-request watches only: the digest of the SHORT reading the last delivered
+    #: turn was decided on, and how many ticks since then have repeated exactly that
+    #: reading without a turn.
+    #:
+    #: A short reading (the fetch reached the subject and left part of it unread) can
+    #: never be screened quiet on the half that arrived, so without these every tick
+    #: of a degraded forge delivers a turn carrying nothing the last one did not. A
+    #: repeat of the reading a turn was already delivered on is HELD instead, up to
+    #: the gate's ceiling, and anything else -- a change in what was read, a different
+    #: reason it came back short, a whole reading -- delivers or ends the run.
+    #:
+    #: The digest is written only where a delivery is confirmed, so a refused fire or
+    #: a process that stops before its turn lands holds nothing. A whole reading and
+    #: an update that re-aims the loop clear both fields, and an unreadable value
+    #: loads as no baseline at all, which delivers the next short reading.
+    short_reading_digest: str = ""
+    short_reading_held: int = 0
     #: Work-ledger watches only: the worker-report revision the probe read on its
     #: newest successful observation, and the one it had read when the last turn
     #: was DELIVERED. While the two are equal no worker has reported since the
@@ -1115,6 +1139,23 @@ class MonitorState:
             self.ledger_revision = ""
         if not isinstance(self.ledger_delivered_revision, str):
             self.ledger_delivered_revision = ""
+        # Normalised toward delivering, as a pair. The digest is what lets a repeat be
+        # held, so an unreadable digest, or one longer than any digest this build
+        # writes, becomes "no baseline" and fails to match. An unreadable count says
+        # nothing about how long the hold has lasted, so it drops the baseline too
+        # rather than restarting a hold from zero.
+        if (
+            not isinstance(self.short_reading_digest, str)
+            or len(self.short_reading_digest) > _MAX_SHORT_READING_DIGEST_CHARS
+        ):
+            self.short_reading_digest = ""
+        if (
+            isinstance(self.short_reading_held, bool)
+            or not isinstance(self.short_reading_held, int)
+            or self.short_reading_held < 0
+        ):
+            self.short_reading_held = 0
+            self.short_reading_digest = ""
         # The marker carries an outcome name, so an unreadable value cannot be
         # guessed. Keep it PENDING and record the cautious classification: a
         # delivery still happens, and a subject wrongly called blocked prompts a
