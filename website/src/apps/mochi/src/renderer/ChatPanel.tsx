@@ -1861,10 +1861,11 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
 })
 
 /** Ensure blank line before fences glued to text, and close any unclosed fence. */
-function fixStreamingFences(s: string): string {
-  // The info string is the whole backtick-free line, including attributes and
-  // a leading space, matching the dashboard's FENCE_OPEN.
-  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
+export function fixStreamingFences(s: string): string {
+  // The info string may be a tag plus an optional `{...}` attribute block,
+  // matching the dashboard's fixCodeFences: a ``` run followed by more words
+  // is a mid-sentence mention, not a fence.
+  s = s.replace(/([^\n])(\n?)(```(?:[ \t]*[^`\s]+)?(?:[ \t]+\{[^`\n]*\})?[ \t\r]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // If there's an odd number of ``` fences, the last one is unclosed — close it
