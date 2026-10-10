@@ -344,6 +344,9 @@ class TestAntiDrift:
     #   table (which also gates apply_job_update). Validated by its own stricter
     #   validate_managed_by (ASCII charset + 200 cap) at its only writer,
     #   CronService.add_managed_job.
+    # - project_dir_was: the rescope marker, copied by the store from an
+    #   already-validated project_dir when that field changes; a caller may
+    #   only CLEAR it (the store refuses any other value)
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
@@ -356,6 +359,7 @@ class TestAntiDrift:
             "last_failure_hash",
             "approval_mode",
             "memory_store",
+            "project_dir_was",
         }
     )
 

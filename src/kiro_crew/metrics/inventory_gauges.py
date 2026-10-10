@@ -170,6 +170,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterable, Iterator, Optional
 # The knowledge store holds knowledge.db open in this process through the shim; a
 # probe on a second SQLite library would drop that store's locks when it closes.
 from kiro_crew._sqlite_compat import sqlite3
+from kiro_crew.config.paths import default_work_dir
 from kiro_crew.metrics.schema import validate_name
 
 if TYPE_CHECKING:  # annotation-only; never imported at runtime
@@ -549,9 +550,7 @@ def read_memory_migrated() -> Optional[int]:
 
 def _read_knowledge_documents_uncached() -> Optional[int]:
     """Uncached knowledge-source count. See :func:`read_knowledge_documents`."""
-    from kiro_crew.config.paths import config_dir
-
-    db_path = config_dir() / "workspace" / "knowledge" / "knowledge.db"
+    db_path = default_work_dir() / "knowledge" / "knowledge.db"
     if not db_path.exists():
         # Never ingested: the database is created on first write, and this probe
         # must not be what creates it.

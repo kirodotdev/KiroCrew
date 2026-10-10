@@ -580,6 +580,7 @@ class _Recording:
         self.factory_kwargs: dict = {}
         self.socket_env_arg: dict | None = None
         self.forward_args: tuple | None = None
+        self.bind_descriptor: int | None = None
 
 
 def _launch_tools(
@@ -640,9 +641,10 @@ def _launch_tools(
         rec.calls.append("inject_xdist_auto_cap")
         env["PYTEST_XDIST_AUTO_NUM_WORKERS"] = "2"
 
-    async def _bind(work_dir):
+    async def _bind(work_dir, *, descriptor=None):
         rec.calls.append("bind_voice_safe_agent_workspace_async")
-        return str(work_dir), 7
+        rec.bind_descriptor = descriptor
+        return str(work_dir), (descriptor if descriptor is not None else 7)
 
     async def _create(*argv, **kwargs):
         rec.calls.append("create_subprocess_limited")
@@ -845,8 +847,9 @@ def test_a_failed_spawn_releases_the_workspace_and_the_sandbox_launcher(
                 _request(),
                 _launch_tools(_Recording(), scratch=_Scratch(None), spawn_error=error),
             )
-        # One discard before the bind, one for the failure.
-        assert host.workspace_discards == 2
+        # One discard for the failure only: the tail no longer discards before the
+        # bind, since a pinned driver's held descriptor is bound through instead.
+        assert host.workspace_discards == 1
         assert host.cleanup_discards == 1
 
 
@@ -907,6 +910,27 @@ def test_a_host_with_its_own_sandbox_enters_a_verified_workspace(monkeypatch, tm
         )
         assert ("bind_voice_safe_agent_workspace_async" in rec.calls) is internal
         assert rec.factory_kwargs["chdir_fd"] == (7 if internal else None)
+
+
+def test_a_pinned_work_dir_descriptor_is_bound_through_not_reopened(monkeypatch, tmp_path) -> None:
+    """A driver that pinned the work-dir chain still holds its leaf here.
+
+    The voice-safe binding must run against THAT descriptor and the spawn must
+    enter through it; discarding it first and re-opening ``_work_dir`` by name
+    would release the pin and trust the pathname the pin exists to distrust.
+    """
+    _launch_env(monkeypatch)
+    for internal in (False, True):
+        rec = _Recording()
+        host = _FakeHost(tmp_path)
+        host._bound_workspace_fd = 11
+        _run_launch(
+            host, _request(internal_sandbox=internal), _launch_tools(rec, scratch=_Scratch(None))
+        )
+        assert host.workspace_discards == 0
+        assert rec.factory_kwargs["chdir_fd"] == 11
+        if internal:
+            assert rec.bind_descriptor == 11
 
 
 def test_the_driver_names_the_scope_and_the_launch_reports_it(monkeypatch, tmp_path) -> None:

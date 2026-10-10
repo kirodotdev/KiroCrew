@@ -299,9 +299,15 @@ class TestEnsureReadyWorkDir:
         client._session_id = "sess-1"
 
         mkdir_threads: list[threading.Thread] = []
-        with patch(
-            "pathlib.Path.mkdir",
-            side_effect=lambda *a, **kw: mkdir_threads.append(threading.current_thread()),
+        # Off the Windows chain-pin gate: under it a caller-named work dir is not
+        # touched by name before the spawn pins it (the pin creates a missing
+        # tail under held ancestors instead) -- pinned in test_work_dir_chain_pin.
+        with (
+            patch.object(client_mod, "_PIN_WORK_DIR_CHAIN", False),
+            patch(
+                "pathlib.Path.mkdir",
+                side_effect=lambda *a, **kw: mkdir_threads.append(threading.current_thread()),
+            ),
         ):
             await client.ensure_ready()
             assert len(mkdir_threads) == 1, "first ensure_ready must create the work dir"
@@ -790,6 +796,14 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             ),
             file_lock=platform_compat.file_lock,
             open_lock_file=platform_compat.open_lock_file,
+            # The work-dir chain pin and its release: nothing to hold for a
+            # stand-in tree, so the pin answers no handles and no leaf
+            # descriptor for the child to enter.
+            pin_directory_chain=lambda path, **kw: [],
+            pin_directory_chain_bound=lambda path, **kw: ([], str(path)),
+            duplicate_leaf_descriptor=lambda fds: None,
+            compare_key=platform_compat.compare_key,
+            release_directory_chain=lambda fds: None,
         )
         monkeypatch.setattr(runtime_mod, "platform_compat", backend)
         monkeypatch.setattr(session_pid, "platform_compat", backend)

@@ -78,13 +78,70 @@ class TestChatSlotProject:
     async def test_sensitive_path_returns_403(self, tmp_path):
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        with patch("kiro_crew.dashboard.chat_handlers.is_sensitive_path", return_value=True):
+        # The verdict comes from the shared rule's canonical gate, and the
+        # denial is audited under this endpoint's own operation.
+        events: list[dict] = []
+        fake_sel = MagicMock()
+        fake_sel.log_api_access = lambda **kw: events.append(kw)
+        with (
+            patch("kiro_crew.security.is_sensitive_canonical_path", return_value=True),
+            patch("kiro_crew.sel.sel", lambda: fake_sel),
+        ):
             async with TestClient(TestServer(_make_app(state))) as client:
                 resp = await client.post(
                     "/api/chat/slots/test/project",
                     json={"project": str(tmp_path)},
                 )
                 assert resp.status == 403
+                assert (await resp.json())["error"] == "Access denied"
+        assert [(e["operation"], e["outcome"], e["error"]) for e in events] == [
+            ("chat_slot_project", "denied", "sensitive path")
+        ]
+
+    @pytest.mark.asyncio
+    async def test_routes_through_the_shared_rule(self, tmp_path):
+        # One rule for every user-named project directory: the endpoint calls
+        # the same core the chat-folder and cron validators call, with its own
+        # wording and audit operation, and stores what the core answers.
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        seen: list[dict] = []
+
+        def _core(raw, **kw):
+            seen.append({"raw": raw, **kw})
+            return str(tmp_path)
+
+        with patch("kiro_crew.dashboard.chat_handlers.resolve_project_dir", _core):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project", json={"project": str(tmp_path)}
+                )
+                assert resp.status == 200
+        assert seen == [
+            {
+                "raw": str(tmp_path),
+                "label": "Project directory",
+                "audit_operation": "chat_slot_project",
+                "audit_caller": "dashboard",
+            }
+        ]
+        assert slot.project == str(tmp_path)
+
+    @pytest.mark.asyncio
+    async def test_other_refusals_are_400_with_the_rules_wording(self):
+        # Relative and UNC spellings are refused like every other surface now,
+        # not resolved against the gateway's cwd.
+        slot = _ChatSlot("test")
+        state = _mock_state(slot)
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post("/api/chat/slots/test/project", json={"project": "rel/path"})
+            assert resp.status == 400
+            assert "absolute path" in (await resp.json())["error"]
+            resp = await client.post(
+                "/api/chat/slots/test/project", json={"project": "//host/share"}
+            )
+            assert resp.status == 400
+            assert "UNC/network" in (await resp.json())["error"]
 
     @pytest.mark.asyncio
     async def test_data_home_overlap_returns_actionable_400(self, tmp_path, monkeypatch):
@@ -104,14 +161,20 @@ class TestChatSlotProject:
         )
         slot = _ChatSlot("test")
         state = _mock_state(slot)
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots/test/project",
-                json={"project": str(tmp_path)},
-            )
-            assert resp.status == 400
-            data = await resp.json()
-            assert data["code"] == "workspace_overlaps_data_home"
+        # The pre-flight is what is under test here. The platform pin above is
+        # global (``sandbox_mod.sys`` IS ``sys``), and on a real Windows host it
+        # starves the project-directory rule of the security API it classifies
+        # volumes with, so the rule is stood in for by its answer; the rule and
+        # this endpoint's routing through it are pinned by their own tests.
+        with patch("kiro_crew.dashboard.chat_handlers.resolve_project_dir", lambda raw, **kw: raw):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots/test/project",
+                    json={"project": str(tmp_path)},
+                )
+                assert resp.status == 400
+                data = await resp.json()
+                assert data["code"] == "workspace_overlaps_data_home"
             assert "protected voice runtime" in data["error"]
             # The guard message embeds paths with !r, so on Windows the
             # backslashes are repr-escaped — assert the repr form, which is the

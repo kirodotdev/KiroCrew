@@ -823,7 +823,7 @@ class LaunchTools:
     browser_session_env: Callable[[Mapping[str, str]], dict[str, str]]
     browser_socket_env: Callable[[Mapping[str, str]], dict[str, str]]
     inject_xdist_auto_cap: Callable[[dict[str, str]], Any]
-    bind_voice_safe_agent_workspace_async: Callable[[Any], Awaitable[tuple[str, int | None]]]
+    bind_voice_safe_agent_workspace_async: Callable[..., Awaitable[tuple[str, int | None]]]
     create_subprocess_limited: Callable[..., Awaitable[asyncio.subprocess.Process]]
     retrying_spawn_factory: Callable[..., Awaitable[asyncio.subprocess.Process]] | None = None
 
@@ -1048,10 +1048,18 @@ async def launch(host: LaunchHost, request: LaunchRequest, tools: LaunchTools) -
     # raw config. Guarded: the sandbox temp file is live.
     await host._to_thread_guarding_sandbox(tools.inject_xdist_auto_cap, env)
 
-    await host._discard_bound_workspace()
+    # A driver that pins the work-dir chain (``_pinned_spawn`` /
+    # ``_pinned_spawn_admitted``) is still holding it here; on POSIX its leaf is
+    # already ``_bound_workspace_fd`` and ``_spawn_work_dir`` is the spelling the
+    # pin verified. The macOS voice-runtime overlap check therefore runs against
+    # THAT descriptor when one is held -- never re-opening the name the pin exists
+    # to distrust -- and opens the work dir by name only when nothing is pinned.
+    # NOT ``_discard_bound_workspace`` first: that is what would release the pin.
     if request.internal_sandbox:
         host._spawn_work_dir, host._bound_workspace_fd = (
-            await tools.bind_voice_safe_agent_workspace_async(host._work_dir)
+            await tools.bind_voice_safe_agent_workspace_async(
+                host._spawn_work_dir, descriptor=host._bound_workspace_fd
+            )
         )
     # Process-group isolation for clean tree-kill. Both flags explicit (NOT via
     # **dict unpack -- that breaks mypy's Popen overload resolution on the build

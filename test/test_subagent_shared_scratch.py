@@ -462,8 +462,8 @@ class TestSpawnersMountTheTreeWindow:
             module, "cgroup_scope_argv", lambda argv: ["/usr/bin/cgroup-wrapper", *argv]
         )
 
-        async def _unbound_workspace(work_dir):
-            return work_dir, None
+        async def _unbound_workspace(work_dir, *, descriptor=None):
+            return work_dir, descriptor
 
         monkeypatch.setattr(
             module, "bind_voice_safe_agent_workspace_async", _unbound_workspace, raising=False
