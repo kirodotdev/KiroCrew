@@ -54,7 +54,7 @@ dev = [
     # a pass, so the gate looked covered while nothing exercised it. Declared here
     # so those tests actually run; the runtime dependency stays optional, because
     # a user who does not enable Teams should not carry a crypto library.
-    "PyJWT[crypto]==2.13.0",
+    "PyJWT[crypto]==2.15.0",
     # Test-only, NOT a runtime dependency. test_transcribe.py's pin-completeness
     # test imports imageio_ffmpeg._definitions.FNAME_PER_PLATFORM to derive the
     # authoritative bundled-decoder filename set; without the package installed the
