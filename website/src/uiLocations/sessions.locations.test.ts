@@ -68,17 +68,12 @@ const EXPECTED: Record<string, Expect> = {
     kind: 'button', labelKey: 'pages.chatSidebar.duplicate',
     placements: [[['page.chat'], 'sidebar', [...DESKTOP, cond('has_open_sessions'), cond('pointer_on_session_row')]]],
   },
-  // Behind the "New ephemeral chat ›" submenu on a wide screen; inline on a phone.
-  'sessions.create-menu.ephemeral': {
-    kind: 'menu-item', labelKey: 'pages.chatSidebar.new_ephemeral_chat',
-    placements: [menuPair('sessions.create-menu')[0]],
-  },
+  // Both private-chat rows sit at the top level of the create menu.
   'sessions.create-menu.incognito': {
-    kind: 'menu-item', labelKey: 'components.welcomeView.incognito',
-    placements: [
-      [['page.chat', 'sessions.create-menu', 'sessions.create-menu.ephemeral'], 'menu', [...DESKTOP]],
-      menuPair('sessions.create-menu')[1],
-    ],
+    kind: 'menu-item', labelKey: 'pages.chatSidebar.new_incognito_chat', placements: menuPair('sessions.create-menu'),
+  },
+  'sessions.create-menu.temporary': {
+    kind: 'menu-item', labelKey: 'pages.chatSidebar.new_temporary_chat', placements: menuPair('sessions.create-menu'),
   },
   // The open session's row menu: reached by opening the session, not by a
   // pointer on its row.
