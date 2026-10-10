@@ -4796,19 +4796,24 @@ class KiroCrewConfig:
             # while the dashboard still shows the level the operator picked.
             _from_option = _backend in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
             _registry_ok = is_valid_effort(_eff) and model_supports_effort(m)
+            # With nothing pinned there is no model id to key the level under
+            # yet: the backend picks the model and reports it on ``session/new``.
+            # The level is carried unkeyed and the provider binds it to the
+            # model the session actually runs (``AcpProvider._bind_unbound_effort``),
+            # which is also where it is judged and, when refused, logged.
+            _unbound_effort = ""
             if m and _eff and (_from_option or _registry_ok):
                 _eff_per_model[m] = _eff
+            elif not m and _eff and (_from_option or is_valid_effort(_eff)):
+                _unbound_effort = _eff
             elif _eff and is_valid_effort(_eff):
                 # Single-authority drop warning: a valid requested effort is
-                # being dropped because the resolved model is empty or not
+                # being dropped because the resolved model is not
                 # effort-capable. Every surface (spawn, dashboard slot, cron)
                 # funnels through this factory, so one log at the gate covers
                 # them all and cannot drift from the decision it reports on.
                 # Reporting-only — the overlay simply stays unwritten, exactly
-                # as before. An unresolved model is named "auto" (it IS the
-                # DEFAULT_MODEL sentinel the backend resolves itself), matching
-                # the spawn-side effort_dropped verdict so one drop event reads
-                # as one event across both surfaces.
+                # as before.
                 #
                 # An EXPLICIT override always warns: a caller's own request
                 # being dropped is the event this gate exists to surface, and
@@ -4828,7 +4833,7 @@ class KiroCrewConfig:
                         "model '%s' does not support effort configuration",
                         _eff,
                         session_key or "?",
-                        m or "auto",
+                        m,
                     )
             return AcpProvider(
                 work_dir=wdir,
@@ -4841,6 +4846,7 @@ class KiroCrewConfig:
                 extra_env=extra_env,
                 acp_backend=_backend,
                 effort_per_model=_eff_per_model,
+                unbound_effort=_unbound_effort,
                 tool_search=tool_search,
                 tool_search_min_pct=tool_search_min_pct,
                 tool_search_min_tokens=tool_search_min_tokens,
