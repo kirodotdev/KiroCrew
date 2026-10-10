@@ -491,28 +491,34 @@ export const messageReducers = {
    *  the text. The tool is then the turn's latest step, so the burst that
    *  preceded it is closed and the new one belongs after it — appending is the
    *  only placement that satisfies both, and it is what stops a post-tool
-   *  burst being concatenated into the pre-tool block. */
+   *  burst being concatenated into the pre-tool block.
+   *
+   *  A NON-active slot accumulates into `slotMessages[slot]`, the array a pane
+   *  rendering that slot reads (the Crewmates page, the session grid): those
+   *  hosts never move `activeSlot`, and their answer text already streams
+   *  there via the non-active chunk path, so reasoning must land beside it. */
   sseThinkingChunk(state: ChatState, action: PayloadAction<{ slot: string; content: string }>) {
     const { slot, content } = action.payload
-    if (slot !== state.activeSlot || !content) return
-    let at = state.messages.length
-    for (let i = state.messages.length - 1; i >= 0; i--) {
-      if (state.messages[i].role === 'streaming') { at = i; break }
+    if (!slot || !content || isUnsafeKey(slot)) return
+    const msgs = slot === state.activeSlot ? state.messages : (state.slotMessages[safeKey(slot)] ??= [])
+    let at = msgs.length
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      if (msgs[i].role === 'streaming') { at = i; break }
     }
-    for (let i = at; i < state.messages.length; i++) {
-      if (state.messages[i].role === 'tool') { at = state.messages.length; break }
+    for (let i = at; i < msgs.length; i++) {
+      if (msgs[i].role === 'tool') { at = msgs.length; break }
     }
     // Extend the burst the model is still emitting: an out-of-band row (an
     // approval, a queued bubble) and a confirmed steer both interrupt it
     // without ending it, so look through them for the open block.
     let prev = at
     while (prev > 0) {
-      const m = state.messages[prev - 1]
+      const m = msgs[prev - 1]
       if (isOutOfBandRow(m) || (m.role === 'user' && !isTurnBoundaryUser(m))) { prev--; continue }
       break
     }
-    const open = prev > 0 ? state.messages[prev - 1] : undefined
+    const open = prev > 0 ? msgs[prev - 1] : undefined
     if (open?.role === 'thinking') { open.content += content; return }
-    state.messages.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
+    msgs.splice(at, 0, { role: 'thinking', content, cls: '', meta: { clientTs: mintMsgId() } })
   },
 }
