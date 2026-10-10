@@ -4161,6 +4161,19 @@ async def api_approval_resolve(request: web.Request) -> web.Response:
             and state.resolve_state_approval(approval_id, action == "approve")
         )
     else:
+        # Imported here: chat_handlers imports this package at module scope.
+        from kiro_crew.dashboard.chat_handlers import bare_approval_decide_allowed
+
+        if not bare_approval_decide_allowed(request):
+            # Only the dashboard owner's browser session may decide by id alone;
+            # any other caller names the request it means with the target above.
+            return web.json_response(
+                {
+                    "error": "an owner-bound approval target is required",
+                    "code": "approval_target_required",
+                },
+                status=404,
+            )
         ok = state.resolve_approval(
             approval_id, action == "approve", rejected_once=action == "reject_once"
         )

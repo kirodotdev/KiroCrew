@@ -8613,6 +8613,40 @@ async def deny_session_approval_caller(request: web.Request, operation: str) -> 
     )
 
 
+def bare_approval_decide_allowed(request: web.Request) -> bool:
+    """Whether *request* may decide a tool approval by its request id alone.
+
+    A request id is minted by the caller that raised the approval and can recur,
+    so a decide that names only the id resolves whichever request holds it at
+    that moment. The owner-bound targets (``origin=coordinator`` with the exact
+    slot and instance, or ``origin: "native"`` with the row's ``request_mid``)
+    name the request a card actually showed and are accepted from every caller.
+
+    The bare form is accepted only from the dashboard user's own browser
+    session: the auth middleware sets a PRESENT, empty ``app`` claim for a
+    validated dashboard session token (the same positive proof
+    ``is_owner_dashboard_request`` reads), and ``internal_auth`` marks a loopback
+    ``X-Internal-Secret`` caller (an agent, MCP tool or cron), which is not a
+    person looking at a card. Every other caller (internal secret, or any
+    request the middleware left without a dashboard-user claim) must send an
+    owner-bound target. App callers are judged by their own grant path before
+    this check and never reach it.
+    """
+    if request.get("internal_auth") is True:
+        return False
+    return request.get("app", None) == ""
+
+
+def _approval_target_required() -> web.Response:
+    return web.json_response(
+        {
+            "error": "an owner-bound approval target is required",
+            "code": "approval_target_required",
+        },
+        status=404,
+    )
+
+
 async def api_chat_slot_followup(request: web.Request) -> web.Response:
     """POST /api/chat/slots/{slot}/followup — show an agent-authored follow-up card.
 
@@ -9744,6 +9778,11 @@ async def api_chat_slot_approve(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     strict_native = "origin" in body
+    if not strict_native and not request_app and not bare_approval_decide_allowed(request):
+        # A decide by request id alone, from a caller that is not the dashboard
+        # owner's browser session: refuse it rather than resolve whichever
+        # request now holds the id.
+        return _approval_target_required()
     if strict_native:
         request_mid = body.get("request_mid")
         if (

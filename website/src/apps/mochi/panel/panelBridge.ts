@@ -384,6 +384,27 @@ function purposeFromToolInput(toolInput: string): string | undefined {
   }
 }
 
+/**
+ * The owner-bound target of one pending approval: the fields that name the exact
+ * request a card showed, so a decide cannot land on a later request that took the
+ * same id. A coordinator (state-level) request is named by its slot and instance;
+ * a native (slot-future) request by its permission row's `mid`.
+ */
+export type ApprovalTarget =
+  | { origin: 'coordinator'; slot: string; instance: string }
+  | { origin: 'native'; requestMid: string }
+
+/** The coordinator target carried by a pending `approval` record, or undefined. */
+export function coordinatorApprovalTarget(
+  rec: Record<string, unknown>,
+): ApprovalTarget | undefined {
+  const { slot, instance } = rec
+  if (typeof slot !== 'string' || !slot || typeof instance !== 'string' || !instance) {
+    return undefined
+  }
+  return { origin: 'coordinator', slot, instance }
+}
+
 export function permissionApprovalFromFrame(
   data: Record<string, unknown>,
 ): {
@@ -394,6 +415,7 @@ export function permissionApprovalFromFrame(
   baseCommand?: string
   trustGrantable?: boolean
   purpose?: string
+  target?: ApprovalTarget
 } | null {
   let meta: unknown
   try {
@@ -416,6 +438,7 @@ export function permissionApprovalFromFrame(
     baseCommand?: string
     trustGrantable?: boolean
     purpose?: string
+    target?: ApprovalTarget
   } = { id, tool }
   if (typeof m.tool_input === 'string' && m.tool_input) {
     req.toolInput = m.tool_input
@@ -427,6 +450,11 @@ export function permissionApprovalFromFrame(
   // Proof is server-authored on the pending card. Scope strings are display
   // values and their absence must never make the pet fall back to broad Trust.
   if (m.trust_grantable === '1') req.trustGrantable = true
+  // The row's delivery identity binds a decide to this exact request.
+  const rowMeta = data.meta
+  const mid =
+    rowMeta && typeof rowMeta === 'object' ? (rowMeta as Record<string, unknown>).mid : undefined
+  if (typeof mid === 'string' && mid) req.target = { origin: 'native', requestMid: mid }
   return req
 }
 
@@ -597,7 +625,9 @@ function connect(): void {
     if (msg.type === 'approval') {
       if (data.slot === MOCHI_SLOT) {
         reportPetEvent('approval_required')
-        for (const cb of approvalListeners) cb(data)
+        const target = coordinatorApprovalTarget(data)
+        const req = target ? { ...data, target } : data
+        for (const cb of approvalListeners) cb(req)
       }
       return
     }
@@ -1445,12 +1475,20 @@ export async function getPendingApprovals(): Promise<Record<string, unknown>[]> 
  * carry no pattern. `trustGrantable` is the gateway proof carried by this exact
  * pending card; every durable trust route fails locally without it, while the
  * server independently verifies the card again before changing policy.
+ *
+ * `target` is the owner-bound target of the card's own request. With it an
+ * approve or reject names that exact request: the coordinator route gets the
+ * slot and instance, a native request goes to the slot route with its
+ * `request_mid`, and a request that has since been replaced under the same id
+ * answers 404 instead of being decided. The durable trust actions keep the slot
+ * route's id form, which is the only form that route accepts for them.
  */
 export async function respondApproval(
   id: string,
   action: string,
   pattern?: string,
   trustGrantable = false,
+  target?: ApprovalTarget,
 ): Promise<{ ok: boolean; error?: string; staleOwnerSession?: boolean }> {
   const route = approvalRoute(action)
   if (
@@ -1465,14 +1503,39 @@ export async function respondApproval(
   }
   try {
     const res =
-      route.kind === 'approval'
-        ? await fetch(`/api/approvals/${encodeURIComponent(id)}/${route.action}`, {
+      route.kind === 'approval' && target?.origin === 'native'
+        ? await fetch(`/api/chat/slots/${MOCHI_SLOT}/approve`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
-            body: '{}',
+            body: JSON.stringify({
+              action: route.action === 'approve' ? 'approved' : 'rejected',
+              request_id: id,
+              origin: 'native',
+              request_mid: target.requestMid,
+            }),
           })
-        : await fetch(`/api/chat/slots/${MOCHI_SLOT}/approve`, {
+        : route.kind === 'approval'
+        ? await fetch(
+            `/api/approvals/${encodeURIComponent(id)}/${route.action}` +
+              (target?.origin === 'coordinator'
+                ? '?' +
+                  new URLSearchParams({
+                    origin: 'coordinator',
+                    slot: target.slot,
+                    instance: target.instance,
+                  }).toString()
+                : ''),
+            {
+              method: 'POST',
+              credentials: 'same-origin',
+              headers: { 'Content-Type': 'application/json' },
+              body: '{}',
+            },
+          )
+        : // approval-target: trust-only. The slot route accepts a durable trust
+          // action only by request id, and re-verifies the card before granting.
+          await fetch(`/api/chat/slots/${MOCHI_SLOT}/approve`, {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },

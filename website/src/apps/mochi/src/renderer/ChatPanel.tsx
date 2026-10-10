@@ -61,6 +61,7 @@ import {
 import { PendingAttachments } from '../../panel/PendingAttachments'
 import { MochiCodeBlock } from '../../panel/MochiCodeBlock'
 import { reportStat, SendRefusedError, slotRefusalReason, isDefiniteRefusal } from '../../panel/panelBridge'
+import type { ApprovalTarget } from '../../panel/panelBridge'
 import { i18nT } from '../../../../i18n/t'
 import { useLanguageGeneration } from '../../../../i18n/useLanguageGeneration'
 import { i18next } from '../../../../i18n'
@@ -999,8 +1000,11 @@ export const ChatPanel: React.FC<ChatPanelProps> = ({ onToggleWatch, watchPanelV
     action: string,
     pattern?: string,
     trustGrantable = false,
+    target?: ApprovalTarget,
   ) => {
-    const res = await api?.respondApproval?.(id, action, pattern, trustGrantable)
+    const res = target
+      ? await api?.respondApproval?.(id, action, pattern, trustGrantable, target)
+      : await api?.respondApproval?.(id, action, pattern, trustGrantable)
     if (res !== undefined && res !== null && res.ok === false) {
       // The POST failed. Do NOT relabel the card "Approved"/"Trusted" — that
       // would claim a security decision that never reached the agent, which is
@@ -2098,6 +2102,8 @@ interface ApprovalPayload {
   baseCommand?: string
   /** Server proof that this pending card may create a durable trust grant. */
   trustGrantable?: boolean
+  /** The owner-bound target of this card's own request (see panelBridge). */
+  target?: ApprovalTarget
 }
 
 /** Parse an approval payload, or null when the text is not really one of ours.
@@ -2192,7 +2198,7 @@ const trustScopeBtnStyle: React.CSSProperties = {
 
 // Exported for the capture harness (capture/mochi-trust-label.tsx), which mounts
 // the real approval card as screenshot evidence; not part of the app's API.
-export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: string) => void; onImageClick?: (b64: string) => void; onApproval?: (id: string, action: string, pattern?: string, trustGrantable?: boolean) => void; onEdit?: (content: string) => void; animate?: boolean }>(({ message, onOption, onImageClick, onApproval, onEdit, animate = true }) => {
+export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: string) => void; onImageClick?: (b64: string) => void; onApproval?: (id: string, action: string, pattern?: string, trustGrantable?: boolean, target?: ApprovalTarget) => void; onEdit?: (content: string) => void; animate?: boolean }>(({ message, onOption, onImageClick, onApproval, onEdit, animate = true }) => {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const mounted = React.useRef(false)
   const shouldAnimate = animate && !mounted.current
@@ -2262,7 +2268,8 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                 // a proven but scopeless card remains a direct broad action.
                 onClick={() => {
                   if (action === 'trust' && hasTrustScopes) { setTrustOpen(v => !v); return }
-                  onApproval?.(req.id, action, undefined, req.trustGrantable === true)
+                  if (req.target) onApproval?.(req.id, action, undefined, req.trustGrantable === true, req.target)
+                  else onApproval?.(req.id, action, undefined, req.trustGrantable === true)
                 }}
                 aria-expanded={action === 'trust' && hasTrustScopes ? trustOpen : undefined}
                 style={{
