@@ -711,6 +711,46 @@ _DOC_STATE_KEY_COL: dict[str, str] = {
 #: the same document adds a second copy instead of replacing the first.
 BUNDLE_STATE_KEY_COL: dict[str, str] = dict(_DOC_STATE_KEY_COL)
 
+
+def _backing_object_present(table: str, key: str) -> bool:
+    """Whether *key*'s backing object still exists, for the one table it is testable on.
+
+    The claimed-id exemption in :meth:`KnowledgeStore._contested_claims` forgives a
+    document meeting its OWN local row -- but only safely while the backing object that
+    row names still exists. A row whose object is already gone and not yet reconciled
+    away still holds the key, and exempting its claim lets a bundle import make the ids
+    live over content the next reap then deletes: the silent-restore-then-delete loss
+    this guards against.
+
+    *key* MUST be a LOCAL doc-state row's recorded key, never a bundle-authored string.
+    For ``folder_file_state`` this reaches the filesystem (``Path.is_file``), and a
+    bundle-supplied path would let an uploaded bundle name any host path -- a UNC path
+    leaks NTLM over SMB on Windows, a stalled mount holds the write lock. The sole
+    caller stats ``row["row_key"]`` from the local table for exactly this reason.
+
+    Only ``folder_file_state`` can answer here. Its key IS a filesystem path, so a
+    regular file at it on disk is a direct, bounded, in-transaction test. ``is_file``
+    rather than ``exists``: the folder reap keys on what ``FolderWatcher._walk`` yields,
+    which is FILES, so a directory (or a broken symlink) sitting at the path is not a
+    backing object the walk would ever re-ingest -- the two agree only on files. The
+    other tables keep the exemption unconditionally (returning ``True``): nothing reaps
+    ``agent_item_state`` by absence, and ``artifact_item_state`` existence lives in the
+    artifact store the reconcile pass holds and this transaction cannot reach, where
+    withholding is the rejected variant that loses a per-chunk-deleted document for good.
+
+    A path that cannot be stat'd (permission, a path too long, a broken mount) is
+    treated as present: the same conservatism :func:`_artifact_is_really_gone` uses,
+    because a stale group is recoverable on the next reconcile while a withheld-away
+    document is not.
+    """
+    if table != "folder_file_state":
+        return True
+    try:
+        return Path(key).is_file()
+    except OSError:
+        return True
+
+
 #: Columns each state table carries through a bundle, beyond its source, its key
 #: and its item group. Everything else is either derived on import -- the live
 #: status, which the surviving group defines -- or local bookkeeping that does not
@@ -3869,17 +3909,29 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         # that already exists here is outside it either way: ``INSERT OR IGNORE`` leaves
         # the local row alone and the inserted-items rule already refuses to hand it to
         # an imported claim.
-        contested = self._contested_claims(bundle, source_id_map, set(item_source))
+        contested, stale_file = self._contested_claims(
+            bundle, source_id_map, set(item_source))
         _present, absent = self._items_exist(contested)
         for item_id in sorted(absent - blocked):
-            withheld.append({"reason": "item_id_claimed_by_another_document",
-                             "item_id": item_id})
+            if item_id in stale_file:
+                # This id's only claimant is the restoring document's own
+                # ``folder_file_state`` row whose file is gone -- a deletion the next
+                # folder scan will run, not a live foreign owner. Saying "another
+                # document claims it" is wrong and offers no remedy; name the actual
+                # one: let the folder rescan reap the stale row, then re-import.
+                withheld.append({"reason": "folder_file_rescan_then_reimport",
+                                 "item_id": item_id})
+            else:
+                withheld.append({"reason": "item_id_claimed_by_another_document",
+                                 "item_id": item_id})
         return blocked | absent, withheld
 
     def _contested_claims(
         self, bundle: dict, source_id_map: dict[str, str], shipped: set[str]
-    ) -> set[str]:
-        """Shipped ids a local row claims that this import must not create.
+    ) -> tuple[set[str], set[str]]:
+        """Shipped ids a local row claims that this import must not create, and the
+        subset of them contested ONLY because a restoring folder row's backing file is
+        gone (so the remedy is a rescan then a re-import, not "another document owns it").
 
         The rule and its one exception: an id a local row claims must not be handed to an
         import, UNLESS the claiming row is a document this bundle is restoring. Both
@@ -3887,9 +3939,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         keyed on the bundle's own row at the SAME ``(table, source, key)``, which is what
         makes it "this document meeting itself" rather than a blanket amnesty -- so it
         covers every table the bundle states, not only the one whose rows get written. A
-        folder file or artifact slug this host still holds owns its chunk correctly, and
+        folder file or artifact slug this host STILL HOLDS owns its chunk correctly, and
         no pass re-derives one withheld here: the scan reaps only a row whose path the
-        walk missed and skips a ``done`` row whose mtime and hash did not change.
+        walk missed and skips a ``done`` row whose mtime and hash did not change. The
+        exemption is therefore gated on the backing object still existing
+        (``_backing_object_present``): a ``folder_file_state`` row whose file is gone is a
+        deletion order the next scan will run, not a document to restore, so it stays
+        contested rather than vouching for ids that reap would then delete.
 
         Without the rule, a stale group belonging to an UNRELATED document captures the
         item: the claim is read before the item loop, so the id does not exist yet, the
@@ -3922,13 +3978,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             # still here; withholding the id there loses it for good, because the folder
             # scan reaps only a row whose path the walk MISSED and skips a `done` row
             # whose mtime and hash are unchanged, so nothing re-ingests the chunk.
-            # The opposite risk is real but needs a race this cannot see from the
-            # database: a row whose document is GONE here and not yet reconciled away
-            # still holds the key, and exempting its claim lets the import make it live
-            # over content the next reap then deletes. Telling the two apart needs the
-            # owning subsystem's view of whether the document still exists, which is not
-            # reachable inside this transaction -- so the ordinary case wins and the race
-            # is left to the reap it belongs to.
+            #
+            # This loop reads only the BUNDLE's own rows, so it does no filesystem access:
+            # the key here is bundle-authored, and stat-ing it would let an uploaded bundle
+            # name any host path (a UNC path leaks NTLM over SMB on Windows, a stalled
+            # mount holds the write lock) before a single local row is consulted. The
+            # existence test the opposite race needs is applied in the SECOND loop below,
+            # against the LOCAL row's recorded key, so only a path this host already wrote
+            # is ever stat'd.
             for row in rows:
                 if not isinstance(row, dict):
                     continue
@@ -3939,9 +3996,11 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if target and isinstance(key, str) and key and group:
                     restored_groups.setdefault((table, target, key), set()).update(group)
         contested: set[str] = set()
+        stale_file: set[str] = set()
+        other: set[str] = set()
         sources = set(source_id_map.values())
         if not sources or not shipped:
-            return contested
+            return contested, stale_file
         for table, key_col in _DOC_STATE_KEY_COL.items():
             # A bundle that ships no row for a table states no ownership through it, so
             # its items cannot be judged against that table's local claims at all. The
@@ -3965,9 +4024,46 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # ships those verbatim -- so keying the exemption on the pair alone
                     # lets such a row vouch for ids it never claimed, handing them to
                     # whatever unrelated local row holds a stale claim on them.
-                    contested |= overlap - restored_groups.get(
+                    #
+                    # The exemption is further gated on the LOCAL row's backing object
+                    # still existing (``_backing_object_present``), the one slice of the
+                    # owning subsystem's existence answer reachable in this transaction:
+                    # a ``folder_file_state`` key is a filesystem path, so the file's
+                    # presence on disk is a direct, bounded test, and the folder reap keys
+                    # on that same path. A local row whose file is already GONE -- deleted
+                    # and not yet reconciled away -- is a deletion order the next scan runs,
+                    # not a document to restore: exempting it would let the import make the
+                    # ids live over content that reap then deletes, silent loss of exactly
+                    # the document the user imported the bundle to restore. The key stat'd
+                    # here is ``row["row_key"]`` from the LOCAL table, never a bundle string,
+                    # so no uploaded path is ever touched. The other two tables keep the
+                    # exemption unconditionally (``_backing_object_present`` returns True):
+                    # nothing reaps ``agent_item_state`` by absence, and
+                    # ``artifact_item_state`` existence lives in the artifact store the
+                    # ``reconcile_artifacts`` pass holds and this transaction cannot reach,
+                    # so withholding there is the rejected variant that loses a
+                    # per-chunk-deleted document for good.
+                    exempt = restored_groups.get(
                         (table, row["source_id"], row["row_key"]), set())
-        return contested
+                    # An id contested ONLY because this own-row's backing file is gone is
+                    # a different story than one a foreign row claims: the user's remedy
+                    # is to let the folder rescan reap the stale row, then re-import. We
+                    # record which ids fell to the file gate so :meth:`_bundle_blocked_
+                    # items` can report that remedy instead of the misleading "another
+                    # document claims it". An id a NON-exempt (foreign) row also contests
+                    # stays in the generic bucket -- the rescan would not free it -- so
+                    # the reported stale-file set is net of ``other`` below.
+                    file_gate_denied = bool(exempt) and not _backing_object_present(
+                        table, row["row_key"])
+                    if file_gate_denied:
+                        exempt = set()
+                    newly = overlap - exempt
+                    if file_gate_denied:
+                        stale_file |= newly
+                    else:
+                        other |= newly
+                    contested |= newly
+        return contested, stale_file - other
 
     def _items_exist(self, item_ids: set[str]) -> tuple[set[str], set[str]]:
         """(*item_ids* this store holds, the rest), read in bounded chunks.
