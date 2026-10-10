@@ -170,6 +170,7 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
     && !!(meta && (meta as { steer?: boolean }).steer)
     && steerState !== 'written'
     && steerState !== 'requeued'
+    && steerState !== 'superseded'
     && !(steerOptimistic && !steerState)
   // The two honest intermediate states get their own MUTED treatment (#8069),
   // so a steer never looks identical to an ordinary send while unconfirmed.
@@ -185,7 +186,10 @@ const UserMessage = memo(function UserMessage({ content, meta, timestamp, timest
   // confirmed badge: "Steering…" and "runs as its own message" are the same
   // steer/queue vocabulary the steer-only surface exists to hide.
   const pendingSteer = !hideSteerBadge && steerMeta && !!slotRunning && (steerState === 'written' || (steerOptimistic && !steerState))
-  const requeuedSteer = !hideSteerBadge && steerMeta && steerState === 'requeued'
+  // `superseded` keeps the requeued label: the shared turn grouping skips that
+  // row, and a surface that still draws it shows what main showed.
+  const requeuedSteer = !hideSteerBadge && steerMeta
+    && (steerState === 'requeued' || steerState === 'superseded')
   // Fired from an EFFECT rather than a `useState` initializer, because the state
   // this depends on arrives AFTER mount. The optimistic bubble mounts with
   // `{ steer: true, optimistic: true }` and no `steerState`, so `isSteer` is

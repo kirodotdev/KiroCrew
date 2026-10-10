@@ -67,6 +67,17 @@ export const isReasoningBurst = (t: TurnItem): t is Extract<TurnItem, { kind: 's
 export const TURN_OPENER_ROLES = new Set(['user', 'nudge', 'subagent'])
 
 /**
+ * A steer the turn never took, whose own queued turn has since written a fresh
+ * row with the same text (`steerState: 'superseded'`, see `chat_delivery.py`).
+ * The row stays in the transcript for history; drawing it would show the
+ * message twice.
+ */
+export function isSupersededSteerRow(m: ChatMessage): boolean {
+  const meta = m.meta as { steer?: unknown; steerState?: unknown } | undefined
+  return m.role === 'user' && meta?.steer === true && meta.steerState === 'superseded'
+}
+
+/**
  * The synthesis injection that closes a sub-agent fan-out.
  *
  * `_run_pending_synthesis` (chat_runner.py) appends this row before dispatching
@@ -195,6 +206,7 @@ export function groupDisplayItems(messages: ChatMessage[]): GroupedTurns {
     // it, the user does not. One it CAN parse renders as a compact outcome row,
     // which is the only scrollback record that a wave's results arrived.
     if (messages[i].role === 'subagent' && !isSubagentCompletionMessage(messages[i])) continue
+    if (isSupersededSteerRow(messages[i])) continue
     if (GROUPABLE.has(messages[i].role)) {
       if (!group.length) groupStart = i
       group.push(messages[i])

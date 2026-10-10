@@ -407,6 +407,14 @@ describe('steer pending / requeued treatments', () => {
     expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
   })
 
+  // A surface without the shared turn grouping still draws a superseded row, so
+  // it must keep the requeued line rather than read as a plain second send.
+  it('keeps the requeued line on a superseded steer row', () => {
+    render(<UserMessage content="go north" meta={{ steer: true, steerState: 'superseded' }} messageTs="req-superseded" renderContent={renderContent} />)
+    expect(screen.getByText(REQUEUED)).toBeInTheDocument()
+    expect(screen.queryByText(BADGE)).not.toBeInTheDocument()
+  })
+
   it('does not render the requeued line for written, optimistic, consumed, or legacy steers', () => {
     for (const [meta, ts] of [
       [{ steer: true, steerState: 'written' }, 'req-not-written'],

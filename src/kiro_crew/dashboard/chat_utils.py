@@ -3943,6 +3943,14 @@ def is_system_injection_item(item: dict) -> bool:
 #: have been delivered. The drain prefixes the turn's model input with
 #: ``STEER_POSSIBLY_DELIVERED_NOTE``; the user's row keeps the text as typed.
 STEER_POSSIBLY_DELIVERED_META = "steer_possibly_delivered"
+#: Queue-entry meta key: the ``mid`` of the transcript row a requeued steer
+#: ALREADY has. A steer the RPC accepted is persisted as a row at once; when the
+#: turn then ends without consuming it, that row is patched to ``requeued`` and
+#: the text is queued to run as its own turn. The drain reads this key, appends
+#: the turn's own row after the stop card, and then marks the existing row
+#: ``superseded`` so the client draws the text once. Queue plumbing only: the
+#: drain pops it, so it never reaches a row.
+REQUEUED_STEER_ROW_MID_META = "requeued_steer_row_mid"
 STEER_POSSIBLY_DELIVERED_NOTE = (
     "[The message below was sent into your previous turn, which then lost its "
     "backend connection before confirming it. It may already have been "

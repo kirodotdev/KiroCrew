@@ -491,7 +491,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_mark_steer_row_state",
             "function",
-            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'None'",
+            "(state: \"'DashboardState'\", slot: \"'_ChatSlot'\", message: 'str', new_state: 'str', siblings: 'list[str] | None' = None) -> 'str'",
         ),
         ("_queue_entry_is_orchestration", "function", "(item: 'dict') -> 'bool'"),
         (

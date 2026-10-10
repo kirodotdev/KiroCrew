@@ -2006,3 +2006,173 @@ class TestPeerSteerOnCodex:
         outcome = await steer_into_running_turn(state, slot, "typed here", user_origin=True)
         assert outcome != STEER_UNAVAILABLE
         client.steer.assert_awaited_once()
+
+
+class TestRequeuedSteerShowsOnce:
+    """A steer persisted as a row and then requeued must not be drawn twice.
+
+    The RPC accepted the steer, so its row was written at once. The turn then
+    ended (a soft stop here) before ``steering_consumed``, so the teardown marked
+    that row ``requeued`` and queued the text. The drain writes the turn's own row
+    after the stop card, as for any queued send, and now retires the old row as
+    ``superseded`` so the client draws the text once.
+    """
+
+    _TEXT = "midway is updated"
+
+    async def _steer_then_requeue(
+        self, tmp_path, monkeypatch, *, user_origin=True, decision_strip=None
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = _running_slot(state)
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(return_value=True)
+        slot._acp_client = client_mock
+
+        from kiro_crew.dashboard.chat_delivery import steer_into_running_turn
+        from kiro_crew.dashboard.chat_runner import _requeue_unconsumed_steers
+
+        await steer_into_running_turn(
+            state,
+            slot,
+            self._TEXT,
+            send_id="s-abc-123",
+            user_origin=user_origin,
+            decision_strip=decision_strip,
+        )
+        # No consumption echo: the turn ends with the steer still pending.
+        assert slot._pending_steers == [self._TEXT]
+        _requeue_unconsumed_steers(state, slot)
+        # The soft stop that ended the turn leaves its card after the steer row.
+        slot.append("stop_event", "Stopped", "msg msg-stop", meta={"kind": "stop_event"})
+        slot.task = None
+        return state, slot
+
+    async def _drain(self, state, slot):
+        from kiro_crew.dashboard import chat_runner
+
+        run_chat = MagicMock()
+        with (
+            patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+            patch.object(chat_runner, "_run_chat", run_chat),
+        ):
+            assert await chat_runner._start_next_queued_turn(state, slot) is True
+        return run_chat
+
+    @staticmethod
+    def _user_rows(slot, text):
+        return [m for m in slot.messages if m.get("role") == "user" and m.get("content") == text]
+
+    @staticmethod
+    def _updates(state):
+        return [
+            c.args[1]
+            for c in state.broadcast_ws.call_args_list
+            if c.args[0] == "chat_message_update"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_the_drain_supersedes_the_requeued_row(self, tmp_path, monkeypatch, _patch_sel):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch)
+        (old,) = self._user_rows(slot, self._TEXT)
+        old_mid = old["meta"]["mid"]
+        assert old["meta"]["steerState"] == "requeued"
+        assert slot._queue[0]["meta"]["requeued_steer_row_mid"] == old_mid
+        state.broadcast_ws.reset_mock()
+
+        run_chat = await self._drain(state, slot)
+
+        old_row, fresh = self._user_rows(slot, self._TEXT)
+        assert old_row["meta"]["mid"] == old_mid
+        assert old_row["meta"]["steerState"] == "superseded"
+        # The turn runs on a row written AFTER the stop card, so the tail walks
+        # that read "deliberately stopped" see the new turn, not the old one.
+        assert slot.messages.index(fresh) > slot.messages.index(
+            next(m for m in slot.messages if m.get("role") == "stop_event")
+        )
+        assert not (fresh.get("meta") or {}).get("steer")
+        assert "requeued_steer_row_mid" not in (fresh.get("meta") or {})
+        assert run_chat.call_args.kwargs["_current_message"] is fresh
+        assert any(
+            u.get("mid") == old_mid and u["meta"]["steerState"] == "superseded"
+            for u in self._updates(state)
+        ), "open clients must be told to stop drawing the old row"
+
+    @pytest.mark.asyncio
+    async def test_the_receipt_and_quote_move_to_the_drawn_row(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """Hiding the old row must not hide the steer's receipt or its quote.
+
+        The persisting tail stamps both onto the steer row only, and the requeued
+        entry carries neither, so the fresh row is the one place left to draw them.
+        """
+        strip = {"point": "message.steer", "decision": "steer", "id": "d-1"}
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch, decision_strip=strip)
+        (old,) = self._user_rows(slot, self._TEXT)
+        quote = {"text": "the line being answered"}
+        old["meta"]["quote"] = quote
+        assert "decisions_strip" not in (slot._queue[0].get("meta") or {})
+
+        await self._drain(state, slot)
+
+        old_row, fresh = self._user_rows(slot, self._TEXT)
+        assert old_row["meta"]["steerState"] == "superseded"
+        assert fresh["meta"].get("decisions_strip") == strip
+        assert fresh["meta"].get("quote") == quote
+
+    @pytest.mark.asyncio
+    async def test_a_peer_steer_is_superseded_too(self, tmp_path, monkeypatch, _patch_sel):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch, user_origin=False)
+        await self._drain(state, slot)
+        old_row, _fresh = self._user_rows(slot, self._TEXT)
+        assert old_row["meta"]["steerState"] == "superseded"
+
+    @pytest.mark.asyncio
+    async def test_an_edited_card_keeps_the_requeued_row(self, tmp_path, monkeypatch, _patch_sel):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch)
+        slot._queue[0]["content"] = "midway is updated, search origin/mainline"
+
+        await self._drain(state, slot)
+
+        # The old row holds different text from what runs, so it stays drawn as the
+        # requeued record and the edited text gets its own row.
+        (old,) = self._user_rows(slot, self._TEXT)
+        assert old["meta"]["steerState"] == "requeued"
+        (fresh,) = self._user_rows(slot, "midway is updated, search origin/mainline")
+        assert "requeued_steer_row_mid" not in (fresh.get("meta") or {})
+
+    @pytest.mark.asyncio
+    async def test_a_steer_requeued_before_any_row_appends_one(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.subagents = None
+        slot = state.get_or_create_slot("test")
+        # Registered but never persisted: the requeue finds no row to name.
+        slot._pending_steers = [self._TEXT]
+        slot._steer_delivery_ids = {self._TEXT: "did-1"}
+
+        from kiro_crew.dashboard import chat_runner
+
+        chat_runner._requeue_unconsumed_steers(state, slot)
+        assert "requeued_steer_row_mid" not in slot._queue[0]["meta"]
+
+        await self._drain(state, slot)
+
+        (row,) = self._user_rows(slot, self._TEXT)
+        assert (row.get("meta") or {}).get("steerState") != "superseded"
+
+    @pytest.mark.asyncio
+    async def test_a_vanished_row_falls_back_to_appending(self, tmp_path, monkeypatch, _patch_sel):
+        state, slot = await self._steer_then_requeue(tmp_path, monkeypatch)
+        slot.messages[:] = [m for m in slot.messages if m.get("content") != self._TEXT]
+
+        await self._drain(state, slot)
+
+        (row,) = self._user_rows(slot, self._TEXT)
+        assert "requeued_steer_row_mid" not in (row.get("meta") or {})

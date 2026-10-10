@@ -60,6 +60,7 @@ STEER_UNAVAILABLE = "unavailable"
 #              in-flight generation was actually redirected.
 #   requeued -- the turn ended with no consumption echo, so the teardown moved the
 #              message to the queue and it runs as its own turn.
+#   superseded -- that own turn has written its row, so this one is not drawn.
 #
 # A steer can only be injected at a model-inference boundary, so a turn that is
 # streaming text without dispatching a tool may never reach one before it ends
@@ -69,6 +70,9 @@ STEER_UNAVAILABLE = "unavailable"
 STEER_STATE_WRITTEN = "written"
 STEER_STATE_CONSUMED = "consumed"
 STEER_STATE_REQUEUED = "requeued"
+# A requeued row whose own turn has since written a fresh row with the same text:
+# the transcript keeps it, the client does not draw it again.
+STEER_STATE_SUPERSEDED = "superseded"
 
 # Upper bound on a client-minted ``meta.sendId`` accepted into the steer path.
 # Client mints are ~17 chars; the bound exists because the value is raw client

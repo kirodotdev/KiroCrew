@@ -14,6 +14,7 @@ from kiro_crew.dashboard.chat_utils import (
 if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_runner import (
         COMMANDS_OFF_META_KEY,
+        REQUEUED_STEER_ROW_MID_META,
         STEER_POSSIBLY_DELIVERED_META,
         STEER_STATE_CONSUMED,
         STEER_STATE_REQUEUED,
@@ -39,9 +40,13 @@ def _mark_steer_row_state(
     message: str,
     new_state: str,
     siblings: list[str] | None = None,
-) -> None:
+) -> str:
     """Move *message*'s persisted steer row to *new_state* and tell open clients.
 
+    Returns the patched row's ``mid``, or "" when no row was patched (none found,
+    no ``mid``, or the update missed). The requeue hands that id to the queue
+    entry so the drain, after it appends this turn's own row, can mark this row
+    ``superseded`` and the client draws the text once.
     One writer for both lifecycle transitions, so `consumed` and `requeued` can
     never disagree about how a row is patched. Best-effort by design: a row that
     cannot be found or updated must never stop the settle or the requeue, because
@@ -55,18 +60,18 @@ def _mark_steer_row_state(
     """
     row = find_written_steer_row(slot, message, siblings)
     if row is None:
-        return
+        return ""
     ts = str(row.get("ts") or "")
     new_meta = dict(row.get("meta") or {})
     new_meta["steerState"] = new_state
     _mid_raw = new_meta.get("mid")
     _mid = _mid_raw if isinstance(_mid_raw, str) and _mid_raw else None
     if not ts and not _mid:
-        return
+        return ""
     # Patch by `mid` where the row has one: `ts` is not an identity, so a ts-only
     # lookup takes the FIRST row carrying it and could patch a same-tick twin.
     if slot.update_message(ts, meta=new_meta, mid=_mid) is None:
-        return
+        return ""
     payload: dict[str, object] = {"slot": slot.key, "ts": ts, "meta": new_meta}
     if _mid:
         # Carried so the client resolves the same row this did; omitted when the
@@ -83,6 +88,10 @@ def _mark_steer_row_state(
             new_state,
             exc_info=True,
         )
+    # The patch above landed, so the row is real even when the broadcast failed;
+    # the update path only reaches here with a ts or a mid, and only a mid is an
+    # identity the drain can resolve.
+    return _mid or ""
 
 
 def _settle_consumed_steers(
@@ -235,7 +244,7 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # `requeued` is passed as the live-steer list because `_pending_steers` was
         # cleared above: the resolver needs to know how many steers in THIS batch
         # share the sanitized content before it trusts the newest matching row.
-        _mark_steer_row_state(state, slot, steer_msg, STEER_STATE_REQUEUED, requeued)
+        _row_mid = _mark_steer_row_state(state, slot, steer_msg, STEER_STATE_REQUEUED, requeued)
         # Raw-at-rest by design: slot._queue is a DELIVERY payload (the drained
         # entry becomes the next turn's LLM input), matching every other queue
         # producer (queue_append in chat_handlers / messaging). The dashboard
@@ -283,6 +292,15 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         if _sid:
             _meta["sendId"] = _sid
         _meta.update(getattr(slot, "_steer_attachment_meta", {}).pop(steer_msg, {}))
+        # The text already has a row: the RPC accepted it, the persisting tail
+        # wrote it, and the patch above just marked it `requeued` ("runs as its
+        # own message"). Name that row on the entry so the drain, after it appends
+        # this turn's own row, marks the old one `superseded` and the client stops
+        # drawing it. Without this the user sees their message twice. "" means no
+        # row was patched (the steer was requeued before any row existed), and then
+        # the drain only appends.
+        if _row_mid:
+            _meta[REQUEUED_STEER_ROW_MID_META] = _row_mid
         # The decision receipt rides the entry for the same reason the two ids do:
         # the drain unions a consumed entry's meta onto the row it writes, so this is
         # the only writer a requeued steer has. Both outcomes a `message.steer`

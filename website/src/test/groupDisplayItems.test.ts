@@ -524,3 +524,27 @@ describe('applyRunningState', () => {
     }
   })
 })
+
+describe('superseded steer rows', () => {
+  const steer = (steerState: string): ChatMessage =>
+    ({ role: 'user', content: 'midway is updated', cls: '',
+       meta: { steer: true, steerState, mid: 'm-1' } } as unknown as ChatMessage)
+  const userTexts = (turns: DisplayItem[]): string[] =>
+    JSON.stringify(turns).match(/"role":"user","content":"[^"]*"/g) ?? []
+
+  it('does not draw a requeued steer once its own turn has written a row', () => {
+    // The steer row, the soft stop that ended the turn, then the queued turn's
+    // own row with the same text: the transcript holds both, the reader sees one.
+    const { turns } = groupDisplayItems([
+      msg('user', 'first'), msg('assistant', 'working'),
+      steer('superseded'), msg('stop_event', 'Stopped'),
+      msg('user', 'midway is updated'), msg('assistant', 'ok'),
+    ])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+
+  it('still draws a requeued steer whose turn has not run yet', () => {
+    const { turns } = groupDisplayItems([msg('user', 'first'), steer('requeued')])
+    expect(userTexts(turns).filter(t => t.includes('midway is updated'))).toHaveLength(1)
+  })
+})
