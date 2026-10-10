@@ -9,11 +9,16 @@ decision, so each filter leaves the same ``mcp_auto_approve_withheld`` SEL recor
 
 KAS reads auto-approval as a ``permissions`` block derived from the filtered
 ``allowedTools``; :func:`_write_derived_permissions` is its one version-gated writer.
+
+:func:`govern_spec` is the tail every generated spec writer runs: it pins the global
+``mcp.json`` merge off, applies the ceiling, strips ungoverned ``autoApprove`` and sets
+the KAS block, and :func:`write_governed_spec` runs it and writes the file.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from pathlib import Path
+from typing import Any, Callable, Mapping
 
 from kiro_crew import agent as agent_mod
 from kiro_crew.agent_files import AGENT_FILENAME
@@ -103,6 +108,138 @@ def _write_derived_permissions(
     )
 
     config["permissions"] = derived_agent_permissions(allowed_tools, agent_filename)
+
+
+#: How :func:`govern_spec` sets a spec's KAS ``permissions`` block.
+#:
+#: * ``"derive"`` -- a spec Crew generates: replace any inherited block with the
+#:   derivation of the filtered ``allowedTools``, so a ceiling that strips a grant
+#:   strips its KAS rule with it.
+#: * ``"seed"`` -- a spec the user owns (a fork): derive only when no block is
+#:   present, and never edit one that is, on the rule :func:`_seed_kas_permissions`
+#:   states for the primary spec.
+#: * ``"inherit_narrowing"`` -- ``"derive"``, then keep the inherited block's
+#:   ``deny`` and ``ask`` rules ahead of the derived ones. For a spec built from the
+#:   operator's own template that has always carried that template's block (the
+#:   research spec): KAS honours a ``deny`` from the spec's block on every session,
+#:   so replacing the whole block would auto-approve what the operator forbade. An
+#:   inherited ``allow`` is still dropped -- allows come from the filtered list alone.
+#: * ``"none"`` -- a spec that mounts nothing: no tool, no server and no grant, so
+#:   there is no grant list to derive from. :func:`govern_spec` refuses it for a spec
+#:   that grants or mounts anything, which keeps it from being a way to skip the pass.
+KAS_POLICIES = ("derive", "seed", "inherit_narrowing", "none")
+
+
+def govern_spec(
+    config: dict[str, Any], *, agent_filename: str, source: str, kas_policy: str = "derive"
+) -> None:
+    """Apply the governed-write tail to *config*, in place. Every spec writer runs it.
+
+    ``allowedTools``, a server's ``autoApprove``, the KAS ``permissions`` block and
+    the global ``mcp.json`` merge are four ways a call reaches a tool without the
+    PreToolUse gate seeing it first. This is the one step that closes all four, so a
+    writer differs from its siblings only in what it puts into *config*:
+
+    1. ``includeMcpJson`` is pinned ``False`` and ``useLegacyMcpJson`` removed. kiro-cli
+       reads an absent ``includeMcpJson`` as true and merges the global ``mcp.json`` on
+       top of the spec, and every filter below reads ``config["mcpServers"]`` and
+       nothing else, so a server arriving through the merge would bring its own
+       ``autoApprove`` past all of them.
+    2. ``allowedTools`` goes through the governance ceiling
+       (:func:`_apply_allowed_tools_ceiling`), which audits every withheld grant.
+    3. Every ``mcpServers`` entry loses an ``autoApprove`` its own spec does not
+       declare (:func:`_strip_ungoverned_auto_approve`).
+    4. ``permissions`` is set per *kas_policy* (:data:`KAS_POLICIES`), from the list
+       step 2 filtered.
+
+    A writer runs it once, through :func:`write_governed_spec`; a writer that must
+    observe the governed bytes before they land does so in that function's
+    ``before_write`` hook rather than by running the tail a second time.
+    """
+    if kas_policy not in KAS_POLICIES:
+        raise ValueError(f"unknown kas_policy {kas_policy!r}; expected one of {KAS_POLICIES}")
+    if kas_policy == "none" and (
+        config.get("allowedTools") or config.get("mcpServers") or config.get("tools")
+    ):
+        raise ValueError(
+            f"kas_policy 'none' is for a spec that mounts nothing, and {agent_filename} "
+            "mounts or grants tools"
+        )
+    inherited = config.get("permissions")
+    config.pop("useLegacyMcpJson", None)
+    config["includeMcpJson"] = False
+    _apply_allowed_tools_ceiling(config, source=source)
+    servers = config.get("mcpServers")
+    if isinstance(servers, dict):
+        config["mcpServers"] = _strip_ungoverned_auto_approve(servers)
+    if kas_policy in ("derive", "inherit_narrowing"):
+        _write_derived_permissions(config, config.get("allowedTools") or [], agent_filename)
+    elif kas_policy == "seed" and inherited is None:
+        _write_derived_permissions(config, config.get("allowedTools") or [], agent_filename)
+    # Only where the version gate kept the key: a release that refuses the field
+    # refuses the whole spec, so a carried ``deny`` there would cost the spec.
+    if kas_policy == "inherit_narrowing" and "permissions" in config:
+        from kiro_crew.agent_sdk.drivers.acp import (  # noqa: PLC0415 - boot path
+            narrowed_agent_permissions,
+        )
+
+        config["permissions"] = narrowed_agent_permissions(
+            config["permissions"],
+            inherited,
+            agent_filename,
+            audit_decision=lambda refs, outcome, reason: _audit_inherited_permissions(
+                refs, reason, source=source, agent_filename=agent_filename
+            ),
+        )
+
+
+def _audit_inherited_permissions(
+    refs: str, reason: str, *, source: str, agent_filename: str
+) -> None:
+    """Record rules left out of a spec's inherited ``permissions`` block in the SEL.
+
+    The same ``mcp_auto_approve_withheld`` record the ceiling leaves for a grant it
+    withholds from ``allowedTools``. Best-effort and never raising, like that one.
+    """
+    try:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation="mcp_auto_approve_withheld",
+            outcome="ok",
+            source=source,
+            resources=(
+                f"{refs} left out of the inherited `permissions` block of "
+                f"{agent_filename} ({reason})"
+            ),
+        )
+    except Exception:  # noqa: BLE001 — the audit must not break the build
+        agent_mod.logger.debug("SEL audit unavailable for withheld permissions", exc_info=True)
+
+
+def write_governed_spec(
+    path: Path,
+    config: dict[str, Any],
+    *,
+    source: str,
+    kas_policy: str = "derive",
+    before_write: Callable[[dict[str, Any]], None] | None = None,
+) -> None:
+    """Run :func:`govern_spec` over *config*, then write it to *path* atomically.
+
+    The one way a generated agent spec reaches disk. Taking the write as well as the
+    passes is what makes omitting a pass impossible: a writer that calls this cannot
+    write a spec the tail has not governed, and a structural test pins that no writer
+    in ``agent_materialization`` reaches the write primitive any other way.
+
+    *before_write*, when given, is called with the governed config after the passes
+    and before the write, so a writer that records the bytes it is about to land (an
+    ownership digest) records exactly those bytes. An exception from it aborts the
+    write.
+    """
+    govern_spec(config, agent_filename=path.name, source=source, kas_policy=kas_policy)
+    if before_write is not None:
+        before_write(config)
+    agent_mod._atomic_json_write(path, config)
 
 
 def _seed_kas_permissions(config: dict[str, Any]) -> None:

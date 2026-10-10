@@ -41,6 +41,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from kiro_crew.agent_sdk.context import ContextPromptProvider
 
 __all__ = [
@@ -56,6 +58,7 @@ __all__ = [
     "finish_suspended_spawn",
     "forget_cached_resolution",
     "kiro_cli_resolves",
+    "narrowed_agent_permissions",
     "provider_error_client",
     "resolve_pin_spelling",
     "resolve_pin_spelling_on",
@@ -216,6 +219,67 @@ def derived_agent_permissions(allowed_tools: object, agent_filename: str) -> dic
 
     derived = allowed_tools_to_permissions(allowed_tools, agent_id=Path(agent_filename).stem)
     return derived if derived is not None else {"rules": []}
+
+
+def _rule_label(rule: dict) -> str:
+    scope = rule.get("match")
+    return f"{rule['capability']}:{rule['effect']}" + (f" {scope}" if scope else "")
+
+
+def narrowed_agent_permissions(
+    derived: dict,
+    inherited: object,
+    agent_filename: str,
+    *,
+    audit_decision: Callable[[str, str, str], None] = lambda refs, outcome, reason: None,
+) -> dict:
+    """*derived* with the ``deny`` and ``ask`` rules of the authored block *inherited* first.
+
+    *inherited* is read with the parser KAS's projection uses
+    (``parse_user_permissions``), so a block it refuses whole on every session -- a
+    named policy bundle, an unknown key, a capability KAS does not define -- yields
+    no rule: none of its rules ever applied. Duplicates are dropped, so a writer
+    that runs over its own output does not grow the list.
+
+    The block returned is one that same projection accepts, because a refused block
+    loses every carried rule with it. When the derived allows would push it past a
+    bound (the rule count, the patterns in one rule), the carried rules are returned
+    alone: KAS re-derives the allows from ``allowedTools`` on every session, so only
+    the narrowing has to be on disk.
+
+    Every inherited rule this leaves out is a permission decision, so each is reported
+    through *audit_decision* as ``(refs, "withheld", reason)``: a refused block, the
+    inherited ``allow`` rules, and derived allows kept off disk by a bound.
+    """
+    from kiro_crew.acp.kas_permissions import parse_user_permissions, projection_accepts
+
+    parsed = parse_user_permissions(
+        inherited, agent_id=Path(agent_filename).stem, audit_decision=audit_decision
+    )
+    carried: list[dict] = []
+    for rule in parsed or []:
+        if rule["effect"] != "allow" and rule not in carried:
+            carried.append(rule)
+    derivable = derived["rules"]
+    dropped = [r for r in parsed or [] if r["effect"] == "allow" and r not in derivable]
+    if dropped:
+        audit_decision(
+            ", ".join(_rule_label(r) for r in dropped),
+            "withheld",
+            "an inherited allow; allows come from the filtered allowedTools alone",
+        )
+    if not carried:
+        return derived
+    combined = {"rules": [*carried, *derivable]}
+    if projection_accepts(combined):
+        return combined
+    audit_decision(
+        ", ".join(_rule_label(r) for r in derivable),
+        "withheld",
+        "kept off the spec file so the block stays within KAS's bounds; "
+        "the session projection re-derives them from allowedTools",
+    )
+    return {"rules": carried}
 
 
 def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bool]]]:

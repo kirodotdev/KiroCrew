@@ -752,24 +752,6 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
         except Exception:  # noqa: BLE001 — the audit must not break the install
             agent_mod.logger.debug("SEL audit unavailable for withheld autoApprove", exc_info=True)
 
-    # ONE ceiling pass over the whole assembled list, so it covers every source at
-    # once: the template's grants, the mirror of the default spec, and the two grants
-    # above. Placing it after them is what keeps the ceiling authoritative.
-    auto_approve._apply_allowed_tools_ceiling(config, source="_install_worker_agent")
-
-    # The SECOND way a call skips the PreToolUse gate is ``autoApprove`` on an
-    # ``mcpServers`` entry, and ``allowedTools`` filtering does not touch it. The
-    # mirror copies the default's map verbatim, so a hand-added ``autoApprove`` there
-    # would arrive on the worker ungoverned — the same reason
-    # ``rebuild_agent_config`` runs this pass over the primary spec's map.
-    config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(config["mcpServers"])
-
-    # Derived from the FILTERED grant list rather than restated as a literal, so a
-    # ceiling that strips a grant strips its KAS rule with it, and the cron
-    # subtraction reaches the KAS backend rather than stopping at ``allowedTools``,
-    # which nothing reads there. The shared writer version-gates it.
-    auto_approve._write_derived_permissions(config, config["allowedTools"], _WORKER_AGENT_FILENAME)
-
     if isinstance(existing, dict) and "model" in existing and _worker_model_is_user_pinned():
         # An explicit per-agent pick outranks the mirror, and it has to be read back
         # off the file: the template the mirror falls back to carries the shipped
@@ -801,7 +783,16 @@ def _write_worker_spec(config: dict, path: Path, *, template_grants: list[str]) 
                 "model",
                 type(pinned).__name__,
             )
-    agent_mod._atomic_json_write(path, config)
+    # The shared governed-write tail, over the whole assembled spec, so it covers
+    # every source at once: the template's grants, the mirror of the default spec,
+    # and the two grants above. Running it at the write is what keeps it
+    # authoritative. It applies ONE ceiling pass to ``allowedTools``; strips an
+    # ``autoApprove`` the mirror copied verbatim off the default's map, which
+    # ``allowedTools`` filtering does not touch; pins the global ``mcp.json`` merge
+    # off, which an operator override in ``agent.json`` would otherwise carry
+    # through; and derives the KAS policy from the FILTERED list, so the cron
+    # subtraction reaches the KAS backend rather than stopping at ``allowedTools``.
+    auto_approve.write_governed_spec(path, config, source="_install_worker_agent")
     # Recorded INSIDE the critical section, against the same default-spec read this
     # derivation used: stamping it after the locks release would record a generation
     # other than the one the spec on disk mirrors.
@@ -1684,11 +1675,9 @@ def _install_dashboard_author_agent() -> None:
     mcp = config.get("mcpServers", {}) or {}
     core_entry = mcp.get("kirocrew-core")
     config["mcpServers"] = {"kirocrew-core": core_entry} if core_entry else {}
-    # Derived from the FILTERED grant list rather than restated, so a ceiling that strips
-    # a grant strips its KAS rule with it; the shared writer version-gates it.
-    auto_approve._write_derived_permissions(
-        config, config["allowedTools"], _DASHBOARD_AUTHOR_AGENT_FILENAME
-    )
+    # The KAS policy is derived at the write, by the shared tail
+    # (``_write_dashboard_author_spec``), from the FILTERED grant list, so a ceiling that
+    # strips a grant strips its KAS rule with it.
     agents_dir = agent_mod.kiro_agents_dir_path()
     agents_dir.mkdir(parents=True, exist_ok=True)
     path = agents_dir / _DASHBOARD_AUTHOR_AGENT_FILENAME
@@ -1795,12 +1784,23 @@ def _write_dashboard_author_spec(path: Path, config: dict) -> None:
     # replace the file (``_atomic_json_write`` -- a tmp-file + atomic replace), then finalize.
     # At every instant the file reproduces either the old finalized digest or the pending
     # one, so a later rebuild always re-confirms and re-filters instead of freezing.
-    new_digest = agent_state.spec_digest(config)
+    #
+    # The pending digest is taken INSIDE the shared writer, after its one governance
+    # pass and before the replace, so it is the digest of exactly the bytes that land:
+    # a ceiling that moves while this runs can change those bytes, never split them
+    # from their record.
     current_digest = (
         agent_state.spec_digest(current_json) if isinstance(current_json, dict) else None
     )
-    agent_state.begin_managed_write(_MANAGED_OWNED_NAME, new_digest, current=current_digest)
-    agent_mod._atomic_json_write(path, config)
+
+    def _record_pending(governed: dict) -> None:
+        agent_state.begin_managed_write(
+            _MANAGED_OWNED_NAME, agent_state.spec_digest(governed), current=current_digest
+        )
+
+    auto_approve.write_governed_spec(
+        path, config, source="_install_dashboard_author_agent", before_write=_record_pending
+    )
     agent_state.finalize_managed_write(_MANAGED_OWNED_NAME)
     agent_mod.logger.info("Installed dashboard-author agent config: %s", path)
 

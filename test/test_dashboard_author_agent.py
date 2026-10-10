@@ -165,6 +165,38 @@ def test_the_install_records_the_ownership_digest(
     assert _is_installers(target) is True
 
 
+def test_the_recorded_digest_is_of_the_bytes_the_governed_write_lands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ceiling that moves while the install runs cannot split the bytes from their record.
+
+    The ceiling is read when the shared tail runs at the write, so the pending digest
+    must be taken after that pass. Here the ceiling starts withholding ``tool_search``
+    the moment the writer is entered: the landed spec loses the grant, and the
+    recorded digest must still be that spec's, or every later rebuild would read the
+    file as foreign and stop re-filtering it.
+    """
+    from kiro_crew.agent_materialization import auto_approve
+
+    rig = _Rig(tmp_path, monkeypatch)
+    real_write = auto_approve.write_governed_spec
+
+    def tightening_write(path: Path, config: dict[str, Any], **kwargs: Any) -> None:
+        if path.name == DASHBOARD_AUTHOR_AGENT_FILENAME:
+            monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: ref != "tool_search")
+        real_write(path, config, **kwargs)
+
+    monkeypatch.setattr(auto_approve, "write_governed_spec", tightening_write)
+    agent.rebuild_agent_config()
+    target = rig.agents / DASHBOARD_AUTHOR_AGENT_FILENAME
+    spec = rig.read(DASHBOARD_AUTHOR_AGENT_FILENAME)
+    assert "tool_search" not in spec["allowedTools"]
+    assert agent_state.get_managed_digest("kirocrew-dashboard-author") == agent_state.spec_digest(
+        spec
+    )
+    assert _is_installers(target) is True
+
+
 def test_a_prior_managed_write_is_refreshed_in_place(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

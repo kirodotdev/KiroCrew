@@ -336,20 +336,21 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                         agent_mod.logger.debug(
                             "refresh failed for forked template %r", fork_name, exc_info=True
                         )
-                # Governance passes, same as every other spec writer:
+                # Governance passes, the same tail every other spec writer runs:
                 # allowedTools and autoApprove are the two paths that never
                 # reach the PreToolUse gate, so a fork carrying grants the
                 # ceiling later tightened against must be re-filtered on every
                 # refresh — this writer is exactly where a stale grant would
-                # otherwise persist verbatim.
-                auto_approve._apply_allowed_tools_ceiling(
-                    config, source=f"fork-refresh:{fork_name}"
-                )
-                servers_map = config.get("mcpServers")
-                if isinstance(servers_map, dict):
-                    config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(servers_map)
+                # otherwise persist verbatim. The tail also pins the global
+                # ``mcp.json`` merge off, which a fork of a custom template
+                # (no plumbing refresh above) would otherwise keep: a server
+                # arriving through that merge is outside every filter here. A
+                # fork is the user's file, so its KAS block is seeded when
+                # absent and never edited, the primary spec's rule.
                 agent_state.lift_and_strip_bookkeeping(config, fork_name)
-                agent_mod._atomic_json_write(spec_path, config)
+                auto_approve.write_governed_spec(
+                    spec_path, config, source=f"fork-refresh:{fork_name}", kas_policy="seed"
+                )
         except Exception:
             failures.add(fork_name)
             agent_mod.logger.warning(

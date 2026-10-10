@@ -136,8 +136,24 @@ The gateway already merges the Kiro global into the agent file, so the agent
 file is the superset. With `includeMcpJson: true` kiro-cli would merge the
 global a second time at session start, producing duplicate entries and letting a
 stale path in the global shadow the fresh path the gateway just resolved.
-Kiro Crew forces `false` on every agent it manages (the primary agent and every
-app agent). Plain kiro-cli agents outside Kiro Crew keep kiro-cli's own default.
+Kiro Crew forces `false` on every agent it manages (the primary agent, every
+generated agent spec, every recorded fork, and every app agent). Plain kiro-cli
+agents outside Kiro Crew keep kiro-cli's own default.
+
+The generated specs and the fork refresh get the pin from one shared step,
+`auto_approve.write_governed_spec`, which every spec writer under
+`agent_materialization` calls instead of writing the file itself. Besides the
+pin it applies the governance ceiling to `allowedTools`, strips an ungoverned
+`autoApprove` and sets the KAS `permissions` block. It derives that block for a
+generated spec, seeds it on a fork only when the fork has none, and writes none
+for a spec that mounts nothing. The research spec, which is built from the
+operator's `agent.json` and has always carried its block, gets the derivation
+plus that block's `deny` and `ask` rules, so a denial written there still holds;
+its `allow` rules are dropped. The pin matters because an operator's
+`agent.json` reaches every spec built from `build_agent_config`, and every
+filter in the step reads `mcpServers` alone: a server arriving through the
+global merge would pass all of them. `test/test_governed_spec_tail.py` fails if
+any writer in the package calls the write primitive directly.
 
 ### Managed servers
 
