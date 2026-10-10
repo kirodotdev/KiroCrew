@@ -9771,6 +9771,7 @@
       "response_ready": "Antwort ist bereit",
       "waiting_for_input": "Wartet auf deine Eingabe",
       "tool_approval": "Werkzeuggenehmigung: {{name}}",
+      "approval_waiting": "Wartet auf deine Freigabe: {{name}}",
       "approval_wait_expired": "Die Wartezeit auf die Genehmigung ist abgelaufen, deshalb wurde die Anfrage abgelehnt.",
       "approval_rejected": "Die Genehmigung wurde verweigert, deshalb wurde die Anfrage abgelehnt.",
       "unknown": "Unbekannt"

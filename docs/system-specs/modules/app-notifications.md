@@ -227,8 +227,9 @@ three sites:
   accepted residual, since holding the row back until the post settles would
   hide the card, the chime and the Board's pending state for the post's whole
   duration on every linked prompt. This site is
-  the `chat_done` layering: sound only, no feed row, no toast, no producer for
-  the protected `system.approval` bus channel (which still has none). A
+  the `chat_done` layering: no feed row and no producer for the protected
+  `system.approval` bus channel (which still has none); the same gate also
+  posts this prompt's OS toast (see "OS toast"). A
   prompt already parked when a tab opens or reconnects reaches it through the
   snapshot and the transcript rehydration, not through this frame, and stays
   silent.
@@ -320,6 +321,8 @@ constructed by the socket's turn-completion owner
 `website/src/hooks/websocket/turnCompletion.ts` on `chat_done`) is a separate, default-OFF
 surface with its own `kirocrew-chat-done:<slot>` tag; it shares only the away
 predicate.
+
+An interactive chat's tool prompt (the chat runner's `permission` row, which has no feed note) is toasted by the socket's transcript owner `website/src/hooks/websocket/chatStream.ts` on the row's live arrival, behind the same gate as its chime (`shouldChimeOnPermissionRow`: not `resolved`, not a reconnect replay). It is on by default, posts only with the OS permission granted and while `isWindowAway()`, is `silent`, reads like the chat-complete toast (session title as the title, `Waiting for your approval: <tool>` as the body), and carries a `kirocrew-approval:<slot>:<request_id>` tag, so one pending prompt is one banner however many windows receive the row. A session's creator mute does not suppress it: a prompt is the session waiting on the user.
 
 ## Bell sheet dismissal (client)
 

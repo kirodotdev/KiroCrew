@@ -9902,6 +9902,7 @@
       "response_ready": "Resposta pronta",
       "waiting_for_input": "Aguardando sua resposta",
       "tool_approval": "Aprovação de ferramenta: {{name}}",
+      "approval_waiting": "Aguardando sua aprovação: {{name}}",
       "approval_wait_expired": "A espera pela aprovação expirou, então a solicitação foi negada.",
       "approval_rejected": "A aprovação foi rejeitada, então a solicitação foi negada.",
       "unknown": "Desconhecido"

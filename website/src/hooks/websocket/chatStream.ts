@@ -11,6 +11,9 @@ import { isSlotMutedByCreator } from '../sessionMute'
 import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
+import { isWindowAway } from '../windowAway'
+import { nativeNotificationPermitted, postNativeNotification } from '../../lib/nativeNotify'
+import { i18nT } from '../../i18n/t'
 import { isReconcileNote } from '../../lib/noteContract'
 import { sanitizeLlmOutput } from '../../utils/sanitize'
 import { deriveToolCallTitle } from '../../utils/toolCallTitle'
@@ -44,8 +47,8 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // parks its turn on this `permission` row and emits no `approval`
       // frame for it (that frame is the coordinator registry's, and chimes
       // on its own), so this row is where the sound is synthesized — the
-      // `chat_done` / `question_card` layering: client-side, sound only,
-      // no feed row, no toast. The row is delivered once, so one frame is
+      // `chat_done` / `question_card` layering: client-side, no feed row,
+      // and the OS toast below rides the same gate. The row is delivered once, so one frame is
       // one sound; a row carrying `resolved` — the batch-rejection
       // re-append, or a turn with no budget left to wait, decided before
       // the append — and a reconnect replay stay silent. A Slack post
@@ -53,6 +56,24 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
       // `approval_resolved`; that arrival chime is the accepted residual.
       if (data.role === 'permission' && shouldChimeOnPermissionRow({ meta: data.meta, reconnecting: reconnectingRef.current })) {
         dispatchMcNotification(APPROVAL_KIND)
+        // The same row is the OS toast for a user away from the window: no
+        // feed note exists for it, so `useNativeNotification` never sees it.
+        // One toast per pending prompt (the tag names slot and request, so
+        // every window that receives the row collapses onto one banner),
+        // silent because WebAudio owns the sound, and only with the OS
+        // permission granted. A session's creator mute does not apply: a
+        // prompt is the session waiting on the user, as for turn-done.
+        if (data.slot && nativeNotificationPermitted() && isWindowAway()) {
+          const slotTitle = store.getState().dashboard.slots.find(s => s.key === data.slot)?.title || data.slot
+          const requestId = String(data.meta?.approval_id ?? data.ts ?? '')
+          // Session name as the title, status as the body: the chat-done
+          // toast's layout, so both banners from one chat read alike.
+          postNativeNotification(slotTitle, {
+            body: i18nT('hooks.useWebSocket.approval_waiting', { name: data.content || i18nT('hooks.useWebSocket.unknown') }),
+            silent: true,
+            tag: `kirocrew-approval:${data.slot}:${requestId}`,
+          })
+        }
       }
       // Re-rank the sidebar the instant a session sees a message, instead of waiting
       // for the next full slots push. `last_ts` moves for agent output too (it feeds
