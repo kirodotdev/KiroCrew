@@ -334,8 +334,9 @@ async def _apply_tag_names(
             lower = name.lower()
             existing = existing_by_lower.get(lower)
             if existing:
-                # NEVER apply status/workflow tags
-                if existing.get("status") or _refused(existing):
+                # NEVER apply status/workflow tags. The grant check runs first so
+                # a model-chosen status tag is refused through the audited path.
+                if _refused(existing) or existing.get("status"):
                     continue
                 tag_id = existing["id"]
             else:

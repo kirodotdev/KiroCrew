@@ -634,6 +634,24 @@ class TestTopicTags:
         assert "st" not in slot.tags
         assert _names(state, slot) == ["debugging"]
 
+    async def test_a_status_tag_the_model_names_is_refused_in_the_audit_log(
+        self, patch_save_slot, topic_model
+    ):
+        topic_model["reply"] = "review\ndebugging"
+        topic_model["rows"] = {"st": ("add-only", True)}
+        state = _make_state([{"id": "st", "name": "Review", "status": True}])
+        slot = _topic_slot(project="")
+
+        events: list[dict] = []
+        with patch("kiro_crew.dashboard.chat_auto_tag.sel") as fake_sel:
+            fake_sel.return_value.log_api_access.side_effect = lambda **kw: events.append(kw)
+            await maybe_auto_tag(state, slot)
+
+        assert "st" not in slot.tags
+        by_tag = {e["resources"].rsplit("tag=", 1)[1]: e for e in events}
+        assert by_tag["st"]["outcome"] == "denied"
+        assert by_tag["st"]["error"] == "status_tag_requires_set_state"
+
     async def test_credentials_are_redacted_before_the_prompt(self, patch_save_slot, topic_model):
         secret = "AKIA" + "ABCDEFGHIJKLMNOP"
         state = _make_state()
