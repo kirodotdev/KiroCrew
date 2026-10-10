@@ -319,6 +319,36 @@ def stat_identity(raw: str) -> tuple[int, int] | None:
     return (st.st_dev, st.st_ino)
 
 
+def safe_content_digest(raw: str) -> str | None:
+    """Content digest of the regular file at *raw* through the sensitive-path gate.
+
+    ``validate_file_path`` refuses a sensitive resolved target before a single
+    byte is read, so no fingerprint of a protected file is ever formed. The
+    open refuses a link at the final component, the opened descriptor must be
+    a regular file under ``MAX_FILE_BYTES`` whose kernel path still matches the
+    validated name, and only then are its bytes streamed into the digest.
+    Returns the digest, or None if the path is rejected or unreadable.
+    """
+    path = validate_file_path(raw)
+    if path is None:
+        return None
+    try:
+        fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
+    except OSError:
+        return None
+    try:
+        st = os.fstat(fd)
+        if not _stat.S_ISREG(st.st_mode) or st.st_size > MAX_FILE_BYTES:
+            return None
+        if not _opened_file_matches_validated_path(fd, path):
+            return None
+        return platform_compat.content_digest_of_fd(fd)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+
+
 def safe_read_file_bytes_nolink(
     raw: str,
     within_root: str | None = None,

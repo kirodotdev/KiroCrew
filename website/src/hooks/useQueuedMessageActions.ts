@@ -225,10 +225,10 @@ export function useQueuedMessageActions({
       // The block comes off BEFORE the parse: the parser's producer-block
       // patterns are anchored at offset 0, so a quote on the head would hide
       // an image block behind it and the file would restore as literal text.
-      const parsed = hit
+      const attachments = queueEntryAttachments(msg.meta)
+      const { files, text } = hit
         ? { text: stashed.raw, files: stashed.files }
-        : restoreQueuedContent(rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content, queueEntryAttachments(msg.meta).files)
-      const { files, text } = parsed
+        : restoreQueuedContent(rowQuote ? stripQuoteBlock(msg.content, rowQuote) : msg.content, attachments.files, attachments.images)
       // The stash also carries the alias map the send-clear dropped; the
       // parser fallback cannot know it, and a restore without aliases falls
       // into the documented reload-limitation class rather than corrupting.

@@ -3487,6 +3487,7 @@
         "ask_placeholder": "Pergunte ao {{name}}...",
         "edit_cancel": "Cancelar",
         "edit_mode": "Editando — envie para substituir ou cancele",
+        "edit_pictures_unrecoverable": "Não foi possível reenviar a mensagem editada. Seu texto ainda está no campo de mensagem e a mensagem mantém suas imagens. Envie novamente para tentar de novo.",
         "load_earlier": "Carregar mensagens anteriores",
         "scroll_bottom": "Ir para as mais recentes",
         "send": "Enviar",

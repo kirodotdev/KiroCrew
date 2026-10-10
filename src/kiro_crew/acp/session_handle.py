@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -184,6 +184,7 @@ from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.metrics.events import CHILD_PERMISSION_DENIED, emit_counter
 from kiro_crew.platform.context import redact_log_via_context
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.recovery.ladder import InfraError, classify_infra_error
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
@@ -1517,7 +1518,11 @@ class AcpSessionHandle:
     # ── Prompt ──
 
     async def prompt(
-        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+        self,
+        message: str,
+        timeout: float | None = None,
+        *,
+        attachments: Sequence[PromptAttachment] = (),
     ) -> AsyncIterator[AcpEvent]:
         """Send session/prompt and yield AcpEvent objects until the turn completes.
 
@@ -1529,9 +1534,11 @@ class AcpSessionHandle:
         ``agent.chat_turn_timeout_secs`` so the transport wait follows a raised
         turn ceiling instead of cutting the turn at the 2h default underneath it.
 
-        ``allow_image=False`` sends the message as text only: no path in it is
-        read or inlined, whatever the agent advertises. For a prompt that is
-        text ABOUT a session, where a path is quoted history, not an attachment.
+        ``attachments`` is the receiving channel's structured list of the files
+        the user attached to THIS message. It is the only source of image
+        blocks: the text is never scanned for image paths (see
+        ``prompt_blocks``), so a channel that hands the provider text alone
+        ships no image, whatever paths the text names.
         """
 
         async def _build() -> tuple[str, dict[str, Any]]:
@@ -1542,7 +1549,8 @@ class AcpSessionHandle:
             prompt_blocks = await asyncio.to_thread(
                 build_prompt_blocks,
                 message,
-                allow_image=allow_image and self._runtime.supports_image_prompt,
+                attachments=attachments,
+                allow_image=self._runtime.supports_image_prompt,
             )
             # Content-free outbound STRUCTURE diagnostics: one
             # line per turn build recording block counts, per-type counts, and
@@ -1558,12 +1566,11 @@ class AcpSessionHandle:
             )
             return METHOD_PROMPT, {
                 "sessionId": self._session_id,
-                # An image reaches the model ONLY as an image block. Sending a
-                # local image path as a single text block would ship a
-                # filesystem path as prose (Slack, dashboard) and the model
-                # would never see the picture. Gated on the agent's advertised
-                # capability; when it is absent the path stays in the text as a
-                # tool-openable reference rather than being dropped.
+                # An image reaches the model ONLY as an image block, and only
+                # from the channel's attachment list. Gated on the agent's
+                # advertised capability; when it is absent the channel's own
+                # path text stays in place as a tool-openable reference rather
+                # than being dropped.
                 "prompt": prompt_blocks,
             }
 

@@ -21,6 +21,7 @@ import contextlib
 import logging
 import re
 import time
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, cast
 
 from kiro_crew import runtime_death
@@ -50,6 +51,7 @@ from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
 from kiro_crew.messaging.link import SLACK_NAMESPACE, canonical_key
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.platform import current_context
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.security import redact, redact_local_paths
 from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
@@ -204,11 +206,17 @@ async def handle_message_transport(
     from_trusted_bot: bool = False,
     dm_single_session: bool = False,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    attachments: Sequence[PromptAttachment] = (),
 ) -> None:
     """Drive a Slack message through the new transport path end-to-end.
 
     ``start_priority``: as for ``handler.handle_message`` (rule:
     ``kiro_crew.start_priority``).
+
+    *attachments* is the structured list of the images the message carried
+    (``process_slack_files``) -- the ONLY way a picture reaches the model. The
+    prompt builder never scans ``text`` for the paths appended there, which
+    remain for agent file tools.
 
     This replaces handle_message when the feature flag is on. It uses
     TurnDriver + SlackRenderer instead of the inline stream loop.
@@ -379,7 +387,9 @@ async def handle_message_transport(
     # Shared with native handle_message so a thread linked via
     # /kirocrew link-to-dashboard routes into its dashboard slot (with the same
     # auth recheck + bang fall-through) instead of spawning a fresh session.
-    if await maybe_route_linked_thread(text, session_key, user_id, channel, slack, reply_ts):
+    if await maybe_route_linked_thread(
+        text, session_key, user_id, channel, slack, reply_ts, attachments=attachments
+    ):
         return
 
     # ── Hook: auto-reply before touching the LLM (mirrors native) ──
@@ -914,7 +924,14 @@ async def handle_message_transport(
             )
 
         renderer.stamp_options = _persist_and_stamp
-        accumulated = await driver.run(full_message)
+        # The message's images ride beside the text as the structured list;
+        # passed only when there are some, so a driver stand-in predating the
+        # keyword still takes every text-only turn.
+        accumulated = await (
+            driver.run(full_message, attachments=tuple(attachments))
+            if attachments
+            else driver.run(full_message)
+        )
 
         # ── Post-turn bookkeeping ──
         # The turn already succeeded (we have `accumulated`), so record success

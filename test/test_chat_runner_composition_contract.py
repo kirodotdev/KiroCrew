@@ -160,7 +160,7 @@ _BASE_NAMES = frozenset("""
         _clear_local_turn_marker
         _clip_card_error _configured_refusal_fallback _connections_managed_mcp_names
         _consume_pending_reset _context_usage_payload _credential_tool_hint_for _crew_log_class
-        _crew_log_lineage _crew_log_model _crew_log_workspace _current_turn_carries_image_ref
+        _crew_log_lineage _crew_log_model _crew_log_workspace
         _decisions_strip_meta _default_session_model _deliver_cross_surface_reply
         _deliver_cross_surface_user_message _deliver_linked_slack_message _dequeue_next_message
         _dequeue_next_system_message _detach_appended_context _directive_recovery_instruction
@@ -448,7 +448,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "function",
             "(segment_text: 'str', notice_chunks: 'list[str]') -> 'str'",
         ),
-        ("_current_turn_carries_image_ref", "function", "(message: 'str') -> 'bool'"),
         ("_empty_auto_continue_enabled", "function", "() -> 'bool'"),
         ("_empty_max_auto_continues", "function", "() -> 'int'"),
         (
@@ -795,6 +794,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_prompt_depth",
         "_attachments",
         "_attachment_meta",
+        "_prompt_images",
         "_synthetic_payload",
         "_replay",
         "_synthetic_recovery_turn",

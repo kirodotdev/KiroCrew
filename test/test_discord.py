@@ -4276,6 +4276,53 @@ class TestDispatcher:
             await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio
+    async def test_an_ingested_image_reaches_the_provider_as_a_structured_attachment(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The prompt builder emits image blocks from the channel's attachment
+        list alone and never scans the text, so the dispatcher must hand the
+        ingested image to the turn as ``attachments`` -- the path it writes into
+        the text is for agent tools only."""
+        from kiro_crew.discord import transport_dispatch as td
+        from kiro_crew.messaging.attachments import IngestResult
+
+        shot = tmp_path / "shot.png"
+        shot.write_bytes(b"\x89PNG")
+        d, _cli, _sess = _dispatcher({"u1"})
+        streamed: list[tuple[str, dict]] = []
+
+        async def _stream(self, message: str, **kw: Any) -> Any:
+            streamed.append((message, kw))
+            yield _Ev(EVENT_TEXT_CHUNK, text="seen")
+            yield _Ev(EVENT_COMPLETE, stop_reason="end_turn")
+
+        async def _ingest(client: Any, attachments: Any) -> IngestResult:
+            return IngestResult(image_paths=[str(shot)])
+
+        monkeypatch.setattr(FakeProvider, "stream", _stream)
+        monkeypatch.setattr(td, "process_discord_attachments", _ingest)
+        await d.handle_message(
+            InboundMessage(
+                channel_type="discord",
+                user_id="u1",
+                conversation_id="c1",
+                text="look at this",
+                attachments=[{"filename": "shot.png", "content_type": "image/png"}],
+            )
+        )
+
+        assert len(streamed) == 1
+        message, kw = streamed[0]
+        assert str(shot) in message, "the path still rides as text for agent tools"
+        assert [a.path for a in kw["attachments"]] == [str(shot)]
+
+        # A text-only message passes no keyword at all, so a provider stand-in
+        # predating it still takes the turn.
+        streamed.clear()
+        await d.handle_message(self._msg("plain words"))
+        assert streamed and streamed[0][1] == {}
+
+    @pytest.mark.asyncio
     async def test_a_thread_route_is_still_bound_under_a_unified_scope(self) -> None:
         # A guild thread keys per-channel-peer regardless of dm_scope, so its
         # bucket still names one conversation.

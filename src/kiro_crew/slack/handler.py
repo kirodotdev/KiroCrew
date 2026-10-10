@@ -27,7 +27,7 @@ import os  # noqa: F401 - read by the owners
 import re
 import time
 import uuid  # noqa: F401 - read by the owners
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -53,6 +53,11 @@ from kiro_crew.agent_sdk import CONTEXT_EVENT_COMPACTION
 from kiro_crew.agent_spec_format import is_markdown_spec, iter_agent_spec_files
 from kiro_crew.agent_switch_command import (  # noqa: F401 - read by the owners
     agent_switch_target,
+)
+from kiro_crew.chat_attachments import (  # noqa: F401 - read by the owners
+    AttachmentAdoptionError,
+    adopt_attachment_copies,
+    rewrite_adopted_paths,
 )
 from kiro_crew.config.loader import (  # noqa: F401 - read by the owners
     ACTIVATION_REVIEW,
@@ -116,6 +121,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging import auto_title, privacy_mode, turn_ceiling
+from kiro_crew.messaging.attachments import cleanup  # noqa: F401 - read by the owners
 from kiro_crew.messaging.commands import (  # noqa: F401 - read by the owners
     compact_unsupported_backend,
     compact_unsupported_reply,
@@ -149,6 +155,7 @@ from kiro_crew.messaging.session_trust import (  # noqa: F401 - read by the owne
 from kiro_crew.messaging.turn_ceiling import TurnCeilingExceeded
 from kiro_crew.permission_floor import OUTCOME_REJECTED_TRANSPORT_FLOOR
 from kiro_crew.platform import current_context
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -1151,11 +1158,17 @@ async def handle_message(
     had_voice_input: bool = False,
     _compaction_replay: _CompactionReplay | None = None,
     start_priority: StartPriority = StartPriority.BACKGROUND,
+    attachments: Sequence[PromptAttachment] = (),
 ) -> None:
     """Route a Slack message through ACP with streaming and tool approval.
 
     ``start_priority`` orders a cold start: the Slack event and interaction paths
     pass FOREGROUND for a person's message (rule: ``kiro_crew.start_priority``).
+
+    *attachments* is the structured list of the images the message carried
+    (``process_slack_files``). It is the ONLY way a picture reaches the model:
+    the prompt builder never scans ``text`` for the paths appended there, which
+    remain for agent file tools.
 
     NOTE: ``from_trusted_bot`` is consumed only in the error path (echo-loop
     suppression). Early-reply paths (hook auto-reply, !status, !sessions) still
@@ -1241,6 +1254,7 @@ async def handle_message(
         reply_ts,
         target_slot=_target_slot,
         route_pinned=route_pinned,
+        attachments=attachments,
     ):
         return
 
@@ -1568,6 +1582,9 @@ async def handle_message(
                 from_trusted_bot=from_trusted_bot,
                 channel_activation=channel_activation,
                 had_voice_input=had_voice_input,
+                # The replay is the SAME message: its pictures ride along, or
+                # the re-run answers as if none were sent.
+                attachments=attachments,
                 _compaction_replay=replay,
                 start_priority=start_priority,
             )
@@ -1846,7 +1863,12 @@ async def handle_message(
             await slack.set_thread_status(channel, reply_ts, "")
             return
 
-        async for event in client.stream(full_message):
+        _stream = (
+            client.stream(full_message, attachments=tuple(attachments))
+            if attachments
+            else client.stream(full_message)
+        )
+        async for event in _stream:
             if event.kind == EVENT_TEXT_CHUNK:
                 await answer.on_text(event)
 

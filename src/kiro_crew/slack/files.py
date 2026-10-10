@@ -62,6 +62,7 @@ from kiro_crew.messaging.outbound_files import (
     extract_local_refs_off_loop,
 )
 from kiro_crew.platform_compat import restrict_dir_to_owner
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -412,15 +413,18 @@ def _to_attachment(f: dict) -> Attachment:
 async def process_slack_files(
     orch: GatewayOrchestrator,
     files: list[dict],
-) -> tuple[list[str], list[str]]:
+) -> tuple[list[str], list[str], tuple[PromptAttachment, ...]]:
     """Process non-audio file attachments from a Slack message.
 
     Returns:
-        (attachment_paths, text_blocks) — local paths for images and opaque
-        files (caller must clean up), plus prompt-ready text and metadata.
+        (attachment_paths, text_blocks, attachments) — local paths for images
+        and opaque files (caller must clean up), prompt-ready text and
+        metadata, and the ingested images as the STRUCTURED list the turn hands
+        to the provider. That list, not the path text, is what puts an image in
+        front of the model: the prompt builder never scans the text for paths.
     """
     if not orch.slack:
-        return [], []
+        return [], [], ()
 
     client = orch.slack
 
@@ -441,4 +445,4 @@ async def process_slack_files(
     # Rejection notes ride along as prompt text, matching the previous behaviour
     # of inlining size and validation failures for the model to see.
     paths = [*result.image_paths, *result.file_paths]
-    return paths, [*result.text_blocks, *result.rejections]
+    return paths, [*result.text_blocks, *result.rejections], result.prompt_attachments()

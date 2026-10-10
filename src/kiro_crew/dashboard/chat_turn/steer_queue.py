@@ -27,6 +27,7 @@ if TYPE_CHECKING:
         is_synthetic_payload_item,
         is_system_injection_item,
         logger,
+        prompt_image_paths,
         queued_text_for_display,
         quote_meta,
         settle_consumed_steers,
@@ -337,6 +338,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             meta=_meta,
             directive_user_origin=_requeue_user_origin,
             directive_channel_origin=_channel,
+            # A channel steer's redacted list must still resolve to the real
+            # image rather than making the provider probe a nonexistent path.
+            prompt_images=prompt_image_paths(_meta),
         )
         try:
             _push: dict = {
@@ -355,9 +359,9 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
             # restores, and a frame without the quote would show the raw
             # blockquote as text until a reload.
             _push_meta = {
-                **attachment_meta(_meta),
                 # Same rule the entry's text follows (`queue_entry_is_user_origin`):
                 # the human's own words stay as typed, anyone else's are redacted.
+                **attachment_meta(_meta, redact=not (_requeue_user_origin and not _channel)),
                 **quote_meta(_meta, user_origin=_requeue_user_origin and not _channel),
             }
             if _push_meta:

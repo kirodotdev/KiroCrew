@@ -1138,10 +1138,11 @@ export default function ChatPane({
     }
     // The same turn ChatPage sends (`buildOutgoingTurn`, the one owner of the
     // order): every image a producer-form `![image](dest)` line on BOTH texts
-    // and every other file an `[attached_file N] path` marker on the wire with
-    // the ORDERED non-image list on `meta.files` (the agent's image extraction
-    // matches absolute paths in the PROMPT TEXT, and the bubble renders images
-    // only from their markdown); folder tokens as `[attached_dir N]`
+    // with the picture list on `meta.images` (the gateway builds the turn's
+    // image blocks from that list alone and never scans the prompt text for
+    // paths; the bubble renders images only from their markdown), and every
+    // other file an `[attached_file N] path` marker on the wire with the
+    // ORDERED non-image list on `meta.files`; folder tokens as `[attached_dir N]`
     // markers with `meta.dirs` (the pane has no project context, so tokens are
     // absolute and serialize as-is); the live paste tokens expanded on the wire
     // while the bubble keeps them plus `meta.pastes`, and the side table

@@ -5,8 +5,8 @@ the slot is busy -- queued, or steered into
 the running turn -- follows that rule on its pending card, its cancel restore and
 its steer row. These pins cover both halves: the composer's text round-trips as
 typed there, and every other origin (a ``session_send`` peer, an app, a channel,
-a restored entry) keeps the redaction. The drain's row and ``queue_pop`` frame
-stay redacted, matching the text the drain hands the next turn.
+a restored entry) keeps the redaction. Wire attachment lists follow their text;
+attachment metadata on persisted rows stays redacted.
 """
 
 from __future__ import annotations
@@ -232,6 +232,274 @@ class TestQueueEgress:
         # Row and turn input are the same `next_msg`; a channel-stamped message
         # keeps the redaction on both even though it also carries the user stamp.
         assert _SECRET not in row["content"]
+
+
+class TestQueueAttachmentEgress:
+    @pytest.fixture
+    def attachment_send(self, tmp_path):
+        prefix = (tmp_path / "uploads" / ("ghp_" + "A" * 36)).as_posix()
+        meta = {
+            "images": [f"{prefix}.png"],
+            "files": [f"{prefix}.pdf"],
+            "dirs": [f"{prefix}/"],
+        }
+        content = (
+            f"look\n\n![image]({meta['images'][0]})\n"
+            f"[attached_file 1] {meta['files'][0]}\n[attached_dir 1] {meta['dirs'][0]}"
+        )
+        return content, meta
+
+    def test_attachment_meta_redaction_is_optional(self, attachment_send):
+        from kiro_crew.dashboard.chat_delivery import attachment_meta
+
+        _, meta = attachment_send
+        assert attachment_meta(meta) != meta
+        assert attachment_meta(meta, redact=True) == attachment_meta(meta)
+        assert attachment_meta(meta, redact=False) == meta
+
+    def test_unredacted_attachment_meta_keeps_validation(self, attachment_send):
+        from kiro_crew.dashboard.chat_delivery import attachment_meta
+        from kiro_crew.dashboard.slot_queue_repository import (
+            ALL_ATTACHMENT_META_KEYS,
+            ATTACHMENT_LIST_MAX_ITEMS,
+            ATTACHMENT_PATH_MAX_LEN,
+        )
+
+        _, meta = attachment_send
+        assert attachment_meta(None, redact=False) == {}
+        assert attachment_meta({**meta, "sendId": "send-1"}, redact=False) == meta
+        for key in ALL_ATTACHMENT_META_KEYS:
+            path = meta[key][0]
+            at_bounds = ["x" * ATTACHMENT_PATH_MAX_LEN] * ATTACHMENT_LIST_MAX_ITEMS
+            assert attachment_meta({key: at_bounds}, redact=False) == {key: at_bounds}
+            for invalid in (
+                [],
+                path,
+                [path, ""],
+                [path, 42],
+                [path] * (ATTACHMENT_LIST_MAX_ITEMS + 1),
+                ["x" * (ATTACHMENT_PATH_MAX_LEN + 1)],
+            ):
+                assert attachment_meta({key: invalid}, redact=False) == {}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enqueue", ["busy", "hold", "steer"])
+    @pytest.mark.parametrize("surface", ["entry", "push", "edit", "pop"])
+    async def test_user_wire_attachment_lists_match_content(
+        self, tmp_path, monkeypatch, _patch_sel, attachment_send, enqueue, surface
+    ):
+        import asyncio
+
+        from kiro_crew.dashboard import chat_runner
+        from kiro_crew.dashboard.chat_delivery import attachment_meta, queue_entry_view
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_queue_edit
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_delivery.start_queue_persist", MagicMock())
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers.start_queue_persist", MagicMock())
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = lambda: None
+        slot = state.get_or_create_slot("test")
+        if enqueue != "hold":
+            slot.task = MagicMock(done=MagicMock(return_value=False))
+        content, meta = attachment_send
+        if enqueue == "hold":
+            state.subagents = MagicMock(running_agents_for=MagicMock(return_value=["agent-1"]))
+        elif enqueue == "steer":
+
+            async def requeue(message):
+                assert message == content
+                chat_runner._requeue_unconsumed_steers(state, slot)
+                return True
+
+            slot._acp_client = MagicMock(supports_steer=True, steer=AsyncMock(side_effect=requeue))
+
+        app = _make_app(state)
+        app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", api_chat_slot_queue_edit)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.post(
+                "/api/chat",
+                json={
+                    "slot": slot.key,
+                    "message": content,
+                    "meta": meta,
+                    "steer": enqueue == "steer",
+                },
+            )
+            assert resp.status == 200
+            assert (await resp.json()).get("queued") is True
+            (entry,) = slot._queue
+            if surface == "edit":
+                content = content.replace("look", "look again", 1)
+                resp = await client.patch(
+                    f"/api/chat/slots/{slot.key}/queue/{entry['id']}", json={"content": content}
+                )
+                assert resp.status == 200
+                (view,) = _frames(state, "queue_edit")
+            elif surface == "push":
+                (view,) = _frames(state, "queue_push")
+            elif surface == "pop":
+                state.subagents = None
+                slot.task = None
+                with (
+                    patch.object(chat_runner, "spawn_guarded_turn", return_value=MagicMock()),
+                    patch.object(chat_runner, "_run_chat", new=MagicMock()),
+                ):
+                    assert await chat_runner._start_next_queued_turn(state, slot) is True
+                (view,) = _frames(state, "queue_pop")
+            else:
+                view = queue_entry_view(entry)
+
+        raw = meta["images"][0]
+        assert view["meta"]["images"][0] == raw
+        assert f"![image]({raw})" in view["content"]
+        assert view["content"] == content
+        assert view["meta"] == meta
+        if surface == "pop":
+            redacted = attachment_meta(meta)
+            row = next(m for m in slot.messages if m.get("role") == "user")
+            assert {key: row["meta"][key] for key in meta} == redacted
+            await asyncio.to_thread(state.flush_slot_now, slot)
+            saved = await asyncio.to_thread(
+                state.conversation_log.read_messages, f"dashboard:{slot.key}"
+            )
+            persisted = next(m for m in saved if m.get("role") == "user")
+            assert {key: persisted["meta"][key] for key in meta} == redacted
+
+    @pytest.mark.parametrize("origin", ["channel", "app", "peer", "restored", "recovery"])
+    def test_non_user_attachment_view_stays_redacted(self, tmp_path, attachment_send, origin):
+        from kiro_crew.dashboard.chat_delivery import (
+            attachment_meta,
+            queue_entry_view,
+            queued_text_for_display,
+        )
+        from kiro_crew.dashboard.slot_queue_repository import (
+            durable_queue_entries,
+            sanitize_restored_queue,
+        )
+
+        content, meta = attachment_send
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("test")
+        slot.queue_append(
+            content,
+            meta=meta,
+            directive_user_origin=origin in {"channel", "restored", "recovery"},
+            directive_channel_origin=origin == "channel",
+            kind="synthetic_recovery" if origin == "recovery" else "",
+        )
+        if origin == "restored":
+            slot._queue[:] = sanitize_restored_queue(durable_queue_entries(slot._queue))
+        view = queue_entry_view(slot._queue[0])
+        assert view["content"] == queued_text_for_display(content, user_origin=False)
+        assert view["content"] != content
+        assert {key: view["meta"][key] for key in meta} == attachment_meta(meta)
+        assert view["meta"] != meta
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "user_origin,channel_origin", [(True, False), (True, True), (False, False)]
+    )
+    async def test_accepted_steer_wire_matches_content_while_row_stays_redacted(
+        self, tmp_path, monkeypatch, attachment_send, user_origin, channel_origin
+    ):
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_STEERED,
+            attachment_meta,
+            queued_text_for_display,
+            steer_into_running_turn,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _steer_capable_slot(state)
+        content, meta = attachment_send
+        result = await steer_into_running_turn(
+            state,
+            slot,
+            content,
+            user_origin=user_origin,
+            channel_origin=channel_origin,
+            attachments=meta,
+        )
+        assert result == STEER_STEERED
+        redacted = attachment_meta(meta)
+        as_typed = user_origin and not channel_origin
+        expected = meta if as_typed else redacted
+        (frame,) = _frames(state, "steer_push")
+        assert frame["content"] == queued_text_for_display(content, user_origin=as_typed)
+        assert frame["meta"] == expected
+        assert slot._steer_attachment_meta[content] == expected
+        row = next(m for m in slot.messages if m.get("meta", {}).get("steer"))
+        assert {key: row["meta"][key] for key in meta} == redacted
+
+    @pytest.mark.asyncio
+    async def test_restored_caption_edit_keeps_the_displayed_image(
+        self, tmp_path, monkeypatch, _patch_sel, attachment_send
+    ):
+        from kiro_crew.dashboard.chat_delivery import queue_entry_view
+        from kiro_crew.dashboard.chat_handlers import api_chat_slot_queue_edit
+        from kiro_crew.dashboard.slot_queue_repository import (
+            durable_queue_entries,
+            sanitize_restored_queue,
+        )
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        state.push_slots_update = lambda: None
+        slot = state.get_or_create_slot("test")
+        content, meta = attachment_send
+        slot.queue_append(content, meta=meta, directive_user_origin=True)
+        snapshot = durable_queue_entries(slot._queue)
+        assert snapshot[0]["meta"]["images"] != meta["images"]
+        assert slot._queue[0]["meta"] == meta
+        slot._queue[:] = sanitize_restored_queue(snapshot)
+        (entry,) = slot._queue
+        shown = queue_entry_view(entry)
+        app = _make_app(state)
+        app.router.add_patch("/api/chat/slots/{slot}/queue/{queue_id}", api_chat_slot_queue_edit)
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.patch(
+                f"/api/chat/slots/{slot.key}/queue/{entry['id']}",
+                json={"content": shown["content"].replace("look", "look again", 1)},
+            )
+            assert resp.status == 200
+        (frame,) = _frames(state, "queue_edit")
+        assert frame["meta"]["images"] == shown["meta"]["images"]
+        assert frame["meta"] == shown["meta"]
+
+    @pytest.mark.parametrize(
+        "user_origin,channel_origin", [(True, False), (True, True), (False, False)]
+    )
+    def test_queue_ack_lists_follow_content_provenance(
+        self, tmp_path, attachment_send, user_origin, channel_origin
+    ):
+        from kiro_crew.dashboard.chat_delivery import (
+            attachment_meta,
+            queue_for_next_turn,
+            queued_text_for_display,
+        )
+
+        content, meta = attachment_send
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = state.get_or_create_slot("test")
+        with patch("kiro_crew.dashboard.chat_delivery.start_queue_persist"):
+            queue_for_next_turn(
+                state,
+                slot,
+                content,
+                attachments=meta,
+                directive_user_origin=user_origin,
+                directive_channel_origin=channel_origin,
+            )
+        (frame,) = _frames(state, "queue_push")
+        as_typed = user_origin and not channel_origin
+        assert frame["content"] == queued_text_for_display(content, user_origin=as_typed)
+        assert frame["meta"] == (meta if as_typed else attachment_meta(meta))
 
 
 class TestSteerEgress:

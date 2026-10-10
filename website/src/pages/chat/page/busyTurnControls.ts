@@ -12,7 +12,7 @@ import { store, type AppDispatch } from '../../../store'
 import { appendMessage, appendSlotMessage, capturePendingAskId, clearPendingPermissions, requestStop, selectComposerBusy, type pendingQuestionFor } from '../../../store/chatSlice'
 import type { ChatMessage, ChatSlot } from '../../../types'
 import { mergeIntoDraft, mergeRecoveredDraft, setDraft } from '../../../utils/chatDrafts'
-import { expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
+import { type PasteBlock, expandAll as expandPasteTokens } from '../../../utils/pasteTokens'
 import { handleStopPress, isEscalationState } from '../../../utils/stopDebounce'
 import { answerRejectedMessage } from '../../../utils/questionAnswers'
 import { interceptSlashCommand, isInterceptedSlashCommand } from '../ChatInput'
@@ -30,7 +30,7 @@ interface BusyTurnControlsOptions {
   /** The page's send, for the busy-but-not-running case and nothing else. */
   send: (optionText?: string, targetSlot?: string, steerNow?: boolean, isolated?: boolean) => Promise<boolean>
   /** The receipt-aware steer POST (ChatPage's `applySteerReceipt` adapter). */
-  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; askId?: string | null }) => void }
+  steerMutation: { mutate: (vars: { text: string; sendId?: string; slot: string; auto?: boolean; quote?: MessageQuote | null; images?: string[]; files?: string[]; raw?: string; staged?: string[]; pastes?: PasteBlock[]; askId?: string | null }) => void }
   /** The whole-message quote stage (`useMessageQuote`): a steer consumes it
    *  like a send does, and a cancelled queued send hands its quote back here. */
   messageQuote: UseMessageQuote
@@ -204,11 +204,18 @@ export function useBusyTurnControls({
       setInput(''); setPasteBlocks([])
       return
     }
-    // The text-only steer turn (`buildOutgoingTurn`): files inlined, folder
-    // tokens kept in their `@rel/` form (a marker with no `meta.dirs` to
-    // replay against would truncate a spaced path), the live paste tokens
-    // expanded, the quote opening the text.
-    const llmTxt = buildOutgoingTurn({ text: raw, files, pastes: pasteBlocksRef.current, quote: steerQuote }, 'steer').wire
+    // The steer turn (`buildOutgoingTurn`): files inlined, folder tokens kept
+    // in their `@rel/` form (a marker with no `meta.dirs` to replay against
+    // would truncate a spaced path), the live paste tokens expanded, the quote
+    // opening the text. The image and file lists are the one piece of meta a
+    // steer carries: they ride the POST so a steer the gateway queues instead
+    // keeps its pictures and the index its `[attached_file N]` markers are
+    // read against.
+    const activePastes = pasteBlocksRef.current
+    const steerTurn = buildOutgoingTurn({ text: raw, files, pastes: activePastes, quote: steerQuote }, 'steer')
+    const llmTxt = steerTurn.wire
+    const steerImgPaths = steerTurn.meta.images ?? []
+    const steerFilePaths = steerTurn.meta.files ?? []
     // Optimistically show the steered text immediately. Steer is the default
     // mid-turn action (split send button), so pressing Enter while a turn is
     // running routes here; without an optimistic bubble the message only appears
@@ -226,17 +233,21 @@ export function useBusyTurnControls({
     // no streaming row to freeze, so that text would flush BELOW this card
     // and post-steer chunks would append to it (see lib/pendingChunkDrain.ts).
     drainPendingChunks()
-    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerQuote ? { quote: steerQuote } : {}) } }))
+    dispatch(appendMessage({ role: 'user', content: llmTxt, cls: 'msg msg-u', ts: new Date().toISOString(), meta: { steer: true, optimistic: true, sendId: steerSendId, ...(steerQuote ? { quote: steerQuote } : {}), ...(steerFilePaths.length ? { files: steerFilePaths } : {}) } }))
     // The optimistic bubble above stays a STEER bubble for an `auto` send: steer
     // is the answer every refusal keeps, so it is the honest guess while the POST
     // is in flight, and a queue answer replaces this row through the same
     // `queue_push` reconcile a manual queue uses.
-    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer })
+    steerMutation.mutate({ text: llmTxt, sendId: steerSendId, slot: activeSlot, auto: opts?.auto === true, quote: steerQuote, askId: askAtSteer, raw, staged: [...new Set(files)], pastes: activePastes, ...(steerImgPaths.length ? { images: steerImgPaths } : {}), ...(steerFilePaths.length ? { files: steerFilePaths } : {}) })
     // Staged session references are deliberately NOT part of steering: neither
-    // carried into the payload nor cleared. Only the TEXT has a restore path
-    // (steerMutation hands it back on a refused, failed or unconfirmed steer);
-    // attachments and pastes are still discarded, and adding refs to that set
-    // would lose a reference the user cannot recover except by dragging again.
+    // carried into the payload nor cleared. The TEXT, the staged FILES and the
+    // collapsed PASTES have a restore path (steerMutation hands all three back
+    // on a refused, failed or unconfirmed steer, from the snapshot taken here:
+    // a picture rides the POST as `meta.images`, and handing back only its
+    // `![image](dest)` line would leave a composer that ships no picture on
+    // the next send; a paste token without its block would send literally);
+    // adding refs to that set would lose a reference the user cannot recover
+    // except by dragging again.
     // Leaving them staged is lossless and predictable: the chip stays in the
     // composer and rides the next real send, which does have a full restore path.
     // Drops only this slot's own token sub-map -- see the same-shaped

@@ -497,7 +497,7 @@ async def test_cancelled_mid_steer_still_answers_the_wire_for_the_bg_oneliner():
             await asyncio.sleep(3600)
             return True
 
-        async def prompt(self, message: str, *, allow_image=True):
+        async def prompt(self, message: str):
             yield _event(title="bash")
             yield LLMEvent(kind=EVENT_COMPLETE, text="")
 
@@ -563,7 +563,7 @@ async def test_an_audit_failure_raises_before_the_wire_for_the_bg_oneliner(monke
     monkeypatch.setattr(llm_helpers, "_sel", _broken_sel)
 
     class _Session(_Provider):
-        async def prompt(self, message: str, *, allow_image=True):
+        async def prompt(self, message: str):
             yield _event(title="bash")
             yield LLMEvent(kind=EVENT_COMPLETE, text="")
 
@@ -610,7 +610,7 @@ async def test_orphan_reject_failure_is_retrieved_and_logged(caplog):
 @pytest.mark.asyncio
 async def test_bg_oneliner_steers_before_rejecting():
     class _Session(_Provider):
-        async def prompt(self, message: str, *, allow_image=True):
+        async def prompt(self, message: str):
             yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="ok")
             yield _event(title="bash")
             yield LLMEvent(kind=EVENT_COMPLETE, text="")

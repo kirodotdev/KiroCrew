@@ -82,6 +82,8 @@ Everything here is blocking file I/O; callers on the event loop must offload it.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import hashlib
 import logging
 import os
@@ -89,12 +91,15 @@ import re
 import secrets
 import shutil
 import stat
+import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.messaging.outbound_files import LocalRef, iter_local_refs, local_destination
+from kiro_crew.prompt_attachments import PromptAttachment, path_spans
 
 logger = logging.getLogger(__name__)
 
@@ -613,3 +618,101 @@ def _encode_destination(new_dest: str, *, angle_wrapped: bool) -> str:
     if any(char in _DEST_NEEDS_ANGLES for char in dest):
         return f"<{escaped}>"
     return escaped
+
+
+class AttachmentAdoptionError(Exception):
+    """A session could not be given its own copy of a picture.
+
+    Raised instead of dropping the picture: the caller refuses where the user
+    can see it rather than running or queueing a turn without it. Carries a
+    user-facing sentence only; the OS error stays in the log.
+    """
+
+
+async def adopt_attachment_copies(
+    attachments: Sequence[PromptAttachment],
+) -> list[tuple[str, str]]:
+    """``(temp path, adopted copy)`` for each picture the dashboard session now OWNS.
+
+    A channel's temp files belong to the channel's own turn and are removed when
+    its handler returns, before a fire-and-forget or queued dashboard turn opens
+    them. Each picture is copied into the upload directory under the writer's
+    own ``<uuid>_<name>`` shape and size cap, so the turn, a later regenerate or
+    edit-resend, and the redacted-spelling resolver all find it where every
+    other dashboard picture lives. The copy runs off the loop; any failure, or a
+    picture over the cap, raises :class:`AttachmentAdoptionError` with no partial
+    copies left behind.
+    """
+    paths = [a for a in attachments if a.path]
+    if not paths:
+        return []
+    # Lazy: ``handlers.files`` imports most of the dashboard at module level.
+    from kiro_crew.dashboard.handlers.files import (
+        _MAX_UPLOAD_BYTES,
+        _upload_dir,
+        _write_file_restricted,
+    )
+
+    upload_dir = _upload_dir()
+
+    def _copy_all() -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        try:
+            upload_dir.mkdir(parents=True, exist_ok=True)
+            for att in paths:
+                # The copy runs in the gateway, outside any sandbox. Same shape as
+                # the staging path above: an attachment records a FILE, so a link,
+                # directory or device at the validated path is refused rather than
+                # resolved, and the bytes come from the descriptor-pinned reader
+                # (hardlink refusal, size cap checked on what is actually read).
+                try:
+                    if not stat.S_ISREG(os.lstat(att.path).st_mode):
+                        raise AttachmentAdoptionError(
+                            f"the attached image {Path(att.path).name} is not a regular file"
+                        )
+                    data = safe_read_file_bytes_nolink(att.path, max_bytes=_MAX_UPLOAD_BYTES)
+                except FileTooLargeError:
+                    raise AttachmentAdoptionError(
+                        f"the attached image {Path(att.path).name} is over the upload size cap"
+                    ) from None
+                if data is None:
+                    raise AttachmentAdoptionError(
+                        f"the attached image {Path(att.path).name} could not be read"
+                    )
+                safe_name = (
+                    re.sub(r"[^\w.\-]", "_", Path(att.display_name).name) or Path(att.path).name
+                )
+                dest = upload_dir / f"{uuid.uuid4().hex}_{safe_name}"
+                # Registered BEFORE the bytes move: a write that raises mid-way
+                # has already created the destination, and an unregistered one
+                # would stay under the upload key the file server and the
+                # resolver serve, tied to no row and no turn.
+                out.append((att.path, str(dest)))
+                # Owner-only like every other file the upload writer creates here.
+                _write_file_restricted(dest, data)
+        except (OSError, AttachmentAdoptionError) as exc:
+            # No partial adoption: a refused turn leaves no copy behind.
+            for _temp, copy in out:
+                with contextlib.suppress(OSError):
+                    os.unlink(copy)
+            if isinstance(exc, AttachmentAdoptionError):
+                raise
+            logger.warning("could not store an attached image for the session", exc_info=exc)
+            raise AttachmentAdoptionError(
+                "the attached image(s) could not be stored for the session"
+            ) from exc
+        return out
+
+    return await asyncio.to_thread(_copy_all)
+
+
+def rewrite_adopted_paths(text: str, adopted: Sequence[tuple[str, str]]) -> str:
+    """*text* with each temp path replaced by its adopted copy, where it stands.
+
+    Delimited spans only (``path_spans``), so a longer path that merely starts
+    the same way is never touched.
+    """
+    for temp, copy in adopted:
+        for start, end in reversed(path_spans(temp, text)):
+            text = text[:start] + copy + text[end:]
+    return text

@@ -612,7 +612,7 @@ async def _route_voice(
                 with patch(
                     "kiro_crew.slack.events.process_slack_files",
                     new_callable=AsyncMock,
-                    return_value=([], []),
+                    return_value=([], [], ()),
                 ):
                     with patch(
                         "kiro_crew.slack.events.handle_message", new_callable=AsyncMock

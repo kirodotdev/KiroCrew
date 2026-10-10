@@ -4,9 +4,12 @@ A history row's picture belonged to an earlier turn, and a text vehicle cannot
 carry bytes, so the reference is the only thing that would arrive. Both readings
 of an arriving reference are wrong, and both are pinned below:
 
-* the file is still readable -- ``build_prompt_blocks`` inlines it, so a picture
-  Kiro Crew's compaction already dropped rides along at full byte cost on every
-  cold start, and the markdown is mangled into ``![alt]([image: name])``;
+* the file is still readable -- a builder that inlined any readable path it
+  found in the text would bring back a picture Kiro Crew's compaction already
+  dropped, at full byte cost on every cold start, with the markdown mangled into
+  ``![alt]([image: name])``. The builder emits image blocks only from the
+  channel's structured attachment list, so a replayed path is text, never a
+  block on its own; the strip stays load-bearing for the other reading;
 * the file is absent -- no image block is emitted and the PATH sits in the prose,
   next to the assistant's own description of what the picture showed. That
   dangling reference is what makes a model narrate a screenshot it cannot see.
@@ -48,6 +51,7 @@ import kiro_crew
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks
 from kiro_crew.context import _recall_rows, build_session_replay
 from kiro_crew.image_refs import STRIPPED_IMAGE_MARKER, strip_image_refs
+from kiro_crew.prompt_attachments import image_attachments
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 # Smallest valid 1x1 PNG.
@@ -655,11 +659,13 @@ class TestBarePathPassKeepsProse:
         assert row in replay
         assert STRIPPED_IMAGE_MARKER not in replay
 
-    def test_the_builder_still_inlines_a_spaced_current_turn_path(self, tmp_path):
-        # The narrowing is the scrubber's alone: the builder reads the same
-        # grammar and still finds a spaced attachment mid-sentence.
+    def test_the_builder_still_inlines_a_spaced_current_turn_attachment(self, tmp_path):
+        # The narrowing is the scrubber's alone: a spaced attachment handed in
+        # the list is inlined, and marked where the text names it mid-sentence.
         p = _png(tmp_path, "Screen Shot 2024.png")
-        blocks = build_prompt_blocks(f"look at {p} please", allow_image=True)
+        blocks = build_prompt_blocks(
+            f"look at {p} please", attachments=image_attachments([str(p)]), allow_image=True
+        )
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == f"look at [image: {p.name}] please"
@@ -784,9 +790,15 @@ class TestReplayedHistoryCarriesNoImage:
 
     def test_the_current_turn_still_gets_its_picture(self, tmp_path):
         # The strip must not reach the live path: an image the user just
-        # attached has to keep becoming a real image block.
+        # attached -- named in the text AND handed over as the channel's
+        # structured attachment, which is what makes it an upload rather than
+        # a mention -- has to keep becoming a real image block.
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"look at {p} please", allow_image=True)
+        blocks = build_prompt_blocks(
+            f"look at {p} please",
+            attachments=image_attachments([str(p)]),
+            allow_image=True,
+        )
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert base64.b64decode(blocks[1]["data"]) == _PNG

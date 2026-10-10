@@ -7559,6 +7559,56 @@ def _is_junction_fallback(path: str | os.PathLike) -> bool:
 _IO_REPARSE_TAG_NAME_SURROGATE = 0x20000000
 
 
+def stat_identity_token(info: os.stat_result | None) -> str | None:
+    """Portable identity of the REGULAR FILE *info* describes: ``"<inode>:<size>"``.
+
+    *info* must come from an ``lstat`` (or a pinned read), so a link is judged
+    as itself and never followed. None for a link, a directory, a device, a
+    name-surrogate reparse point, or a platform that reports no file index
+    (``st_ino`` of 0). The device number is left out on purpose: Windows
+    reports ``st_dev`` differently across stat calls on some volumes, and a
+    caller always compares entries of ONE directory, where the inode alone is
+    unique. Equal tokens therefore mean the same file on every platform.
+    """
+    if info is None or not stat.S_ISREG(info.st_mode) or lstat_is_name_surrogate(info):
+        return None
+    if not info.st_ino:
+        return None
+    return f"{info.st_ino}:{info.st_size}"
+
+
+def file_identity_token(path: str | os.PathLike) -> str | None:
+    """:func:`stat_identity_token` of the file AT *path*, read without following a link."""
+    try:
+        return stat_identity_token(os.lstat(path))
+    except (OSError, ValueError):
+        return None
+
+
+#: Width of :func:`content_digest_of_fd` in hex characters (a 64-bit BLAKE2b).
+CONTENT_DIGEST_HEX_CHARS = 16
+
+
+def content_digest_of_fd(fd: int) -> str | None:
+    """Digest of the REGULAR FILE open on *fd*, or None for anything else.
+
+    Judged on the descriptor, not on a path: what was opened is what is hashed.
+    A directory, a device or a FIFO yields None rather than a read that blocks.
+    """
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        digest = hashlib.blake2b(digest_size=CONTENT_DIGEST_HEX_CHARS // 2)
+        while True:
+            chunk = os.read(fd, 1 << 20)
+            if not chunk:
+                break
+            digest.update(chunk)
+        return digest.hexdigest()
+    except OSError:
+        return None
+
+
 def lstat_is_name_surrogate(info: os.stat_result) -> bool:
     """True when an ``lstat`` result is a Windows link to another name.
 
@@ -7869,6 +7919,31 @@ class PinnedDirectory:
             return False
         info = self._lstat(name)
         return info is not None and stat.S_ISDIR(info.st_mode)
+
+    def identity_token(self, name: str) -> str | None:
+        """:func:`stat_identity_token` of the regular file *name* in this directory.
+
+        Read with the pin's own ``lstat``, so a link at the name yields None and
+        its target is never touched; a directory or device yields None too.
+        """
+        if self.is_link(name):
+            return None
+        return stat_identity_token(self._lstat(name))
+
+    def content_digest(self, name: str) -> str | None:
+        """:func:`content_digest_of_fd` of the regular file *name*, opened through this pin.
+
+        A link at the name is refused by the open itself, so the bytes come from
+        the entry that was inspected; anything but a regular file yields None.
+        """
+        try:
+            fd = self._open_file(name)
+        except OSError:
+            return None
+        try:
+            return content_digest_of_fd(fd)
+        finally:
+            os.close(fd)
 
     def unlink(self, name: str) -> None:
         """Remove the non-directory *name*. A link is removed, never its target."""

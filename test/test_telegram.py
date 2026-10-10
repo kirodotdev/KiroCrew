@@ -6275,6 +6275,65 @@ class TestYoloCommand:
             self._reset()
 
 
+class TestIngestedPhotoReachesTheTurnAsAStructuredList:
+    """An ingested photo is handed to ``TurnDriver.run`` as ``attachments``.
+
+    The prompt builder emits image blocks from that list alone and never scans
+    the text, so the path ``append_attachment_context`` writes into the prompt
+    is for agent tools only -- a dispatcher that passed the text and nothing
+    else would ship no picture.
+    """
+
+    def test_photo_rides_as_attachments_beside_the_text(self, tmp_path) -> None:
+        from kiro_crew.messaging.attachments import IngestResult
+
+        shot = tmp_path / "photo.jpg"
+        shot.write_bytes(b"\xff\xd8\xff")
+        d, _cli, _sess = _dispatcher({7})
+        runs: list[tuple[str, dict]] = []
+
+        class _Recorder:
+            def __init__(self, *a: Any, **kw: Any) -> None:
+                pass
+
+            async def run(self, message: str, **kw: Any) -> str:
+                runs.append((message, kw))
+                return "ok"
+
+        async def _ingest(client: Any, attachments: Any) -> IngestResult:
+            return IngestResult(image_paths=[str(shot)])
+
+        msg = _dm("what is this?")
+        msg.attachments = [{"file_id": "f1", "kind": "photo"}]
+        with (
+            patch("kiro_crew.telegram.transport_dispatch.TurnDriver", _Recorder),
+            patch("kiro_crew.telegram.transport_dispatch.process_telegram_attachments", _ingest),
+        ):
+            asyncio.run(d.handle_message(msg))
+
+        assert len(runs) == 1
+        message, kw = runs[0]
+        assert str(shot) in message, "the path still rides as text for agent tools"
+        assert [a.path for a in kw["attachments"]] == [str(shot)]
+
+    def test_a_text_only_message_passes_no_attachments_keyword(self) -> None:
+        """A driver stand-in predating the keyword still takes a text turn."""
+        d, _cli, _sess = _dispatcher({7})
+        runs: list[dict] = []
+
+        class _Recorder:
+            def __init__(self, *a: Any, **kw: Any) -> None:
+                pass
+
+            async def run(self, message: str, **kw: Any) -> str:
+                runs.append(kw)
+                return "ok"
+
+        with patch("kiro_crew.telegram.transport_dispatch.TurnDriver", _Recorder):
+            asyncio.run(d.handle_message(_dm("hi")))
+        assert runs == [{}]
+
+
 class TestModelPicker:
     """/model is button-only: the user picks from what the backend advertised."""
 

@@ -4,6 +4,12 @@ Regression coverage for the defect where EVERY channel shipped a filesystem
 path as prose: ``AcpSessionHandle.prompt`` hardcoded a single text block, while
 the only image encoder lived on ``AcpClient`` -- the path ``AcpProvider.start``
 replaces. An image therefore never reached the model as vision input.
+
+The builder takes the channel's STRUCTURED attachment list and builds every
+image block from it; the text is never scanned for paths (that half of the
+contract is pinned in ``test_prompt_attachments.py``). The tests here pass each
+image both ways a real channel does -- named in the text and listed as an
+attachment -- and check the bytes, the caps and the marker rewrite.
 """
 
 from __future__ import annotations
@@ -14,15 +20,14 @@ import json
 import os
 import random
 import re
-import time
 from pathlib import Path
 
 import pytest
 
-from kiro_crew import hooks, imaging
+from conftest import CountingText
+from kiro_crew import hooks, image_refs, imaging, prompt_attachments
 from kiro_crew.acp import prompt_blocks
 from kiro_crew.acp.prompt_blocks import (
-    _POSIX_PATH_RE,
     IMAGE_MEDIA_TYPES,
     IMAGE_SIZE_NOTE,
     MAX_IMAGE_BYTES,
@@ -33,6 +38,8 @@ from kiro_crew.acp.prompt_blocks import (
     build_prompt_blocks,
     summarize_prompt_structure,
 )
+from kiro_crew.image_refs import _POSIX_PATH_RE
+from kiro_crew.prompt_attachments import PromptAttachment, image_attachments
 
 # Smallest valid 1x1 PNG.
 _PNG = base64.b64decode(
@@ -54,6 +61,17 @@ def _distinct_png(tmp_path, name, width):
     return p
 
 
+def _att(*paths):
+    """The structured list a channel hands the builder for *paths*.
+
+    Every image block comes from this list; the text is never scanned, so the
+    tests below pass the path BOTH ways a real channel does -- in the text (as
+    Slack and the dashboard write it) and in the list -- and check the text
+    rewrite the marker contract promises.
+    """
+    return image_attachments([str(p) for p in paths])
+
+
 def _image_bytes(fmt="PNG", size=(2, 2)):
     pil = pytest.importorskip("PIL.Image")
     buf = io.BytesIO()
@@ -68,7 +86,7 @@ class TestBuildPromptBlocks:
 
     def test_image_path_becomes_an_image_block(self, tmp_path):
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"look at {p} please")
+        blocks = build_prompt_blocks(f"look at {p} please", attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         # Text block leads, so the caller can pass this straight to session/prompt.
@@ -85,7 +103,7 @@ class TestBuildPromptBlocks:
         path lets a tool-capable agent still open the file.
         """
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"look at {p}", allow_image=False)
+        blocks = build_prompt_blocks(f"look at {p}", attachments=_att(p), allow_image=False)
 
         assert [b["type"] for b in blocks] == ["text"]
         assert str(p) in blocks[0]["text"]
@@ -94,32 +112,32 @@ class TestBuildPromptBlocks:
         """Size is checked BEFORE base64: encoding inflates 4/3 and the whole
         request is one newline-delimited JSON frame."""
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see {p}", max_image_bytes=1)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_bytes=1)
 
         assert [b["type"] for b in blocks] == ["text"]
         assert str(p) in blocks[0]["text"]
 
     def test_missing_and_unreadable_files_are_skipped(self, tmp_path):
-        blocks = build_prompt_blocks("/definitely/not/here.png")
+        blocks = build_prompt_blocks("see", attachments=_att("/definitely/not/here.png"))
         assert [b["type"] for b in blocks] == ["text"]
 
     def test_directory_with_image_suffix_is_not_read(self, tmp_path):
         d = tmp_path / "weird.png"
         d.mkdir()
-        blocks = build_prompt_blocks(f"see {d}")
+        blocks = build_prompt_blocks(f"see {d}", attachments=_att(d))
         assert [b["type"] for b in blocks] == ["text"]
 
     def test_multiple_images_each_get_a_block(self, tmp_path):
         a = _distinct_png(tmp_path, "a.png", 1)
         b = _distinct_png(tmp_path, "b.png", 2)
-        blocks = build_prompt_blocks(f"{a} and {b}")
+        blocks = build_prompt_blocks(f"{a} and {b}", attachments=_att(a, b))
 
         assert [x["type"] for x in blocks] == ["text", "image", "image"]
         assert blocks[0]["text"] == "[image: a.png] and [image: b.png]"
 
     def test_same_path_twice_is_encoded_once(self, tmp_path):
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"{p} then {p} again")
+        blocks = build_prompt_blocks(f"{p} then {p} again", attachments=_att(p, p))
         # One image block, and both textual occurrences are rewritten.
         assert [x["type"] for x in blocks] == ["text", "image"]
         assert str(p) not in blocks[0]["text"]
@@ -135,7 +153,7 @@ class TestBuildPromptBlocks:
         p = tmp_path / f"img{suffix}"
         mode = "P" if fmt == "GIF" else "RGB"
         pil.new(mode, (2, 2)).save(p, format=fmt)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert blocks[1]["mimeType"] == mime
 
     def test_svg_is_not_inlined(self, tmp_path):
@@ -144,14 +162,14 @@ class TestBuildPromptBlocks:
         unreachable -- keep it excluded deliberately."""
         p = tmp_path / "vector.svg"
         p.write_bytes(b"<svg xmlns='http://www.w3.org/2000/svg'/>")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text"]
         assert ".svg" not in IMAGE_MEDIA_TYPES
 
     def test_bare_filename_is_not_treated_as_a_path(self, tmp_path):
-        """Only absolute paths are candidates, so prose mentioning a filename
-        does not trigger a filesystem probe."""
+        """Prose mentioning a filename triggers no filesystem probe: the text is
+        never scanned, so only the attachment list names candidates."""
         blocks = build_prompt_blocks("the file shot.png is attached")
         assert [b["type"] for b in blocks] == ["text"]
         assert blocks[0]["text"] == "the file shot.png is attached"
@@ -160,14 +178,14 @@ class TestBuildPromptBlocks:
         assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
 
     def test_overlong_name_is_not_probed_and_does_not_raise(self, tmp_path):
-        """A 400-char single-segment token ending in .png names nothing: the
+        """A 400-char single-segment entry ending in .png names nothing: the
         probe would raise ENAMETOOLONG and fail the whole turn. It must stay
-        plain text, while a real image in the same message still inlines."""
+        plain text, while a real image in the same list still inlines."""
         p = _png(tmp_path)
         token = "/" + "a" * 400 + ".png"
         message = f"see {token} and {p}"
 
-        blocks = build_prompt_blocks(message)
+        blocks = build_prompt_blocks(message, attachments=_att(token, p))
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert token in blocks[0]["text"]
@@ -185,7 +203,7 @@ class TestBuildPromptBlocks:
             return real_is_file(self)
 
         monkeypatch.setattr(Path, "is_file", flaky_is_file)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text"]
         assert str(p) in blocks[0]["text"]
@@ -193,111 +211,144 @@ class TestBuildPromptBlocks:
 
 class TestOnePromptImageRules:
     """What one prompt does with its own pictures, with no memory of earlier
-    prompts: markers land only where the grammar matched a path, two files that
-    share a name get two markers, the same bytes under two names are one block,
-    and a prompt past its own count or byte cap keeps the rest as paths."""
+    prompts: markers land only where the attachment's spelling stands delimited
+    (and are appended when the text never names it), two files that share a
+    name get two markers, the same bytes under two names are one block, and a
+    prompt past its own count or byte cap keeps the rest as text that says so.
+    Every picture here is handed over as the channel's list; the text alone
+    never attaches anything."""
 
-    def test_marker_substitution_touches_only_grammar_matches(self, tmp_path):
+    def test_marker_substitution_touches_only_the_delimited_spelling(self, tmp_path):
         p = _png(tmp_path)
-        # The same characters inside a URL are not a path the grammar matched;
-        # a whole-text replace would rewrite them too.
-        blocks = build_prompt_blocks(f"see {p} and the mirror at https://example.com{p}")
+        # The same characters inside a URL are not the attachment standing on
+        # its own; a whole-text replace would rewrite them too.
+        blocks = build_prompt_blocks(
+            f"see {p} and the mirror at https://example.com{p}", attachments=_att(p)
+        )
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == f"see [image: shot.png] and the mirror at https://example.com{p}"
 
     @pytest.mark.parametrize("tail", [".backup", "x", "/other", "-v2", "_old", "~", "~1"])
-    def test_a_longer_name_that_starts_with_a_picture_path_is_not_that_picture(self, tmp_path, tail):
+    def test_a_longer_name_that_starts_with_an_attached_path_is_not_rewritten(self, tmp_path, tail):
         p = _png(tmp_path)
         text = f"restore {p}{tail} please"
-        blocks = build_prompt_blocks(text)
-        # A longer token names a different file, not the picture at its prefix.
-        assert blocks == [{"type": "text", "text": text}]
 
-    def test_a_sentence_ending_right_after_a_path_still_inlines_it(self, tmp_path):
-        # A period followed by a capital letter is prose, not a longer file name:
-        # extensions are lowercase, sentences start upper.
+        blocks = build_prompt_blocks(text, attachments=_att(p))
+
+        # The longer token names a different file, so it is left as written;
+        # the attached picture still rides, announced on its own line.
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"{text}\n[image: shot.png]"
+
+    def test_a_sentence_glued_to_an_attached_path_leaves_the_text_as_written(self, tmp_path):
+        # `.Then` glued to the path is not the attachment standing delimited:
+        # the text stays as the user wrote it and the marker is appended, so
+        # the picture is attached either way and no prose is rewritten.
         p = _png(tmp_path)
+        text = f"see {p}.Then we moved on"
 
-        blocks = build_prompt_blocks(f"see {p}.Then we moved on")
+        blocks = build_prompt_blocks(text, attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text", "image"]
-        assert blocks[0]["text"] == "see [image: shot.png].Then we moved on"
+        assert blocks[0]["text"] == f"{text}\n[image: shot.png]"
 
-    @pytest.mark.parametrize("suffix", ["版本", "-old"], ids=["cjk", "ascii"])
+    @pytest.mark.parametrize("suffix", ["版本", "-old", "📁", "Ａ"], ids=["cjk", "ascii", "emoji", "fullwidth"])
     def test_a_non_image_file_inside_a_directory_named_like_a_picture_attaches_nothing(
         self, tmp_path, suffix
     ):
         _png(tmp_path, "a.png")
         directory = tmp_path / f"a.png{suffix}"
         directory.mkdir()
-        (directory / "final.txt").write_text("not an image", encoding="utf-8")
-        message = f"open {tmp_path}/a.png{suffix}/final.txt"
+        final = directory / "final.txt"
+        final.write_text("not an image", encoding="utf-8")
+        message = f"open {final}"
 
+        # Named in the text only: nothing is read. Listed: the bytes are not a
+        # raster, so it stays text, with no note (the notes speak about images).
         assert build_prompt_blocks(message) == [{"type": "text", "text": message}]
+        assert build_prompt_blocks(message, attachments=_att(final)) == [
+            {"type": "text", "text": message}
+        ]
 
-    @pytest.mark.parametrize("glued", ["📁", "Ａ"])
-    def test_a_symbol_in_a_directory_named_like_a_picture_still_hides_nothing(
-        self, tmp_path, glued
-    ):
-        _png(tmp_path, "a.png")
-        directory = tmp_path / f"a.png{glued}"
-        directory.mkdir()
-        (directory / "final.txt").write_text("not an image", encoding="utf-8")
-        message = f"open {tmp_path}/a.png{glued}/final.txt"
-
-        assert build_prompt_blocks(message) == [{"type": "text", "text": message}]
-
-    def test_a_fullwidth_comma_still_separates_two_pictures(self, tmp_path):
-        a = _distinct_png(tmp_path, "a.png", 1)
-        b = _distinct_png(tmp_path, "b.png", 2)
-
-        blocks = build_prompt_blocks(f"看 {a}，{b}")
-
-        assert [block["type"] for block in blocks] == ["text", "image", "image"]
-        assert blocks[0]["text"] == "看 [image: a.png]，[image: b.png]"
-
-    def test_two_paths_glued_by_cjk_text_inline_nothing(self, tmp_path):
-        # The glued spelling is one token that names no file: nothing is
-        # attached and nothing rewritten; a space or fullwidth comma keeps two.
-        a = _distinct_png(tmp_path, "a.png", 1)
-        b = _distinct_png(tmp_path, "b.png", 2)
-        text = f"看 {a}和{b}"
-
-        assert build_prompt_blocks(text) == [{"type": "text", "text": text}]
-
-    @pytest.mark.parametrize("glue", ["\U0001F4C1", "\\"])
-    def test_two_paths_glued_by_a_symbol_inline_nothing(self, tmp_path, glue):
-        # A symbol is neither a path character nor punctuation: no path may
-        # start after it, so the pair is one token naming no file -- never the
-        # second picture alone with the first dropped silently.
+    @pytest.mark.parametrize(
+        "glue",
+        ["，", "和", "\U0001F4C1", "\\", ","],
+        ids=["fullwidth-comma", "cjk", "emoji", "backslash", "comma"],
+    )
+    def test_two_attached_pictures_glued_in_the_text_are_both_attached(self, tmp_path, glue):
+        # The glued spelling is one token that names neither picture, so the
+        # text stays as written; the list still carries both, each announced
+        # on its own line -- never the second picture alone with the first
+        # dropped silently.
         a = _distinct_png(tmp_path, "a.png", 1)
         b = _distinct_png(tmp_path, "b.png", 2)
         text = f"look {a}{glue}{b}"
 
-        assert build_prompt_blocks(text) == [{"type": "text", "text": text}]
+        blocks = build_prompt_blocks(text, attachments=_att(a, b))
+
+        assert [block["type"] for block in blocks] == ["text", "image", "image"]
+        assert blocks[0]["text"] == f"{text}\n[image: a.png]\n[image: b.png]"
+
+    @pytest.mark.parametrize(
+        ("template", "in_place"),
+        [
+            ("({a})({b})", True),
+            ("'{a}' '{b}'", True),
+            ("{a}\n{b}", True),
+            ("{a}\u2014{b}", False),
+            ("{a}\u2013{b}", False),
+            ("{a}\u2192{b}", False),
+            ("{a}\u2022{b}", False),
+            ("{a}\u30fb{b}", False),
+        ],
+    )
+    def test_two_pictures_separated_by_punctuation_are_two_pictures(self, tmp_path, template, in_place):
+        # Both ride from the list whatever stands between them. The marker
+        # replaces a path only where it stands delimited (a parenthesis, a
+        # quote, whitespace); glued to a dash, an arrow or a bullet the path is
+        # left as written and the marker is appended.
+        a = _distinct_png(tmp_path, "a.png", 1)
+        b = _distinct_png(tmp_path, "b.png", 2)
+        text = template.format(a=a, b=b)
+
+        blocks = build_prompt_blocks(text, attachments=_att(a, b))
+
+        assert [block["type"] for block in blocks] == ["text", "image", "image"]
+        if in_place:
+            assert blocks[0]["text"] == template.format(a="[image: a.png]", b="[image: b.png]")
+        else:
+            assert blocks[0]["text"] == f"{text}\n[image: a.png]\n[image: b.png]"
 
     def test_a_web_image_after_a_picture_is_left_as_a_url(self, tmp_path):
         a = _distinct_png(tmp_path, "a.png", 1)
 
-        blocks = build_prompt_blocks(f"see {a} and the banner is at https://example.com/logo.png")
+        blocks = build_prompt_blocks(
+            f"see {a} and the banner is at https://example.com/logo.png", attachments=_att(a)
+        )
 
         assert [block["type"] for block in blocks] == ["text", "image"]
         assert blocks[0]["text"] == "see [image: a.png] and the banner is at https://example.com/logo.png"
 
-    def test_a_long_message_of_path_fragments_scans_in_linear_time(self):
-        # Space is both a delimiter and a legal path character, so every "/" here
-        # opens a path body that would walk to the suffix: the bounded body is
-        # what keeps this linear.
+    def test_a_long_message_of_path_fragments_is_handled_in_bounded_work(self, tmp_path):
+        # Nothing in the text is read as a path, and the one attachment's
+        # spans are found with each character read a bounded number of times:
+        # the work is counted, not timed.
+        p = _png(tmp_path)
         text = (" /a" * 20000) + ".png~"
 
-        started = time.perf_counter()
-        blocks = build_prompt_blocks(text)
-        elapsed = time.perf_counter() - started
+        alone = build_prompt_blocks(text)
+        counted = CountingText(text)
+        with_picture = build_prompt_blocks(counted, attachments=_att(p))
 
-        assert blocks == [{"type": "text", "text": text}]
-        assert elapsed < 5.0, f"image-path scan took {elapsed:.3f}s"
+        assert alone == [{"type": "text", "text": text}]
+        assert [b["type"] for b in with_picture] == ["text", "image"]
+        assert with_picture[0]["text"] == f"{text}\n[image: shot.png]"
+        assert counted.visits > 0, "the builder never read the text -- the counter is not wired"
+        assert counted.visits <= 20 * len(text), (
+            f"the builder read {counted.visits / len(text):.0f} characters per character of text"
+        )
 
-    def test_a_path_component_after_an_image_suffix_belongs_to_the_longer_path(self, tmp_path):
+    def test_a_picture_inside_a_directory_named_like_a_picture_is_marked_whole(self, tmp_path):
         _png(tmp_path, "a.png")
         directory = tmp_path / "a.png版本"
         directory.mkdir()
@@ -305,7 +356,7 @@ class TestOnePromptImageRules:
         image = _image_bytes("JPEG")
         p.write_bytes(image)
 
-        blocks = build_prompt_blocks(f"see {tmp_path}/a.png版本/final.jpg")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == "see [image: final.jpg]"
@@ -317,59 +368,55 @@ class TestOnePromptImageRules:
         image = _image_bytes("JPEG")
         p.write_bytes(image)
 
-        blocks = build_prompt_blocks(str(p))
+        blocks = build_prompt_blocks(str(p), attachments=_att(p))
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == "[image: a.png.jpg]"
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert base64.b64decode(blocks[1]["data"]) == image
 
-    @pytest.mark.parametrize(
-        "template",
-        [
-            "{a},{b}",
-            "({a})({b})",
-            "{a}\u2014{b}",
-            "{a}\u2013{b}",
-            "{a}\u2192{b}",
-            "{a}\u2022{b}",
-            "{a}\u30fb{b}",
-        ],
-    )
-    def test_two_paths_glued_by_punctuation_are_two_pictures(self, tmp_path, template):
-        # ASCII or Unicode punctuation (a dash, an arrow, a bullet) between two
-        # paths ends the first token, and the second may start right after it.
-        a = _distinct_png(tmp_path, "a.png", 1)
-        b = _distinct_png(tmp_path, "b.png", 2)
-
-        blocks = build_prompt_blocks(template.format(a=a, b=b))
-
-        assert [block["type"] for block in blocks] == ["text", "image", "image"]
-        assert blocks[0]["text"] == template.format(a="[image: a.png]", b="[image: b.png]")
-
-    def test_a_backup_of_a_nested_picture_is_not_a_picture(self, tmp_path):
+    def test_a_backup_of_a_nested_picture_is_not_rewritten(self, tmp_path):
         directory = tmp_path / "a.png"
         directory.mkdir()
         p = _png(directory, "b.png")
         text = f"{p}~"
 
-        assert build_prompt_blocks(text) == [{"type": "text", "text": text}]
+        blocks = build_prompt_blocks(text, attachments=_att(p))
+
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"{text}\n[image: b.png]"
 
     def test_a_longer_name_before_the_real_path_does_not_hide_it(self, tmp_path):
         p = _png(tmp_path)
         text = f"diff {p}.orig against {p}"
-        blocks = build_prompt_blocks(text)
+        blocks = build_prompt_blocks(text, attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == f"diff {p}.orig against [image: shot.png]"
-        assert [m.group(1) for m in prompt_blocks._PATH_RE.finditer(text)] == [str(p)]
+        # The scrubber's grammar agrees on which token is the picture.
+        assert [m.group(1) for m in image_refs._PATH_RE.finditer(text)] == [str(p)]
 
-    @pytest.mark.parametrize("wrap", ["{p}.", "({p})", "{p},", "'{p}'", "{p}\n", "看 {p}这个图"])
-    def test_punctuation_after_a_path_still_inlines_it(self, tmp_path, wrap):
+    @pytest.mark.parametrize(
+        ("wrap", "in_place"),
+        [
+            ("({p})", True),
+            ("'{p}'", True),
+            ("{p}\n", True),
+            ("{p}.", False),
+            ("{p},", False),
+            ("看 {p}这个图", False),
+        ],
+    )
+    def test_punctuation_after_an_attached_path_marks_it_where_it_stands_delimited(
+        self, tmp_path, wrap, in_place
+    ):
         p = _png(tmp_path)
         text = wrap.format(p=p)
-        blocks = build_prompt_blocks(text)
+        blocks = build_prompt_blocks(text, attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
-        assert blocks[0]["text"] == wrap.format(p="[image: shot.png]")
+        if in_place:
+            assert blocks[0]["text"] == wrap.format(p="[image: shot.png]")
+        else:
+            assert blocks[0]["text"] == f"{text}\n[image: shot.png]"
 
     def test_distinct_files_sharing_a_basename_get_distinct_markers(self, tmp_path):
         (tmp_path / "a").mkdir()
@@ -378,31 +425,67 @@ class TestOnePromptImageRules:
         second = tmp_path / "b" / "shot.png"
         first.write_bytes(_image_bytes(size=(1, 1)))
         second.write_bytes(_image_bytes(size=(2, 1)))
-        blocks = build_prompt_blocks(f"{first} vs {second}")
+        blocks = build_prompt_blocks(f"{first} vs {second}", attachments=_att(first, second))
         assert [b["type"] for b in blocks] == ["text", "image", "image"]
         assert blocks[0]["text"] == "[image: shot.png] vs [image: shot.png (2)]"
+
+    def test_distinct_files_sharing_a_sender_name_get_distinct_markers(self, tmp_path):
+        # The marker carries the SENDER'S name when the channel supplied one,
+        # so two different pictures uploaded under one name are told apart.
+        first = tmp_path / "x1.png"
+        second = tmp_path / "x2.png"
+        first.write_bytes(_image_bytes(size=(1, 1)))
+        second.write_bytes(_image_bytes(size=(2, 1)))
+        attachments = [
+            PromptAttachment(path=str(first), name="photo.png"),
+            PromptAttachment(path=str(second), name="photo.png"),
+        ]
+        blocks = build_prompt_blocks(f"{first} {second}", attachments=attachments)
+        assert blocks[0]["text"] == "[image: photo.png] [image: photo.png (2)]"
 
     def test_identical_bytes_under_two_paths_are_one_block(self, tmp_path):
         a = _png(tmp_path, "a.png")
         b = _png(tmp_path, "b.png")  # same bytes, another name
-        blocks = build_prompt_blocks(f"{a} then {b}")
+        blocks = build_prompt_blocks(f"{a} then {b}", attachments=_att(a, b))
         assert [x["type"] for x in blocks] == ["text", "image"]
         # Both places point at the one picture that was sent.
         assert blocks[0]["text"] == "[image: a.png] then [image: a.png]"
 
-    def test_prompt_block_cap_leaves_the_rest_as_paths(self, tmp_path, caplog):
+    @pytest.mark.parametrize("named", ["neither", "first", "second"])
+    def test_identical_bytes_under_two_paths_are_announced_once(self, tmp_path, named):
+        # One block, one marker: the model was handed one picture, so the text
+        # says so once, whichever of the two paths the text names.
+        a = _png(tmp_path, "a.png")
+        b = _png(tmp_path, "b.png")
+        text = {"neither": "caption", "first": f"see {a}", "second": f"see {b}"}[named]
+
+        blocks = build_prompt_blocks(text, attachments=_att(a, b))
+
+        assert [x["type"] for x in blocks] == ["text", "image"]
+        assert blocks[0]["text"].count("[image: a.png]") == 1
+        assert blocks[0]["text"] == {
+            "neither": "caption\n[image: a.png]",
+            "first": "see [image: a.png]",
+            "second": "see [image: a.png]",
+        }[named]
+
+    def test_prompt_block_cap_leaves_the_rest_as_text_that_says_so(self, tmp_path, caplog):
         paths = []
         for i in range(3):
             p = tmp_path / f"p{i}.png"
             p.write_bytes(_image_bytes(size=(i + 1, 1)))
             paths.append(p)
-        # Path-shaped tokens naming no file are plain text, past the cap or not:
-        # no note, no tally. Only a real picture that was dropped is counted.
+        # Listed entries naming no file are skipped without a word, past the
+        # cap or not: no note, no tally. Only a real picture that was dropped
+        # is counted.
         nowhere = "C:\\nowhere" if os.name == "nt" else "/nowhere"
-        shaped = " ".join(f"{nowhere}{os.sep}n{i}.png" for i in range(50))
+        missing = [f"{nowhere}{os.sep}n{i}.png" for i in range(50)]
+        shaped = " ".join(missing)
         with caplog.at_level("WARNING", logger="kiro_crew.acp.prompt_blocks"):
             blocks = build_prompt_blocks(
-                " ".join(map(str, paths)) + " " + shaped, max_prompt_image_blocks=2
+                " ".join(map(str, paths)) + " " + shaped,
+                attachments=_att(*paths, *missing),
+                max_prompt_image_blocks=2,
             )
         assert [b["type"] for b in blocks] == ["text", "image", "image"]
         # The third stays a usable path and says so, like a picture over the
@@ -414,6 +497,17 @@ class TestOnePromptImageRules:
         assert len(over_cap) == 1
         assert "1 image" in over_cap[0].getMessage()
 
+    def test_a_kept_out_picture_the_text_never_names_is_announced_on_its_own_line(self, tmp_path):
+        a = _distinct_png(tmp_path, "a.png", 1)
+        b = _distinct_png(tmp_path, "b.png", 2)
+
+        blocks = build_prompt_blocks(
+            "two pictures", attachments=_att(a, b), max_prompt_image_blocks=1
+        )
+
+        assert [x["type"] for x in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"two pictures\n[image: a.png]\nb.png {PROMPT_LIMIT_NOTE}"
+
     def test_a_full_prompt_decodes_no_further_pictures(self, tmp_path, monkeypatch):
         a = _distinct_png(tmp_path, "a.png", 1)
         b = _distinct_png(tmp_path, "b.png", 2)
@@ -424,7 +518,7 @@ class TestOnePromptImageRules:
             "downscale_image_block",
             lambda data, *args, **kwargs: (decoded.append(data), real(data, *args, **kwargs))[1],
         )
-        build_prompt_blocks(f"{a} {b}", max_prompt_image_blocks=1)
+        build_prompt_blocks(f"{a} {b}", attachments=_att(a, b), max_prompt_image_blocks=1)
         assert decoded == [a.read_bytes()], "the second picture is past the cap before any decode"
 
     def test_a_duplicate_past_the_block_cap_maps_to_its_block(self, tmp_path):
@@ -433,34 +527,30 @@ class TestOnePromptImageRules:
         a = _png(tmp_path, "a.png")
         copy = _png(tmp_path, "copy.png")
 
-        blocks = build_prompt_blocks(f"{a} {copy}", max_prompt_image_blocks=1)
+        blocks = build_prompt_blocks(f"{a} {copy}", attachments=_att(a, copy), max_prompt_image_blocks=1)
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == "[image: a.png] [image: a.png]"
 
-    def test_prompt_byte_cap_leaves_the_rest_as_paths(self, tmp_path):
+    def test_prompt_byte_cap_leaves_the_rest_as_text_that_says_so(self, tmp_path):
         a = tmp_path / "a.png"
         b = tmp_path / "b.png"
         a.write_bytes(_image_bytes(size=(1, 1)))
         b.write_bytes(_image_bytes(size=(2, 1)))
-        one = len(build_prompt_blocks(str(a))[1]["data"])
-        blocks = build_prompt_blocks(f"{a} {b}", max_prompt_image_b64_bytes=one)
+        one = len(build_prompt_blocks(str(a), attachments=_att(a))[1]["data"])
+        blocks = build_prompt_blocks(f"{a} {b}", attachments=_att(a, b), max_prompt_image_b64_bytes=one)
         assert [x["type"] for x in blocks] == ["text", "image"]
         assert blocks[0]["text"] == f"[image: a.png] {b} {PROMPT_LIMIT_NOTE}"
         # The cap is inclusive: exactly at the cap still fits.
-        both = len(build_prompt_blocks(f"{a} {b}")[1]["data"]) + len(
-            build_prompt_blocks(f"{a} {b}")[2]["data"]
-        )
-        assert [x["type"] for x in build_prompt_blocks(f"{a} {b}", max_prompt_image_b64_bytes=both)] == [
-            "text",
-            "image",
-            "image",
-        ]
+        both_blocks = build_prompt_blocks(f"{a} {b}", attachments=_att(a, b))
+        both = len(both_blocks[1]["data"]) + len(both_blocks[2]["data"])
+        at_cap = build_prompt_blocks(f"{a} {b}", attachments=_att(a, b), max_prompt_image_b64_bytes=both)
+        assert [x["type"] for x in at_cap] == ["text", "image", "image"]
 
     def test_a_picture_over_the_per_image_cap_says_so(self, tmp_path):
         p = _png(tmp_path)
 
-        blocks = build_prompt_blocks(f"see {p} now", max_image_bytes=10)
+        blocks = build_prompt_blocks(f"see {p} now", attachments=_att(p), max_image_bytes=10)
 
         assert blocks == [{"type": "text", "text": f"see {p} {IMAGE_SIZE_NOTE} now"}]
 
@@ -469,18 +559,34 @@ class TestOnePromptImageRules:
         # reference instead, so the markdown still renders and still says so.
         p = _png(tmp_path)
 
-        blocks = build_prompt_blocks(f"see ![shot]({p}) now", max_image_bytes=10)
+        blocks = build_prompt_blocks(f"see ![shot]({p}) now", attachments=_att(p), max_image_bytes=10)
 
         assert blocks == [{"type": "text", "text": f"see ![shot]({p}) {IMAGE_SIZE_NOTE} now"}]
 
-    @pytest.mark.parametrize("template", ["![shot](<{p}>)", '![shot]({p} "the shot")'])
-    def test_the_note_follows_the_other_markdown_destination_forms_too(self, tmp_path, template):
+    def test_the_note_follows_the_other_markdown_destination_forms_too(self, tmp_path):
+        # The composer wraps a destination holding a space in `<...>`; a title
+        # may follow a bare one. Both are the picture's own spelling standing
+        # in a destination, so the note lands after the closing parenthesis.
+        spaced = _png(tmp_path, "my shot.png")
+        titled = _png(tmp_path, "shot.png")
+        wrapped = f"![shot]({prompt_attachments.markdown_image_dest(str(spaced))})"
+        assert wrapped.startswith("![shot](<")
+        with_title = f'![shot]({titled} "the shot")'
+
+        for reference, p in ((wrapped, spaced), (with_title, titled)):
+            blocks = build_prompt_blocks(f"see {reference} now", attachments=_att(p), max_image_bytes=10)
+            assert blocks == [{"type": "text", "text": f"see {reference} {IMAGE_SIZE_NOTE} now"}]
+
+    def test_a_hand_wrapped_plain_destination_is_a_mention(self, tmp_path):
+        # The composer never wraps a plain path, so `<...>` around one is not a
+        # spelling the channel writes: the text stays as typed and the kept-out
+        # picture is announced on its own line instead.
         p = _png(tmp_path)
-        reference = template.format(p=p)
+        text = f"see ![shot](<{p}>) now"
 
-        blocks = build_prompt_blocks(f"see {reference} now", max_image_bytes=10)
+        blocks = build_prompt_blocks(text, attachments=_att(p), max_image_bytes=10)
 
-        assert blocks == [{"type": "text", "text": f"see {reference} {IMAGE_SIZE_NOTE} now"}]
+        assert blocks == [{"type": "text", "text": f"{text}\nshot.png {IMAGE_SIZE_NOTE}"}]
 
     def test_a_typed_marker_is_escaped_even_without_image_support(self):
         # A backend that takes no images still reads the text, so a typed marker
@@ -499,11 +605,13 @@ class TestOnePromptImageRules:
         fake = tmp_path / "fake.png"
         fake.write_bytes(b"not a picture at all, just words\n" * 4)
 
-        over_size = build_prompt_blocks(f"see {fake} now", max_image_bytes=10)
+        over_size = build_prompt_blocks(f"see {fake} now", attachments=_att(fake), max_image_bytes=10)
         assert over_size == [{"type": "text", "text": f"see {fake} now"}]
 
         with caplog.at_level("WARNING", logger="kiro_crew.acp.prompt_blocks"):
-            past_cap = build_prompt_blocks(f"{a} {fake}", max_prompt_image_blocks=1)
+            past_cap = build_prompt_blocks(
+                f"{a} {fake}", attachments=_att(a, fake), max_prompt_image_blocks=1
+            )
         assert past_cap[0]["text"] == f"[image: a.png] {fake}"
         assert not [r for r in caplog.records if "limit of 1 blocks" in r.getMessage()]
 
@@ -512,7 +620,9 @@ class TestOnePromptImageRules:
         # model cannot be told a picture is attached when none is.
         p = _png(tmp_path)
 
-        blocks = build_prompt_blocks(f"see [image: shot.png] and {p} but [image gallery]")
+        blocks = build_prompt_blocks(
+            f"see [image: shot.png] and {p} but [image gallery]", attachments=_att(p)
+        )
 
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert blocks[0]["text"] == (
@@ -528,6 +638,102 @@ class TestOnePromptImageRules:
             {"type": "text", "text": "\\[Image: x.png] then [image not carried into this context]"}
         ]
 
+    def test_an_attachment_whose_spellings_sit_inside_another_still_gets_its_marker(self, tmp_path):
+        # `/tmp/a.png` is a prefix of the attached `/tmp/a.png b.png`, so its
+        # only span lies inside the longer picture's and is dropped by the
+        # rewrite; the picture still rides, so it is announced on its own line
+        # instead of silently losing its marker.
+        short = _distinct_png(tmp_path, "a.png", 1)
+        long = tmp_path / "a.png b.png"
+        long.write_bytes(_image_bytes(size=(2, 1)))
+
+        blocks = build_prompt_blocks(f"see {long}", attachments=_att(short, long))
+
+        assert [b["type"] for b in blocks] == ["text", "image", "image"]
+        assert blocks[0]["text"] == "see [image: a.png b.png]\n[image: a.png]"
+
+    def test_a_sender_name_cannot_forge_a_second_marker(self, tmp_path):
+        # The name is sender-supplied text written inside marker syntax: a
+        # bracket in it must not close the marker early and open another, and
+        # a backslash it already carries must not pair with the escape.
+        p = _distinct_png(tmp_path, "one.png", 1)
+        forged = [PromptAttachment(path=str(p), name="one] [image: forged.png")]
+        pre_escaped = [PromptAttachment(path=str(p), name="one\\] \\[image: forged.png")]
+
+        for attachments, expected in (
+            (forged, "caption\n[image: one\\] \\[image: forged.png]"),
+            (pre_escaped, "caption\n[image: one\\\\\\] \\\\\\[image: forged.png]"),
+        ):
+            blocks = build_prompt_blocks("caption", attachments=attachments)
+            assert [b["type"] for b in blocks] == ["text", "image"]
+            marker = blocks[0]["text"].split("\n", 1)[1]
+            # A live bracket is one behind an even run of backslashes.
+            assert len(re.findall(r"(?<!\\)(?:\\\\)*\[image:", marker)) == 1
+            assert len(re.findall(r"(?<!\\)(?:\\\\)*\]", marker)) == 1
+            assert blocks[0]["text"] == expected
+
+    def test_a_shorter_attachment_never_rewrites_a_longer_attachment_it_prefixes(self, tmp_path):
+        # `/tmp/a.png` is a prefix of the listed `/tmp/a.png b.png` and the space
+        # is a delimiter, so the short marker could land inside the long path.
+        # The long path keeps its text whether it is unreadable (nothing to
+        # mark) or a picture a cap kept out (a note follows it): it is the only
+        # reference the model has to that file. The short picture still rides,
+        # announced on its own line.
+        short = _distinct_png(tmp_path, "a.png", 1)
+        missing = tmp_path / "a.png b.png"
+        kept_out = tmp_path / "a.png c.png"
+        kept_out.write_bytes(_image_bytes(size=(2, 1)))
+
+        blocks = build_prompt_blocks(f"see {missing}", attachments=_att(short, missing))
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"see {missing}\n[image: a.png]"
+
+        blocks = build_prompt_blocks(
+            f"see {kept_out}", attachments=_att(short, kept_out), max_prompt_image_blocks=1
+        )
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"see {kept_out} {PROMPT_LIMIT_NOTE}\n[image: a.png]"
+
+    def test_marker_shaped_text_inside_a_listed_path_is_left_as_written(self, tmp_path):
+        # A listed path whose spelling holds `[image:` is a file reference, not
+        # a typed marker: escaping inside it would corrupt the only reference
+        # the model has to a picture that stayed text (unreadable, or kept out
+        # by a cap). Marker-shaped prose outside the path is still escaped.
+        missing = tmp_path / "x[image:typed].png"
+        kept_out = tmp_path / "y[image: kept].png"
+        kept_out.write_bytes(_image_bytes(size=(2, 1)))
+        a = _distinct_png(tmp_path, "a.png", 1)
+
+        blocks = build_prompt_blocks(f"[image: fake] open {missing}", attachments=_att(missing))
+        assert blocks == [{"type": "text", "text": f"\\[image: fake] open {missing}"}]
+
+        blocks = build_prompt_blocks(
+            f"open {kept_out} and {a}", attachments=_att(a, kept_out), max_prompt_image_blocks=1
+        )
+        assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == f"open {kept_out} {PROMPT_LIMIT_NOTE} and [image: a.png]"
+
+    def test_marker_labels_are_unique_across_the_prompt(self, tmp_path):
+        # A sender-chosen name that already reads `photo (2)` must not collide
+        # with the label the second distinct `photo` would otherwise get.
+        paths = []
+        for i, name in enumerate(("p1.png", "p2.png", "p3.png")):
+            p = tmp_path / name
+            p.write_bytes(_image_bytes(size=(i + 1, 1)))
+            paths.append(p)
+        attachments = [
+            PromptAttachment(path=str(paths[0]), name="photo (2)"),
+            PromptAttachment(path=str(paths[1]), name="photo"),
+            PromptAttachment(path=str(paths[2]), name="photo"),
+        ]
+
+        blocks = build_prompt_blocks("caption", attachments=attachments)
+
+        assert [b["type"] for b in blocks] == ["text", "image", "image", "image"]
+        labels = blocks[0]["text"].split("\n")[1:]
+        assert labels == ["[image: photo (2)]", "[image: photo]", "[image: photo (3)]"]
+        assert len(set(labels)) == 3
+
     def test_default_prompt_caps(self):
         assert MAX_PROMPT_IMAGE_BLOCKS == 20
         assert MAX_PROMPT_IMAGE_B64_BYTES == 12 * 1024 * 1024
@@ -538,7 +744,7 @@ class TestMediaTypeFromContent:
         p = tmp_path / "actually-a-jpeg.png"
         p.write_bytes(_image_bytes("JPEG"))
 
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [block["type"] for block in blocks] == ["text", "image"]
         assert blocks[1]["mimeType"] == "image/jpeg"
@@ -555,7 +761,7 @@ class TestMediaTypeFromContent:
         p = tmp_path / name
         p.write_bytes(raw)
 
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [block["type"] for block in blocks] == ["text"]
         assert str(p) in blocks[0]["text"]
@@ -564,7 +770,7 @@ class TestMediaTypeFromContent:
         p = tmp_path / "audio.webp"
         p.write_bytes(b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"fmt ")
 
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert [block["type"] for block in blocks] == ["text"]
 
@@ -574,7 +780,7 @@ class TestMediaTypeFromContent:
         p.write_bytes(original)
         monkeypatch.setattr(imaging, "_pil", lambda: None)
 
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert base64.b64decode(blocks[1]["data"]) == original
@@ -583,7 +789,7 @@ class TestMediaTypeFromContent:
         p = tmp_path / "big.png"
         p.write_bytes(_image_bytes("JPEG", (MAX_IMAGE_EDGE_PX + 40, 10)))
 
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
 
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert base64.b64decode(blocks[1]["data"]).startswith(b"\xff\xd8\xff")
@@ -593,7 +799,7 @@ class TestMediaTypeFromContent:
         original = _image_bytes("JPEG")
         p.write_bytes(original)
 
-        blocks = build_prompt_blocks(f"see {p}", max_image_edge=0)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_edge=0)
 
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert base64.b64decode(blocks[1]["data"]) == original
@@ -604,15 +810,16 @@ class TestSensitivePathGate:
 
     The gate itself (``hooks.safe_read_file_bytes``: realpath canonicalization,
     ``is_sensitive_path``, ``O_NOFOLLOW``) has its own tests. What matters here
-    is that this builder ROUTES through it and honours a refusal -- paths
-    reaching it are scraped from message text and so are user-influenced.
+    is that this builder ROUTES through it and honours a refusal -- the paths
+    reaching it come from the channel's attachment list, which for the dashboard
+    is client-supplied JSON and so user-influenced.
     """
 
     def test_refused_read_is_not_inlined(self, tmp_path, monkeypatch):
         p = _png(tmp_path)
-        monkeypatch.setattr(prompt_blocks, "safe_read_file_bytes", lambda raw: None)
+        monkeypatch.setattr(prompt_attachments, "safe_read_file_bytes", lambda raw: None)
 
-        blocks = build_prompt_blocks(f"look at {p}")
+        blocks = build_prompt_blocks(f"look at {p}", attachments=_att(p))
 
         # No image block -- and the path STAYS in the text rather than being
         # silently deleted, so a tool-capable agent can still choose to open it.
@@ -627,8 +834,8 @@ class TestSensitivePathGate:
             seen.append(raw)
             return _PNG
 
-        monkeypatch.setattr(prompt_blocks, "safe_read_file_bytes", _spy)
-        build_prompt_blocks(f"look at {p}")
+        monkeypatch.setattr(prompt_attachments, "safe_read_file_bytes", _spy)
+        build_prompt_blocks(f"look at {p}", attachments=_att(p))
         assert seen == [str(p)]
 
     def test_encoded_bytes_come_from_the_gate(self, tmp_path, monkeypatch):
@@ -642,9 +849,9 @@ class TestSensitivePathGate:
         pil.new("RGB", (2, 2), (1, 2, 3)).save(buf, format="PNG")
         gate_bytes = buf.getvalue()
         assert gate_bytes != p.read_bytes()
-        monkeypatch.setattr(prompt_blocks, "safe_read_file_bytes", lambda raw: gate_bytes)
+        monkeypatch.setattr(prompt_attachments, "safe_read_file_bytes", lambda raw: gate_bytes)
 
-        blocks = build_prompt_blocks(f"look at {p}")
+        blocks = build_prompt_blocks(f"look at {p}", attachments=_att(p))
 
         assert base64.b64decode(blocks[1]["data"]) == gate_bytes
 
@@ -653,7 +860,7 @@ class TestPlatformPathGrammar:
     """The path grammar is host-specific on purpose."""
 
     def test_posix_pattern_matches_posix_paths(self):
-        assert prompt_blocks._POSIX_PATH_RE.search("/tmp/a.png") is not None
+        assert image_refs._POSIX_PATH_RE.search("/tmp/a.png") is not None
 
     def test_posix_pattern_ignores_windows_shapes(self):
         r"""Prose like ``C:\shots\logo.png`` must NOT be a candidate on POSIX.
@@ -663,8 +870,8 @@ class TestPlatformPathGrammar:
         file with that literal name can exist in the CWD, which would inline
         something the user only talked about.
         """
-        assert prompt_blocks._POSIX_PATH_RE.search(r"C:\shots\logo.png") is None
-        assert prompt_blocks._POSIX_PATH_RE.search(r"\\host\share\logo.png") is None
+        assert image_refs._POSIX_PATH_RE.search(r"C:\shots\logo.png") is None
+        assert image_refs._POSIX_PATH_RE.search(r"\\host\share\logo.png") is None
 
     @pytest.mark.parametrize(
         "text",
@@ -690,7 +897,7 @@ class TestPlatformPathGrammar:
         are the 8.3 short-name temp directory a CI runner (and a long-named
         local user) actually gets.
         """
-        assert prompt_blocks._WINDOWS_PATH_RE.search(text) is not None
+        assert image_refs._WINDOWS_PATH_RE.search(text) is not None
 
     def test_windows_pattern_extracts_dashboard_unc_image_markdown(self):
         """A UNC upload serialized by the dashboard must yield the usable path.
@@ -701,17 +908,17 @@ class TestPlatformPathGrammar:
         span, or the agent silently receives no image block.
         """
         text = "![image](//fileserver/home/me/.kiro/crew/uploads/shot.png)"
-        m = prompt_blocks._WINDOWS_PATH_RE.search(text)
+        m = image_refs._WINDOWS_PATH_RE.search(text)
         assert m is not None
         assert m.group(1) == "//fileserver/home/me/.kiro/crew/uploads/shot.png"
 
     def test_windows_pattern_ignores_urls(self):
         """``//`` acceptance must not make ``https://host/x.png`` a candidate."""
-        assert prompt_blocks._WINDOWS_PATH_RE.search("see https://example.com/docs/logo.png") is None
-        assert prompt_blocks._WINDOWS_PATH_RE.search("see http://host/a.png here") is None
+        assert image_refs._WINDOWS_PATH_RE.search("see https://example.com/docs/logo.png") is None
+        assert image_refs._WINDOWS_PATH_RE.search("see http://host/a.png here") is None
 
     def test_windows_pattern_requires_an_absolute_path(self):
-        assert prompt_blocks._WINDOWS_PATH_RE.search(r"shots\logo.png") is None
+        assert image_refs._WINDOWS_PATH_RE.search(r"shots\logo.png") is None
 
     def test_no_token_break_is_a_path_character(self):
         # A non-ASCII character that both ends a token and may sit inside a path
@@ -741,10 +948,10 @@ class TestPlatformPathGrammar:
         # The drive colon is not a token break here: a second absolute path
         # glued on by prose stays inside the first path's token, as the POSIX
         # grammar reads the same spelling, so neither host attaches a picture.
-        assert [m.group(1) for m in prompt_blocks._WINDOWS_PATH_RE.finditer(text)] == [text[2:]]
+        assert [m.group(1) for m in image_refs._WINDOWS_PATH_RE.finditer(text)] == [text[2:]]
 
     def test_windows_pattern_sees_a_separator_past_a_glued_drive_prefix(self):
-        assert prompt_blocks._WINDOWS_PATH_RE.search("C:/x/a.png和C:/y/final.txt") is None
+        assert image_refs._WINDOWS_PATH_RE.search("C:/x/a.png和C:/y/final.txt") is None
 
     @pytest.mark.parametrize(
         ("text", "expected"),
@@ -759,7 +966,7 @@ class TestPlatformPathGrammar:
     def test_a_period_before_a_capital_letter_ends_the_path(self, text, expected):
         # Extensions are lowercase and sentences start upper, so `.Then` is
         # prose glued to the path while `.backup` is a longer file name.
-        rx = prompt_blocks._WINDOWS_PATH_RE if text.startswith("see C:") else _POSIX_PATH_RE
+        rx = image_refs._WINDOWS_PATH_RE if text.startswith("see C:") else _POSIX_PATH_RE
         m = rx.search(text)
 
         assert (m.group(1) if m else None) == expected
@@ -779,7 +986,7 @@ class TestPlatformPathGrammar:
         ],
     )
     def test_windows_pattern_takes_only_a_standalone_drive_colon(self, text, expected):
-        assert [m.group(1) for m in prompt_blocks._WINDOWS_PATH_RE.finditer(text)] == expected
+        assert [m.group(1) for m in image_refs._WINDOWS_PATH_RE.finditer(text)] == expected
 
     def test_windows_pattern_lets_a_separated_drive_start_its_own_path(self):
         # Only a drive letter GLUED to the token continues it: after whitespace
@@ -787,7 +994,7 @@ class TestPlatformPathGrammar:
         # a picture yields exactly the picture and the scrubber keeps the prose.
         text = r"C:\docs\readme.txt and D:\tmp\shot.png"
 
-        assert [m.group(1) for m in prompt_blocks._WINDOWS_PATH_RE.finditer(text)] == [
+        assert [m.group(1) for m in image_refs._WINDOWS_PATH_RE.finditer(text)] == [
             r"D:\tmp\shot.png"
         ]
 
@@ -805,32 +1012,32 @@ class TestPlatformPathGrammar:
     def test_windows_pattern_separates_two_paths_glued_by_punctuation(self, glue):
         text = f"look C:/x/a.png{glue}C:/y/b.png"
 
-        assert [m.group(1) for m in prompt_blocks._WINDOWS_PATH_RE.finditer(text)] == [
+        assert [m.group(1) for m in image_refs._WINDOWS_PATH_RE.finditer(text)] == [
             "C:/x/a.png",
             "C:/y/b.png",
         ]
 
     def test_windows_pattern_starts_no_path_after_a_symbol(self):
-        assert prompt_blocks._WINDOWS_PATH_RE.search("look C:/x/a.png\U0001F4C1C:/y/b.png") is None
+        assert image_refs._WINDOWS_PATH_RE.search("look C:/x/a.png\U0001F4C1C:/y/b.png") is None
 
     def test_windows_pattern_reads_a_backslash_glued_pair_as_one_token(self):
         # A backslash is a Windows path character, so the glued spelling is one
         # (nonexistent) path, as a drive colon glued into a token continues it.
         text = r"look C:\x\a.png\C:\y\b.png"
 
-        assert [m.group(1) for m in prompt_blocks._WINDOWS_PATH_RE.finditer(text)] == [text[5:]]
+        assert [m.group(1) for m in image_refs._WINDOWS_PATH_RE.finditer(text)] == [text[5:]]
 
     def test_windows_pattern_bounds_the_unc_host_scan(self):
         # The host segment is a forward scan like any other, so it stops at the
         # shared budget instead of walking an arbitrarily long run.
-        assert prompt_blocks._WINDOWS_PATH_RE.search(f"//{'h' * 512}/share/a.png") is not None
-        assert prompt_blocks._WINDOWS_PATH_RE.search(f"//{'h' * 513}/share/a.png") is None
+        assert image_refs._WINDOWS_PATH_RE.search(f"//{'h' * 512}/share/a.png") is not None
+        assert image_refs._WINDOWS_PATH_RE.search(f"//{'h' * 513}/share/a.png") is None
 
     @pytest.mark.parametrize(
         ("rx", "a", "b"),
         [
             (_POSIX_PATH_RE, "/x/a.png", "/y/b.png"),
-            (prompt_blocks._WINDOWS_PATH_RE, "C:/x/a.png", "C:/y/b.png"),
+            (image_refs._WINDOWS_PATH_RE, "C:/x/a.png", "C:/y/b.png"),
         ],
     )
     def test_masked_code_separates_two_paths_on_both_grammars(self, rx, a, b):
@@ -1129,14 +1336,17 @@ class TestUncProbeGate:
             return real_is_file(self)
 
         monkeypatch.setattr(Path, "is_file", spy)
-        prompt_blocks.build_prompt_blocks(r"look at \\evil\share\x.png please")
+        prompt_blocks.build_prompt_blocks(
+            r"look at \\evil\share\x.png please",
+            attachments=[PromptAttachment(path=r"\\evil\share\x.png")],
+        )
         assert not any("evil" in p for p in probed)
 
     def test_active_pattern_follows_the_host(self):
         expected = (
-            prompt_blocks._WINDOWS_PATH_RE if os.name == "nt" else prompt_blocks._POSIX_PATH_RE
+            image_refs._WINDOWS_PATH_RE if os.name == "nt" else image_refs._POSIX_PATH_RE
         )
-        assert prompt_blocks._PATH_RE is expected
+        assert image_refs._PATH_RE is expected
 
     def test_natively_produced_path_is_inlined_on_this_host(self, tmp_path):
         """End-to-end guard against the gap Windows CI exposed.
@@ -1146,31 +1356,41 @@ class TestUncProbeGate:
         supported, CI-tested platform.
         """
         p = _png(tmp_path, "native.png")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
 
 class TestPathsAdjacentToUrls:
-    r"""A URL in the message must not swallow the appended image path.
+    r"""A URL in the message must not disturb the appended image path.
 
-    ``slack/events.py`` emits ``"<user text>\n<image path>"``. With ``\s`` in the
-    character class (which matches ``\n``) the leading URL chained across the
-    newline into the path, so ``see https://x.com/d\n/tmp/a.png`` matched as the
-    single nonexistent path ``//x.com/d\n/tmp/a.png`` -- meaning ANY Slack
-    message containing a link silently lost its image, and the temp file was
-    then deleted at end of turn.
+    ``slack/events.py`` emits ``"<user text>\n<image path>"``. The path grammar
+    (``kiro_crew.image_refs``, read by the history scrubber) must not let a
+    leading URL chain across the newline into the path: with ``\s`` in its
+    character class, ``see https://x.com/d\n/tmp/a.png`` matched as the single
+    nonexistent path ``//x.com/d\n/tmp/a.png``, and ANY Slack message
+    containing a link silently lost its image. The builder reads no grammar: it
+    rewrites the KNOWN attachment path wherever it sits, so these shapes must
+    all yield the block and the marker regardless of the URL beside them; the
+    grammar's own guards are pinned directly.
     """
 
     def test_url_then_newline_then_path(self, tmp_path):
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see https://example.com/docs\n{p}")
+        blocks = build_prompt_blocks(f"see https://example.com/docs\n{p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == "see https://example.com/docs\n[image: shot.png]"
 
     def test_url_then_space_then_path(self, tmp_path):
-        """Same defect on one line -- the newline-only fix does not cover this."""
+        """Same shape on one line."""
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see https://example.com/docs {p}")
+        blocks = build_prompt_blocks(f"see https://example.com/docs {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
+        assert blocks[0]["text"] == "see https://example.com/docs [image: shot.png]"
+
+    def test_grammar_does_not_chain_a_url_into_the_path(self):
+        """The scrubber's grammar must find the path, not a URL-prefixed span."""
+        assert _POSIX_PATH_RE.findall("see https://example.com/docs\n/tmp/a.png") == ["/tmp/a.png"]
+        assert _POSIX_PATH_RE.findall("see https://example.com/docs /tmp/a.png") == ["/tmp/a.png"]
 
     def test_url_ending_in_an_image_suffix_is_not_a_path(self):
         """A remote URL is not a local file and must not even be a candidate."""
@@ -1179,13 +1399,13 @@ class TestPathsAdjacentToUrls:
     def test_multiple_urls_do_not_break_a_trailing_path(self, tmp_path):
         p = _png(tmp_path)
         text = f"a https://x.com/1 b http://y.com/2/z\n{p}"
-        blocks = build_prompt_blocks(text)
+        blocks = build_prompt_blocks(text, attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_two_images_after_a_url_both_survive(self, tmp_path):
         a = _distinct_png(tmp_path, "a.png", 1)
         b = _distinct_png(tmp_path, "b.png", 2)
-        blocks = build_prompt_blocks(f"ref https://x.com/d\n{a}\n{b}")
+        blocks = build_prompt_blocks(f"ref https://x.com/d\n{a}\n{b}", attachments=_att(a, b))
         assert [x["type"] for x in blocks] == ["text", "image", "image"]
 
     def test_newline_is_not_part_of_a_path(self):
@@ -1196,13 +1416,13 @@ class TestPathsAdjacentToUrls:
     def test_filename_with_spaces_still_matches(self, tmp_path):
         """Horizontal whitespace stays allowed -- this is why `\\s` was used."""
         p = _png(tmp_path, "my shot.png")
-        blocks = build_prompt_blocks(f"look at {p}")
+        blocks = build_prompt_blocks(f"look at {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_path_inside_markdown_image_syntax(self, tmp_path):
         """The dashboard emits `![image](<path>)`."""
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"![image]({p})")
+        blocks = build_prompt_blocks(f"![image]({p})", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
 
@@ -1235,7 +1455,7 @@ class TestImageDownscale:
 
     def test_oversized_image_is_downscaled(self, tmp_path):
         p = _sized_image(tmp_path, 4000, 3000)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         w, h = _decoded_size(blocks[1])
         # Longest edge capped, aspect preserved (4000x3000 -> 2000x1500).
         assert max(w, h) <= MAX_IMAGE_EDGE_PX
@@ -1243,7 +1463,7 @@ class TestImageDownscale:
 
     def test_portrait_image_downscaled_on_its_long_edge(self, tmp_path):
         p = _sized_image(tmp_path, 1000, 4000)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert _decoded_size(blocks[1]) == (500, 2000)
 
     def test_image_within_cap_is_byte_identical(self, tmp_path):
@@ -1251,24 +1471,24 @@ class TestImageDownscale:
         needless re-encode (which would recompress and drift quality)."""
         p = _sized_image(tmp_path, 1600, 1200)
         original = p.read_bytes()
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert base64.b64decode(blocks[1]["data"]) == original
 
     def test_custom_edge_param_is_honoured(self, tmp_path):
         p = _sized_image(tmp_path, 40, 20)
-        blocks = build_prompt_blocks(f"see {p}", max_image_edge=10)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_edge=10)
         assert _decoded_size(blocks[1]) == (10, 5)
 
     def test_edge_zero_disables_downscale(self, tmp_path):
         """The escape hatch: a non-positive cap leaves bytes exactly as-is."""
         p = _sized_image(tmp_path, 4000, 10)
         original = p.read_bytes()
-        blocks = build_prompt_blocks(f"see {p}", max_image_edge=0)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_edge=0)
         assert base64.b64decode(blocks[1]["data"]) == original
 
     def test_oversized_jpeg_keeps_jpeg_mime(self, tmp_path):
         p = _sized_image(tmp_path, 3000, 1000, fmt="JPEG")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
@@ -1288,12 +1508,12 @@ class TestImageDownscale:
             return path
 
         small = _mpo(tmp_path / "portrait.jpg", 800, 600)
-        blocks = build_prompt_blocks(f"see {small}")
+        blocks = build_prompt_blocks(f"see {small}", attachments=_att(small))
         assert blocks[1]["mimeType"] == "image/jpeg"
         assert base64.b64decode(blocks[1]["data"]) == small.read_bytes()
 
         big = _mpo(tmp_path / "wide.jpg", 3000, 1000)
-        blocks = build_prompt_blocks(f"see {big}")
+        blocks = build_prompt_blocks(f"see {big}", attachments=_att(big))
         assert blocks[1]["mimeType"] == "image/jpeg"
         out = base64.b64decode(blocks[1]["data"])
         assert out.startswith(b"\xff\xd8\xff")
@@ -1305,7 +1525,7 @@ class TestImageDownscale:
         """GIF re-encodes to a PNG first frame: the vision model reads frame 0
         only, and palette rescaling is lossy, so a lossless still is faithful."""
         p = _sized_image(tmp_path, 3000, 100, fmt="GIF")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert blocks[1]["mimeType"] == "image/png"
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
@@ -1313,12 +1533,12 @@ class TestImageDownscale:
         # A thin BMP stays under the 10 MB byte gate yet over the edge cap, so
         # the downscale (not the byte gate) is what fires.
         p = _sized_image(tmp_path, 2400, 80, fmt="BMP")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
     def test_oversized_webp_keeps_webp_mime(self, tmp_path):
         p = _sized_image(tmp_path, 3000, 1000, fmt="WEBP")
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert blocks[1]["mimeType"] == "image/webp"
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
 
@@ -1331,7 +1551,7 @@ class TestImageDownscale:
         p = _sized_image(tmp_path, 2001, 2001)  # over the edge cap
         # Force a decompression-bomb ERROR on decode/resize (pixels > 2 x limit).
         monkeypatch.setattr(pil, "MAX_IMAGE_PIXELS", 1_000_000)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text"]  # no image block
         assert str(p) in blocks[0]["text"]  # path preserved for a tool-capable agent
 
@@ -1344,7 +1564,7 @@ class TestImageDownscale:
         exif = img.getexif()
         exif[0x0112] = 6  # Orientation = rotate 90 CW -> displayed as 1000x3000
         img.save(p, format="JPEG", exif=exif)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         with pil.open(io.BytesIO(base64.b64decode(blocks[1]["data"]))) as out:
             w, h = out.size
             assert 0x0112 not in out.getexif()  # tag baked away, not carried
@@ -1393,7 +1613,7 @@ class TestImageEncodedBudget:
         """
         p = _noise_image(tmp_path, 900, 900)
         budget = len(base64.b64encode(p.read_bytes())) // 3
-        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=budget)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_b64_bytes=budget)
         assert [b["type"] for b in blocks] == ["text", "image"]
         assert len(blocks[1]["data"]) <= budget
         # Shrunk, not passed through: the bug was inlining the original here.
@@ -1403,28 +1623,28 @@ class TestImageEncodedBudget:
     def test_image_within_budget_is_byte_identical(self, tmp_path):
         p = _sized_image(tmp_path, 100, 80)
         original = p.read_bytes()
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert base64.b64decode(blocks[1]["data"]) == original
 
     def test_unshrinkable_image_falls_back_to_a_path(self, tmp_path):
         """Fail CLOSED: a budget no rendition can meet must leave the path as
         text rather than inline a payload the backend will reject forever."""
         p = _noise_image(tmp_path, 400, 400)
-        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=8)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_b64_bytes=8)
         assert [b["type"] for b in blocks] == ["text"]
         assert str(p) in blocks[0]["text"]
 
     def test_zero_budget_disables_the_check(self, tmp_path):
         p = _noise_image(tmp_path, 120, 120)
         original = p.read_bytes()
-        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=0)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_b64_bytes=0)
         assert base64.b64decode(blocks[1]["data"]) == original
 
     def test_budget_applies_after_the_dimension_cap(self, tmp_path):
         """Both caps hold at once -- shrinking for bytes must not reintroduce an
         over-dimension rendition, and vice versa."""
         p = _noise_image(tmp_path, 2400, 2400, name="big.jpg", fmt="JPEG")
-        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=400_000)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_b64_bytes=400_000)
         assert max(_decoded_size(blocks[1])) <= MAX_IMAGE_EDGE_PX
         assert len(blocks[1]["data"]) <= 400_000
 
@@ -1432,7 +1652,7 @@ class TestImageEncodedBudget:
         """The loop never grinds an image below the usable-accuracy floor; it
         gives up and hands back a path instead."""
         p = _noise_image(tmp_path, 1000, 1000)
-        blocks = build_prompt_blocks(f"see {p}", max_image_b64_bytes=64)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p), max_image_b64_bytes=64)
         assert [b["type"] for b in blocks] == ["text"]
 
 
@@ -1597,32 +1817,32 @@ class TestLinkedAncestorGate:
     ancestor, so the probe itself would traverse the link and open the SMB
     connection the lexical UNC screen exists to prevent.
 
-    NOTE: under the module-local os patch, ``_PATH_RE`` keeps the grammar
-    chosen at import time, so candidates here stay host-native; the Windows
-    CI shard exercises real backslash shapes via ``tmp_path`` (see
+    NOTE: under the module-local os patch the candidates come from the
+    attachment list and stay host-native; the Windows CI shard exercises real
+    backslash shapes via ``tmp_path`` (see
     ``test_natively_produced_path_is_inlined_on_this_host``)."""
 
     def _windows(self, monkeypatch):
         import types
 
-        # Patch ONLY prompt_blocks' view of os (its sole runtime use is the
-        # two gates' os.name checks; _PATH_RE was chosen at import time) --
+        # Patch ONLY the predicate module's view of os (the gates read os.name
+        # and os.path there; _PATH_RE was chosen at import time) --
         # patching the global os.name would make pathlib dispatch WindowsPath
         # everywhere on a POSIX test host.
-        monkeypatch.setattr(prompt_blocks, "os", types.SimpleNamespace(name="nt"))
+        monkeypatch.setattr(prompt_attachments, "os", types.SimpleNamespace(name="nt", path=os.path))
 
     def test_linked_ancestor_candidate_is_refused_before_any_probe(self, tmp_path, monkeypatch):
         """Ordering IS the property: the leaf probe is wired to explode, so a
         regression that probes first fails loudly instead of silently."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: str(tmp_path))
+        monkeypatch.setattr(prompt_attachments, "first_linked_ancestor", lambda _p: str(tmp_path))
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
             raise AssertionError("is_file ran before the ancestor walk")
 
         monkeypatch.setattr(Path, "is_file", _boom)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         # The candidate is skipped, not inlined; the text keeps the path so
         # the turn still carries a usable reference.
         assert [b["type"] for b in blocks] == ["text"]
@@ -1634,8 +1854,8 @@ class TestLinkedAncestorGate:
         the guard, not to some other screen."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
-        blocks = build_prompt_blocks(f"see {p}")
+        monkeypatch.setattr(prompt_attachments, "first_linked_ancestor", lambda _p: None)
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_the_walk_is_not_consulted_on_posix(self, tmp_path, monkeypatch):
@@ -1647,9 +1867,9 @@ class TestLinkedAncestorGate:
         def _boom(_p):  # pragma: no cover
             raise AssertionError("ancestor walk ran on POSIX")
 
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", _boom)
+        monkeypatch.setattr(prompt_attachments, "first_linked_ancestor", _boom)
         p = _png(tmp_path)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text", "image"]
 
     def test_a_leaf_link_is_refused_before_the_probe(self, tmp_path, monkeypatch):
@@ -1657,12 +1877,12 @@ class TestLinkedAncestorGate:
         junction-aware check -- is_file() FOLLOWS a final-component link."""
         p = _png(tmp_path)
         self._windows(monkeypatch)
-        monkeypatch.setattr(prompt_blocks, "first_linked_ancestor", lambda _p: None)
-        monkeypatch.setattr(prompt_blocks, "is_link_or_junction", lambda _p: True)
+        monkeypatch.setattr(prompt_attachments, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(prompt_attachments, "is_link_or_junction", lambda _p: True)
 
         def _boom(self):  # type: ignore[no-untyped-def]  # pragma: no cover
             raise AssertionError("is_file ran before the leaf link check")
 
         monkeypatch.setattr(Path, "is_file", _boom)
-        blocks = build_prompt_blocks(f"see {p}")
+        blocks = build_prompt_blocks(f"see {p}", attachments=_att(p))
         assert [b["type"] for b in blocks] == ["text"]

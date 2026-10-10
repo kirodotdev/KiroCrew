@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import ctypes
 import errno
+import hashlib
 import io
 import json
 import logging
@@ -8933,3 +8934,65 @@ class TestMemoryPressureLevel:
         assert len(answers) == 2 and answers[0] is answers[1] is not None
         assert len(built) == 1
         assert answers[0].sysctlbyname.argtypes is not None  # type: ignore[attr-defined]
+
+
+class TestContentDigest:
+    """The identity digest names a regular file's bytes and nothing else."""
+
+    def test_the_digest_is_of_the_bytes_and_agrees_between_the_gated_and_the_pinned_read(
+        self, tmp_path
+    ):
+        from kiro_crew.hooks import safe_content_digest
+
+        picture = tmp_path / "shot.png"
+        picture.write_bytes(b"\x89PNG\r\n\x1a\n" + bytes(range(64)))
+        expected = hashlib.blake2b(picture.read_bytes(), digest_size=8).hexdigest()
+        assert safe_content_digest(str(picture)) == expected
+        with pc.pinned_directory(tmp_path) as directory:
+            assert directory.content_digest("shot.png") == expected
+        # Same size, different bytes: a different digest, which is the whole point.
+        picture.write_bytes(bytes(reversed(picture.read_bytes())))
+        assert safe_content_digest(str(picture)) != expected
+        assert len(safe_content_digest(str(picture))) == pc.CONTENT_DIGEST_HEX_CHARS
+
+    def test_the_gated_read_refuses_a_protected_file_a_directory_and_a_missing_name(
+        self, tmp_path, monkeypatch
+    ):
+        from kiro_crew.hooks import safe_content_digest
+
+        home = tmp_path / "home"
+        (home / ".aws").mkdir(parents=True)
+        secret = home / ".aws" / "credentials"
+        secret.write_bytes(b"[default]\naws_secret_access_key = not-for-hashing\n")
+        monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
+        reads: list[int] = []
+        real = pc.content_digest_of_fd
+        monkeypatch.setattr(pc, "content_digest_of_fd", lambda fd: reads.append(fd) or real(fd))
+        assert safe_content_digest(str(secret)) is None
+        assert reads == []
+        assert safe_content_digest(str(tmp_path)) is None
+        assert safe_content_digest(str(tmp_path / "missing.png")) is None
+
+    @pytest.mark.skipif(pc.IS_WINDOWS, reason="symlink creation needs a privilege on Windows")
+    def test_the_pinned_read_refuses_a_link_a_directory_and_a_missing_name(self, tmp_path):
+        from kiro_crew.hooks import safe_content_digest
+
+        target = tmp_path / "target.png"
+        target.write_bytes(b"\x89PNG\r\n\x1a\n")
+        (tmp_path / "link.png").symlink_to(target)
+        (tmp_path / "sub").mkdir()
+        with pc.pinned_directory(tmp_path) as directory:
+            assert directory.content_digest("link.png") is None
+            assert directory.content_digest("sub") is None
+            assert directory.content_digest("missing.png") is None
+            assert directory.content_digest("target.png") == safe_content_digest(str(target))
+
+    def test_a_descriptor_that_is_not_a_regular_file_yields_none(self):
+        # A pipe is a FIFO on every platform; Windows refuses a directory descriptor.
+        read_end, write_end = os.pipe()
+        try:
+            assert pc.content_digest_of_fd(read_end) is None
+        finally:
+            os.close(read_end)
+            os.close(write_end)

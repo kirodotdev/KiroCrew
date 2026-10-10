@@ -762,6 +762,34 @@ describe('panelBridge send', () => {
     await expect(bridge.sendMessage('hi')).rejects.not.toBeInstanceOf(bridge.SendRefusedError)
   })
 
+  it('carries structured images on a refused send and retracts its optimistic echo', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { ok: false, status: 409, body: { error: 'busy' } }, 'POST')
+    const bridge = await loadBridge()
+    const seen: Record<string, unknown>[] = []
+    bridge.onChatMessage((m) => seen.push(m))
+    const images = ['/tmp/uploads/a.png', '/tmp/uploads/b.png'] as const
+    const send = bridge.sendMessage('keep me', undefined, images)
+    await expect(send).rejects.toBeInstanceOf(bridge.SendRefusedError)
+    await expect(send).rejects.toMatchObject({ status: 409, reason: 'busy' })
+    expect(bodyOf(calls('/api/chat?ws=1', 'POST')[0]).meta).toEqual({ images: [...images] })
+    expect(seen).toHaveLength(2)
+    expect(seen[0]).toMatchObject({ role: 'user', content: 'keep me', _optimistic: true })
+    expect(seen[1]).toEqual({ _retract: seen[0].id })
+  })
+
+  it('resolves with structured images when the gateway accepts the send', async () => {
+    route('/api/chat/slots', { body: { agent: 'mochi' } }, 'POST')
+    route('/api/chat?ws=1', { ok: true, status: 200, body: { ok: true } }, 'POST')
+    const bridge = await loadBridge()
+    const images = ['/tmp/uploads/a.png', '/tmp/uploads/b.png'] as const
+    await expect(bridge.sendMessage('go', 'data:image/png;base64,AAA', images)).resolves.toBeUndefined()
+    expect(bodyOf(calls('/api/chat?ws=1', 'POST')[0]).meta).toEqual({
+      screenshot: 'data:image/png;base64,AAA',
+      images: [...images],
+    })
+  })
+
   it('refuses to send into a slot another agent owns', async () => {
     route('/api/chat/slots', { body: { agent: 'someone-else' } }, 'POST')
     const bridge = await loadBridge()

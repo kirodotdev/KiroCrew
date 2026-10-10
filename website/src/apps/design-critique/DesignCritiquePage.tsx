@@ -216,7 +216,7 @@ export default function DesignCritiquePage() {
     trackSlot(s.key); markLive(s.key)
     return s.key
   }
-  const send = (slotKey: string, message: string) => designCritiqueApi.send(slotKey, message)
+  const send = (slotKey: string, message: string, images?: string[]) => designCritiqueApi.send(slotKey, message, images)
   const dropSlot = (slotKey: string) => { if (!slotKey) return; untrackSlot(slotKey); unmarkLive(slotKey); designCritiqueApi.deleteSlot(slotKey) }
 
   // Fetch the critique method once and cache it; on failure the critique still
@@ -332,7 +332,9 @@ export default function DesignCritiquePage() {
     notify('Critique failed: ' + (e instanceof Error ? e.message : String(e)), { type: 'error' })
   }
 
-  const ask = async (prompt: string, uploaded: Screen[], foreground = true) => {
+  // `images` are the screens' server paths: the structured list the critic's
+  // turn takes its pictures from (the prompt's image lines are rendering only).
+  const ask = async (prompt: string, uploaded: Screen[], foreground = true, images: string[] = []) => {
     let slotKey = ''
     try {
       slotKey = await openSlot()
@@ -342,7 +344,7 @@ export default function DesignCritiquePage() {
       if (foreground) activeSlotRef.current = slotKey
       else setCritiques(beginPendingCritique(slotKey, uploaded || []))
       saveJob({ stage: 'analyzing', slotKey, screens: uploaded || [], ts: Date.now() })
-      await send(slotKey, prompt)
+      await send(slotKey, prompt, images)
       const rep = await pollForReport<Report>(slotKey)
       finishReport(slotKey, uploaded, rep)
     } catch (e) { failWith(e, slotKey) }
@@ -366,7 +368,7 @@ export default function DesignCritiquePage() {
       const method = await loadMethod()
       const mine = runSeqRef.current === seq
       if (mine) { setCurrent({ report: null, screens: uploaded }); setScreenIdx(0); setPhase('analyzing') }
-      await ask(IMAGES_PROMPT(paths, undefined, method), uploaded, mine)
+      await ask(IMAGES_PROMPT(paths, undefined, method), uploaded, mine, paths)
     } catch (e) {
       // No slot exists yet at this point; ask() owns cleanup for the one it creates.
       if (runSeqRef.current === seq) { setErr(e instanceof Error ? e.message : i18nT('apps.designCritique.designCritiquePage.something_went_wrong')); setPhase('error') }
@@ -478,7 +480,7 @@ export default function DesignCritiquePage() {
     const method = await loadMethod()
     const mine = seq === undefined || runSeqRef.current === seq
     if (mine) { setCurrent({ report: null, screens: uploaded }); setScreenIdx(0) }
-    await ask(IMAGES_PROMPT(paths, brief, method, missed), uploaded, mine)
+    await ask(IMAGES_PROMPT(paths, brief, method, missed), uploaded, mine, paths)
   }
 
   // Step 2: the backend renders the picked screens to PNGs, then the agent

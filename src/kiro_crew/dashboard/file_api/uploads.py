@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import os
 import re
@@ -56,7 +57,14 @@ def _write_file_restricted(path: Path, data: bytes) -> None:
         0o600,
     )
     try:
-        os.write(fd, data)
+        # os.write may accept only a prefix; a prefix left as the file would be
+        # served as the whole upload.
+        view = memoryview(data)
+        while view:
+            written = os.write(fd, view)
+            if written <= 0:
+                raise OSError(errno.EIO, "write accepted no bytes")
+            view = view[written:]
     finally:
         os.close(fd)
 

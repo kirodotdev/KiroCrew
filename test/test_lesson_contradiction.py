@@ -70,7 +70,7 @@ class _FakeBgSession:
         self.reject_tool = AsyncMock()
         self.destroy = AsyncMock()
 
-    async def prompt(self, _prompt, *, allow_image=True):  # noqa: ANN001 - test double
+    async def prompt(self, _prompt):  # noqa: ANN001 - test double
         if self._emit_tool_call:
             yield SimpleNamespace(kind=EVENT_TOOL_CALL, title="fs_read")
         if self._emit_permission:
@@ -292,7 +292,7 @@ class TestResolveContradictions:
                 self.reject_tool = AsyncMock()
                 self.destroy = destroyed
 
-            async def prompt(self, _prompt, *, allow_image=True):  # noqa: ANN001 - test double
+            async def prompt(self, _prompt):  # noqa: ANN001 - test double
                 import asyncio
                 await asyncio.sleep(10)
                 yield SimpleNamespace(kind=EVENT_COMPLETE)  # pragma: no cover

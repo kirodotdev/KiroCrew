@@ -1,7 +1,8 @@
 """Layer 1 -- the ``MessagingTransport`` contract and value objects.
 
 Depends only on the standard library so the package stays channel-neutral
-and cycle-free.
+and cycle-free (the one ``kiro_crew`` name below is imported for type checking
+only, from a module that does not import this package at module scope).
 """
 
 from __future__ import annotations
@@ -9,7 +10,10 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from kiro_crew.prompt_attachments import PromptAttachment
 
 #: The ``configured_targets()`` prefix every transport gives a DIRECT (1:1)
 #: conversation: ``user:<identity>``. A ``thread:`` or room target is a different
@@ -284,6 +288,13 @@ class InboundMessage:
     # gateway built itself (a nudge or monitor wake) leaves it False. The channel
     # dispatchers start a person's turn FOREGROUND from it (kiro_crew.start_priority).
     person_origin: bool = False
+    #: The ingested images as the structured list the turn hands to the
+    #: provider (``IngestResult.prompt_attachments``) -- the ONLY way an image
+    #: reaches the model; a path written into ``text`` is for agent tools. Set
+    #: by a transport that ingests media before dispatch (WhatsApp); left empty
+    #: by adapters whose dispatcher ingests inside the turn. Turn-local: the
+    #: temp files it names die with the turn, so it is not part of ``to_dict``.
+    prompt_attachments: tuple[PromptAttachment, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {

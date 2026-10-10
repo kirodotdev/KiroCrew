@@ -498,7 +498,8 @@ describe('Design Critique — critiquing screenshots', () => {
     expect(mockApi.uploadFiles).toHaveBeenCalledTimes(1)
     expect(screen.getByText('Reading your screen')).toBeInTheDocument()
     expect(screen.getByText('Reading your design…')).toBeInTheDocument()
-    expect(mockApi.send).toHaveBeenCalledWith('slot-1', expect.stringContaining('/tmp/shot-1.png'))
+    // The screens ride as the structured list beside the prompt that names them.
+    expect(mockApi.send).toHaveBeenCalledWith('slot-1', expect.stringContaining('/tmp/shot-1.png'), ['/tmp/shot-1.png'])
 
     // One poll cycle later the critic has answered.
     await tick(POLL_MS)
@@ -704,7 +705,7 @@ describe('Design Critique — critiquing a reference', () => {
     await tick(POLL_MS)
     expect(screen.getByText(/the two blue buttons fight each other/)).toBeInTheDocument()
     expect(mockApi.openSlot).toHaveBeenCalledTimes(1)
-    expect(mockApi.send).toHaveBeenLastCalledWith('slot-1', expect.stringContaining('first-time buyers'))
+    expect(mockApi.send).toHaveBeenLastCalledWith('slot-1', expect.stringContaining('first-time buyers'), ['/tmp/cart.png', '/tmp/pay.png'])
   })
 
   it('narrows the pick to one screen and says what it will do', async () => {
@@ -860,7 +861,7 @@ describe('Design Critique — resuming and History', () => {
     // Reconnected to the running render — did not render again.
     expect(mockApi.render).not.toHaveBeenCalled()
     // The stored brief still travels into the critique prompt.
-    expect(mockApi.send).toHaveBeenLastCalledWith('slot-1', expect.stringContaining('first-time buyers'))
+    expect(mockApi.send).toHaveBeenLastCalledWith('slot-1', expect.stringContaining('first-time buyers'), ['/tmp/cart.png'])
   })
 
   it('routes a Figma link to exporting PNGs instead of a wrong access error', async () => {

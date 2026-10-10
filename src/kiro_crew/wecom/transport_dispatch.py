@@ -66,6 +66,7 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
+from kiro_crew.prompt_attachments import PromptAttachment
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -284,7 +285,9 @@ class WeComDispatcher:
             text = payload
             inbound.text = payload
 
-        prompt_text, media_temp_paths = await self._ingest_media(inbound, text, userid)
+        prompt_text, media_temp_paths, prompt_attachments = await self._ingest_media(
+            inbound, text, userid
+        )
         if prompt_text is None:
             return
         text = prompt_text
@@ -354,6 +357,7 @@ class WeComDispatcher:
                     conversation_id=conversation_id,
                     agent=agent,
                     user_text=text,
+                    attachments=prompt_attachments,
                     renderer=renderer,
                     approval_mode=self.approval_mode,
                     decider=None,  # WeCom can't render approve/deny buttons
@@ -576,11 +580,14 @@ class WeComDispatcher:
 
     async def _ingest_media(
         self, inbound: "WeComInbound", text: str, userid: str
-    ) -> tuple[str | None, list[str]]:
+    ) -> tuple[str | None, list[str], tuple[PromptAttachment, ...]]:
         """Download, decrypt and inline any inbound media.
 
-        Returns ``(prompt_text, temp_paths)``; ``None`` text means the message was
-        handled without running a turn. ``inbound.attachments`` is cleared either
+        Returns ``(prompt_text, temp_paths, attachments)``; ``None`` text means
+        the message was handled without running a turn, and ``attachments`` is
+        the ingested images as the structured list the turn hands to the
+        provider -- the only way they reach the model (the paths appended to the
+        text are for agent tools). ``inbound.attachments`` is cleared either
         way, so a refused item can never be ingested twice on re-entry.
 
         The busy check is made AFTER the download as well as before, because a
@@ -590,12 +597,12 @@ class WeComDispatcher:
         """
         pairs = list(inbound.attachments or [])
         if not pairs:
-            return text, []
+            return text, [], ()
         assert self.client is not None
         if self.sessions.is_busy(self._session_key(userid)):
             inbound.attachments = []
             await self.client.say(inbound, "⏳ 正在处理上一条消息，请稍后重新发送附件。")
-            return (text if (text or "").strip() else None), []
+            return (text if (text or "").strip() else None), [], ()
         try:
             result = await process_wecom_attachments(pairs, proxy=self.client.proxy)
         except Exception:
@@ -605,17 +612,21 @@ class WeComDispatcher:
             logger.exception("WeCom: attachment ingestion failed for %s", userid)
             inbound.attachments = []
             note = "[附件无法读取]"
-            return (f"{text}\n\n{note}" if text else note), []
+            return (f"{text}\n\n{note}" if text else note), [], ()
         inbound.attachments = []
         temp_paths = list(result.temp_paths)
         if self.sessions.is_busy(self._session_key(userid)):
             if temp_paths:
                 await asyncio.to_thread(cleanup_attachments, temp_paths)
             await self.client.say(inbound, "⏳ 正在处理上一条消息，请稍后重新发送附件。")
-            return (text if (text or "").strip() else None), []
+            return (text if (text or "").strip() else None), [], ()
         for rejection in result.rejections:
             logger.info("WeCom: attachment refused for %s: %s", userid, rejection)
-        return append_attachment_context(text, result), temp_paths
+        return (
+            append_attachment_context(text, result),
+            temp_paths,
+            result.prompt_attachments(),
+        )
 
     # ── Dashboard mirror ───────────────────────────────────────────────────
 

@@ -106,6 +106,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     TURN_ACTOR_META_KEY,
     attachment_meta,
     normalize_send_id,
+    prompt_image_paths,
     queue_entry_is_user_origin,
     queue_entry_view,
     queue_for_next_turn,
@@ -113,6 +114,7 @@ from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     quote_meta,
     start_queue_persist,
     steer_into_running_turn,
+    with_image_identities,
 )
 from kiro_crew.dashboard.chat_folders import (
     _unhide_folder,
@@ -244,7 +246,14 @@ from kiro_crew.dashboard.slot_projection import (  # noqa: F401
     resolved_row_identity,
     stop_declined_armed,
 )
-from kiro_crew.dashboard.slot_queue_repository import warn_if_not_durable
+from kiro_crew.dashboard.slot_queue_repository import (
+    IMAGE_ATTACHMENT_META_KEY,
+    IMAGE_IDENTITY_META_KEY,
+    attachment_paths,
+    bounded_attachment_list,
+    image_list_refusal_text,
+    warn_if_not_durable,
+)
 from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     loop_slot_keys,
     select_idle_slot_keys,
@@ -710,6 +719,25 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             bounded_quote = quote_meta(user_meta, user_origin=not bool(request.get("app", "")))
             user_meta.pop("quote")
             user_meta.update(bounded_quote)
+        images = user_meta.get(IMAGE_ATTACHMENT_META_KEY)
+        # Present and non-empty means a list the bound admits, or a refusal: a
+        # value of any other shape under this key would ride the row unbounded.
+        if images not in (None, []) and (
+            not isinstance(images, list)
+            or bounded_attachment_list(IMAGE_ATTACHMENT_META_KEY, images) is None
+        ):
+            return web.json_response(
+                {
+                    "error": image_list_refusal_text(
+                        len(images) if isinstance(images, list) else 0
+                    ),
+                    "code": "images_over_bound",
+                },
+                status=400,
+            )
+        # One worker-thread hop for the pictures' identities, before any
+        # normalizer below: the loop never waits on a stalled mount.
+        user_meta = await with_image_identities(user_meta)
         if not user_meta:
             user_meta = None
     theme_consent = body.get("theme_consent") is True
@@ -1181,7 +1209,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # more conjunct on its condition and the receipt it stamps.
         _auto_strip: dict | None = None
         _auto_queues = False
-        if steer_is_auto(steer) and not request_app:
+        # The live steer carries text only, so pictures must wait for their own turn.
+        _has_images = bool(prompt_image_paths(user_meta))
+        if steer_is_auto(steer) and not request_app and not _has_images:
             # The turn the question is ABOUT, captured before the await. The
             # decision is a provider round-trip, so the turn it describes can end
             # while it is in flight -- and an answer about a turn that is gone is
@@ -1197,7 +1227,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             if slot.task is not _turn_before:
                 _auto_queues = False
                 _auto_strip = None
-        if steer and not request_app and not _auto_queues:
+        if steer and not request_app and not _auto_queues and not _has_images:
             # Client-minted send correlation id (the same `meta.sendId`
             # convention the plain send path persists): thread it through the
             # steer so the persisted row and the steer_push echo can be matched
@@ -1267,8 +1297,9 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # `user` and files an app's send as a person's.
             turn_actor="app" if request_app else "",
             send_id=normalize_send_id(user_meta.get("sendId")) if user_meta else None,
-            attachments=attachment_meta(user_meta),
+            attachments=attachment_meta(user_meta, redact=bool(request_app)),
             quote=quote_meta(user_meta).get("quote"),
+            prompt_images=prompt_image_paths(user_meta),
             # The receipt travels whichever way the send went, including the one
             # case where the two disagree: `auto` answered steer and the steer was
             # UNAVAILABLE, so this path runs with a record saying steer. That is the
@@ -1311,7 +1342,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         _hold_sid = normalize_send_id(user_meta.get("sendId")) if user_meta else None
         if _hold_sid:
             _hold_meta["sendId"] = _hold_sid
-        _hold_attachments = attachment_meta(user_meta)
+        _hold_attachments = attachment_meta(user_meta, redact=bool(request_app))
         _hold_meta.update(_hold_attachments)
         _hold_meta.update(quote_meta(user_meta))
         if request_app:
@@ -1322,6 +1353,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             message,
             meta=_hold_meta,
             directive_user_origin=not bool(request_app),
+            prompt_images=prompt_image_paths(user_meta),
         )
         _redacted = queued_text_for_display(message, user_origin=not bool(request_app))
         warn_if_not_durable(slot._queue, qid, slot.key)
@@ -1456,6 +1488,12 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
     # HTTP receipt arrives. sendId/mid reconcile an existing optimistic bubble;
     # callers without a correlation id keep their existing delivery contract.
     _user_row_meta = _redact_meta(user_meta) if user_meta else {}
+    if user_meta:
+        # Read off the raw list before the redaction above hid the names: the
+        # persisted row's only way back to a credential-shaped picture.
+        _row_identities = attachment_meta(user_meta).get(IMAGE_IDENTITY_META_KEY)
+        if _row_identities:
+            _user_row_meta[IMAGE_IDENTITY_META_KEY] = _row_identities
     if user_meta and not request_app and isinstance(user_meta.get("quote"), dict):
         # The human's own quote record stays as typed, like the row's content
         # it must byte-match (`_redact_meta_for_role` keeps the same rule on
@@ -1595,9 +1633,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         # some: an ordinary send then calls `_run_chat` with exactly the arguments it
         # always did, which is what keeps the many test doubles of it valid.
         _accepted_attachment_meta = attachment_meta(user_meta)
-        _accepted_attachments = [
-            path for paths in _accepted_attachment_meta.values() for path in paths
-        ]
+        _accepted_attachments = attachment_paths(_accepted_attachment_meta)
         # ``request_app`` is stamped by the app-token auth middleware, not read from
         # the request body, so it is a fact about the caller a person cannot write --
         # which is what lets the turn's actor come from it. Passing it is what keeps
@@ -1611,6 +1647,14 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             _turn_kwargs["_attachments"] = _accepted_attachments
             # Typed form for the refusal replay: keeps ``dirs`` entries as folders.
             _turn_kwargs["_attachment_meta"] = _accepted_attachment_meta
+        # The PROVIDER copy of the image list: the validated raw paths the prompt
+        # builder opens (`prompt_image_paths`). `_attachment_meta` above is the
+        # redacted copy every observer reads (ledger, refusal replay, frames); a
+        # picture whose filename the redactor rewrote would otherwise be probed at
+        # a path that does not exist and silently dropped.
+        _prompt_images = prompt_image_paths(user_meta)
+        if _prompt_images:
+            _turn_kwargs["_prompt_images"] = _prompt_images
         task = spawn_guarded_turn(
             state,
             slot,
@@ -4743,6 +4787,7 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         queue_id,
         content,
         directive_user_origin=not bool(request.get("app", "")),
+        display_text=lambda text: queued_text_for_display(text, user_origin=False),
     ):
         return web.json_response({"error": "queue item not found"}, status=404)
     # The stored text is what the edit normalized to (attachment markers are
@@ -4754,17 +4799,13 @@ async def api_chat_slot_queue_edit(request: web.Request) -> web.Response:
         content = stored
     _edit_queued_by_id(slot.messages, queue_id, content)
     slot.invalidate_source_links()
-    _redacted = queued_text_for_display(content, user_origin=queue_entry_is_user_origin(entry))
+    _user_origin = queue_entry_is_user_origin(entry)
+    _redacted = queued_text_for_display(content, user_origin=_user_origin)
     frame: dict[str, Any] = {"slot": name, "queue_id": queue_id, "content": _redacted}
-    # The edit prunes and renumbers the entry's attachment lists alongside the
-    # text (`prune_attachment_meta`), so the frame carries the lists the
-    # renumbered markers now index -- the client replaces the row's lists from
-    # it. Same `meta` shape and redaction as `queue_entry_view`, read straight
-    # off the entry so the content is not redacted a second time. Absent when
-    # the entry has none left (or never had any): the client reads absence on
-    # THIS frame as "no lists", so a row whose markers the edit all removed
-    # drops its stale lists too.
-    _edit_attachments = attachment_meta(entry.get("meta")) if entry is not None else {}
+    # Lists must match the edited text's provenance or cancel cannot restore its images.
+    _edit_attachments = (
+        attachment_meta(entry.get("meta"), redact=not _user_origin) if entry is not None else {}
+    )
     if _edit_attachments:
         frame["meta"] = _edit_attachments
     state.broadcast_ws("queue_edit", frame)

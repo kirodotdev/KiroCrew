@@ -45,6 +45,7 @@ from kiro_crew.dashboard.slot_ownership import (
     deny_app_slot_access,
     slot_not_found,
 )
+from kiro_crew.dashboard.slot_queue_repository import attachment_paths, retained_image_meta
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 from kiro_crew.session_map import _kiro_sessions_dir
@@ -303,7 +304,19 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         # reach it -- the sole question left is whether an app drives the edit.
         _user_origin = not bool(request_app)
         redacted_content = queued_text_for_display(content, user_origin=_user_origin)
-        prospective_slot.append("user", redacted_content, "msg msg-u")
+        # The rewound row keeps the pictures the edit left in place: the text's
+        # ``![image](path)`` line is a rendering, and only the structured list
+        # puts the image in front of the model, so it rides onto the new row and
+        # into the turn. A picture whose line the edit removed is dropped.
+        _previous_content = (msgs[index].get("content") or "") if 0 <= index < len(msgs) else ""
+        _image_meta = retained_image_meta(
+            msgs[index].get("meta") if 0 <= index < len(msgs) else None,
+            redacted_content,
+            _previous_content,
+            display_content=queued_text_for_display(redacted_content, user_origin=False),
+            display_previous=queued_text_for_display(_previous_content, user_origin=False),
+        )
+        prospective_slot.append("user", redacted_content, "msg msg-u", meta=_image_meta or None)
         msgs_snapshot = list(prospective_slot.messages)
         # The frozen-prefix boundary this snapshot must be written against. An
         # ``append`` at the window cap credits trimmed rows to this counter, so a
@@ -365,6 +378,11 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
         dispatch_ready = asyncio.Event()
         dispatch_commit = False
 
+        _rewind_kwargs: dict = {}
+        if _image_meta:
+            _rewind_kwargs["_attachments"] = attachment_paths(_image_meta)
+            _rewind_kwargs["_attachment_meta"] = _image_meta
+
         async def _rewind_dispatch() -> None:
             await dispatch_ready.wait()
             if request_app and state._slots.get(name) is not slot:
@@ -379,6 +397,7 @@ async def api_chat_slot_rewind(request: web.Request) -> web.Response:
                     # actor resolver's fallback is ``user``. ``""`` is the
                     # parameter's own default and reads as "not named".
                     _turn_actor="app" if request_app else "",
+                    **_rewind_kwargs,
                 )
                 return
             # Rewind rejected. A send diverted to the queue by this

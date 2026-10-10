@@ -3451,6 +3451,7 @@
         "ask_placeholder": "{{name}}に質問…",
         "edit_cancel": "キャンセル",
         "edit_mode": "編集中 — 送信して置き換えるか、キャンセル",
+        "edit_pictures_unrecoverable": "編集したメッセージを再送信できませんでした。テキストは入力欄に残っており、メッセージの画像もそのまま残っています。もう一度送信すると再試行できます。",
         "load_earlier": "前のメッセージを読み込む",
         "scroll_bottom": "最新にスクロール",
         "send": "送信",

@@ -338,6 +338,22 @@ auto-nudge cycle message**, so each cycle starts from durable state rather than
 transcript memory. It is empty when the session has no ledger or its phase is
 terminal. See [Session Ledger](../../src/kiro_crew/docs/session-ledger.md), [Monitor Loops](../../src/kiro_crew/docs/monitor-loops.md).
 
+### Images in the prompt
+
+Everything above is TEXT. A picture reaches the model only as an ACP image block,
+and the prompt builder (`acp/prompt_blocks.py`) builds image blocks from exactly
+one source: the **structured attachment list** the receiving channel hands the
+provider beside the text (`kiro_crew/prompt_attachments.py` — the dashboard's
+`meta.images`, a channel's `IngestResult.prompt_attachments`). No text in this
+document is ever scanned for image paths. So a path named in an injected
+context block, a `[work ledger]` snapshot's `artifact` line, a nudge body, a
+replayed or recalled history row, a consolidation prompt or a sub-agent envelope
+stays text: the model can read the path and a tool-capable agent can open the
+file, but no pixels ride along. This is what keeps a screenshot named in a
+per-cycle snapshot from being re-inlined — and replayed by the backend — on every
+turn until the request is rejected. Details and the per-channel plumbing:
+[acp-client](../system-specs/modules/acp-client.md#image-support).
+
 ## 3. Sub-agent sessions (`spawn_run`)
 
 A sub-agent's prompt is built by the **same** `build_message`, from

@@ -27,6 +27,7 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.image_refs import strip_image_refs
 from kiro_crew.llm_helpers import run_bg_oneliner
+from kiro_crew.prompt_attachments import image_attachments
 
 
 class _FakeSession:
@@ -49,7 +50,7 @@ class _FakeSession:
         self.model = model
         self.served_model = model
 
-    async def prompt(self, _prompt, *, allow_image=True):
+    async def prompt(self, _prompt):
         if self._raise:
             raise RuntimeError("backend boom")
         # Fresh per-turn stats, installed as the real handle does once the turn
@@ -171,7 +172,7 @@ async def test_image_paths_in_the_prompt_are_not_sent_as_attachments(tmp_path):
     sent: list[str] = []
 
     class _Capturing(_FakeSession):
-        async def prompt(self, prompt, *, allow_image=True):
+        async def prompt(self, prompt):
             sent.append(prompt)
             async for event in super().prompt(prompt):
                 yield event
@@ -295,7 +296,7 @@ class _RejectThenSucceedSession:
         self.models.append(model)
         self.served_model = model
 
-    async def prompt(self, _prompt, *, allow_image=True):
+    async def prompt(self, _prompt):
         self._calls += 1
         if self._calls == 1:
             err = AcpError("model rejected", transient=False)
@@ -431,7 +432,7 @@ async def test_non_rejection_error_is_not_retried():
     it must propagate unchanged (no retry), and the session is destroyed."""
 
     class _BoomSession(_FakeSession):
-        async def prompt(self, _p, *, allow_image=True):
+        async def prompt(self, _p):
             raise AcpError("backend boom")
             yield  # pragma: no cover
 
@@ -598,7 +599,7 @@ class _ClaudeSeamSession(_FakeSession):
         super().__init__(events)
         self._turn_stats = turn_stats
 
-    async def prompt(self, _prompt, *, allow_image=True):
+    async def prompt(self, _prompt):
         self.last_prompt_stats = self._turn_stats
         for e in self._events:
             yield e
@@ -666,12 +667,14 @@ async def test_a_claude_seam_turn_that_billed_nothing_still_records_nothing():
 # suggestion, a status card -- so an image path inside one is quoted history, not
 # an attachment. ``strip_image_refs`` keeps a spaced path whose shape cannot be
 # told from prose, so the scrub alone cannot keep a still-readable file out of
-# the request; the text-only seam does, whatever shape a caller composes.
+# the request; the builder does, by reading image blocks only from the
+# attachment list a turn carries, whatever shape a caller composes.
 #
 # The three composed prompts below each put a channel attachment line somewhere
 # the scrub leaves it (mid-line, after a prefix, inside a JSON string) and each
-# asserts that, sent the default way, the prompt WOULD carry an image block --
-# so the test fails if the seam is dropped rather than passing vacuously.
+# asserts that the same file, handed as an attachment, WOULD carry an image block
+# -- so the test fails if the file is not inlinable rather than passing
+# vacuously.
 
 # Smallest valid 1x1 PNG.
 _PNG = base64.b64decode(
@@ -706,14 +709,17 @@ class _BuildingSession(_FakeSession):
         super().__init__([])
         self.sent: list[list[dict]] = []
 
-    async def prompt(self, message, *, allow_image=True):
-        self.sent.append(build_prompt_blocks(message, allow_image=allow_image))
+    async def prompt(self, message, *, attachments=()):
+        self.sent.append(build_prompt_blocks(message, attachments=attachments))
         yield SimpleNamespace(kind=EVENT_COMPLETE, text="")
 
 
-async def _send(prompt: str) -> list[list[dict]]:
-    # The premise: sent with inlining on, the scrubbed prompt carries the file.
-    assert "image" in _types(build_prompt_blocks(strip_image_refs(prompt)))
+async def _send(prompt: str, attachment: str) -> list[list[dict]]:
+    # The premise: handed as an attachment, the file the prompt names inlines.
+    attached = build_prompt_blocks(
+        strip_image_refs(prompt), attachments=image_attachments([attachment])
+    )
+    assert "image" in _types(attached)
     session = _BuildingSession()
     await run_bg_oneliner(_FakeSessions(session), prompt)
     return session.sent
@@ -726,7 +732,7 @@ async def test_the_title_prompt_carries_no_image(attachment):
     prompt = _build_title_prompt([{"role": "user", "content": f"look at this\n{attachment}"}])
 
     assert prompt and attachment in prompt
-    assert [_types(b) for b in await _send(prompt)] == [["text"]]
+    assert [_types(b) for b in await _send(prompt, attachment)] == [["text"]]
 
 
 @pytest.mark.asyncio
@@ -744,7 +750,7 @@ async def test_the_suggestions_prompt_carries_no_image(attachment, monkeypatch):
     context = suggestions._build_context(state)
 
     assert f"  - User: {attachment}" in context
-    assert [_types(b) for b in await _send(context)] == [["text"]]
+    assert [_types(b) for b in await _send(context, attachment)] == [["text"]]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="JSON doubles a Windows path's separators")
@@ -756,10 +762,10 @@ async def test_the_status_card_prompt_carries_no_image(attachment):
     prompt = card_lifecycle._ROOT_PROMPT + json.dumps({"recent_messages": rows})
 
     assert f'"text": "{attachment}"' in prompt
-    assert [_types(b) for b in await _send(prompt)] == [["text"]]
+    assert [_types(b) for b in await _send(prompt, attachment)] == [["text"]]
 
 
-# ── The seam on each path a background handle can take ──────────────────────
+# ── The attachment list on each path a background handle can take ───────────
 
 
 class _PromptRuntime:
@@ -784,15 +790,16 @@ class _PromptRuntime:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("allow_image", "expected"), [(True, ["image"]), (False, [])])
-async def test_the_runtime_handle_honours_the_seam(attachment, allow_image, expected):
+@pytest.mark.parametrize(("attached", "expected"), [(True, ["image"]), (False, [])])
+async def test_the_runtime_handle_inlines_the_list_not_the_text(attachment, attached, expected):
     from kiro_crew.acp.session_handle import AcpSessionHandle
 
     queue: asyncio.Queue = asyncio.Queue()
     rt = _PromptRuntime(queue)
     handle = AcpSessionHandle("sA", queue, rt)
+    attachments = image_attachments([attachment]) if attached else ()
 
-    async for _ in handle.prompt(f"look {attachment}", timeout=5.0, allow_image=allow_image):
+    async for _ in handle.prompt(f"look {attachment}", timeout=5.0, attachments=attachments):
         pass
 
     _method, params = rt.requests[-1]
@@ -800,37 +807,42 @@ async def test_the_runtime_handle_honours_the_seam(attachment, allow_image, expe
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(("allow_image", "expected"), [(True, ["image"]), (False, [])])
-async def test_the_direct_client_honours_the_seam(tmp_path, attachment, allow_image, expected):
+@pytest.mark.parametrize(("attached", "expected"), [(True, ["image"]), (False, [])])
+async def test_the_direct_client_inlines_the_list_not_the_text(
+    tmp_path, attachment, attached, expected
+):
     from kiro_crew.acp.client import AcpClient
 
     client = AcpClient(work_dir=tmp_path)
     client._session_id = "sid"
     client._send_request = AsyncMock(return_value=3)
+    attachments = image_attachments([attachment]) if attached else ()
 
-    await client._send_prompt(f"look {attachment}", allow_image=allow_image)
+    await client._send_prompt(f"look {attachment}", attachments)
 
     _method, params = client._send_request.await_args[0]
     assert [t for t in _types(params["prompt"]) if t == "image"] == expected
 
 
 @pytest.mark.asyncio
-async def test_the_provider_paths_forward_the_seam():
+async def test_the_provider_paths_forward_the_list(attachment):
     from kiro_crew.acp.session_provider import AcpSessionProvider
     from kiro_crew.providers.acp import AcpProvider
     from kiro_crew.session_background import _ProviderBgSession
 
     seen: list[object] = []
+    atts = image_attachments([attachment])
 
-    async def _record(message, *, allow_image=True):
-        seen.append(allow_image)
+    async def _record(message, *, attachments=()):
+        seen.append(tuple(attachments))
         return
         yield  # pragma: no cover - makes this an async generator
 
-    # The provider-backed background adapter, over a non-runtime backend.
+    # The provider-backed background adapter, over a non-runtime backend: a
+    # one-liner's turn, which never carries a list.
     provider = SimpleNamespace(stream=_record)
     bg = _ProviderBgSession(SimpleNamespace(semaphore=asyncio.Semaphore(1), provider=provider))
-    async for _ in bg.prompt("p", allow_image=False):
+    async for _ in bg.prompt("p"):
         pass
 
     # The direct-client provider that entry holds.
@@ -838,14 +850,14 @@ async def test_the_provider_paths_forward_the_seam():
         direct = AcpProvider(acp_backend="")
     direct._client = MagicMock()
     direct._client.stream_events = _record
-    async for _ in direct.stream("p", allow_image=False):
+    async for _ in direct.stream("p", attachments=atts):
         pass
 
     # The runtime-backed provider.
     handle = MagicMock()
     handle.prompt = _record
     on_runtime = AcpSessionProvider(handle, MagicMock())
-    async for _ in on_runtime.stream("p", allow_image=False):
+    async for _ in on_runtime.stream("p", attachments=atts):
         pass
 
-    assert seen == [False, False, False]
+    assert seen == [(), atts, atts]
