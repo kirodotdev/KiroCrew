@@ -159,6 +159,17 @@ const READ_ONLY_LEAD_KEY = {
 /** kiro-cli's built-in tool names, offered as completions in the Add tool input. */
 const NATIVE_TOOL_NAMES = ['fs_read', 'fs_write', 'execute_bash', 'use_aws', 'grep', 'glob', 'web_fetch', 'web_search', 'knowledge', 'thinking'] as const
 
+/**
+ * Kiro Crew's background-subagent tools, offered as completions too. Adding one
+ * grants it and the save declares the server, so a custom agent gets the same
+ * session-attached spawn (task box, Stop, explicit `agent` / `crew`) as the
+ * built-in agent without a hand-edited spec.
+ */
+const CREW_CORE_SERVER = 'kirocrew-core'
+const CREW_SPAWN_TOOL_NAMES = ['spawn_run', 'spawn_list', 'spawn_status', 'spawn_steer', 'spawn_continue', 'spawn_release'] as const
+const CREW_CORE_REF = `@${CREW_CORE_SERVER}`
+const CREW_SPAWN_TOOL_REFS: readonly string[] = CREW_SPAWN_TOOL_NAMES.map(name => `${CREW_CORE_REF}/${name}`)
+
 const referenceHref = (ref: TemplateReference): string | null => {
   switch (ref.kind) {
     case 'crew': return `/members?member=${encodeURIComponent(ref.id)}`
@@ -612,6 +623,7 @@ export default function AgentTemplatesTab() {
   // has valid spellings to pick from without the input refusing anything.
   const toolSuggestions = useMemo(() => Array.from(new Set([
     ...NATIVE_TOOL_NAMES,
+    ...CREW_SPAWN_TOOL_REFS,
     ...(draft?.tools ?? []),
     ...(draft?.allowed ?? []),
   ])).sort(), [draft?.tools, draft?.allowed])
@@ -819,6 +831,20 @@ export default function AgentTemplatesTab() {
                           addPlaceholder={i18nT('pages.overview.agentTemplatesTab.add_tool_placeholder')}
                           suggestions={toolSuggestions}
                         />
+                        {!detailReadOnly && !detailDraft.tools.some(t => t === CREW_CORE_REF || t === CREW_SPAWN_TOOL_REFS[0]) && (
+                          <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
+                            <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.spawn_tool_hint')}</span>
+                            <Btn
+                              type="button"
+                              className="inline-flex items-center gap-1.5 border-dashed"
+                              onClick={() => setD({ tools: [...detailDraft.tools, CREW_SPAWN_TOOL_REFS[0]] })}
+                            >
+                              <Plus className="lucide-inline" aria-hidden />
+                              {i18nT('pages.overview.agentTemplatesTab.spawn_tool_add')}
+                              <code className="font-mono text-muted">{CREW_SPAWN_TOOL_REFS[0]}</code>
+                            </Btn>
+                          </div>
+                        )}
                       </Section>
                       {editable ? (
                         // The editor renders its own "Skills" heading; wrapping it in a

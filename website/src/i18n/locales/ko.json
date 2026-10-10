@@ -14154,6 +14154,8 @@
         "tool_state_asks": "먼저 확인",
         "add_tool": "도구 추가",
         "add_tool_placeholder": "예: fs_write 또는 @github/…",
+        "spawn_tool_hint": "이 에이전트가 다른 에이전트를 백그라운드에서 실행하게 합니다. 각각 채팅에 작업 상자와 중지 버튼이 표시됩니다.",
+        "spawn_tool_add": "백그라운드 에이전트 추가",
         "remove_item": "{{item}} 제거",
         "remove_item_hint": "제거 — 커스텀 에이전트를 저장하기 전까지 반영되지 않습니다.",
         "skills": "스킬",

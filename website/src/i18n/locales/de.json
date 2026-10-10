@@ -14379,6 +14379,8 @@
         "tool_state_asks": "fragt erst",
         "add_tool": "Werkzeug hinzufügen",
         "add_tool_placeholder": "z. B. fs_write oder @github/…",
+        "spawn_tool_hint": "Lass diesen Agenten andere Agenten im Hintergrund ausführen, jeweils mit einem Aufgabenfeld und Stopp im Chat.",
+        "spawn_tool_add": "Hintergrund-Agenten hinzufügen",
         "remove_item": "{{item}} entfernen",
         "remove_item_hint": "Entfernen – wirkt erst, wenn du den benutzerdefinierten Agenten speicherst.",
         "skills": "Skills",

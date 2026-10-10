@@ -598,6 +598,29 @@ describe('AgentTemplatesTab actions', () => {
     expect(input).toHaveAttribute('placeholder', 'e.g. fs_write or @github/…')
   })
 
+  it('names the spawn tool on an editable template until the template grants it', async () => {
+    renderTab()
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'))
+    const hint = await screen.findByText(/run other agents in the background/)
+    expect(hint).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add tool' }))
+    const input = screen.getByRole('combobox', { name: 'Add tool' })
+    // The datalist offers the spawn refs beside kiro-cli's own tool names.
+    const listId = input.getAttribute('list')
+    expect(listId).toBeTruthy()
+    const values = Array.from(document.getElementById(listId!)!.querySelectorAll('option')).map(o => o.getAttribute('value'))
+    expect(values).toEqual(expect.arrayContaining(['fs_read', '@kirocrew-core/spawn_run', '@kirocrew-core/spawn_list']))
+    // One click on the hint's button grants the tool; the hint then goes away.
+    fireEvent.click(screen.getByRole('button', { name: /Add background agents/ }))
+    expect(screen.getByRole('button', { name: '@kirocrew-core/spawn_run: asks first', pressed: false })).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText(/run other agents in the background/)).toBeNull())
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['fs_read', '@docs/search', '@kirocrew-core/spawn_run'],
+      allowedTools: ['@docs/search'],
+    }))
+  })
+
   it('names the deleted template in the closure line over the next row', async () => {
     mockApi.agentTemplates.mockResolvedValue({ templates: [FREE, PKG, RUNTIME, COPY] })
     renderTab()

@@ -14604,6 +14604,8 @@
         "tool_state_asks": "pregunta antes",
         "add_tool": "Añadir herramienta",
         "add_tool_placeholder": "p. ej. fs_write o @github/…",
+        "spawn_tool_hint": "Permite que este agente ejecute otros agentes en segundo plano, cada uno con un cuadro de tarea y Detener en el chat.",
+        "spawn_tool_add": "Añadir agentes en segundo plano",
         "remove_item": "Quitar {{item}}",
         "remove_item_hint": "Quitar — sin efecto hasta que guardes el agente personalizado.",
         "skills": "Habilidades",

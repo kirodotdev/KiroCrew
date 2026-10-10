@@ -113,7 +113,9 @@ FolderPin = tuple[str, str, str]
 #: ``model`` and ``skills`` the crew pane already writes. ``resources`` and
 #: ``mcpServers`` are deliberately absent: skills are a computed view OVER
 #: ``resources`` (writing both would race), and an MCP server is a capability
-#: grant that has its own admission path (the MCP page and its quarantine).
+#: grant that has its own admission path (the MCP page and its quarantine). The
+#: one ``mcpServers`` write a tools edit makes is the declaration of a Crew
+#: control-plane server the new ``tools`` grants (``declare_granted_control_plane``).
 TEMPLATE_DEFINITION_KEYS = frozenset({"description", "prompt", "tools", "allowedTools"})
 
 _READ_ONLY_PACKAGE = "package"
@@ -1030,6 +1032,60 @@ def apply_definition_patch(data: dict[str, Any], patch_body: dict[str, Any]) -> 
     for key in TEMPLATE_DEFINITION_KEYS:
         if key in patch_body:
             data[key] = patch_body[key]
+
+
+def declare_granted_control_plane(data: dict[str, Any]) -> None:
+    """Declare each Crew control-plane server the spec's ``tools`` now grants.
+
+    kiro-cli mounts a server only when the spec both grants it in ``tools`` and
+    declares it under ``mcpServers``, so a template whose author adds
+    ``@kirocrew-core/spawn_run`` through the tools list would otherwise carry a
+    grant that mounts nothing. Only Crew's own control plane is declared here:
+    its launch is re-derived from the managed source at every session start, so
+    the entry written is a placeholder for the grant, not a command anyone can
+    steer. A third-party server keeps its own admission path (the MCP page and
+    its quarantine), and an opt-in Crew server is assigned by hand, never minted
+    by a tools edit -- ``managed_mcp_spec_entry`` answers ``None`` for both a
+    gated and an opt-in name. An existing declaration is never replaced, and a
+    declaration whose grant is later removed is left in place: ``tools`` is the
+    allowlist, so an ungranted declaration mounts nothing.
+
+    Called on the spec as re-read under the spec lock, after the patch's keys
+    are merged onto it, so the one entry added lands beside whatever a
+    concurrent writer saved to ``mcpServers`` in the meantime.
+    """
+    from kiro_crew.agent import managed_mcp_spec_entry
+    from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+    from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
+
+    tools = data.get("tools")
+    grant_all, granted = parse_tools_refs(tools if isinstance(tools, list) else [])
+    if grant_all:
+        # ``*`` grants every DECLARED server; it is not a request to declare one.
+        return
+    wanted = [name for name in CONTROL_PLANE_SERVERS if name in granted]
+    if not wanted:
+        return
+    servers = data.get("mcpServers")
+    if servers is None:
+        servers = {}
+    elif not isinstance(servers, dict):
+        # A hand-edited non-object is the author's to fix; rewriting it would
+        # drop whatever they meant by it.
+        return
+    else:
+        servers = dict(servers)
+    added = False
+    for name in wanted:
+        if name in servers:
+            continue
+        entry = managed_mcp_spec_entry(name)
+        if entry is None:
+            continue
+        servers[name] = entry
+        added = True
+    if added:
+        data["mcpServers"] = servers
 
 
 def read_only_reason_for_path(path: Path) -> str | None:

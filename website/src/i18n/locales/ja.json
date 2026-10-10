@@ -14154,6 +14154,8 @@
         "tool_state_asks": "確認あり",
         "add_tool": "ツールを追加",
         "add_tool_placeholder": "例: fs_write または @github/…",
+        "spawn_tool_hint": "このエージェントが他のエージェントをバックグラウンドで実行できるようにします。それぞれチャットにタスクボックスと停止ボタンが表示されます。",
+        "spawn_tool_add": "バックグラウンドエージェントを追加",
         "remove_item": "{{item}} を削除",
         "remove_item_hint": "削除 — カスタムエージェントを保存するまで反映されません。",
         "skills": "スキル",

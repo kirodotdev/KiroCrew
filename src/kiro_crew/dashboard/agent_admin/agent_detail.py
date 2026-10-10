@@ -424,6 +424,16 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 if key not in data and key != "resources":
                                     fresh.pop(key, None)
                             _merge_resources_delta(fresh, before_patch, data, mapped_uris)
+                            if "tools" in patch_body:  # type: ignore[operator]
+                                # On the FRESH read, not the pre-lock snapshot: adding
+                                # one entry to the snapshot's map would make the whole
+                                # map a changed key and overwrite a concurrent writer's
+                                # ``mcpServers`` edit.
+                                from kiro_crew.dashboard.handlers.agent_templates import (
+                                    declare_granted_control_plane,
+                                )
+
+                                declare_granted_control_plane(fresh)
                             sanitize_agent_config_governance(fresh)
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing

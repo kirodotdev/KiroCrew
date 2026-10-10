@@ -485,8 +485,28 @@ MCP server reaches an already-running chat only after a relaunch.) The MCP serve
 the acronym ("external tool connections"). The Add tool
 input keeps the words "Add tool" visible as its label while open (one control
 in two states, not two controls), is wide enough for its example placeholder (`fs_write or @github/…`)
-and offers a datalist of kiro-cli's native tool names plus every name the
-template already grants (offered, not enforced); the enroll row says where
+and offers a datalist of kiro-cli's native tool names, Kiro Crew's
+background-subagent tools (`@kirocrew-core/spawn_run`, `spawn_list`,
+`spawn_status`, `spawn_steer`, `spawn_continue`, `spawn_release`), plus every name the
+template already grants (offered, not enforced). Until an editable template
+grants `@kirocrew-core` or `@kirocrew-core/spawn_run`, a muted line under the
+tools says what background agents give it (`spawn_tool_hint`) beside a one-click
+**Add background agents** button that adds `@kirocrew-core/spawn_run` to the
+draft (`spawn_tool_add`, the raw ref shown as secondary text). A tools save that grants a
+Crew control-plane server (`kirocrew-core`, `kirocrew-cron`) the spec does not
+declare also writes that server's managed `mcpServers` entry
+(`agent_templates.declare_granted_control_plane`, applied to the spec re-read
+under the spec lock so a concurrent `mcpServers` edit survives): kiro-cli mounts a server
+only when the spec both grants and declares it, so the grant alone would mount
+nothing, and with both a custom agent's `spawn_run` is the same native
+session-attached spawn the built-in agent has (inline task box with Stop, an
+explicit `agent` / `crew` pin, completion delivered to the chat). Only the
+control plane is declared this way, because its launch is re-derived from the
+managed source at every session start; a third-party or opt-in server keeps
+its own admission path, `*` declares nothing, an existing declaration is never
+replaced, a non-object `mcpServers` is left for the author, and removing the
+grant leaves the declaration in place (ungranted, it mounts nothing). The grant
+is a mount, not an auto-approval: each spawn still asks unless the author ticks it. The enroll row says where
 the result lands (under Crewmates); the save bar's two buttons never wrap or
 shrink, and its instruction names the button by its label ("Save custom agent"). A private copy is never a dead end: its
 banner offers **Open crewmate** (the crew's **Built from** pane, where the copy is
