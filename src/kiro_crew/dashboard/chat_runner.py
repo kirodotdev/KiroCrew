@@ -18120,6 +18120,10 @@ async def _run_chat(
                 (_image_replay_owed := not _turn_emitted and _replay_owes_delivery())
                 or (
                     not _should_suppress_requeue(slot)
+                    # Resolved Stop: the `_image_stop_gen` snapshot below is
+                    # taken after the Stop moved the counter, so only this read
+                    # sees it (see the AcpProcessDied arm).
+                    and not _stop_pressed()
                     and not _has_user_queued_followup(slot)
                     and not getattr(slot, "_pending_steers", None)
                 )
@@ -18252,7 +18256,9 @@ async def _run_chat(
             # No tokens streamed (guarded above), so no chunk message exists;
             # strip defensively before re-queue all the same.
             slot.purge_chunks()
-            if _should_suppress_requeue(slot):
+            # Resolved Stop: skip the "retrying" card the post-backoff re-read
+            # would only withdraw (see the AcpProcessDied arm).
+            if _should_suppress_requeue(slot) or _stop_pressed():
                 pass
             elif _prompt_depth == 0:
                 # Single emit (see AcpProcessDied note): slot.append persists +
@@ -18915,6 +18921,9 @@ async def _run_chat(
                 and not slot._poisoned_reset_used
                 and _prompt_depth == 0
                 and not _should_suppress_requeue(slot)
+                # Resolved Stop: the canary snapshot below is taken after the
+                # Stop moved the counter (see the AcpProcessDied arm).
+                and not _stop_pressed()
             ):
                 # ── Canary probe: conversation-specific evidence, or bust ──
                 # Two exhausted ladders alone cannot distinguish a poisoned
