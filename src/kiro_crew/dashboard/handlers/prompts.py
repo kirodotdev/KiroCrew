@@ -2375,6 +2375,9 @@ async def api_skills(request: web.Request) -> web.Response:
                 "matches": result,
                 "next_offset": next_offset,
                 "incomplete": report.incomplete,
+                # The caller cannot see its own skill:// mapping, so a miss would
+                # otherwise read as "not installed" when it means "not in scope".
+                "scope_size": None if only is None else len(only),
             }
 
         try:

@@ -375,6 +375,7 @@ class TestScopedDiscovery:
         page = await call(action="list", limit=2)
         assert [row["key"] for row in page["matches"]] == ["team/s0", "team/s1"]
         assert page["next_offset"] == 2
+        assert page["scope_size"] == 3
         tail = await call(action="list", limit=2, offset=2)
         assert [row["key"] for row in tail["matches"]] == ["team/s2"]
         assert tail["next_offset"] is None
@@ -383,7 +384,9 @@ class TestScopedDiscovery:
         # Clearing the custom mapping must not widen any discovery surface.
         paths.clear()
         assert (await call(action="list"))["matches"] == []
-        assert (await call(action="search", q="outside"))["matches"] == []
+        cleared = await call(action="search", q="outside")
+        assert cleared["matches"] == []
+        assert cleared["scope_size"] == 0
         assert (await call(action="read", key="outside"))["matches"] == []
 
     def test_mapping_bounds_every_surface_and_keeps_the_tail_loadable(self, tmp_path, opened):

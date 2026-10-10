@@ -961,12 +961,14 @@ class TestSkillSearch:
         assert seen[0][2] == "dashboard:signed"
 
     @staticmethod
-    def _gateway(monkeypatch: pytest.MonkeyPatch, matches: list[dict]) -> list[str]:
+    def _gateway(
+        monkeypatch: pytest.MonkeyPatch, matches: list[dict], **extra: object
+    ) -> list[str]:
         seen: list[str] = []
 
         def _get(path: str, **_kw: object) -> dict:
             seen.append(path)
-            return {"matches": matches}
+            return {"matches": matches, **extra}
 
         monkeypatch.setattr(mcp_core, "_get", _get)
         monkeypatch.setattr(
@@ -1027,6 +1029,12 @@ class TestSkillSearch:
         self._gateway(monkeypatch, [])
         out = _call_tool("skill_search", {"query": "zzz"})
         assert "No skills matched 'zzz'" in out
+
+    def test_no_matches_in_a_mapped_scope_names_the_scope(self, monkeypatch: pytest.MonkeyPatch):
+        self._gateway(monkeypatch, [], scope_size=3)
+        out = _call_tool("skill_search", {"query": "babysit"})
+        assert "No skills matched 'babysit' among the 3 skill(s) mapped to this agent" in out
+        assert "not found" in out
 
     def test_pid_walked_identity_never_selects_a_project(self, monkeypatch: pytest.MonkeyPatch):
         """A tokenless spawn child resolves leniently to its PARENT slot. The
