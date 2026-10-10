@@ -232,6 +232,7 @@
       "proxy_challenge_reload": "이 브라우저 탭을 다시 로드하세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 그렇지 않다면 이 대시보드 앞단의 프록시나 방화벽이 요청을 거부한 것이니, 프록시 로그를 확인하거나 나중에 다시 시도하세요.",
       "proxy_challenge_framed": "새 탭에서 {{origin}} 을 여세요. 로그인 페이지가 나타나면 액세스 프록시 세션이 만료된 것입니다. 이 패널 안에서는 로그인할 수 없습니다. 거기서 로그인한 뒤 이 페이지를 다시 로드하세요.",
       "rate_limited_by_the_tunnel_edge_http_429_too_man": "터널 엣지에서 요청 수가 제한되었습니다 (HTTP 429) — 짧은 시간에 요청이 너무 많습니다. 대시보드가 자동으로 재시도합니다. 계속되면 몇 초 기다린 후 새로고침하세요.",
+      "too_many_open_sessions_http_429_close_old": "열려 있는 세션이 너무 많습니다. 오래된 세션을 몇 개 닫은 뒤(기록에 남아 있어 언제든 다시 열 수 있습니다) 다시 시도하세요.",
       "reauth_command": "kirocrew token",
       "run_kirocrew_token_then_paste_sign_in_url": "터미널에서 kirocrew token 을 실행한 다음 아래에 로그인 URL을 붙여넣고 Enter를 누르세요.",
       "session_expired": "세션이 만료되었습니다.",
@@ -9622,7 +9623,9 @@
     "useSessionActions": {
       "close_this_session": "이 세션을 닫으시겠습니까?",
       "reload_failed": "세션 다시 로드에 실패했습니다. 에이전트가 응답 중이거나 게이트웨이에 연결할 수 없습니다. 세션이 유휴 상태일 때 다시 시도하세요.",
-      "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요."
+      "fork_failed": "이 세션을 복제할 수 없습니다 — {{productName}}에 연결할 수 없습니다. 연결을 확인한 뒤 다시 시도하세요.",
+      "reload_failed_subagents": "이 세션의 하위 에이전트가 아직 작업 중입니다. 완료된 후 다시 시도하세요.",
+      "duplicate_failed_reason": "이 세션을 복제할 수 없습니다: {{reason}}"
     },
     "useStreamingStt": {
       "audio_worklet_unavailable": "오디오 워크릿을 사용할 수 없습니다",
