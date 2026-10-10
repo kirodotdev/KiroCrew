@@ -3834,6 +3834,16 @@ class SubagentManager:
         # it, recorded by ``_fire_event`` and serialized on each slot as
         # ``subagents_queued`` (see ``subagent_manager.published_depth``).
         self._published_depths = PublishedQueueDepths()
+        # Done-but-unreported holds per wave: batch_id -> agent ids whose
+        # ``done`` has flipped but whose terminal report the completion
+        # consumer has not yet consumed. Held OUTSIDE the agent records
+        # because ``_agents`` membership is operator-mutable (DELETE
+        # /api/spawn pops done members) -- the wave-close fallback must not
+        # lose its hold to a concurrent clear. Armed by the
+        # report machinery at the done-flip, disarmed by the consumer when
+        # the contribution lands or structurally when a report ends without
+        # reaching the consumer. Pruned by finalize_batch.
+        self._reports_in_flight: dict[str, set[str]] = {}
         self._reaper_task: asyncio.Task | None = None  # type: ignore[type-arg]
         # Every ``_force_reap`` that runs OUTSIDE the reaper task -- a dashboard
         # Stop or a parent-end cancel, each awaited inside its
@@ -4517,6 +4527,25 @@ class SubagentManager:
             settle_digest=settle_digest,
             teardown_done=teardown_done,
             gate=gate,
+        )
+
+    async def _report_terminal_guarded(
+        self,
+        info: SubagentInfo,
+        *,
+        source: str,
+        injection_timeout_reason: str,
+        mark_delivered_on_success: bool,
+        settle_digest: bool = False,
+        teardown_done: "asyncio.Event | None" = None,
+    ) -> bool:
+        return await self._terminal._report_terminal_guarded_impl(
+            info,
+            source=source,
+            injection_timeout_reason=injection_timeout_reason,
+            mark_delivered_on_success=mark_delivered_on_success,
+            settle_digest=settle_digest,
+            teardown_done=teardown_done,
         )
 
     async def _run_terminal_report(
@@ -5835,6 +5864,15 @@ class SubagentManager:
 
     def batch_members_pending(self, batch_id: str) -> bool:
         return self._waves.batch_members_pending_impl(batch_id)
+
+    def batch_reports_in_flight(self, batch_id: str) -> bool:
+        return self._waves.batch_reports_in_flight_impl(batch_id)
+
+    def arm_report_in_flight(self, info: SubagentInfo) -> None:
+        return self._waves.arm_report_in_flight_impl(info)
+
+    def consume_report_hold(self, batch_id: str, agent_id: str) -> None:
+        return self._waves.consume_report_hold_impl(batch_id, agent_id)
 
     async def batch_members_pending_async(self, batch_id: str) -> bool:
         return await self._waves.batch_members_pending_async_impl(batch_id)

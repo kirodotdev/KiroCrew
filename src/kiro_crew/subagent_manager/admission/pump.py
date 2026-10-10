@@ -1079,6 +1079,10 @@ class _PumpMixin(ManagerComponent):
             # separates this from a decline for a machine; the prose is what
             # separates it for the agent that receives the completion event.
             info.error = no_surface_error or "spawn rejected"
+            # Registered terminal flip whose announce is awaited below after a
+            # claim/slot/drain hop -- arm with the flip so no sibling
+            # completion can observe this member as done-but-unarmed.
+            self._manager.arm_report_in_flight(info)
             # Slot accounting through the one-shot token, NOT a bare decrement.
             # A user Stop funnels into `_force_reap` and can land while this
             # approval is still pending (a human prompt has no deadline), and
@@ -1127,6 +1131,8 @@ class _PumpMixin(ManagerComponent):
                 "spawn rejected: the gateway closed admission before this "
                 "approved spawn could start"
             )
+            # Registered terminal flip; arm with it.
+            self._manager.arm_report_in_flight(info)
             if self._manager._release_slot(info):
                 self._manager._running_count -= 1
                 self._manager._drain_queue()
@@ -1146,6 +1152,8 @@ class _PumpMixin(ManagerComponent):
             # started, with the same terminal bookkeeping as a refusal here.
             info.done = True
             info.error = MEMORY_PRESSURE_NEVER_STARTED
+            # Registered terminal flip; arm with it.
+            self._manager.arm_report_in_flight(info)
             if self._manager._release_slot(info):
                 self._manager._running_count -= 1
                 self._manager._drain_queue()

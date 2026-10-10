@@ -2117,9 +2117,30 @@ class TestSweepDigestHolds:
         held._digest_held_at = 1.0
         mgr._agents["a"] = held
         mgr._batch_submitted["w1"] = [1, 1]
+        mgr.arm_report_in_flight(held)
         with patch.object(mgr, "force_digest_flush") as flush:
             mgr._sweep_digest_holds(now=1e6)
         flush.assert_not_called()
+
+    def test_stranded_hold_past_deadline_is_forced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No pending members AND no report in flight, yet a hold aged past the
+        deadline: the wave-close flush is never coming (a terminal report ended
+        without reaching the consumer — injection-timeout / announce-failure
+        arms release the hold but land no accounting). The sweep is the only
+        remaining exit; before the in-flight-aware guard this state was
+        unsweepable and the held sibling results stranded until restart."""
+        monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
+        mgr = _manager(on_done=AsyncMock())
+        held = _info("a", batch_id="w1", batch_total=1, done=True, parent_session_key="dash:1")
+        held._digest_held_at = 1.0
+        mgr._agents["a"] = held
+        mgr._batch_submitted["w1"] = [1, 1]  # no pending members
+        # No arm: the member's report ended without reaching the consumer.
+        with patch.object(mgr, "force_digest_flush") as flush:
+            mgr._sweep_digest_holds(now=1e6)
+        assert flush.call_count == 1
+        assert flush.call_args[0][0] == "w1"
+        assert flush.call_args[0][1] == "dash:1"
 
     def test_expired_hold_forces_partial_flush(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(sa, "DIGEST_HOLD_SECS", 10.0)
@@ -2538,3 +2559,318 @@ class TestPlatformConstants:
         back to 100 there."""
         assert isinstance(sa._CLK_TCK, int)
         assert sa._CLK_TCK > 0
+
+
+# ── Manager: done-but-unreported wave accounting ────────────
+
+
+class TestBatchReportsInFlight:
+    """``batch_reports_in_flight`` holds the wave-close fallback open across the
+    done-but-unreported window: ``info.done`` has flipped (so
+    ``batch_members_pending`` does not count the member) but its terminal
+    report has not yet been consumed, so the wave's done-count does not include
+    it either. Without the hold, a sibling completion landing in that window
+    finalizes the wave early and the in-flight report finalizes it again."""
+
+    def test_no_batch_id_is_never_in_flight(self) -> None:
+        assert _manager().batch_reports_in_flight("") is False
+
+    def test_done_but_unreported_member_is_in_flight(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is True
+
+    def test_consumed_report_is_not_in_flight(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+        # The consumed wave's registry entry is pruned, not left empty.
+        assert "w1" not in mgr._reports_in_flight
+
+    def test_operator_clear_cannot_drop_the_hold(self) -> None:
+        """The hold lives in the manager-level registry, NOT on `_agents`
+        membership. An operator clear-completed (DELETE /api/spawn) pops every
+        done member — landing inside the done-but-unreported window it must NOT
+        release the hold, or a sibling completion would finalize the wave early
+        and the in-flight report would finalize it a second time."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        # What the DELETE /api/spawn handler does to done members:
+        mgr._agents.pop("a")
+        assert mgr.batch_reports_in_flight("w1") is True
+        # The consumer still holds `info` by reference and releases on landing.
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_flush_only_records_never_arm(self) -> None:
+        """Flush-only synthetics skip the consumer's accounting block, so a
+        hold would only ever be released structurally — transiently pinning
+        the wave open for no accounting reason."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        info._digest_flush_only = True
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_consume_is_idempotent_and_unarmed_release_is_a_noop(self) -> None:
+        mgr = _manager()
+        mgr.consume_report_hold("w1", "never-armed")
+        assert mgr.batch_reports_in_flight("w1") is False
+        info = _info("a", batch_id="w1", done=True)
+        mgr.arm_report_in_flight(info)
+        mgr.consume_report_hold("w1", "a")
+        mgr.consume_report_hold("w1", "a")
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_finalize_batch_prunes_the_hold_registry(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w1", done=True)
+        mgr.arm_report_in_flight(info)
+        mgr.finalize_batch("w1")
+        assert mgr.batch_reports_in_flight("w1") is False
+        assert "w1" not in mgr._reports_in_flight
+
+    def test_live_member_is_not_in_flight(self) -> None:
+        """A member still RUNNING is `batch_members_pending`'s job — the arm
+        happens only at the report's done-flip, so a live member never holds
+        here and the two predicates stay complementary, not redundant."""
+        mgr = _manager()
+        mgr._agents["a"] = _info("a", batch_id="w1", done=False)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    def test_other_waves_members_do_not_count(self) -> None:
+        mgr = _manager()
+        info = _info("a", batch_id="w2", done=True)
+        mgr._agents["a"] = info
+        mgr.arm_report_in_flight(info)
+        assert mgr.batch_reports_in_flight("w1") is False
+
+
+class TestReportsInFlightStrandBackstops:
+    """Every terminal arm that can end a member's report WITHOUT reaching the
+    completion consumer must clear the hold, or `batch_reports_in_flight`
+    would strand the wave-close fallback forever. The wave keeps its degraded
+    a-sibling-can-close liveness instead."""
+
+    @pytest.mark.asyncio
+    async def test_report_injection_timeout_clears_the_hold(self) -> None:
+        """`asyncio.wait_for(self._on_done(info), …)` timing out is terminal for
+        the report: nothing further reaches the consumer for this member. The
+        structural `finally` must release the hold the report armed."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise asyncio.TimeoutError
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        # The report armed the hold at its done-flip (visible mid-announce)…
+        assert seen == [True]
+        # …and the structural `finally` released it when the report ended.
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_report_announce_failure_clears_the_hold(self) -> None:
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise RuntimeError("boom")
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_safe_announce_failure_clears_the_hold(self) -> None:
+        """The registered approval-parked rejection announces through
+        `_safe_announce`; it must arm before the announce (its done-flip
+        equivalent) and a raising consumer must not leave it holding."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+            raise RuntimeError("boom")
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._safe_announce(info)
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_hold_is_visible_to_the_consumer_and_released_after(self) -> None:
+        """On the happy path the hold is armed BEFORE the announce and the
+        CONSUMER owns the release (same synchronous block as the done-count
+        increment) — so the wave-close fallback stays held open for exactly
+        the window between the done-flip and the count landing. The report's
+        structural `finally` then re-releases as an idempotent no-op."""
+        seen: list[bool] = []
+
+        async def _consumer(info: SubagentInfo) -> None:
+            seen.append(_manager_ref[0].batch_reports_in_flight("w1"))
+
+        mgr = _manager(on_done=_consumer)
+        _manager_ref = [mgr]
+        info = _info("a", batch_id="w1", done=True)
+        mgr._agents["a"] = info
+
+        await mgr._run_terminal_report(
+            info,
+            source="Test",
+            injection_timeout_reason="delivery timed out (test)",
+            mark_delivered_on_success=False,
+        )
+
+        assert seen == [True]
+        assert mgr.batch_reports_in_flight("w1") is False
+
+    @pytest.mark.asyncio
+    async def test_cancelled_recovery_arm_never_strands_the_wave(self) -> None:
+        """The cancelled-recovery arm is deliberately report-free (limbo
+        avoidance — no finalize claim, no terminal report ever runs). Holds are
+        armed only at a report's done-flip, so a record terminalized here never
+        carries one — the wave must read as hold-free throughout."""
+        mgr = _manager()
+        info = _info("a", batch_id="w1")
+        info.started = 1.0
+        mgr._agents["a"] = info
+
+        with patch.object(mgr, "_write_tombstone"):
+            # From the test task, `_resume` awaits the ORIGINAL task — this
+            # test's own — which never finishes first: a deterministic block
+            # point with no timing dependence.
+            mgr._schedule_cancel_recovery(info)
+            recovery = mgr._tasks["a:recovery"]
+            await asyncio.sleep(0)  # let _resume start and park on the wait
+            recovery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await recovery
+
+        assert info.done is True
+        assert mgr.batch_reports_in_flight("w1") is False
+
+
+# ── Structural guard: every terminal done-flip arms the wave-close hold ──────
+
+
+class TestEveryDoneFlipArmsTheHold:
+    """A done-but-unreported hold protects wave close only if EVERY terminal
+    ``info.done = True`` flip arms it in the same synchronous block. Hand-placed
+    arms are fragile — one missed flip (the common success path) reopens the
+    double-finalize race. This source-scan fails on a bare ``.done = True`` that
+    is not followed by an ``arm_report_in_flight`` call, so a new flip site
+    cannot silently bypass the hold. The one documented exception is the
+    cancelled-recovery limbo arm, which takes no finalize claim and whose
+    ``not info.done`` guard proves no report ever runs — it carries an explicit
+    ``report-free`` marker on an adjacent line."""
+
+    def test_no_terminal_done_flip_is_left_unarmed(self) -> None:
+        import re
+
+        root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "subagent_manager"
+        files = sorted(root.rglob("*.py"))
+        assert files, "no subagent_manager sources found"
+
+        flip_re = re.compile(r"^\s*(\w+)\.done\s*=\s*True\s*$")
+        unarmed: list[str] = []
+        for path in files:
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for i, line in enumerate(lines):
+                m = flip_re.match(line)
+                if not m:
+                    continue
+                target = m.group(1)  # the object whose .done flips (usually "info")
+                window = "\n".join(lines[i : i + 16])
+                armed = f"arm_report_in_flight({target})" in window
+                # Documented report-free exception: a flip that takes no
+                # finalize claim and spawns no report (limbo-avoidance only).
+                exempt = "report-free" in window
+                if not armed and not exempt:
+                    unarmed.append(f"{path.name}:{i + 1}: {line.strip()}")
+
+        assert not unarmed, (
+            "terminal `.done = True` flip(s) do not arm the wave-close hold "
+            "(and carry no `report-free` exemption marker) — a sibling "
+            "completion can close the wave in the done-but-unarmed window and "
+            "the late report re-finalizes it:\n  " + "\n  ".join(unarmed)
+        )
+
+    def test_every_deferred_safe_announce_is_armed_first(self) -> None:
+        """A record flipped ``done=True`` elsewhere and then announced through a
+        DEFERRED ``ensure_future(_safe_announce(info))`` is in the same
+        done-but-unreported window as a flip-site: the arm inside
+        ``_safe_announce`` runs only on the task's first step, one event-loop
+        turn later, so a sibling completing in that turn closes the wave early.
+        Every such scheduling must be preceded by a synchronous
+        ``arm_report_in_flight(info)`` in the same block. The one exception is a
+        NON-batch rejection (``_drain_queue``'s path), which carries no
+        ``batch_id`` and so holds nothing — marked ``non-batch`` nearby."""
+        import re
+
+        root = Path(__file__).resolve().parent.parent / "src" / "kiro_crew" / "subagent_manager"
+        sched_re = re.compile(r"ensure_future\(\s*self\._manager\._safe_announce\((\w+)\)")
+        split_re = re.compile(r"ensure_future\(\s*$")  # the call split across two lines
+        unarmed: list[str] = []
+        for path in sorted(root.rglob("*.py")):
+            lines = path.read_text(encoding="utf-8").splitlines()
+            for i, line in enumerate(lines):
+                m = sched_re.search(line)
+                target = None
+                if m:
+                    target = m.group(1)
+                elif split_re.search(line) and i + 1 < len(lines):
+                    nxt = re.search(r"self\._manager\._safe_announce\((\w+)\)", lines[i + 1])
+                    if nxt:
+                        target = nxt.group(1)
+                if target is None:
+                    continue
+                back = "\n".join(lines[max(0, i - 20) : i + 1])
+                armed = f"arm_report_in_flight({target})" in back
+                # NON-batch rejections announce off a record with no batch_id,
+                # so there is no wave hold to arm (the drain path). Matched
+                # case-insensitively against a `non-batch` marker nearby.
+                exempt = "non-batch" in back.lower()
+                if not armed and not exempt:
+                    unarmed.append(f"{path.name}:{i + 1}: {line.strip()}")
+
+        assert not unarmed, (
+            "deferred `_safe_announce` scheduling(s) are not preceded by a "
+            "synchronous `arm_report_in_flight` (and carry no `non-batch` "
+            "marker) — the arm inside `_safe_announce` lands one event-loop "
+            "turn late, leaving a window where a sibling closes the wave "
+            "early:\n  " + "\n  ".join(unarmed)
+        )

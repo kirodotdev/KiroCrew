@@ -219,6 +219,12 @@ class CancellationCoordinator(ManagerComponent):
                     # failure (with any partial result) even when the respawn
                     # itself could not happen.
                     info.done = True
+                    # Terminal flip that reports via ``_run_terminal_report``
+                    # below, after a claim/bookkeeping hop -- arm with the flip
+                    # so a sibling completion cannot read this member as
+                    # done-but-unarmed in that window. The report
+                    # machinery's own arm is an idempotent backstop.
+                    self._manager.arm_report_in_flight(info)
                     if reason == "context_overflow":
                         info.error = (
                             "agent context exceeded the model window and the dedicated-session "
@@ -292,6 +298,17 @@ class CancellationCoordinator(ManagerComponent):
                 # tombstone the reaper could not correct.
                 if not info.done and not info._reap_started and not info.reaped:
                     info.done = True
+                    # This arm is deliberately report-free (limbo-avoidance
+                    # only -- no finalize claim is taken, so no terminal report
+                    # will ever reach the completion consumer for this record).
+                    # No done-but-unreported hold needs arming or releasing
+                    # here: holds are armed only by the report machinery in the
+                    # same synchronous block that flips ``done`` (or immediately
+                    # before a safe-announce of an already-done record), so a
+                    # record reaching this arm with ``done`` still False can
+                    # never carry one -- ``batch_reports_in_flight`` ignores it
+                    # and a sibling completion keeps its ability to close the
+                    # wave with this member's line missing.
                     info.error = "cancelled"
                     info.elapsed = time.time() - info.started
                     if not info.user_stopped:

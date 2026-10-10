@@ -1607,6 +1607,9 @@ class _GateMixin(ManagerComponent):
             else:
                 info.done = True
                 info.error = "spawn rejected: no approval mechanism configured"
+                # Registered terminal flip whose announce task arms a loop
+                # cycle later -- arm with the flip.
+                self._manager.arm_report_in_flight(info)
                 self._manager._running_count -= 1
                 self._manager._drain_queue()
                 sel().log_tool_invocation(
@@ -1631,6 +1634,9 @@ class _GateMixin(ManagerComponent):
         else:
             info.done = True
             info.error = "spawn rejected: no approval mechanism configured"
+            # Registered terminal flip whose announce task arms a loop cycle
+            # later -- arm with the flip.
+            self._manager.arm_report_in_flight(info)
             self._manager._running_count -= 1
             self._manager._drain_queue()
             sel().log_tool_invocation(
@@ -1894,10 +1900,25 @@ class _GateMixin(ManagerComponent):
             # backstop is what retires the mark.
             logger.info("Skipping parent announce for %s - its parent ended", info.id)
             return
+        # Records routed here never pass through ``_report_terminal``, so this
+        # is their done-flip-equivalent moment: arm the done-but-unreported
+        # hold immediately before the announce (registered approval-parked
+        # rejections, batch rejections, lost-submission synthetics -- all
+        # created/flipped ``done=True`` before reaching this coroutine). Flush-
+        # only records never arm (guarded inside the arm itself): they skip the
+        # consumer's accounting block entirely.
+        self._manager.arm_report_in_flight(info)
         try:
             await self._manager._on_done(info)
         except Exception as exc:
             logger.error("Subagent announce failed for %s (%s)", info.id, type(exc).__name__)
+        finally:
+            # Structural release, mirroring ``_report_terminal``'s: whether the
+            # consumer landed the contribution (idempotent no-op), the announce
+            # raised, or this task was cancelled -- an announce that has ended
+            # is not in flight, and ``batch_reports_in_flight`` must not
+            # strand the wave-close fallback.
+            self._manager.consume_report_hold(info.batch_id, info.id)
 
     def _record_crew_log_dispatch(
         self,
@@ -2082,8 +2103,26 @@ class _GateMixin(ManagerComponent):
         self._manager._forget_pending_start(info.id)
         if info.batch_id and self._manager._on_done:
             try:
-                self._manager._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
+                # Arm synchronously BEFORE scheduling the announce. This path
+                # also carries SYNTHETIC rejections created ``done=True``
+                # elsewhere (unknown-agent / batch rejections counted as
+                # submitted but never registered), which have no flip-site arm.
+                # ``_safe_announce`` arms too, but only on its first execution
+                # step one event-loop turn later -- during that turn the member
+                # is done, not pending, and not in flight, so a sibling
+                # completion could close the wave early. Arm here so the hold
+                # and the submitted-count can never be observed apart. The arm
+                # is idempotent, so a registered rejection that already armed
+                # at its flip site composes with no effect.
+                self._manager.arm_report_in_flight(info)
+                _announce_task = asyncio.ensure_future(self._manager._safe_announce(info))
+                self._manager._tasks[f"reject-{info.id}"] = _announce_task
+                # Strand-guard mirroring ``_spawn_terminal_report``'s: an
+                # announce task cancelled before its first run never reaches
+                # ``_safe_announce``'s structural release. Idempotent no-op on
+                # every path where the release already happened.
+                _announce_task.add_done_callback(
+                    lambda _t: self._manager.consume_report_hold(info.batch_id, info.id)
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)

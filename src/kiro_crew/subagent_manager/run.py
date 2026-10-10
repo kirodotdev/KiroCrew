@@ -886,6 +886,11 @@ class RunEventCoordinator(ManagerComponent):
         if not info.result and info.streaming_text:
             info.result = info.streaming_text
         info.done = True
+        # Terminal done flip on the reap-ending path: arm with it. The reap's
+        # report is spawned separately and reaches the consumer only after its
+        # own teardown, so a done-but-unarmed window here would let a sibling
+        # close the wave early (same shape as the run's own terminal flips).
+        self._manager.arm_report_in_flight(info)
         if not neutral:
             Stats().inc_subagent_failed()
         self._manager._write_tombstone(info, info._reap_reason or "reaped")
@@ -924,6 +929,15 @@ class RunEventCoordinator(ManagerComponent):
             if not info.reaped and not info.done:
                 info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
+                # Armed HERE, synchronously with the flip -- not left to the
+                # report task spawned later. Between this flip and that task's
+                # first run the coroutine yields (the teardown awaits), and in
+                # that done-but-unarmed window a sibling completion reads this
+                # member as neither pending nor in flight and closes the wave
+                # early; the report then finalizes it AGAIN (the
+                # failure-path window). The report machinery's own arm stays
+                # as an idempotent no-op.
+                self._manager.arm_report_in_flight(info)
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
             if info._ending_claimed:
@@ -979,6 +993,10 @@ class RunEventCoordinator(ManagerComponent):
                     handed_to_recovery = True
                 else:
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above --
+                    # the cancel path yields at teardown before its report
+                    # task first runs (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     if (
                         info.tool_count > 0
                         and not info.user_stopped
@@ -1085,6 +1103,9 @@ class RunEventCoordinator(ManagerComponent):
                     else:
                         info.error = detail
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above
+                    # (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "error")
                     logger.warning("Subagent %s context overflow: %s", info.id, exc)
@@ -1181,6 +1202,9 @@ class RunEventCoordinator(ManagerComponent):
                         _describe_exception(exc), exc, budget=MAX_ERROR_DETAIL_LEN
                     )
                     info.done = True
+                    # Same synchronous flip+arm as the timeout arm above
+                    # (the failure-path window).
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     self._manager._write_tombstone(info, "error")
                 if info._ending_claimed:
@@ -3130,6 +3154,10 @@ class RunEventCoordinator(ManagerComponent):
                         info.result = result_text or "_Partial output._"
                         info.error = f"child_escalation_limit:{child_escalation_limit}"
                         info.done = True
+                        # In-run terminal flip: the report is spawned only
+                        # after this return unwinds to ``_run``'s ``finally``
+                        # -- arm with the flip.
+                        self._manager.arm_report_in_flight(info)
                         Stats().inc_subagent_failed()
                         logger.warning(
                             "Subagent %s hit child escalation limit (%d)",
@@ -3176,6 +3204,9 @@ class RunEventCoordinator(ManagerComponent):
                     info.result = result_text or "_Partial output._"
                     info.error = f"turn_limit:{turn_limit}"
                     info.done = True
+                    # In-run terminal flip -- same arm as the escalation-limit
+                    # return above.
+                    self._manager.arm_report_in_flight(info)
                     Stats().inc_subagent_failed()
                     logger.warning("Subagent %s hit turn limit (%d)", info.id, turn_limit)
                     usage.settle()
@@ -3423,6 +3454,15 @@ class RunEventCoordinator(ManagerComponent):
                 logger.warning("Failed to record result_complete for %s", info.id, exc_info=True)
             finally:
                 info.done = True
+                # The claimed-success flip is a terminal done transition like
+                # any other, and the most common one. _run's finally spawns the
+                # report task then awaits the session teardown; the report's own
+                # arm runs only after that teardown await, so without arming
+                # here member A is done, not pending, and not in flight for the
+                # whole teardown window -- a sibling completion would read the
+                # wave as closeable and finalize it early, and A's late report
+                # would finalize it again. Arm with the flip.
+                self._manager.arm_report_in_flight(info)
             return
         # Any other ending, including a whole answer a stop got to first: _run's
         # ``finally`` caps the streamed file and records no whole answer.
@@ -3442,6 +3482,12 @@ class RunEventCoordinator(ManagerComponent):
             return
         was_done = info.done
         info.done = True
+        # Success is a terminal done transition like any other: between this
+        # flip and the report task's first run, the caller's teardown can
+        # yield -- arm with the flip so the window is closed on EVERY terminal
+        # path, not just failures. Idempotent when another path
+        # (``was_done``) already recorded the ending.
+        self._manager.arm_report_in_flight(info)
         if info.user_stopped:
             # The user-stop path owns the tombstone/stat for this record.
             logger.info("Subagent %s stream ended by user stop (%s)", info.id, _stop.stop_reason)

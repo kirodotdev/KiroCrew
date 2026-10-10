@@ -9582,6 +9582,17 @@ class GatewayOrchestrator:
                         },
                     )
             if _batch_id and not _flush_only:
+                # This member's report has been consumed: its contribution is
+                # about to land in the wave's done-count, so it stops holding
+                # the wave-close fallback open (batch_reports_in_flight).
+                # Release in the same synchronous block as the
+                # increment so the hold and the count can never be observed
+                # apart. The release goes to the manager-level registry -- NOT
+                # an agent-record flag -- so an operator clear (DELETE
+                # /api/spawn) popping this member from ``_agents`` mid-flight
+                # cannot have dropped the hold before this line lands it.
+                if self.subagent_mgr is not None:
+                    self.subagent_mgr.consume_report_hold(_batch_id, info.id)
                 bp["done"] += 1
                 _oc = info.outcome
                 if _oc == "stopped":
@@ -9638,13 +9649,47 @@ class GatewayOrchestrator:
                     # stagger gate) — an unrelated agent under the same
                     # parent must neither hold the digest hostage nor
                     # release it early.
+                    #
+                    # A member whose ``done`` flag has flipped but whose
+                    # terminal report has not reached this consumer yet is
+                    # OUTSTANDING too: ``batch_members_pending`` does not
+                    # count it while its contribution to bp["done"] is still
+                    # in flight, so without the reports-in-flight check a
+                    # sibling landing in that window finalizes the wave early
+                    # and the in-flight report then finalizes it again.
                     try:
                         _last = bool(
                             self.subagent_mgr
                             and not await _subagent_batch_pending(self.subagent_mgr, _batch_id)
+                            and not self.subagent_mgr.batch_reports_in_flight(_batch_id)
                         )
                     except Exception:
                         _last = False
+                    # The membership lookup above is awaited, so a sibling
+                    # completion can run this same consumer while we yield:
+                    # it may close the wave (pop ``_batch_progress`` and
+                    # finalize) in that window. If it did, the record we hold
+                    # is detached — finalizing or flushing from it here would
+                    # deliver the wave digest a SECOND time. Re-read the live
+                    # record after the await and bail when it is not the one
+                    # we hold.
+                    if self._batch_progress.get(_batch_id) is not bp:
+                        # This member's result line was written into bp["ok_lines"]
+                        # before the await, so the sibling's winning digest already
+                        # names it — but that digest's settle set was captured
+                        # before this member resumed, so it will not mark this
+                        # member delivered. Flag it ``_digest_held`` so the run
+                        # loop SKIPS its own mark_delivered: delivering it now would
+                        # start the result TTL while the winning digest can still
+                        # sit queued behind a busy parent past that TTL, and the
+                        # digest would then point at an output the prune already
+                        # removed. Held, the output is retained and stays
+                        # orphan-recoverable — the same restart-safety the held
+                        # chunk path relies on. ``_digest_held_at`` is left 0.0 so
+                        # the reaper's hold-deadline sweep does not force a second,
+                        # duplicate chunk for a result the winner already carried.
+                        info._digest_held = True
+                        return
                 if _last:
                     self._batch_progress.pop(_batch_id, None)
                     # Prune per-wave bookkeeping for ALL wave sizes (bounds
