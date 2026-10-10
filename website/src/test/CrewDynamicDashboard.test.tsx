@@ -112,6 +112,53 @@ describe('CrewDynamicDashboard', () => {
     }
   })
 
+  it('says the page is locked, and what that stops, when the gateway body says so', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ structure_locked: true }))
+    mount()
+    const toggle = await screen.findByTestId('crew-dashboard-lock-toggle')
+    expect(toggle).toHaveAccessibleName('Unlock dashboard')
+    expect(screen.getByTestId('crew-dashboard-lock-status')).toHaveTextContent(
+      "Locked: this crewmate can still refresh the values shown, but can't change or restore the layout.",
+    )
+  })
+
+  it('flips the lock through the owner route, then re-reads the page', async () => {
+    const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    const lock = vi.spyOn(api, 'memberDashboardLock').mockResolvedValue({ ok: true, structure_locked: true })
+    mount()
+    const toggle = await screen.findByTestId('crew-dashboard-lock-toggle')
+    expect(toggle).toHaveAccessibleName('Lock dashboard')
+    // Unlocked, the line says what pressing it would stop.
+    expect(screen.getByTestId('crew-dashboard-lock-status')).toHaveTextContent(
+      "Lock this dashboard so this crewmate can't replace it with a different layout or restore an older one.",
+    )
+    const readsBefore = read.mock.calls.length
+    fireEvent.click(toggle)
+    await waitFor(() => expect(lock).toHaveBeenCalledWith('oncall', 'oncall', true))
+    await waitFor(() => expect(read.mock.calls.length).toBeGreaterThan(readsBefore))
+  })
+
+  it.each([
+    ['broken', page({ state: 'error', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-broken'],
+    ['empty', page({ state: 'empty', html: '', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-none'],
+    ['unrenderable', page({ state: 'stale', rendered_html: undefined, structure_locked: true }), 'crew-dashboard-empty'],
+  ])('offers Unlock dashboard on a locked %s view, so the person is never stuck locked', async (_name, body, testId) => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(body)
+    mount()
+    await screen.findByTestId(testId)
+    expect(screen.getByTestId('crew-dashboard-lock-toggle')).toHaveAccessibleName('Unlock dashboard')
+  })
+
+  it('says which change failed and what stayed the same', async () => {
+    vi.spyOn(api, 'memberDashboard').mockResolvedValue(page({ structure_locked: true }))
+    vi.spyOn(api, 'memberDashboardLock').mockRejectedValue(new Error('403'))
+    mount()
+    fireEvent.click(await screen.findByTestId('crew-dashboard-lock-toggle'))
+    expect(await screen.findByTestId('crew-dashboard-lock-error')).toHaveTextContent(
+      "Couldn't unlock the dashboard. It's still locked. Try again.",
+    )
+  })
+
   it('shows the page the read resolved, in a frame granting scripts and nothing else', async () => {
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
     mount()

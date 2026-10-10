@@ -17690,7 +17690,13 @@
       "dashboard_render_error": "यह डैशबोर्ड ड्रॉ नहीं हो सका।",
       "dashboard_frame_title": "{{crew}} का डैशबोर्ड",
       "dashboard_rendering": "डैशबोर्ड बनाया जा रहा है…",
-      "back_to_roster": "साथियों की सूची पर वापस"
+      "back_to_roster": "साथियों की सूची पर वापस",
+      "dashboard_lock_page": "डैशबोर्ड लॉक करो",
+      "dashboard_unlock_page": "डैशबोर्ड अनलॉक करो",
+      "dashboard_lock_hint": "इस डैशबोर्ड को लॉक करो ताकि यह क्रूमेट इसे दूसरे लेआउट से न बदल सके या पुराना वापस न ला सके।",
+      "dashboard_locked_status": "लॉक है: यह क्रूमेट दिखाए गए मान रिफ्रेश कर सकता है, पर लेआउट बदल या वापस नहीं ला सकता।",
+      "dashboard_lock_failed": "डैशबोर्ड लॉक नहीं हुआ। यह अभी भी अनलॉक है। फिर से कोशिश करो।",
+      "dashboard_unlock_failed": "डैशबोर्ड अनलॉक नहीं हुआ। यह अभी भी लॉक है। फिर से कोशिश करो।"
     },
     "tasksCapacityCard": {
       "title": "कार्य और क्षमता",

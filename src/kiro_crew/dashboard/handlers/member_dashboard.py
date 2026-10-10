@@ -22,6 +22,7 @@ withholds.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 from typing import Any, Callable, Mapping
 
@@ -164,6 +165,8 @@ def _refusal(exc: Exception) -> web.Response:
     again; ``*_failed`` is this gateway's state and a retry may work. Collapsing them
     would make a client either retry forever or give up on a transient fault.
     """
+    if isinstance(exc, instance.InstanceLocked):
+        return _bad("dashboard_locked", str(exc), status=423)
     if isinstance(exc, instance.InstanceRefused):
         return _bad("dashboard_refused", str(exc), status=409)
     if isinstance(exc, catalog.UnknownTemplate):
@@ -248,7 +251,9 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
     if record.state == instance.STATE_EMPTY:
         fallback = await _run(lambda: instance.default_instance(slug))
         if fallback is not None:
-            record = fallback
+            # The default page is served for an unadopted crewmate, and the person
+            # may have locked it: the lock is the stored record's, not the default's.
+            record = dataclasses.replace(fallback, structure_locked=record.structure_locked)
         else:
             # NOTHING TO COMPOSE, so nothing is attempted. An empty record carries
             # `manifest={}`, which `parse_manifest` refuses, so `_render` would log a
@@ -576,6 +581,61 @@ def _render(slug: str, member: str, record: Any, locale: str = "") -> str | None
         return None
 
 
+async def api_member_dashboard_lock(request: web.Request) -> web.Response:
+    """POST /api/members/{slug}/dashboard/lock?member=<name> -- the person's structure lock.
+
+    Body ``{"locked": true|false}``. While set, the store refuses every new page version,
+    so an agent's apply or rollback answers ``dashboard_locked`` until the person clears
+    it here. Values and previews keep working.
+
+    PERSON-ONLY, in two gates. An internal-secret caller is an MCP server acting for an
+    agent, and the lock exists to stop exactly that caller, so it is refused before
+    anything else is read. Then the owner gate, as for the read.
+    """
+    if request.get("internal_auth") or request.headers.get("X-Internal-Secret") is not None:
+        # Audited like every other permission decision: an agent trying to lift its
+        # own lock is exactly the event the security log exists to record.
+        try:
+            from kiro_crew.sel import sel as _sel
+
+            _sel().log_api_access(
+                caller=str(request.get("user") or "internal"),
+                operation="members.dashboard_lock",
+                outcome="denied",
+                source="dashboard",
+                resources="internal_secret_caller",
+            )
+        except Exception:  # pragma: no cover - audit must never change the outcome
+            logger.debug("SEL audit for the dashboard lock refusal failed", exc_info=True)
+        return _bad(
+            "human_only",
+            "only the person can lock or unlock a dashboard, from its Dashboard tab",
+            status=403,
+        )
+    resolved = await _resolve(request)
+    if isinstance(resolved, web.Response):
+        return resolved
+    owner_denied = await _owner_only(request, "members.dashboard_lock")
+    if owner_denied is not None:
+        return owner_denied
+    slug, member = resolved
+    try:
+        body = await request.json()
+    except Exception:
+        return _bad("invalid_json", "invalid JSON body")
+    locked = body.get("locked") if isinstance(body, dict) else None
+    if not isinstance(locked, bool):
+        return _bad("validation_error", "locked must be true or false")
+    try:
+        record = await _run(lambda: instance.set_structure_lock(slug, locked))
+    except Exception as exc:
+        return _refusal(exc)
+    state = request.app.get("state")
+    if state is not None:
+        state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
+    return web.json_response({"ok": True, "structure_locked": record.structure_locked})
+
+
 def register_member_dashboard_routes(app: web.Application) -> None:
     """Register the dynamic dashboard's read route.
 
@@ -586,3 +646,4 @@ def register_member_dashboard_routes(app: web.Application) -> None:
     each other.
     """
     app.router.add_get("/api/members/{slug}/dashboard", api_member_dashboard)
+    app.router.add_post("/api/members/{slug}/dashboard/lock", api_member_dashboard_lock)

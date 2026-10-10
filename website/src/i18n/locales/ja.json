@@ -17432,7 +17432,13 @@
       "dashboard_render_error": "このダッシュボードを描画できませんでした。",
       "dashboard_frame_title": "{{crew}} のダッシュボード",
       "dashboard_rendering": "ダッシュボードを描画中…",
-      "back_to_roster": "クルーメイト一覧に戻る"
+      "back_to_roster": "クルーメイト一覧に戻る",
+      "dashboard_lock_page": "ダッシュボードをロック",
+      "dashboard_unlock_page": "ダッシュボードのロックを解除",
+      "dashboard_lock_hint": "ロックすると、このクルーメイトはこのダッシュボードを別のレイアウトに差し替えたり、以前のものに戻したりできなくなります。",
+      "dashboard_locked_status": "ロック中。このクルーメイトは表示中の値を更新できますが、レイアウトの変更や復元はできません。",
+      "dashboard_lock_failed": "ダッシュボードをロックできませんでした。ロックされていません。もう一度お試しください。",
+      "dashboard_unlock_failed": "ダッシュボードのロックを解除できませんでした。ロックされたままです。もう一度お試しください。"
     },
     "tasksCapacityCard": {
       "title": "タスクと処理能力",

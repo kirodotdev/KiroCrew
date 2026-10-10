@@ -17948,7 +17948,13 @@
       "dashboard_render_error": "No se pudo dibujar este panel.",
       "dashboard_frame_title": "Panel de {{crew}}",
       "dashboard_rendering": "Dibujando el panel…",
-      "back_to_roster": "Volver a los compañeros"
+      "back_to_roster": "Volver a los compañeros",
+      "dashboard_lock_page": "Bloquear panel",
+      "dashboard_unlock_page": "Desbloquear panel",
+      "dashboard_lock_hint": "Bloquea este panel para que este miembro no lo reemplace por otro diseño ni restaure uno anterior.",
+      "dashboard_locked_status": "Bloqueado: este miembro puede seguir actualizando los valores, pero no cambiar ni restaurar el diseño.",
+      "dashboard_lock_failed": "No se pudo bloquear el panel. Sigue desbloqueado. Inténtalo de nuevo.",
+      "dashboard_unlock_failed": "No se pudo desbloquear el panel. Sigue bloqueado. Inténtalo de nuevo."
     },
     "tasksCapacityCard": {
       "title": "Tareas y capacidad",

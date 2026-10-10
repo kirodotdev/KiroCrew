@@ -17948,7 +17948,13 @@
       "dashboard_render_error": "Non e stato possibile disegnare questa dashboard.",
       "dashboard_frame_title": "Dashboard di {{crew}}",
       "dashboard_rendering": "Disegno della dashboard…",
-      "back_to_roster": "Torna ai compagni"
+      "back_to_roster": "Torna ai compagni",
+      "dashboard_lock_page": "Blocca dashboard",
+      "dashboard_unlock_page": "Sblocca dashboard",
+      "dashboard_lock_hint": "Blocca questa dashboard così questo membro non può sostituirla con un altro layout né ripristinarne una precedente.",
+      "dashboard_locked_status": "Bloccata. Questo membro può ancora aggiornare i valori mostrati, ma non cambiare né ripristinare il layout.",
+      "dashboard_lock_failed": "Impossibile bloccare la dashboard. È ancora sbloccata. Riprova.",
+      "dashboard_unlock_failed": "Impossibile sbloccare la dashboard. È ancora bloccata. Riprova."
     },
     "tasksCapacityCard": {
       "title": "Attività e capacità",

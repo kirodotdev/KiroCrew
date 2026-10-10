@@ -17948,7 +17948,13 @@
       "dashboard_render_error": "Ce tableau de bord n'a pas pu etre dessine.",
       "dashboard_frame_title": "Tableau de bord de {{crew}}",
       "dashboard_rendering": "Affichage du tableau de bord…",
-      "back_to_roster": "Retour aux coéquipiers"
+      "back_to_roster": "Retour aux coéquipiers",
+      "dashboard_lock_page": "Verrouiller le tableau de bord",
+      "dashboard_unlock_page": "Déverrouiller le tableau de bord",
+      "dashboard_lock_hint": "Verrouille ce tableau de bord pour que ce membre ne le remplace pas par une autre mise en page ni n'en restaure une ancienne.",
+      "dashboard_locked_status": "Verrouillé. Ce membre peut encore actualiser les valeurs affichées, mais pas modifier ni restaurer la mise en page.",
+      "dashboard_lock_failed": "Impossible de verrouiller le tableau de bord. Il reste déverrouillé. Réessaie.",
+      "dashboard_unlock_failed": "Impossible de déverrouiller le tableau de bord. Il reste verrouillé. Réessaie."
     },
     "tasksCapacityCard": {
       "title": "Tâches et capacité",

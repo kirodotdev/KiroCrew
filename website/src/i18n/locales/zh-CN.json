@@ -17432,7 +17432,13 @@
       "dashboard_render_error": "无法绘制该仪表板。",
       "dashboard_frame_title": "{{crew}} 的仪表板",
       "dashboard_rendering": "正在绘制仪表板…",
-      "back_to_roster": "返回队友列表"
+      "back_to_roster": "返回队友列表",
+      "dashboard_lock_page": "锁定仪表板",
+      "dashboard_unlock_page": "解锁仪表板",
+      "dashboard_lock_hint": "锁定后，此成员无法用其他布局替换此仪表板，也无法恢复旧布局。",
+      "dashboard_locked_status": "已锁定：此成员仍可刷新显示的数值，但无法更改或恢复布局。",
+      "dashboard_lock_failed": "无法锁定仪表板，它仍未锁定。请重试。",
+      "dashboard_unlock_failed": "无法解锁仪表板，它仍处于锁定状态。请重试。"
     },
     "tasksCapacityCard": {
       "title": "任务与容量",

@@ -227,7 +227,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "pages that shipped with the product are rendered. Custom "
                 "templates come later. ALWAYS show a preview and ask before you "
                 "apply: the page is the person's, not yours, and a page swapped "
-                "without asking is one they have to undo."
+                "without asking is one they have to undo. Do not preview while "
+                "the person has locked the layout (your [DASHBOARD] block says "
+                "LOCKED): ask them to unlock it first."
             ),
             "inputSchema": {
                 "type": "object",
@@ -252,7 +254,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "saying yes, and it takes NO arguments on purpose: what it "
                 "installs is the page that was staged, so it cannot differ from "
                 "the one they were shown. The previous version stays on disk, so "
-                "dashboard_rollback can go back to it."
+                "dashboard_rollback can go back to it. Refused with "
+                "`dashboard_locked` while the person has locked the layout: "
+                "applying or adopting a page then waits until they unlock it "
+                "from the Dashboard tab, so ask them. You cannot unlock it."
             ),
             "inputSchema": {"type": "object", "properties": {}},
         },
@@ -264,7 +269,9 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "versions you can still reach; a version the store has dropped is "
                 "refused, so read that list rather than guessing. A rollback moves "
                 "FORWARD: restoring version 1 over version 2 writes version 3, so "
-                "nothing is lost and you can roll back again."
+                "nothing is lost and you can roll back again. Refused with "
+                "`dashboard_locked` while the person has locked the layout; "
+                "ask them to unlock it from the Dashboard tab. You cannot."
             ),
             "inputSchema": {
                 "type": "object",

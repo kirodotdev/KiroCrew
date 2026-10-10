@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { RotateCw } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import { Lock, LockOpen, RotateCw } from 'lucide-react'
 import { api, type DashboardManifest } from '../../api/client'
 import { Btn } from '../../components/ui'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -171,6 +171,18 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
     refetchInterval: DASHBOARD_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
   })
+
+  // The person's layout lock. Read off the same body, so the toggle shows what the
+  // gateway holds rather than what was last clicked.
+  const locked = Boolean(data?.structure_locked)
+  const lockMutation = useMutation({
+    mutationFn: (want: boolean) => api.memberDashboardLock(slug, member, want),
+    onSuccess: () => { void refetch() },
+  })
+  const lockBusy = lockMutation.isPending
+  // Which change failed, so the notice can say what stayed the same.
+  const lockFailed = lockMutation.isError ? (lockMutation.variables ? 'lock' : 'unlock') : null
+  const toggleLock = () => lockMutation.mutate(!locked)
 
   /**
    * The page currently believed to work, and the candidate waiting to prove it.
@@ -343,6 +355,33 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
     // could never promote the page it just re-minted.
   }, [probating, candidate, probe.url])
 
+  // The person's lock bar. In EVERY view that has a read, not only the page view: a
+  // page locked while its record was healthy can later read as broken or empty, and
+  // a bar missing there would leave the person with no way to unlock it.
+  const lockBar = (
+    <div className="shrink-0 border-b border-border px-2 py-1 space-y-1 text-[11px] text-muted">
+      <div className="flex items-center gap-2">
+        {/* Said in BOTH states, so the person knows what the button protects before
+            pressing it. The crew is not named: a slug such as `default` reads as a word. */}
+        <span className="flex-1 min-w-0" data-testid="crew-dashboard-lock-status">
+          {i18nT(locked ? 'pages.membersPage.dashboard_locked_status' : 'pages.membersPage.dashboard_lock_hint')}
+        </span>
+        <Btn disabled={lockBusy} onClick={toggleLock} className="shrink-0" data-testid="crew-dashboard-lock-toggle">
+          {locked ? <Lock className="lucide-inline" aria-hidden /> : <LockOpen className="lucide-inline" aria-hidden />}
+          {i18nT(locked ? 'pages.membersPage.dashboard_unlock_page' : 'pages.membersPage.dashboard_lock_page')}
+        </Btn>
+      </div>
+      {/* Its own row, full width. No hand-off: the Members page's unsaved Profile and
+          crew-editor drafts, as at the isError branch below. */}
+      <ErrorNotice
+        message={lockFailed && i18nT(
+          lockFailed === 'lock' ? 'pages.membersPage.dashboard_lock_failed' : 'pages.membersPage.dashboard_unlock_failed',
+        )}
+        testId="crew-dashboard-lock-error"
+      />
+    </div>
+  )
+
   if (isLoading || awaitingFirstPage) {
     return (
       <div className="p-4 space-y-1.5" data-testid="crew-dashboard-loading" aria-hidden>
@@ -377,6 +416,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
       // Nothing good to keep, so the frame is not drawn at all rather than drawn from
       // markup the gateway refused to fill.
       <div className="p-4 space-y-1.5">
+        {lockBar}
         {/* No hand-off: this tab sits on the Members page, which holds unsaved
             Profile and crew-editor drafts; the hand-off navigates to /chat and
             unmounts them past the page's leave guard. Reasoned in full at the
@@ -402,6 +442,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
       // the same empty answer and a button that cannot change anything reads as a
       // fault the reader could clear.
       <div className="p-4 text-sm text-muted" data-testid="crew-dashboard-none">
+        {lockBar}
         {i18nT('pages.membersPage.dashboard_none_yet')}
       </div>
     )
@@ -416,6 +457,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
       // nothing, because this tab renders the dashboard and no longer renders a
       // published document.
       <div className="p-4 space-y-1.5">
+        {lockBar}
         {/* No hand-off: the Members page's unsaved Profile and crew-editor drafts,
             as at the isError branch above. */}
         <ErrorNotice
@@ -432,6 +474,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct 
 
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame">
+      {lockBar}
       {broken && (
         // The page on screen is the last one that parsed. Banded, never replaced: the
         // alternative is blanking a working page because a NEWER copy is broken.

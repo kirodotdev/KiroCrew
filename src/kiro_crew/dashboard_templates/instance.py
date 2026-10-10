@@ -43,6 +43,7 @@ to see, not a shape this module will write.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -72,6 +73,7 @@ from kiro_crew.platform_compat import release_lock, try_acquire_lock
 __all__ = [
     "ACTIONS",
     "AUTHORED_PAGE_REFUSAL",
+    "LOCKED_REFUSAL",
     "DEFAULT_TEMPLATE_ID",
     "MAX_HISTORY_ROWS",
     "MAX_INSTANCE_HTML_BYTES",
@@ -85,6 +87,7 @@ __all__ = [
     "STATE_STALE",
     "Instance",
     "InstanceError",
+    "InstanceLocked",
     "InstanceRefused",
     "Preview",
     "adopt",
@@ -97,6 +100,7 @@ __all__ = [
     "preview_url",
     "read",
     "rollback",
+    "set_structure_lock",
     "stage_preview",
     "staged_preview",
     "versions",
@@ -180,6 +184,20 @@ class InstanceRefused(InstanceError):
     """A write was refused, with the reason a user can be told."""
 
 
+class InstanceLocked(InstanceRefused):
+    """A structure change was refused because the person locked this dashboard."""
+
+
+#: The ONE sentence the agent hears about the lock: as a structure change's refusal
+#: and on every turn in its ``[DASHBOARD]`` block. Only the person can clear the lock,
+#: from the Dashboard tab, so the one useful next step is to ask them.
+LOCKED_REFUSAL: Final[str] = (
+    "LOCKED by the person: the page layout is frozen. Do not preview, apply, roll back "
+    "or propose a different page; if they want one, ask them to unlock it from the "
+    "Dashboard tab. Your dashboard_write values and the folded numbers still update."
+)
+
+
 @dataclass(frozen=True)
 class Instance:
     """One crewmate's dashboard as a reader sees it.
@@ -201,6 +219,10 @@ class Instance:
     #: an empty or broken dashboard instead of rendering a blank frame.
     state_reason: str
     updated_ms: int
+    #: The person's structure lock, read from :func:`lock_path`. While set,
+    #: :func:`_commit` refuses every new version, so adopt, apply, edit and rollback
+    #: all answer :class:`InstanceLocked`.
+    structure_locked: bool = False
 
     def wire(self) -> dict[str, Any]:
         """The response body ``GET /api/members/{slug}/dashboard`` returns.
@@ -217,6 +239,7 @@ class Instance:
             "manifest": dict(self.manifest),
             "state": self.state,
             "state_reason": self.state_reason,
+            "structure_locked": self.structure_locked,
         }
 
 
@@ -236,7 +259,7 @@ def instance_dir(slug: str) -> Path:
 
 
 @contextmanager
-def _locked(directory: Path) -> Iterator[None]:
+def _locked(directory: Path, *, lock_file: str = _LOCK_FILE) -> Iterator[None]:
     """Exclusive lock over one instance directory, bounded against a live holder.
 
     The same shape the session ledger's lock has, and for the same reasons: a dedicated
@@ -247,7 +270,7 @@ def _locked(directory: Path) -> Iterator[None]:
     the two pages is lost with nothing recorded.
     """
     mkdirs_owner_only(directory)
-    lock_path = directory / _LOCK_FILE
+    lock_path = directory / lock_file
     fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
     try:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
@@ -371,6 +394,47 @@ def _state_of(template_id: str, copied_version: int, manifest: Any, html: str) -
 
 
 def read(slug: str) -> Instance:
+    """One crewmate's dashboard instance, as the person's lock says it is.
+
+    While locked, the answer is the record SNAPSHOTTED into the lock file, not
+    ``instance.json``: that file is writable by the crewmate's own shell, so a copy of
+    an old version over it must not become the page the person locked.
+    """
+    snapshot = _lock_snapshot(slug)
+    if snapshot is None:
+        stored = _read_stored(slug)
+        # Asked AGAIN after the writable record is read: a lock set in between means
+        # that record may already be an agent's write made after the person locked.
+        # No lock now means none existed when the record was read, so it stands.
+        snapshot = _lock_snapshot(slug)
+        if snapshot is None:
+            return stored
+    if "record" not in snapshot:
+        # Present but unreadable. NOT a reason to read ``instance.json``, which an agent
+        # can write: the page is withheld as broken, and the person can still unlock.
+        return Instance(
+            slug=slug,
+            instance_version=0,
+            template_id="",
+            template_version=0,
+            html="",
+            manifest={},
+            state=STATE_ERROR,
+            state_reason="the dashboard is locked and its lock record cannot be read",
+            updated_ms=0,
+            structure_locked=True,
+        )
+    record = snapshot["record"]
+    stored = _instance_from_raw(slug, record if isinstance(record, dict) else None)
+    return dataclasses.replace(stored, structure_locked=True)
+
+
+def _read_stored(slug: str) -> Instance:
+    """The instance as ``instance.json`` holds it, with no regard to the lock."""
+    return _instance_from_raw(slug, _read_record(slug))
+
+
+def _instance_from_raw(slug: str, raw: dict[str, Any] | None) -> Instance:
     """One crewmate's dashboard instance, with its state derived at read time.
 
     The state is DERIVED rather than stored. A stored state would be a claim about the
@@ -380,7 +444,6 @@ def read(slug: str) -> Instance:
 
     Costs the record plus one registry scan -- the fields, never the log.
     """
-    raw = _read_record(slug)
     if raw is None:
         return _empty(slug, "no template adopted yet")
     if raw.get("schema") != SCHEMA_VERSION:
@@ -653,6 +716,10 @@ def _commit(
     versions_dir = directory / _VERSIONS_SUBDIR
     mkdirs_owner_only(versions_dir)
     current = _read_record(slug) or {}
+    # Asked HERE, under the instance lock every caller already holds, so a lock set
+    # between a caller's own read and this write still refuses it.
+    if is_locked(slug):
+        raise InstanceLocked(LOCKED_REFUSAL)
     previous = current.get("instance_version")
     previous = previous if isinstance(previous, int) and previous > 0 else 0
     next_version = previous + 1
@@ -880,6 +947,101 @@ def rollback(slug: str, to_version: int, *, session_id: str = "") -> Instance:
             from_version=to_version,
             session_id=session_id,
         )
+
+
+#: The lock file's suffix inside the crew-panels store. A slug is ``[a-z0-9-]``, so no
+#: published panel record (``<slug>.json``) can share a lock file's name.
+_LOCK_SUFFIX: Final[str] = ".dashboard-lock"
+
+
+def lock_path(slug: str) -> Path:
+    """Where the person's structure lock for *slug* lives. Present means locked.
+
+    NOT beside ``instance.json``: ``members/<slug>/`` is writable by the crewmate's own
+    sandboxed shell, so a flag there is one an agent could clear by editing a file.
+    The lock is an OWNER decision about what an agent may change, which is the class
+    the ``crew-panels`` store exists for: the sandbox masks that directory, the
+    file-tool gate fences it (``security.paths``), the launcher pre-creates it, and
+    :func:`kiro_crew.agent_panel.panel_dir` refuses an aliased name. The gateway is
+    its only reader and writer.
+    """
+    from kiro_crew.agent_panel import panel_dir
+
+    if not slug:
+        raise InstanceError("a dashboard instance needs a member slug")
+    return panel_dir() / f"{slug}{_LOCK_SUFFIX}"
+
+
+def _lock_snapshot(slug: str) -> dict[str, Any] | None:
+    """The lock file's contents, or ``None`` when *slug* is unlocked.
+
+    FAIL-CLOSED: only a missing file is "unlocked". Any other failure -- a permission
+    error, a damaged file, an aliased store -- reads as locked with no snapshot, so a
+    store that cannot answer never lets an agent's change through, and the person
+    shown "locked" can unlock it from the tab.
+    """
+    try:
+        text = lock_path(slug).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return None
+    except Exception:
+        logger.warning("dashboard: the structure lock for %r is unreadable", slug, exc_info=True)
+        return {}
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def is_locked(slug: str) -> bool:
+    """Whether the person has locked *slug*'s page. Unreadable reads locked."""
+    return _lock_snapshot(slug) is not None
+
+
+#: The setter's own lock file, beside the lock in ``crew-panels``. Not the instance
+#: directory's ``.lock``: creating that would write under ``members/<slug>/``.
+_LOCK_GUARD_SUFFIX: Final[str] = ".dashboard-lock.guard"
+
+
+def set_structure_lock(slug: str, locked: bool) -> Instance:
+    """Set or clear the person's structure lock on *slug*'s dashboard.
+
+    The only writer of :func:`lock_path`, and reached only from the owner-gated
+    dashboard route: no MCP tool calls it, so an agent can be refused by the lock and
+    can never lift it. The lock is not part of any version, so a rollback cannot
+    restore an old lock state, and it holds for a crewmate that never adopted.
+
+    EVERY write here is inside ``crew-panels``. Nothing is created, written or deleted
+    under ``members/<slug>/``, a tree the crewmate's shell can redirect, so neither a
+    lock nor an unlock can be steered into touching a file somewhere else. That is
+    also why a lock change is not a history row: the history savepoint lives in that
+    tree, and the lock file itself is the record of the lock.
+    """
+    if not isinstance(locked, bool):
+        raise InstanceRefused("locked must be true or false")
+    path = lock_path(slug)
+    with _locked(path.parent, lock_file=f"{slug}{_LOCK_GUARD_SUFFIX}"):
+        if is_locked(slug) != locked:
+            if locked:
+                # The record as it is NOW, which :func:`read` serves until the unlock.
+                try:
+                    record = _read_record(slug)
+                except InstanceError:
+                    raise InstanceRefused(
+                        "this dashboard's record cannot be read, so it cannot be locked"
+                    ) from None
+                snapshot = {"slug": slug, "at_ms": _now_ms(), "record": record}
+                atomic_write(path, json.dumps(snapshot, ensure_ascii=False), fsync=True)
+            else:
+                path.unlink()
+            fsync_dir(path.parent)
+    try:
+        current = read(slug)
+    except InstanceError:
+        # An unreadable record does not undo a lock change that already landed.
+        current = _empty(slug, "the record cannot be read")
+    return dataclasses.replace(current, structure_locked=locked)
 
 
 # --------------------------------------------------------------------------

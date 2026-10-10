@@ -177,7 +177,7 @@ listing a chronology without opening every file.
 
 `GET /api/members/{slug}/dashboard` is the one route the frame reads, and its body is
 `{instance_version, template: {id, version}, html, manifest, state}` plus
-`state_reason`.
+`state_reason` and `structure_locked`.
 
 `?member=` is REQUIRED on every route, exactly as the briefing and rules reads require
 it. Slugification is lossy, so two crew names can reach one slug; an instance is one
@@ -254,6 +254,42 @@ describe a change the existing three already name.
 
 The preview is discarded once the version lands, so "keep this one" cannot be answered
 twice and quietly write two versions of one page.
+
+## The structure lock is the person's, and only theirs
+
+The person's structure lock freezes WHICH page the tab shows. While it is set,
+`_commit` refuses every new version with `InstanceLocked`, so adopt, apply, edit
+and rollback all fail, and the agent surface answers `dashboard_locked` (423) with a
+sentence telling the agent to ask the person. The check sits in `_commit`, under the
+instance lock every writer already holds, so a lock set between a caller's read and
+its write still refuses it. Staging a preview and writing agentic values are not
+structure changes and keep working.
+
+`set_structure_lock` is the only writer of the flag, and
+`POST /api/members/{slug}/dashboard/lock` is its only caller: owner-gated, and it
+refuses an internal-secret caller (`human_only`) before anything else, because that
+caller is an MCP server acting for an agent. No MCP tool sets the lock.
+
+The lock is a file, `crew-panels/<slug>.dashboard-lock`, and NOT a field of
+`instance.json`: `members/<slug>/` is writable by the crewmate's own sandboxed shell,
+so a flag there could be cleared by editing a file. `crew-panels` is masked in the
+sandbox, fenced by the file-tool gate and refused when aliased, and the gateway is its
+only reader and writer. Locking SNAPSHOTS the current record into that file, and
+while it exists `read` serves the snapshot, so copying an old version over
+`instance.json` cannot change the locked page. Only a missing file is unlocked; any
+other read error reads as locked, and a lock file with no readable snapshot serves
+the error state rather than `instance.json`. Unlocking removes the lock file and
+writes nothing under `members/<slug>/`, which the crewmate's shell can redirect.
+It is never part of a version, so a rollback cannot restore an old lock state, and
+it holds for a crewmate that never adopted. A lock change is NOT a history row: the
+history savepoint lives under `members/<slug>/`, and the lock file is the record.
+
+The lock is keyed by the member slug, which is the crewmate's immutable `member_id`
+wherever one is persisted, so a rename keeps it. It is no part of any DM session or
+of `members/<slug>/`, so a cleared chat, a new DM, a wiped member dashboard folder
+and a gateway restart all leave it set. The member record does not grow.
+While locked, the crewmate's `[DASHBOARD]` turn block carries a LOCKED line telling
+it not to preview, apply, roll back or propose another page.
 
 ## The preview link is the ordinary read with `?preview=1`
 
