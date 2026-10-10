@@ -13559,7 +13559,12 @@
         "dismiss_summary_result": "요약 결과 닫기",
         "summarize_now": "지금 요약",
         "tool": "도구",
-        "when": "시점"
+        "when": "시점",
+        "search_lessons": "레슨 검색…",
+        "edit": "편집",
+        "cancel": "취소",
+        "edit_rule": "규칙 편집",
+        "edit_failed": "레슨을 업데이트할 수 없습니다"
       },
       "portabilityTab": {
         "archive_contents": "아카이브 내용:",

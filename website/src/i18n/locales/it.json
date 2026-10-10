@@ -13983,7 +13983,12 @@
         "dismiss_summary_result": "Chiudi il risultato del riepilogo",
         "summarize_now": "Riepiloga ora",
         "tool": "strumento",
-        "when": "Quando"
+        "when": "Quando",
+        "search_lessons": "Cerca lezioni…",
+        "edit": "Modifica",
+        "cancel": "Annulla",
+        "edit_rule": "Modifica regola",
+        "edit_failed": "Impossibile aggiornare la lezione"
       },
       "portabilityTab": {
         "archive_contents": "Contenuto dell'archivio:",

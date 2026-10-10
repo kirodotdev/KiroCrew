@@ -13983,7 +13983,12 @@
         "dismiss_summary_result": "Fermer le résultat du résumé",
         "summarize_now": "Résumer maintenant",
         "tool": "outil",
-        "when": "Quand"
+        "when": "Quand",
+        "search_lessons": "Rechercher des leçons…",
+        "edit": "Modifier",
+        "cancel": "Annuler",
+        "edit_rule": "Modifier la règle",
+        "edit_failed": "Impossible de mettre à jour la leçon"
       },
       "portabilityTab": {
         "archive_contents": "Contenu de l'archive :",

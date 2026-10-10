@@ -13983,7 +13983,12 @@
         "dismiss_summary_result": "Descartar el resultado del resumen",
         "summarize_now": "Resumir ahora",
         "tool": "herramienta",
-        "when": "Cuándo"
+        "when": "Cuándo",
+        "search_lessons": "Buscar lecciones…",
+        "edit": "Editar",
+        "cancel": "Cancelar",
+        "edit_rule": "Editar regla",
+        "edit_failed": "No se pudo actualizar la lección"
       },
       "portabilityTab": {
         "archive_contents": "Contenido del archivo:",

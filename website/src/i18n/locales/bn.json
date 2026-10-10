@@ -13743,7 +13743,7 @@
         "rule": "নিয়ম",
         "rule_e_g_always_use_tabs_not_spaces": "নিয়ম (যেমন সবসময় ট্যাব ব্যবহার করুন, স্পেস নয়)",
         "running": "চলছে…",
-        "save": "সেভ করো",
+        "save": "সংরক্ষণ",
         "saved": "সংরক্ষিত",
         "scope": "স্কোপ",
         "scope_global": "গ্লোবাল",
@@ -13771,7 +13771,12 @@
         "dismiss_summary_result": "সারসংক্ষেপের ফলাফল সরাও",
         "summarize_now": "এখনই সারসংক্ষেপ করো",
         "tool": "টুল",
-        "when": "কখন"
+        "when": "কখন",
+        "search_lessons": "পাঠ খুঁজুন…",
+        "edit": "সম্পাদনা করুন",
+        "cancel": "বাতিল",
+        "edit_rule": "নিয়ম সম্পাদনা করুন",
+        "edit_failed": "পাঠ আপডেট করা যায়নি"
       },
       "portabilityTab": {
         "archive_contents": "আর্কাইভের বিষয়বস্তু:",

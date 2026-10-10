@@ -13559,7 +13559,12 @@
         "dismiss_summary_result": "关闭总结结果",
         "summarize_now": "立即总结",
         "tool": "工具",
-        "when": "时间"
+        "when": "时间",
+        "search_lessons": "搜索课程…",
+        "edit": "编辑",
+        "cancel": "取消",
+        "edit_rule": "编辑规则",
+        "edit_failed": "无法更新课程"
       },
       "portabilityTab": {
         "archive_contents": "压缩包内容：",

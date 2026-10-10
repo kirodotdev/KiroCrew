@@ -4,7 +4,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { XCircle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal, X } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton, IconButton } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, FilteredEmpty, SearchInput, Skeleton, IconButton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
@@ -282,14 +282,94 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
       setDeleteError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
     }
   }
+  const [searchQuery, setSearchQuery] = useState('')
+  const [editingRowKey, setEditingRowKey] = useState<string | null>(null)
+  const [editingText, setEditingText] = useState('')
+  const [isSavingEdit, setIsSavingEdit] = useState(false)
+  const [editError, setEditError] = useState<{ step: 'edit' | 'refresh'; message?: string } | null>(null)
+
   const lessonComparators = useMemo(() => ({
     rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
     category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
     repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
   }), [])
-  const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
-  const { sorted: sortedLessons, sort: lessonSort, toggle: toggleLessonSort } = useSortableTable(recentLessons, 'memory-lessons', lessonComparators, { key: 'ts', dir: 'desc' })
+  const visibleLessons = useMemo(() => {
+    const q = searchQuery.trim().toLowerCase()
+    if (!q) return lessons.slice(-20)
+    return lessons.filter((l) => l.rule.toLowerCase().includes(q))
+  }, [lessons, searchQuery])
+  const { sorted: sortedLessons, sort: lessonSort, toggle: toggleLessonSort } = useSortableTable(visibleLessons, 'memory-lessons', lessonComparators, { key: 'ts', dir: 'desc' })
+
+  const lessonRowKey = (l: Lesson) => `${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`
+
+  const startEdit = (l: Lesson) => {
+    setEditingRowKey(lessonRowKey(l))
+    setEditingText(l.rule)
+    setEditError(null)
+  }
+
+  const cancelEdit = () => {
+    setEditingRowKey(null)
+    setEditingText('')
+    setEditError(null)
+  }
+
+  const saveEdit = async (oldLesson: Lesson) => {
+    const nextRule = editingText.trim()
+    if (!nextRule || isSavingEdit) return
+    if (nextRule === oldLesson.rule) {
+      cancelEdit()
+      return
+    }
+    if (oldLesson.repo_scope === null && !(await confirm({
+      title: i18nT('pages.overview.memoryTab.delete_unusable_scope_title'),
+      body: i18nT('pages.overview.memoryTab.delete_unusable_scope_confirm'),
+      confirmLabel: i18nT('pages.overview.memoryTab.delete_unusable_scope_button'),
+    }))) return
+    setIsSavingEdit(true)
+    setEditError(null)
+    let delRes: { ok: boolean }
+    try {
+      delRes = await api.deleteLesson(oldLesson.rule, oldLesson.repo_scope, {
+        scope: oldLesson.scope,
+        workspace: oldLesson.workspace,
+        exact: true,
+      })
+    } catch (e) {
+      setEditError({ step: 'edit', message: e instanceof Error ? e.message : String(e) })
+      setIsSavingEdit(false)
+      return
+    }
+    if (!delRes?.ok) {
+      setEditError({ step: 'edit', message: i18nT('pages.overview.memoryTab.delete_matched_nothing') })
+      setIsSavingEdit(false)
+      return
+    }
+    try {
+      const createRes = await api.createLesson(nextRule, oldLesson.category, {
+        scope: oldLesson.scope,
+        repo_scope: oldLesson.repo_scope,
+        workspace: oldLesson.workspace,
+      })
+      if (createRes.outcome === 'refused' || createRes.outcome === 'deduped') {
+        setEditError({ step: 'edit', message: createRes.reason || i18nT('pages.overview.memoryTab.edit_failed') })
+      }
+    } catch (e) {
+      setEditError({ step: 'edit', message: e instanceof Error ? e.message : String(e) })
+      setIsSavingEdit(false)
+      return
+    }
+    try {
+      await loadLessons()
+      setEditingRowKey(null)
+      setEditingText('')
+    } catch (e) {
+      setEditError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
+    } finally {
+      setIsSavingEdit(false)
+    }
+  }
   useEffect(() => {
     api.memorySettings().then(d => { setIdleHours(d.history_idle_hours ?? 3); setMaxDays(d.history_max_days ?? 90); setMigrated(d.migrated ?? false) })
     loadLessons()
@@ -646,6 +726,15 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
           </span>
         )}
       </div>
+      {/* Search box for filtering lessons by rule text */}
+      <div className="mb-3 max-w-sm">
+        <SearchInput
+          aria-label={i18nT('pages.overview.memoryTab.search_lessons')}
+          placeholder={i18nT('pages.overview.memoryTab.search_lessons')}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+      </div>
       {/* No agent hand-off: it navigates away, and the Add row above may hold
           an unsaved rule draft. */}
       <ErrorNotice
@@ -655,17 +744,94 @@ function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: nu
         askAgent={false}
         className="mb-2"
       />
+      {editError && (
+        <ErrorNotice
+          title={i18nT(editError.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.edit_failed')}
+          message={editError.message}
+          onDismiss={() => setEditError(null)}
+          askAgent={false}
+          className="mb-2"
+        />
+      )}
       {/* Scrolls sideways rather than clipping: five columns plus a long path
           fragment overrun a narrow viewport, and the card hides overflow. */}
       <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={5}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
-          // Scope is part of the key: a scoped and a global row sharing rule text
-          // are two lessons, and can share a timestamp. String() keeps the null
-          // (unusable-scope) row distinct from the "" (global) one; the JSONL tier
-          // keeps a workspace row distinct from a global one.
-          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
-        ))}</tbody></table></div></Card>
+        <tbody>
+          {lessons.length === 0 ? (
+            <tr>
+              <td colSpan={5}>
+                <EmptyState
+                  icon={<BookOpen className="lucide-inline" />}
+                  title={i18nT('pages.overview.memoryTab.no_lessons_yet')}
+                  subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')}
+                />
+              </td>
+            </tr>
+          ) : sortedLessons.length === 0 ? (
+            <tr>
+              <td colSpan={5}>
+                <FilteredEmpty query={searchQuery} onClear={() => setSearchQuery('')} />
+              </td>
+            </tr>
+          ) : (
+            sortedLessons.map((l) => {
+              const key = lessonRowKey(l)
+              const isEditing = editingRowKey === key
+              return (
+                <tr key={key} className="hover:bg-bg-hover transition-colors">
+                  <td className="px-2.5 py-2 border-b border-border text-sm">
+                    {isEditing ? (
+                      <Input
+                        aria-label={i18nT('pages.overview.memoryTab.edit_rule')}
+                        value={editingText}
+                        onChange={(e) => setEditingText(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') void saveEdit(l)
+                          if (e.key === 'Escape') cancelEdit()
+                        }}
+                        disabled={isSavingEdit}
+                        autoFocus
+                        className="w-full"
+                      />
+                    ) : (
+                      esc(l.rule)
+                    )}
+                  </td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">
+                    <Badge variant="ok">{l.category}</Badge>
+                  </td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
+                  <td className="px-2.5 py-2 border-b border-border text-sm">
+                    {isEditing ? (
+                      <div className="flex items-center gap-1.5 flex-nowrap">
+                        <Btn
+                          onClick={() => void saveEdit(l)}
+                          disabled={isSavingEdit || !editingText.trim()}
+                        >
+                          {i18nT('pages.overview.memoryTab.save')}
+                        </Btn>
+                        <Btn onClick={cancelEdit} disabled={isSavingEdit}>
+                          {i18nT('pages.overview.memoryTab.cancel')}
+                        </Btn>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5 flex-nowrap">
+                        <Btn onClick={() => startEdit(l)}>
+                          {i18nT('pages.overview.memoryTab.edit')}
+                        </Btn>
+                        <Btn danger onClick={() => deleteLesson(l)}>
+                          {i18nT('pages.overview.memoryTab.delete')}
+                        </Btn>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              )
+            })
+          )}
+        </tbody>
+      </table></div></Card>
     )}
     {confirmDialog}
   </>)
