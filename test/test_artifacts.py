@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
+from kiro_crew import agent_scratch
 from kiro_crew.artifacts import (
     MAX_CONTENT_BYTES,
     MAX_VERSIONS,
@@ -1230,8 +1231,212 @@ class TestSourcePathSecurityHardening:
         result.encode("utf-8")  # would raise on invalid surrogates
 
 
+def _plant_nested_index(
+    store: ArtifactStore, tmp_path: Path, monkeypatch
+) -> tuple[Path, Path, str, Artifact, Path, Path]:
+    """An artifact whose own ``current.html`` is linked at a nested index copy.
+
+    Returns ``(scratch root, real index, the index's original text, artifact,
+    nested directory, the path the store resolves and judges)``. The last entry
+    is the hook a test uses to swap *nested* for a link to the scratch root at
+    exactly the moment the store has finished judging that path -- the window
+    the ancestor-swap findings are about.
+    """
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    index = scratch / agent_scratch.TREE_INDEX_FILENAME
+    original = '{"dashboard:chat-1": "dashboard-chat-1-abcdef01"}'
+    index.write_text(original, encoding="utf-8")
+    monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+
+    art = store.create(name="swapped", content="innocent")
+    nested = store._artifact_dir(art.slug) / "nested"
+    nested.mkdir()
+    planted = nested / agent_scratch.TREE_INDEX_FILENAME
+    planted.write_text("{}", encoding="utf-8")
+    current = store._artifact_dir(art.slug) / "current.html"
+    current.unlink()
+    current.symlink_to(planted)
+    return scratch, index, original, art, nested, planted
+
+
+def _swap_dir_for_link(directory: Path, target: Path, occupant: str) -> None:
+    """Replace *directory* with a link to *target*, as an agent's swap would."""
+    (directory / occupant).unlink()
+    directory.rmdir()
+    make_dir_link(directory, target)
+
+
 class TestRoundThirteenFixes:
     """Bounded read, event_type pre-validation, and live_dirty not persisted."""
+
+    def test_scratch_tree_index_is_fenced_from_artifact_reads_and_writes(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The scratch tree index maps session keys to work trees. Artifact
+        # access the host performs on an agent's behalf must refuse it: a read
+        # would expose every tree name, a write would remap a later resume
+        # onto another session's directory.
+        from kiro_crew import agent_scratch
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch.TREE_INDEX_FILENAME
+        index.write_text('{"dashboard:chat-1": "dashboard-chat-1-abcdef01"}', encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+
+        assert store._try_read_source_path(str(index)) is None
+        assert store._try_write_source_path(str(index), "{}") is False
+        assert index.read_text(encoding="utf-8").startswith("{")  # untouched
+
+    @requires_symlinks
+    @pytest.mark.parametrize("verb", ["read", "write"])
+    @pytest.mark.parametrize("gate", ["canonical", "descriptor"])
+    def test_source_index_swap_is_refused_at_each_io_gate(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch, verb: str, gate: str
+    ) -> None:
+        from kiro_crew import agent_scratch, hooks
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch.TREE_INDEX_FILENAME
+        original = '{"dashboard:chat-1": "another-conversation"}'
+        index.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+        nested = tmp_path / "source"
+        nested.mkdir()
+        source = nested / index.name
+        source.write_text("innocent", encoding="utf-8")
+        validate = hooks.validate_file_path
+        swapped = []
+
+        def swap_before_recanonicalization(raw: str) -> str | None:
+            swapped.append(True)
+            _swap_dir_for_link(nested, scratch, index.name)
+            if gate == "descriptor":
+                # Admit the canonical name to exercise the descriptor fence alone.
+                with monkeypatch.context() as patch:
+                    patch.setattr(hooks, "is_tree_index_path", lambda _path: False)
+                    return validate(raw)
+            canonical = validate(raw)
+            assert canonical is None, "the canonical gate admitted the index"
+            return canonical
+
+        monkeypatch.setattr(hooks, "validate_file_path", swap_before_recanonicalization)
+        if verb == "read":
+            assert store._try_read_source_path(str(source), str(tmp_path)) is None
+        else:
+            assert store._try_write_source_path(str(source), "forged", str(tmp_path)) is False
+        assert swapped, "the source gate never reached the ancestor swap"
+        assert index.read_text(encoding="utf-8") == original
+
+    @requires_symlinks
+    def test_a_symlinked_snapshot_cannot_forge_the_tree_index_read(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The forge path: an agent symlinks an artifact's current.html onto
+        # the scratch tree index. The snapshot read resolves the link and
+        # must refuse on the RESOLVED target, so artifact_get cannot expose
+        # every tree name.
+        from kiro_crew import agent_scratch
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch.TREE_INDEX_FILENAME
+        index.write_text('{"dashboard:chat-1": "dashboard-chat-1-abcdef01"}', encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+
+        art = store.create(name="forged-read", content="innocent")
+        current = store._artifact_dir(art.slug) / "current.html"
+        current.unlink()
+        current.symlink_to(index)
+
+        with pytest.raises(ArtifactError):
+            store.get(art.slug)
+        assert index.read_text(encoding="utf-8").startswith("{")  # untouched
+
+    @requires_symlinks
+    def test_a_symlinked_snapshot_cannot_forge_the_tree_index_write(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # Same plant, write side: artifact_update must refuse instead of
+        # rewriting the index, which would remap a later resume onto another
+        # session's directory.
+        from kiro_crew import agent_scratch
+
+        scratch = tmp_path / "scratch"
+        scratch.mkdir()
+        index = scratch / agent_scratch.TREE_INDEX_FILENAME
+        original = '{"dashboard:chat-1": "dashboard-chat-1-abcdef01"}'
+        index.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: scratch)
+
+        art = store.create(name="forged-write", content="innocent")
+        current = store._artifact_dir(art.slug) / "current.html"
+        current.unlink()
+        current.symlink_to(index)
+
+        with pytest.raises(ArtifactError):
+            store.update(art.slug, content='{"dashboard:chat-1": "evil"}')
+        assert index.read_text(encoding="utf-8") == original  # untouched
+
+    @requires_symlinks
+    def test_a_symlinked_data_home_does_not_hide_the_index(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # A supported layout: the data home is reached through a link (~/.kiro
+        # on another disk). The fence resolved the CANDIDATE and compared it to
+        # the RAW root, so one file had two spellings and the fence answered
+        # False -- leaving the index readable and writable after all.
+        from kiro_crew import agent_scratch
+
+        real_home = tmp_path / "real-home"
+        (real_home / "scratch").mkdir(parents=True)
+        linked_home = tmp_path / "linked-home"
+        make_dir_link(linked_home, real_home)
+        index = real_home / "scratch" / agent_scratch.TREE_INDEX_FILENAME
+        original = '{"dashboard:chat-1": "dashboard-chat-1-abcdef01"}'
+        index.write_text(original, encoding="utf-8")
+        monkeypatch.setattr(agent_scratch, "scratch_root", lambda: linked_home / "scratch")
+
+        # Both spellings of the same file.
+        assert agent_scratch.is_tree_index_path(index)
+        assert agent_scratch.is_tree_index_path(linked_home / "scratch" / index.name)
+        assert store._try_read_source_path(str(index), source_root=str(tmp_path)) is None
+        assert store._try_write_source_path(str(index), "{}", source_root=str(tmp_path)) is False
+        assert index.read_text(encoding="utf-8") == original
+
+    @requires_symlinks
+    def test_an_ancestor_swap_cannot_read_the_tree_index(
+        self, store: ArtifactStore, tmp_path: Path, monkeypatch
+    ) -> None:
+        # The fence judges a NAME; the open that follows it re-walks every
+        # component. An agent that plants a nested file, links current.html at
+        # it, then swaps the nested directory for a link to the scratch root
+        # AFTER the fence is judged routes the read onto the index. The
+        # descriptor's own path is what refuses it, because that path cannot be
+        # re-pointed.
+        import kiro_crew.artifacts as artifacts_module
+
+        scratch, index, original, art, nested, judged = _plant_nested_index(
+            store, tmp_path, monkeypatch
+        )
+        real_fence = artifacts_module._fence_refusal
+        swapped: list[bool] = []
+
+        def swap_after_the_fence(path: Path, verb: str) -> str | None:
+            reason = real_fence(path, verb)
+            if not swapped and Path(path) == judged:
+                swapped.append(True)
+                _swap_dir_for_link(nested, scratch, agent_scratch.TREE_INDEX_FILENAME)
+            return reason
+
+        monkeypatch.setattr(artifacts_module, "_fence_refusal", swap_after_the_fence)
+
+        with pytest.raises(ArtifactError):
+            store.get(art.slug)
+        assert swapped, "the swap never landed, so this test proved nothing"
+        assert index.read_text(encoding="utf-8") == original  # never exposed
 
     def test_oversized_file_does_not_load_full_content_into_memory(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch

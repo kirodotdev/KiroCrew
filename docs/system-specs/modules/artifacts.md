@@ -1214,6 +1214,20 @@ migration that rewrites or drops the stranded tags first.
   match but raised with the producer's own "could not be verified" wording.
   The file-backed `source_path` pointers stay on the bounded
   `security.is_sensitive_path()` and fall back to the snapshot silently.
+- **Scratch tree index** — `agent_scratch`'s `.trees.json` maps session keys to
+  their scratch work trees, so a read would expose every tree name and a write
+  would remap the next resume onto another conversation's directory. It is
+  refused on both sides of this store's boundary. `is_tree_index_path` joins the
+  fence predicate, canonicalising BOTH sides and asking file identity first, so a
+  data home reached through a link — or a case-insensitive filesystem — cannot
+  spell the index two ways past a string comparison. It is part of
+  `_fence_refuses` as well as `_fence_refusal`, which is what covers the
+  descriptor: `pinned_fs.open_fenced_for_read` asks that predicate about the
+  kernel's path for the inode it actually opened, so an ancestor swapped between
+  the judged name and the open is refused on the inode reached rather than on the
+  name judged. Live source reads and writes also refuse the index at the hooks
+  canonical-path gate and on the opened descriptor, so re-resolution cannot
+  bypass the fence.
 - **Relocate root confinement** — `PATCH /api/artifacts/{slug}/relocate`
   points a file-backed artifact at a `source_path`; a later GET reads
   that file, so an unconfined relocate would be an agent-reachable

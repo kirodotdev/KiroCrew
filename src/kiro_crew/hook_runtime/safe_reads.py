@@ -11,6 +11,7 @@ import os
 import stat as _stat
 import tempfile
 from collections.abc import Callable
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
         _opened_path_within_root,
         _screen_windows_links,
         is_sensitive_path,
+        is_tree_index_path,
         is_unc_shape,
         is_unverifiable_path_refusal,
         jsonl_util,
@@ -98,7 +100,7 @@ def validate_file_path(raw: str) -> str | None:
     # `realpath` consumes the SAME string the walk inspected -- resolving a
     # different form would traverse a chain the walk never saw.
     path = os.path.realpath(target)
-    if is_sensitive_path(path):
+    if is_sensitive_path(path) or is_tree_index_path(Path(path)):
         return None
     return path
 
@@ -409,7 +411,7 @@ def safe_read_file_bytes_nolink(
                 fd_real, within_root, root_is_canonical=within_root_is_canonical
             ):
                 return None  # opened inode escapes the approved tree
-            if is_sensitive_path(fd_real):
+            if is_sensitive_path(fd_real) or is_tree_index_path(Path(fd_real)):
                 return None
         with os.fdopen(fd, "rb") as fh:
             data = fh.read(read_limit + 1)

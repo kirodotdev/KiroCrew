@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import itertools
 import logging
 import threading
 import time
@@ -20,6 +21,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
+from kiro_crew import agent_scratch
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
@@ -54,6 +56,10 @@ else:
 
 
 ProviderFactory = Callable[..., LLMProvider]
+
+#: Registration-order ticket for scratch tree records: handed out at CALL time
+#: (registration order), so a delayed executor write cannot retire a successor.
+_scratch_record_tickets = itertools.count()
 
 
 class SessionClosingError(RuntimeError):
@@ -1977,6 +1983,22 @@ class SessionAllocationService:
             # waitpid/taskkill inline and wedging the event loop.
             threading.Thread(target=kill, args=(provider,), daemon=True).start()
 
+    async def _record_scratch_tree(self, key: str, tree: Path) -> None:
+        """Attempt persistence off-loop; index failures must not prevent session start."""
+        persisted = await asyncio.to_thread(
+            agent_scratch.record_tree,
+            key,
+            tree,
+            ticket=next(_scratch_record_tickets),
+        )
+        if not persisted:
+            self._deps.logger.warning(
+                "Could not persist scratch binding for session %r; continuing with an "
+                "in-process binding only. A gateway restart may start a fresh scratch tree.",
+                key,
+            )
+        agent_scratch.note_tree(key, tree)
+
     def _remove_reservation_now(self, key: str, token: object) -> None:
         """Remove a token in the yield-free span after a successful claim."""
         # A fence's invalidation lives exactly as long as the reservation it
@@ -2329,6 +2351,20 @@ class SessionAllocationService:
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
+        # A conversation resumed after its process ended (gateway restart, a
+        # transient backend exit) rejoins the work directory it had, instead of
+        # starting an empty one while the old tree waits for the sweep. The
+        # binding is read from this process first and only then from the index,
+        # so a successor whose persistence failed is not read as its
+        # predecessor. The spawn re-validates the path
+        # (``agent_scratch.shared_scratch_window``) and falls back to its own
+        # directory if the tree is gone.
+        if resume_sid and extra_factory_kwargs.get("shared_scratch") is None:
+            from kiro_crew import agent_scratch
+
+            tree = await asyncio.to_thread(agent_scratch.recorded_tree, key)
+            if tree is not None:
+                extra_factory_kwargs["shared_scratch"] = tree
         claim_crew = extra_factory_kwargs.get("crew_agent")
         session_agent = agent
         preparation = await asyncio.to_thread(prepare_runtime, agent, claim_crew, effective_cwd)
@@ -2796,6 +2832,14 @@ class SessionAllocationService:
                     # earlier cleanup path may kill unconditionally.
                     await acquire_session_lease(provider)
                     try:
+                        work_scratch = parent_work_scratch_dir(owner, key)
+                        if not is_stateless and isinstance(work_scratch, Path):
+                            await self._record_scratch_tree(key, work_scratch)
+                        if self._closing:
+                            raise SessionClosingError(
+                                "SessionManager began closing during scratch persistence"
+                            )
+                        self._refuse_if_ending(key, _reservation)
                         await record_session_started(key)
                     except BaseException:
                         # See open_task_session: a cancellation here would leave a

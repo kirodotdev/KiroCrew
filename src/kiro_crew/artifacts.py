@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING, Any, Callable, Iterator
 from typing import List as _List
 
 from kiro_crew import hooks, pinned_fs, platform_compat
+from kiro_crew.agent_scratch import is_tree_index_path as _is_tree_index_path
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
 from kiro_crew.artifact_store import records as _records
@@ -364,12 +365,27 @@ def _fence_refuses(resolved: Path) -> bool:
     loop the bounded gate stays in place, so an on-loop store call behaves as
     it always has, and a caller earns the off-pool gate by offloading, never by
     declaring anything.
+
+    The scratch tree index is refused here as well as in :func:`_fence_refusal`,
+    and the duplication is the point: this is the predicate handed to
+    ``pinned_fs`` as the DESCRIPTOR fence, so it is what answers for the inode
+    an open actually reached. ``_fence_refusal``'s own index branch only sees
+    the path the caller resolved BEFORE the open, which an ancestor swapped in
+    between routes around -- the descriptor's path is the one that cannot be.
     """
-    return is_sensitive_canonical_path(str(resolved))
+    return is_sensitive_canonical_path(str(resolved)) or _is_tree_index_path(resolved)
 
 
 def _fence_refusal(resolved: Path, verb: str) -> str | None:
     """:func:`_fence_refuses` with wording: a resolver stall is passed through as a stall."""
+    if _is_tree_index_path(resolved):
+        # The scratch tree index maps session keys to work trees: a read
+        # would expose every tree name and a write would remap a later
+        # resume onto another session's directory. Judged here, on the
+        # RESOLVED path shared by every snapshot read and write, so a
+        # symlink an agent plants inside an artifact directory cannot
+        # route host-side access onto the index.
+        return f"refusing to {verb} the scratch tree index: {resolved}"
     reason = canonical_path_refusal(str(resolved))
     if reason and not is_unverifiable_path_refusal(reason):
         return f"refusing to {verb} sensitive path: {resolved}"
@@ -982,6 +998,12 @@ class ArtifactStore:
                 return None
             if is_sensitive_path(str(p)):
                 return None
+            if _is_tree_index_path(p):
+                # The scratch tree index maps session keys to work trees: a
+                # read would expose every tree name and a write would remap a
+                # later resume onto another session's directory. Host-side
+                # artifact access on an agent's behalf must never reach it.
+                return None
             # Root-confinement re-check on every read: a symlink replacement
             # after relocate could escape the allowed roots if we only checked
             # at set time. Re-validate that the RESOLVED path is under the
@@ -1064,6 +1086,11 @@ class ArtifactStore:
             if not p.is_absolute():
                 return False
             if is_sensitive_path(str(p)):
+                return False
+            if _is_tree_index_path(p):
+                # Same fence as the read side: an artifact write through the
+                # index would remap the next resume onto another session's
+                # tree.
                 return False
             # Root-confinement re-check (same set as _try_read_source_path, via
             # the single producer): a symlink swap after relocate must not allow
