@@ -6212,6 +6212,7 @@
       "killing": "Wird beendet…",
       "killing_session": "Sitzung wird beendet",
       "let_the_agent_read_one_of_your_files": "Dem Agenten erlauben, eine Ihrer Dateien zu lesen",
+      "list_indent_hint": "In einer Listenzeile rückt Tab ein und Umschalt+Tab aus. Drücke Esc und dann Tab, um die Nachrichteneingabe zu verlassen.",
       "message_input": "Nachrichteneingabe",
       "message_placeholder": "Nachricht an {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Nachricht an {{bot}}… (/command · @file · $skill · ! Shell-Befehl)",

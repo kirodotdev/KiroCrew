@@ -38,6 +38,7 @@ import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
 import { useComposerTreeDrop } from './composerTreeDrop'
+import { hasListLine } from './composerListIndent'
 import { useStopEscapeHatch } from '../hooks/useStopEscapeHatch'
 import { useStopDeclinedHint } from '../hooks/useStopDeclinedHint'
 import { useScrollEdges } from '../hooks/useScrollEdges'
@@ -369,6 +370,8 @@ function ChatInput({
   const wrapperRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const fileInputId = useId()
+  const listIndentHintId = useId()
+  const draftHasListLine = useMemo(() => hasListLine(value), [value])
   const { shelfRef, shelfHeight, shelfCompact, shelfTiny } = useShelfMeasure()
   // Tooltip for the project chip. The chip itself shows the basename (plus the
   // branch when known); the tooltip carries the full path so nothing that was
@@ -1068,6 +1071,7 @@ function ChatInput({
           </ComposerLoadBoundary>
         ) : (<>
         <PasteHighlightLayer ref={mirrorRef} value={value} blocks={pasteBlocks} />
+        {draftHasListLine && <span id={listIndentHintId} className="sr-only">{i18nT('components.chatInput.list_indent_hint')}</span>}
         {/* `block` on the textarea is load-bearing for the mirror above. A
             textarea is inline-block by default, so it sits on a line box and
             leaves a descender gap (~7px) under itself. The wrapper grows by that
@@ -1086,7 +1090,9 @@ function ChatInput({
           aria-label={inputAriaLabel ?? i18nT('components.chatInput.message_input')}
           data-composer-input=""
           spellCheck={spellCheck}
-          aria-describedby={pastePreviewPanelId ?? undefined}
+          // On a draft with a list line Tab may indent, so screen readers also
+          // hear how to leave the composer (Esc then Tab, chat-input/keyboard.ts).
+          aria-describedby={[pastePreviewPanelId, draftHasListLine ? listIndentHintId : null].filter(Boolean).join(' ') || undefined}
           data-composer-typo
           // Chromium paints no `text-overflow` on a `::placeholder`, so the cut tail
           // fades out instead, the way the app's other cut edges do.

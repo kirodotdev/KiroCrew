@@ -6212,6 +6212,7 @@
       "killing": "বন্ধ করা হচ্ছে…",
       "killing_session": "সেশন বন্ধ করা হচ্ছে",
       "let_the_agent_read_one_of_your_files": "এজেন্টকে আপনার একটি ফাইল পড়তে দিন",
+      "list_indent_hint": "তালিকার লাইনে Tab ইন্ডেন্ট করে আর Shift+Tab ইন্ডেন্ট সরায়। বার্তা ইনপুট থেকে বেরোতে Esc চাপো, তারপর Tab চাপো।",
       "message_input": "বার্তা ইনপুট",
       "message_placeholder": "{{bot}}-কে মেসেজ করুন… (/command · @file · $skill)",
       "message_placeholder_terminal": "{{bot}}-কে মেসেজ করো… (/command · @file · $skill · ! শেল কমান্ড)",

@@ -6311,6 +6311,7 @@
       "killing": "Terminando…",
       "killing_session": "Terminando la sesión",
       "let_the_agent_read_one_of_your_files": "Permite que el agente lea uno de tus archivos",
+      "list_indent_hint": "En una línea de lista, Tab aplica sangría y Mayús+Tab la quita. Pulsa Esc y luego Tab para salir del campo de mensaje.",
       "message_input": "Campo de mensaje",
       "message_placeholder": "Enviar mensaje a {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Enviar mensaje a {{bot}}… (/command · @file · $skill · ! comando de shell)",

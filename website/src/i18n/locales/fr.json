@@ -6311,6 +6311,7 @@
       "killing": "Arrêt forcé…",
       "killing_session": "Arrêt forcé de la session",
       "let_the_agent_read_one_of_your_files": "Autoriser l'agent à lire l'un de vos fichiers",
+      "list_indent_hint": "Sur une ligne de liste, Tab ajoute un retrait et Maj+Tab le retire. Appuie sur Échap puis sur Tab pour quitter la saisie du message.",
       "message_input": "Saisie du message",
       "message_placeholder": "Envoyer un message à {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Envoyer un message à {{bot}}… (/command · @file · $skill · ! commande shell)",

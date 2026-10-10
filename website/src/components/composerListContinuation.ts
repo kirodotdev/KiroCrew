@@ -53,6 +53,11 @@ interface ListMarker {
 const MARKER_RE = /^([ \t]*)(?:([-*+])|(\d+)([.)]))([ \t]+)/
 const TASK_RE = /^\[[ xX]\](?=[ \t]|$)([ \t]*)/
 
+/** True when `line` starts with a list marker the composer continues and indents. */
+export function isListLine(line: string): boolean {
+  return MARKER_RE.test(line)
+}
+
 function parseMarker(line: string): ListMarker | null {
   const match = MARKER_RE.exec(line)
   if (!match) return null

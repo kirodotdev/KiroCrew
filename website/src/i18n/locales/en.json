@@ -4292,6 +4292,7 @@
       "killing": "Killing…",
       "killing_session": "Killing session",
       "let_the_agent_read_one_of_your_files": "Let the agent read one of your files",
+      "list_indent_hint": "On a list line, Tab indents and Shift+Tab outdents. Press Escape, then Tab, to leave the message input.",
       "message_input": "Message input",
       "model": "Model",
       "optimizing_prompt": "Optimizing prompt…",

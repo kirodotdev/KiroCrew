@@ -6113,6 +6113,7 @@
       "killing": "正在终止…",
       "killing_session": "正在终止会话",
       "let_the_agent_read_one_of_your_files": "让代理读取你的某个文件",
+      "list_indent_hint": "在列表行中，Tab 增加缩进，Shift+Tab 减少缩进。要离开消息输入框，先按 Esc，再按 Tab。",
       "message_input": "消息输入",
       "message_placeholder": "给 {{bot}} 发消息… (/command · @file · $skill)",
       "message_placeholder_terminal": "给 {{bot}} 发消息… (/command · @file · $skill · ! shell 命令)",

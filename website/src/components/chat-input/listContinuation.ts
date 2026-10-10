@@ -34,11 +34,18 @@ export function applyTextareaListBreak(
   // setter, and a value written through it would make the `input` event below
   // look like no change, so onChange would never run.
   // Renumbering only rewrites digits after the caret, so the caret offset holds.
-  setNativeValue(textarea, applyListEdit(value, edit))
-  const caret = edit.start + edit.insert.length
+  writeTextareaEdit(textarea, applyListEdit(value, edit), edit.start + edit.insert.length)
+  return true
+}
+
+/** Write a composer-owned edit to `textarea` as if the user typed it: set the
+ *  value and caret, then fire an `input` event so onChange, the undo recorder
+ *  and the autosize caret-follow all run on their ordinary path. Shared by the
+ *  Enter list break and the Tab list indent. */
+export function writeTextareaEdit(textarea: HTMLTextAreaElement, next: string, caret: number) {
+  setNativeValue(textarea, next)
   textarea.setSelectionRange(caret, caret)
   textarea.dispatchEvent(new Event('input', { bubbles: true }))
-  return true
 }
 
 /** Remove the list marker in front of a collapsed caret in `textarea` in one

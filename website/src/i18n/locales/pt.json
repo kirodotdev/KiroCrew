@@ -6311,6 +6311,7 @@
       "killing": "Encerrando à força…",
       "killing_session": "Encerrando a sessão à força",
       "let_the_agent_read_one_of_your_files": "Permite que o agente leia um dos seus arquivos",
+      "list_indent_hint": "Em uma linha de lista, Tab aumenta o recuo e Shift+Tab o reduz. Pressione Esc e depois Tab para sair da entrada de mensagem.",
       "message_input": "Entrada de mensagem",
       "message_placeholder": "Enviar mensagem para {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Enviar mensagem para {{bot}}… (/command · @file · $skill · ! comando de shell)",

@@ -12,7 +12,8 @@ import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { MentionKeyMods } from './props'
-import { applyTextareaListBreak } from './listContinuation'
+import { applyTextareaListBreak, writeTextareaEdit } from './listContinuation'
+import { listIndentEdit } from '../composerListIndent'
 
 /* The composer's keyboard and focus: autofocus on a session switch, the
    global `/` shortcut, the textarea's keydown (raw paste, undo, token keys,
@@ -104,6 +105,8 @@ export function useComposerFocus({ autoFocusKey, disabled, isMobile, composerCon
   }, [typedCommandMenus, composerCollapsed, expandComposer, composerControl])
 }
 
+const MODIFIER_KEYS = new Set(['Shift', 'Control', 'Alt', 'Meta'])
+
 export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef }: {
   rawPasteRef: React.MutableRefObject<boolean>
   handleUndoKey: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean
@@ -127,7 +130,15 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   inputRef: React.RefObject<HTMLTextAreaElement>
   pasteBlocksRef: React.RefObject<readonly PasteBlock[]>
 }) {
+  // Set by a bare Escape and spent by the next key: Esc then Tab always moves
+  // focus, so a draft made only of list lines is never a keyboard trap.
+  const escapedRef = useRef(false)
   return useCallback((e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    const escaped = escapedRef.current
+    // A lone modifier press (Shift before Shift+Tab) neither sets nor spends it.
+    if (!MODIFIER_KEYS.has(e.key)) {
+      escapedRef.current = e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey
+    }
     // Cmd/Ctrl+Shift+V (or Cmd+Option+Shift+V on macOS) → next paste inserts
     // full text inline (no chip collapse).
     // Self-clearing: any other keydown resets the flag so it only ever affects
@@ -139,6 +150,28 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
+    // Tab / Shift+Tab on a list line indents or outdents that line
+    // (composerListIndent). Everything else keeps Tab's focus move, as does a
+    // Tab straight after Escape, and an open suggestion menu owns Tab even
+    // when it has no rows.
+    if (e.key === 'Tab' && !escaped && !e.metaKey && !e.ctrlKey && !e.altKey &&
+      !optimizingRef.current && !anyPickerOpenRef.current) {
+      const ta = e.currentTarget
+      const edit = listIndentEdit(valueRef.current, ta.selectionStart ?? 0, ta.selectionEnd ?? 0, e.shiftKey)
+      if (edit) {
+        // Claim before the rewrite: IMEs cycle candidates with Tab, and on
+        // WebKit the commit keydown lands after `compositionend` with
+        // `isComposing` already false, so only the shared latch can tell.
+        if (!ime.claimKey(e)) return
+        e.preventDefault()
+        // Start a fresh undo boundary so one Ctrl/Cmd+Z reverts exactly this step.
+        endUndoBurst()
+        // The same path as the Enter list break (listContinuation.ts): the
+        // `input` event it fires runs onChange and the caret-follow as for typing.
+        writeTextareaEdit(ta, edit.value, edit.caret)
+        return
+      }
+    }
     // Atomic paste-token handling (chat-input/paste.ts) runs before
     // Enter/history, so edits on or around a token never reach the default
     // textarea handling.

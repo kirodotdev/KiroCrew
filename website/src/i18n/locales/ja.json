@@ -6113,6 +6113,7 @@
       "killing": "終了中…",
       "killing_session": "セッション終了中",
       "let_the_agent_read_one_of_your_files": "エージェントにファイルを読み込ませる",
+      "list_indent_hint": "リストの行では、Tab でインデント、Shift+Tab でインデント解除します。メッセージ入力から出るには、Esc を押してから Tab を押します。",
       "message_input": "メッセージ入力",
       "message_placeholder": "{{bot}} にメッセージ… (/command · @file · $skill)",
       "message_placeholder_terminal": "{{bot}} にメッセージ… (/command · @file · $skill · ! シェルコマンド)",

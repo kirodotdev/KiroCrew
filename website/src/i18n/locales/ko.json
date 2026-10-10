@@ -6113,6 +6113,7 @@
       "killing": "종료 중…",
       "killing_session": "세션 종료 중",
       "let_the_agent_read_one_of_your_files": "에이전트가 내 파일을 읽도록 허용",
+      "list_indent_hint": "목록 줄에서 Tab은 들여쓰기, Shift+Tab은 내어쓰기를 합니다. 메시지 입력에서 나가려면 Esc를 누른 다음 Tab을 누르세요.",
       "message_input": "메시지 입력",
       "message_placeholder": "{{bot}}에게 메시지… (/command · @file · $skill)",
       "message_placeholder_terminal": "{{bot}}에게 메시지… (/command · @file · $skill · ! 셸 명령어)",

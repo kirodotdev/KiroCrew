@@ -6410,6 +6410,7 @@
       "killing": "Завершение…",
       "killing_session": "Завершение сессии",
       "let_the_agent_read_one_of_your_files": "Разрешить агенту прочитать один из ваших файлов",
+      "list_indent_hint": "В строке списка Tab добавляет отступ, а Shift+Tab убирает его. Нажми Esc, а затем Tab, чтобы выйти из поля ввода сообщения.",
       "message_input": "Поле ввода сообщения",
       "message_placeholder": "Написать {{bot}}… (/command · @file · $skill)",
       "message_placeholder_terminal": "Написать {{bot}}… (/command · @file · $skill · ! команда оболочки)",
