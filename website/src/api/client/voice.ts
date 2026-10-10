@@ -9,7 +9,7 @@ import { parseErrorCode } from '../../utils/errorReport'
 import { ApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
-export function createVoiceEndpoints({ post, put, j, jfetch: fetch }: ClientTransport) {
+export function createVoiceEndpoints({ post, put, del, j, jfetch: fetch }: ClientTransport) {
   const speechToText = {
     // STT
     sttConfig: () => fetch('/api/config/stt').then(j),
@@ -43,6 +43,10 @@ export function createVoiceEndpoints({ post, put, j, jfetch: fetch }: ClientTran
     // than in the middle of their first dictation. Returns as soon as the transfer
     // is under way; progress is read from `sttStatus`.
     sttPrepare: (model: string) => post('/api/stt/prepare', { model }).then(j),
+    // Delete one downloaded model file. The gateway refuses (409, with a `code`)
+    // the selected model, the one loaded in the recogniser, and one downloading.
+    sttDeleteModel: (model: string) =>
+      del(`/api/stt/models/${encodeURIComponent(model)}`).then(j) as Promise<{ model: string; removed: boolean }>,
     // Fetch the audio decoder (ffmpeg) into the gateway's digest-verified store,
     // for a source install whose OS ships no ffmpeg package. Same 202-then-poll
     // shape as `sttPrepare`; progress arrives on `sttStatus().ffmpeg.download`.

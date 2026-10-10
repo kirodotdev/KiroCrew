@@ -55,6 +55,7 @@ from kiro_crew import aws_consent, pinned_fs, platform_compat, stt
 # boot path; `stt.decoder` in turn imports THIS module only inside a function,
 # which is what keeps the pair acyclic.
 from kiro_crew.stt import decoder
+from kiro_crew.stt import models as stt_models
 
 # Re-exported: the hallucination filter lives in kiro_crew.stt.hallucinations so
 # the live session's final transcript and this batch path apply the SAME rules.
@@ -2834,7 +2835,20 @@ async def _transcribe_local(audio_path: str, stt_config) -> str | None:  # type:
     Everything expensive is shared with every other voice surface: one loaded
     model per process, so a Slack voice memo decodes on the weights a dashboard
     dictation just warmed rather than loading its own copy.
+
+    The configured model is claimed from here to the end of the decode, across the
+    transcode awaits, so ``DELETE /api/stt/models/{name}`` cannot remove it from
+    under this recording.
     """
+    held = stt_models.claim(stt_config.model)
+    try:
+        return await _transcribe_local_claimed(audio_path, stt_config)
+    finally:
+        stt_models.release(held)
+
+
+async def _transcribe_local_claimed(audio_path: str, stt_config) -> str | None:  # type: ignore[no-untyped-def]
+    """The body of :func:`_transcribe_local`, under its model claim."""
     # Off the loop: the first probe links the recogniser's native extension, and
     # this coroutine is awaited from the Slack path and the transcribe endpoint.
     available = await asyncio.to_thread(stt.availability)

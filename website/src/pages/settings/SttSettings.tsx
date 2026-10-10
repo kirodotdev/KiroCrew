@@ -1,8 +1,8 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { Fragment, useState, useEffect, useRef, useCallback } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Trans } from 'react-i18next'
-import { Download, Sparkles } from 'lucide-react'
-import { SettingsCard, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsSection, SettingsStepper } from '../../components/settings'
+import { Download, Sparkles, Trash2 } from 'lucide-react'
+import { SettingsCard, SettingsField, SettingsToggle, SettingsSelect, SettingsInput, SettingsButtonGroup, SettingsSection, SettingsStepper } from '../../components/settings'
 import { Badge, Btn, FormSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import { CopyCommand } from '../../components/agentHarness/CopyCommand'
@@ -24,7 +24,7 @@ import {
   providerLabel,
   unavailableMessage,
 } from '../../lib/sttProviders'
-import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat } from '../../utils/errorReport'
+import { parseErrorCode, parseErrorField, reportForError, sendErrorToChat, type ErrorReport } from '../../utils/errorReport'
 import { PttTestStrip } from '../../components/PttTestStrip'
 import AwsConsentGate from '../../components/AwsConsentGate'
 import {
@@ -46,6 +46,7 @@ import {
 
 import { i18nT } from '../../i18n/t'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { errMessage } from '../../utils/thunkError'
 
 interface SttConfig {
@@ -176,6 +177,9 @@ interface SttStatus {
   code: string
   /** The backend's own sentence, shown only for a code this build cannot name. */
   detail: string
+  /** The catalog name the configured `stt.model` resolves to. A config still
+   *  holding a superseded name (`medium`) resolves here to `large-v3-turbo`. */
+  model?: string
   models: SttModel[]
   download: SttDownload
   ffmpeg?: SttFfmpeg
@@ -426,6 +430,194 @@ function ModelDownloadProgress({ download }: { download: SttDownload }) {
       </div>
     </div>
   )
+}
+
+/**
+ * One row per catalog model: what it is, what it costs, whether it is on disk,
+ * and the actions that state allows.
+ *
+ * A table rather than the old dropdown because the dropdown showed the state of
+ * the selected model only: a user could not see what else was installed, could
+ * not fetch a model without first selecting it, and had no way to delete one.
+ *
+ * At most two buttons per row (Use plus Download or Remove). The selected model
+ * offers no Remove: the gateway refuses it, and asking the user to pick another
+ * model first keeps the selection explicit rather than letting a delete change it.
+ * Only one transfer runs per gateway, so every Download waits while one is going.
+ */
+export function SttModelTable({ label, hint, configKey, models, selected, download, saving, preparing, removing, removeError, onDismissRemoveError, onUse, onDownload, onRemove, selectedNotice }: {
+  /** The settings row's caption. A prop, not a constant, so the settings
+   *  registry extractor indexes this row like any other `Settings*` control. */
+  label: string
+  hint?: string
+  configKey?: string
+  models: SttModel[]
+  selected: string
+  download: SttDownload | undefined
+  saving: boolean
+  preparing: boolean
+  removing: string
+  /** A refused or failed Remove, shown on a row under the model it was for. */
+  removeError: ModelRemoveError | null
+  onDismissRemoveError: () => void
+  onUse: (name: string) => void
+  onDownload: (name: string) => void
+  onRemove: (model: SttModel) => void
+  /** A line about the selected model, shown on a full-width row under it. */
+  selectedNotice?: string
+}) {
+  const transferRunning = download?.step === DOWNLOAD_STEP_RUNNING
+  return (
+    <SettingsField label={label} hint={hint} configKey={configKey}>
+      <table className="table-striped w-full text-[13px] border-collapse" data-testid="stt-model-table" aria-label={label}>
+        <thead>
+          <tr className="hidden sm:table-row text-left text-[12px] text-muted">
+            <th scope="col" className="font-medium py-1.5 pr-2">{i18nT('pages.settings.sttSettings.model_table_model')}</th>
+            <th scope="col" className="hidden sm:table-cell font-medium py-1.5 pr-2">{i18nT('pages.settings.sttSettings.model_table_size')}</th>
+            <th scope="col" className="font-medium py-1.5 pr-2">{i18nT('pages.settings.sttSettings.model_table_status')}</th>
+            <th scope="col" className="py-1.5"><span className="sr-only">{i18nT('pages.settings.sttSettings.model_table_actions')}</span></th>
+          </tr>
+        </thead>
+        <tbody>
+          {models.map((m, index) => {
+            const isSelected = m.name === selected
+            const thisDownload = download?.model === m.name ? download : undefined
+            const downloadingThis = thisDownload?.step === DOWNLOAD_STEP_RUNNING
+            // `.table-striped` counts <tr>s, and a failure or refusal row is its own
+            // <tr>: it would take the next stripe and shift every model below it.
+            // Each model's rows therefore carry that model's stripe inline, which
+            // overrides the positional rule and keeps a notice on its model's band.
+            const band = { background: index % 2 ? 'var(--card-hl)' : 'transparent' }
+            return (
+              <Fragment key={m.name}>
+                <tr style={band} className="block sm:table-row border-t border-border align-top" data-testid={`stt-model-${m.name}`} aria-current={isSelected ? 'true' : undefined}>
+                  <td className="block sm:table-cell pt-2 sm:pb-2 sm:pr-2">
+                    <div className="font-medium text-text">{m.name}</div>
+                    {/* Phone-first: below `sm` every row stacks its cells (name and
+                        size, then status, then actions) instead of laying them side
+                        by side. At 320px the pane is 288px, and the German "Nicht
+                        heruntergeladen" badge plus a Download button do not fit
+                        beside the name. The column header is hidden while stacked. */}
+                    <div className="sm:hidden text-[12px] text-muted">{fmtBytes(m.size_bytes)}</div>
+                  </td>
+                  <td className="hidden sm:table-cell py-2 pr-2 text-muted whitespace-nowrap">{fmtBytes(m.size_bytes)}</td>
+                  <td className="block sm:table-cell pt-1 sm:py-2 sm:pr-2 min-w-0">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {isSelected && <Badge variant="ok">{i18nT('pages.settings.sttSettings.model_state_selected')}</Badge>}
+                      {downloadingThis
+                        ? null
+                        : m.present
+                          ? <Badge variant="muted">{i18nT('pages.settings.sttSettings.model_state_installed')}</Badge>
+                          : <Badge variant="muted">{i18nT('pages.settings.sttSettings.model_state_not_downloaded')}</Badge>}
+                    </div>
+                    {downloadingThis && thisDownload && <div className="mt-1"><ModelDownloadProgress download={thisDownload} /></div>}
+                  </td>
+                  <td className="block sm:table-cell pt-1.5 pb-2 sm:py-2">
+                    <div className="flex flex-wrap justify-start sm:justify-end gap-1.5">
+                      {!isSelected && (
+                        <Btn onClick={() => onUse(m.name)} disabled={saving} aria-label={i18nT('pages.settings.sttSettings.model_use_named', { name: m.name })}>
+                          {i18nT('pages.settings.sttSettings.model_use')}
+                        </Btn>
+                      )}
+                      {!m.present && !downloadingThis && (
+                        <Btn
+                          onClick={() => onDownload(m.name)}
+                          disabled={preparing || transferRunning}
+                          aria-label={i18nT('pages.settings.sttSettings.model_download_named', { name: m.name })}
+                        >
+                          <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}
+                        </Btn>
+                      )}
+                      {m.present && !isSelected && (
+                        <Btn
+                          danger
+                          onClick={() => onRemove(m)}
+                          disabled={removing === m.name}
+                          aria-label={i18nT('pages.settings.sttSettings.model_remove_named', { name: m.name })}
+                        >
+                          <Trash2 className="lucide-inline" /> {i18nT('pages.settings.sttSettings.model_remove')}
+                        </Btn>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+                {isSelected && selectedNotice && (
+                  <tr style={band} className="block sm:table-row" data-testid={`stt-model-${m.name}-notice`}>
+                    <td colSpan={4} className="block sm:table-cell pb-2 text-[12px] text-muted">{selectedNotice}</td>
+                  </tr>
+                )}
+                {/* The job's own failure, in a full-width row under the model it
+                    belongs to: inside the status cell it wrapped one word per line
+                    on a phone. Status text with nothing editable → hand-off on. */}
+                {thisDownload?.step === DOWNLOAD_STEP_FAILED && thisDownload.error && (
+                  <tr style={band} className="block sm:table-row" data-testid={`stt-model-${m.name}-failed`}>
+                    <td colSpan={4} className="block sm:table-cell pb-2">
+                      <ErrorNotice
+                        variant="inline"
+                        message={i18nT('pages.settings.sttSettings.model_download_failed_row')}
+                        report={downloadFailureReport(m.name, thisDownload.error)}
+                        askAgent
+                      />
+                    </td>
+                  </tr>
+                )}
+                {/* A refused or failed Remove, under the row it was for: below the
+                    table, "this model" pointed at nothing. Nothing editable → hand-off on. */}
+                {removeError?.model === m.name && (
+                  <tr style={band} className="block sm:table-row" data-testid={`stt-model-${m.name}-remove-error`}>
+                    <td colSpan={4} className="block sm:table-cell pb-2">
+                      <ErrorNotice
+                        variant="inline"
+                        testId="stt-model-remove-error"
+                        message={removeError.message}
+                        report={reportForError(removeError.error)}
+                        onDismiss={onDismissRemoveError}
+                        askAgent
+                      />
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            )
+          })}
+        </tbody>
+      </table>
+    </SettingsField>
+  )
+}
+
+/** A refused or failed Remove, and the model it was for. */
+interface ModelRemoveError {
+  model: string
+  message: string
+  error: unknown
+}
+
+/**
+ * The hand-off report for a failed download. The row says in plain words that
+ * the download stopped and how to retry; the gateway's own reason (byte counts, a
+ * digest mismatch) is what an agent needs, so it rides here as the detail.
+ * Built per render rather than journaled: it is a projection of polled status,
+ * not a new failure.
+ */
+function downloadFailureReport(model: string, reason: string): ErrorReport {
+  return {
+    id: `stt-model-download-${model}`,
+    at: 0,
+    source: 'system',
+    message: i18nT('pages.settings.sttSettings.model_download_failed_row'),
+    endpoint: '/api/stt/status',
+    route: window.location.pathname,
+    detail: `${model}: ${reason}`,
+  }
+}
+
+/** The gateway's refusal codes for `DELETE /api/stt/models/{name}`, as catalog keys. */
+const MODEL_REMOVE_ERROR_KEY: Record<string, string> = {
+  stt_model_selected: 'pages.settings.sttSettings.model_remove_selected',
+  stt_model_in_use: 'pages.settings.sttSettings.model_remove_in_use',
+  stt_model_downloading: 'pages.settings.sttSettings.model_remove_downloading',
+  stt_model_loading: 'pages.settings.sttSettings.model_remove_loading',
 }
 
 /**
@@ -742,6 +934,32 @@ export default function SttSettings({ cardIndex }: {
     onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
     onError: (e: Error) => setErr(e.message || i18nT('pages.settings.sttSettings.download_failed')),
   })
+  const { confirm, confirmDialog } = useConfirm()
+  // A refusal is shown on the row it was for, by code, so it can say what to do;
+  // any other failure falls back to the server's message.
+  const [removeErr, setRemoveErr] = useState<ModelRemoveError | null>(null)
+  const removeMut = useMutation({
+    mutationFn: (model: string) => api.sttDeleteModel(model),
+    onMutate: () => setRemoveErr(null),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['sttStatus'] }),
+    onError: (e: Error, model: string) => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      const key = code ? MODEL_REMOVE_ERROR_KEY[code] : undefined
+      setRemoveErr({
+        model,
+        message: key ? i18nT(key) : (e.message || i18nT('pages.settings.sttSettings.model_remove_failed')),
+        error: e,
+      })
+    },
+  })
+  const removeModel = async (m: SttModel) => {
+    const ok = await confirm({
+      title: i18nT('pages.settings.sttSettings.model_remove_confirm_title', { name: m.name }),
+      body: i18nT('pages.settings.sttSettings.model_remove_confirm_body', { size: fmtBytes(m.size_bytes) }),
+      confirmLabel: i18nT('pages.settings.sttSettings.model_remove'),
+    })
+    if (ok) removeMut.mutate(m.name)
+  }
   const [restarting, setRestarting] = useState(false)
   const decoderMut = useMutation({
     mutationFn: () => api.sttFfmpegDownload(),
@@ -800,7 +1018,11 @@ export default function SttSettings({ cardIndex }: {
   // shows no model rows instead of claiming a model is missing.
   const status = statusQ.data
   const models = status?.models ?? []
-  const selectedModel = models.find(m => m.name === stt.model)
+  // The RESOLVED name, not the stored one: a config still holding a superseded
+  // name such as `medium` loads `large-v3-turbo`, so that is the row that is in
+  // use and the one the gateway refuses to remove.
+  const selectedName = status?.model || stt.model
+  const selectedModel = models.find(m => m.name === selectedName)
   // Progress is only shown for the model on screen. The gateway runs one transfer
   // at a time, so switching models mid-download leaves the store reporting the
   // PREVIOUS model, and attributing that byte count to the new selection would
@@ -809,7 +1031,7 @@ export default function SttSettings({ cardIndex }: {
   // body without it threw during render, and the error boundary then replaced the
   // entire settings page rather than this one card.
   const download =
-    status?.download?.model === stt.model ? status?.download : undefined
+    status?.download?.model === selectedName ? status?.download : undefined
   const downloading = download?.step === DOWNLOAD_STEP_RUNNING
   // Availability comes from the status endpoint when it has answered, because it
   // carries the machine-readable reason. The config's plain boolean is the
@@ -836,7 +1058,7 @@ export default function SttSettings({ cardIndex }: {
     && !!backend
     && !backend.accelerated
     && backend.name !== BACKEND_UNKNOWN
-    && SLOW_WITHOUT_ACCELERATION.includes(stt.model)
+    && SLOW_WITHOUT_ACCELERATION.includes(selectedName)
 
   // The acceleration, as a badge beside Status. One glanceable fact, and the only
   // one of the engine readings that changes what a user would DO -- the threads and
@@ -1010,21 +1232,34 @@ export default function SttSettings({ cardIndex }: {
             than "the list has not arrived". */}
         {usesCatalogModel && models.length > 0 && (
           <>
-            {/* Options come from the served catalog, never a list in this file:
-                the sizes and the set of models are the backend's to change, and a
+            {/* Rows come from the served catalog, never a list in this file: the
+                sizes and the set of models are the backend's to change, and a
                 hardcoded copy here would offer a model the gateway cannot load.
-                The size rides in the option label so the download cost is visible
-                BEFORE the click that commits to it. */}
-            <SettingsSelect
-              label={i18nT('pages.settings.sttSettings.model')}
-              hint={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
-              value={stt.model}
-              options={models.map(m => m.name)}
-              optionLabels={models.map(m => i18nT('pages.settings.sttSettings.model_option', { name: m.name, size: fmtBytes(m.size_bytes) }))}
-              onChange={v => set({ model: v })}
-              disabled={saving}
-              configKey="stt.model"
-            />
+                The size is on every row, so the download cost is visible BEFORE
+                the click that commits to it. */}
+              <SttModelTable
+                label={i18nT('pages.settings.sttSettings.model')}
+                hint={i18nT('pages.settings.sttSettings.larger_models_are_more_accurate_but_slower_to_ru')}
+                configKey="stt.model"
+                models={models}
+                selected={selectedName}
+                download={status?.download}
+                saving={saving}
+                preparing={prepareMut.isPending}
+                removing={removeMut.isPending ? removeMut.variables ?? '' : ''}
+                onUse={name => set({ model: name })}
+                onDownload={name => prepareMut.mutate(name)}
+                removeError={removeErr}
+                onDismissRemoveError={() => setRemoveErr(null)}
+                onRemove={m => void removeModel(m)}
+                // The selected model is not on disk yet. Offered BEFORE the first
+                // dictation on purpose: otherwise the download starts while the user
+                // is already talking, where a multi-hundred-megabyte transfer is
+                // indistinguishable from a hang. Its Download button is on its row.
+                selectedNotice={selectedModel && !selectedModel.present && !downloading
+                  ? i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })
+                  : undefined}
+              />
             {/* The cost of THIS choice on THIS machine, before the download rather
                 than after the first dictation. Shown only when the build links no
                 acceleration and the build was readable, so it is a measured warning
@@ -1038,37 +1273,10 @@ export default function SttSettings({ cardIndex }: {
                 {i18nT('pages.settings.sttSettings.model_slow_on_cpu')}
               </p>
             )}
-            {downloading && download ? (
-              <ModelDownloadProgress download={download} />
-            ) : selectedModel?.present ? (
-              // Nothing. A model already on disk needs no line of its own: the
-              // absence of a download prompt IS the message, and a row that says
-              // "this is fine" for the ordinary case is the kind of reassurance
-              // that crowds out the warnings worth reading.
-              null
-            ) : selectedModel ? (
-              // Offered BEFORE the first dictation on purpose. The alternative is
-              // that the download starts when the user is already talking, where a
-              // multi-hundred-megabyte transfer is indistinguishable from a hang.
-              <div className="-mt-1 mb-1 flex flex-col gap-1.5 items-start">
-                <p className="text-[12px] text-muted">
-                  {i18nT('pages.settings.sttSettings.model_download_prompt', { size: fmtBytes(selectedModel.size_bytes) })}
-                </p>
-                <Btn onClick={() => prepareMut.mutate(selectedModel.name)} disabled={prepareMut.isPending}>
-                  <Download className="lucide-inline" /> {i18nT('pages.settings.sttSettings.download_model')}
-                </Btn>
-              </div>
-            ) : null}
-            {/* A finished-and-failed transfer (the job's own `error`). Status
-                panel with nothing editable in this block → hand-off on. */}
-            {download?.step === DOWNLOAD_STEP_FAILED && download.error && (
-              <ErrorNotice
-                variant="inline"
-                className="-mt-1 mb-1"
-                message={i18nT('pages.settings.sttSettings.download_failed_reason', { error: download.error })}
-                askAgent
-              />
-            )}
+            {/* The selected model's download prompt is a row under that model inside
+                the table (`selectedNotice`), not a line here: below the table it read
+                as being about the last row. */}
+            {confirmDialog}
           </>
         )}
 

@@ -669,6 +669,7 @@
     "components.guideLayer.predicate_goal_loop_running": "Guide blocker before the goal button: no goal loop (auto-nudge) runs in the open chat, so its Pause is not there.",
     "components.guideLayer.predicate_monitor_running": "Guide blocker before the goal button: no unfinished monitor watches the open chat, so its Stop monitor is not there.",
     "components.guideLayer.select_the_only_one_tick": "Guide panel line on a choose-one step whose pick is the row's checkbox (the outline is on that checkbox) when the list holds exactly one job.",
-    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button."
+    "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button.",
+    "pages.settings.sttSettings.model_use": "Button on a row of the speech-model table in Voice settings. Imperative verb: make this model the one used for transcription. Same word as the row's \"Selected\" badge."
   }
 }

@@ -1008,6 +1008,7 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     api_shutdown,
     api_stt_config,
     api_stt_ffmpeg_download,
+    api_stt_model_delete,
     api_stt_polish,
     api_stt_prepare,
     api_stt_prewarm,

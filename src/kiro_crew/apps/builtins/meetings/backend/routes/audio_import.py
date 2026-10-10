@@ -531,6 +531,7 @@ async def handle_import_audio(request: web.Request) -> web.Response:
 
         # Function-local for the recorded lazy-import reason (`_transcription_ready`):
         # the heavy optional STT stack must not be imported at gateway startup.
+        from kiro_crew.stt import models as stt_models
         from kiro_crew.transcribe import (
             audio_exceeds_secs,
             batch_duration_cap_secs,
@@ -547,144 +548,155 @@ async def handle_import_audio(request: web.Request) -> web.Response:
         # without a ceiling while the decode runs under the local one that silently
         # truncates. The snapshot makes the three answers describe one provider.
         stt_config = await asyncio.to_thread(load_stt_config)
-
-        if not await asyncio.to_thread(_transcription_ready, stt_config):
-            # 503, not 400: the request is fine and will work once speech-to-text is
-            # configured, which is a Settings action rather than a different request.
-            raise BadRequest(
-                "speech-to-text is not available",
-                status=503,
-                code="transcription_unavailable",
-            )
-
-        # Snapshot BEFORE the probe and the decode, so both consume bytes pinned at
-        # validation time (see `_snapshot_recording`) rather than re-opening the
-        # user-writable name. The snapshot directory is this request's own 0700 dir
-        # beneath the agent-denied voice-runtime root (see `_new_snapshot_dir` — a
-        # system-tmp dir would leave the bytes rewritable in place by a same-uid
-        # agent, defeating the inode pin), deleted on every exit path below.
-        snapshot_dir = await asyncio.to_thread(_new_snapshot_dir)
-        copy_task: "asyncio.Future[tuple[str, tuple[int, int]] | None] | None" = None
-        snap_fd: int | None = None
+        # The model is fixed by that snapshot, so it is claimed until the transcript
+        # is back: `DELETE /api/stt/models/{name}` must not remove it during the copy,
+        # the duration probe, or between the segments of a split recording.
+        held = stt_models.claim(stt_config.model) if stt_config.provider == "local" else None
         try:
-            # The copy runs as its OWN future, shielded: a ``to_thread`` worker
-            # cannot be cancelled anyway, so shielding just makes the bookkeeping
-            # honest -- the future stays alive for the cleanup below to JOIN, and
-            # a cancelled request abandons the wait rather than orphaning a
-            # thread that still holds handles inside ``snapshot_dir``.
-            copy_task = asyncio.ensure_future(
-                asyncio.to_thread(_snapshot_recording, canonical, snapshot_dir, vetted_ident)
-            )
-            snapped = await asyncio.shield(copy_task)
-            if snapped is None:
-                # The file changed identity between validation and the copy — the
-                # same answer as any other unreadable path, for the same reason.
-                _reject("denied")
-                raise BadRequest("that path cannot be read", status=403, code="audio_path_denied")
-            snapshot, snap_ident = snapped
 
-            # ONE open for everything below (see ``_open_snapshot_pinned``): the
-            # probe and the transcoder consume this descriptor, never the name —
-            # and the open is accepted only if it reaches the exact inode the
-            # copy published, so nothing swapped in at the name (before OR after
-            # this open) can ever be transcribed. Closed in the finally.
-            snap_fd = await asyncio.to_thread(_open_snapshot_pinned, snapshot, snap_ident)
-            if snap_fd is None:
-                _reject("denied")
-                raise BadRequest("that path cannot be read", status=403, code="audio_path_denied")
-            pinned = _pinned_consumer_path(snapshot, snap_fd)
-
-            # BEFORE transcription, because the local recogniser's decode paths stop
-            # reading at their ceiling WITHOUT saying so: a recording over the cap
-            # would otherwise transcribe its first hour, dispatch it, and return 200 —
-            # silent data loss. So an over-cap recording is not decoded whole: the
-            # probe detects it and the audio is split into cap-sized segments that are
-            # transcribed and stitched (see the ``exceeds`` branch below).
-            # Provider-aware: BOTH the local decoder and the Apple lane share the
-            # ceiling (both ``-t``-bound their decode), so both are PROBED here; but
-            # only the LOCAL decoder truncates SILENTLY, so only it splits. Apple
-            # fails loudly at the ceiling and its sandboxed helper cannot read the
-            # segment dir, so an over-cap Apple recording is REFUSED (413), not split
-            # (see ``provider_splits_oversized`` and the branch below). AWS refuses an
-            # oversized payload loudly and has no silent ceiling, so it is not probed.
-            # A probe that cannot answer (None) is REFUSED, loudly and retryably
-            # (GPT review r14): the aligned budget (``stt_config.timeout_secs``)
-            # guarantees a PERSISTENT cause also defeats the transcode, but a
-            # TRANSIENT one — a load spike that clears between probe and
-            # transcode — would let the decoder truncate an over-cap recording
-            # and answer 200. The error names the retry and the cap, so the
-            # refusal is actionable rather than a dead end. (A None here refuses
-            # rather than splits, because the split needs the same decode the probe
-            # could not complete.)
-            cap_secs = await asyncio.to_thread(batch_duration_cap_secs, stt_config)
-            if cap_secs is not None:
-                exceeds = await audio_exceeds_secs(
-                    pinned, cap_secs, timeout_secs=stt_config.timeout_secs
+            if not await asyncio.to_thread(_transcription_ready, stt_config):
+                # 503, not 400: the request is fine and will work once speech-to-text is
+                # configured, which is a Settings action rather than a different request.
+                raise BadRequest(
+                    "speech-to-text is not available",
+                    status=503,
+                    code="transcription_unavailable",
                 )
-                if exceeds is None:
-                    _reject("duration_unverified")
+
+            # Snapshot BEFORE the probe and the decode, so both consume bytes pinned at
+            # validation time (see `_snapshot_recording`) rather than re-opening the
+            # user-writable name. The snapshot directory is this request's own 0700 dir
+            # beneath the agent-denied voice-runtime root (see `_new_snapshot_dir` — a
+            # system-tmp dir would leave the bytes rewritable in place by a same-uid
+            # agent, defeating the inode pin), deleted on every exit path below.
+            snapshot_dir = await asyncio.to_thread(_new_snapshot_dir)
+            copy_task: "asyncio.Future[tuple[str, tuple[int, int]] | None] | None" = None
+            snap_fd: int | None = None
+            try:
+                # The copy runs as its OWN future, shielded: a ``to_thread`` worker
+                # cannot be cancelled anyway, so shielding just makes the bookkeeping
+                # honest -- the future stays alive for the cleanup below to JOIN, and
+                # a cancelled request abandons the wait rather than orphaning a
+                # thread that still holds handles inside ``snapshot_dir``.
+                copy_task = asyncio.ensure_future(
+                    asyncio.to_thread(_snapshot_recording, canonical, snapshot_dir, vetted_ident)
+                )
+                snapped = await asyncio.shield(copy_task)
+                if snapped is None:
+                    # The file changed identity between validation and the copy — the
+                    # same answer as any other unreadable path, for the same reason.
+                    _reject("denied")
                     raise BadRequest(
-                        "could not verify the recording's duration just now; "
-                        "retry the import, or trim the recording to under "
-                        f"{cap_secs // 60} minutes",
-                        status=503,
-                        code="duration_unverified",
+                        "that path cannot be read", status=403, code="audio_path_denied"
                     )
-                if exceeds and not provider_splits_oversized(stt_config):
-                    # Over the cap on a provider that FAILS LOUDLY at the ceiling
-                    # (Apple raises rather than truncating), so there is no silent
-                    # loss to prevent and splitting is wrong here: the Apple Swift
-                    # helper runs in a strict sandbox that masks the voice-runtime
-                    # root the segments are staged under, so a split would 502 every
-                    # time (GPT review). Refuse whole, as before this feature.
-                    _reject("recording_too_long")
+                snapshot, snap_ident = snapped
+
+                # ONE open for everything below (see ``_open_snapshot_pinned``): the
+                # probe and the transcoder consume this descriptor, never the name —
+                # and the open is accepted only if it reaches the exact inode the
+                # copy published, so nothing swapped in at the name (before OR after
+                # this open) can ever be transcribed. Closed in the finally.
+                snap_fd = await asyncio.to_thread(_open_snapshot_pinned, snapshot, snap_ident)
+                if snap_fd is None:
+                    _reject("denied")
                     raise BadRequest(
-                        "recording is too long to import",
-                        status=413,
-                        code="recording_too_long",
+                        "that path cannot be read", status=403, code="audio_path_denied"
                     )
-                if exceeds:
-                    # OVER the cap on a provider that truncates SILENTLY (local):
-                    # split rather than refuse. The local decoder would otherwise
-                    # transcribe only its first hour and return 200 (the exact
-                    # silent-partial failure the probe exists to catch), so instead
-                    # the audio is cut into cap-sized segments at the pauses between
-                    # utterances, each segment transcribed through ``transcribe_audio``,
-                    # and the per-segment transcripts stitched into one. The stitched
-                    # result feeds ``split_transcript`` below exactly as a whole
-                    # transcript does, so it is ONE transcript sentence-split into
-                    # utterances -- and it still passes through the MAX_IMPORT_LINES /
-                    # MAX_TRANSCRIPT_CHARS ceiling there, so splitting is never a way
-                    # around the total-size refusal.
-                    # Segments are staged in this request's own snapshot dir (under
-                    # the agent-denied voice-runtime root), which ``transcribe_audio``'s
-                    # sensitive-path guard exempts, and removed with it in the finally.
-                    # Audited as ALLOWED, not rejected: this path succeeds (a 200), so
-                    # the split is a permission decision the incident trail wants to
-                    # see, the same way the owner-check ALLOW above is recorded. It
-                    # must NOT emit a ``rejected`` record (Opus review): a single
-                    # over-cap import would then write two contradictory SEL records.
-                    audit(
-                        "meetings.import_audio",
-                        f"{meeting_id} split:over-{cap_secs // 60}min",
-                        outcome="allowed",
+                pinned = _pinned_consumer_path(snapshot, snap_fd)
+
+                # BEFORE transcription, because the local recogniser's decode paths stop
+                # reading at their ceiling WITHOUT saying so: a recording over the cap
+                # would otherwise transcribe its first hour, dispatch it, and return 200 —
+                # silent data loss. So an over-cap recording is not decoded whole: the
+                # probe detects it and the audio is split into cap-sized segments that are
+                # transcribed and stitched (see the ``exceeds`` branch below).
+                # Provider-aware: BOTH the local decoder and the Apple lane share the
+                # ceiling (both ``-t``-bound their decode), so both are PROBED here; but
+                # only the LOCAL decoder truncates SILENTLY, so only it splits. Apple
+                # fails loudly at the ceiling and its sandboxed helper cannot read the
+                # segment dir, so an over-cap Apple recording is REFUSED (413), not split
+                # (see ``provider_splits_oversized`` and the branch below). AWS refuses an
+                # oversized payload loudly and has no silent ceiling, so it is not probed.
+                # A probe that cannot answer (None) is REFUSED, loudly and retryably
+                # (GPT review r14): the aligned budget (``stt_config.timeout_secs``)
+                # guarantees a PERSISTENT cause also defeats the transcode, but a
+                # TRANSIENT one — a load spike that clears between probe and
+                # transcode — would let the decoder truncate an over-cap recording
+                # and answer 200. The error names the retry and the cap, so the
+                # refusal is actionable rather than a dead end. (A None here refuses
+                # rather than splits, because the split needs the same decode the probe
+                # could not complete.)
+                cap_secs = await asyncio.to_thread(batch_duration_cap_secs, stt_config)
+                if cap_secs is not None:
+                    exceeds = await audio_exceeds_secs(
+                        pinned, cap_secs, timeout_secs=stt_config.timeout_secs
                     )
-                    transcript = await transcribe_oversized_in_segments(
-                        pinned, cap_secs, snapshot_dir, stt_config
-                    )
+                    if exceeds is None:
+                        _reject("duration_unverified")
+                        raise BadRequest(
+                            "could not verify the recording's duration just now; "
+                            "retry the import, or trim the recording to under "
+                            f"{cap_secs // 60} minutes",
+                            status=503,
+                            code="duration_unverified",
+                        )
+                    if exceeds and not provider_splits_oversized(stt_config):
+                        # Over the cap on a provider that FAILS LOUDLY at the ceiling
+                        # (Apple raises rather than truncating), so there is no silent
+                        # loss to prevent and splitting is wrong here: the Apple Swift
+                        # helper runs in a strict sandbox that masks the voice-runtime
+                        # root the segments are staged under, so a split would 502 every
+                        # time (GPT review). Refuse whole, as before this feature.
+                        _reject("recording_too_long")
+                        raise BadRequest(
+                            "recording is too long to import",
+                            status=413,
+                            code="recording_too_long",
+                        )
+                    if exceeds:
+                        # OVER the cap on a provider that truncates SILENTLY (local):
+                        # split rather than refuse. The local decoder would otherwise
+                        # transcribe only its first hour and return 200 (the exact
+                        # silent-partial failure the probe exists to catch), so instead
+                        # the audio is cut into cap-sized segments at the pauses between
+                        # utterances, each segment transcribed through ``transcribe_audio``,
+                        # and the per-segment transcripts stitched into one. The stitched
+                        # result feeds ``split_transcript`` below exactly as a whole
+                        # transcript does, so it is ONE transcript sentence-split into
+                        # utterances -- and it still passes through the MAX_IMPORT_LINES /
+                        # MAX_TRANSCRIPT_CHARS ceiling there, so splitting is never a way
+                        # around the total-size refusal.
+                        # Segments are staged in this request's own snapshot dir (under
+                        # the agent-denied voice-runtime root), which ``transcribe_audio``'s
+                        # sensitive-path guard exempts, and removed with it in the finally.
+                        # Audited as ALLOWED, not rejected: this path succeeds (a 200), so
+                        # the split is a permission decision the incident trail wants to
+                        # see, the same way the owner-check ALLOW above is recorded. It
+                        # must NOT emit a ``rejected`` record (Opus review): a single
+                        # over-cap import would then write two contradictory SEL records.
+                        audit(
+                            "meetings.import_audio",
+                            f"{meeting_id} split:over-{cap_secs // 60}min",
+                            outcome="allowed",
+                        )
+                        transcript = await transcribe_oversized_in_segments(
+                            pinned, cap_secs, snapshot_dir, stt_config
+                        )
+                    else:
+                        transcript = await transcribe_audio(pinned, stt_config)
                 else:
                     transcript = await transcribe_audio(pinned, stt_config)
-            else:
-                transcript = await transcribe_audio(pinned, stt_config)
+            finally:
+                # Join-then-close-then-remove, as its own task (see
+                # ``_remove_snapshot_dir``): scheduled before it is awaited so a
+                # repeat cancellation abandons only the wait, never the join, the
+                # descriptor close, or the removal. The pinned descriptor rides
+                # the task rather than being closed here — ``os.close`` is a
+                # blocking filesystem call and must stay off the event loop.
+                rm = asyncio.ensure_future(_remove_snapshot_dir(copy_task, snapshot_dir, snap_fd))
+                await asyncio.shield(rm)
         finally:
-            # Join-then-close-then-remove, as its own task (see
-            # ``_remove_snapshot_dir``): scheduled before it is awaited so a
-            # repeat cancellation abandons only the wait, never the join, the
-            # descriptor close, or the removal. The pinned descriptor rides
-            # the task rather than being closed here — ``os.close`` is a
-            # blocking filesystem call and must stay off the event loop.
-            rm = asyncio.ensure_future(_remove_snapshot_dir(copy_task, snapshot_dir, snap_fd))
-            await asyncio.shield(rm)
+            stt_models.release(held)
         # A falsy transcript intentionally maps to one route-level 502: provider or disabled
         # provider failures return None; successful whole-file silence and a whole-file
         # transcript emptied by the hallucination filter return ""; and the segmented

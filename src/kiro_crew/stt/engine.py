@@ -48,6 +48,7 @@ import functools
 import importlib.util
 import logging
 import math
+import os
 import platform
 import time
 import weakref
@@ -776,6 +777,20 @@ class WhisperEngine:
         return caps_mod.detect()
 
     @property
+    def loading(self) -> bool:
+        """Whether a model load is under way: verifying, building, or outliving a timeout.
+
+        ``loaded_key`` is set only once a load FINISHES, so it cannot answer "is any
+        model file in use right now". A caller about to delete a model file asks this
+        too: the load lock is held from the digest check through the native build,
+        and ``_load_future`` outlives the lock when a build overran its timeout.
+        """
+        lock = self._load_lock
+        if lock is not None and lock.locked():
+            return True
+        return self._load_future is not None and not self._load_future.done()
+
+    @property
     def loaded_key(self) -> LoadedKey | None:
         """What the resident context was loaded for, or ``None`` when unloaded.
 
@@ -1106,6 +1121,24 @@ class WhisperEngine:
         load_lock, _ = self._locks()
         async with load_lock:
             self._unload_locked()
+
+    async def release_if_resident(self, filename: str) -> bool:
+        """Drop the resident model now if it was loaded from ``filename``.
+
+        For removing a model the user has deselected: it stays resident until the
+        idle sweep (600 s by default, up to a day), and until then its file cannot
+        be deleted. Holds both locks for the reason :meth:`maybe_evict` gives, so a
+        decode still running on it finishes first and no second context is built.
+        Returns whether it released anything.
+        """
+        load_lock, decode_lock = self._locks()
+        async with load_lock, decode_lock:
+            key = self._key
+            if self._model is None or key is None or os.path.basename(key.model_path) != filename:
+                return False
+            self._unload_locked()
+        logger.info("Released whisper model %s for removal", filename)
+        return True
 
     def _unload_locked(self) -> None:
         """Release the context. Caller holds the load lock.

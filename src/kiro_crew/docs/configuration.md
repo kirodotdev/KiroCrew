@@ -360,8 +360,12 @@ transfer of that size is indistinguishable from a hang.
 Every download is verified against a pinned sha256 digest and is only moved into
 place once the digest matches, so a tampered mirror, a truncated transfer or a
 captive-portal login page cannot become your speech model. Weights live under
-`models/whisper/` in the data home. Deleting one just costs you the download
-again.
+`models/whisper/` in the data home. Settings → Voice lists every model with its
+size and whether it is downloaded, and lets you download, select or remove each
+one. Remove deletes only that model's file. It is refused for the selected model
+(select another first), for one a running voice session or transcription still
+uses, and for one that is downloading. A removed model is downloaded again if you
+select it later.
 
 Desktop users install nothing else by hand: the app already carries the
 recognizer, decoder, and AWS client. In a source environment the recognizer and

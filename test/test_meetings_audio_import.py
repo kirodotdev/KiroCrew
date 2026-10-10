@@ -105,7 +105,9 @@ def _patch(monkeypatch: pytest.MonkeyPatch, **over: Any) -> dict[str, list]:
     """
     import kiro_crew.transcribe as transcribe_mod
 
-    stt_config = over.get("stt_config", SimpleNamespace(timeout_secs=300))
+    stt_config = over.get(
+        "stt_config", SimpleNamespace(timeout_secs=300, provider="aws", model="base")
+    )
     log: dict[str, list] = {
         "vetted": [],
         "transcribed": [],
@@ -710,6 +712,78 @@ class TestRefusals:
             assert all(len(q.queue) == 0 for q in session.agents.values())
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("split_transcript", ["segment one text", None])
+    async def test_a_local_import_claims_its_model_from_config_to_transcript(
+        self, app, fake_sessions, monkeypatch, split_transcript
+    ):
+        """Design review: a split import fixes its model once and decodes many
+        segments. The route claims that model from the config snapshot until the
+        transcript is back, so `DELETE /api/stt/models/{name}` cannot remove it
+        during the probe or between segments, and drops the claim on success and
+        on failure alike."""
+        import weakref
+
+        import kiro_crew.transcribe as transcribe_mod
+        from kiro_crew.stt import models as stt_models
+
+        monkeypatch.setattr(stt_models, "_CLAIMS", weakref.WeakSet())
+        name = stt_models.resolve("small").name
+        cfg = SimpleNamespace(timeout_secs=300, provider="local", model="small")
+        log = _patch(monkeypatch, stt_config=cfg, exceeds=True, split_transcript=split_transcript)
+        seen: dict[str, bool] = {}
+        probe, split = (
+            transcribe_mod.audio_exceeds_secs,
+            transcribe_mod.transcribe_oversized_in_segments,
+        )
+
+        async def _probe(*a: Any, **kw: Any) -> bool | None:
+            seen["probe"] = stt_models.is_claimed(name)
+            return await probe(*a, **kw)
+
+        async def _split(*a: Any) -> str | None:
+            seen["split"] = stt_models.is_claimed(name)
+            return await split(*a)
+
+        monkeypatch.setattr(transcribe_mod, "audio_exceeds_secs", _probe)
+        monkeypatch.setattr(transcribe_mod, "transcribe_oversized_in_segments", _split)
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/marathon.webm"}
+            )
+            assert resp.status == (200 if split_transcript else 502)
+        assert len(log["split_calls"]) == 1
+        assert seen == {"probe": True, "split": True}
+        assert not stt_models.is_claimed(name)
+
+    @pytest.mark.asyncio
+    async def test_a_cloud_provider_import_claims_no_local_model(
+        self, app, fake_sessions, monkeypatch
+    ):
+        import weakref
+
+        import kiro_crew.transcribe as transcribe_mod
+        from kiro_crew.stt import models as stt_models
+
+        monkeypatch.setattr(stt_models, "_CLAIMS", weakref.WeakSet())
+        _patch(monkeypatch)
+        claimed: list[int] = []
+        whole = transcribe_mod.transcribe_audio
+
+        async def _transcribe(*a: Any, **kw: Any) -> str | None:
+            claimed.append(len(stt_models._CLAIMS))
+            return await whole(*a, **kw)
+
+        monkeypatch.setattr(transcribe_mod, "transcribe_audio", _transcribe)
+        async with client_for(app) as client:
+            await _start(client)
+            resp = await client.post(
+                f"{BASE}/meetings/standup/import", json={"audio_path": "/tmp/standup.webm"}
+            )
+            assert resp.status == 200
+        assert claimed == [0]
+
+    @pytest.mark.asyncio
     async def test_a_split_result_over_the_line_budget_is_still_413(
         self, app, fake_sessions, monkeypatch
     ):
@@ -761,7 +835,9 @@ class TestRefusals:
         transcode "succeeds" truncated — silent data loss on exactly the
         over-cap files the guard exists to catch. The route must hand the probe
         the same budget the transcode will get."""
-        log = _patch(monkeypatch, stt_config=SimpleNamespace(timeout_secs=222))
+        log = _patch(
+            monkeypatch, stt_config=SimpleNamespace(timeout_secs=222, provider="aws", model="base")
+        )
         async with client_for(app) as client:
             await _start(client)
             resp = await client.post(
@@ -818,7 +894,7 @@ class TestRefusals:
         config snapshot and passes that identical object to all three — three
         separate loads could straddle a provider switch, re-opening the
         silent-truncation hole the duration gate exists to close."""
-        marker = SimpleNamespace(timeout_secs=222)
+        marker = SimpleNamespace(timeout_secs=222, provider="aws", model="base")
         log = _patch(monkeypatch, stt_config=marker)
         async with client_for(app) as client:
             await _start(client)

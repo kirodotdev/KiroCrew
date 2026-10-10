@@ -267,6 +267,11 @@ export const EXEMPT_CONFIRM_PLACEHOLDER_NAMES = new Set([
  * kind-word form and record that decision.
  */
 export const CONFIRM_OPERAND_KEY_EXEMPTIONS: Record<string, string> = {
+  'pages.settings.sttSettings.model_remove_confirm_title':
+    'kind-word form ("the {{name}} model"), and {{name}} is a speech-model name from the '
+    + 'gateway\'s fixed catalog (tiny, base, small, large-v3-turbo), never user-supplied',
+  'pages.settings.sttSettings.model_remove_confirm_body':
+    'the only operand is {{size}}, a byte count formatted by fmtBytes, which cannot read as prose',
   'components.redaction.link_open_confirm_title':
     'the {{host}} operand is a hostname the blocked-link record already passed through a '
     + 'strict host shape (letters, digits, dots, hyphens, underscores, or a bracketed IPv6 '

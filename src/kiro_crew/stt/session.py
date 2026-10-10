@@ -230,6 +230,11 @@ class LocalSession:
         # Set by prepare(); every decode carries it so a concurrent session
         # cannot retarget this one's model or language unnoticed.
         self._key: LoadedKey | None = None
+        # The session fixes its model here and keeps it after the user selects
+        # another, so it claims the file until it ends: after `finish` has decoded,
+        # or on `cancel`. A removal under it would make the next final re-download
+        # the model, or drop the utterance when offline.
+        self._claim: models.ModelClaim | None = models.claim(model_name)
 
     @property
     def ended(self) -> bool:
@@ -425,7 +430,10 @@ class LocalSession:
         :meth:`_finalise_utterance`, which leaves the session running.
         """
         self._ended = True
-        event = await self._decode_utterance()
+        try:
+            event = await self._decode_utterance()
+        finally:
+            self._release_claim()
         # Only on the terminal path. Per utterance this would release the model in
         # the middle of a meeting whenever the idle window is short.
         await self._engine.maybe_evict()
@@ -516,6 +524,11 @@ class LocalSession:
         """Abandon the session. Any in-flight decode is left to abort on its own."""
         self._cancelled = True
         self._ended = True
+        self._release_claim()
+
+    def _release_claim(self) -> None:
+        models.release(self._claim)
+        self._claim = None
 
     def stop_partials(self) -> None:
         """Stop cosmetic inference while queued audio is drained to the final."""
