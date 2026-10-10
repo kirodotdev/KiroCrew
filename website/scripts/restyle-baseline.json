@@ -38,7 +38,6 @@
   "website/src/pages/apps/LaunchpadTile.tsx": 2,
   "website/src/pages/chat-sidebar/SearchDock.tsx": 13,
   "website/src/pages/chat-sidebar/SidebarHeader.tsx": 9,
-  "website/src/pages/chat-sidebar/boardLane.tsx": 2,
   "website/src/pages/chat/AssistantMessage.tsx": 1,
   "website/src/pages/chat/ChatHeaderMenu.tsx": 2,
   "website/src/pages/chat/FolderSuggestionCard.tsx": 4,

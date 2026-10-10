@@ -226,21 +226,23 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
   // `variant` -- the same shape SessionActionsMenu and FolderMoveSubmenu use.
   // `data-testid`s carry a `-ctx` suffix in the context variant so a test can
   // tell the two copies apart when both are mounted for one folder.
-  const renderFolderMenuItems = (folder: ChatFolder, reparentTargets: readonly ChatFolder[], variant: 'dropdown' | 'context') => {
+  // Board copies scope rename and chat creation to their column; tree-only
+  // visibility and conductor actions are omitted from the board menu.
+  const renderFolderMenuItems = (folder: ChatFolder, reparentTargets: readonly ChatFolder[], variant: 'dropdown' | 'context', columnId?: string) => {
     const ctx = variant === 'context'
     const Item = ctx ? ContextMenuItem : DropdownMenuItem
     const Separator = ctx ? ContextMenuSeparator : DropdownMenuSeparator
-    const tid = (name: string) => `folder-${name}-${folder.id}${ctx ? '-ctx' : ''}`
+    const tid = (name: string) => `${columnId ? `col-${columnId}-folder-${folder.id}-${name}` : `folder-${name}-${folder.id}`}${ctx ? '-ctx' : ''}`
     const privateChatRows = (
       <>
         {/* Menu create entries take NO open-in-tab gesture (#10575,
          *  scoped out): a menu closes on select, and Radix keyboard
          *  activation synthesizes a modifier-free click, so the
          *  gesture would be mouse-only and undiscoverable. */}
-        <Item className="items-start" data-testid={tid('new-incognito')} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_incognito_chat'), () => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) })}>
+        <Item className="items-start" data-testid={tid('new-incognito')} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_incognito_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) })}>
           <PrivateChatRow kind="incognito" />
         </Item>
-        <Item className="items-start" data-testid={tid('new-temporary')} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_temporary_chat'), () => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) })}>
+        <Item className="items-start" data-testid={tid('new-temporary')} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_temporary_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) })}>
           <PrivateChatRow kind="temporary" />
         </Item>
       </>
@@ -274,7 +276,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // that row. The conductor's title is a session name they have not
     // necessarily seen, and reading one in a menu hung off a different name made
     // the item look like it belonged to something else.
-    const conductor = folderConductorOf(folder.id)
+    const conductor = columnId === undefined ? folderConductorOf(folder.id) : null
     return (
       <>
         {conductor && (
@@ -294,7 +296,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
             </span>
           </Item>
         )}
-        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
+        <Item data-testid={tid('rename')} {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId ?? 'list'); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
         {/* The two private modes are listed flat, each naming its own action
          *  and what it does with memory. A grouping caption read as a button
@@ -319,18 +321,20 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
          *  folder itself — which is where the user is looking when they
          *  decide a folder is noise. Distinct from "Hide when empty"
          *  below, which is a server-persisted archive affordance. */}
-        <Item data-testid={tid('visibility')} onClick={() => { toggleFolderFilter(folder.id) }}>
-          {filterHiddenFolders.has(folder.id)
-            ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
-            : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
-        </Item>
-        {folderOffersHide(folder, foldersWithActiveSubtree) && (
+        {columnId === undefined && (
+          <Item data-testid={tid('visibility')} onClick={() => { toggleFolderFilter(folder.id) }}>
+            {filterHiddenFolders.has(folder.id)
+              ? <><Eye size={13} /> {i18nT('pages.chatSidebar.show_folder')}</>
+              : <><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_folder')}</>}
+          </Item>
+        )}
+        {columnId === undefined && folderOffersHide(folder, foldersWithActiveSubtree) && (
           <Item data-testid={tid('hide')} {...offlineMenuRow(connected, i18nT('utils.offline.hide_folders'), i18nT('pages.chatSidebar.hide_when_empty'), () => { updateFolderMutation.mutate({ id: folder.id, body: { hidden: true } }) })}><EyeOff size={13} /> {i18nT('pages.chatSidebar.hide_when_empty')}</Item>
         )}
         <Separator />
         <Item className="text-danger focus:text-danger" data-testid={tid('delete')} {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'), () => { deleteFolderWithConfirm(folder) })}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</Item>
         {/* Last, so its mount on disconnect shifts no row under the pointer. */}
-        <OfflineMenuReason testId={ctx ? 'folder-offline-reason-ctx' : 'folder-offline-reason'} />
+        <OfflineMenuReason testId={columnId === undefined ? (ctx ? 'folder-offline-reason-ctx' : 'folder-offline-reason') : (ctx ? 'col-folder-offline-reason-ctx' : 'col-folder-offline-reason')} />
       </>
     )
   }
@@ -965,7 +969,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
       </DndDroppable>,
     ]
   }
-  return { renderFolderBlock, renderHiddenReveal, renderFolderCreateError, folderCreateMountAbsent }
+  return { renderFolderBlock, renderHiddenReveal, renderFolderCreateError, folderCreateMountAbsent, renderFolderMenuItems }
 }
 
 /** What `createFolderBlocks` hands the lanes. */

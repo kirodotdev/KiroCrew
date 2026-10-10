@@ -457,7 +457,7 @@ order, and pins that no owner imports the facade:
 | `SessionSourceChips.tsx` | a row's pull-request and issue chips: the provider mark, the one status glyph a change chip shows (`chipStatusGlyph`), and the `+N` overflow that fetches the links the slots payload leaves out |
 | `scope.ts` | the shell's interface: `ChatSidebarProps`, and `SidebarScope`, the one object of props, shell state, owner-hook results and confirming callbacks the shell builds after its last hook call and hands every render owner below |
 | `laneRows.tsx` | how a lane draws its rows: `renderSessionRow` (each row behind its window stub, stamped in paint order and clamped at `SIDEBAR_DISPLACEMENT_WINDOW`), the dormant section and its hover hold, the Older Sessions hint that ends a lane, and the crew groups |
-| `folderBlocks.tsx` | the tree's folder blocks: the folder header row and its hover cluster, its two menus, the body with the pinned conductor card and the sorted and dormant rows, the hidden-folder reveal, and the folder-scoped create-failure notice |
+| `folderBlocks.tsx` | the tree's folder blocks: the folder header row and its hover cluster, the shared dropdown/context action renderer used by tree and board headers, the body with the pinned conductor card and the sorted and dormant rows, the hidden-folder reveal, and the folder-scoped create-failure notice |
 | `listLanes.tsx`, `boardLane.tsx` | the conductor, flat and tree lanes, with the drag overlay and chat-pane drop target the flat and tree lanes share (the conductor lane has no drag and drop); the tag-column board with its column headers, filter popover, card drop, column folder blocks and unfile strip |
 | `SidebarHeader.tsx`, `SearchDock.tsx` | the header (list menu and split New button); the dock over the lanes: its field (the search row's lane toggle and sort and filter menu, with the filter and sort label tables) and its shelf (the active filter chips and the list-level notices) |
 | `HistoryPane.tsx`, `folderModal.tsx` | the Older Sessions splitter, footer and pane; the one folder create / settings modal |
@@ -481,6 +481,14 @@ order, and pins that no owner imports the facade:
 | `rename.ts`, `history.ts`, `resize.ts`, `tags.ts`, `models.ts`, `shortcuts.ts`, `create.ts` | row and folder rename, the Older Sessions pane state, the sidebar width (including the width saved while the board is open), the tag vocabulary, the model vocabulary (the models the sessions use, grouped by canonical key, with the include-or-exclude predicate), the chat-jump order, and session creation |
 | `scrollPeek.ts`, `ScrollPeekLayer.tsx` | the scroll peek: which clipped titles in view to show in full while the lane is scrolled, its on / follow-the-rows / off lifecycle, the floating click-through layer that draws them over the rows (rows keep `sidebarWidth`), and the `fullTitlesOnScroll` setting read |
 | `dnd/` | collision geometry (`collision.ts`), drop targets and drag previews (`targets.tsx`), and the drag lifecycle with its folder writes and undo offers (`useSidebarDrag.ts`) |
+
+Board folder headers open the same actions from right-click as from their ⋯
+button. `boardLane.tsx` wraps only the header in a context-menu trigger, leaving
+body session menus separate and disabling the trigger during that column's
+inline rename. `folderBlocks.tsx` supplies both menu families: an optional
+column id scopes Rename and private-chat creation to the clicked column and
+omits the tree-only visibility and conductor actions. Both board menus keep
+the shared offline guards and folder-delete confirmation.
 
 **The row model and peer isolation.** A live peer row's raw key can be
 byte-identical to a local slot's, and every piece of local sidebar state (folder,

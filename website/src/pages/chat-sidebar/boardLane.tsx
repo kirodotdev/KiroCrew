@@ -3,17 +3,17 @@
  *  own folder rows, reorderable per column) and the unfile strip. */
 import { Fragment } from 'react'
 import { createPortal } from 'react-dom'
-import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, Pencil, MoreVertical, Tag as TagIcon, GripVertical, Settings, Server } from 'lucide-react'
+import { Plus, X, EyeOff, FolderPlus, MessageSquarePlus, ChevronRight, MoreVertical, Tag as TagIcon, GripVertical, Server } from 'lucide-react'
 import { FolderBody } from '../../components/FolderBody'
 import { FolderRail } from '../../components/FolderRail'
 import ErrorNotice from '../../components/ErrorNotice'
 import FolderGlyph from '../../components/FolderGlyph'
 import { DndContext, DragOverlay, MeasuringStrategy } from '@dnd-kit/core'
 import { SortableContext, verticalListSortingStrategy } from '@dnd-kit/sortable'
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from '../../components/ui/dropdown-menu'
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent } from '../../components/ui/dropdown-menu'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent } from '../../components/ui/context-menu'
 import { Input } from '../../components/ui'
 import { safeSetItem } from '../../utils/safeStorage'
-import FolderMoveSubmenu from '../../components/FolderMoveSubmenu'
 import TagManagerList from '../../components/TagManagerList'
 import { DndActiveProbe, DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds } from '../../utils/folderTree'
@@ -22,7 +22,6 @@ import { SESSION_LANES } from '../chat/sessionLane'
 import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
-import { PrivateChatRow } from './PrivateChatRow'
 import { BoardUnfileDropStrip, SortableColumnFolder, FolderDragGhost } from './dnd/targets'
 import type { Slot } from './types'
 import { FOLDERS_SHELVED_LS_KEY } from './persistence'
@@ -31,23 +30,22 @@ import { BOARD_FOLDER_BODY_CLS, FOLDER_BODY_OPEN_PADDING, PinnedSessionDivider, 
 import type { LaneRows } from './laneRows'
 import type { FolderBlocks } from './folderBlocks'
 import type { SidebarScope } from './scope'
-import OfflineMenuReason from '../../components/OfflineMenuReason'
-import { offlineMenuRow, offlineProps } from '../../utils/offline'
+import { offlineProps } from '../../utils/offline'
 
 /** The board lane renderer for one shell render. */
 export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
   const { activeDrag, addColumnAfterMutation, attachStripEdges, boardError, boardFolderCollapsed,
     boardPeerCount, closeColumnPopover, columnEditId, columnMatches, columnPopoverImeLatch, columnPopoverRef,
-    connected, createChatInFolder, deleteColumnWithConfirm, deleteFolderWithConfirm, derivedHintCol, dndSensors,
+    connected, createChatInFolder, deleteColumnWithConfirm, derivedHintCol, dndSensors,
     dropSlotMutation, editName, editScope, editingId, flatView, folderCompare, folderCreateError,
-    folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderReorderable, folderSortMode,
+    folderCreateMountAbsent, folderDragWithheld, folderEditInputRef, folderReorderable,
     folderSubtrees, folders, handleSidebarDragCancel, handleSidebarDragEnd, handleSidebarDragStart, heldLane,
     hiddenFolderCount, hideEmptyFolderBody, ime, isActiveRow, isFolderFilteredOut, laneSlots, moveByDrag,
-    moveFolderTo, nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
-    renameCommit, renderFolderCreateError, renderSessionRow, reorderColumnsMutation, reportDndActive,
+    nativeSessionDrag, onMenuCloseAutoFocus, onOpenSlotInNewTab, orderedColumns, popoverPos,
+    renameCommit, renderFolderCreateError, renderFolderMenuItems, renderSessionRow, reorderColumnsMutation, reportDndActive,
     revealFlash, rootFolders, setBoardError, setColumnEditId, setDerivedHintCol, setEditName, setEditScope,
     setEditingId, setFilterSortOpen, setFolderModal, setFolderOfflineNotice, setFoldersShelved, sidebarRows, slotFolders,
-    startsAutomaticSection, stripEdges, suppressMenuRestoreRef, tagById, toggleColumnCollapse,
+    startsAutomaticSection, stripEdges, tagById, toggleColumnCollapse,
     updateColumnMutation } = shell
   // Does any descendant (direct or nested) of `folderId` contain a slot from `slots`?
   function descendantMatch(fs: ChatFolder[], folderId: string, slots: Slot[], visited = new Set<string>()): boolean {
@@ -144,6 +142,10 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           if (k) moveByDrag(k, folder.id)
         }}
       >
+        {/* Only the header opens the folder menu; body rows keep their own
+         * menus and the rename input keeps its native editing menu. */}
+        <ContextMenu>
+          <ContextMenuTrigger asChild disabled={editingId === folder.id && editScope === columnId}>
         {/* Same rule as the tree row: a column copy with no body has nothing to
          *  toggle, so it is not a control - no button role, no tab stop, no
          *  pointer cursor, no expanded state and no handler. It stays draggable,
@@ -221,28 +223,7 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                 </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
-                <DropdownMenuItem {...offlineMenuRow(connected, i18nT('utils.offline.rename_folders'), i18nT('pages.chatSidebar.rename'), () => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) })}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} {...offlineMenuRow(connected, i18nT('utils.offline.create_folders'), i18nT('pages.chatSidebar.new_subfolder'), () => { setFolderModal({ mode: 'create', parentId: folder.id }) })}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
-                {/* Menu create entries take NO open-in-tab gesture (#10575,
-                 *  scoped out): a menu closes on select, and Radix keyboard
-                 *  activation synthesizes a modifier-free click, so the
-                 *  gesture would be mouse-only and undiscoverable. Listed flat,
-                 *  same as the list-view folder menu (renderFolderMenuItems). */}
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_incognito_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) })}><PrivateChatRow kind="incognito" /></DropdownMenuItem>
-                <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} {...offlineMenuRow(connected, i18nT('utils.offline.create_sessions'), i18nT('pages.chatSidebar.new_temporary_chat'), () => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) })}><PrivateChatRow kind="temporary" /></DropdownMenuItem>
-                <DropdownMenuSeparator />
-                {/* Re-parent: board-view parity with the list-view folder menu. */}
-                <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
-                  folders={reparentTargets}
-                  currentFolderId={folder.parent_id || null}
-                  offline={!connected}
-                  offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
-                  onPick={pid => moveFolderTo(folder.id, pid)} />
-                <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-settings`} {...offlineMenuRow(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'), () => { setFolderModal({ mode: 'edit', folderId: folder.id }) })}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</DropdownMenuItem>
-                <DropdownMenuSeparator />
-                <DropdownMenuItem className="text-danger focus:text-danger" {...offlineMenuRow(connected, i18nT('utils.offline.delete_folders'), i18nT('pages.chatSidebar.delete_folder'), () => { deleteFolderWithConfirm(folder) })}><X size={13} /> {i18nT('pages.chatSidebar.delete_folder')}</DropdownMenuItem>
-                <OfflineMenuReason testId="col-folder-offline-reason" />
+                {renderFolderMenuItems(folder, reparentTargets, 'dropdown', columnId)}
               </DropdownMenuContent>
             </DropdownMenu>
             {/* Same three-gesture contract as the header New button; the
@@ -263,6 +244,11 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
           </span>
           )}
         </div>
+          </ContextMenuTrigger>
+          <ContextMenuContent data-testid={`col-${columnId}-folder-${folder.id}-context-menu`} className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
+            {renderFolderMenuItems(folder, reparentTargets, 'context', columnId)}
+          </ContextMenuContent>
+        </ContextMenu>
         {renderFolderCreateError(folder.id, columnId)}
         {!emptyBody && (
         <FolderBody padding={FOLDER_BODY_OPEN_PADDING} open={!collapsed && !forceCollapsed}>
