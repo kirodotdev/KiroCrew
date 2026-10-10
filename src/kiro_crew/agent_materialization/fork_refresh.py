@@ -10,9 +10,10 @@ a session on. The boot path defers the refresh to a thread
 
 from __future__ import annotations
 
+import copy
 import threading
 from pathlib import Path
-from typing import Literal
+from typing import Callable, Literal
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state, user_json
@@ -175,12 +176,15 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
     stamp kirocrew's prompt and hooks onto an unrelated spec. The GOVERNANCE
     passes (ceiling + auto-approve strip) run for every corroborated fork
     regardless of origin — no other writer sanitizes these files.
+
+    After the forks, the same two governance passes run over every other spec a crew
+    in ``config.json`` is bound to (:func:`_govern_bound_shared_specs`): a template
+    created on the Agent templates tab, edited through the agent detail page, or
+    turned into a shared template by publish was filtered only when it was written,
+    so without this pass it would keep the grants a tightened ceiling now denies.
     """
     forks = agent_state.all_fork_info()
     global _fork_refresh_failed
-    if not forks:
-        _fork_refresh_failed = frozenset()
-        return
     owned_names = {Path(f).stem for f in OWNED_KIRO_AGENT_FILES}
     # Defense in depth: the sidecar is sealed read-only for sandboxed agents and
     # its writers are gated, but lineage alone must still never drive a write —
@@ -191,6 +195,14 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
 
         cfg_agents = KiroCrewConfig.load().agents
     except Exception:
+        if not forks:
+            # No fork exists to block. The shared-template pass needs the
+            # bindings too, so it is skipped and retried on the next rebuild.
+            _fork_refresh_failed = frozenset()
+            agent_mod.logger.warning(
+                "shared template governance skipped: config unreadable", exc_info=True
+            )
+            return
         # No corroboration possible means no fork was refreshed: every
         # fork-backed session stays blocked rather than running stale grants.
         _fork_refresh_failed = frozenset({"*"})
@@ -356,3 +368,94 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                 "fork refresh failed for %r; its sessions stay blocked", fork_name, exc_info=True
             )
     _fork_refresh_failed = frozenset(failures)
+    try:
+        _govern_bound_shared_specs(
+            cfg_agents, skip=lambda name: name in forks or _owned_spec_has_its_own_writer(name)
+        )
+    except Exception:
+        agent_mod.logger.warning("shared template governance pass failed", exc_info=True)
+
+
+def _govern_bound_shared_specs(cfg_agents: object, *, skip: Callable[[str], bool]) -> None:
+    """Re-filter ``allowedTools``/``autoApprove`` on every crew-bound spec that is not a fork.
+
+    kiro-cli reads both lists from the spec file and honours them before Kiro Crew's
+    PreToolUse gate, so a grant written under an older ceiling stays live until the
+    file is rewritten. Forks and Kiro Crew's own specs have writers that re-filter
+    them on every rebuild; *skip* names those. Everything else a crew is bound to is
+    a shared template, and this pass gives it the same two governance passes the
+    fork refresh runs, and nothing more: no plumbing, no bookkeeping, no prompt.
+
+    The set is bounded the way the fork refresh bounds its own: a spec qualifies
+    only when ``config.json`` binds a crew to it, so an unbound file in the agents
+    directory is never written by this pass. The file is rewritten ONLY when a pass
+    actually removed something, which leaves an unaffected hand-written spec
+    byte-for-byte as its author saved it.
+
+    Non-forks are never held at the spawn gate (``require_fork_governance``), so a
+    spec this pass cannot rewrite (a markdown spec, an unreadable file, an ambiguous
+    name) is logged at WARNING and left for the next rebuild rather than refused.
+    """
+    agents = cfg_agents if isinstance(cfg_agents, dict) else {}
+    bound: dict[str, str] = {}
+    for crew, binding in agents.items():
+        name = getattr(binding, "kiro_agent", None)
+        if isinstance(name, str) and name and isinstance(crew, str):
+            bound.setdefault(name, crew)
+    if not bound:
+        return
+    agents_dir = agent_mod.kiro_agents_dir_path()
+    for name in sorted(bound):
+        if skip(name):
+            continue
+        try:
+            if agent_state.get_capabilities(name) is not None:
+                from kiro_crew.agent_capabilities import reconcile_member_capabilities
+
+                reconcile_member_capabilities(bound[name])
+                continue
+            try:
+                spec_path = agent_mod.agent_spec_path(name)
+            except ValueError:
+                agent_mod.logger.warning(
+                    "shared template governance: ambiguous spec name %r; its grants were "
+                    "not re-filtered against the current ceiling",
+                    name,
+                )
+                continue
+            if spec_path is None:
+                continue
+            if is_markdown_spec(spec_path):
+                agent_mod.logger.warning(
+                    "shared template governance: %r is a markdown spec %s, which this pass "
+                    "cannot rewrite; its grants were not re-filtered against the current "
+                    "ceiling",
+                    name,
+                    spec_path,
+                )
+                continue
+            with agent_mod.agents_spec_lock(agents_dir):
+                try:
+                    config = user_json.loads_user_json(spec_path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    config = None
+                if not isinstance(config, dict):
+                    agent_mod.logger.warning(
+                        "shared template governance: %r could not be read as a spec; its "
+                        "grants were not re-filtered against the current ceiling",
+                        name,
+                    )
+                    continue
+                before = copy.deepcopy(config)
+                auto_approve._apply_allowed_tools_ceiling(
+                    config, source=f"shared-template-refresh:{name}"
+                )
+                servers_map = config.get("mcpServers")
+                if isinstance(servers_map, dict):
+                    config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(servers_map)
+                if config != before:
+                    agent_mod._atomic_json_write(spec_path, config)
+        except Exception:
+            agent_mod.logger.warning(
+                "shared template governance failed for %r", name, exc_info=True
+            )

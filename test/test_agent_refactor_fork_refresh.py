@@ -358,3 +358,118 @@ def test_an_unconfirmed_private_copy_at_the_dashboard_author_stem_is_governance_
     agent._refresh_forked_templates_locked(gated_off=frozenset())
     assert written == [], "a confirmed-owned stem spec is left to its owned writer"
     assert agent._fork_refresh_failed == frozenset()
+
+
+# --- crew-bound shared templates (not forks) -------------------------------------------
+
+
+@pytest.fixture
+def shared_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """No forks; one crew bound to a shared template carrying a denied grant."""
+    from kiro_crew.agent_materialization import auto_approve
+
+    _forks(monkeypatch, {})
+    _bindings(monkeypatch, {"reviewer-crew": "reviewer", "default": "kirocrew"})
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    spec = tmp_path / "reviewer.json"
+    monkeypatch.setattr(agent, "agent_spec_path", lambda name: tmp_path / f"{name}.json")
+    # The tightened ceiling: denies the shell grant and every governed server's autoApprove.
+    monkeypatch.setattr(auto_approve, "_may_auto_approve", lambda ref: ref != "execute_bash")
+
+    def strip(servers: dict[str, Any]) -> dict[str, Any]:
+        return {
+            k: {kk: vv for kk, vv in v.items() if kk != "autoApprove"} for k, v in servers.items()
+        }
+
+    monkeypatch.setattr(auto_approve, "_strip_ungoverned_auto_approve", strip)
+    return spec
+
+
+def test_a_bound_shared_template_is_re_filtered_after_the_ceiling_tightens(
+    shared_template: Path,
+) -> None:
+    doc = {
+        "name": "reviewer",
+        "prompt": "review carefully",
+        "tools": ["fs_read", "execute_bash"],
+        "allowedTools": ["fs_read", "execute_bash"],
+        "mcpServers": {"gh": {"command": "gh-mcp", "autoApprove": ["*"]}},
+    }
+    shared_template.write_text(json.dumps(doc), encoding="utf-8")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    written = json.loads(shared_template.read_text(encoding="utf-8"))
+    assert written["allowedTools"] == ["fs_read"]
+    assert written["mcpServers"] == {"gh": {"command": "gh-mcp"}}
+    # Mount list and human-authored fields are untouched.
+    assert written["tools"] == ["fs_read", "execute_bash"]
+    assert written["prompt"] == "review carefully"
+    # A shared template is never a fork, so the spawn gate's failure record is unchanged.
+    assert agent._fork_refresh_failed == frozenset()
+
+
+def test_a_bound_shared_template_with_nothing_denied_is_not_rewritten(
+    shared_template: Path,
+) -> None:
+    raw = '{ "name": "reviewer",   "allowedTools": ["fs_read"] }\n'
+    shared_template.write_text(raw, encoding="utf-8")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert shared_template.read_text(encoding="utf-8") == raw
+
+
+def test_an_unbound_template_is_never_written(
+    shared_template: Path,
+) -> None:
+    loose = shared_template.parent / "loose.json"
+    raw = json.dumps({"name": "loose", "allowedTools": ["execute_bash"]})
+    loose.write_text(raw, encoding="utf-8")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert loose.read_text(encoding="utf-8") == raw
+
+
+def test_an_owned_spec_bound_to_a_crew_is_left_to_its_own_writer(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owned = shared_template.parent / "kirocrew.json"
+    raw = json.dumps({"name": "kirocrew", "allowedTools": ["execute_bash"]})
+    owned.write_text(raw, encoding="utf-8")
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert owned.read_text(encoding="utf-8") == raw
+
+
+def test_a_markdown_shared_template_is_warned_about_not_blocked(
+    shared_template: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    md = shared_template.parent / "reviewer.md"
+    md.write_text("---\nname: reviewer\n---\n", encoding="utf-8")
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: md)
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert "markdown spec" in caplog.text
+    assert agent._fork_refresh_failed == frozenset()
+
+
+def test_a_fork_is_not_governed_twice_by_the_shared_pass(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _forks(monkeypatch, {"crewfork": {"private_to": "crew", "forked_from": "custom"}})
+    _bindings(monkeypatch, {"crew": "crewfork"})
+    monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+    spec = tmp_path / "crewfork.json"
+    spec.write_text(json.dumps({"name": "crewfork", "tools": [], "allowedTools": []}))
+    monkeypatch.setattr(agent, "agent_spec_path", lambda _name: spec)
+    written: list[str] = []
+    monkeypatch.setattr(agent, "_atomic_json_write", lambda _p, c: written.append(c["name"]))
+    agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert written == ["crewfork"]
+
+
+def test_no_forks_and_an_unreadable_config_records_no_failure(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(agent, "_fork_refresh_failed", frozenset({"stale"}))
+    _forks(monkeypatch, {})
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(_raise))
+    with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+        agent._refresh_forked_templates_locked(gated_off=frozenset())
+    assert agent._fork_refresh_failed == frozenset()
+    assert "shared template governance skipped" in caplog.text

@@ -977,7 +977,22 @@ the fleet now forbids: the tool short-circuits inside the harness and never reac
 own PreToolUse gate. `agent.reproject_for_ceiling_change` re-derives the file, bounded to an
 actual ceiling move by `governance_generation` — hooks run on every confirming poll, so an
 unconditional rebuild would rewrite a file kiro-cli watches every refresh interval for nothing.
-Two details make that bound safe rather than merely cheap. The baseline is seeded by
+
+"The file" is every spec a session can be started on through a crew, not only `kirocrew.json`.
+The rebuild re-derives Kiro Crew's own specs, then the fork refresh
+(`agent_materialization.fork_refresh`) re-filters `allowedTools` and strips governed
+`autoApprove` on every corroborated fork, and then runs the same two passes over every
+**shared template** a crew in `config.json` is bound to: a spec created on the Agent
+templates tab, edited on the agent detail page, or turned into a shared template by publish.
+Those writers filter only when they write, so without this pass such a template would keep
+the grants the ceiling now denies. The shared-template pass touches nothing but those two
+lists, rewrites a file only when a pass removed something, and never writes a spec no crew is
+bound to. It does not hold spawns the way the fork gate does: a bound template it cannot
+rewrite (a markdown spec, an unreadable file, an ambiguous name) is logged at WARNING and
+retried on the next rebuild. A spec that reaches the agents directory by a hand edit and is
+bound to no crew is outside every Kiro Crew writer; its grants are whatever its author wrote.
+
+Two details make the generation bound safe rather than merely cheap. The baseline is seeded by
 `prime_ceiling_projection` **before the poller starts**, because the first poll can itself
 install a new ceiling and a first-call baseline would record that generation and skip the very
 rebuild it needed. And the memo advances **only after a confirmed write**: the hook calls
