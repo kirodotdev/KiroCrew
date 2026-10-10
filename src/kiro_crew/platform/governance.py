@@ -1177,8 +1177,9 @@ class ScopedMap:
     """
 
     members: RulesetLike
-    # member id -> {leaf name -> ScopedRuleset}
-    posture: Mapping[str, Mapping[str, ScopedRuleset]] = field(default_factory=dict)
+    # member id -> {leaf name -> ruleset}; a leaf both sides of a fold name holds
+    # their intersection, which may be an ``_AndRuleset``.
+    posture: Mapping[str, Mapping[str, RulesetLike]] = field(default_factory=dict)
 
     @staticmethod
     def from_dict(d: Mapping[str, object], *, allow_posture: bool) -> "ScopedMap":
@@ -1212,7 +1213,10 @@ class ScopedMap:
         return ScopedMap(members=members, posture=posture)
 
     def compose(self, narrower: "ScopedMap") -> "ScopedMap":
-        # members intersect; posture is policy-only so the ceiling's wins.
+        # members intersect, and so does posture: the narrower side can only
+        # tighten.  A profile never carries posture (``from_dict`` rejects it), so
+        # over a profile this keeps the ceiling's posture unchanged; between two
+        # policy tiers the lower tier's posture narrows the higher one's.
         base = self.members
         if isinstance(base, ScopedRuleset):
             composed: RulesetLike = base.compose(narrower.members)
@@ -1222,7 +1226,7 @@ class ScopedMap:
             # ``_compose_controls``) do, so a third — and any later — tier's
             # narrowing is honoured instead of being silently dropped.
             composed = _AndRuleset(base, narrower.members)
-        return ScopedMap(members=composed, posture=self.posture)
+        return ScopedMap(members=composed, posture=_compose_posture(self.posture, narrower.posture))
 
     def permits_member(self, member: str) -> Decision:
         return self.members.permits(member)
@@ -1235,6 +1239,32 @@ class ScopedMap:
         if ruleset is None:
             return Decision(True, f"no posture leaf {leaf!r} for {member!r}", rule="scopedmap")
         return ruleset.permits(item)
+
+
+def _compose_posture(
+    ceiling: Mapping[str, Mapping[str, RulesetLike]],
+    narrower: Mapping[str, Mapping[str, RulesetLike]],
+) -> Mapping[str, Mapping[str, RulesetLike]]:
+    """Intersect two ``ScopedMap`` postures, leaf by leaf.
+
+    An absent member or leaf permits everything, so a leaf only one side names
+    carries through as a restriction, and a leaf both name permits an item only
+    when both rulesets do.  No combination can permit what the ceiling refuses.
+    """
+    if not narrower:
+        return ceiling
+    merged: Dict[str, Dict[str, RulesetLike]] = {m: dict(ls) for m, ls in ceiling.items()}
+    for member, leaves in narrower.items():
+        target = merged.setdefault(member, {})
+        for leaf, ruleset in leaves.items():
+            base = target.get(leaf)
+            if base is None:
+                target[leaf] = ruleset
+            elif isinstance(base, ScopedRuleset):
+                target[leaf] = base.compose(ruleset)
+            else:
+                target[leaf] = _AndRuleset(base, ruleset)
+    return merged
 
 
 # ──────────────────────────────────────────────────────────────────────────

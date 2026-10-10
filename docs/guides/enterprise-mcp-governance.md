@@ -289,10 +289,11 @@ the authority narrowed by it: allow-lists intersect, deny-lists union, a strictn
 level takes the stricter value. A subordinate cannot repeal by omission either — a
 scope it simply leaves out keeps the authority's value.
 
-Two values a subordinate sets are kept only when the authority left them empty:
+One value a subordinate sets is kept only when the authority left it empty:
 `updates.source` (where both name one, the authority's glob stands — two globs have no
-expressible intersection) and `channels.posture` (the authority's posture wins; a
-subordinate posture is not yet folded). A `min_version`
+expressible intersection). `channels.posture` folds leaf by leaf: where both tiers
+set the same leaf, an id must be allowed by both; a leaf only the subordinate sets
+is added as a further restriction. A `min_version`
 floor does fold: the higher of the two wins. A
 `~/.kiro/crew/security_policy.json` that cannot be used (unreadable, not JSON, or
 a document the schema rejects) beneath a central document is skipped with one
