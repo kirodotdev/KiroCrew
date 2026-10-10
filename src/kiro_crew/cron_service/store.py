@@ -21,9 +21,9 @@ import logging
 import math
 import os
 import time
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +36,10 @@ _CRONS_FILE = "crons.json"
 
 
 _STORE_VERSION = 2
+
+#: The top-level keys of the store document this build writes itself. Any other
+#: top-level key came from a newer build and is written back unchanged.
+_STORE_DOCUMENT_KEYS = frozenset({"version", "jobs"})
 
 # Bounded non-blocking acquire for the cron-store advisory lock (see
 # CronService._file_lock). The spin never parks the event loop in an
@@ -608,23 +612,146 @@ def job_record(j: CronJob) -> dict[str, Any]:
     }
     # Written only when set, and last: a store with no installer-managed job
     # stays byte-identical to the one an older build writes (pinned by
-    # test_cron_refactor_contract's store-bytes fixtures), and an older build
-    # reading a newer store simply ignores the extra key.
+    # test_cron_refactor_contract's store-bytes fixtures). An older build reads a
+    # newer store's extra key and, from this build on, writes it back
+    # (decode_store / encode_store).
     if j.managed_by:
         record["managed_by"] = j.managed_by
     return record
 
 
-def encode_store(jobs: Iterable[CronJob]) -> str:
-    """The whole store document for ``jobs``, as ``_save`` writes it (two-space indent)."""
-    data = {
-        "version": _STORE_VERSION,
-        "jobs": [job_record(j) for j in jobs],
+#: Every key :func:`job_record` can write, read off the encoder itself so the two
+#: cannot drift: a job that sets each conditionally written key (``managed_by``).
+#: A record key outside this set came from a newer build. A key inside it is this
+#: build's to write or to omit, so a value this build cleared stays cleared.
+_KNOWN_JOB_KEYS = frozenset(
+    job_record(
+        CronJob(id="", name="", message="", schedule=CronSchedule(kind="cron"), managed_by="-")
+    )
+)
+
+#: The ``schedule`` keys this build writes (``asdict(job.schedule)``).
+_KNOWN_SCHEDULE_KEYS = frozenset(f.name for f in fields(CronSchedule))
+
+#: The most this build keeps of what a newer build added, per item: one job's unknown
+#: keys together with its schedule's, and the document's unknown top-level keys. It is
+#: measured as the JSON text they are written back as (``json.dumps`` of each non-empty
+#: mapping; ASCII, so a character is a byte), where :func:`decode_store` keeps them. An
+#: item over the cap keeps none of its unknown keys (logged), so the next save writes it
+#: as this build knows it.
+MAX_UNKNOWN_FIELDS_BYTES = 64 * 1024
+
+#: The most the whole store keeps of them, measured the same way: the document's
+#: top-level keys first, then each job in file order. The number of jobs does not bound
+#: it (nothing limits how many jobs a store holds), so this does: a job whose keys would
+#: take the total past it keeps none of them, and one warning per load counts those jobs.
+MAX_UNKNOWN_FIELDS_STORE_BYTES = 1024 * 1024
+
+
+def _kept_size(what: str, *parts: Mapping[str, Any]) -> int | None:
+    """The JSON size of the unknown keys in *parts*, or None (logged) past the per-item cap."""
+    try:
+        size = sum(len(json.dumps(part)) for part in parts if part)
+    except (TypeError, ValueError, RecursionError):
+        size = MAX_UNKNOWN_FIELDS_BYTES + 1
+    if size <= MAX_UNKNOWN_FIELDS_BYTES:
+        return size
+    logger.warning(
+        "Cron store: %s has %d key(s) from a newer build totalling %d bytes, over the "
+        "%d-byte cap; they are not kept, so the next save writes it without them",
+        what,
+        sum(len(part) for part in parts),
+        size,
+        MAX_UNKNOWN_FIELDS_BYTES,
+    )
+    return None
+
+
+def encode_store(
+    jobs: Iterable[CronJob],
+    *,
+    version: int = _STORE_VERSION,
+    extra: Mapping[str, Any] | None = None,
+    unknown_fields: Mapping[str, UnknownFields] | None = None,
+) -> str:
+    """The whole store document for ``jobs``, as ``_save`` writes it (two-space indent).
+
+    ``version``, ``extra`` and ``unknown_fields`` carry what :func:`decode_store` read
+    from a store a NEWER build wrote, so this build's save does not delete it. Each is
+    written back fill-only, the rule ``KiroCrewConfig.to_dict`` applies to unknown
+    config keys: a key this build writes itself is never overwritten, and only a job
+    still in ``jobs`` gets its unknown keys back, so a job this build deleted is gone
+    with them. The version is never written lower than the one read. A store with no
+    unknown keys encodes exactly as it did before.
+    """
+    fields_by_job = unknown_fields or {}
+    records = []
+    for j in jobs:
+        record = job_record(j)
+        unknown = fields_by_job.get(j.id)
+        if unknown is not None:
+            for key, value in unknown.schedule.items():
+                record["schedule"].setdefault(key, value)
+            for key, value in unknown.job.items():
+                record.setdefault(key, value)
+        records.append(record)
+    data: dict[str, Any] = {
+        "version": max(_STORE_VERSION, version),
+        "jobs": records,
     }
+    for key, value in (extra or {}).items():
+        data.setdefault(key, value)
     return json.dumps(data, indent=2)
 
 
+@dataclass(frozen=True)
+class UnknownFields:
+    """The keys of one job record that this build does not know, kept for its save."""
+
+    job: Mapping[str, Any]
+    schedule: Mapping[str, Any]
+
+
+@dataclass(frozen=True)
+class StoreDocument:
+    """What :func:`decode_store` read: the jobs, plus what a newer build added.
+
+    ``version`` is the document's version when it is an integer above this build's,
+    else this build's. ``extra`` holds the top-level keys other than ``version`` and
+    ``jobs``; ``unknown_fields`` maps a loaded job's id to its unknown keys.
+    """
+
+    jobs: list[CronJob]
+    version: int
+    extra: Mapping[str, Any]
+    unknown_fields: Mapping[str, UnknownFields]
+
+
+def _unknown_fields_of(record: dict[str, Any]) -> tuple[UnknownFields, int] | None:
+    """The keys of *record* (and of its ``schedule``) this build does not know, with
+    their JSON size; None when there are none or they pass the per-job cap."""
+    job = {key: value for key, value in record.items() if key not in _KNOWN_JOB_KEYS}
+    schedule_record = record.get("schedule")
+    schedule = (
+        {key: value for key, value in schedule_record.items() if key not in _KNOWN_SCHEDULE_KEYS}
+        if isinstance(schedule_record, dict)
+        else {}
+    )
+    if not job and not schedule:
+        return None
+    size = _kept_size(f"job {record.get('id')!r}", job, schedule)
+    if size is None:
+        return None
+    return UnknownFields(job=job, schedule=schedule), size
+
+
 def decode_jobs(raw: bytes) -> list[CronJob] | None:
+    """The jobs the store bytes ``raw`` hold; :func:`decode_store` without the rest."""
+    document = decode_store(raw)
+    return None if document is None else document.jobs
+
+
+def decode_store(raw: bytes) -> StoreDocument | None:
     """The jobs the store bytes ``raw`` hold, each record isolated from the others.
 
     None when the document parses but is not an object holding a ``jobs`` list
@@ -637,6 +764,24 @@ def decode_jobs(raw: bytes) -> list[CronJob] | None:
     records = data.get("jobs", []) if isinstance(data, dict) else None
     if not isinstance(records, list):
         return None
+    read_version = data.get("version")
+    version = (
+        read_version
+        if isinstance(read_version, int)
+        and not isinstance(read_version, bool)
+        and read_version > _STORE_VERSION
+        else _STORE_VERSION
+    )
+    extra = {key: value for key, value in data.items() if key not in _STORE_DOCUMENT_KEYS}
+    kept_total = 0
+    if extra:
+        extra_size = _kept_size("the store document", extra)
+        if extra_size is None:
+            extra = {}
+        else:
+            kept_total = extra_size
+    unknown_fields: dict[str, UnknownFields] = {}
+    past_total = 0
     # Per-entry isolation: one malformed or legacy record must not
     # discard the whole registry. Each record is built in its own
     # try block; a bad one is warned about and skipped, and every
@@ -652,7 +797,7 @@ def decode_jobs(raw: bytes) -> list[CronJob] | None:
     jobs: list[CronJob] = []
     for j in records:
         try:
-            jobs.append(_job_from_record(j))
+            job = _job_from_record(j)
         except (KeyError, TypeError) as entry_exc:
             entry_id = j.get("id", "<missing id>") if isinstance(j, dict) else "<not an object>"
             logger.warning(
@@ -661,7 +806,26 @@ def decode_jobs(raw: bytes) -> list[CronJob] | None:
                 entry_id,
                 entry_exc,
             )
-    return jobs
+            continue
+        jobs.append(job)
+        found = _unknown_fields_of(j)
+        if found is None:
+            continue
+        unknown, size = found
+        if kept_total + size > MAX_UNKNOWN_FIELDS_STORE_BYTES:
+            past_total += 1
+            continue
+        kept_total += size
+        unknown_fields[job.id] = unknown
+    if past_total:
+        logger.warning(
+            "Cron store: %d job(s) carry keys from a newer build past the %d-byte total "
+            "the store keeps; they are not kept, so the next save writes those jobs "
+            "without them",
+            past_total,
+            MAX_UNKNOWN_FIELDS_STORE_BYTES,
+        )
+    return StoreDocument(jobs=jobs, version=version, extra=extra, unknown_fields=unknown_fields)
 
 
 #: Infix between the store's file name and the UTC stamp of a quarantine copy:
