@@ -65,6 +65,9 @@ class _Runtime:
         self._result = result
         self._updates = updates or []
         self._last_activity = time.monotonic()
+        self._agent_capabilities: dict = {
+            "_meta": {"kiro": {"extensionMethods": [METHOD_KAS_SESSION_COMPACT]}}
+        }
 
     def mark_turn_active(self, session_id: str, active: bool) -> None:
         pass
@@ -210,6 +213,31 @@ async def test_compact_then_wait_returns_the_turns_outcome() -> None:
 @pytest.mark.asyncio
 async def test_compact_then_wait_returns_a_refusal() -> None:
     handle, _ = _make(result={"success": False})
+    await handle.compact()
+    result = await asyncio.wait_for(handle.wait_for_compaction(timeout=30.0), timeout=2.0)
+    assert result["type"] == "failed"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "caps",
+    [
+        {},
+        {"_meta": {"kiro": {"extensionMethods": ["_kiro/session/history"]}}},
+        {"_meta": {"kiro": {"extensionMethods": "_kiro/session/compact"}}},
+    ],
+)
+async def test_an_engine_without_the_verb_fails_without_sending(caps) -> None:
+    """No verb in ``extensionMethods``: nothing is sent, and the turn reports a
+    failed compaction instead of a JSON-RPC error or a fake prompt."""
+    handle, rt = _make(result={"success": True})
+    rt._agent_capabilities = caps
+    events = await _prompt(handle, "/compact")
+    assert rt.requests == []
+    statuses = _statuses(events)
+    assert [s for s, _ in statuses] == ["failed"]
+    assert "no compaction command" in statuses[0][1]
+    assert events[-1].kind == EVENT_COMPLETE
     await handle.compact()
     result = await asyncio.wait_for(handle.wait_for_compaction(timeout=30.0), timeout=2.0)
     assert result["type"] == "failed"

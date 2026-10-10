@@ -1580,6 +1580,21 @@ class AcpSessionHandle:
         # finally is what unmarks the turn and re-sets _turn_done. Left to the
         # event loop's async-generator GC hook, the handle would read as
         # turn-active until some later collection pass.
+        if self._kas_compact_request(message) and not self._kas_compact_advertised():
+            # An engine that does not list the verb would answer it with a
+            # JSON-RPC error, and the prompt does not compact on KAS. Report a
+            # failed compaction without sending anything.
+            self.last_compaction_transient = False
+            yield AcpEvent(
+                kind=EVENT_COMPACTION_STATUS,
+                text="failed",
+                title=(
+                    "this KAS build offers no compaction command; it still "
+                    "summarizes on its own as the context fills"
+                ),
+            )
+            yield AcpEvent(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN)
+            return
         turn = self._run_turn(_build, timeout)
         try:
             async for event in turn:
@@ -3519,6 +3534,18 @@ class AcpSessionHandle:
             name, _args = parse_slash_command(message)
             return name == "compact"
         return False
+
+    def _kas_compact_advertised(self) -> bool:
+        """Whether the engine listed ``_kiro/session/compact`` at ``initialize``.
+
+        Read from ``agentCapabilities._meta.kiro.extensionMethods`` as the
+        runtime kept it. Fails closed: no record means no verb.
+        """
+        caps = getattr(getattr(self, "_runtime", None), "_agent_capabilities", None)
+        meta = caps.get("_meta") if isinstance(caps, dict) else None
+        kiro = meta.get("kiro") if isinstance(meta, dict) else None
+        methods = kiro.get("extensionMethods") if isinstance(kiro, dict) else None
+        return isinstance(methods, list) and METHOD_KAS_SESSION_COMPACT in methods
 
     def _settle_kas_compaction(self, result: Any) -> AcpEvent | None:
         """The compaction status a KAS compaction answer still owes, or None.
