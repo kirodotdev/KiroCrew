@@ -4920,6 +4920,52 @@ class TestDoctorMcpTools:
         assert agent_path.read_bytes() == before
         assert "agent config (auto-fix skipped: shared home)" in issues
 
+    def test_auto_fix_refused_at_the_locked_recheck_is_audited_and_writes_nothing(
+        self, tmp_path, capsys
+    ):
+        """Ownership that changes between the probe and the write is caught under
+        the agent-spec lock, and the audit records that final refusal."""
+        from kiro_crew.cli_doctor import _doctor_mcp_tools
+
+        agent_path = tmp_path / "kirocrew.json"
+        _write_agent_config(
+            agent_path,
+            tools=[],
+            allowed=[],
+            servers={
+                "kirocrew-core": {"command": "/bin/kirocrew", "args": ["mcp-core"]},
+                "kirocrew-cron": {"command": "/bin/kirocrew", "args": ["mcp-cron"]},
+            },
+        )
+        before = agent_path.read_bytes()
+        issues: list[str] = []
+        sel_mock = MagicMock()
+        with (
+            patch(
+                "kiro_crew.agent._decline_shared_agent_home",
+                side_effect=[None, agent_path],
+            ),
+            patch("kiro_crew.cli_doctor.sel", sel_mock),
+            self._mock_probe(
+                {
+                    "kirocrew-core": ("ok", [], ""),
+                    "kirocrew-cron": ("ok", [], ""),
+                }
+            ),
+        ):
+            _doctor_mcp_tools(agent_path, issues)
+        out = capsys.readouterr().out
+        assert "Auto-fix skipped: shared home" in out
+        assert agent_path.read_bytes() == before
+        assert "agent config (auto-fix skipped: shared home)" in issues
+        sel_mock.return_value.log_api_access.assert_called_once_with(
+            caller="system",
+            operation="agent_home_write",
+            outcome="denied",
+            source="cli_doctor",
+            resources=str(agent_path),
+        )
+
     def test_declined_home_reports_a_forbidden_grant_without_writing(self, tmp_path, capsys):
         """A declined home leaves a ceiling-forbidden grant on disk, logs no
         SEL revoke, and reports the grant for the owning install to repair."""

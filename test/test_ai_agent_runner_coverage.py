@@ -1190,6 +1190,23 @@ def test_ensure_agent_registered_writes_the_apps_own_spec(monkeypatch, tmp_path)
     assert runner.ensure_agent_registered() is True  # idempotent re-register
 
 
+def test_ensure_agent_registered_writes_nothing_into_a_foreign_owned_shared_dir(
+    monkeypatch, tmp_path
+):
+    from kiro_crew import agent as agent_mod
+
+    monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
+    shared = tmp_path / "kiro" / "agents"
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", shared)
+    monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: shared)
+    monkeypatch.setattr(
+        agent_mod, "_decline_shared_agent_home", lambda **_kw: shared / agent_mod.AGENT_FILENAME
+    )
+    runner = R.SessionAgentRunner()
+    assert runner.ensure_agent_registered() is False
+    assert not (shared / f"{runner.agent_name}.json").exists()
+
+
 def test_ensure_agent_registered_never_clobbers_the_users_own_file(monkeypatch, tmp_path):
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     runner = R.SessionAgentRunner()

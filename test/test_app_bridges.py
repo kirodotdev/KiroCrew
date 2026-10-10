@@ -162,6 +162,33 @@ class TestAgentRegistration:
         target = json.loads(link.read_text(encoding="utf-8"))
         assert target["name"] == "my-agent"
 
+    def test_register_agents_leaves_a_foreign_owned_shared_dir_alone(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """From a data home that does not own the shared agents dir, the app's
+        agent is not written there: the owner's specs are left in place."""
+        from kiro_crew import agent as agent_mod
+
+        src = _make_app_source(tmp_path)
+        install_app(src)
+        manifest = AppManifest.from_json_file(
+            app_env["home"] / "apps" / "test-app" / APP_MANIFEST_FILENAME
+        )
+        app_root = app_env["home"] / "apps" / "test-app"
+        shared = app_env["kiro_agents"]
+        monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", shared)
+        monkeypatch.setattr(agent_mod, "ambient_agents_dir", lambda: shared)
+        monkeypatch.setattr(
+            agent_mod,
+            "_decline_shared_agent_home",
+            lambda **_kw: shared / agent_mod.AGENT_FILENAME,
+        )
+
+        registered = _register_agents("test-app", manifest, app_root)
+
+        assert registered == []
+        assert not (shared / "test-app--my-agent.json").exists()
+
     def test_deregister_agents(self, tmp_path, app_env):
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -866,7 +893,8 @@ class TestTopLevel:
         refreshed = refresh_app_agents("test-app")
 
         assert refreshed == []
-        assert not any(app_env["kiro_agents"].iterdir())
+        # The agent-spec lock file spec writers share is not a spec.
+        assert not list(app_env["kiro_agents"].glob("*.json"))
 
     def test_install_while_execution_denied_registers_nothing(self, tmp_path, app_env, monkeypatch):
         import kiro_crew.apps.execution as execution_mod

@@ -1541,6 +1541,42 @@ def test_rebuild_round_trip_keeps_self_ownership(monkeypatch, tmp_path):
     assert probe == [True], "a landed rebuild must report exactly one True verdict"
 
 
+def test_rebuild_rechecks_ownership_under_the_lock_before_its_write(monkeypatch, tmp_path):
+    """A default-home gateway that writes the shared spec while an override-home
+    rebuild is past its first check wins: the override rebuild re-asks under the
+    shared agents-dir lock, reads the new owner's spec and writes nothing."""
+    import json
+
+    from kiro_crew import agent
+    from kiro_crew.agent_materialization import auto_approve
+
+    monkeypatch.delenv("KIRO_HOME", raising=False)
+    monkeypatch.delenv("KIROCREW_POD", raising=False)
+    own_home = tmp_path / "relocated-home"
+    own_home.mkdir()
+    monkeypatch.setenv("KIROCREW_HOME", str(own_home))
+    _durable_checkout(monkeypatch, agent)
+    shared = tmp_path / "agents"
+    _pretend_target_is_shared(monkeypatch, agent, shared)
+    owner_spec = json.dumps({"name": "kirocrew", "mcpServers": {"kirocrew-cron": {"command": "x"}}})
+    real_pass = auto_approve.final_ceiling_pass
+
+    def owner_writes_first(config):
+        # The other gateway lands its unpinned spec after this rebuild was admitted.
+        shared.mkdir(parents=True, exist_ok=True)
+        (shared / agent.AGENT_FILENAME).write_text(owner_spec, encoding="utf-8")
+        return real_pass(config)
+
+    monkeypatch.setattr(auto_approve, "final_ceiling_pass", owner_writes_first)
+    probe: list[bool] = []
+
+    returned = agent.rebuild_agent_config(_wrote_out=probe)
+
+    assert returned == shared / agent.AGENT_FILENAME
+    assert (shared / agent.AGENT_FILENAME).read_text(encoding="utf-8") == owner_spec
+    assert probe == [False], "a rebuild refused at the re-check must report it did not write"
+
+
 def test_rebuild_under_override_home_never_touches_shared_dir(monkeypatch, tmp_path):
     """``rebuild_agent_config`` under an override home must not rewrite an
     existing shared spec — the guard stops the write, not merely warns."""

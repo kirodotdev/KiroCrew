@@ -409,8 +409,10 @@ def _declined_foreign_spec_write(path: Path) -> bool:
     covered the day it is added, and such a writer cannot forget the check. It
     is NOT every spec write in the tree — ``apps/bridges.py`` renders app agent
     specs into the same directory through :func:`atomic_write`, a different
-    primitive this guard never sees, and other writers reach it the same way.
-    Those remain open; what this covers is the set that goes through
+    primitive this guard never sees; that writer, the auto_improvement runner's
+    self-registration call this function themselves, under
+    :func:`agents_spec_lock`. What this covers on its own is the set that goes
+    through
     :func:`_atomic_json_write`: ``worker_agent``, the conductor agents, the
     service agents, the default-spec commit, the fork refresh and the read-only
     side spec. The decision itself is not re-implemented — it is the same
@@ -4058,15 +4060,35 @@ def rebuild_agent_config(
         config[key] = list(dict.fromkeys(config.get(key, [])))
     auto_approve.final_ceiling_pass(config)
 
-    default_spec_commit.write_default_spec(
-        path,
-        config,
-        clean=clean,
-        gated_off=gated_off,
-        sources=sources,
-        resolved=resolved,
-        app_owned_at_start=_app_owned_at_start,
-    )
+    # The provenance-bearing write happens under the agent-spec lock, and the
+    # guard is asked AGAIN once the lock is held. A default-home and an
+    # override-home gateway booting together can both pass the check at the top
+    # (both read "no spec"); serialized here, the second one reads the spec the
+    # first one just wrote and refuses instead of landing last. The lock narrows
+    # that interleave and is not the gate: when it cannot be taken (an on-loop
+    # caller under contention) the re-check still runs and the write proceeds
+    # unserialized, because refusing would leave a fresh install with no spec.
+    with contextlib.ExitStack() as spec_lock:
+        try:
+            spec_lock.enter_context(agents_spec_lock(kiro_agents_dir_path()))
+        except OSError:
+            logger.debug("default spec written without the agent-spec lock", exc_info=True)
+        if _decline_shared_agent_home(audit=False) is not None:
+            declined = _decline_shared_agent_home()
+            if _wrote_out is not None:
+                _wrote_out.append(False)
+            if _held_out is not None:
+                _held_out.append(False)
+            return declined if declined is not None else path
+        default_spec_commit.write_default_spec(
+            path,
+            config,
+            clean=clean,
+            gated_off=gated_off,
+            sources=sources,
+            resolved=resolved,
+            app_owned_at_start=_app_owned_at_start,
+        )
     logger.info("Installed agent config: %s", path)
     _claim_propagated_model(config, main_name)
     if guide_grant_pending:

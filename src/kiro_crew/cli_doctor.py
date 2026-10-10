@@ -35,6 +35,7 @@ module).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import importlib
 import json
 import logging
@@ -943,25 +944,51 @@ def _doctor_mcp_tools(
         )
 
     if config_changed:
-        try:  # both verdicts on the shared spec are audited; the audit must not break doctor
-            sel().log_api_access(
-                caller="system",
-                operation="agent_home_write",
-                outcome="denied" if declined else "allowed",
-                source="cli_doctor",
-                resources=str(agent_path),
-            )
-        except Exception:  # noqa: BLE001
-            logger.debug("SEL audit unavailable for doctor spec write", exc_info=True)
-    if config_changed and declined:
-        print("  → Auto-fix skipped: shared home")
-        issues.append("agent config (auto-fix skipped: shared home)")
-    elif config_changed:
-        agent_data["tools"] = tools
-        agent_data["allowedTools"] = allowed
-        agent_data["mcpServers"] = mcps
-        atomic_write(agent_path, json.dumps(agent_data, indent=2) + "\n")
-        print("  → Auto-fixed agent config")
+        # The verdict that decides the write is the one taken under the agent-spec
+        # lock every spec writer of that directory holds, so a gateway that took
+        # ownership since the probe above is not overwritten by this auto-fix, and
+        # that final verdict is the one audited.
+        lock_error = ""
+        with contextlib.ExitStack() as spec_lock:
+            if not declined:
+                try:
+                    spec_lock.enter_context(_agent.agents_spec_lock(agent_path.parent))
+                except OSError as exc:
+                    lock_error = f"agent-spec lock unavailable ({exc})"
+                else:
+                    declined = _agent._decline_shared_agent_home(audit=False) is not None
+            try:  # both verdicts on the shared spec are audited; the audit must not break doctor
+                if lock_error:
+                    sel().log_api_access(
+                        caller="system",
+                        operation="agent_home_write",
+                        outcome="denied",
+                        source="cli_doctor",
+                        resources=str(agent_path),
+                        error=lock_error,
+                    )
+                else:
+                    sel().log_api_access(
+                        caller="system",
+                        operation="agent_home_write",
+                        outcome="denied" if declined else "allowed",
+                        source="cli_doctor",
+                        resources=str(agent_path),
+                    )
+            except Exception:  # noqa: BLE001
+                logger.debug("SEL audit unavailable for doctor spec write", exc_info=True)
+            if lock_error:
+                print(f"  → Auto-fix skipped: {lock_error}")
+                issues.append("agent config (auto-fix skipped: agent-spec lock unavailable)")
+            elif declined:
+                print("  → Auto-fix skipped: shared home")
+                issues.append("agent config (auto-fix skipped: shared home)")
+            else:
+                agent_data["tools"] = tools
+                agent_data["allowedTools"] = allowed
+                agent_data["mcpServers"] = mcps
+                atomic_write(agent_path, json.dumps(agent_data, indent=2) + "\n")
+                print("  → Auto-fixed agent config")
 
     if not probe_targets:
         return

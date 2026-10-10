@@ -234,6 +234,39 @@ def _detail_is_richer(refined: str, prior: str) -> bool:
 from .push_policy import strip_credential_env  # noqa: E402
 
 
+def _same_bytes(path: Path, desired: bytes) -> bool:
+    """Does *path* already hold exactly *desired*? An unreadable file does not."""
+    try:
+        return path.read_bytes() == desired
+    except OSError:
+        return False
+
+
+def _install_agent_copy(src: Path, dest: Path, desired: bytes, agent_name: str) -> bool:
+    """Copy *src* to *dest* unless *dest* is a DIFFERENT file; report success.
+
+    ``~/.kiro/agents/<name>.json`` is the user's own agent directory, and a file
+    there that merely shares this app's agent name is theirs: overwriting it
+    destroys their data. So the copy lands only when the destination is absent,
+    and an existing destination counts as registered only when it is already
+    byte-identical. On a real conflict the run proceeds with the default agent,
+    as on any other registration failure: tool scoping is best-effort, not a
+    licence to overwrite.
+    """
+    if dest.exists():
+        if _same_bytes(dest, desired):
+            return True
+        logger.warning(
+            "not self-registering agent %s: %s already exists with different "
+            "content (leaving the user's file intact; using the default agent)",
+            agent_name,
+            dest,
+        )
+        return False
+    shutil.copyfile(src, dest)
+    return True
+
+
 def _unlink_quietly(path: object) -> None:
     """Remove a sandbox launcher temp file. Never raises — losing the cleanup of a temp
     file must not fail an otherwise-successful agent run."""
@@ -1317,34 +1350,20 @@ class SessionAgentRunner:
                 return False
             # kiro_agents_dir() honors KIRO_HOME; hard-coding ~/.kiro would write
             # into the real agent home during tests and break agent-home isolation.
+            from kiro_crew import agent as agent_mod
             from kiro_crew.config.paths import kiro_agents_dir
 
             dest_dir = kiro_agents_dir()
             dest_dir.mkdir(parents=True, exist_ok=True)
             dest = dest_dir / f"{self.agent_name}.json"
             desired = src.read_bytes()
-            # Do NOT clobber a DIFFERENT existing file. `~/.kiro/agents/<name>.json` is the
-            # user's own agent directory; overwriting a file they wrote — because it happens
-            # to share this app's agent name — destroys their data. Write only when the file
-            # is absent or already byte-identical (idempotent re-register). On a real
-            # conflict, refuse and warn: the run proceeds with the default agent exactly as
-            # it does on any other registration failure, so tool-scoping is best-effort, not
-            # a licence to overwrite. Raised by the GPT review of this branch.
-            if dest.exists():
-                try:
-                    if dest.read_bytes() == desired:
-                        return True  # already ours — nothing to do
-                except OSError:
-                    pass
-                logger.warning(
-                    "not self-registering agent %s: %s already exists with different "
-                    "content (leaving the user's file intact; using the default agent)",
-                    self.agent_name,
-                    dest,
-                )
-                return False
-            shutil.copyfile(src, dest)
-            return True
+            # The shared agents dir belongs to the instance that owns it: from a data
+            # home that does not, write nothing and run with whatever the owner left,
+            # under the same decision every other writer of that directory asks.
+            with agent_mod.agents_spec_lock(dest_dir):
+                if agent_mod._declined_foreign_spec_write(dest):
+                    return dest.is_file() and _same_bytes(dest, desired)
+                return _install_agent_copy(src, dest, desired, self.agent_name)
         except Exception:  # noqa: BLE001 — never block a run on agent registration
             logger.warning("could not self-register agent %s", self.agent_name, exc_info=True)
             return False
