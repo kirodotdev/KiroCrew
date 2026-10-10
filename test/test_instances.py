@@ -1151,6 +1151,11 @@ class TestRunMarkerSidecarReadRetry:
     def _no_backoff_sleep(self, _floor_monkeypatch):
         """Keep the bounded retry instant; attempt COUNT is what matters here.
 
+        Only the simulator tests belong under this fixture. The real-file
+        concurrency test lives in ``TestRunMarkerSidecarConcurrentRewrite``
+        below, OUTSIDE it, because there the attempts must be spaced in time:
+        with the sleep zeroed the whole budget fits inside one writer syscall.
+
         Patches through ``_floor_monkeypatch`` (the isolation floor's own
         ``MonkeyPatch``), not the shared ``monkeypatch``: an autouse fixture that
         used the shared instance would be lifted by any test here that called
@@ -1276,6 +1281,21 @@ class TestRunMarkerSidecarReadRetry:
         assert run_marker.read_launcher(7001) == str(launcher)
         assert run_marker.read_pid(7001) == os.getpid()
 
+
+class TestRunMarkerSidecarConcurrentRewrite:
+    """Real files, real threads: a reader racing a tight ``atomic_write`` loop.
+
+    Deliberately NOT a member of ``TestRunMarkerSidecarReadRetry``. That class's
+    autouse fixture zeroes ``_REPLACE_BACKOFF_SECONDS`` because its simulator
+    tests count attempts; here the attempts must be spaced in TIME. On Windows
+    the writer's ``os.replace`` (``MoveFileEx`` superseding the target) runs with
+    the GIL released, and every read that opens the file meanwhile raises
+    WinError 32, so with the sleep zeroed the reader burns all ten attempts in a
+    few microseconds INSIDE that one syscall and folds to ``None`` -- a false
+    absence the ``Backend Tests (Windows)`` matrix saw intermittently. The
+    product's 50 ms backoff is what rides the window out, so it stays in force.
+    """
+
     def test_concurrent_rewrites_never_fold_to_a_false_absence(self, tmp_path, monkeypatch):
         """The issue's own reproduction, on real files.
 
@@ -1285,12 +1305,19 @@ class TestRunMarkerSidecarReadRetry:
         that holds on every platform: a read that returns a value never returns a
         TORN or EMPTY one -- it is always a value some writer published, never ""
         while the file exists. (The Windows-specific fold is covered
-        deterministically by the simulator tests above.)
+        deterministically by the simulator tests in
+        ``TestRunMarkerSidecarReadRetry``.)
 
         The launcher-marker sidecar stands in for the whole sidecar family here:
         the read-retry chokepoint (``read_bytes_with_retry``) is shared by every
         reader, so the concurrent-rewrite invariant is identical whichever sidecar
-        is exercised. ``read_secret`` has its own deterministic coverage above.
+        is exercised. ``read_secret`` has its own deterministic coverage.
+
+        The writer's failure is surfaced, not swallowed: a writer that dies
+        (``replace_with_retry`` out of budget against a reader's open handle)
+        leaves a stable file behind, and every later read would then pass this
+        test vacuously. The reads also start only after the writer's first
+        publish, so they are known to race a live writer.
         """
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
         from kiro_crew.atomic_write import atomic_write
@@ -1301,16 +1328,26 @@ class TestRunMarkerSidecarReadRetry:
         atomic_write(marker, "/opt/venv-0/bin/kirocrew\n", mode=0o600)
 
         stop = threading.Event()
+        first_publish = threading.Event()
+        writer_error: list[BaseException] = []
 
         def _rewrite():
             i = 0
-            while not stop.is_set():
-                atomic_write(marker, f"/opt/venv-{i % 50}/bin/kirocrew\n", mode=0o600)
-                i += 1
+            try:
+                while not stop.is_set():
+                    atomic_write(marker, f"/opt/venv-{i % 50}/bin/kirocrew\n", mode=0o600)
+                    i += 1
+                    first_publish.set()
+            except BaseException as exc:  # surfaced on the main thread below
+                writer_error.append(exc)
 
         writer = threading.Thread(target=_rewrite, daemon=True)
         writer.start()
         try:
+            # The reads must race a live writer: on a saturated host the main
+            # thread could otherwise finish every read before the writer's first
+            # publish and prove nothing.
+            assert first_publish.wait(5), "the writer never published: the reads raced nothing"
             for _ in range(3000):
                 got = run_marker.read_launcher(6776)
                 # The sidecar exists for the whole run, so a reader must never
@@ -1320,6 +1357,8 @@ class TestRunMarkerSidecarReadRetry:
         finally:
             stop.set()
             writer.join(timeout=5)
+        assert not writer.is_alive(), "the writer thread did not stop"
+        assert not writer_error, f"the writer died mid-run: {writer_error[0]!r}"
 
 
 # ── run-marker port discovery (clients find a gateway on a non-default port) ──
