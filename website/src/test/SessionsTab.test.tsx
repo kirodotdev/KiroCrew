@@ -219,8 +219,11 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed')).toBeInTheDocument()
     })
-    // The orphan names the slot its crew log cited; nothing else knows the creator.
-    expect(screen.getByText('Created by chat-99-gone (not running, so shown top-level)')).toBeInTheDocument()
+    // The creator (chat-99-gone) is CLOSED and has no row in this payload, so no name
+    // resolves. The line names it with a graceful label, never the raw slot id -- an
+    // id nobody recognises explains the nesting no better than silence (#18153).
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
+    expect(screen.queryByText(/chat-99-gone/)).toBeNull()
     // Rows start expanded, so the nested row is on screen under its creator,
     // whose expander says what it hides: that place IS the citation, so the
     // nested row does not repeat its creator's name beside its own.
@@ -251,7 +254,10 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed under a live lead')).toBeInTheDocument()
     })
-    expect(screen.getByText('Created by chat-99-gone (closed)')).toBeInTheDocument()
+    // The closed creator has no row in this payload, so the line uses the graceful
+    // closed label rather than the raw slot id (#18153).
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
+    expect(screen.queryByText(/chat-99-gone/)).toBeNull()
     // The ancestor it nests under is named by its own expander, not by this row.
     expect(screen.queryByText(/Created by Debugging session/)).toBeNull()
   })
@@ -267,7 +273,7 @@ describe('Created-by citation', () => {
     await waitFor(() => {
       expect(screen.getByText('Worker whose conductor closed')).toBeInTheDocument()
     })
-    expect(screen.getByText('Created by chat-99-gone (not running, so shown top-level)')).toBeInTheDocument()
+    expect(screen.getByText('Created by a closed session')).toBeInTheDocument()
     expect(screen.getAllByText(/^Created by /)).toHaveLength(1)
   })
 
