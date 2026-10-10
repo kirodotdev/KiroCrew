@@ -6267,7 +6267,9 @@
     "codeBlock": {
       "copied": "コピーしました！",
       "copy": "コピー",
-      "generating": "生成中…"
+      "generating": "生成中…",
+      "unwrap": "折り返し解除",
+      "wrap": "折り返し"
     },
     "columnResizer": {
       "resize_column": "列の幅を変更: {{column}}",

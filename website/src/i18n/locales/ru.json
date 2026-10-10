@@ -6570,7 +6570,9 @@
     "codeBlock": {
       "copied": "Скопировано!",
       "copy": "Копировать",
-      "generating": "генерация…"
+      "generating": "генерация…",
+      "unwrap": "Не переносить строки",
+      "wrap": "Переносить строки"
     },
     "columnResizer": {
       "resize_column": "Изменить ширину столбца: {{column}}",

@@ -2148,7 +2148,9 @@
     },
     "codeBlock": {
       "copied": "Copied!",
-      "copy": "Copy"
+      "copy": "Copy",
+      "unwrap": "Unwrap lines",
+      "wrap": "Wrap lines"
     },
     "commandPalette": {
       "min_query_chars": "Type at least {{min}} characters to search {{scope}}",

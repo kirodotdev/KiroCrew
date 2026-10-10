@@ -6469,7 +6469,9 @@
     "codeBlock": {
       "copied": "Copié !",
       "copy": "Copier",
-      "generating": "génération…"
+      "generating": "génération…",
+      "unwrap": "Désactiver le retour à la ligne",
+      "wrap": "Retour à la ligne"
     },
     "columnResizer": {
       "resize_column": "Redimensionner la colonne : {{column}}",

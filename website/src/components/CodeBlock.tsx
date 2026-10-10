@@ -1,5 +1,5 @@
 import { memo, useMemo, useState , useRef } from 'react'
-import { Copy, Check } from 'lucide-react'
+import { Copy, Check, WrapText } from 'lucide-react'
 import { copyCode } from '../utils/clipboard'
 import { PierreCode } from '../pierre'
 import { HOVER_NONE_ACTIONS_ROW_CLS } from '../utils/touchActions'
@@ -38,16 +38,41 @@ const isProseLang = (lang?: string) => !!lang && PROSE_LANGS.has(lang.toLowerCas
  *  ToolDetails.tsx; the `file` object below is memoized for the same reason). */
 const PROSE_CODE_OPTIONS = { overflow: 'wrap' } as const
 
-/** The copy button, plus any caller-supplied actions (e.g. the pencil edit
- *  button), as one reusable row -- shared between the header and the footer
- *  duplicate so the two stay visually identical without a copy-pasted JSX
- *  block. */
+/** The wrap toggle and copy button, plus any caller-supplied actions (e.g. the
+ *  pencil edit button), as one reusable row -- shared between the header and
+ *  the footer duplicate so the two stay visually identical without a copy-pasted
+ *  JSX block. */
 function CodeBlockActions(
-  { headerActions, copied, onCopy }: { headerActions?: React.ReactNode; copied: boolean; onCopy: () => void },
+  {
+    headerActions,
+    copied,
+    onCopy,
+    wrap,
+    onToggleWrap,
+  }: {
+    headerActions?: React.ReactNode
+    copied: boolean
+    onCopy: () => void
+    wrap: boolean
+    onToggleWrap: () => void
+  },
 ) {
   return (
     <div className={`flex items-center gap-1 opacity-0 group-hover/code:opacity-100 group-focus-within/code:opacity-100 transition-opacity ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
       {headerActions}
+      <button
+        type="button"
+        data-testid="code-block-wrap-toggle"
+        className={`p-1 rounded cursor-pointer transition-colors ${
+          wrap ? 'text-text bg-bg-hover' : 'text-muted hover:text-text hover:bg-bg-hover'
+        }`}
+        onClick={onToggleWrap}
+        title={wrap ? i18nT('components.codeBlock.unwrap') : i18nT('components.codeBlock.wrap')}
+        aria-label={wrap ? i18nT('components.codeBlock.unwrap') : i18nT('components.codeBlock.wrap')}
+        aria-pressed={wrap}
+      >
+        <WrapText size={13} />
+      </button>
       <button className="p-1 rounded text-muted hover:text-text hover:bg-bg-hover cursor-pointer" onClick={onCopy} title={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')} aria-label={copied ? i18nT('components.codeBlock.copied') : i18nT('components.codeBlock.copy')}>
         {copied ? <Check size={13} /> : <Copy size={13} />}
       </button>
@@ -83,6 +108,9 @@ export const CodeBlock = memo(function CodeBlock(
   const [contentRef, contentHeight] = useMeasuredHeight<HTMLDivElement>()
   const isTall = contentHeight > TALL_CODE_BLOCK_PX
   const prose = isProseLang(lang)
+  const [wrapOverride, setWrapOverride] = useState<boolean | null>(null)
+  const isWrapped = wrapOverride !== null ? wrapOverride : prose
+  const toggleWrap = () => setWrapOverride(!isWrapped)
   // Stable file identity per (code, lang): Pierre diffs options/files by
   // reference first, so a fresh object every render would force re-renders.
   const file = useMemo(() => ({ name: `snippet.${lang || 'txt'}`, contents: code }), [code, lang])
@@ -107,7 +135,7 @@ export const CodeBlock = memo(function CodeBlock(
     <div ref={nearRef} className="code-block group/code rounded-xl border border-border bg-bg-elevated overflow-hidden">
       <div className="flex items-center justify-between px-3 py-1">
         <span className="text-muted text-[13px] font-mono">{lang || 'code'}</span>
-        <CodeBlockActions headerActions={headerActions} copied={copied} onCopy={copy} />
+        <CodeBlockActions headerActions={headerActions} copied={copied} onCopy={copy} wrap={isWrapped} onToggleWrap={toggleWrap} />
       </div>
       {/* tabIndex=0 + role/label: a horizontally-scrollable region must be keyboard
           focusable so keyboard-only users can scroll it (axe scrollable-region-focusable).
@@ -118,7 +146,7 @@ export const CodeBlock = memo(function CodeBlock(
       {/* eslint-disable-next-line jsx-a11y/no-noninteractive-tabindex */}
       <div ref={contentRef} className="pierre-surface scroll-fade" tabIndex={0} role="region" aria-label={lang ? `${lang} code` : 'code'}>
         {complete && highlighted ? (
-          <PierreCode file={file} langHint={lang} options={prose ? PROSE_CODE_OPTIONS : undefined} />
+          <PierreCode file={file} langHint={lang} options={isWrapped ? PROSE_CODE_OPTIONS : undefined} />
         ) : (
           /* `pierre-plain` is what makes the swap a restyle instead of a reflow.
              The utilities here LOSE to `.msg-content pre` (two selectors beat one
@@ -133,7 +161,7 @@ export const CodeBlock = memo(function CodeBlock(
              Prose tags wrap here too (mirrors PlainFilePairFallback's wraps
              branch), so the stand-in and the highlighted surface agree on line
              count and the swap stays a restyle in the prose case as well. */
-          <pre className={`pierre-plain ${prose ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'} px-3 py-2 m-0`}><code className="text-[13px] font-mono leading-5">{code}</code></pre>
+          <pre className={`pierre-plain ${isWrapped ? 'whitespace-pre-wrap break-words' : 'overflow-x-auto'} px-3 py-2 m-0`}><code className="text-[13px] font-mono leading-5">{code}</code></pre>
         )}
         {!complete && <div className="px-3 pb-2 text-muted text-[12px] italic animate-pulse">{i18nT('components.codeBlock.generating')}</div>}
       </div>
@@ -145,7 +173,7 @@ export const CodeBlock = memo(function CodeBlock(
         // reserved unconditionally, so revealing the border on hover does not
         // shift layout.
         <div data-testid="code-block-footer" className={`flex items-center justify-end px-3 py-1 border-t border-transparent group-hover/code:border-border [@media(hover:none)]:border-border transition-colors ${HOVER_NONE_ACTIONS_ROW_CLS}`}>
-          <CodeBlockActions headerActions={footerActions ?? headerActions} copied={copied} onCopy={copy} />
+          <CodeBlockActions headerActions={footerActions ?? headerActions} copied={copied} onCopy={copy} wrap={isWrapped} onToggleWrap={toggleWrap} />
         </div>
       )}
     </div>
