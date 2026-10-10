@@ -261,7 +261,9 @@ def _agent_roster_row(
     Excluded on purpose, each verified to have NO consumer in ``website/src``:
     ``watchdog_tool_stall_suspect_secs`` and ``watchdog_tool_stall_hard_cap_secs``
     (per-agent watchdog windows -- backend scheduling knobs the roster does not
-    render) and ``telegram_account`` (deprecated and inert, and the one record
+    render), ``autocompact_pct`` (the per-agent compaction default, surfaced
+    through the per-slot autocompact endpoint instead) and ``telegram_account``
+    (deprecated and inert, and the one record
     field naming an external messaging binding). Adding any of them back is a
     one-line change plus the pinned key set.
     """

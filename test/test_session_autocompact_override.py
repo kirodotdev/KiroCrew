@@ -122,6 +122,8 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     if slot:
         state._slots[slot.key] = slot
     state.sessions = MagicMock()
+    # No agent default unless a test sets one: the session follows the global.
+    state.sessions.agent_autocompact_default.return_value = None
     state.conversation_log = MagicMock()
     return state
 

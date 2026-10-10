@@ -19,6 +19,8 @@ from kiro_crew.config.loader import (
     ConfigReadError,
     build_provider_factory,
     config_path,
+    crew_autocompact_pct,
+    resolve_crew_identity,
     update_config_locked,
 )
 from kiro_crew.config.paths import data_home
@@ -338,7 +340,7 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
             # than blocking a caller that may be a script.
             await _send_and_print(provider, message, interactive=False, gate=gate)
         else:
-            await _interactive(provider, cfg, gate=gate)
+            await _interactive(provider, cfg, gate=gate, agent=agent_name)
     finally:
         try:
             await provider.shutdown()
@@ -1091,10 +1093,29 @@ async def _send_and_print(
         sys.exit(1)
 
 
+def _repl_compact_at(cfg: KiroCrewConfig, agent: str) -> float:
+    """The context percentage the REPL compacts at for a run of *agent*.
+
+    The crew the run resolves to (the provider factory's rule) may declare its
+    own number; otherwise the global ``session.autocompact_pct`` applies.
+    """
+    declared = crew_autocompact_pct(cfg, resolve_crew_identity(cfg, agent, None))
+    return cfg.session.autocompact_pct if declared is None else declared
+
+
 async def _interactive(
-    provider: LLMProvider, cfg: KiroCrewConfig, *, gate: _ToolGate | None = None
+    provider: LLMProvider,
+    cfg: KiroCrewConfig,
+    *,
+    gate: _ToolGate | None = None,
+    agent: str = "",
 ) -> None:
-    """REPL loop — read user input, stream responses, auto-compact at configured threshold."""
+    """REPL loop — read user input, stream responses, auto-compact at configured threshold.
+
+    The threshold is the one the run's crew declares (``agents.<name>.autocompact_pct``),
+    resolved from *agent* by the same rule the provider factory keys the run on,
+    else the global ``session.autocompact_pct``.
+    """
     print(BANNER)
     print()
 
@@ -1121,11 +1142,12 @@ async def _interactive(
 
         # Check context usage — compact and restart if needed
         pct = provider.context_usage_pct()
-        needs_compact = pct >= cfg.session.autocompact_pct
+        compact_at = _repl_compact_at(cfg, agent)
+        needs_compact = pct >= compact_at
         # Warn one margin BELOW the compaction point. An absolute warn level
         # would be dead code here: the compact arm is tested first and claims
         # the whole range above the configured threshold.
-        warn_at = cfg.session.autocompact_pct - CONTEXT_WARN_MARGIN_PCT
+        warn_at = compact_at - CONTEXT_WARN_MARGIN_PCT
 
         if needs_compact:
             reason = f"context at {pct:.0f}%"

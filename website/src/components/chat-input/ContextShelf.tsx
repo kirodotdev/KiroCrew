@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Trans } from 'react-i18next'
 import { Bot } from 'lucide-react'
 import AppIcon from '../AppIcon'
 import ContextBar, { contextTip, contextColor, composeContextReadout, contextPctClamped, fmtTokens } from '../ContextBar'
@@ -211,6 +212,12 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
   autoCompactThreshold: ReturnType<typeof useAutoCompactThreshold>
 }) {
   const { autoCompactQuery, autoCompact, autoCompactError, setAutoCompactError, pushAutoCompact } = autoCompactThreshold
+  // The agent default's labels name the crew in mono so it reads as a name, and
+  // their tooltip says where that number is set (config only, no UI edits it).
+  const agentName = <span className="font-mono">{autoCompact?.agent ?? ''}</span>
+  const agentDefaultSource = autoCompact?.agent_pct != null
+    ? i18nT('components.chatInput.agent_default_source', { agent: autoCompact.agent ?? '' })
+    : undefined
   const pct = Math.round(contextPct)
   const win = contextWindowTokens || 0
   const used = contextUsedTokens != null ? contextUsedTokens : (win ? Math.round((pct / 100) * win) : 0)
@@ -285,10 +292,10 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                   <div className="mt-2 pt-2 border-t border-border">
                     <div className="flex items-center justify-between mb-1">
                       <span className="text-[11px] text-muted">{i18nT('components.chatInput.auto_compact_at')}</span>
-                      <span className="text-[12px] font-mono font-bold text-accent">{fmtPercent(Math.round(autoCompact.pct ?? autoCompact.global_pct) / 100)}</span>
+                      <span className="text-[12px] font-mono font-bold text-accent">{fmtPercent(Math.round(autoCompact.pct ?? autoCompact.agent_pct ?? autoCompact.global_pct) / 100)}</span>
                     </div>
                     <Slider
-                      value={autoCompact.pct ?? autoCompact.global_pct}
+                      value={autoCompact.pct ?? autoCompact.agent_pct ?? autoCompact.global_pct}
                       onChange={v => pushAutoCompact(v)}
                       min={autoCompact.min}
                       max={autoCompact.max}
@@ -300,11 +307,18 @@ export function ContextUsageControl({ contextPct, contextUsedTokens, contextWind
                       <Btn
                         className="mt-1 px-0 py-0 border-none text-[10px] text-muted underline hover:text-text hover:bg-transparent"
                         onClick={() => pushAutoCompact(null)}
+                        title={agentDefaultSource}
                       >
-                        {i18nT('components.chatInput.reset_to_global', { pct: Math.round(autoCompact.global_pct) })}
+                        {autoCompact.agent_pct != null
+                          ? <span><Trans i18nKey="components.chatInput.reset_to_agent_default" values={{ pct: Math.round(autoCompact.agent_pct) }} components={{ agent: agentName }} /></span>
+                          : i18nT('components.chatInput.reset_to_global', { pct: Math.round(autoCompact.global_pct) })}
                       </Btn>
                     ) : (
-                      <div className="mt-1 text-[10px] text-muted">{i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}</div>
+                      <div className="mt-1 text-[10px] text-muted" title={agentDefaultSource}>
+                        {autoCompact.agent_pct != null
+                          ? <Trans i18nKey="components.chatInput.following_agent_default" values={{ pct: Math.round(autoCompact.agent_pct) }} components={{ agent: agentName }} />
+                          : i18nT('components.chatInput.following_global', { pct: Math.round(autoCompact.global_pct) })}
+                      </div>
                     )}
                   </div>
                 )}

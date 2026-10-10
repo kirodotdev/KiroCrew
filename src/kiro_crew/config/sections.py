@@ -3745,6 +3745,22 @@ class KiroCrewAgentConfig:
             "WORKING session is never acted on.",
         ),
     )
+    # Per-agent compaction threshold. Same empty-inherits convention as the
+    # watchdog windows above: 0 means "use session.autocompact_pct". A
+    # session's own slider override still wins over this.
+    autocompact_pct: float = field(
+        default=0.0,
+        metadata=_meta(
+            "Auto-compact threshold override (%)",
+            "Default context-usage percentage at which sessions running this "
+            "agent compact. 0 inherits session.autocompact_pct, and so does a "
+            "negative value. A positive value is held to the same 5-90 range as "
+            "the global. Set low (e.g. 45) for "
+            "an orchestrator that should stay sharp, high (e.g. 85) for a worker "
+            "that should keep its long context. A session's own threshold "
+            "override (the context popover slider) still takes precedence.",
+        ),
+    )
     session_color: str = field(
         default="",
         metadata=_meta(

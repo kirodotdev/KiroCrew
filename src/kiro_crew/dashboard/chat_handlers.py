@@ -37,6 +37,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     _workspace_name_for_dir,
     config_dir,
+    crew_autocompact_pct,
     default_project_dir,
     published_autocompact_pct,
     resolve_agent_bindings,
@@ -6924,11 +6925,15 @@ _source_link_txn_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
 async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
     """GET/POST /api/chat/slots/{slot}/autocompact — per-session compact threshold.
 
-    GET returns the slot's override (``pct``, null when it follows the global),
-    the current global (``global_pct``), and the valid range. POST takes
+    GET returns the slot's override (``pct``, null when it follows a default),
+    the current global (``global_pct``), the default the session's crew
+    declares (``agent_pct``) with that crew's name (``agent``), both null when
+    it declares none -- the session then follows the global -- and the valid
+    range. POST takes
     ``{"pct": <number|null>}``: a number sets this session's override (rejected
     outside the documented range, matching the global knob's PATCH validation),
-    null clears it back to the global. The value applies to the live session
+    null clears it back to the agent's default, else the global. The value
+    applies to the live session
     immediately via the SessionManager override map and persists with the slot
     metadata, so it survives gateway restarts.
     """
@@ -6951,6 +6956,7 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
             {
                 "pct": slot.autocompact_pct,
                 "global_pct": published_autocompact_pct(),
+                **await _slot_agent_autocompact_fields(state, slot),
                 "min": AUTOCOMPACT_PCT_MIN,
                 "max": AUTOCOMPACT_PCT_MAX,
             }
@@ -7151,8 +7157,65 @@ async def api_chat_slot_autocompact(request: web.Request) -> web.Response:
         state.sessions.set_autocompact_pct(effective_session_key(slot), live_pct)
         logger.info("Slot %s autocompact_pct set to %r", name, live_pct)
         return web.json_response(
-            {"ok": True, "pct": live_pct, "global_pct": published_autocompact_pct()}
+            {
+                "ok": True,
+                "pct": live_pct,
+                "global_pct": published_autocompact_pct(),
+                **await _slot_agent_autocompact_fields(state, slot),
+            }
         )
+
+
+async def _slot_agent_autocompact_fields(state: DashboardState, slot: Any) -> dict[str, Any]:
+    """``agent_pct`` and ``agent``: the default *slot*'s session takes from its crew.
+
+    Both are null when the session follows the global because its crew
+    declares no default. A live session answers for the crew it started
+    under. Without one (a new slot, an idle expiry, a restart before the first
+    turn) the answer is for the crew the slot's next session starts under, so
+    the popover shows the number the next context reading compacts at.
+    """
+    key = effective_session_key(slot)
+    sessions = state.sessions
+    if sessions is not None and sessions.has_session(key):
+        found = sessions.agent_autocompact_default(key)
+    else:
+        found = await asyncio.to_thread(_slot_next_agent_autocompact_default, key, slot)
+    if found is None:
+        return {"agent_pct": None, "agent": None}
+    # The name is display text for the popover, never an identity this route
+    # acts on. Crew names are operator- and agent-writable and the name grammar
+    # admits token-shaped strings, so it is scrubbed like any other label.
+    label, _ = redact_exfiltration_urls(found[0])
+    label, _ = redact_credentials(label)
+    return {"agent_pct": found[1], "agent": label}
+
+
+def _slot_next_agent_autocompact_default(session_key: str, slot: Any) -> tuple[str, float] | None:
+    """The crew a fresh session of *slot* would run, and the default it declares.
+
+    Resolves the slot's selection the way a dashboard turn does before it
+    starts a session: the crew is the resolved alias, and a template
+    selection runs under no crew. Config and binding reads touch files, so
+    callers run this off the event loop.
+    """
+    try:
+        cfg = KiroCrewConfig.load()
+        bindings = resolve_session_agent_bindings(
+            resolve_agent_bindings,
+            cfg,
+            session_key,
+            slot.agent or None,
+            slot.project or None,
+        )
+    except Exception:
+        logger.debug("autocompact: could not resolve slot %s's agent", session_key, exc_info=True)
+        return None
+    if bindings.selection_kind == "template":
+        return None
+    crew = bindings.resolved_alias or ""
+    pct = crew_autocompact_pct(cfg, crew)
+    return None if pct is None else (crew, pct)
 
 
 async def api_chat_slots_model(request: web.Request) -> web.Response:
