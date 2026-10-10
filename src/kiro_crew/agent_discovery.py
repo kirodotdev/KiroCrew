@@ -840,10 +840,11 @@ def project_agent_files(
     ``--agent`` against, and therefore the only one whose names are dispatchable.
     Dispatchable by the kiro-cli backend, which reads the checkout itself, and by
     the KAS projection (:func:`kiro_crew.acp.harness.kas.resolve_projected_spec`),
-    which honours only a checkout spec's prompt and visible tools and takes its
-    servers from the user level. Whether a checkout's spec may GRANT anything is a
-    governance question (a checkout can shadow a managed agent), not a question of
-    which form is scanned, and the two forms are treated alike here.
+    which projects a project-only agent's prompt and visible tools and nothing it
+    could grant, and reads the user-level spec for a name both levels declare.
+    Whether a checkout's spec may be projected at all is a governance question (a
+    checkout can shadow a managed agent), not a question of which form is
+    scanned, and the two forms are treated alike here.
 
     *include_legacy* additionally returns ``<project>/.kiro/*.agent-spec.json``, Kiro
     Crew's own older convention. It defaults to ``False`` because every dispatch

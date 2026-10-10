@@ -17,6 +17,7 @@ import pytest
 import kiro_crew.agent as agent_mod
 import kiro_crew.config.paths as paths_mod
 from kiro_crew.acp.harness.kas import KasHarness, resolve_projected_spec
+from kiro_crew.acp.kas_agents import expand_kiro_cli_tool_names
 from kiro_crew.acp.session_handle import AcpRuntimeError
 
 
@@ -75,8 +76,8 @@ async def test_a_project_only_agent_binds_with_its_prompt_and_tools(layout):
 
     assert entry["id"] == "proj"
     assert entry["prompt"] == "from the checkout"
-    assert entry["tools"] == ["fs_read", "grep"]
-    assert entry["excludedTools"] == ["grep"]
+    assert entry["tools"] == expand_kiro_cli_tool_names(["fs_read", "grep"])
+    assert entry["excludedTools"] == expand_kiro_cli_tool_names(["grep"])
     assert entry["description"] == "checkout agent"
 
 
@@ -95,34 +96,64 @@ async def test_a_project_spec_grants_nothing(layout):
 
 
 @pytest.mark.asyncio
-async def test_a_shadowing_project_spec_sets_the_prompt_and_only_mutes_user_servers(layout):
+async def test_a_shadowing_project_spec_changes_nothing_about_the_user_agent(layout):
     user, checkout, project = layout
     servers = {
         "kept": {"command": "/usr/bin/kept-server"},
         "muted": {"command": "/usr/bin/muted-server"},
     }
-    _write(user, "shared", {"name": "shared", "prompt": "user prompt", "mcpServers": servers})
+    _write(
+        user,
+        "shared",
+        {"name": "shared", "prompt": "user prompt", "tools": ["@kept"], "mcpServers": servers},
+    )
     _write(
         project,
         "shared",
         {
             "name": "shared",
             "prompt": "project prompt",
-            "tools": ["@kept"],
+            "tools": ["*"],
             "mcpServers": {"muted": {"disabled": True}, **_GRANTS["mcpServers"]},
-            "allowedTools": ["@kept"],
+            "allowedTools": ["*"],
         },
     )
 
     entry = await _project("shared", checkout)
 
-    assert entry["prompt"] == "project prompt"
+    assert entry["prompt"] == "user prompt"
     assert entry["tools"] == ["@kept"]
     wire = json.dumps(entry.get("mcpServers"))
     assert "/usr/bin/kept-server" in wire
-    assert "/usr/bin/muted-server" not in wire
+    assert "/usr/bin/muted-server" in wire
     assert "planted" not in wire
     assert "permissions" not in entry
+
+
+def test_a_shadowing_project_spec_keeps_the_user_level_hooks_the_stale_check_reads(layout):
+    from kiro_crew.acp.kas_agents import pre_tool_hook_matchers
+    from kiro_crew.agent_sdk import spec_hooks
+
+    user, checkout, project = layout
+    user_hooks = {"preToolUse": [{"matcher": "*", "command": "/usr/bin/user-hook"}]}
+    _write(user, "shared", {"name": "shared", "prompt": "user prompt", "hooks": user_hooks})
+    _write(
+        project,
+        "shared",
+        {
+            "name": "shared",
+            "prompt": "project prompt",
+            "hooks": {"preToolUse": [{"matcher": "fs_read", "command": "id"}]},
+        },
+    )
+
+    spec, _ = resolve_projected_spec(user, "shared", checkout)
+
+    assert spec["hooks"] == user_hooks
+    assert pre_tool_hook_matchers("shared", spec)
+    assert pre_tool_hook_matchers("shared", spec) == pre_tool_hook_matchers(
+        "shared", spec_hooks._agent_spec("shared")
+    )
 
 
 @pytest.mark.asyncio
@@ -133,7 +164,7 @@ async def test_with_no_project_spec_the_user_level_agent_is_projected(layout):
     entry = await _project("solo", checkout)
 
     assert entry["prompt"] == "user prompt"
-    assert entry["tools"] == ["fs_read"]
+    assert entry["tools"] == expand_kiro_cli_tool_names(["fs_read"])
 
 
 @pytest.mark.asyncio
@@ -156,14 +187,24 @@ async def test_a_relative_project_prompt_may_not_escape_the_checkout(layout):
 
 
 @pytest.mark.asyncio
-async def test_an_unreadable_project_spec_refuses_rather_than_falling_back(layout):
+async def test_an_unreadable_project_only_spec_refuses_the_session(layout):
+    _user, checkout, project = layout
+    (project / "proj.json").write_text("{not json", encoding="utf-8")
+
+    # A spec that cannot be parsed declares no name, so it is matched by its stem.
+    with pytest.raises(AcpRuntimeError, match="unreadable"):
+        await _project("proj", checkout)
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_shadowing_spec_still_runs_the_user_agent(layout):
     user, checkout, project = layout
     _write(user, "shared", {"name": "shared", "prompt": "user prompt"})
     (project / "shared.json").write_text("{not json", encoding="utf-8")
 
-    # A spec that cannot be parsed declares no name, so it is matched by its stem.
-    with pytest.raises(AcpRuntimeError, match="unreadable"):
-        await _project("shared", checkout)
+    entry = await _project("shared", checkout)
+
+    assert entry["prompt"] == "user prompt"
 
 
 def test_the_tool_search_judgement_reads_the_spec_the_projection_sends(layout):

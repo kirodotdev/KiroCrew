@@ -1224,8 +1224,8 @@ needs a channel for a target the daemon was not started with.
 
 One host is the exception, and for it the scope must NOT be applied. KAS projects
 the agent spec itself (`acp/harness/kas.resolve_projected_spec`), nearest-first, but
-a checkout's spec sets only its prompt and visible tools there: its servers are cut
-to switch-off keys over the user-level spec of that name, so the user-level servers
+a checkout's spec never supplies a server there: a name the user level declares
+resolves to the user-level spec, and a project-only agent gets no servers, so the user-level servers
 ARE the ones a KAS session runs even when the checkout declares that name. Scoping
 its lookup would collapse the
 stub set to empty, the projection would declare the user-level servers

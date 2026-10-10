@@ -43,11 +43,7 @@ from kiro_crew.acp.harness.base import (
 from kiro_crew.acp.kas_agents import KasAgentTranslationError, KasReservedAgentIdError
 from kiro_crew.acp.kas_host_auth import answer_get_access_token, vault_holds_identity_off_loop
 from kiro_crew.acp.kas_transport import METHOD_KAS_AUTH_GET_ACCESS_TOKEN, build_kas_argv
-from kiro_crew.acp.session_mcp import (
-    _project_restrictions,
-    _with_restrictions,
-    project_agent_spec,
-)
+from kiro_crew.acp.session_mcp import project_agent_spec
 from kiro_crew.acp.types import (
     ACP_BACKEND_KAS,
     ACP_BACKENDS_HOST_AUTH_CALLBACK,
@@ -94,38 +90,33 @@ def _is_operator_override(binary: str, environ: Mapping[str, str]) -> bool:
 PROJECT_SPEC_HONOURED_KEYS = ("name", "description", "prompt", "tools", "excludedTools", "model")
 
 
-def _servers_of(spec: dict[str, Any] | None) -> dict[str, Any]:
-    raw = spec.get("mcpServers") if isinstance(spec, dict) else None
-    return dict(raw) if isinstance(raw, dict) else {}
-
-
 def resolve_projected_spec(
     agents_dir: Path, agent: str, work_dir: str | Path | None
 ) -> tuple[dict[str, Any], Path]:
     """The spec KAS is handed for *agent*, and the directory its prompt anchors to.
 
-    Nearest first, as kiro-cli resolves ``--agent``: a checkout declaring *agent*
-    under ``<work_dir>/.kiro/agents/`` is matched by the same resolver the
-    mirrored hosts use (``acp.session_mcp.project_agent_spec``), and only when it
-    declares none is the user-level spec in *agents_dir* read.
+    A name the user level declares resolves to the user-level spec in
+    *agents_dir*, whatever the checkout holds. Only a name the user level does
+    NOT declare is looked up in ``<work_dir>/.kiro/agents/``, through the
+    resolver the mirrored hosts use (``acp.session_mcp.project_agent_spec``).
 
-    A checkout's spec contributes :data:`PROJECT_SPEC_HONOURED_KEYS` and nothing
-    else. Its servers come from the user-level spec of the same name, if one
-    exists, with the checkout's switch-off keys layered on
-    (``acp.session_mcp._project_restrictions``) -- the rule the mirrored hosts
-    apply -- so a checkout can mute a server but never add one. That keeps the
-    servers this session runs user-level, which is why the broker-overlay lookup
-    stays unscoped for this host (``agent_sdk.backends.overlay_project_scope``).
-
-    Its ``file://`` prompt anchors to the checkout's agents directory and may not
-    leave it: an absolute path is refused, because the resolved text is shipped
+    A checkout is untrusted input, so a project-only agent's spec is its
+    :data:`PROJECT_SPEC_HONOURED_KEYS` and nothing else, with no servers. Its
+    ``file://`` prompt anchors to the checkout's agents directory and may not
+    leave it: a rooted path is refused, because the resolved text is shipped
     over the wire and a cloned repository must not choose which of the user's
     files that is.
 
-    A checkout spec that exists but cannot be read raises
-    :class:`KasAgentTranslationError` rather than falling back: kiro-cli would not
-    run the user-level agent in its place either.
+    Either way the servers and hooks a session runs are user-level, which is why
+    the broker-overlay lookup stays unscoped for this host
+    (``agent_sdk.backends.overlay_project_scope``) and why Crew's spec hooks keep
+    reading the user level (``agent_sdk.spec_hooks``).
+
+    A project-only spec that exists but cannot be read raises
+    :class:`KasAgentTranslationError`: there is no other spec of that name to run.
     """
+    if not kas_agents_mod.agent_spec_absent(agents_dir, agent):
+        return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
     declared, project = project_agent_spec(agent, work_dir)
     if not declared:
         return kas_agents_mod.load_agent_spec(agents_dir, agent), agents_dir
@@ -136,23 +127,13 @@ def resolve_projected_spec(
     prompt = project.get("prompt")
     if isinstance(prompt, str) and prompt.startswith(kas_agents_mod._PROMPT_FILE_SCHEME):
         ref = prompt[len(kas_agents_mod._PROMPT_FILE_SCHEME) :]
-        if Path(ref).expanduser().is_absolute():
+        # ``anchor``, not ``is_absolute``: on Windows ``/etc/x`` is rooted without a
+        # drive, so it is not absolute there yet still names a file outside the checkout.
+        if Path(ref).expanduser().anchor:
             raise KasAgentTranslationError(
                 f"agent {agent!r} is declared by a project checkout, so its prompt must be "
                 f"a path inside that checkout's .kiro/agents, not {ref!r}"
             )
-    user = (
-        None
-        if kas_agents_mod.agent_spec_absent(agents_dir, agent)
-        else kas_agents_mod.load_agent_spec(agents_dir, agent)
-    )
-    user_servers = _servers_of(user)
-    # A switch-off for a server the user level does not declare mounts nothing, so
-    # only the names the user level declares are kept.
-    layered = _servers_of(
-        _with_restrictions({"mcpServers": user_servers}, _project_restrictions(project))
-    )
-    servers = {name: entry for name, entry in layered.items() if name in user_servers}
     dropped = sorted(k for k in project if k not in PROJECT_SPEC_HONOURED_KEYS)
     if dropped:
         logger.info(
@@ -160,12 +141,10 @@ def resolve_projected_spec(
             agent,
             ", ".join(dropped),
         )
-    spec: dict[str, Any] = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
-    if servers:
-        spec["mcpServers"] = servers
+    spec = {k: project[k] for k in PROJECT_SPEC_HONOURED_KEYS if k in project}
     if work_dir is None:  # unreachable: ``project_agent_spec`` declares nothing without one
         return spec, agents_dir
-    return spec, Path(work_dir) / ".kiro" / "agents"
+    return spec, paths_mod.project_agents_dir(work_dir)
 
 
 class KasHarness(MembershipHarness):
@@ -361,9 +340,9 @@ class KasHarness(MembershipHarness):
                 stubbed = session_servers_mod.injection_server_names(
                     mcp_gateway_overlay,
                     agent,
-                    # Deliberately UNSCOPED. A checkout spec of this name sets the
-                    # prompt and tools but never the servers: those stay the
-                    # user-level spec's (``resolve_projected_spec``). Handing the
+                    # Deliberately UNSCOPED. A checkout spec of this name never
+                    # sets the servers: those stay the user-level spec's
+                    # (``resolve_projected_spec``). Handing the
                     # checkout to a name-keyed lookup over that same user-level
                     # directory would collapse this set to empty, project the
                     # user-level servers un-subtracted, and run them outside the

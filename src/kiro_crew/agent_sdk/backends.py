@@ -1507,9 +1507,10 @@ ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 # ``<project>/.kiro/agents/`` itself for ``--agent``, and a MIRRORED host receives
 # the array ``acp/session_mcp.py`` translates, which is project-nearest-first. KAS
 # resolves the agent nearest-first as well (``acp.harness.kas.resolve_projected_spec``),
-# but a checkout's spec there sets only the prompt and the visible tools: its servers
-# are cut to switch-off keys over the user-level spec's, because a server is a
-# command and a cloned repository is untrusted input.
+# but a checkout's spec there never supplies a server: a project-only agent gets
+# its prompt and visible tools and no servers, and a name the user level declares
+# keeps the user-level spec, because a server is a command and a cloned repository
+# is untrusted input.
 #
 # What membership decides is the SCOPE of the broker-overlay lookup
 # (``mcp_gateway.session_servers``). That overlay is keyed by agent name and is
