@@ -21,7 +21,7 @@ function isToday(epochSecs: number): boolean {
   return new Date(epochSecs * 1000).toDateString() === new Date().toDateString()
 }
 import SortableHeader from '../../components/SortableHeader'
-import { connectionProviderForServer, isRegistrySlug } from '../connections/registry'
+import { connectionProviderForServer } from '../connections/registry'
 import McpRowSignIn, { type McpSignInTarget } from './McpRowSignIn'
 import { useConnectionsUiEnabled } from '../../hooks/useConnectionsUi'
 
@@ -327,9 +327,8 @@ function mcpAuthState(s: McpServer): McpAuthState {
  * signs in by its exact name only when the gateway reports `ownerSignIn`: the
  * owner added it from the dashboard at this url. A server an agent, a session
  * or a hand edit added keeps the chat guidance, and the gateway refuses its
- * mint regardless. A name with a `/` is rewritten by the agent spec and cannot
- * be matched to the engine's challenge, and a name that reuses a registry slug
- * stays on the provider path.
+ * mint regardless. The gateway never sets `ownerSignIn` on a name it would
+ * refuse to mint for, so this check is the whole rule here.
  */
 function signInTargetFor(
   s: McpServer,
@@ -339,7 +338,6 @@ function signInTargetFor(
   if (!connectionsUi) return undefined
   if (managedProvider) return { slug: managedProvider.slug }
   if (s.ownerSignIn !== true) return undefined
-  if (s.name.includes('/') || isRegistrySlug(s.name)) return undefined
   return { server: s.name }
 }
 

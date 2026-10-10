@@ -2132,7 +2132,7 @@ def _annotate_owner_sign_in(rows: list[dict]) -> None:
     leaves every row on the chat guidance.
     """
     from kiro_crew.config.loader import read_config_for_update
-    from kiro_crew.connections.owner_servers import is_owner_server
+    from kiro_crew.connections.owner_servers import is_owner_server, is_signable_name
 
     for row in rows:
         if "ownerSignIn" in row:
@@ -2145,7 +2145,11 @@ def _annotate_owner_sign_in(rows: list[dict]) -> None:
         name, url = row.get("name"), row.get("url")
         if not isinstance(url, str) or not url:
             continue
-        row["ownerSignIn"] = isinstance(name, str) and is_owner_server(config, name, {"url": url})
+        row["ownerSignIn"] = (
+            isinstance(name, str)
+            and is_signable_name(name)
+            and is_owner_server(config, name, {"url": url})
+        )
 
 
 async def _forget_owner_servers(names: list[str]) -> None:

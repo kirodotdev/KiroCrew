@@ -67,6 +67,24 @@ def recorded_url(config: object, name: str) -> str | None:
     return remote_url(servers.get(name))
 
 
+def is_signable_name(name: object) -> bool:
+    """Whether ``name`` can carry an owner-added server's dashboard sign-in.
+
+    A name that is also a registry slug is refused, so the registry path and
+    this one never share a mint row under different URLs. A name that
+    ``mcp_server_alias`` would rewrite (one with a ``/``, say) is refused,
+    because the mint matches the engine's challenge by the spec key. The row
+    flag and the mint both apply this, so the table never offers a sign-in the
+    mint would refuse.
+    """
+    from kiro_crew.connections.registry import get_provider
+    from kiro_crew.mcp_utils import mcp_server_alias
+
+    if not isinstance(name, str) or not name:
+        return False
+    return mcp_server_alias(name) == name and get_provider(name.lower()) is None
+
+
 def is_owner_server(config: object, name: str, entry: object) -> bool:
     """Whether ``entry`` is the remote server the owner recorded under ``name``."""
     url = remote_url(entry)

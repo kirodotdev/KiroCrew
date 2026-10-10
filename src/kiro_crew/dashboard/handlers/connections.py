@@ -338,12 +338,15 @@ def _configured_remote_server(name: object) -> dict[str, Any] | None:
     from kiro_crew.agent_discovery import _read_agent_spec
     from kiro_crew.agent_files import AGENT_FILENAME
     from kiro_crew.config.loader import read_config_for_update
-    from kiro_crew.connections.owner_servers import is_owner_server, remote_url
-    from kiro_crew.mcp_utils import mcp_server_alias
+    from kiro_crew.connections.owner_servers import (
+        is_owner_server,
+        is_signable_name,
+        remote_url,
+    )
 
     if not isinstance(name, str) or not _is_valid_mcp_name(name):
         return None
-    if mcp_server_alias(name) != name or get_provider(name.lower()) is not None:
+    if not is_signable_name(name):
         return None
 
     spec = _read_agent_spec(

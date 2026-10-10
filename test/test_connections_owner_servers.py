@@ -77,6 +77,29 @@ def test_the_row_flag_is_true_only_for_the_owner_record(
     assert [row["ownerSignIn"] for row in rows] == [True, False, False, False]
 
 
+def test_the_row_flag_is_false_for_a_name_the_mint_refuses(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    # A recorded server whose name is a registry slug, or one the agent spec
+    # rewrites, is refused by the mint, so its row is never offered a sign-in.
+    from kiro_crew.connections.registry import get_all_providers
+    from kiro_crew.dashboard.handlers import mcp as mcp_mod
+
+    slug = get_all_providers()[0]["slug"]
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {"connections": {"owner_mcp_servers": {slug: {"url": _URL}, "a/b": {"url": _URL}}}}
+        ),
+        encoding="utf-8",
+    )
+    rows = [{"name": slug, "url": _URL}, {"name": "a/b", "url": _URL}]
+
+    mcp_mod._annotate_owner_sign_in(rows)
+
+    assert [row["ownerSignIn"] for row in rows] == [False, False]
+
+
 @pytest.mark.parametrize("url", ["https://[", "https://docs.example.com/" + "a" * 4096, 42, ""])
 def test_a_malformed_or_oversized_url_is_never_a_remote_url(url):
     assert owner_servers.remote_url({"url": url}) is None
