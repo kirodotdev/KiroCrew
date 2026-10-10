@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ComponentType, type ReactNode } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo, type ComponentType } from 'react'
 import { createPortal } from 'react-dom'
 import { useNavigate } from 'react-router-dom'
 import { X } from 'lucide-react'
@@ -152,7 +152,6 @@ export default function ChatPane({
   onSessionOpen,
   sessions,
   activeSession,
-  crewmateCreated,
 }: {
   slotKey: string
   onOpenCommandCenter?: () => void
@@ -265,8 +264,6 @@ export default function ChatPane({
   onSessionOpen?: (key: string) => void
   sessions?: ReadonlyMap<string, string>
   activeSession?: string
-  /** Host confirmation of a user-created crewmate, never a synthetic AI reply. */
-  crewmateCreated?: ReactNode
 }) {
   // One instance covers both dropdown filter inputs (never open at once).
   const dispatch = useAppDispatch()
@@ -1822,7 +1819,6 @@ export default function ChatPane({
                     liveness the status line and footer read): its current step
                     is on screen, so "hasn't said anything" would sit under a
                     line that shows it busy. */}
-                {crewmateCreated}
                 {messages.length === 0 && !(crewmate ? crewmateLive : running) && !slotDetailFailed && !hideEmptyHint && !crewmateQuietUnproven && (
                   <div className="text-center text-muted text-[13px] px-4 py-8" data-testid={crewmate && paneMessages.length > 0 ? 'crewmate-quiet-hint' : undefined}>
                     {crewmate && paneMessages.length > 0 ? (

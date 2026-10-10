@@ -254,3 +254,10 @@ export function countByFilter<M extends RosterRowLike>(
   }
   return out
 }
+
+/** No crewmate beyond the always-present `default` row. The first crewmate
+ *  (key `mate`) IS a crewmate, so a roster holding it is not empty: the page
+ *  opens it instead. An unread roster (`undefined`) is not empty either. */
+export function hasNoCrewmates(rows: readonly { name: string }[] | undefined): boolean {
+  return Array.isArray(rows) && rows.every(r => r.name === 'default')
+}

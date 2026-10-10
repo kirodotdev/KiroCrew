@@ -23,8 +23,6 @@ const themeState = {
   onboarded: false,
   importOnboarded: true,
   privacyAcked: true,
-  crewmatesOnboarded: false,
-  crewmatesFlowSeen: false,
   themeBootReady: true,
   themes: [],
   // What the Pick your look step itself reads once it opens (the control case).
@@ -34,7 +32,6 @@ const themeState = {
   markOnboarded: vi.fn(),
   markImportOnboarded: vi.fn(),
   markPrivacyAcked: vi.fn(),
-  markCrewmatesOnboarded: vi.fn(),
   setColorTheme: vi.fn(),
   setMode: vi.fn(),
 }

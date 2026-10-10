@@ -35,6 +35,17 @@ describe('useFirstGreeting', () => {
     expect(greet).toHaveBeenCalledTimes(1)
   })
 
+  it('asks for a crewmate the page enabled it for, by that crewmate\'s slug, once', async () => {
+    const { rerender } = renderHook(({ slot }) => useFirstGreeting('scout', slot, true), {
+      wrapper,
+      initialProps: { slot: 'member-scout' },
+    })
+    await waitFor(() => expect(greet).toHaveBeenCalledWith('scout'))
+    rerender({ slot: 'member-scout' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(greet).toHaveBeenCalledTimes(1)
+  })
+
   it('never asks while disabled', async () => {
     renderHook(() => useFirstGreeting('alpha', 'member-alpha', false), { wrapper })
     await new Promise((r) => setTimeout(r, 0))

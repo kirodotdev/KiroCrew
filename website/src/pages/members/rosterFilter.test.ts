@@ -6,7 +6,7 @@
 import { describe, it, expect } from 'vitest'
 
 import {
-  countByFilter, listedByDefault, matchesStatus, narrowRoster, parseSort, parseStatusFilters, queryNarrows,
+  countByFilter, hasNoCrewmates, listedByDefault, matchesStatus, narrowRoster, parseSort, parseStatusFilters, queryNarrows,
   chatRecency, rosterPopulation, rosterShows, sortRoster,
   type MemberSignals, type RosterQuery,
 } from './rosterFilter'
@@ -264,5 +264,15 @@ describe('last_chat_ts: only crews the user chatted with', () => {
     expect(sortRoster(CHAT, 'recent').map((m) => m.name)).toEqual(['new-chat', 'old-chat', 'app-bot', 'bg-only', 'default'])
     expect(chatRecency({ name: 'x', last_active_ts: 7 })).toBe(7)
     expect(chatRecency({ name: 'x', last_active_ts: 7, last_chat_ts: 0 })).toBe(0)
+  })
+})
+
+describe('hasNoCrewmates', () => {
+  it('treats a default-only roster as empty; the first crewmate is a crewmate', () => {
+    expect(hasNoCrewmates([])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'mate' }])).toBe(false)
+    expect(hasNoCrewmates([{ name: 'default' }, { name: 'Radar' }])).toBe(false)
+    expect(hasNoCrewmates(undefined)).toBe(false)
   })
 })

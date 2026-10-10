@@ -1,4 +1,4 @@
-"""Mate's first welcome: one real model turn the first time its chat opens.
+"""A crewmate's first welcome: one real model turn the first time its chat opens.
 
 Mate, the first crewmate every install creates once
 (:func:`kiro_crew.agent.create_first_crewmate_once`), speaks first. When the
@@ -8,15 +8,22 @@ ONE ordinary turn whose prompt is a hidden kickoff. Nothing in any system
 prompt explains the kickoff: it carries the whole welcome itself -- who Mate
 is, what a crewmate is, what it can help with now, and a name the user picks
 for it. A user who already has other crewmates hears Mate introduce itself as
-one more teammate rather than their first. A crewmate the user creates on the
-dashboard greets through that create flow's own seeded turn, not this module.
+one more teammate rather than their first.
+
+A crewmate the user creates from the Crewmates page's New crewmate card opens
+the same way, through the same route and dispatch: its create sends
+``first_greeting`` and records a goal welcome
+(:data:`kiro_crew.members.WELCOME_KIND_GOAL`), and its first turn runs
+:func:`goal_kickoff`, which has it introduce itself by name and ask what it
+should work on, or confirm the goal the card was given.
 
 Four properties are the whole design:
 
-* **Only the member the first-crewmate step created.** That step records the
-  welcome it owes at creation (:func:`kiro_crew.members.mark_welcome_owed`). A
-  member that arrived any other way (a create form, discovery, an import, an
-  app) carries no such record and never greets here.
+* **Only a member whose creation recorded it.** The first-crewmate step and a
+  ``first_greeting`` create record the welcome owed
+  (:func:`kiro_crew.members.mark_welcome_owed`). A member that arrived any other
+  way (discovery, an import, an app) carries no such record and never greets
+  here.
 * **A real turn, no user row.** The kickoff goes to the model through
   ``_run_chat`` exactly like a gateway-composed prompt (``_synthetic_payload``,
   actor ``gateway``), but nothing is appended to the transcript before dispatch,
@@ -102,6 +109,46 @@ FIRST_WELCOME = _KICKOFF_PREAMBLE + _WELCOME_INTRO + _FIRST_OF_CREW + _WELCOME_O
 
 #: Mate's welcome for a user who already has other crewmates.
 FIRST_WELCOME_WITH_CREW = _KICKOFF_PREAMBLE + _WELCOME_INTRO + _ONE_MORE_OF_CREW + _WELCOME_OFFER
+
+
+#: A created crewmate's first message: who it is, then what it should do. The
+#: user picked a name and a look, not a template, so the greeting never names
+#: the template or role it runs as. When it runs is settled in the same
+#: conversation: it offers a schedule once the goal is clear, never sets one up
+#: unasked.
+GOAL_WELCOME = _KICKOFF_PREAMBLE + (
+    "The user just created you. In two or three short sentences of plain, everyday "
+    "words, introduce yourself by your name, {name}, then ask them what they want "
+    "you to do: the goal you should own and look after. Do not name your template, "
+    "role or agent type, and do not describe how you work. Do not start any work "
+    "or propose a plan until they answer. Once the goal is clear, if the work "
+    "should run on its own (every morning, every hour, whenever something "
+    "changes), offer a schedule: say in plain words when you would run and ask "
+    "whether they want it. Set it up with your schedule tool only after they say "
+    "yes; never create a schedule without asking."
+)
+
+#: Appended to :data:`GOAL_WELCOME` when the create carried a description, so
+#: the crewmate confirms that goal instead of asking blind.
+_GOAL_KNOWN = (
+    " When you were created you were described as: {description!r}. Treat that as "
+    "a first draft of your goal: restate it in your own words and ask whether that "
+    "is what they want, or what to change."
+)
+
+
+def goal_kickoff(entry: object, member: str) -> str:
+    """The hidden kickoff for crewmate *member*'s first turn; *entry* is its row.
+
+    Names the crewmate by its label (its key when unlabelled) and, when the
+    create carried a description, asks it to confirm that goal.
+    """
+    label = getattr(entry, "display_name", "") or ""
+    label = label.strip() if isinstance(label, str) else ""
+    text = GOAL_WELCOME.format(name=label or member)
+    description = getattr(entry, "description", "") or ""
+    description = description.strip() if isinstance(description, str) else ""
+    return text + _GOAL_KNOWN.format(description=description) if description else text
 
 
 def welcome_kickoff(entry: object, *, has_other_crewmates: bool) -> str:
@@ -190,7 +237,7 @@ def _has_content(slot: Any) -> bool:
 
 
 async def maybe_start_first_greeting(state: Any, slug: str) -> str:
-    """Start Mate's first welcome on *slug*'s thread when it is owed.
+    """Start the first welcome *slug*'s crewmate owes: Mate's, or a goal question.
 
     Returns one of the module's outcome constants. Every check that can refuse
     runs BEFORE the marker is claimed, and the emptiness/busy checks run again
@@ -205,15 +252,20 @@ async def maybe_start_first_greeting(state: Any, slug: str) -> str:
         return BUSY
     if _has_content(slot):
         return NOT_EMPTY
-    if not await asyncio.to_thread(members_mod.welcome_owed, slug, member):
+    kind = await asyncio.to_thread(members_mod.owed_welcome_kind, slug, member)
+    if kind is None:
         return NOT_OWED
+    if kind == members_mod.WELCOME_KIND_GOAL:
+        kickoff = goal_kickoff(entry, member)
+    else:
+        kickoff = welcome_kickoff(entry, has_other_crewmates=others)
     if not await asyncio.to_thread(claim_greeting_marker, slug, slot.key):
         return ALREADY_GREETED
     if slot.running or _has_content(slot) or state._slots.get(slot.key) is not slot:
         # Lost the race to a real send (or the slot was replaced) after the
         # claim. The user is already talking, so the greeting is simply moot.
         return NOT_EMPTY if _has_content(slot) else BUSY
-    _dispatch_greeting(state, slot, welcome_kickoff(entry, has_other_crewmates=others))
+    _dispatch_greeting(state, slot, kickoff)
     return STARTED
 
 

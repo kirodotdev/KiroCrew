@@ -1728,8 +1728,9 @@ was saved; the guide ended without confirming it", never "completed" without
 the gateway's evidence and never a bare "cancelled"; the reason is kept on the
 conversation row (`meta.card.reason`), so the line reads the same after the
 store has forgotten the guide. A save the server refuses
-outright (a 4xx) clears the step's "submitted" state, and the guide follows the
-form back to the step it shows. `target_found`
+outright (a 4xx) clears the step's "submitted" state, and the guide stays on
+`crewmate.create`'s one step, the New crewmate card's Create, so the person can
+press it again. `target_found`
 is a no-op on an active guide, is refused on a terminal one, and needs the owner
 tab, so a cancelled, expired or completed guide never resumes; a reloaded tab
 (a new tab id) takes the guide over explicitly, which walks it back to the

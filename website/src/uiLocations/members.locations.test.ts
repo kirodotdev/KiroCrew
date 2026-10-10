@@ -38,7 +38,6 @@ const EXPECTED: Record<string, [string, string, string, string, string[], string
   // Creating once the roster has a crewmate: the header "+" menu's first item, and the switcher list's last.
   'members.add-menu.new': ['menu-item', 'pages.membersPage.add_member', 'New crewmate', '新建队友', ['page.members', 'members.add-menu'], 'menu', '/members', [CREW_PREVIEW, cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   'members.switcher.new': ['menu-item', 'pages.membersPage.add_member', 'New crewmate', '新建队友', ['page.members', 'members.switcher'], 'menu', '/members', [CREW_PREVIEW, vp('desktop'), cond('crewmate_selected')]],
-  'members.add-menu.advanced': ['menu-item', 'pages.membersPage.create_advanced', 'Advanced', '高级', ['page.members', 'members.add-menu'], 'menu', '/members', [CREW_PREVIEW, cond('has_crewmates'), ROSTER_SHOWN, ROSTER_SHOWN_PHONE]],
   'members.back': ['button', 'pages.membersPage.back_to_roster', 'Back to crewmates', '返回队友列表', ['page.members'], 'header', '/members', [CREW_PREVIEW, vp('mobile'), cond('crewmate_selected')]],
   'members.switcher': ['button', 'pages.membersPage.switch_crewmate', 'Switch crewmate', '切换队友', ['page.members'], 'header', '/members', [CREW_PREVIEW, vp('desktop'), cond('crewmate_selected')]],
   'members.switcher.show-roster': ['menu-item', 'pages.membersPage.roster_show', 'Show the full roster', '显示完整队友列表', ['page.members', 'members.switcher'], 'menu', '/members', [CREW_PREVIEW, vp('desktop'), cond('crewmate_selected')]],
@@ -91,7 +90,7 @@ describe('the Crewmates area in the index', () => {
       expect(terms['zh-CN'].length, id).toBeGreaterThan(0)
     }
     expect(byId.get('members.new')!.terms!['zh-CN']).toContain('创建代理')
-    expect(byId.get('members.add-menu.advanced')!.terms!.en).toContain('advanced crewmate setup')
+    expect(byId.get('members.add-menu')!.terms!.en).toContain('advanced crewmate setup')
   })
 
   it("marks agents.delete on the Danger zone's unarmed delete only, never the armed confirm", () => {
