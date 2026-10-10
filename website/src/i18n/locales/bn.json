@@ -6368,7 +6368,9 @@
     "codeBlock": {
       "copied": "কপি হয়েছে!",
       "copy": "কপি",
-      "generating": "তৈরি হচ্ছে…"
+      "generating": "তৈরি হচ্ছে…",
+      "unwrap": "লাইন মোড়ানো বাতিল",
+      "wrap": "লাইন মোড়ানো"
     },
     "columnResizer": {
       "resize_column": "কলামের আকার বদলাও: {{column}}",

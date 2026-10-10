@@ -6267,7 +6267,9 @@
     "codeBlock": {
       "copied": "已复制！",
       "copy": "复制",
-      "generating": "生成中…"
+      "generating": "生成中…",
+      "unwrap": "不折行",
+      "wrap": "折行"
     },
     "columnResizer": {
       "resize_column": "调整列宽：{{column}}",
