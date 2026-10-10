@@ -1042,10 +1042,21 @@ rows this incarnation has since claimed are skipped.
 | class `unknown` | `unknown_side_effect` |
 | class `none` / `idempotent_key` | `recovering`, `next_run_at = now + backoff(attempts)` (`2·2^attempts`, cap 120s); the dispatcher re-claims it |
 
-The reconciler deliberately still examines only `ACTIVE` rows: it is
-kind-agnostic, and a CLAIMABLE row is normally its dispatcher's — a `queued`
-`subagent` row is exactly what the window refill exists to pick up. The
-`queued` rows of a kind with NO dispatcher are therefore the kind-scoped
+The table above is the `ACTIVE` pass. A `queued` row is claimed by nobody and
+is normally its dispatcher's — a `queued` `subagent` row is exactly what the
+window refill exists to pick up — so the reconciler reads the `queued` rows
+(`store.queued_rows()`, snapshotted BEFORE the active pass, so a row that pass
+requeues from `admitted` is not read twice; counted in
+`ReconcileReport.queued_examined`, not `examined`) for one thing only: an
+`artifact_probe` verdict of `done` / `failed` / `cancelled`, settled exactly as
+the first row of the table. It never applies a class verdict to a `queued` row,
+and one whose artifacts say nothing is left as it was. The case it closes is a
+refusal or a stop recorded for a row the dispatcher never claimed (the subagent
+refusal tombstone, [subagent](subagent.md) § Refused-row settle) whose own
+`failed` / `cancelled` write was lost before the crash: without the pass the
+pump starts that row under an id whose tombstone already records an ending,
+and the next crash's probe reads the stale ending as that execution's. The
+`queued` rows of a kind with NO dispatcher are otherwise the kind-scoped
 adopter's half of the job (§ Runner adapters, `adopt_orphaned_rows`), and the
 two are complementary rather than overlapping: the adopter also picks up the
 row this table just requeued from `admitted`, which for such a kind would

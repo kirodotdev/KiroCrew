@@ -16,6 +16,13 @@ dispatcher takes a single new row, each of those is examined once:
 
 ``cancelled`` and the other terminal states are never touched: a cancel that
 landed before the crash stays a cancel, whatever the artifacts say.
+
+A ``queued`` row is claimed by nobody and is normally its dispatcher's to pick
+up, so it is examined for ONE thing only: an artifact that records its ending.
+A refusal or a stop that was recorded for a row the dispatcher never claimed,
+whose own ``failed``/``cancelled`` write was lost before the crash, is settled
+from that record rather than started as if the refusal had never happened; a
+``queued`` row whose artifacts say nothing is left exactly as it was.
 """
 
 from __future__ import annotations
@@ -52,6 +59,8 @@ DEFAULT_RECOVERY_ADAPTERS: frozenset[str] = frozenset({KIND_SUBAGENT})
 @dataclass
 class ReconcileReport:
     examined: int = 0
+    #: ``queued`` rows read for an artifact-recorded ending (not in ``examined``).
+    queued_examined: int = 0
     settled_done: int = 0
     settled_failed: int = 0
     settled_cancelled: int = 0
@@ -93,17 +102,27 @@ def reconcile_on_boot(
     known = frozenset(adapters)
     ts = store.now() if now is None else now
     report = ReconcileReport()
+    # Read before the active pass: a row that pass requeues from ``admitted``
+    # was examined by it, and is not read a second time here.
+    queued = store.queued_rows()
     for rec in store.active_rows(exclude_owner=store.incarnation):
         report.examined += 1
         try:
             _settle_one(store, rec, probe, known, ts, report)
         except TaskStoreUnavailable as exc:
             report.errors.append(f"{rec.id}: {exc}")
-    if report.examined:
+    for rec in queued:
+        report.queued_examined += 1
+        try:
+            _settle_terminal(store, rec, _probe_verdict(rec, probe, report), report)
+        except TaskStoreUnavailable as exc:
+            report.errors.append(f"{rec.id}: {exc}")
+    if report.examined or report.changed or report.errors:
         logger.info(
-            "taskq reconcile: examined=%d done=%d failed=%d cancelled=%d requeued=%d "
-            "recovering=%d unknown_side_effect=%d awaiting_adapter=%d errors=%d",
+            "taskq reconcile: examined=%d queued_examined=%d done=%d failed=%d cancelled=%d "
+            "requeued=%d recovering=%d unknown_side_effect=%d awaiting_adapter=%d errors=%d",
             report.examined,
+            report.queued_examined,
             report.settled_done,
             report.settled_failed,
             report.settled_cancelled,
@@ -116,6 +135,37 @@ def reconcile_on_boot(
     return report
 
 
+def _probe_verdict(rec: TaskRecord, probe: ArtifactProbe, report: ReconcileReport) -> str | None:
+    try:
+        return probe(rec)
+    except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
+        # The probe is the caller's callable and ``None`` is already its "the
+        # artifacts say nothing" answer, so an exception is that answer for THIS
+        # row: settling it by class is safe (``unknown`` never re-runs), while
+        # unwinding would abandon every row behind it with no later sweep.
+        report.errors.append(f"{rec.id}: artifact probe failed: {exc}")
+        return None
+
+
+def _settle_terminal(
+    store: TaskStore, rec: TaskRecord, verdict: str | None, report: ReconcileReport
+) -> bool:
+    """Settle *rec* into the terminal its artifacts recorded; False when they recorded none."""
+    if verdict == DONE:
+        if store.transition(rec.id, DONE, detail={"reconciled": "artifact"}):
+            report.settled_done += 1
+        return True
+    if verdict == FAILED:
+        if store.transition(rec.id, FAILED, detail={"reconciled": "artifact"}):
+            report.settled_failed += 1
+        return True
+    if verdict == CANCELLED:
+        if store.cancel(rec.id, reason="reconciled: tombstone") is not None:
+            report.settled_cancelled += 1
+        return True
+    return False
+
+
 def _settle_one(
     store: TaskStore,
     rec: TaskRecord,
@@ -124,26 +174,7 @@ def _settle_one(
     now: float,
     report: ReconcileReport,
 ) -> None:
-    try:
-        verdict = probe(rec)
-    except Exception as exc:  # noqa: BLE001 - a probe that cannot answer says nothing
-        # The probe is the caller's callable and ``None`` is already its "the
-        # artifacts say nothing" answer, so an exception is that answer for THIS
-        # row: settling it by class is safe (``unknown`` never re-runs), while
-        # unwinding would abandon every row behind it with no later sweep.
-        report.errors.append(f"{rec.id}: artifact probe failed: {exc}")
-        verdict = None
-    if verdict == DONE:
-        if store.transition(rec.id, DONE, detail={"reconciled": "artifact"}):
-            report.settled_done += 1
-        return
-    if verdict == FAILED:
-        if store.transition(rec.id, FAILED, detail={"reconciled": "artifact"}):
-            report.settled_failed += 1
-        return
-    if verdict == CANCELLED:
-        if store.cancel(rec.id, reason="reconciled: tombstone") is not None:
-            report.settled_cancelled += 1
+    if _settle_terminal(store, rec, _probe_verdict(rec, probe, report), report):
         return
     if rec.state == ADMITTED:
         # Claimed but never started: no runtime, no side effect. Back to the

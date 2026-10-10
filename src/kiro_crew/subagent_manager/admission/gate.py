@@ -383,7 +383,9 @@ class _GateMixin(ManagerComponent):
                 # admission closed during one of them. The caller is told it
                 # was refused, so the store is told the same: a row left
                 # queued would run once admission reopens.
-                self._manager._admission.taskq_fail(agent_id, closed.error)
+                self._manager._admission.taskq_fail(
+                    agent_id, closed.error, memory_mode=_memory_mode or ""
+                )
             return self._manager._announce_rejection(closed)
 
         def _refuse_row(info: SubagentInfo) -> SubagentInfo:
@@ -397,12 +399,16 @@ class _GateMixin(ManagerComponent):
             A drained run is registered as a terminal record too: its caller
             was told it was accepted, and its next ``GET /api/spawn/{id}``
             must read this failure, not a 404 for an id that is neither
-            queued nor started any more. ``spawn_async``'s caller has not been
-            answered yet, and receives this refusal as its answer."""
+            queued nor started any more -- registered once the row's settle
+            has landed (``register_refused``), since that record is the
+            refusal PUBLISHED to a status poll. ``spawn_async``'s caller has
+            not been answered yet, and receives this refusal as its answer."""
             if info.error and (_from_queue or (_store_accepted and _claimed is None)):
-                self._manager._admission.taskq_fail(agent_id, info.error)
+                self._manager._admission.taskq_fail(
+                    agent_id, info.error, memory_mode=info.memory_mode
+                )
                 if _from_queue:
-                    self._manager._agents.setdefault(info.id, info)
+                    self._manager._admission.register_refused(info)
             return self._manager._announce_rejection(info)
 
         # The mutable policy gates (cwd allowlist, governance, the parent
@@ -856,7 +862,7 @@ class _GateMixin(ManagerComponent):
                 _checked[3] if _checked is not None else _validate_app_agent_ownership(agent, app)
             )
             if owner_err:
-                self._manager._admission.taskq_fail(agent_id, owner_err)
+                self._manager._admission.taskq_fail(agent_id, owner_err, memory_mode=_memory_mode)
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -889,7 +895,7 @@ class _GateMixin(ManagerComponent):
             if err:
                 # The row was accepted; an agent name that does not resolve at
                 # dispatch is a terminal failure of THAT row, never a silent drop.
-                self._manager._admission.taskq_fail(agent_id, err)
+                self._manager._admission.taskq_fail(agent_id, err, memory_mode=_memory_mode)
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
@@ -1280,8 +1286,9 @@ class _GateMixin(ManagerComponent):
         if verdict == "expired":
             # Never proceeds into the pressure it waited on: ended, never
             # started, its row failed so the depth stops counting it, and
-            # registered as a terminal record so a caller that was told it was
-            # queued reads this outcome by id rather than a 404.
+            # registered as a terminal record -- once that failure has landed
+            # -- so a caller that was told it was queued reads this outcome by
+            # id rather than a 404.
             ended = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
@@ -1293,8 +1300,10 @@ class _GateMixin(ManagerComponent):
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
             )
-            self._manager._admission.taskq_fail(agent_id, MEMORY_PRESSURE_NEVER_STARTED)
-            self._manager._agents.setdefault(agent_id, ended)
+            self._manager._admission.taskq_fail(
+                agent_id, MEMORY_PRESSURE_NEVER_STARTED, memory_mode=_memory_mode
+            )
+            self._manager._admission.register_refused(ended)
             self._manager._emit_queue_depth(parent_session_key, batch_id)
             return self._manager._announce_rejection(ended)
         if verdict == "held":
@@ -2078,12 +2087,24 @@ class _GateMixin(ManagerComponent):
         queue-drained non-batch rejections too — ``_drain_queue`` announces
         those itself off the returned info, so announcing here as well would
         inject the completion twice.
+
+        The announce of a refused row that the store holds waits for that
+        row's settle (``await_pending_defer``) before ``_on_done`` runs: the
+        wave's completion event, and the failure it counts, are the refusal
+        PUBLISHED to the parent, and a refusal published while the row's
+        ``failed`` write is still in flight is one a restart reverses. A
+        refusal with no pending write returns from that wait at once.
         """
         self._manager._forget_pending_start(info.id)
         if info.batch_id and self._manager._on_done:
+
+            async def _settled_then_announce() -> None:
+                await self._manager._admission.await_pending_defer(info.id)
+                await self._manager._safe_announce(info)
+
             try:
                 self._manager._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
+                    _settled_then_announce()
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)

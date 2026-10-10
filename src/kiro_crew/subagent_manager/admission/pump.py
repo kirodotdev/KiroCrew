@@ -46,6 +46,7 @@ class _PumpMixin(ManagerComponent):
         def taskq_admit_wait_secs(self) -> float: ...
 
         async def taskq_child_registered_async(self, info: "SubagentInfo") -> None: ...
+        async def await_pending_defer(self, agent_id: str) -> None: ...
 
         def _record_crew_log_spawn_started(self, info: "SubagentInfo") -> None: ...
 
@@ -486,6 +487,15 @@ class _PumpMixin(ManagerComponent):
                 # durably parked -- or refused for want of a row -- before any
                 # caller can read the answer as a queued handle.
                 first = await admission.finish_parked_defer(first)
+                # A refusal fired on this branch (the gate's commit-point
+                # re-check, an agent name that fails validation at dispatch)
+                # posted its row's FAILED write on the way out. Await it -- and
+                # verify it landed -- before the answer is returned: this
+                # branch runs under neither ``spawn_async``'s accept ``finally``
+                # nor ``claim_and_start``, so without the await the entry would
+                # sit in the pending map for the process lifetime and the row
+                # ADMITTED for the next incarnation's reconcile to requeue.
+                await admission.await_pending_defer(first.id)
             # A re-queued (or, without a store, started) row: the W3 branch
             # runs here, awaited, instead of inline in ``spawn_impl``.
             if (
@@ -626,6 +636,15 @@ class _PumpMixin(ManagerComponent):
             registered = claim_will_register and point.agent_id in self._manager._agents
             if not registered and not claim_retained:
                 self.release_reservation(point.agent_id)
+                # A claim that was refused at the gate's commit point (the
+                # conversation-busy re-check) posted its row's FAILED write on
+                # the way out. Await it here -- and verify it landed -- before
+                # the refusal is returned: this is the one re-entry path that
+                # does not run under ``spawn_async``'s accept ``finally``, and a
+                # refusal published while its durable failure is still in
+                # flight would let a lost write leave the claimed row ADMITTED
+                # for the next incarnation's reconcile to requeue and run.
+                await self.await_pending_defer(point.agent_id)
             if registered:
                 # Every registered start re-publishes the parent's queued depth.
                 # A direct spawn owes nothing to the count, so its emit reports

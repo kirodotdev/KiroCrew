@@ -292,7 +292,42 @@ same step (`_refuse_row` -> `taskq_fail`): a drained row, and a row `spawn_async
 committed before the read (`_store_accepted`, the default persistent path). A
 committed row is failed the same way when gateway admission closes during the
 read, so a row the caller was told was refused never runs once admission
-reopens. `spawn_async` hands the re-entry the parent's declaration and the
+reopens. That `failed` write is a SETTLE, not a posted write nothing waits for:
+`taskq_fail` runs ONE tracked store task (`_settle_refused_row`) covering the
+write and its verification, recorded under the row's id in the slot the accept
+path already awaits (`_pending_defers`), and every refusal path that returns a
+row the store holds -- `spawn_async`'s accept `finally`, the dispatcher's
+claimed re-entry on its not-registered branch (`claim_and_start`), and its
+drained non-claim branch beside `finish_parked_defer` -- awaits it
+(`await_pending_defer`) before the refusal is handed back, and a drained or
+memory-expired refusal's terminal record -- the `done` entry `GET
+/api/spawn/{id}` reads -- is registered by the settle's completion
+(`register_refused`), not at the refusal. A refusal published over a row still
+ADMITTED is the one state `reconcile_on_boot` requeues without asking, so the
+refusal is HELD until the row reads terminal. Store contention is
+routine, so the retry has no count bound: it paces like a state re-read, backs
+off to a 2-second cap (`_SETTLE_RETRY_BACKOFF_CAP_SECS`), warns once that it is
+holding, and stops only on an answer a retry cannot change (the row reads
+terminal, or a healthy store refused the edge) or when the store is gone; only
+the store's typed failure (`TaskStoreUnavailable`) is retried, and any other
+exception from the write is the row's, not the store's, and ends the settle
+with a warning rather than holding the dispatcher on a write no retry can
+land. Every awaiter joins the task SHIELDED and the entry outlives a cancelled awaiter, so a
+later awaiter of the same id joins the same task and `cancel_all` drains it at
+shutdown. For a `persistent` run the settle writes the refused run's tombstone
+(`write_refusal_tombstone`, `cause="error"`) FIRST, where the store cannot
+reach: the boot reconcile asks the artifact probe before it requeues an ADMITTED
+row AND reads it for every row left QUEUED ([taskq](taskq.md) § Reconcile-first
+boot), and that tombstone is the probe's `failed`, so a store wedged for the
+whole shutdown drain still ends with the row settled on the next boot --
+whether the refusal found the row claimed or, as the memory-pressure expiry
+does, still queued, and never started under an id whose tombstone already
+records an ending. The join has no bound of its own: a refusal published over a
+row the store has not taken is one a restart reverses, and the store a held
+settle is waiting on is the store every other queued row's claim needs, so a
+hold delays nothing that could have started. A defer write (`taskq_defer_posted`) is awaited the same way: its
+awaiter publishes `queued` on return, and a row whose `next_run_at` is still in
+flight at that point is one a restart dispatches at once. `spawn_async` hands the re-entry the parent's declaration and the
 agent check it read off the loop (`_parent_spawn_policy`, `_agent_check`), so
 neither the allowlist vet nor agent validation scans the agents directory on the
 loop. A spawn with no row to write (non-persistent, or the task queue off) runs

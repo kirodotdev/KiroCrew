@@ -2096,6 +2096,17 @@ class TaskStore:
         return [TaskRecord.from_row(r) for r in rows]
 
     @_typed_read
+    def queued_rows(self) -> list[TaskRecord]:
+        """Rows in ``queued``: accepted, claimed by no incarnation, oldest first."""
+        with self._lock:
+            rows = (
+                self._c()
+                .execute("SELECT * FROM tasks WHERE state=? ORDER BY created_at, rowid", [QUEUED])
+                .fetchall()
+            )
+        return [TaskRecord.from_row(r) for r in rows]
+
+    @_typed_read
     def active_rows(self, *, exclude_owner: str | None = None) -> list[TaskRecord]:
         """Rows some incarnation owns; optionally only those NOT owned by *exclude_owner*."""
         sql = f"SELECT * FROM tasks WHERE state IN {_SQL_ACTIVE}"

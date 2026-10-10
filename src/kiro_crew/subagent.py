@@ -962,6 +962,25 @@ def _redact_and_truncate(text: str, max_chars: int) -> str:
     return redact_and_truncate(text, max_chars)
 
 
+def write_refusal_tombstone(agent_id: str, reason: str) -> None:
+    """The durable ending of a persisted row refused before it registered.
+
+    ``reconcile_on_boot`` asks the artifact probe about every row the dead
+    incarnation left behind BEFORE it requeues an ADMITTED one, and a tombstone
+    whose cause is ``error`` is the probe's ``failed``. The refusal text is
+    redacted the way :meth:`SubagentManager._write_tombstone` redacts a run's
+    ``error`` into the same ``detail`` field -- one writer owns that field's
+    hygiene. Blocking file I/O: an on-loop caller wraps it in a thread.
+    Raises ``ValueError`` / ``OSError`` as ``write_tombstone`` does.
+    """
+    write_tombstone(
+        agent_id,
+        cause="error",
+        recovery_action=tombstone_recovery_action(agent_id, read_state(agent_id) or {}),
+        detail=_redact(reason)[:MAX_ERROR_DETAIL_LEN],
+    )
+
+
 # Bound for a rendered exception chain. The rendering reaches a WS frame, a
 # tombstone and the Subagents panel, so it is capped rather than trusted -- to
 # ``process_identity.MAX_ERROR_DETAIL_LEN``, the one bound every retained error
