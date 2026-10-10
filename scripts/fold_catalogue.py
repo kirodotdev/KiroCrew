@@ -93,6 +93,11 @@ _ANSWERS: dict[str, str] = {
         "long it ran and what it cost"
     ),
     "class": "What KIND of session this log belongs to, over the log's whole life",
+    "outline": (
+        "The conversation one row per turn: the first line the human typed and the "
+        "reply the turn settled on, both clipped, with no injected context and no "
+        "tool output"
+    ),
     "ledger": (
         "One workstream's goal, phase and next step, what was tried and rejected, and "
         "its artifacts"

@@ -31,6 +31,7 @@ slot ran under.
 | `approvals` | session | What was requested, what was decided, and what is still pending |
 | `subagents` | session | Which children this session dispatched, and for each one what happened, how long it ran and what it cost |
 | `class` *(internal)* | session | What KIND of session this log belongs to, over the log's whole life |
+| `outline` *(internal)* | session | The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output |
 | `ledger` | slot | One workstream's goal, phase and next step, what was tried and rejected, and its artifacts |
 | `radar` | slot | An issue crew's items, counts, phase lines and recorded skips |
 | `work` | slot | A conductor's board: the header, every work item, and what the fold dropped |
@@ -176,6 +177,22 @@ Moved by **every** entry in the log.
 | `recorded` | `bool` | no |
 | `workspace` | `str` | no |
 | `workspace_moved` | `bool` | no |
+
+## `outline`
+
+The conversation one row per turn: the first line the human typed and the reply the turn settled on, both clipped, with no injected context and no tool output.
+
+Moved by: `message/received`, `message/sent`, `turn/completed`, `turn/refused`, `turn/started`.
+
+| Field | Type | Optional |
+|---|---|---|
+| `dropped` | `int` | no |
+| `first_turn` | `unknown` | yes |
+| `last_turn` | `unknown` | yes |
+| `limit` | `int` | no |
+| `prompt_chars` | `int` | no |
+| `reply_chars` | `int` | no |
+| `turns` | `list` | no |
 
 ## `ledger`
 
