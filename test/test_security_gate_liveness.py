@@ -230,7 +230,24 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Raised again, from 28,741, for the bare-kill window's runtime-synthesis search:
+#: a substitution body whose lookup target is assembled from a single-literal
+#: ``printf``/``echo`` substitution or a brace expansion is folded and matched for
+#: the name before the search. The constant-output fold reuses the existing
+#: ``_static_substitution_output`` resolver (guarded to a single plain literal, so
+#: no second printf model); the quote reading that keeps a quoted substitution,
+#: brace, comment or escape inert is taken from ``_iter_shell_chars`` -- the
+#: module's one quote/escape state machine -- not a second copy, so the fold and
+#: the brace mask read quoting through it and the shared paren-span reader
+#: (subshells, case patterns and ``$$`` open or close nothing); all of a body's
+#: expansion work shares one cumulative character budget (the connection-target
+#: check keeps its word cap alone), an assignment value's braces stay literal,
+#: and a same-line assignment chain is bounded by length before it is built.
+#: Neither an unresolvable operand nor a brace product past the fan-out cap is
+#: failed closed -- both are documented residuals; no pass widened, no threshold
+#: moved.
+_PACKAGE_LINE_BUDGET = 29_203
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

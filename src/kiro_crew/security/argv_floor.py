@@ -842,6 +842,38 @@ def _bare_kill_raw_bodies(source: str) -> "list[str]":
     return bodies
 
 
+def _kill_body_synthesizes_self(body: str) -> bool:
+    """True if a bare-kill substitution *body* builds the protected name at runtime.
+
+    Brace-expands each folded word under ONE character budget for the body,
+    failing closed once it or the assignment bound is spent.  Neither an
+    unresolvable operand NOR a brace product past the fan-out cap is failed
+    closed: both are the documented residual (the issue's reported forms all fit
+    within the cap, and a wider product cannot name a single live process).
+    """
+    words = _shell_normalizer._synthesis_words(body, _static_substitution_output, _BRACE_CHAR_CAP)
+    if words is None:
+        return True
+    budget = [_BRACE_CHAR_CAP]
+
+    for word in words:
+        # Mask ${...} braces so an ENCLOSING brace group still expands.
+        alternatives = _brace_expansions(
+            _shell_normalizer._mask_param_word_braces(word), budget=budget
+        )
+        if budget[0] < 0:
+            return True
+        if alternatives is None:
+            continue  # over-cap fan-out: a residual, not failed closed
+        for alt in alternatives:
+            alt = _shell_normalizer._restore_quoted_braces(alt)
+            if _SELF_NAME_RE.search(_debracket(alt)) or _SELF_NAME_RE.search(
+                _shell_normalizer._resolved_word_view(alt)
+            ):
+                return True
+    return False
+
+
 def _is_self_kill(text_lower: str) -> bool:
     """True if *text_lower* terminates a Kiro Crew process.
 
@@ -973,6 +1005,9 @@ def _is_self_kill(text_lower: str) -> bool:
                     _shell_normalizer._resolved_word_view(word)
                 ):
                     return True
+            # Runtime synthesis the static views cannot see (folded output, braces).
+            if _kill_body_synthesizes_self(body):
+                return True
     return False
 
 
@@ -2363,9 +2398,9 @@ _ARITH_INT_LITERAL_RE = re.compile(r"\$\(\(\s*(-?(?:0[xX][0-9a-fA-F]+|[0-9]+))\s
 _BRACE_GROUP_RE = re.compile(r"(?<!\$)\{([^{}]*)\}")
 _BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.\.(-?[0-9]+))?\Z")
 # ponytail: fan-out ceiling.  Expansion stops at 256 generated words and the
-# caller DENIES (fail-closed) — a wider product in a connection operand is
-# pathological, and enumerating it here would be its own DoS.
+# caller DENIES (fail-closed) — a wider product is pathological to enumerate.
 _BRACE_EXPANSION_CAP = 256
+_BRACE_CHAR_CAP = 262_144
 
 
 def _arith_int_literal_repl(match: "re.Match[str]") -> str:
@@ -2392,7 +2427,7 @@ def _arith_int_literal_repl(match: "re.Match[str]") -> str:
         return match.group(0)
 
 
-def _brace_alternatives(body: str) -> "list[str] | None":
+def _brace_alternatives(body: str, cap: int = _BRACE_EXPANSION_CAP) -> "list[str] | None":
     """The words one brace-group *body* expands to, or None when literal.
 
     A comma body is an alternation (empty alternatives included, as in
@@ -2421,25 +2456,26 @@ def _brace_alternatives(body: str) -> "list[str] | None":
             # gate.  An endpoint or step that large cannot name a single
             # legitimate target, so signal overflow exactly like the cap
             # check below -- the caller converts it to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
-        if abs(end - start) // step + 1 > _BRACE_EXPANSION_CAP:
+            return [""] * (cap + 1)
+        if abs(end - start) // step + 1 > cap:
             # Signal overflow with an over-long list the caller's cap check
             # converts to a fail-closed deny.
-            return [""] * (_BRACE_EXPANSION_CAP + 1)
+            return [""] * (cap + 1)
         direction = 1 if start <= end else -1
         return [render(v) for v in range(start, end + direction, direction * step)]
     if "," in body:
-        return body.split(",")
+        parts = body.split(",")
+        return parts if len(parts) <= cap else [""] * (cap + 1)  # cap the alternation
     return None
 
 
-def _brace_expansions(token: str) -> "list[str] | None":
+def _brace_expansions(
+    token: str, cap: int = _BRACE_EXPANSION_CAP, budget: "list[int] | None" = None
+) -> "list[str] | None":
     """Every word bash brace expansion produces for *token*; None on overflow.
 
-    Groups are expanded left-to-right to a fixpoint (each rewrite removes one
-    brace pair, so this terminates); the returned words carry no expandable
-    group.  A product beyond ``_BRACE_EXPANSION_CAP`` returns None and the
-    caller fails closed.
+    Identical alternatives and words dedupe (so ``{,}`` x k is one word); past
+    *cap* words, or past *budget* chars over ALL passes, None.
     """
     words = [token]
     changed = True
@@ -2449,17 +2485,27 @@ def _brace_expansions(token: str) -> "list[str] | None":
         for word in words:
             expanded = False
             for group in _BRACE_GROUP_RE.finditer(word):
-                alternatives = _brace_alternatives(group.group(1))
+                alternatives = _brace_alternatives(group.group(1), cap)
                 if alternatives is None:
                     continue
+                if len(alternatives) > cap:
+                    return None  # one group past the cap: residual
+                alternatives = list(dict.fromkeys(alternatives))  # identical collapse
                 head, tail = word[: group.start()], word[group.end() :]
+                if len(next_words) + len(alternatives) > cap:
+                    return None
                 next_words.extend(head + alt + tail for alt in alternatives)
                 expanded = True
                 changed = True
                 break
             if not expanded:
                 next_words.append(word)
-            if len(next_words) > _BRACE_EXPANSION_CAP:
+            if len(next_words) > cap:
+                return None
+        next_words = list(dict.fromkeys(next_words))  # identical words collapse
+        if budget is not None:
+            budget[0] -= sum(len(w) for w in next_words)  # cumulative: passes x width
+            if budget[0] < 0:
                 return None
         words = next_words
     return words
