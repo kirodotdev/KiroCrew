@@ -20,6 +20,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import aiohttp
 import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES, assert_rejected_without_backtracking
@@ -5851,6 +5852,130 @@ class TestForumCallbackGate:
 
         assert asyncio.run(_go()) is False
         assert cli.answered == []
+
+
+class _PlainRetryResponse:
+    """A Bot API response: ``body`` as JSON, or ``error`` raised on entering it."""
+
+    def __init__(self, body: dict[str, Any] | None = None, error: BaseException | None = None):
+        self._body = body
+        self._error = error
+
+    async def json(self, content_type: Any = None) -> dict[str, Any] | None:
+        return self._body
+
+    async def __aenter__(self) -> "_PlainRetryResponse":
+        if self._error is not None:
+            raise self._error
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+
+class _PlainRetrySession:
+    """Records every ``sendMessage`` the server receives; answers ``first``, then ok."""
+
+    closed = False
+
+    def __init__(self, first: _PlainRetryResponse) -> None:
+        self.received: list[dict[str, Any]] = []
+        self._first = first
+
+    def post(self, url: str, **kwargs: Any) -> _PlainRetryResponse:
+        if not url.endswith("/sendMessage"):
+            return _PlainRetryResponse({"ok": True, "result": True})
+        self.received.append(dict(kwargs.get("json") or {}))
+        if len(self.received) == 1:
+            return self._first
+        return _PlainRetryResponse({"ok": True, "result": {"message_id": 100 + len(self.received)}})
+
+
+def _plain_retry_client(first: _PlainRetryResponse) -> tuple[TelegramClient, _PlainRetrySession]:
+    client = TelegramClient(token="12345:testtoken")
+    session = _PlainRetrySession(first)
+    client._session = session  # type: ignore[assignment]
+    return client, session
+
+
+_REJECTED_MARKUP = {"ok": False, "error_code": 400, "description": "Bad Request"}
+
+
+class TestPlainRetryOnlyOnRejectedMarkup:
+    """``send_message`` drops ``parse_mode`` on its retry only when Telegram rejected the send.
+
+    After a 400 nothing was posted, so the retry goes out as plain text. After
+    any other failure the first message may already be in the chat; the retry
+    keeps the markup, so a copy renders like the first instead of showing the
+    tags as text.
+    """
+
+    @pytest.mark.parametrize(
+        "first",
+        [
+            _PlainRetryResponse(error=asyncio.TimeoutError()),
+            _PlainRetryResponse(error=aiohttp.ServerDisconnectedError()),
+            _PlainRetryResponse({"ok": False, "error_code": 500, "description": "Internal"}),
+            _PlainRetryResponse({"ok": False, "error_code": 403, "description": "Forbidden"}),
+        ],
+        ids=["response-lost", "connection-reset", "server-error", "forbidden"],
+    )
+    def test_a_retry_after_an_unknown_outcome_keeps_the_markup(self, first) -> None:
+        client, session = _plain_retry_client(first)
+
+        result = asyncio.run(
+            client.send_message(42, "\U0001f510 Approve <code>bash</code>?", parse_mode="HTML")
+        )
+
+        modes = [r.get("parse_mode") for r in session.received]
+        assert modes == ["HTML", "HTML"], f"the retry shows the tags as text: {modes}"
+        assert result == 102
+
+    def test_a_rejected_markup_is_re_sent_once_as_plain_text(self) -> None:
+        client, session = _plain_retry_client(_PlainRetryResponse(_REJECTED_MARKUP))
+
+        result = asyncio.run(client.send_message(42, "<b>bad", parse_mode="HTML"))
+
+        assert result == 102
+        assert [r.get("parse_mode") for r in session.received] == ["HTML", None]
+        for sent in session.received:
+            assert sent["link_preview_options"] == {"is_disabled": True}
+
+    def test_a_send_that_lands_is_sent_once(self) -> None:
+        ok = _PlainRetryResponse({"ok": True, "result": {"message_id": 7}})
+        client, session = _plain_retry_client(ok)
+
+        assert asyncio.run(client.send_message(42, "<b>ok</b>", parse_mode="HTML")) == 7
+        assert len(session.received) == 1
+
+    def test_a_caller_that_opts_out_is_never_re_sent(self) -> None:
+        client, session = _plain_retry_client(_PlainRetryResponse(_REJECTED_MARKUP))
+
+        result = asyncio.run(
+            client.send_message(42, "<b>bad", parse_mode="HTML", retry_plain=False)
+        )
+
+        assert result is None
+        assert len(session.received) == 1
+
+    def test_the_approval_card_is_not_refused_after_a_lost_response(self, monkeypatch) -> None:
+        client, session = _plain_retry_client(_PlainRetryResponse(error=asyncio.TimeoutError()))
+        refused: list[str] = []
+        monkeypatch.setattr(
+            TelegramApprovalDecider,
+            "refuse_undelivered",
+            classmethod(lambda cls, key: refused.append(key)),
+        )
+        renderer = TelegramRenderer(  # type: ignore[arg-type]
+            client, 42, TELEGRAM_CAPABILITIES, session_key="telegram:42:0"
+        )
+        try:
+            asyncio.run(renderer.on_prompt_choice([], request_id="rq-lost", tool_title="bash"))
+        finally:
+            TelegramApprovalDecider.retire(TelegramApprovalDecider.key("telegram:42:0", "rq-lost"))
+
+        assert refused == [], "a lost response refused the approval"
+        assert len(session.received) == 2
 
 
 class TestLinkPreviewSuppression:

@@ -900,14 +900,21 @@ class TelegramClient:
         if disable_notification:
             params["disable_notification"] = True
         _apply_reply_target(params, reply_to_message_id)
-        result = await self._api("sendMessage", params)
+        err: dict[str, Any] = {}
+        result = await self._api("sendMessage", params, err_out=err)
         if result:
             return result.get("message_id")
-        # Only retry (drop parse_mode) when a parse_mode was actually requested
-        # AND the caller allows it. Renderers that send HTML pass
-        # retry_plain=False so a parse failure never re-sends the literal tags.
+        # Only retry when a parse_mode was actually requested AND the caller
+        # allows it. Renderers that send HTML pass retry_plain=False so a parse
+        # failure never re-sends the literal tags.
+        # A 400 means Telegram rejected the request, so nothing was posted and
+        # the retry drops parse_mode. After any other failure (a timeout, a
+        # reset, a 5xx) the message may already be in the chat. Telegram has no
+        # idempotency key, so the retry keeps parse_mode: a copy of a message
+        # that landed renders like the first, and one that never landed arrives.
         if parse_mode and retry_plain:
-            params.pop("parse_mode", None)
+            if err.get("error_code") == 400:
+                params.pop("parse_mode", None)
             result = await self._api("sendMessage", params)
         return result.get("message_id") if result else None
 
