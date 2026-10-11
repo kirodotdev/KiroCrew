@@ -214,6 +214,27 @@ def spec_keys_without_carrier(spec: dict[str, Any]) -> list[str]:
     return sorted(k for k in SPEC_KEYS_WITHOUT_CARRIER if spec.get(k))
 
 
+def tool_limited_servers(spec: Any) -> list[str]:
+    """Launched MCP servers whose entry turns tools off with ``disabledTools``, sorted.
+
+    ``disabledTools`` is a RESTRICTION the customAgents wire accepts and then
+    discards (:data:`_KAS_DISCARDED_ENTRY_KEYS`), so a server declared with one runs
+    here with those tools on. A muted server is left out: it is not declared at all
+    (:func:`_project_mcp_servers`), so nothing of it runs to widen.
+    """
+    servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+    if not isinstance(servers, dict):
+        return []
+    return sorted(
+        name
+        for name, entry in servers.items()
+        if isinstance(name, str)
+        and isinstance(entry, dict)
+        and entry.get("disabledTools")
+        and not mcp_entry_is_muted(entry)
+    )
+
+
 class KasAgentTranslationError(ValueError):
     """A spec cannot be projected onto KAS's schema at all."""
 

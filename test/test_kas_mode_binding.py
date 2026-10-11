@@ -447,6 +447,92 @@ class TestModeBinding:
         assert seen["set_mode"] is None
 
 
+#: A member's private copy, named the way a Capabilities save names it.
+_SAVED_TEMPLATE = "crew-0123456789abcdef01234567"
+
+
+def _write_saved_spec(agents_dir, server_entry):
+    (agents_dir / f"{_SAVED_TEMPLATE}.json").write_text(
+        json.dumps(
+            {
+                "name": _SAVED_TEMPLATE,
+                "prompt": "You are the member.",
+                "tools": ["fs_read", "@extra"],
+                "mcpServers": {"extra": server_entry},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
+class TestSavedMemberSpecOnKas:
+    """#18876: a member's saved capability spec loads on KAS, the default member backend."""
+
+    @pytest.mark.asyncio
+    async def test_a_saved_spec_is_loaded_and_confirmed(self, mode_stub, crew_agent, tmp_path):
+        """The whole member chain: provider support, injection, activation, evidence."""
+        from kiro_crew.acp.session_provider import AcpSessionProvider
+
+        _write_saved_spec(crew_agent, {"command": "extra-server"})
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws",
+            agent=_SAVED_TEMPLATE,
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            handle = await runtime.create_session(cwd=tmp_path / "ws")
+            provider = AcpSessionProvider(handle, runtime, owns_runtime=True)
+            # Asked BEFORE start in session_allocation; False was the whole bug.
+            assert provider.member_capabilities_supported is True
+            # The evidence loaded_stamp() requires after start.
+            assert provider.loaded_capability_template == _SAVED_TEMPLATE
+        finally:
+            await runtime.kill()
+        seen = json.loads(mode_stub.read_text(encoding="utf-8"))
+        assert [a["id"] for a in seen["injected"]] == [_SAVED_TEMPLATE]
+        assert seen["injected"][0]["prompt"] == "You are the member."
+        assert "extra" in seen["injected"][0]["mcpServers"]
+        assert seen["set_mode"] == _SAVED_TEMPLATE
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("enrolled", [True, False], ids=["saved_spec", "plain_agent"])
+    async def test_a_saved_per_tool_switch_off_refuses_rather_than_widens(
+        self, mode_stub, crew_agent, tmp_path, monkeypatch, enrolled
+    ):
+        """The KAS wire drops ``disabledTools``; a saved spec using it must not run wider."""
+        from kiro_crew import agent_state
+
+        _write_saved_spec(crew_agent, {"command": "extra-server", "disabledTools": ["wipe"]})
+        intent = {"status": "saved"} if enrolled else None
+        monkeypatch.setattr(agent_state, "get_capabilities", lambda name: intent)
+        runtime = AcpRuntime(
+            work_dir=tmp_path / "ws",
+            agent=_SAVED_TEMPLATE,
+            sandbox_mode="off",
+            acp_backend=ACP_BACKEND_KAS,
+        )
+        try:
+            await runtime.spawn()
+            if enrolled:
+                with pytest.raises(sh.AcpRuntimeError) as refused:
+                    await runtime.create_session(cwd=tmp_path / "ws")
+                assert "extra" in str(refused.value)
+                assert "agent.member_acp_backend" in str(refused.value)
+            else:
+                # Not a saved member spec: unchanged, this PR touches no other agent.
+                assert await runtime.create_session(cwd=tmp_path / "ws") is not None
+        finally:
+            await runtime.kill()
+        if enrolled:
+            # Refused before session/new: nothing reached the engine.
+            assert not mode_stub.exists()
+        else:
+            assert json.loads(mode_stub.read_text(encoding="utf-8"))["set_mode"] == _SAVED_TEMPLATE
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="the stub launcher is a POSIX shell script")
 class TestKiroPathUntouched:
     """The kiro backend must not gain a customAgents payload.

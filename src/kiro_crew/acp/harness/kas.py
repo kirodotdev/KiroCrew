@@ -25,6 +25,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import agent_state
 from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -263,6 +264,19 @@ class KasHarness(MembershipHarness):
                 if snapshot is not None and snapshot.spec is not None
                 else kas_agents_mod.load_agent_spec(agents_dir, agent)
             )
+            # A member's saved capability spec is the member's reviewed tool
+            # surface. A per-tool switch-off in it has no carrier on this wire, so
+            # the spec is refused rather than run wider than it was saved (#18876).
+            limited = kas_agents_mod.tool_limited_servers(spec)
+            if limited and agent_state.get_capabilities(agent) is not None:
+                raise AcpRuntimeError(
+                    "This crew member's saved capabilities turn off single tools on "
+                    f"MCP server {', '.join(limited)} (disabledTools). Its chats run on "
+                    "KAS (agent.member_acp_backend), which cannot turn off single "
+                    "tools, so they would be on. On the member's Capabilities page, "
+                    "turn the whole server off or turn those tools back on, then start "
+                    "a new chat."
+                )
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
