@@ -151,12 +151,22 @@ export const LOCATIONS = {
       requires: [{ kind: 'condition', id: 'artifact_open' }],
     }],
   },
-  // The toolbar's comments toggle (icon-only; its tooltip flips Show / Hide
-  // comments, its name stays "Toggle comments"): opens the comments panel.
+  // The open artifact's More menu: the toolbar's overflow, holding Snapshot,
+  // reading width, the comments panel, pop-out and the rest.
+  'artifacts.detail.more': {
+    kind: 'button',
+    label: { from: 'attr', attr: 'aria-label', key: 'pages.artifactDetailPage.more_actions' },
+    placements: [{
+      surface: 'artifacts', parent: 'page.artifacts', entry: 'toolbar',
+      requires: [{ kind: 'condition', id: 'artifact_open' }],
+    }],
+  },
+  // The More menu's comments item (it reads Show / Hide comments): opens or
+  // closes the comments panel.
   'artifacts.detail.comments': {
-    kind: 'toggle',
-    label: { from: 'attr', attr: 'aria-label' },
-    aliasKeys: ['pages.artifactDetailPage.show_comments'],
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.artifactDetailPage.show_comments' },
+    aliasKeys: ['pages.artifactDetailPage.hide_comments'],
     terms: {
       en: [
         'comment on an artifact', 'leave feedback on a document', 'add a comment', 'artifact comments',
@@ -172,9 +182,6 @@ export const LOCATIONS = {
       it: ['aggiungere un commento', 'commentare un documento'],
       ru: ['добавить комментарий', 'прокомментировать документ'],
     },
-    placements: [{
-      surface: 'artifacts', parent: 'page.artifacts', entry: 'toolbar',
-      requires: [{ kind: 'condition', id: 'artifact_open' }],
-    }],
+    placements: [{ surface: 'artifacts', parent: 'artifacts.detail.more', entry: 'menu' }],
   },
 } as const satisfies UiLocationArea

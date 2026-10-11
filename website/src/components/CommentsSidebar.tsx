@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState, useCallback, useEffect } from 'react'
+import { createContext, memo, useContext, useId, useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useIsMobile } from '../hooks/useIsMobile'
 import {
   MessageSquare, X, RefreshCw, Send, Bot, CheckCircle2, Eye, CornerDownRight,
@@ -74,6 +74,7 @@ const ORPHAN_WARN_KEY = 'components.commentsSidebar.anchor_text_no_longer_found_
 /** A small inline reply composer used under a root thread. */
 export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => void; onCancel: () => void }) {
   const [text, setText] = useState('')
+  useReportDraft(text.trim() !== '')
   const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
   useAutoGrowTextarea(ref, text)
@@ -119,6 +120,7 @@ export function ReplyBox({ onSubmit, onCancel }: { onSubmit: (text: string) => v
  *  comment card, so it carries no left indent. */
 export function EditBox({ initial, onSubmit, onCancel }: { initial: string; onSubmit: (text: string) => void; onCancel: () => void }) {
   const [text, setText] = useState(initial)
+  useReportDraft(text !== initial)
   const ref = useRef<HTMLTextAreaElement>(null)
   const ime = useImeGuard()
   useAutoGrowTextarea(ref, text)
@@ -372,6 +374,26 @@ export interface CommentsSidebarProps {
   /** Inline sizing override paired with `containerClassName`. Defaults to the
    *  full-page height. */
   containerStyle?: React.CSSProperties
+  /** Told whether any composer in the panel (the add box, a reply, an in-place
+   *  edit) holds unsaved text, so a host that navigates away can ask first. */
+  onDraftDirtyChange?: (dirty: boolean) => void
+  /** Bump to discard every unsaved box in the panel at once (the host's
+   *  "discard and leave" was confirmed). The initial value discards nothing. */
+  discardSignal?: number
+}
+
+/** Lets the reply and edit boxes, which sit inside comment rows, report an
+ *  unsaved draft to their host (the sidebar, or the floating thread popover)
+ *  without threading a prop through every row. With no provider, reporting is
+ *  a no-op. */
+const DraftReportContext = createContext<((id: string, dirty: boolean) => void) | null>(null)
+export const CommentDraftReportProvider = DraftReportContext.Provider
+
+function useReportDraft(dirty: boolean) {
+  const report = useContext(DraftReportContext)
+  const id = useId()
+  useEffect(() => { report?.(id, dirty) }, [report, id, dirty])
+  useEffect(() => () => report?.(id, false), [report, id])
 }
 
 const SIDEBAR_DEFAULT_CLASS = 'w-[340px] shrink-0 flex flex-col rounded-xl border border-border bg-card overflow-hidden'
@@ -390,7 +412,7 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
     comments, loading, remoteSyncError, loadError, mutationError, onDismissMutationError, onAdd, onReply, onResolve,
     onMarkReview, onDelete, onRefresh, onAskAgent, submitBar, onClose, restrictActions, hideResolve, hideDelete,
     onCommentClick, onReopen, activeCommentId, flashCommentId,
-    containerClassName, containerStyle, onEditComment,
+    containerClassName, containerStyle, onEditComment, onDraftDirtyChange, discardSignal,
   } = props
   // Which comment (if any) is currently being edited in place.
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -422,6 +444,31 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
   const ime = useImeGuard()
   useAutoGrowTextarea(addRef, addText)
   useEffect(() => { if (adding) addRef.current?.focus() }, [adding])
+
+  // Unsaved text anywhere in the panel: the add box here, plus whatever the
+  // reply and edit boxes report through DraftReportContext.
+  const dirtyBoxesRef = useRef(new Set<string>())
+  const [boxDirty, setBoxDirty] = useState(false)
+  const reportDraft = useCallback((id: string, dirty: boolean) => {
+    const boxes = dirtyBoxesRef.current
+    if (dirty) boxes.add(id)
+    else boxes.delete(id)
+    setBoxDirty(boxes.size > 0)
+  }, [])
+  const draftDirty = (adding && addText.trim() !== '') || boxDirty
+  useEffect(() => { onDraftDirtyChange?.(draftDirty) }, [draftDirty, onDraftDirtyChange])
+  useEffect(() => () => onDraftDirtyChange?.(false), [onDraftDirtyChange])
+  // The host confirmed discarding: close the add, reply and edit boxes (the
+  // reply and edit boxes report clean as they unmount).
+  const seenDiscardRef = useRef(discardSignal)
+  useEffect(() => {
+    if (discardSignal === seenDiscardRef.current) return
+    seenDiscardRef.current = discardSignal
+    setAdding(false)
+    setAddText('')
+    setReplyTo(null)
+    setEditingId(null)
+  }, [discardSignal])
 
   // Group into root threads + replies (one level deep). A comment is a reply
   // when parent_id points at another comment in the set; everything else is a
@@ -472,8 +519,9 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
   const visibleRoots = showResolved ? roots : roots.filter(r => r.status !== 'resolved')
 
   return (
-    // A caller-supplied class still wins. Absent one, the default 340px leaves
-    // the artifact body 34px at 390px, so the panel takes the width instead.
+    <DraftReportContext.Provider value={reportDraft}>
+    {/* A caller-supplied class still wins. Absent one, the default 340px leaves
+        the artifact body 34px at 390px, so the panel takes the width instead. */}
     <aside className={containerClassName ?? (isMobile ? SIDEBAR_NARROW_CLASS : SIDEBAR_DEFAULT_CLASS)} style={containerStyle ?? SIDEBAR_DEFAULT_STYLE}>
       {/* header */}
       <div className="flex items-center gap-2 px-3 py-2 border-b border-border bg-bg-elevated shrink-0">
@@ -649,5 +697,6 @@ export const CommentsSidebar = memo(function CommentsSidebar(props: CommentsSide
         )}
       </div>
     </aside>
+    </DraftReportContext.Provider>
   )
 })

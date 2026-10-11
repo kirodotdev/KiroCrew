@@ -1622,11 +1622,70 @@ past that cap produces no signal and no reload; and each mounted surface (every
 popout is its own window) opens its own EventSource against an HTTP/1.1 gateway,
 so nothing is watched unless the artifact is actually file-backed.
 
+**Toolbar (frontend)** — the header row holds at most two actions beside the
+version select (`max-two-buttons-per-row`): Save and Cancel while editing,
+otherwise Revert on a historical version or Edit on the live one, plus the
+companion-chat toggle. Everything else is one labelled **More** menu, a
+keyboard-operable `DropdownMenu`: Snapshot
+and Preview while editing, Snapshot of a drifted live state, Full width, Show/Hide
+comments, the pop-out entries, Copy content and the Send to a session submenu
+(both hidden while editing), Publish and Download. Copy keeps the menu open so its
+Copied label confirms success; a failed copy closes the menu and is reported only
+by the page's `ErrorNotice`.
+
 **Panel (frontend)** — the comments sidebar and the chat panel are mutually
-exclusive flex siblings of the artifact body, icon-toggled from the toolbar
-(sparkle = chat, speech bubble = comments); neither overlays the artifact. The
+exclusive flex siblings of the artifact body, toggled from the toolbar (the
+sparkle button for chat, **More → Show comments** for comments); neither overlays
+the artifact. The
 comment-count auto-reveal never switches away from an open chat panel, since the
 chat panel opens only on explicit action.
+
+**Send to a session (frontend)** — the **More** menu's submenu
+(`ArtifactSendToSessionSubmenu`, driven by the page-owned
+`useArtifactSendToSession` so a New-session create outlives the menu closing) lists "New session" plus the ten most recent live
+sessions, leaving out artifact-bound companion chats.
+Picking one navigates there through the page's `sendNav` and appends a one-line
+reference (`Reference artifact "<name>" (slug \`<slug>\`; load it with
+artifact_get).`) to that session's composer draft with `mergeIntoDraft`, so an
+unsent draft is kept. Nothing is sent: the user reviews and submits. The menu is
+hidden while editing, because navigating away would drop unsaved edits. The
+unsaved-comment-draft prompt runs before anything else, including creating the
+new session, so cancelling it never leaves an empty session behind. It covers the
+selection composer, the comments sidebar's own boxes (add, reply, in-place
+edit), which report through `CommentsSidebar`'s `onDraftDirtyChange`, and the
+floating thread popover's reply and edit boxes, which report the same way through
+`CommentThreadPopover`'s; a confirmed discard closes the popover, and answering the
+prompt is not an outside click that dismisses it. A
+confirmed discard takes effect at once: the sidebar's boxes reset (its
+`discardSignal`) and the selection toolbar remounts, closing its box. So after a
+new session is created, any draft still present was typed since, and the
+hand-off asks about it before navigating. If the create then fails, the
+discarded draft is already gone. If the user starts editing while the create is
+in flight, the hand-off is abandoned. In a popout the guard is skipped: `sendNav` forwards the
+intent to a main window and the popout stays on the artifact, so no draft is
+lost. The sidebar check covers send-to-session only, not Back or the other
+`sendNav` exits. A failed create shows as an `ErrorNotice` on the
+page, since the menu has already closed. From a popout, a hand-off to the session
+the main window already shows on `/chat` is appended to that live composer
+(the intent's `prefill.append`, staged by `applyNavIntentInMain` in
+`utils/navIntent.ts` on the store's `mainComposerAppend`, which ChatPage or the
+split-view grid pane for that session merges into the draft) instead of written
+to the sessionStorage prefill: activating an
+already-active slot does not re-run the slot-restore effect, so the seed would
+otherwise sit unread and later overwrite newer typing.
+
+**Leaving with unsaved edits (frontend)** — a dirty edit buffer registers a
+guard with the app shell's leave registry (`useRegisterNavigationLeaveGuard`)
+and publishes its stake (`usePublishNavigationStake`), so the global sidebar,
+the command palette and browser Back cannot discard it; `beforeunload` covers
+only a real unload. The registry needs a synchronous answer, so the guard
+refuses the exit and opens the page's async discard dialog (`useConfirm`, not
+`window.confirm`); after a discard the user repeats the navigation, since the
+registry does not pass its target. A navigation intent forwarded from a popout ("Ask agent to
+address", timeline session links, send-to-session) runs that same check in the
+main window before `applyNavIntentInMain` stages a prefill, switches slot or
+navigates, and a refusal drops the whole intent. The append-to-open-composer
+branch leaves no page, so it does not ask.
 
 **Session resolution (frontend)** — the active bound session is resolved from
 the Redux slots snapshot (`slot.artifact === slug`), so no extra endpoint exists:

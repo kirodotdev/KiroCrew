@@ -82,6 +82,8 @@ export function useSelectionComposerAnchor<A>({
    *  first (via `confirmDiscard`); a confirmed discard clears the slot too.
    *  Without `confirmDiscard` the draft is dropped without asking. */
   guardCommentDraft: (proceed: () => void) => Promise<void>
+  /** Whether the composer box currently holds unsaved text. */
+  hasCommentDraft: () => boolean
 } {
   const pendingAnchorRef = useRef<A | null>(null)
   const stagedIframeAnchorRef = useRef<A | null>(null)
@@ -89,6 +91,7 @@ export function useSelectionComposerAnchor<A>({
   const highlightOwnerRef = useRef<object>({})
   const composerOpenRef = useRef(false)
   const isComposerOpen = useCallback(() => composerOpenRef.current, [])
+  const hasCommentDraft = useCallback(() => composerDraftRef.current, [])
 
   // Bumped whenever the pending anchor changes hands (a new open, a clear), so
   // a post that settles late — after the user moved on to another passage or
@@ -195,6 +198,6 @@ export function useSelectionComposerAnchor<A>({
 
   return {
     selectionComposer, iframeSelection, stageIframeSelection, clearSelectionState,
-    isComposerOpen, guardCommentDraft,
+    isComposerOpen, guardCommentDraft, hasCommentDraft,
   }
 }

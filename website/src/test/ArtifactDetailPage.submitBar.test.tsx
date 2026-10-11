@@ -28,6 +28,7 @@ import { renderWithProviders, createTestStore } from './helpers'
 import { api } from '../api/client'
 import { sseSlots, sseConnected, sseDisconnected } from '../store/dashboardSlice'
 import type { Artifact, ArtifactComment, ChatSlot } from '../types'
+import { MORE_ACTIONS } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 vi.mock('../pages/ChatPage', () => ({
@@ -150,13 +151,13 @@ describe('ArtifactDetailPage comment submit bar', () => {
 
   it('offers no bar when every thread is resolved', async () => {
     renderPage([mkComment('r1', { status: 'resolved', thread_id: 'r1' })])
-    await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: MORE_ACTIONS })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
   })
 
   it('offers no bar when every comment is agent-authored', async () => {
     renderPage([mkComment('a1', { is_agent: true })])
-    await waitFor(() => expect(screen.getByLabelText('Toggle comments')).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: MORE_ACTIONS })).toBeInTheDocument())
     expect(screen.queryByText(/to send to this chat/)).not.toBeInTheDocument()
   })
 

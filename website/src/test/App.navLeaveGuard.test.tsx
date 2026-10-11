@@ -16,8 +16,10 @@
  */
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
-import { renderWithProviders } from './helpers'
+import { screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
+import { renderWithProviders, createTestStore } from './helpers'
+import { setActiveSlot } from '../store/chatSlice'
+import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import App from '../App'
 import SidePanelLayout, { useSidePanelLeaveGuard } from '../components/SidePanelLayout'
 import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
@@ -68,6 +70,19 @@ vi.mock('../pages/CapabilitiesPage', () => {
   return { default: CapabilitiesPageStub }
 })
 vi.mock('../hooks/useWebSocket', () => ({ useWebSocket: () => ({ subscribeLogs: () => {} }) }))
+// Capture the main-window nav-intent handler App registers, so a test can
+// deliver the intent a popout would forward over the BroadcastChannel.
+const navIntent = vi.hoisted(() => ({ handler: null as ((intent: { path: string }) => void) | null }))
+vi.mock('../utils/artifactPopout', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../utils/artifactPopout')>()
+  return {
+    ...real,
+    setNavIntentHandler: (fn: (intent: { path: string }) => void) => {
+      navIntent.handler = fn
+      return () => { if (navIntent.handler === fn) navIntent.handler = null }
+    },
+  }
+})
 vi.mock('../hooks/useAgents', () => ({ useAgents: vi.fn(() => ({ agents: [{ name: 'kirocrew' }], defaultAgent: 'kirocrew' })) }))
 vi.mock('../providers/context', () => ({ useProvider: () => ({ id: 'acp' }) }))
 vi.mock('../components/MarkdownRenderer', () => ({ default: ({ content }: { content: string }) => <span>{content}</span>, Lightbox: () => null }))
@@ -169,5 +184,68 @@ describe('sidebar navigation leave guard', () => {
     fireEvent.click(navRow(/^Customize$/))
     expect(confirmSpy).not.toHaveBeenCalled()
     expect(draftValue()).toBe('half-written prompt')
+  })
+})
+
+describe('popout-forwarded navigation leave guard', () => {
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
+  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+
+  // A popout forwards its navigation to this window, which then replaces the
+  // page on screen here. The popout cannot see this window's draft, so the
+  // main window has to ask before it carries the intent out.
+  it('keeps the page on screen when the confirm is declined', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    renderDashboard()
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    act(() => { navIntent.handler!({ path: '/schedule' }) })
+    expect(confirmSpy).toHaveBeenCalled()
+    expect(draftValue()).toBe('half-written prompt')
+  })
+
+  it('carries the intent out once the confirm is accepted', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    renderDashboard()
+    await paneReady()
+    typeDraft('half-written prompt')
+    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    act(() => { navIntent.handler!({ path: '/schedule' }) })
+    await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
+  })
+})
+
+describe('popout hand-off to the session already on screen', () => {
+  beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
+  afterEach(() => { vi.restoreAllMocks(); cleanup() })
+
+  const deliver = (store: ReturnType<typeof createTestStore>, activeSlot: string) => {
+    act(() => { store.dispatch(setActiveSlot(activeSlot)) })
+    act(() => {
+      navIntent.handler!({
+        path: '/chat', slotKey: 'chat-1', prefill: { slotKey: 'chat-1', prompt: 'ref', append: 'ref' },
+      } as Parameters<NonNullable<typeof navIntent.handler>>[0])
+    })
+  }
+
+  // Staging on mainComposerAppend is what lets the split-view grid pane for
+  // that slot pick it up as well as the single-session ChatPage.
+  it('stages the append for the composer consumers when /chat shows the target slot', async () => {
+    const store = createTestStore()
+    renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/chat', store })
+    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    deliver(store, 'chat-1')
+    expect(store.getState().chat.mainComposerAppend).toEqual({ slot: 'chat-1', text: 'ref' })
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it('seeds the prefill instead when /chat shows another slot', async () => {
+    const store = createTestStore()
+    renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/chat', store })
+    await waitFor(() => expect(navIntent.handler).not.toBeNull())
+    deliver(store, 'chat-2')
+    expect(store.getState().chat.mainComposerAppend).toBeNull()
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toContain('"prompt":"ref"')
   })
 })

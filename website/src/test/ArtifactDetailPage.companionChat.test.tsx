@@ -27,6 +27,7 @@ import { api } from '../api/client'
 import { sseSlots } from '../store/dashboardSlice'
 import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
 import type { Artifact, ChatSlot } from '../types'
+import { chooseMore, commentsShown } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 // Stub the embedded chat page — these tests assert the panel wiring, not
@@ -251,11 +252,10 @@ describe('ArtifactDetailPage companion chat', () => {
     renderPage(false, store)
     await waitForLoaded()
     const chatToggle = screen.getByLabelText('Toggle agent chat')
-    const commentsToggle = screen.getByLabelText('Toggle comments')
     fireEvent.click(chatToggle)
     await waitFor(() => expect(chatToggle).toHaveAttribute('aria-pressed', 'true'))
-    fireEvent.click(commentsToggle)
-    await waitFor(() => expect(commentsToggle).toHaveAttribute('aria-pressed', 'true'))
+    await chooseMore(/Show comments/)
+    expect(await commentsShown()).toBe(true)
     expect(chatToggle).toHaveAttribute('aria-pressed', 'false')
     expect(screen.queryByTestId('chat-page')).toBeNull()
   })
@@ -584,9 +584,8 @@ describe('ArtifactDetailPage companion chat', () => {
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact({ kind: 'webapp' }))
     renderPage()
     await waitForLoaded()
-    fireEvent.click(screen.getByLabelText('Toggle comments'))
-    await waitFor(() =>
-      expect(screen.getByLabelText('Toggle comments')).toHaveAttribute('aria-pressed', 'true'))
+    await chooseMore(/(Show|Hide) comments/)
+    await waitFor(async () => expect(await commentsShown()).toBe(true))
     expect(screen.getByRole('button', { name: /add comment/i })).toBeInTheDocument()
   })
 

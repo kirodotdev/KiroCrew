@@ -3403,8 +3403,6 @@
       "effort_help": "Reasoning effort sets how long the model thinks before answering. Higher means more time reasoning through hard problems (slower, better answers); lower is faster. Turning off the per-session override falls back to the default in Settings → Chat, or to the model's own choice when no default is set. Only models that support reasoning effort offer this setting."
     },
     "readingWidthToggle": {
-      "label_full": "F",
-      "label_md": "M",
       "title_full": "Full width",
       "title_md": "Medium width"
     },
@@ -4351,7 +4349,6 @@
       "could_not_overwrite": "Could not overwrite.",
       "discard_changes_button": "Discard changes",
       "document_type": "Document type",
-      "edit": "Edit",
       "edited": "Edited",
       "filed_in_click_to_move": "Filed in {{path}} — click to move",
       "folder_move_to_folder": "Folder: {{path}}. Move to folder",
@@ -4363,7 +4360,6 @@
       "open_session": "Open session {{sessionId}}",
       "overwrite_failed": "Overwrite failed",
       "preview": "Preview",
-      "preview_rendered_output_of_current_edits": "Preview rendered output of current edits",
       "publication_still_rolling_out": "Still rolling out — this link will be reachable in a few minutes.",
       "publication_distribution_disabled": "The delivery network for this link is disabled, so the link will not resolve. Re-enable the distribution in the AWS console.",
       "publication_notice_generic": "This link may not work yet.",

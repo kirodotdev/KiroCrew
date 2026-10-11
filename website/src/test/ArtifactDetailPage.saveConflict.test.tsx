@@ -15,6 +15,7 @@ import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import type { PierreEditorHandle } from '../pierre'
 import type { Artifact } from '../types'
+import { chooseMore } from './artifactMoreMenu'
 
 vi.mock('../api/client')
 vi.mock('../pages/ChatPage', () => ({
@@ -75,7 +76,7 @@ async function editAndDirty() {
     { route: '/artifacts/cr-queue' },
   )
   await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
-  fireEvent.click(screen.getByTitle('Edit content'))
+  fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
   const editor = await screen.findByTestId('editor-stub')
   fireEvent.change(editor, { target: { value: '# v1 edited' } })
   return view
@@ -186,14 +187,14 @@ function renderCrossArtifactSave(write: Promise<Artifact>) {
 
 async function beginCrossArtifactSave() {
   await screen.findByText('File A')
-  fireEvent.click(screen.getByTitle('Edit content'))
+  fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
   fireEvent.change(await screen.findByTestId('editor-stub'), { target: { value: '# file a edited' } })
   fireEvent.click(screen.getByRole('button', { name: 'Save' }))
   await waitFor(() => expect(saveCalls()).toHaveLength(1))
 
   fireEvent.click(screen.getByRole('button', { name: 'go to store-b' }))
   await screen.findByText('Store B')
-  fireEvent.click(screen.getByTitle('Edit content'))
+  fireEvent.click(screen.getByRole('button', { description: 'Edit content' }))
   fireEvent.change(await screen.findByTestId('editor-stub'), { target: { value: '# store b edited' } })
 }
 
@@ -356,29 +357,29 @@ describe('stale-write guard', () => {
     vi.mocked(api).artifactVersions = vi.fn().mockResolvedValue({ slug: 'cr-queue', versions: [1, 2] })
     vi.mocked(api).artifactVersion = vi.fn().mockResolvedValue(mkArtifact({ content: '# v1 historical' }))
     await editAndDirty()
-    fireEvent.click(screen.getByRole('button', { name: 'Preview' }))
+    await chooseMore('Preview')
     await waitFor(() => expect(screen.queryByTestId('editor-stub')).not.toBeInTheDocument())
 
     await pickVersion('v1', { discard: true })
     await waitFor(() => expect(api.artifactVersion).toHaveBeenCalledWith('cr-queue', 1))
     await pickVersion('Live')
-    fireEvent.click(await screen.findByTitle('Edit content'))
+    fireEvent.click(await screen.findByRole('button', { description: 'Edit content' }))
     expect(await screen.findByTestId('editor-stub')).toBeInTheDocument()
   })
 
   // Only the relabelled Save may send the overwrite token; every other save
   // path keeps the base token and is refused again.
   it.each([
-    ['the Snapshot button', () => fireEvent.click(screen.getByRole('button', { name: /^Snapshot/ })), true],
-    ['Cmd+S', () => fireEvent.keyDown(document, { key: 's', metaKey: true }), false],
-    ['Cmd+Shift+S', () => fireEvent.keyDown(document, { key: 's', metaKey: true, shiftKey: true }), true],
+    ['the Snapshot menu item', () => chooseMore(/^Snapshot/), true],
+    ['Cmd+S', () => { fireEvent.keyDown(document, { key: 's', metaKey: true }) }, false],
+    ['Cmd+Shift+S', () => { fireEvent.keyDown(document, { key: 's', metaKey: true, shiftKey: true }) }, true],
   ])('after a 409, %s keeps the base token', async (_label, act, snapshot) => {
     vi.mocked(api).updateArtifact = vi.fn().mockRejectedValue(conflict())
     await editAndDirty()
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
     await screen.findByRole('button', { name: 'Save — overwrite newer content' })
 
-    act()
+    await act()
     await waitFor(() => expect(saveCalls()).toHaveLength(2))
     expect(saveCalls()[1]).toEqual({ content: '# v1 edited', snapshot, expected_token: TOKEN_V1 })
     expect(screen.getByTestId('editor-stub')).toHaveValue('# v1 edited')

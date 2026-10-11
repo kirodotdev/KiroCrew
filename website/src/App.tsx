@@ -3,13 +3,13 @@ import { createPortal } from 'react-dom'
 import { isLookPreviewFrame } from './utils/lookPreview'
 import { Routes, Route, Navigate, useLocation, useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
-import { useAppSelector, useAppDispatch } from './store'
+import { useAppSelector, useAppDispatch, useAppStore } from './store'
 import { fetchSlots, sseStatus, setUpdateProgress, setEnabledAppIds } from './store/dashboardSlice'
 // Side-effect: registers every built-in surface in the registry, ahead of every
 // module below that reads it (`shell/nav/navItems.ts` computes `NAV_ITEMS`).
 import './surfaces/builtins'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount, selectAllSurfacesAttention, surfaceLabel } from './surfaces/registry'
-import { setAgentSwitchNotice, switchSlot, selectActiveSlotProject } from './store/chatSlice'
+import { setAgentSwitchNotice, switchSlot, selectActiveSlotProject, stageToMainComposer } from './store/chatSlice'
 import { setNavIntentHandler as setArtifactNavIntentHandler } from './utils/artifactPopout'
 import { applyNavIntentInMain, chatDeepLinkSlot } from './utils/navIntent'
 import { installSoftNavigate } from './utils/errorReport'
@@ -898,22 +898,40 @@ export default function App() {
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
-  const mayLeaveForErrorHandoff = useMayLeaveForNavigation()
+  const mayLeaveForNavigation = useMayLeaveForNavigation()
+  const appStore = useAppStore()
+  const pathnameRef = useRef(location.pathname)
+  pathnameRef.current = location.pathname
 
   // Main-dashboard role for the artifact popout nav-intent handshake: perform
   // navigation intents forwarded from popout windows (activity-timeline
   // session links, "Ask agent to address", …). Popout and embed windows never
   // register — only handler-registered windows answer nav-requests, which is
   // what keeps a second popout from claiming another popout's navigation.
+  // A forwarded intent replaces the page on screen HERE, so that page's leave
+  // check runs first — the popout cannot see this window's unsaved work.
+  //
+  // A hand-off to the session /chat already shows is staged on
+  // `mainComposerAppend`, whose consumers (ChatPage, or the split-view grid
+  // pane for that slot) merge it into the live draft. Read through the store at
+  // call time so the handler is not re-registered on every slot switch.
   useEffect(() => {
     if (isPopout || isEmbed) return
     return setArtifactNavIntentHandler((intent) =>
       applyNavIntentInMain(intent, {
         navigate,
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
+        mayLeave: mayLeaveForNavigation,
+        appendToOpenComposer: (slotKey, text) => {
+          const path = pathnameRef.current
+          const onChat = path === '/chat' || path.startsWith('/chat/')
+          if (!onChat || appStore.getState().chat.activeSlot !== slotKey) return false
+          dispatch(stageToMainComposer({ slot: slotKey, text }))
+          return true
+        },
       }),
     )
-  }, [isPopout, isEmbed, navigate, dispatch])
+  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
 
   // Publish the router navigator and the current page's leave answer for the
   // error → agent hand-off. AskAgentButton is deliberately hook-free (its
@@ -928,9 +946,9 @@ export default function App() {
   // banners of its own). They fall through to the hard-nav path instead.
   useEffect(() => {
     if (isPopout || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForErrorHandoff)
+    installSoftNavigate(navigate, mayLeaveForNavigation)
     return () => installSoftNavigate(null)
-  }, [isPopout, isEmbed, navigate, mayLeaveForErrorHandoff])
+  }, [isPopout, isEmbed, navigate, mayLeaveForNavigation])
 
   const {
     colorTheme,
