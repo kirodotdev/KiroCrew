@@ -852,6 +852,62 @@
           "optional": false
         }
       ]
+    },
+    {
+      "name": "worktree",
+      "mode": "tree",
+      "advertised": true,
+      "affects": [
+        "work/recorded"
+      ],
+      "answers": "The shape of a fleet: every work board the tree reaches, which board each one hangs under, and which boards are its roots",
+      "fields": [
+        {
+          "name": "boards",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "cycles",
+          "type": "number",
+          "optional": false
+        },
+        {
+          "name": "dropped",
+          "type": "number",
+          "optional": false
+        },
+        {
+          "name": "goal_chars",
+          "type": "number",
+          "optional": false
+        },
+        {
+          "name": "limit",
+          "type": "number",
+          "optional": false
+        },
+        {
+          "name": "owner_limit",
+          "type": "number",
+          "optional": false
+        },
+        {
+          "name": "root",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "roots",
+          "type": "array",
+          "optional": false
+        },
+        {
+          "name": "unresolved",
+          "type": "number",
+          "optional": false
+        }
+      ]
     }
   ]
 }

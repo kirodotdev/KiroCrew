@@ -24,10 +24,12 @@ from kiro_crew.crew_log.entry_types import DASHBOARD_FOLD_NAME
 from kiro_crew.crew_log.projection import (
     _FOLDS,
     _SLOT_FOLD_ROW_BYTES,
+    _TREE_FOLD_ROW_BYTES,
     FOLD_NAMES,
     OWNER_SERVED_SLOT_PROJECTION,
     SESSION_FOLD_NAMES,
     SLOT_PROJECTION_NAMES,
+    TREE_PROJECTION_NAMES,
 )
 from kiro_crew.crew_log.schema import Entry
 from kiro_crew.dashboard_templates.manifest import FIELD_TYPES
@@ -223,29 +225,70 @@ class TestEveryFoldIsCovered:
 class TestKeying:
     def test_each_fold_is_keyed_the_way_the_registry_keys_it(self) -> None:
         by_name = _by_name()
+        for name in TREE_PROJECTION_NAMES:
+            assert by_name[name].keyed_by == dt.KEYED_BY_TREE
         for name in SLOT_PROJECTION_NAMES:
             assert by_name[name].keyed_by == dt.KEYED_BY_SLOT
         for name in SESSION_FOLD_NAMES:
             assert by_name[name].keyed_by == dt.KEYED_BY_SESSION
 
-    def test_the_two_families_partition_the_catalog(self) -> None:
-        """No fold is both and none is neither, or a reader could not tell what to
-        read it against: a slot fold joins every unit a slot ran under, a session fold
-        reads one log."""
+    def test_the_three_families_partition_the_catalog(self) -> None:
+        """No fold is in two and none is in none, or a reader could not tell what to
+        read it against: a session fold reads one log, a slot fold joins every unit a
+        slot ran under, a tree fold joins the logs of every slot the tree reaches.
+
+        THREE, not two. The pair was the whole catalog until the tree-keyed fold, and a
+        third kind that merely degraded to one of the other two would tell a composing
+        agent to key a whole fleet's tree by one conversation -- a complete-looking
+        wrong answer, which is why the partition is asserted both ways round.
+        """
         kinds = {entry.keyed_by for entry in dt.catalog()}
-        assert kinds == {dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT}
-        assert not set(SESSION_FOLD_NAMES) & set(SLOT_PROJECTION_NAMES)
+        assert kinds == {dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT, dt.KEYED_BY_TREE}
+        families = (
+            set(SESSION_FOLD_NAMES),
+            set(SLOT_PROJECTION_NAMES),
+            set(TREE_PROJECTION_NAMES),
+        )
+        for index, family in enumerate(families):
+            for other in families[index + 1 :]:
+                assert not family & other, (family, other)
+        assert set().union(*families) == {entry.name for entry in dt.catalog()}
+
+    def test_the_three_keyed_by_words_are_distinct(self) -> None:
+        """A composing agent branches on this string, so two kinds sharing a spelling
+        would route a tree block down the slot path with nothing raised."""
+        words = {dt.KEYED_BY_SESSION, dt.KEYED_BY_SLOT, dt.KEYED_BY_TREE}
+        assert len(words) == 3
 
     def test_only_the_owner_served_fold_is_marked_owner_served(self) -> None:
         marked = {entry.name for entry in dt.catalog() if entry.owner_served}
         assert marked == {OWNER_SERVED_SLOT_PROJECTION}
 
-    def test_row_bytes_is_carried_for_the_slot_folds_and_absent_for_the_rest(self) -> None:
+    def test_row_bytes_comes_from_the_folds_own_key_kind_table(self) -> None:
+        """Each measured table answers for its own kind, and a fold in neither is None.
+
+        Two tables rather than one because each states its figure against its own
+        largest member, and the fold a figure is read for decides which. A tree fold
+        falling through to the slot table would be charged another kind's measurement.
+        """
         for entry in dt.catalog():
             if entry.name in _SLOT_FOLD_ROW_BYTES:
                 assert entry.row_bytes == _SLOT_FOLD_ROW_BYTES[entry.name]
+            elif entry.name in _TREE_FOLD_ROW_BYTES:
+                assert entry.row_bytes == _TREE_FOLD_ROW_BYTES[entry.name]
             else:
                 assert entry.row_bytes is None
+
+    def test_every_tree_fold_carries_a_measured_row_cost(self) -> None:
+        """The third key kind's whole admission condition, pinned here as well as at
+        import: a tree fold with no measured figure would publish ``row_bytes: null``
+        to a composing agent sizing a block, which reads as "this fold retains nothing".
+        """
+        by_name = _by_name()
+        assert TREE_PROJECTION_NAMES, "the tree key kind has no members to check"
+        for name in TREE_PROJECTION_NAMES:
+            assert by_name[name].row_bytes == _TREE_FOLD_ROW_BYTES[name]
+            assert by_name[name].row_bytes > 0
 
     def test_state_version_comes_off_the_fold(self) -> None:
         for entry in dt.catalog():

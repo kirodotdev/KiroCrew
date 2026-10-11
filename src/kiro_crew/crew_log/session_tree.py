@@ -13,8 +13,15 @@ degrades to root rather than to an error.
 
 Three pieces, kept apart so each is testable on its own:
 
-* :func:`fold_tree` -- pure. :class:`OpenedRecord` in, one :class:`TreeNode`
-  per slot out.
+* :func:`fold_citations` -- pure, and the only piece that is NOT about sessions.
+  ``(node, cited_parent)`` pairs plus later decisions in, one
+  :class:`TreePlacement` per node out, with the orphan and cycle handling. A
+  caller whose nodes are not slots -- a dashboard block binding a tree of work
+  boards, artifacts or issues -- uses this directly.
+* :func:`fold_tree` -- pure, and the SESSION caller of the above.
+  :class:`OpenedRecord` in, one :class:`TreeNode` per slot out. What it adds is
+  the session part: which log is older, which decision per slot is newest, and
+  the slot names its consumers read.
 * :func:`fold_slot_chain` -- pure. The same records in, one slot's logs out,
   newest first, with the reason the walk stopped.
 * :class:`SessionTree` -- the scanner. It reads the header and the first entry
@@ -531,10 +538,112 @@ def log_rank_of(records: Iterable[OpenedRecord]) -> dict[str, tuple[int, int, st
     return {sid: (depth.get(sid, 0), record.created_at, sid) for sid, record in by_sid.items()}
 
 
+@dataclass(frozen=True)
+class TreePlacement:
+    """Where ONE node sits in a tree of any node kind: its parent, and whether it
+    lies on a cycle.
+
+    The node-kind-free counterpart of :class:`TreeNode`. The two carry the same three
+    facts and differ only in what they call them: this one says ``node``/``parent``
+    because its caller's nodes are not slots, and :class:`TreeNode` keeps
+    ``slot``/``parent_slot`` because its consumers read those names.
+
+    ``parent`` is the citation, retained even where the tree could not FOLLOW it (the
+    cited parent is not a node here, or the citation lies on a cycle): it is the
+    child's record, not the fold's, and a consumer that nests reads ``cycle`` to know
+    not to. Depth is not carried, for :class:`TreeNode`'s reason -- a consumer that
+    nests walks the parent chain itself.
+    """
+
+    node: str
+    parent: str | None
+    cycle: bool
+
+
+def fold_citations(
+    citations: Iterable[tuple[str, "str | None"]],
+    overrides: "Mapping[str, str | None] | None" = None,
+) -> dict[str, TreePlacement]:
+    """Every node's placement, from citations of ANY node kind. Pure.
+
+    THE tree machinery, with the session slot taken out of it. :func:`fold_tree` is
+    now one caller: it maps a session log's records onto these citations and maps the
+    result back onto :class:`TreeNode`. A second caller -- a dashboard block binding a
+    tree of work boards by ``parent_item``, of artifacts by folder, of issues by a
+    blocked-by link -- supplies its own ids and its own edge source and gets the same
+    orphan and cycle handling, which is the part that is hard to get right and was
+    already right here.
+
+    *citations* are ``(node, cited_parent)`` pairs and the CALLER owns their order,
+    which is the one obligation this signature moves outward. The rule applied over
+    them is the session tree's own: a node's parent is the one its FIRST citation
+    carrying a parent names, and a citation with no parent never retracts it -- so
+    "first" is a question about order, and a caller whose order is arbitrary gets an
+    arbitrary answer to it rather than a wrong one it cannot see. :func:`fold_tree`
+    answers it with :func:`log_rank_of`; a caller whose nodes have no succession
+    history can pass them in any stable order it can defend. A pair with no node is
+    dropped: it places nothing.
+
+    *overrides* are the later DECISIONS, each REPLACING its node's citation outright
+    rather than merging with it -- so ``None`` here is the one way a parent is taken
+    away, where ``None`` in a citation only means that citation did not repeat one.
+    Only nodes that exist among *citations* can be overridden: an override onto
+    anything else would name a node this tree does not have. A caller with several
+    rival decisions per node reduces them to one first (:func:`latest_edges` is how
+    the session caller does it).
+
+    THE NODES ARE EXACTLY THE CITED SUBJECTS, and that is what makes an edge
+    followable or not. A cited parent that is not itself a node is a citation and not
+    a place in the tree, so the child is a ROOT that still carries its parent --
+    degrading to root rather than to an error, which is the posture this whole module
+    takes. A cycle, reachable through damaged or forged records and through a takeover
+    recorded against a stale reading of the tree, marks every node ON it so a consumer
+    nests none of them; a node merely hanging off a cycle member keeps its edge to it.
+    Self-citation is a cycle of one.
+    """
+    exists: set[str] = set()
+    cited: dict[str, str | None] = {}
+    for node, parent in citations:
+        if not node:
+            continue
+        exists.add(node)
+        if parent and node not in cited:
+            cited[node] = parent
+
+    for node, parent in (overrides or {}).items():
+        if node in exists:
+            cited[node] = parent
+
+    # Which citations the tree can FOLLOW, which is the only input the colouring takes:
+    # an unfollowable edge cannot be part of a cycle, and a self-citation is one on its
+    # own without needing the walk to find it.
+    followed: dict[str, str] = {}
+    on_cycle: set[str] = set()
+    for node, parent in cited.items():
+        if not parent:
+            continue
+        if parent == node:
+            on_cycle.add(node)
+        elif parent in exists:
+            followed[node] = parent
+    on_cycle |= _cycle_members(followed)
+
+    return {
+        node: TreePlacement(node=node, parent=cited.get(node), cycle=node in on_cycle)
+        for node in exists
+    }
+
+
 def fold_tree(
     records: Iterable[OpenedRecord], edges: Iterable[EdgeRecord] = ()
 ) -> dict[str, TreeNode]:
     """Every slot's node, from the records of every session log. Pure.
+
+    THE SESSION CALLER of :func:`fold_citations`. What lives here is the part that is
+    about sessions -- which log is older (:func:`log_rank_of`), which decision per slot
+    is newest (:func:`latest_edges`), and the slot names its consumers read -- while
+    the placement rules themselves, including the orphan and cycle handling described
+    below, are that function's and are shared with any other kind of tree.
 
     Input order does not matter: records are folded oldest log first, by the
     header's ``createdAt`` and then id, so two scans of the same files agree.
@@ -580,42 +689,22 @@ def fold_tree(
     ordered = sorted(
         population, key=lambda record: rank.get(record.sid, (0, record.created_at, record.sid))
     )
-    has_log: set[str] = set()
-    cited: dict[str, str | None] = {}
-    for record in ordered:
-        if not record.slot:
-            continue
-        has_log.add(record.slot)
-        if record.parent_slot and record.slot not in cited:
-            cited[record.slot] = record.parent_slot
-
-    # The decisions are placed by the SAME log order the records above were folded in,
-    # handed to the comparison rather than re-derived inside it (see
-    # :func:`edge_supersedes`): two orderings of one slot's logs could disagree, and the
-    # tree would then contradict itself about which of its own records is newer.
-    for slot, edge in latest_edges(edges, rank).items():
-        if slot in has_log:
-            cited[slot] = edge.parent_slot
-
-    edge_of: dict[str, str] = {}
-    on_cycle: set[str] = set()
-    for slot, parent_slot in cited.items():
-        if not parent_slot:
-            continue
-        if parent_slot == slot:
-            on_cycle.add(slot)
-        elif parent_slot in has_log:
-            edge_of[slot] = parent_slot
-    on_cycle |= _cycle_members(edge_of)
-
-    nodes: dict[str, TreeNode] = {}
-    for slot in has_log:
-        nodes[slot] = TreeNode(
-            slot=slot,
-            parent_slot=cited.get(slot),
-            cycle=slot in on_cycle,
-        )
-    return nodes
+    # The order the citations are read in IS the answer to "which record is the
+    # slot's oldest", which is why this caller sorts before handing them over:
+    # :func:`fold_citations` takes the order as given and does not invent one.
+    #
+    # The decisions are placed by that SAME log order, handed to the comparison rather
+    # than re-derived inside it (see :func:`edge_supersedes`): two orderings of one
+    # slot's logs could disagree, and the tree would then contradict itself about which
+    # of its own records is newer.
+    placements = fold_citations(
+        ((record.slot, record.parent_slot) for record in ordered),
+        {slot: edge.parent_slot for slot, edge in latest_edges(edges, rank).items()},
+    )
+    return {
+        slot: TreeNode(slot=slot, parent_slot=placement.parent, cycle=placement.cycle)
+        for slot, placement in placements.items()
+    }
 
 
 def _cycle_members(edge: Mapping[str, str]) -> set[str]:

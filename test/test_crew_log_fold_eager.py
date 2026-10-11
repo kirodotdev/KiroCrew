@@ -221,18 +221,33 @@ def test_an_eager_fold_with_an_affects_set_is_accepted():
     assert fold.mode == "eager"
 
 
-def test_every_fold_is_eager_and_each_family_has_a_warm_path():
-    """The rule is "eager unless written down", and today nothing is written down.
+def test_every_fold_with_a_warm_path_is_eager_and_the_rest_say_why_not():
+    """The rule is "eager unless written down", and exactly the TREE folds write it down.
 
     The session-keyed folds are what the dashboard's panel reads, so they are eager like
-    the slot folds; each family is advanced along its own memo, and together they are the
-    whole registry.
+    the slot folds; each family is advanced along its own memo, and together the two are
+    every fold that HAS a memo to be advanced along.
+
+    The third key kind has neither. A tree fold joins the logs of many slots, so its
+    value is stale when any member's log grows -- including a member that was not in the
+    closure when the value was built -- and no publisher raises that event. Eager would
+    mean waking on the root's own log and then serving a tree missing every change made
+    in a child's, which is worse than folding cold. So each one is lazy WITH a stated
+    reason, which is the pin here: an empty ``LAZY_FOLD_REASONS`` was the old assertion
+    and it cannot tell "no exception" from "an exception nobody wrote down".
     """
-    assert set(crew_log.EAGER_FOLD_NAMES) == set(crew_log.FOLD_NAMES)
-    assert crew_log.LAZY_FOLD_REASONS == {}
+    lazy = set(crew_log.TREE_PROJECTION_NAMES)
+    assert set(crew_log.EAGER_FOLD_NAMES) == set(crew_log.FOLD_NAMES) - lazy
+    assert set(crew_log.LAZY_FOLD_REASONS) == lazy
+    for name, reason in crew_log.LAZY_FOLD_REASONS.items():
+        assert reason.strip(), f"{name} is lazy with an empty reason"
     assert set(crew_log.EAGER_SLOT_FOLD_NAMES) == set(crew_log.SLOT_PROJECTION_NAMES)
     assert set(crew_log.EAGER_SESSION_FOLD_NAMES) == set(crew_log.SESSION_FOLD_NAMES)
     assert not set(crew_log.EAGER_SLOT_FOLD_NAMES) & set(crew_log.EAGER_SESSION_FOLD_NAMES)
+    # A lazy fold must be in NEITHER eager family, or the folder would wake for it and
+    # then have nothing to continue -- a silent lazy fold, which is what the import-time
+    # ``_ORPHAN_EAGER`` guard refuses from the other direction.
+    assert not lazy & set(crew_log.EAGER_FOLD_NAMES)
 
 
 # --------------------------------------------------------------------------- #
