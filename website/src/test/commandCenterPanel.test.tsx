@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api, ApiError } from '../api/client'
+import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
 import * as transport from '../chat-core/transport/sendTurn'
 import { createTestStore, renderWithProviders } from './helpers'
 import CommandCenterPanel from '../pages/chat/command-center/CommandCenterPanel'
@@ -8,12 +9,18 @@ import PendingQuestionCard from '../components/PendingQuestionCard'
 import { setQuestionCard } from '../store/chatSlice'
 import { __resetForTests, loadDrafts } from '../utils/chatDrafts'
 
+// Set true to make the lazy Overview subtree throw on render, standing in for a
+// failed chunk import — the F1 regression drives the dashboard-only boundary.
+const mockState = vi.hoisted(() => ({ chunkLoadFails: false }))
+
 vi.mock('../pages/members/CrewDynamicDashboard', () => ({
-  default: ({ target, onAct }: { target: { kind: string; slot?: string; slug?: string; member?: string }; onAct?: (text: string) => void }) =>
-    <div data-testid="session-dynamic-dashboard" data-kind={target.kind} data-slot={target.slot} data-slug={target.slug} data-member={target.member}>
+  default: ({ target, onAct }: { target: { kind: string; slot?: string; slug?: string; member?: string }; onAct?: (text: string) => void }) => {
+    if (mockState.chunkLoadFails) throw new Error('Failed to fetch dynamically imported module')
+    return <div data-testid="session-dynamic-dashboard" data-kind={target.kind} data-slot={target.slot} data-slug={target.slug} data-member={target.member}>
       dynamic dashboard
       <button type="button" onClick={() => onAct?.('Re-dispatch it')}>page option</button>
-    </div>,
+    </div>
+  },
 }))
 
 /** The Overview mounts `CrewDynamicDashboard` through a lazy import, so its first
@@ -76,6 +83,38 @@ describe('task dashboard host controls', () => {
     renderWithProviders(<CommandCenterPanel slot="mate-dm" active />, { store: taskStore() })
     expect(await screen.findByTestId('command-center-roster-error', {}, LAZY_DASHBOARD_WAIT)).toHaveTextContent('This dashboard could not be loaded.')
     expect(screen.queryByTestId('session-dynamic-dashboard')).not.toBeInTheDocument()
+  })
+
+  it('says a refresh failed while keeping the cached DM dashboard mounted', async () => {
+    // A good read followed by a failed refresh: react-query serves the cached DM
+    // row (so the member page stays) AND reports isError. The notice must still
+    // render -- gating it on `!dm` would hide the failed request behind the stale page.
+    const { queryClient } = renderWithProviders(<CommandCenterPanel slot="mate-dm" active />, { store: taskStore() })
+    const page = await screen.findByTestId('session-dynamic-dashboard', {}, LAZY_DASHBOARD_WAIT)
+    expect(page).toHaveAttribute('data-kind', 'member')
+    // The refresh fails while the cached roster row is still in hand.
+    vi.mocked(api.members).mockRejectedValue(new Error('refresh down'))
+    await act(async () => { await queryClient.refetchQueries({ queryKey: MEMBERS_ROSTER_QUERY_KEY }) })
+    expect(await screen.findByTestId('command-center-roster-error', {}, LAZY_DASHBOARD_WAIT)).toHaveTextContent('This dashboard could not be loaded.')
+    expect(screen.getByTestId('session-dynamic-dashboard')).toHaveAttribute('data-kind', 'member')
+  })
+
+  it('contains an Overview chunk-load failure instead of unmounting the panel', async () => {
+    // The Overview is a lazy import; a failed chunk load rejects inside its
+    // Suspense. Without a boundary of its own that rejection climbs to the host's
+    // outer boundary and unmounts this panel, taking the Questions tab's unsent
+    // draft. Contained here, the panel and its cards stay mounted.
+    vi.mocked(api.pendingQuestions).mockResolvedValue([{ slot: 'worker', ask_id: 'ask', questions: [
+      { question: 'Which contract?', options: [{ label: 'Stable API' }] }] }])
+    mockState.chunkLoadFails = true
+    try {
+      renderWithProviders(<CommandCenterPanel slot="root" active />, { store: taskStore() })
+      expect(await screen.findByTestId('command-center-overview-error', {}, LAZY_DASHBOARD_WAIT)).toHaveTextContent('This dashboard could not be loaded.')
+      // The panel itself is still mounted -- the host's draft-bearing cards survive.
+      expect(screen.getByTestId('command-center-panel')).toBeInTheDocument()
+    } finally {
+      mockState.chunkLoadFails = false
+    }
   })
 
   it.each(['worker', 'adopted'])('gives a non-root (%s) session no dashboard and opens on Questions', async slot => {

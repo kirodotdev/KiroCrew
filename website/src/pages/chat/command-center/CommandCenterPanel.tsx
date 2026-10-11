@@ -5,6 +5,7 @@ import { LayoutDashboard, MessageSquare, ShieldCheck } from 'lucide-react'
 import { PanelSectionHeader } from '../../../components/ui'
 import SegmentedControl from '../../../components/SegmentedControl'
 import ErrorNotice from '../../../components/ErrorNotice'
+import ErrorBoundary from '../../../components/ErrorBoundary'
 import InfoTip from '../../../components/InfoTip'
 import { fmtDateTime } from '../../../i18n/format'
 import { useAppSelector } from '../../../store'
@@ -77,7 +78,12 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
   const roster = useQuery({ ...membersRosterQuery, enabled: root && active })
   const dmRows = (roster.data ?? []).filter(r => !!slot && r.slot_key === slot)
   const dm = dmRows.length === 1 ? dmRows[0] : null
-  const rosterFailed = !dm && roster.isError
+  // A failed roster read is said even when a cached DM row is still in hand: the
+  // read failed, so the notice renders, while `target` below keeps the cached DM
+  // dashboard mounted rather than blanking it. Gating this on `!dm` would let a
+  // refresh failure after a good read pass silently, showing a stale page with no
+  // sign the request failed.
+  const rosterFailed = roster.isError
   const target = dm
     ? { kind: 'member' as const, slug: dm.slug, member: dm.name }
     : roster.isPending || rosterFailed ? null : { kind: 'session' as const, slot: slot ?? '' }
@@ -146,14 +152,28 @@ export default function CommandCenterPanel({ slot, active, sessionReady = true, 
           nobody is looking at. */}
       {/* No hand-off: the Questions tab beside this can hold unsent answer drafts. */}
       {active && showingOverview && rosterFailed && <ErrorNotice className="m-3" message={t('pages.membersPage.dashboard_unavailable')} testId="command-center-roster-error" />}
-      {active && showingOverview && target && <Suspense fallback={null}>
-        <CrewDynamicDashboard
-          key={target.kind === 'member' ? `member:${target.slug}` : slot}
-          target={target}
-          displayName={dm ? dm.display_name || dm.name : owner?.title || t('commandCenter.title')}
-          onAct={onAct}
-        />
-      </Suspense>}
+      {/* A dashboard-only boundary: the Overview chunk is lazy-loaded, and a
+          failed import (a 404 after a frontend rebuild on an open tab) rejects
+          inside this Suspense. Without a boundary of its own that rejection
+          climbs to SidePanel's outer boundary and unmounts this whole panel,
+          taking the unsent answer draft the Questions tab holds in local state.
+          Contained here, the failure shows a notice in the Overview region and
+          leaves the cards and their drafts mounted. retryOnly: the hand-off is a
+          hard /chat navigation that would discard the draft too. */}
+      {active && showingOverview && target && <ErrorBoundary
+        scope="command-center-overview"
+        retryOnly
+        fallback={<ErrorNotice className="m-3" message={t('pages.membersPage.dashboard_unavailable')} testId="command-center-overview-error" />}
+      >
+        <Suspense fallback={null}>
+          <CrewDynamicDashboard
+            key={target.kind === 'member' ? `member:${target.slug}` : slot}
+            target={target}
+            displayName={dm ? dm.display_name || dm.name : owner?.title || t('commandCenter.title')}
+            onAct={onAct}
+          />
+        </Suspense>
+      </ErrorBoundary>}
     </div>}
     </div>
   </div>
