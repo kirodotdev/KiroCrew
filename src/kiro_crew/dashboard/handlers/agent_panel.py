@@ -2006,7 +2006,7 @@ async def api_dashboard_preview(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     assert resolved is not None
-    slug, _crew_name, _slot = resolved
+    slug, crew_name, _slot = resolved
     body = await _instance_body(request)
     if isinstance(body, web.Response):
         return body
@@ -2024,7 +2024,7 @@ async def api_dashboard_preview(request: web.Request) -> web.Response:
         preview = instance_store.stage_preview(
             slug, template_id=template_id, html=html, manifest=manifest
         )
-        return preview.wire()
+        return preview.wire(crew_name)
 
     try:
         staged = await asyncio.to_thread(_stage)

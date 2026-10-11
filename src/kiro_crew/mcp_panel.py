@@ -548,8 +548,8 @@ def _render_preview(preview: dict[str, Any]) -> str:
     """
     fields = preview.get("fields")
     lines = [
-        f"Staged for a look -- NOTHING has changed yet. Show the person this link: "
-        f"{preview.get('preview_url')}",
+        f"Staged for a look -- NOTHING has changed yet. Give the person this link, "
+        f"as written: [Open the dashboard preview]({preview.get('preview_url')})",
         "",
     ]
     lines.append(

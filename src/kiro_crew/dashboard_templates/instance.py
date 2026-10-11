@@ -51,6 +51,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Iterator, Mapping
+from urllib.parse import quote, urlencode
 
 from kiro_crew import dashboard_frame
 from kiro_crew.atomic_write import atomic_write, fsync_dir
@@ -77,6 +78,8 @@ __all__ = [
     "MAX_INSTANCE_HTML_BYTES",
     "MAX_PREVIEW_AGE_MS",
     "MAX_RETAINED_VERSIONS",
+    "PREVIEW_PAGE_PARAM",
+    "PREVIEW_PAGE_VALUE",
     "RENDERABLE_SOURCES",
     "SCHEMA_VERSION",
     "STATE_EMPTY",
@@ -910,15 +913,27 @@ def _preview_path(slug: str) -> Path:
     return instance_dir(slug) / _PREVIEW_FILE
 
 
-def preview_url(slug: str) -> str:
-    """The link a person opens to SEE the staged page.
+#: The Members page query that opens the Dashboard tab on the STAGED page:
+#: ``?dashboard=preview``. Mirrored by ``DASHBOARD_PREVIEW_PARAM`` and
+#: ``DASHBOARD_PREVIEW_VALUE`` in ``website/src/pages/members/dashboardPreview.ts``.
+PREVIEW_PAGE_PARAM: Final[str] = "dashboard"
+PREVIEW_PAGE_VALUE: Final[str] = "preview"
 
-    The ordinary dashboard read with ``preview=1``, not a route of its own. That route
-    is already owner-only and a staged page carries the same crewmate's fold values as
-    the live one, so a second route would be a second place to get that gate right. A
-    capability token would be a second credential for data its holder can already read.
+
+def preview_url(member: str) -> str:
+    """The link a person opens to SEE the staged page: a page, never the JSON read.
+
+    The Members page with this crewmate open and its Dashboard tab showing the staged
+    page under a preview band. The tab reads it from the ordinary dashboard route with
+    ``preview=1`` rather than a route of its own: that route is already owner-only and
+    a staged page carries the same crewmate's fold values as the live one, so a second
+    route would be a second place to get that gate right.
+
+    *member* is the exact crew name, not the slug. Slugification is lossy, so the
+    page and the read it makes both refuse a slug alone (``missing_member``).
     """
-    return f"/api/members/{slug}/dashboard?preview=1"
+    query = urlencode({"member": member, PREVIEW_PAGE_PARAM: PREVIEW_PAGE_VALUE}, quote_via=quote)
+    return f"/members?{query}"
 
 
 @dataclass(frozen=True)
@@ -934,12 +949,15 @@ class Preview:
     manifest: Mapping[str, Any]
     staged_ms: int
 
-    def wire(self) -> dict[str, Any]:
+    def wire(self, member: str) -> dict[str, Any]:
         """What a caller is told about the staged page. NEVER the page itself.
 
         The html is the large half, no caller renders it, and the person who has to
         decide reads it in the frame through :func:`preview_url`. So this carries
         identity and shape, which is the same cut a catalog listing makes.
+
+        *member* is the exact crew name the link opens; a staged page is stored per
+        slug and the slug alone does not name a crewmate.
         """
         declared = self.manifest.get("fields")
         return {
@@ -949,7 +967,7 @@ class Preview:
             "fields": sorted(declared) if isinstance(declared, dict) else [],
             "html_bytes": len(self.html.encode("utf-8")),
             "staged_ms": self.staged_ms,
-            "preview_url": preview_url(self.slug),
+            "preview_url": preview_url(member),
         }
 
 

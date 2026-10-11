@@ -2,13 +2,13 @@ import { useCallback } from 'react'
 import type { QueryClient } from '@tanstack/react-query'
 
 import { api, type MemberRosterRow } from '../api/client'
-import { MEMBERS_ROSTER_QUERY_KEY } from '../api/membersQuery'
+import { MEMBERS_ROSTER_QUERY_KEY, membersRosterQuery } from '../api/membersQuery'
 import { noteStaleOwnerResponse } from '../api/staleOwnerSignal'
 import { clearInlineDraft, getInlineDraft, type usePanelTabs } from './usePanelTabs'
 import { i18nT } from '../i18n/t'
 import type { Artifact } from '../types'
 import { fetchFileRead, fileReadQueryKey, FILE_READ_STALE_MS, isPartialRead } from '../utils/fileReadQuery'
-import { dashboardPreviewSlugFromRef } from '../utils/dashboardPreview'
+import { dashboardPreviewMemberFromRef, dashboardPreviewRef, dashboardPreviewSlugFromRef } from '../utils/dashboardPreview'
 import { errMessage } from '../utils/thunkError'
 import { optsForReplace } from '../pages/chat/replaceGuard'
 
@@ -143,6 +143,24 @@ export function usePanelDocumentActions({ tabsCtl, slotRef, queryClient, showAct
     // A crewmate's STAGED dashboard (`dashboardPreviewRef`), not an artifact: no
     // artifact read and no involvement breadcrumb, because there is no artifact.
     // The tab body renders the staged page (SidePanel's artifact branch).
+    // The page link names the crew; the panel is keyed by slug. Resolve it from the
+    // roster by exact name, and refuse rather than guess when no single row matches.
+    const previewMember = dashboardPreviewMemberFromRef(slug)
+    if (previewMember) {
+      let rows: MemberRosterRow[]
+      try {
+        rows = await queryClient.fetchQuery(membersRosterQuery)
+      } catch {
+        showActionError(i18nT('pages.chat.dashboardPreviewPanel.roster_failed'))
+        return
+      }
+      const matches = rows.filter(r => r.name === previewMember)
+      if (matches.length !== 1) {
+        showActionError(i18nT('pages.chat.dashboardPreviewPanel.no_member'))
+        return
+      }
+      return openArtifact(dashboardPreviewRef(matches[0].slug))
+    }
     const previewSlug = dashboardPreviewSlugFromRef(slug)
     if (previewSlug) {
       // Every open re-reads the staged page. Staging sends no frame and the link

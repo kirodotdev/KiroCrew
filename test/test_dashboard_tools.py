@@ -170,9 +170,47 @@ class TestStagingRecordsNothing:
 
     def test_the_preview_wire_carries_the_link_and_never_the_page(self) -> None:
         """The html is the large half and the agent that staged it already holds it."""
-        wire = instance.stage_preview(SLUG, template_id="fixture-board").wire()
-        assert wire["preview_url"] == f"/api/members/{SLUG}/dashboard?preview=1"
+        wire = instance.stage_preview(SLUG, template_id="fixture-board").wire("Fleet")
+        assert wire["preview_url"] == "/members?member=Fleet&dashboard=preview"
         assert "html" not in wire and wire["html_bytes"] == len(PAGE.encode("utf-8"))
+
+
+class TestThePreviewLinkIsAPageForOneCrewmate:
+    """`preview_url` builds what a person OPENS: a page, for one crewmate by name.
+
+    A slug alone is refused by the dashboard route with ``missing_member``, and the
+    JSON read shows in a browser as raw JSON, so the link is the Members page, by crew
+    name, with the Dashboard tab on the staged page.
+    """
+
+    def test_it_names_the_crewmate_and_opens_the_dashboard_tab_preview(self) -> None:
+        assert instance.preview_url("bi-buddy") == "/members?member=bi-buddy&dashboard=preview"
+
+    def test_it_is_a_page_and_never_the_json_route(self) -> None:
+        link = instance.preview_url("bi-buddy")
+        assert link.startswith("/members?")
+        assert "/api/" not in link
+
+    def test_a_name_the_slug_would_lose_survives_the_round_trip(self) -> None:
+        """Spaces, case and reserved characters are what slugification throws away."""
+        from urllib.parse import parse_qs, urlsplit
+
+        for name in ("BI Buddy", "R&D", "a/b?c=d", "Ünïcødé"):
+            query = parse_qs(urlsplit(instance.preview_url(name)).query)
+            assert query == {
+                "member": [name],
+                instance.PREVIEW_PAGE_PARAM: [instance.PREVIEW_PAGE_VALUE],
+            }, name
+
+    def test_the_query_matches_the_members_page_constants(self) -> None:
+        """The page reads these two literals; a rename on one side breaks every link."""
+        from pathlib import Path
+
+        source = (
+            Path(__file__).resolve().parents[1] / "website/src/pages/members/dashboardPreview.ts"
+        ).read_text(encoding="utf-8")
+        assert f"DASHBOARD_PREVIEW_PARAM = '{instance.PREVIEW_PAGE_PARAM}'" in source
+        assert f"DASHBOARD_PREVIEW_VALUE = '{instance.PREVIEW_PAGE_VALUE}'" in source
 
 
 class TestAnAgentWrittenPageCannotBeStaged:
@@ -472,13 +510,15 @@ class TestDashboardPreviewTool:
                 "fields": ["credits", "phase"],
                 "html_bytes": 120,
                 "staged_ms": 1,
-                "preview_url": "/api/members/fleet/dashboard?preview=1",
+                "preview_url": "/members?member=fleet&dashboard=preview",
             },
         }
         with patch("kiro_crew.mcp_panel._post", return_value=body):
             out = _call_tool_inner("dashboard_preview", {"template_id": "fixture-board"})
         assert "NOTHING has changed" in out
-        assert "/api/members/fleet/dashboard?preview=1" in out
+        # A markdown link, because the chat links a root-relative href only in that
+        # form; the bare path would show as plain text the person cannot click.
+        assert "[Open the dashboard preview](/members?member=fleet&dashboard=preview)" in out
         # The instruction to ASK is unconditional: this tool's whole value is that it
         # changes nothing, and an agent that previews and applies in one breath has
         # spent the staging step without letting anybody look.

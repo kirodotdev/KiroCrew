@@ -255,11 +255,27 @@ describe a change the existing three already name.
 The preview is discarded once the version lands, so "keep this one" cannot be answered
 twice and quietly write two versions of one page.
 
-## The preview link is the ordinary read with `?preview=1`
+## The preview link opens the Dashboard tab; the tab reads `?preview=1`
 
-`GET /api/members/{slug}/dashboard?preview=1` serves the staged page through the same
-renderer, the same masking pass and the same owner gate as the live one, with
-`preview: true` in the body and `instance_version` left at the current version.
+The link `dashboard_preview` hands back (`instance.preview_url`) is a PAGE:
+`/members?member=<exact crew name>&dashboard=preview`. The Members page opens that
+crewmate, opens the side panel on its Dashboard tab, and draws the staged page in the
+same sandboxed frame as the live one, under a band that says it is a preview and that
+nothing has changed. A button on the band returns the tab to the live page; switching
+crewmate drops the query, so the preview never follows a person to another crewmate.
+The tab shows the dynamic dashboard for a preview whether or not the Dynamic Dashboard
+Feature Preview is on: the staged page exists only in that form, and the person was
+sent to look at it.
+
+The link carries the crew NAME, not just the slug, because slugification is lossy and
+the page and the read below both refuse a slug alone (`missing_member`).
+
+To fill the frame, the tab reads
+`GET /api/members/{slug}/dashboard?member=<name>&preview=1`, which serves the staged
+page through the same renderer, the same masking pass and the same owner gate as the
+live one, with `preview: true` in the body and `instance_version` left at the current
+version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
+was kept, discarded or expired) with the same way back to the live page.
 
 One route and not two. A staged page carries the same crewmate's fold values as the page
 it would replace, so a route of its own would be a second place to get that owner gate

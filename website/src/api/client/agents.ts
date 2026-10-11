@@ -278,8 +278,9 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     // `member` is the exact crew name, as every member route takes it (slugs are lossy).
     // `locale` is the UI language the page should render its own words in; the
     // gateway checks it against the shipped catalogs and falls back to English.
-    /** `preview`: the STAGED page `dashboard_preview` set aside, which no version
-     *  records; 404 `no_preview` once nothing is staged. */
+    // `preview` reads the STAGED page instead of the live record -- the page an agent
+    // offered and nobody has applied. Same route, same owner gate; nothing staged
+    // answers 404 `no_preview`.
     memberDashboard: (slug: string, member: string, locale = '', preview = false) =>
       fetch(
         '/api/members/' + encodeURIComponent(slug) + '/dashboard?member=' + encodeURIComponent(member)
@@ -295,6 +296,8 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         rendered_html?: string
         manifest: DashboardManifest
         state: 'empty' | 'live' | 'stale' | 'error'
+        /** Set on a `preview` read: this body is the staged page, not the record. */
+        preview?: boolean
       } | null>,
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps

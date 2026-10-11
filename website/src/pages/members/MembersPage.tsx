@@ -137,6 +137,8 @@ import { createPortal } from 'react-dom'
 import { useCrewmateThreadsFlag } from '../../hooks/useCrewmateThreadsFlag'
 import { CrewDashboardFrame } from './CrewWebview'
 import CrewDashboardTab from './CrewDashboardTab'
+import { DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE, isDashboardPreview, withoutDashboardPreview } from './dashboardPreview'
+import { dashboardPreviewMemberFromRef, dashboardPreviewSlugFromRef } from '../../utils/dashboardPreview'
 import { mergePaneDraft } from '../../utils/chatPaneDrafts'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -2630,6 +2632,32 @@ export default function MembersPage() {
 
   const activeSlug = active?.slug ?? ''
   const activeMemberName = active?.name ?? ''
+  // A PREVIEW LINK -- `?dashboard=preview`, the link `dashboard_preview` hands the
+  // crewmate to show the person -- opens the side panel on the Dashboard tab, where
+  // the staged page is drawn under its preview band. Once per crewmate and strip
+  // bucket: the strip re-buckets when the thread's slot confirms, and that bucket's
+  // stored focus may be another tab; after that, closing the panel or picking
+  // another tab is the person's choice and is not undone while the link is still in
+  // the URL. Switching crewmate writes a fresh `?member=`, which drops the request.
+  const dashboardPreviewLink = isDashboardPreview(searchParams)
+  const focusPanelTab = tabsCtl.setActive
+  const previewOpenedFor = useRef('')
+  useEffect(() => {
+    if (!dashboardPreviewLink) {
+      previewOpenedFor.current = ''
+      return
+    }
+    if (!activeMemberName) return
+    const opened = JSON.stringify([activeMemberName, activeSlot])
+    if (previewOpenedFor.current === opened) return
+    previewOpenedFor.current = opened
+    if (beside) setDockedOpen(true)
+    else setOverlayOpen(true)
+    focusPanelTab(CREW_DASHBOARD_TAB_ID)
+  }, [dashboardPreviewLink, activeMemberName, activeSlot, beside, setDockedOpen, focusPanelTab])
+  const exitDashboardPreview = useCallback(() => {
+    setSearchParams(withoutDashboardPreview(searchParams), { replace: true, state: location.state })
+  }, [searchParams, setSearchParams, location.state])
   // What a schedule created from the Schedules tab must carry in its `agent` field --
   // which is the provider template only for a crewmate whose identity the server will
   // KEEP. `wakesCrew` matches a job on `member_id` when there is one, and otherwise
@@ -3210,6 +3238,47 @@ export default function MembersPage() {
     },
     [activeName, urlMember, isMobile, activate, setSearchParams, leaveGuided],
   )
+
+  // ONE preview surface on this page: a staged-dashboard link clicked in a thread
+  // (either form) opens the named crewmate's Dashboard tab on the staged page, the
+  // same place `?dashboard=preview` lands, never a second side-panel tab. The chat
+  // page keeps its own side-panel preview. Answers whether the reference was one.
+  const openDashboardPreviewHere = useCallback((ref: string): boolean => {
+    const byName = dashboardPreviewMemberFromRef(ref)
+    const bySlug = byName ? null : dashboardPreviewSlugFromRef(ref)
+    if (!byName && !bySlug) return false
+    const matches = byName ? members.filter(m => m.name === byName) : members.filter(m => m.slug === bySlug)
+    if (matches.length !== 1) {
+      showActionError(i18nT('pages.chat.dashboardPreviewPanel.no_member'))
+      return true
+    }
+    const target = matches[0]
+    // Every open re-reads the staged page, as the chat page's opener does: staging
+    // sends no frame and the link never changes, so a cached read could show page A
+    // while B is what `dashboard_apply` would install.
+    void queryClient.invalidateQueries({ queryKey: ['member-dashboard', target.slug] })
+    if (target.name === activeMemberName) {
+      // The URL may already ask for the preview, so the link effect would not run
+      // again: open the tab here as well.
+      const next = new URLSearchParams(searchParams)
+      next.set(DASHBOARD_PREVIEW_PARAM, DASHBOARD_PREVIEW_VALUE)
+      setSearchParams(next, { replace: true, state: location.state })
+      revealPanelAfterOpen()
+      focusPanelTab(CREW_DASHBOARD_TAB_ID)
+      return true
+    }
+    // Another crewmate: through the same switch guards, then the link's own query.
+    void openMember(target).then((ok) => {
+      if (ok) setSearchParams({ [MEMBER_PARAM]: target.name, [DASHBOARD_PREVIEW_PARAM]: DASHBOARD_PREVIEW_VALUE }, { replace: true })
+    })
+    return true
+  }, [members, activeMemberName, queryClient, searchParams, setSearchParams, location.state, revealPanelAfterOpen, focusPanelTab, openMember, showActionError])
+  const openArtifactInThread = useCallback((slug: string) => {
+    if (!openDashboardPreviewHere(slug)) openArtifactGuarded(slug)
+  }, [openDashboardPreviewHere, openArtifactGuarded])
+  const openArtifactInPanel = useCallback((slug: string) => {
+    if (!openDashboardPreviewHere(slug)) void openArtifact(slug)
+  }, [openDashboardPreviewHere, openArtifact])
 
   // The seeded first turn of a just-created crewmate's chat. The receipt is
   // read, not dropped — but only a REFUSED send is said and retried: the
@@ -4743,7 +4812,7 @@ export default function MembersPage() {
                     openSideChat={openMemberSideChat}
                     threads={threadHooks}
                     onFileOpen={openFileGuarded}
-                    onArtifactOpen={openArtifactGuarded}
+                    onArtifactOpen={openArtifactInThread}
                     onSessionOpen={openSessionGuarded}
                     sessions={connected && slotsLoaded ? sessionRoster : undefined}
                     activeSession={activeSlot}
@@ -4850,7 +4919,10 @@ export default function MembersPage() {
                 ? <p role="status" className="px-4 pt-3 text-sm text-muted">{t('pages.membersPage.opening_thread')}</p>
                 : null}
               {activeSlug && activeMemberName && (
-                dashboardPreview ? (
+                // A preview link is drawn by the dynamic dashboard whatever the
+                // Feature Preview says: the staged page exists only in that form,
+                // and the person was sent here to look at it.
+                dashboardPreview || dashboardPreviewLink ? (
                   // Keyed per crewmate so the tab remounts on a switch instead of
                   // opening the next crewmate on the page held for this one.
                   <CrewDashboardTab
@@ -4860,6 +4932,8 @@ export default function MembersPage() {
                     displayName={crewDisplayName(activeView ?? active)}
                     // A needs-you option lands in this crewmate's chat box; the person sends it.
                     onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
+                    preview={dashboardPreviewLink}
+                    onExitPreview={exitDashboardPreview}
                   />
                 ) : (
                   <CrewDashboardFrame
@@ -5139,7 +5213,7 @@ export default function MembersPage() {
             projectDir,
             onFileOpen: openFile,
             onOpenWorkingTreeDiff: openWorkingTreeDiff,
-            onArtifactOpen: openArtifact,
+            onArtifactOpen: openArtifactInPanel,
             onFileSave: saveFile,
             leadingTabs,
             slotTitle: crewDisplayName(activeView ?? active),

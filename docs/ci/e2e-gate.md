@@ -322,6 +322,17 @@ the attempt manifest records that fixture limitation. Only a completed CI run
 supplies these recordings; source authoring alone is not rendered evidence.
 Its retention is seven days, and it does not fail when setup produced no images.
 
+`website/playwright/dashboard-preview-link.spec.ts` opens the link
+`dashboard_preview` hands a crewmate and asserts that it resolves: the Members page
+draws the staged page under its preview band, and the dashboard read accepts the
+crewmate the link names. Before the browser starts, the harness
+(`test_playwright_e2e._stage_dashboard_preview`) seeds one crewmate in the disposable
+config, stages the `standup` template for it with the production store, and passes
+the link that store's `wire()` returns in `KIROCREW_E2E_DASHBOARD_PREVIEW`. The spec
+never builds the link itself. `standup` is not the default page, so a tab still
+showing the live page fails. The spec guards against a person being asked to approve
+a page they could not open.
+
 When the job fails, a final `if: failure()` step uploads
 `website/test-results/` and `website/playwright-report/` as the
 `e2e-playwright-failures` artifact (7-day retention). `test-results/` holds one

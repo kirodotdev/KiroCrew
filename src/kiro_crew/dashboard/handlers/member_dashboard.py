@@ -226,7 +226,9 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
         # The STAGED page, which no version records. Served from the same route and
         # behind the same owner check: a staged page carries this crewmate's fold
         # values exactly as the live one does, so a route of its own would be a second
-        # place to get that gate right. `instance.preview_url` builds this link.
+        # place to get that gate right. `instance.preview_url` builds the PAGE link that
+        # reads this: the Members page's Dashboard tab, which asks here with
+        # `preview=1` and draws the answer under a preview band.
         staged = await _run(lambda: _preview_record(slug))
         if staged is None:
             return web.json_response(
