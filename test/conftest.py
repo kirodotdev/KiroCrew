@@ -648,6 +648,35 @@ def _fresh_reexec_environment(_floor_monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _fresh_response_outcome(_floor_monkeypatch):
+    """Start every test with no dispatched MCP call armed in this process.
+
+    ``mcp_shared`` keeps the in-flight call's response arm, a thread-local copy
+    of it, and whether this process has dispatched a call at all. A dispatch
+    loop one test drives would otherwise make a later test's direct tool call
+    read as a call on a thread the dispatcher cannot answer for.
+    """
+    import threading
+
+    from kiro_crew import mcp_shared
+    from kiro_crew.mcp_tools import spawn as spawn_tools
+
+    _floor_monkeypatch.setattr(mcp_shared, "_response_outcome_arms", {})
+    _floor_monkeypatch.setattr(mcp_shared, "_response_outcome_local", threading.local())
+    _floor_monkeypatch.setattr(mcp_shared, "_response_outcome_dispatching", False)
+    # Arming registers the exit join once per process: in the suite it is a
+    # no-op, so tests add no interpreter-exit hooks. A test that checks the
+    # registration records it itself.
+    _floor_monkeypatch.setattr(mcp_shared, "_outcome_exit_join_registered", False)
+    _floor_monkeypatch.setattr(mcp_shared, "_register_exit_join", lambda *_a: None)
+    # A hook one test leaves running must not hold the next test's exit join.
+    _floor_monkeypatch.setattr(mcp_shared, "_outcome_hook_threads", set())
+    # A collection report that fails is retried after a pause: no test waits
+    # for it in real time. A test that checks the pauses records them itself.
+    _floor_monkeypatch.setattr(spawn_tools, "_collection_retry_pause", lambda _secs: None)
+
+
+@pytest.fixture(autouse=True)
 def _a_shared_monkeypatch_first(monkeypatch):  # flake-ok: patches nothing; only fixes setup order
     """Build the test's shared ``monkeypatch`` before every other autouse fixture here.
 

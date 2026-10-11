@@ -21,6 +21,7 @@ if TYPE_CHECKING:
         DashboardState,
         KiroCrewConfig,
         ValidationError,
+        _oversized_identity_refusal,
         _redact,
         _spawn_scope_refusal,
         dashboard_slot_key,
@@ -28,6 +29,7 @@ if TYPE_CHECKING:
         effort_applied_note,
         effort_drop_reason,
         internal_memory_scope,
+        oversized_identity,
         parent_spawn_allowlists,
         parent_work_supported,
         validate_tool_args,
@@ -130,6 +132,19 @@ async def api_spawn(request: web.Request) -> web.Response:
             {"error": "parent_session must be a string", "code": "invalid_parent_session"},
             status=400,
         )
+    inline_call = body.get("inline_call", "")
+    if not isinstance(inline_call, str):
+        return web.json_response(
+            {"error": "inline_call must be a string", "code": "invalid_inline_call"},
+            status=400,
+        )
+    if body.get("inline_collect") is True:
+        # The inline-collection registry would keep the parent key and the call
+        # id: each is refused whole, before anything is retained, never truncated.
+        field = oversized_identity(parent_session, (), inline_call)
+        if field:
+            length = len(parent_session if field == "parent_session" else inline_call)
+            return _oversized_identity_refusal(state, field, length)
     _, refusal = await internal_memory_scope(
         request, "spawn.create", claimed_session=parent_session
     )
@@ -241,29 +256,62 @@ async def api_spawn(request: web.Request) -> web.Response:
     # on-loop, cache-only agent validation inside spawn() is a hit.
     if agent:
         await warm_project_agents_for_spawn(state, cwd)
-    info = await _spawn_on_loop(
-        state,
-        task,
-        parent_session_key=parent_session,
-        agent=agent,
-        max_turns=max_turns,
-        cwd=cwd,
-        model=model or None,
-        reasoning_effort=reasoning_effort,
-        approval_mode=approval_mode or None,
-        silent=silent,
-        batch_id=batch_id,
-        batch_total=batch_total,
-        keep=keep,
-        include_memory=cleaned.get("include_memory", True) is not False,
-        include_lessons=cleaned.get("include_lessons", True) is not False,
-        include_project=cleaned.get("include_project", True) is not False,
-        memory_store=child_memory_store,
-        crew=crew,
-        _memory_mode=admitted_mode,
-        _execution_context=admitted_execution.to_record(),
-        _parent_spawn_policy=parent_spawn_policy,
-    )
+    # A member of a blocking spawn_sub_agents call: its id is minted and held
+    # for that call BEFORE the run exists, so its completion can never reach the
+    # parent whose turn is blocked in the call (subagent_inline_collection).
+    inline_kwargs: dict[str, Any] = {}
+    reserve = getattr(state.subagents, "reserve_inline_member", None)
+    if body.get("inline_collect") is True and parent_session and callable(reserve):
+        try:
+            inline_wait = float(body.get("max_wait", 0) or 0)
+        except (TypeError, ValueError):
+            inline_wait = 0.0
+        inline_id = reserve(parent_session, inline_wait, call=inline_call)
+        if not inline_id:
+            return web.json_response(
+                {
+                    "error": "too many sub-agents are waiting on this session's blocking calls",
+                    "code": "inline_collection_full",
+                },
+                status=429,
+            )
+        inline_kwargs["_preassigned_id"] = inline_id
+    try:
+        info = await _spawn_on_loop(
+            state,
+            task,
+            parent_session_key=parent_session,
+            agent=agent,
+            max_turns=max_turns,
+            cwd=cwd,
+            model=model or None,
+            reasoning_effort=reasoning_effort,
+            approval_mode=approval_mode or None,
+            silent=silent,
+            batch_id=batch_id,
+            batch_total=batch_total,
+            keep=keep,
+            include_memory=cleaned.get("include_memory", True) is not False,
+            include_lessons=cleaned.get("include_lessons", True) is not False,
+            include_project=cleaned.get("include_project", True) is not False,
+            memory_store=child_memory_store,
+            crew=crew,
+            _memory_mode=admitted_mode,
+            _execution_context=admitted_execution.to_record(),
+            _parent_spawn_policy=parent_spawn_policy,
+            **inline_kwargs,
+        )
+    except BaseException:
+        # The call never learns this id, so it can never collect it: release
+        # it now rather than hold the parent's capacity until expiry.
+        if inline_kwargs:
+            state.subagents.inline_collections.discard(
+                parent_session, inline_kwargs["_preassigned_id"]
+            )
+        raise
+    if inline_kwargs and (not info or (info.done and info.error)):
+        # Refused: nothing will run under the reserved id, so release it.
+        state.subagents.inline_collections.discard(parent_session, inline_kwargs["_preassigned_id"])
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
         # refused for capacity — tell the client so it does NOT reconcile

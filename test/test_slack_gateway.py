@@ -2731,7 +2731,6 @@ class TestSubagentFinalSummaryDirective:
         slot.task = None
         slot._pending_synthesis = False  # explicit start (not a MagicMock auto-attr)
         slot._subagent_deliveries_inflight = 0  # real int so the gateway counter works
-        slot._subagents_inline_collected = set()
         ds.get_slot = MagicMock(return_value=slot)
         orch.dashboard_state = ds
         on_done = self._capture_on_done(orch)

@@ -3337,7 +3337,10 @@ class RunEventCoordinator(ManagerComponent):
             info.partial = True
             # result.txt is what spawn_status / spawn_run read for a done run.
             write_result_chunk(info.id, f"\n\n{_warn}\n")
-        evict_completed_agents(self._manager._agents)
+        # A completion a blocking spawn_sub_agents call holds is read back
+        # from this record at release, so retention keeps it while held.
+        _inline = getattr(self._manager, "inline_collections", None)
+        evict_completed_agents(self._manager._agents, pinned=getattr(_inline, "pins", None))
 
         # ── Per-turn usage row: attribute subagent spend. ──
         # Its inputs are read here, synchronously, and the append itself is

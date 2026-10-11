@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
 from typing import Any
@@ -30,7 +31,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.execution_context import read_session_execution
-from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
+from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled, on_response_outcome
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.subagent import (
@@ -48,12 +49,14 @@ from kiro_crew.subagent_persistence import agent_dir_for_display
 from kiro_crew.subagent_wait_reasons import MEMORY_PRESSURE_PHRASE, queued_wait_text
 from kiro_crew.validation import (
     MAX_MEDIUM_STRING,
+    MAX_RESPONSE_LEN,
     MAX_SHORT_STRING,
     SPAWN_CONTINUE_SCHEMA,
     SPAWN_RELEASE_SCHEMA,
     SPAWN_RUN_SCHEMA,
     SPAWN_STEER_SCHEMA,
     SPAWN_SUB_AGENTS_SCHEMA,
+    sanitize_string,
     validate_tool_args,
 )
 
@@ -1414,24 +1417,6 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     def _redact_sa(text: str) -> str:
         return redact(text)
 
-    def _inline_result(aid: str, raw: str) -> str:
-        """A finished child's retained output as this reply carries it.
-
-        Redacted, and past ``COMPLETION_KEEP_DEFAULT_CHARS`` replaced by the same
-        summary plus disk path that ``spawn_run`` gives, so a large transcript
-        does not fill the caller's context window. One rule for a child that
-        completed and one that ended in error.
-        """
-        result_text = _redact_sa(raw)
-        if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
-            try:
-                result_path = str(agent_dir_for_display(aid) / "result.txt")
-            except (ValueError, OSError):
-                result_path = ""
-            if result_path:
-                result_text = mcp_core.summarize_result(result_text, result_path)
-        return result_text
-
     # Validate individual agent entries (schema guarantees dict entries)
     for entry in agents_input:
         p = entry.get("prompt", "")
@@ -1461,10 +1446,23 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         metadata={"agent_count": len(agents_input)},
     )
 
+    # The blocking wait's bound (1 min .. 2 hours). Read before spawning: each
+    # member's spawn carries it, so the gateway holds the member's completion
+    # for exactly as long as this call can still collect it.
+    try:
+        max_wait = float(os.environ.get("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200"))
+    except (TypeError, ValueError):
+        max_wait = 7200.0
+    max_wait = max(60.0, min(7200.0, max_wait))
+
     sa_ids: list[str] = []
     sa_errors: list[str] = []
     # Members the gate accepted as ``queued`` (deferred, not started).
     sa_deferred: set[str] = set()
+    # Names this call to the gateway: every member it reserves carries it, so
+    # ending the call's collection ends each of them, including one whose
+    # ``/api/spawn`` reply never arrived and whose id this call never learned.
+    call_id = uuid.uuid4().hex
     for entry in agents_input:
         prompt = entry.get("prompt", "").strip()
         if not prompt:
@@ -1474,6 +1472,12 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             "task": prompt,
             "agent": sa_agent,
             "parent_session": parent_session,
+            # Held for this call from the moment its id is minted: its
+            # completion is this call's result, never a prompt into the
+            # parent's turn, which is blocked right here.
+            "inline_collect": True,
+            "inline_call": call_id,
+            "max_wait": max_wait,
             **sa_groups,
         }
         if cwd:
@@ -1493,6 +1497,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 sa_errors.append(f"{_redact_sa(prompt)[:60]}: spawn returned no agent id")
 
     if not sa_ids and sa_errors:
+        # A spawn whose reply was lost may still have reserved a member: end
+        # the call's collection so its completion is delivered at once.
+        _close_collection(parent_session, [], [], call=call_id)
         return "Error spawning sub-agents:\n" + "\n".join(f"  - {e}" for e in sa_errors)
     if not sa_ids:
         return "Error: no valid agent entries found in 'agents' array"
@@ -1501,12 +1508,97 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # 60s so the gateway's is_responsive() does not flag this session as
     # stale and SIGTERM the ACP subprocess mid-poll, which would abort the
     # very sub-agents we are waiting on.
-    poll_interval = 2.0
     try:
-        max_wait = float(os.environ.get("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "7200"))
-    except (TypeError, ValueError):
-        max_wait = 7200.0
-    max_wait = max(60.0, min(7200.0, max_wait))  # clamp: 1 min .. 2 hours
+        return _await_and_collect(
+            sa_ids, sa_errors, sa_deferred, parent_session, max_wait, _redact_sa, call_id
+        )
+    except BaseException:
+        # Cancelled or failed before returning anything: end the collection
+        # with nothing collected, so every completion it held is delivered to
+        # the parent as an ordinary one.
+        _close_collection(parent_session, [], sa_ids, call=call_id)
+        raise
+
+
+#: The pauses between ``_close_collection``'s attempts: three attempts of at
+#: most 5 s each, so a report fits the 20 s a normal exit waits for it
+#: (``mcp_shared.OUTCOME_HOOK_EXIT_WAIT_SECS``).
+COLLECTION_RETRY_PAUSES: tuple[float, ...] = (1.0, 2.0)
+#: The pause itself, this module's own name so a test can make it a no-op
+#: without touching the process-wide ``time.sleep``.
+_collection_retry_pause: Callable[[float], None] = time.sleep
+
+
+def _close_collection(
+    parent_session: str,
+    collected: list[str],
+    released: list[str],
+    phase: str = "claim",
+    *,
+    call: str = "",
+) -> None:
+    """Send one step of this call's inline collection to the gateway.
+
+    ``claim`` ends the collection of *released* and claims *collected*, the ids
+    the result names. ``commit`` / ``drop`` report that the dispatcher wrote or
+    dropped the response carrying them. *call* names the call, so every step
+    also ends each member the call reserved, including one whose id it never
+    learned. Retried, because a lost claim leaves every member held until the
+    collection expires (``max_wait`` plus a grace period), and a lost commit or
+    drop leaves a claim to expire; both are then delivered as ordinary
+    completions. Never raises.
+    """
+    if not parent_session:
+        return
+    body: dict[str, Any] = {"ids": collected, "parent_session": parent_session, "phase": phase}
+    if released:
+        body["released"] = released
+    if call:
+        body["call"] = call
+    pauses = COLLECTION_RETRY_PAUSES
+    for attempt in range(len(pauses) + 1):
+        try:
+            # A refused or failed request comes back as an ``error`` body, not
+            # an exception, and is retried the same way.
+            resp = mcp_core._post("/api/spawn/mark-collected", body, timeout=5.0)
+            if isinstance(resp, dict) and not resp.get("error"):
+                return
+        except Exception:
+            pass
+        if attempt < len(pauses) and pauses[attempt] > 0:
+            _collection_retry_pause(pauses[attempt])
+
+
+def _inline_result(aid: str, raw: str, redact_text: Callable[[str], str]) -> str:
+    """A finished child's retained output as this reply carries it.
+
+    Redacted, and past ``COMPLETION_KEEP_DEFAULT_CHARS`` replaced by the same
+    summary plus disk path that ``spawn_run`` gives, so a large transcript
+    does not fill the caller's context window. One rule for a child that
+    completed and one that ended in error.
+    """
+    result_text = redact_text(raw)
+    if len(result_text) > COMPLETION_KEEP_DEFAULT_CHARS:
+        try:
+            result_path = str(agent_dir_for_display(aid) / "result.txt")
+        except (ValueError, OSError):
+            result_path = ""
+        if result_path:
+            result_text = mcp_core.summarize_result(result_text, result_path)
+    return result_text
+
+
+def _await_and_collect(
+    sa_ids: list[str],
+    sa_errors: list[str],
+    sa_deferred: set[str],
+    parent_session: str,
+    max_wait: float,
+    _redact_sa: Callable[[str], str],
+    call_id: str = "",
+) -> str:
+    """Poll ``spawn_sub_agents``' members until settled, then build its result."""
+    poll_interval = 2.0
     deadline = mcp_core.time.monotonic() + max_wait
     _next_ping = mcp_core.time.monotonic() + 60.0  # first keepalive after 60s, not immediately
     _wait_settled: set[str] = set()
@@ -1561,6 +1653,9 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     still_running = 0
     errored = 0
     _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+    # The position in ``sa_results`` of each settled member's block: only a
+    # member whose whole block survives the response's truncation is claimed.
+    _block_of: dict[str, int] = {}
     # Children the wait ended on, with the state each was last seen in. The
     # wait expiring is a fact about THIS call, not about them: they keep their
     # own execution budget, are never cancelled here, and their completion
@@ -1602,13 +1697,14 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 # work). This call marks the child collected, so its completion
                 # event is not injected either: the reply is where that output
                 # reaches the caller.
-                failure["text"] = _inline_result(aid, sa_st.get("result", ""))
+                failure["text"] = _inline_result(aid, sa_st.get("result", ""), _redact_sa)
             if aid in sa_deferred and not sa_st.get("done"):
                 failure["hint"] = (
                     "accepted at spawn time; its state couldn't be read now; "
                     "check spawn_status before re-spawning"
                 )
             sa_results.append(json.dumps(failure))
+            _block_of[aid] = len(sa_results) - 1
         elif not sa_st.get("done"):
             still_running += 1
             if sa_st.get("awaiting_approval"):
@@ -1618,7 +1714,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
         else:
             completed += 1
             _settled_ids.add(aid)
-            result_text = _inline_result(aid, sa_st.get("result", ""))
+            result_text = _inline_result(aid, sa_st.get("result", ""), _redact_sa)
             sa_results.append(
                 json.dumps(
                     {
@@ -1628,6 +1724,7 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                     }
                 )
             )
+            _block_of[aid] = len(sa_results) - 1
     if _unsettled:
         sa_results.append(
             json.dumps(
@@ -1686,17 +1783,73 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # [OPTIONS:] buttons rendered in the synthesis.
     # Only mark agents whose results were actually delivered inline
     # (completed or errored) — still-running agents complete later and
-    # their real result must not be suppressed.
-    if _settled_ids and parent_session:
-        try:
-            mcp_core._post(
-                "/api/spawn/mark-collected",
-                {"ids": list(_settled_ids), "parent_session": parent_session},
-                timeout=5,
-            )
-        except Exception:
-            pass  # best-effort; worst case = duplicate turn (pre-existing behavior)
-    return "\n\n".join(sa_results)
+    # their real result must not be suppressed. ``released`` ends the
+    # collection opened before polling, for every member. A call cancelled
+    # after the poll (during the resume hold or the result reads) returns to
+    # no turn, so it raises and the caller closes with nothing collected.
+    if is_tool_cancelled():
+        raise ToolCancelled("spawn_sub_agents cancelled before returning its results")
+    reply = "\n\n".join(sa_results)
+    collected = _carried_in_reply(sa_results, {aid: _block_of[aid] for aid in _settled_ids})
+    _close_collection(parent_session, collected, sa_ids, call=call_id)
+    _commit_when_answered(parent_session, collected, sa_ids, call_id)
+    return reply
+
+
+def _carried_in_reply(blocks: list[str], position: Mapping[str, int]) -> list[str]:
+    """The members whose whole result block the delivered reply still carries.
+
+    The reply is *blocks* joined by blank lines, and the dispatcher sends
+    ``sanitize_response`` of it, which cuts the TAIL off a reply over
+    ``MAX_RESPONSE_LEN``. A member whose block ends past the cut never reached
+    the parent, so it is not claimed: its completion goes out as an ordinary
+    one. Each block is judged by where it ends, never by its text, since two
+    members can return identical text. Omitted members are counted and logged
+    once.
+    """
+    ends: list[int] = []
+    end = -2
+    for block in blocks:
+        end += 2 + len(sanitize_string(block))
+        ends.append(end)
+    if not ends or ends[-1] <= MAX_RESPONSE_LEN:
+        return sorted(position)  # nothing is cut
+    carried = sorted(aid for aid, i in position.items() if ends[i] <= MAX_RESPONSE_LEN)
+    omitted = len(position) - len(carried)
+    if omitted:
+        logger.warning(
+            "spawn_sub_agents: the reply was truncated at %d chars; %d result(s) it "
+            "cut are delivered as ordinary completions",
+            MAX_RESPONSE_LEN,
+            omitted,
+        )
+    return carried
+
+
+def _commit_when_answered(
+    parent_session: str, collected: list[str], released: list[str], call: str = ""
+) -> None:
+    """Settle the claims on *collected* only once the response carrying them is written.
+
+    A cancel can still drop the response after this call returns, so the
+    dispatcher reports what it did, and the claims are committed or released
+    then. The report names *released* too, so it ends the collection even when
+    the claim itself was lost. A hook registered after the dispatcher already
+    answered gets that answer, so a response dropped at EOF is never committed.
+    Only a process that never dispatched a call (a direct call) commits at once:
+    the result is the caller's already.
+    """
+    if not parent_session or not collected:
+        return
+
+    def _report(delivered: bool) -> None:
+        _close_collection(
+            parent_session, collected, released, "commit" if delivered else "drop", call=call
+        )
+
+    delivered = on_response_outcome(_report)
+    if delivered is not None:
+        _report(delivered)
 
 
 def _live_adaptive_state() -> dict[str, Any] | None:

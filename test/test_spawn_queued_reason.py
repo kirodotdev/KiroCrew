@@ -148,7 +148,12 @@ class TestSpawnSubAgentsNamesTheDeferral:
                 },
             )
         # Never marked collected: it has not run, so its completion must inject.
-        assert not [c for c in post.call_args_list if c.args[0] == "/api/spawn/mark-collected"]
+        # (The call still opens and closes its collection; neither names it.)
+        assert not [
+            c
+            for c in post.call_args_list
+            if c.args[0] == "/api/spawn/mark-collected" and c.args[1].get("ids")
+        ]
         return [json.loads(chunk) for chunk in out.split("\n\n")]
 
     def test_a_not_found_answer_is_an_error_never_a_queued_member(self, monkeypatch) -> None:

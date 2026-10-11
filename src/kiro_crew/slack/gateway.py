@@ -476,6 +476,7 @@ from kiro_crew.subagent_completion_meta import (
     wave_chunk_meta,
     wave_final_meta,
 )
+from kiro_crew.subagent_inline_collection import InlineCollections
 from kiro_crew.taskrunner import TaskRunner
 from kiro_crew.tunnel import set_publish_disabled
 from kiro_crew.validation import CHANNEL_ID_RE
@@ -585,6 +586,49 @@ def _injection_slot_busy(slot: Any) -> bool:
     """
     task = slot.task
     return bool(slot.running) or (task is not None and not task.done())
+
+
+def inline_collection_owns(manager: Any, slot: Any, info: Any) -> bool:
+    """True when a blocking ``spawn_sub_agents`` call returns *info*'s result inline.
+
+    The ONE rule every parent kind's completion route consults before it
+    injects. A member the call is still collecting is HELD: the call returns its
+    result, and a prompt sent into the parent's turn, blocked inside that call,
+    would cancel it. A member the call has claimed is held the same way until
+    the dispatcher reports on the response that names it. A held completion is
+    undelivered (``_delivery_queued``), so its retention clock does not start
+    until the commit settles it, or it is delivered as an ordinary completion
+    when the call did not return it or its response was dropped. A member whose
+    response was written is consumed: only this completion would ever evict
+    its id. Returned ids live on the manager's registry for every
+    parent kind; a dashboard tab's synthesis turn is disarmed once none of its
+    returned ids remain. Never raises: an unreadable record answers False, which
+    injects as before.
+    """
+    parent_key = info.parent_session_key
+    agent_id = info.id
+    try:
+        registry = getattr(manager, "inline_collections", None)
+        if not isinstance(registry, InlineCollections):
+            registry = None
+        if registry is not None and registry.hold(parent_key, agent_id):
+            info._delivery_queued = True
+            logger.info(
+                "Subagent %s: holding completion (spawn_sub_agents is collecting it inline)",
+                agent_id,
+            )
+            return True
+        if registry is not None and registry.consume_collected(parent_key, agent_id):
+            if slot is not None and not registry.has_collected(parent_key):
+                slot._pending_synthesis = False
+            logger.info(
+                "Subagent %s: skipping injection (already collected inline by spawn_sub_agents)",
+                agent_id,
+            )
+            return True
+    except Exception:
+        logger.debug("inline-collection check failed for %s", agent_id, exc_info=True)
+    return False
 
 
 async def _subagent_work_pending(manager: Any, parent_session_key: str) -> bool:
@@ -10167,6 +10211,70 @@ class GatewayOrchestrator:
                         bp["ok_lines"] = []
                         bp["held_ok_deliveries"] = []
 
+            async def _reset_cron_parent_when_idle(*, skip_if_busy: bool) -> None:
+                """Reset the cron parent once none of its sub-agent work remains."""
+                assert self.sessions is not None
+                # Reset only when no subagents running or QUEUED AND no
+                # injections pending. Queued spawns (behind the concurrency /
+                # stagger gate) have no SubagentInfo in `running` yet — a
+                # sibling completing while the rest of the wave is still
+                # queued must not reset the parent out from under them.
+                still_running = self.subagent_mgr and (
+                    any(
+                        a.parent_session_key == parent_key and a.id != info.id
+                        for a in self.subagent_mgr.running
+                    )
+                    or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
+                )
+                still_injecting = self._cron_injecting.get(parent_key, 0) > 0
+                if not still_running and not still_injecting:
+                    try:
+                        if skip_if_busy:
+                            if not await self.sessions.reset(parent_key, skip_if_busy=True):
+                                # The parent's own turn still holds it; that
+                                # turn's finally makes this decision instead.
+                                return
+                        else:
+                            await self.sessions.reset(parent_key)
+                        logger.info(
+                            "Cron session %s: last subagent done, session reset", parent_key
+                        )
+                        # reset succeeded → the reaper has nothing left to
+                        # target under the registered ephemeral key. Clear inside try so a failed
+                        # reset leaves the key registered (ephemeral session may
+                        # still be alive — reaper must be able to target it).
+                        # parent_key is "cron:{job_id}" (persistent) or
+                        # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
+                        # second colon-separated segment in both cases. Exact-key
+                        # tracking means an older deferred reset removes only its
+                        # own key even after a newer run registers another one,
+                        # without stripping the reaper/ownership fence for either.
+                        cron_svc = getattr(self, "cron_svc", None)
+                        if cron_svc is not None:
+                            parts = parent_key.split(":", 2)
+                            if len(parts) >= 2:
+                                cron_svc.clear_active_session_key(parts[1], parent_key)
+                    except Exception:
+                        logger.exception(
+                            "Cron session %s: reset failed after last subagent", parent_key
+                        )
+
+            # ── A result a blocking spawn_sub_agents call returns inline ──
+            # Never injected, for any parent kind: while the call collects it
+            # the parent's turn is blocked inside that call, and a prompt sent
+            # into it cancels the turn (the prompt-busy retry interrupts it);
+            # once the call has returned it, the injection would replay a result
+            # the model already read. The registry delivers a held result
+            # (subagent_inline_collection): the call's closing mark settles it,
+            # or, if the call never returns it, routes it here on a ticket.
+            if not _flush_only and inline_collection_owns(self.subagent_mgr, _injection_slot, info):
+                if parent_key.startswith("cron:"):
+                    # The branch that would have injected also resets an
+                    # idle cron session after its last sub-agent; keep that,
+                    # but never under the parent's own live turn.
+                    await _reset_cron_parent_when_idle(skip_if_busy=True)
+                return
+
             # ── Route completion back to the originating session ──
             # Tab open        → that tab (a channel-born tab mirrors on to its channel)
             # Channel, no tab → channel thread + dashboard notification
@@ -10209,7 +10317,6 @@ class GatewayOrchestrator:
                             _mgr is not None
                             and not _injection_slot._pending_synthesis
                             and not _flush_only
-                            and info.id not in _injection_slot._subagents_inline_collected
                             and _mgr.running_agents_for(parent_key) == []
                             and not _mgr.has_in_memory_pending_work_for(
                                 parent_key, exclude_id=info.id
@@ -10220,31 +10327,11 @@ class GatewayOrchestrator:
                     if _arm_synthesis:
                         _injection_slot._pending_synthesis = True
 
-                    # ── Skip injection for blocking-tool-collected results ──
-                    # spawn_sub_agents (blocking MCP tool) already delivered
-                    # this result inline as a tool-call return value. Injecting
-                    # it again would trigger a redundant _run_chat turn whose
-                    # assistant response shadows any [OPTIONS:] buttons from the
-                    # synthesis message. Mark delivered and return.
-                    # NOTE: This check is placed BEFORE the inflight counter and
-                    # busy-wait because at this point the blocking tool's
-                    # mark-collected POST has already landed (the tool returns
-                    # before its turn ends, and _subagent_done fires only after
-                    # the agent's terminal report, which is after the tool has
-                    # finished). However, if the slot is busy (turn still
-                    # running) we must wait first, then re-check — see the
-                    # second check after the busy-wait below.
-                    if info.id in _injection_slot._subagents_inline_collected:
-                        _injection_slot._subagents_inline_collected.discard(info.id)
-                        # Disarm synthesis — the blocking tool already delivered
-                        # all results and the model synthesized inline.
-                        if not _injection_slot._subagents_inline_collected:
-                            _injection_slot._pending_synthesis = False
-                        logger.info(
-                            "Subagent %s: skipping injection (already collected inline by spawn_sub_agents)",
-                            info.id,
-                        )
-                        return
+                    # A result the blocking spawn_sub_agents call returns
+                    # inline was already settled above (inline_collection_owns,
+                    # shared by every parent kind). A completion that waits for
+                    # this slot's turn below is checked again once the wait
+                    # ends: the call may have returned it meanwhile.
 
                     # Fix 2 (B1) race guard: count this completion as an
                     # in-flight delivery from entry until it is handed off (turn
@@ -10279,14 +10366,7 @@ class GatewayOrchestrator:
                                 # Check inline-collected before queuing — if the
                                 # blocking tool already handled this result, don't
                                 # queue it for a later redundant turn.
-                                if info.id in _injection_slot._subagents_inline_collected:
-                                    _injection_slot._subagents_inline_collected.discard(info.id)
-                                    if not _injection_slot._subagents_inline_collected:
-                                        _injection_slot._pending_synthesis = False
-                                    logger.info(
-                                        "Subagent %s: skipping queue " "(already collected inline)",
-                                        info.id,
-                                    )
+                                if inline_collection_owns(self.subagent_mgr, _injection_slot, info):
                                     return
                                 logger.info(
                                     "Subagent %s: slot %s claimed by another injection, queuing",
@@ -10328,15 +10408,7 @@ class GatewayOrchestrator:
                         # Slot is idle — re-check inline-collected (the
                         # blocking tool's mark-collected POST has now landed,
                         # since the tool returns before its owning turn ends).
-                        if info.id in _injection_slot._subagents_inline_collected:
-                            _injection_slot._subagents_inline_collected.discard(info.id)
-                            if not _injection_slot._subagents_inline_collected:
-                                _injection_slot._pending_synthesis = False
-                            logger.info(
-                                "Subagent %s: skipping injection after wait "
-                                "(already collected inline by spawn_sub_agents)",
-                                info.id,
-                            )
+                        if inline_collection_owns(self.subagent_mgr, _injection_slot, info):
                             return
 
                         # Slot is idle — start _run_chat.
@@ -10827,44 +10899,7 @@ class GatewayOrchestrator:
                             "Subagent %s: failed to deliver cron response",
                             info.id,
                         )
-                # Reset only when no subagents running or QUEUED AND no
-                # injections pending. Queued spawns (behind the concurrency /
-                # stagger gate) have no SubagentInfo in `running` yet — a
-                # sibling completing while the rest of the wave is still
-                # queued must not reset the parent out from under them.
-                still_running = self.subagent_mgr and (
-                    any(
-                        a.parent_session_key == parent_key and a.id != info.id
-                        for a in self.subagent_mgr.running
-                    )
-                    or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
-                )
-                still_injecting = self._cron_injecting.get(parent_key, 0) > 0
-                if not still_running and not still_injecting:
-                    try:
-                        await self.sessions.reset(parent_key)
-                        logger.info(
-                            "Cron session %s: last subagent done, session reset", parent_key
-                        )
-                        # reset succeeded → reaper no longer needs the
-                        # registered ephemeral key. Clear inside try so a failed
-                        # reset leaves the key registered (ephemeral session may
-                        # still be alive — reaper must be able to target it).
-                        # parent_key is "cron:{job_id}" (persistent) or
-                        # "cron:{job_id}:{run_id}" (ephemeral); job_id is the
-                        # second colon-separated segment in both cases. Exact-key
-                        # tracking means an older deferred reset removes only its
-                        # own key even after a newer run registers another one,
-                        # without stripping the reaper/ownership fence for either.
-                        cron_svc = getattr(self, "cron_svc", None)
-                        if cron_svc is not None:
-                            parts = parent_key.split(":", 2)
-                            if len(parts) >= 2:
-                                cron_svc.clear_active_session_key(parts[1], parent_key)
-                    except Exception:
-                        logger.exception(
-                            "Cron session %s: reset failed after last subagent", parent_key
-                        )
+                await _reset_cron_parent_when_idle(skip_if_busy=False)
 
             # Dashboard notification
             if self.dashboard_state and not info.silent:
@@ -11162,6 +11197,7 @@ class GatewayOrchestrator:
         # rather than as two bound methods because the halves have to agree about
         # which runs they are talking about.
         self.sessions.set_child_teardown_handler(self.subagent_mgr)
+
         self.subagent_mgr.start_reaper()
 
     # gateway_runtime/admission.py

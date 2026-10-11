@@ -573,8 +573,8 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     """A slow sibling's delivery timed out waiting on the tool's turn and QUEUED
     its announce; the tool then collected it inline. The queued announce is
     removed (no duplicate completion turn), its delivery mark is written, and
-    its id stays out of the inline-collected set, where nothing would discard
-    it and the 'set empty, disarm' path would never fire again."""
+    its id stays out of the inline-collected ids, where nothing would discard
+    it and the 'none left, disarm' path would never fire again."""
     from chat_test_helpers import _make_state
 
     from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY
@@ -582,6 +582,7 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     from kiro_crew.dashboard.handlers.messaging import api_spawn_mark_collected
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.subagent_completion_meta import single_completion_meta
+    from kiro_crew.subagent_inline_collection import InlineCollections
 
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
@@ -593,14 +594,18 @@ async def test_collecting_a_member_whose_announce_already_queued_settles_it(tmp_
     )
     owed = [SubagentDelivery("a1", 1.0, 0.0)]
     slot.note_pending_subagent_delivery(announce, owed)
-    state.subagents = MagicMock(settle_queued_delivery=AsyncMock())
+    registry = InlineCollections()
+    state.subagents = MagicMock(settle_queued_delivery=AsyncMock(), inline_collections=registry)
 
-    await api_spawn_mark_collected(
-        _Req(state, body={"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1"})
-    )
+    for aid in ("a1", "b1"):
+        assert registry.reserve("dashboard:chat-1", aid, 600)
+    for phase in ("claim", "commit"):
+        body = {"ids": ["a1", "b1"], "parent_session": "dashboard:chat-1", "phase": phase}
+        await api_spawn_mark_collected(_Req(state, body=body))
 
     assert not [q for q in slot._queue if q.get("kind") == SUBAGENT_COMPLETION_KIND]
-    assert slot._subagents_inline_collected == {"b1"}
+    assert registry.consume_collected("dashboard:chat-1", "b1")
+    assert not registry.consume_collected("dashboard:chat-1", "a1")
     state.subagents.settle_queued_delivery.assert_awaited_once_with(owed)
 
 
@@ -723,21 +728,38 @@ async def test_an_unreadable_queue_answers_503_not_404() -> None:
 
 @pytest.mark.asyncio
 async def test_collected_ids_are_bounded_and_known(tmp_path) -> None:
-    """Only ids the gateway knows, each of bounded length, and never more than
-    the cap in total: an id no completion will match is never evicted."""
+    """Only ids a reservation covers, each of bounded length, and never more than
+    the cap in total: an id no completion will match is never recorded. A call
+    naming an id past the length bound is refused whole and records nothing, and
+    so is a body with no ``phase``."""
     from chat_test_helpers import _make_state
 
     from kiro_crew.dashboard.handlers import messaging
+    from kiro_crew.subagent_inline_collection import InlineCollections
 
+    parent = "dashboard:chat-1"
     state = _make_state(tmp_path)
-    slot = state.get_or_create_slot("chat-1")
-    known = {f"k{i:04d}" for i in range(1500)}
-    state.subagents = MagicMock()
-    state.subagents.get = MagicMock(side_effect=lambda aid: object() if aid in known else None)
+    state.get_or_create_slot("chat-1")
+    known = [f"k{i:04d}" for i in range(1500)]
+    registry = InlineCollections()
+    state.subagents = MagicMock(inline_collections=registry)
+    refused = await messaging.api_spawn_mark_collected(
+        _Req(state, body={"ids": ["k0000", "x" * 500], "parent_session": parent, "phase": "commit"})
+    )
+    assert refused.status == 400
+    assert registry._records.get(parent, {}) == {}
+    reserved = {aid for aid in known if registry.reserve(parent, aid, 600)}
+    assert len(reserved) == messaging._COLLECTED_IDS_CAP
+    phaseless = await messaging.api_spawn_mark_collected(
+        _Req(state, body={"ids": known[:200], "parent_session": parent})
+    )
+    assert phaseless.status == 400
+    assert all(rec.state == "collecting" for rec in registry._records[parent].values())
     for start in range(0, 1500, 200):
-        ids = [f"k{i:04d}" for i in range(start, start + 200)] + ["x" * 500, "unknown1"]
-        await messaging.api_spawn_mark_collected(
-            _Req(state, body={"ids": ids, "parent_session": "dashboard:chat-1"})
-        )
-    assert len(slot._subagents_inline_collected) == messaging._COLLECTED_IDS_CAP
-    assert slot._subagents_inline_collected <= known
+        ids = known[start : start + 200] + ["unknown1"]
+        for phase in ("claim", "commit"):
+            body = {"ids": ids, "parent_session": parent, "phase": phase}
+            await messaging.api_spawn_mark_collected(_Req(state, body=body))
+    probe = known + ["x" * 500, "unknown1"]
+    kept = {aid for aid in probe if registry.consume_collected(parent, aid)}
+    assert kept == reserved

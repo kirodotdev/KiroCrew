@@ -1791,7 +1791,6 @@ class TestWaveDigest:
         slot.running = True
         slot.task = None
         slot._subagent_deliveries_inflight = 0
-        slot._subagents_inline_collected = set()
         queued: list[dict] = []
         slot.queue_append = MagicMock(
             side_effect=lambda content, kind="", meta=None: (
@@ -2232,7 +2231,6 @@ class TestDigestHoldDeadline:
         slot.running = False
         slot.task = None
         slot._subagent_deliveries_inflight = 0
-        slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         gw_mgr, on_done = TestWaveDigest()._capture_on_done(orch)
         gw_mgr.batch_members_pending = MagicMock(return_value=True)  # straggler alive
@@ -2308,7 +2306,6 @@ class TestDigestHoldDeadline:
         slot.running = False
         slot.task = None
         slot._subagent_deliveries_inflight = 0
-        slot._subagents_inline_collected = set()
         orch.dashboard_state.get_slot = MagicMock(return_value=slot)
         mgr, on_done = TestWaveDigest()._capture_on_done(orch)
         ledger, settled = _wire_hold_settlement(orch, slot, mgr)

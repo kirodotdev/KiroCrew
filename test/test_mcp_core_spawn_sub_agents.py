@@ -67,7 +67,14 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "a1"}, {"error": "capacity reached"}]
+            # Two spawns, then the collection's claim and commit: each answered, so
+            # no report is retried.
+            mock_post.side_effect = [
+                {"id": "a1"},
+                {"error": "capacity reached"},
+                {"status": "ok"},
+                {"status": "ok"},
+            ]
             mock_get.return_value = {"done": True, "agent": "w", "result": "ok"}
 
             result = _call_tool("spawn_sub_agents", {
@@ -77,6 +84,7 @@ class TestSpawnSubAgents:
             assert '"completed"' in result
             assert '"spawn_errors"' in result
             assert "capacity reached" in result
+            assert mock_post.call_count == 4
 
     def test_reports_spawn_with_no_agent_id(self):
         # /api/spawn returns neither error nor id — must not append an empty
@@ -133,8 +141,11 @@ class TestSpawnSubAgents:
             assert not any(
                 call.args and "cancel" in str(call.args[0]) for call in mock_post.call_args_list
             )
+            # The call closes its collection, but marks nothing collected.
             assert not any(
-                call.args and call.args[0] == "/api/spawn/mark-collected"
+                call.args
+                and call.args[0] == "/api/spawn/mark-collected"
+                and call.args[1].get("ids")
                 for call in mock_post.call_args_list
             )
             outcome_call = mock_sel.return_value.log_tool_invocation.call_args_list[-1]
@@ -304,7 +315,7 @@ class TestSpawnSubAgents:
              patch("kiro_crew.mcp_core._get") as mock_get, \
              patch("kiro_crew.mcp_core.sel"), \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}, {}]
+            mock_post.side_effect = [{"id": "a1"}, {"id": "a2"}, {}, {}]
             mock_get.return_value = {"done": True, "agent": "w", "result": "done"}
 
             result = _call_tool("spawn_sub_agents", {
@@ -314,8 +325,8 @@ class TestSpawnSubAgents:
                 ],
             })
 
-            # 2 spawn calls + 1 mark-collected call = 3 total
-            assert mock_post.call_count == 3
+            # 2 spawn calls + the mark-collected claim and its commit = 4 total
+            assert mock_post.call_count == 4
             assert result.count('"completed"') == 2
 
     def test_truncates_oversized_prompt(self):
@@ -447,7 +458,14 @@ class TestSpawnSubAgentsSummarization:
              patch("kiro_crew.mcp_core.sel"), \
              patch("kiro_crew.mcp_core.summarize_result") as mock_summarize, \
              patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "s"}):
-            mock_post.side_effect = [{"id": "short1"}, {"id": "long1"}]
+            # Two spawns, then the collection's claim and commit: each answered, so
+            # no report is retried.
+            mock_post.side_effect = [
+                {"id": "short1"},
+                {"id": "long1"},
+                {"status": "ok"},
+                {"status": "ok"},
+            ]
             short_result = "brief answer"
             large_result = "detailed " * 600  # over 3K
 
@@ -468,6 +486,7 @@ class TestSpawnSubAgentsSummarization:
             # Long result was summarized
             assert mock_summarize.call_count == 1
             assert "summarized long result" in result
+            assert mock_post.call_count == 4
 
     def test_result_exactly_at_threshold_not_summarized(self):
         """A result exactly at COMPLETION_KEEP_DEFAULT_CHARS is NOT summarized."""

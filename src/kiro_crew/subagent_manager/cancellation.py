@@ -608,6 +608,13 @@ class CancellationCoordinator(ManagerComponent):
             agent_id for agent_id in approval_parked if agent_id
         )
         self._manager._teardown_cancelled_ids.update(batching)
+        # Held for a blocking spawn_sub_agents call, or released by it and still
+        # being delivered: the inline-collection registry owns that delivery and
+        # its fence, keyed by parent, because the run record may already be
+        # evicted from ``_agents`` by completed-run retention.
+        inline = self._manager.__dict__.get("inline_collections")
+        if inline is not None:
+            inline.retire(parent_session_key)
         # A follow-up watcher is a SECOND announce path for the same run, and the id gate
         # cannot see it: when a queued follow-up cannot be delivered the watcher announces a
         # SYNTHETIC failure built with a fresh id, so it walks past a gate keyed on the run

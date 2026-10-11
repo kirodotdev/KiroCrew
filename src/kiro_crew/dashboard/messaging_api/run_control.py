@@ -30,9 +30,11 @@ if TYPE_CHECKING:
         SUBAGENT_COMPLETION_META_KEY,
         SUCCESSOR_UNKNOWN,
         DashboardState,
+        InlineCollections,
         QueuedReadUnavailable,
         QueuedRun,
         QueuedRunListing,
+        _oversized_identity_refusal,
         _redact,
         _run_belongs_to_caller,
         _sel,
@@ -41,6 +43,7 @@ if TYPE_CHECKING:
         effective_session_key,
         internal_memory_scope,
         logger,
+        oversized_identity,
         read_state,
         record_panel_dismissal_outcome,
         subagent_event_slot,
@@ -373,69 +376,175 @@ async def api_spawn_lost(request: web.Request) -> web.Response:
 async def api_spawn_mark_collected(request: web.Request) -> web.Response:
     """POST /api/spawn/mark-collected — suppress injection for blocking tool.
 
-    Called by the spawn_sub_agents MCP tool after it has polled and collected
-    results inline.  Records the agent IDs on the parent slot so that the
-    subsequent _subagent_done callback skips the _run_chat injection (the model
-    already processed these results as a tool-call return value).  Without this,
-    each completion event triggers a redundant LLM turn whose response shadows
-    any [OPTIONS:] buttons the synthesis message rendered.
+    Called by the spawn_sub_agents MCP tool for the results it returns inline,
+    so each member's completion never plays as a redundant turn (one whose
+    response would shadow any [OPTIONS:] buttons the synthesis rendered), and
+    never interrupts the parent's turn while it is blocked in the call.
+
+    ``phase`` names the step. The manager's ``inline_collections`` registry owns
+    what each step does, for every parent kind:
+
+    * ``claim``: the call is about to return. ``released`` ends the collection
+      ``/api/spawn`` opened for every member, however the call ends (a cancelled
+      call sends ``ids`` empty). ``ids`` are CLAIMED: named in the result, not
+      yet settled. A held member the call does not name is delivered as an
+      ordinary completion.
+    * ``commit``: the dispatcher wrote the call's response, so ``ids`` settle
+      (their delivered marks are written now, or when the completion arrives),
+      whether or not their claim landed first: a written response is the
+      stronger fact. ``released`` ends the collection as the claim would.
+    * ``drop``: the dispatcher dropped the response (the call was cancelled), so
+      ``ids`` are released for ordinary delivery.
+
+    A body with no ``phase`` is refused with ``400 invalid_phase``, so nothing
+    is marked and its members are delivered as ordinary completions.
+
+    ``call`` (the id the call sent as ``inline_call`` on ``/api/spawn``) makes
+    every step also end each member that call reserved, so a member whose
+    ``/api/spawn`` reply was lost is not held until its reservation expires.
     """
     state: DashboardState = request.app["state"]
+    over_cap: list[int] = []
+
+    def _well_formed(raw: Any) -> list[str]:
+        if not isinstance(raw, list):
+            return []
+        if len(raw) > _COLLECTED_IDS_CAP:
+            over_cap.append(len(raw) - _COLLECTED_IDS_CAP)
+        return [
+            aid
+            for aid in raw[:_COLLECTED_IDS_CAP]
+            if isinstance(aid, str) and 0 < len(aid) <= _COLLECTED_ID_MAX_LEN
+        ]
+
     try:
         body = await request.json()
     except Exception:
         return web.json_response({"error": "invalid JSON", "code": "invalid_json"}, status=400)
+    if not isinstance(body, dict):
+        return web.json_response(
+            {"error": "body must be an object", "code": "invalid_body"}, status=400
+        )
+    phase = body.get("phase")
+    if phase not in ("claim", "commit", "drop"):
+        return web.json_response(
+            {"error": "'phase' must be claim, commit or drop", "code": "invalid_phase"},
+            status=400,
+        )
     ids = body.get("ids")
-    if not ids or not isinstance(ids, list):
+    parent_session = str(body.get("parent_session", "") or "")
+    # The call this step belongs to: it also ends every member the call
+    # reserved, including one whose id the call never learned.
+    call = body.get("call")
+    if call is not None and not isinstance(call, str):
+        return web.json_response(
+            {"error": "'call' must be a string", "code": "invalid_call"}, status=400
+        )
+    # Every caller-supplied identity the registry would keep is checked whole,
+    # before anything below can retain it: the parent key, every named id and
+    # the call id.
+    named = [
+        aid
+        for raw in (ids, body.get("released"))
+        if isinstance(raw, list)
+        for aid in raw
+        if isinstance(aid, str)
+    ]
+    field = oversized_identity(parent_session, named, call or "")
+    if field:
+        lengths = {"parent_session": len(parent_session), "call_id": len(call or "")}
+        return _oversized_identity_refusal(
+            state, field, lengths.get(field) or max(len(a) for a in named)
+        )
+    released = _well_formed(body.get("released"))
+    if not isinstance(ids, list) or (not ids and not released and not call):
         return web.json_response(
             {"error": "'ids' array required", "code": "ids_required"}, status=400
         )
-    parent_session = str(body.get("parent_session", "") or "")
     _, refusal = await internal_memory_scope(request, "spawn.batch", claimed_session=parent_session)
     if refusal is not None:
         return refusal
+    # Every id the call names is claimed, whether or not the gateway still
+    # keeps the run's record: a held member whose record was evicted is still
+    # one the call returned, never an orphan to deliver.
+    returned = set(_well_formed(ids))
+    if over_cap:
+        logger.warning(
+            "mark-collected for %s named %d id(s) past the cap of %d; they are not recorded",
+            parent_session,
+            sum(over_cap),
+            _COLLECTED_IDS_CAP,
+        )
+    registry = getattr(state.subagents, "inline_collections", None)
+    if not isinstance(registry, InlineCollections) or not parent_session:
+        registry = None
+
+    if phase == "claim" and registry is not None:
+        # Synchronous, with no await between it and the reply: a completion
+        # whose callback runs after it finds every named id owned and is never
+        # injected into the turn still blocked on this request. A completion
+        # that runs during the earlier awaits (``request.json()``,
+        # ``internal_memory_scope``) is already held, since ``reserve`` recorded
+        # every member as collecting.
+        registry.finish(parent_session, set(released) | returned, returned, call=call)
     slot_name = dashboard_slot_key(parent_session)
-    if not slot_name:
+    if registry is None and not (slot_name and state.get_slot(slot_name)):
+        # No registry and no dashboard slot: nothing here could hold the ids.
         return web.json_response({"status": "no_slot"})
-    slot = state.get_slot(slot_name)
-    if not slot:
-        return web.json_response({"status": "no_slot"})
-    # Record the IDs (bounded to 200 to prevent unbounded growth). A member whose
-    # completion is already QUEUED on the slot (its delivery timed out waiting on
-    # this tool's turn) is settled here instead: the queued announce is removed
-    # so it never plays as a redundant turn, and its owed delivery marks are
-    # written now, since the tool's return value IS the consumption. Its id is
-    # kept out of the set, where nothing would ever discard it again.
-    wanted = {
-        aid
-        for aid in ids[:200]
-        if isinstance(aid, str) and 0 < len(aid) <= _COLLECTED_ID_MAX_LEN
-        # Only ids this gateway knows: nothing else will ever discard them.
-        and (state.subagents is None or state.subagents.get(aid) is not None)
-    }
-    owed: list[Any] = []
-    for item in list(slot._queue):
-        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
-        card = meta.get(SUBAGENT_COMPLETION_META_KEY) if meta else None
-        aid = card.get("agentId") if isinstance(card, dict) and card.get("kind") == "single" else ""
-        if item.get("kind") != SUBAGENT_COMPLETION_KIND or aid not in wanted:
-            continue
-        if slot.queue_remove_by_id(str(item.get("id") or "")) is None:
-            continue
-        wanted.discard(aid)
-        try:
-            owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
-        except Exception:
-            logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
-    room = max(0, _COLLECTED_IDS_CAP - len(slot._subagents_inline_collected))
-    slot._subagents_inline_collected.update(sorted(wanted)[:room])
+    if phase == "claim":
+        return web.json_response({"status": "ok", "claimed": len(returned)})
+    delivered = phase != "drop"
+    # A member whose completion is already QUEUED on a dashboard slot (its
+    # delivery timed out waiting on the tool's turn) is consumed by the written
+    # response: its announce is removed, so it never plays as a redundant turn,
+    # its owed delivery marks are written, and its claim simply ends.
+    queued, owed = (
+        _take_queued_collected(state, parent_session, returned) if delivered else ([], [])
+    )
+    settles: list[Any] = []
+    if registry is not None:
+        # ``released`` rides on the commit too, so the collection ends even
+        # when the claim was lost or this commit overtook it.
+        settles = registry.commit(
+            parent_session, returned - set(queued), delivered, released=released, call=call
+        )
+        registry.commit(parent_session, queued, False, call=None)
     if owed and state.subagents is not None:
         try:
             await state.subagents.settle_queued_delivery(owed)
         except Exception:
             logger.debug("Could not settle inline-collected deliveries", exc_info=True)
-    state.push_slots_update()
+    if queued:
+        state.push_slots_update()
+    if settles:
+        await asyncio.gather(*settles, return_exceptions=True)
     return web.json_response({"status": "ok", "marked": len(ids)})
+
+
+def _take_queued_collected(
+    state: DashboardState, parent_session: str, ids: set[str]
+) -> tuple[list[str], list[Any]]:
+    """Remove the queued announces of *ids*: the ids removed and their owed marks."""
+    slot_name = dashboard_slot_key(parent_session)
+    slot = state.get_slot(slot_name) if slot_name else None
+    if not slot:
+        return [], []
+    taken: list[str] = []
+    owed: list[Any] = []
+    for item in list(slot._queue):
+        meta = item.get("meta") if isinstance(item.get("meta"), dict) else {}
+        card = meta.get(SUBAGENT_COMPLETION_META_KEY) if meta else None
+        aid = card.get("agentId") if isinstance(card, dict) and card.get("kind") == "single" else ""
+        if item.get("kind") != SUBAGENT_COMPLETION_KIND or aid not in ids:
+            continue
+        if slot.queue_remove_by_id(str(item.get("id") or "")) is None:
+            continue
+        taken.append(aid)
+        try:
+            owed.extend(slot.take_pending_subagent_deliveries([str(item.get("content") or "")]))
+        except Exception:
+            logger.debug("Could not claim delivery marks for %s", aid, exc_info=True)
+    return taken, owed
 
 
 async def api_spawn_retry(request: web.Request) -> web.Response:

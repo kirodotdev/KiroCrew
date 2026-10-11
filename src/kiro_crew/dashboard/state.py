@@ -2942,7 +2942,6 @@ class _ChatSlot:
         "_synthesis_rechecks",
         "_synthesis_completion_turns",
         "_subagent_deliveries_inflight",
-        "_subagents_inline_collected",
         "_subagent_delivery_pending",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
@@ -3672,10 +3671,6 @@ class _ChatSlot:
         # fire-gate requires this to be 0 so a concurrently-finishing sibling
         # can't let an earlier turn fire synthesis before its result lands.
         self._subagent_deliveries_inflight: int = 0
-        # IDs of sub-agents whose results were already delivered inline via the
-        # blocking spawn_sub_agents MCP tool.  _subagent_done skips injection
-        # for these to prevent a duplicate turn that clobbers [OPTIONS:] buttons.
-        self._subagents_inline_collected: set[str] = set()
         # Queued sub-agent completions whose delivery tombstone is still owed:
         # queue-id -> the agent ids whose ``result.txt`` that row promises. A
         # completion routed into a BUSY slot is queued, so the parent's context
