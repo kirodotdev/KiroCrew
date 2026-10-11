@@ -2387,6 +2387,51 @@ class TestRenderer:
         labels = [b["text"] for row in final_kb["inline_keyboard"] for b in row]
         assert labels == ["A", "B"]
 
+    @staticmethod
+    def _parts_seen(fails: Any) -> list[str]:
+        # A three-part reply; ``fails(text, kwargs)`` says which sends fail.
+        class _Client(FakeClient):
+            async def send_message(self, chat_id: int, text: str, **kw: Any) -> Any:
+                if fails(text, kw):
+                    return None
+                return await super().send_message(chat_id, text, **kw)
+
+        cli = _Client()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+        reply = "\n\n".join(
+            (
+                "Part one. " + "alpha " * 500,
+                "Part two. " + "bravo " * 500,
+                "Part three. " + "charlie " * 400,
+            )
+        )
+
+        async def _go() -> None:
+            await r.on_turn_start()
+            await r.dispatch(OutputEvent(kind=TEXT_CHUNK, text=reply))
+            await r.dispatch(OutputEvent(kind=DONE, stop_reason=""))
+
+        asyncio.run(_go())
+        names = {"alpha": "1", "bravo": "2", "charlie": "3"}
+        seen = []
+        for text, _kb in cli.sent:
+            seen.append(next((n for w, n in names.items() if w in text), text))
+        return seen
+
+    def test_a_part_that_cannot_be_delivered_leaves_a_notice_in_its_place(self) -> None:
+        # Every send of the middle part fails. The later part still goes out, so
+        # a notice stands where the part is missing and the reply does not read
+        # as complete.
+        seen = self._parts_seen(lambda text, kw: "bravo" in text)
+        assert seen == ["1", "Part of this reply may not have been delivered.", "3"]
+
+    def test_a_reply_whose_parts_all_land_has_no_notice(self) -> None:
+        assert self._parts_seen(lambda text, kw: False) == ["1", "2", "3"]
+
+    def test_a_part_delivered_by_its_plain_fallback_has_no_notice(self) -> None:
+        seen = self._parts_seen(lambda text, kw: "bravo" in text and kw.get("parse_mode"))
+        assert seen == ["1", "2", "3"]
+
     def test_error_done_renders_error_when_no_text(self) -> None:
         cli = self._drive([OutputEvent(kind=DONE, stop_reason="error")])
         assert "Error" in cli.sent[-1][0]

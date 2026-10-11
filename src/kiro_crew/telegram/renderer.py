@@ -180,6 +180,9 @@ _THINKING_SCAFFOLD = "<blockquote expandable>💭 </blockquote>"
 # ``close(failure_reason=...)`` so the user is never told to retry an error
 # that says retrying will not help.
 _GENERIC_ERROR_TEXT = "⚠️ Error — please try again"
+#: Sent in place of a part of a reply whose every send failed, so the later parts
+#: do not read as the whole reply.
+_LOST_PART_NOTICE = "Part of this reply may not have been delivered."
 
 
 def _display_safe(text: str) -> str:
@@ -2174,6 +2177,8 @@ class TelegramRenderer(Renderer):
                 if mid is not None:
                     self._tally_redactions(text)
                     self._record_sent(text)
+                else:
+                    await self._send_lost_part_notice()
 
             finally:
                 # Retire the live message: this segment is final, so nothing
@@ -2584,8 +2589,25 @@ class TelegramRenderer(Renderer):
                 self._chat_id, _strip_md(chunk), message_thread_id=self._thread_id
             ):
                 self._record_sent(chunk)
+            else:
+                await self._send_lost_part_notice()
             return
         self._record_sent(chunk)
+
+    async def _send_lost_part_notice(self) -> None:
+        """Mark the place of a part whose every send failed.
+
+        The later parts of the reply still go out, so without a mark the reply
+        reads as complete. Best-effort: a notice that cannot be sent either is
+        logged, never raised.
+        """
+        logger.warning("Telegram: a part of the reply to chat %s was not delivered", self._chat_id)
+        try:
+            await self._client.send_message(
+                self._chat_id, _LOST_PART_NOTICE, message_thread_id=self._thread_id
+            )
+        except Exception:
+            logger.debug("Telegram: the lost-part notice failed", exc_info=True)
 
     def _chip_for_seal(self, i: int) -> str | None:
         """The steer chip (a "> quote" blockquote of the USER's own words) that
