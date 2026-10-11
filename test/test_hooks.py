@@ -3919,3 +3919,74 @@ class TestShellCommandTextLeavesThePathTier:
         )
         assert result.action == TOOL_DENY
         assert "sensitive path" in result.reason
+
+    def test_a_verified_tool_identity_title_leaves_the_path_tier(self, monkeypatch):
+        """A title that is exactly the call's own verified ``@server/tool``
+        identity names a tool, not a file -- a resolver stall cannot refuse it."""
+        from kiro_crew import hooks
+
+        asked: list[str] = []
+
+        def stalled(p, base_dir=None):
+            asked.append(p)
+            return f"{hooks.security.UNVERIFIABLE_PATH_PREFIX}, so it is refused. Path: {p!r}"
+
+        monkeypatch.setattr(hooks, "sensitive_path_refusal", stalled)
+        result = HookManager().on_tool_call(
+            "@kirocrew-core/wait",
+            mcp_server_name="kirocrew-core",
+            mcp_tool_name="wait",
+            mcp_identity_trusted=True,
+        )
+        assert "@kirocrew-core/wait" not in asked
+        assert result.action != TOOL_DENY or "Path:" not in result.reason
+
+    def test_a_bare_server_title_with_a_known_tool_is_not_exempt(self, monkeypatch):
+        """When the tool is proven the call's own identity is ``@server/tool``; a
+        bare ``@server`` title names a broader thing than the specific tool that
+        ran, so it is NOT this call's identity and must stay path-gated."""
+        from kiro_crew import hooks
+
+        asked: list[str] = []
+
+        def recording(p, base_dir=None):
+            asked.append(p)
+            return f"Blocked: access to sensitive path: {p}"
+
+        monkeypatch.setattr(hooks, "sensitive_path_refusal", recording)
+        result = HookManager().on_tool_call(
+            "@kirocrew-core",
+            mcp_server_name="kirocrew-core",
+            mcp_tool_name="wait",
+            mcp_identity_trusted=True,
+        )
+        assert "@kirocrew-core" in asked
+        assert result.action == TOOL_DENY
+
+    @pytest.mark.parametrize(
+        ("title", "trusted"),
+        [
+            ("@kirocrew-core/wait", False),
+            ("~/.ssh/id_rsa", True),
+            ("@kirocrew-core/wait/x", True),
+            ("@kirocrew-core/other", True),
+        ],
+    )
+    def test_any_other_title_of_an_mcp_call_is_still_path_gated(self, monkeypatch, title, trusted):
+        from kiro_crew import hooks
+
+        asked: list[str] = []
+
+        def recording(p, base_dir=None):
+            asked.append(p)
+            return f"Blocked: access to sensitive path: {p}"
+
+        monkeypatch.setattr(hooks, "sensitive_path_refusal", recording)
+        result = HookManager().on_tool_call(
+            title,
+            mcp_server_name="kirocrew-core",
+            mcp_tool_name="wait",
+            mcp_identity_trusted=trusted,
+        )
+        assert title in asked
+        assert result.action == TOOL_DENY
