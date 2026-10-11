@@ -41,16 +41,20 @@ continuation_runtime = _continuation_runtime
 
 
 @contextmanager
-def _hermetic_cfg(role_models=None, agent_pins=None):
+def _hermetic_cfg(role_models=None, agent_pins=None, backend=None):
     """A config the verdict helpers AND the provider factory resolve
     identically on any box: the global model stays the unresolved ``auto``
     sentinel (``_resolve_agent_model`` would otherwise read the installed
     ``~/.kiro/agents/kirocrew.json`` from disk) and named-agent pins come from
-    *agent_pins* instead of the real agents directory."""
+    *agent_pins* instead of the real agents directory. *backend* selects
+    ``agent.acp_backend``; omitted, the default (kiro) backend is kept."""
     from kiro_crew.config.loader import AgentConfig, KiroCrewConfig
 
     pins = dict(agent_pins or {})
-    cfg = KiroCrewConfig(agent=AgentConfig(role_models=role_models or {}))
+    agent_cfg = AgentConfig(role_models=role_models or {})
+    if backend is not None:
+        agent_cfg.acp_backend = backend
+    cfg = KiroCrewConfig(agent=agent_cfg)
     with (
         patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
         patch.object(KiroCrewConfig, "_resolve_agent_model", staticmethod(lambda: "")),
@@ -989,6 +993,61 @@ class TestVerdictFactoryParity:
         assert resolved == gate_model
         assert (note != "") == gate_applies
         assert (drop == "") == gate_applies
+
+
+class TestUnpinnedSpawnVerdictFollowsTheBackend:
+    """With no model pinned the factory carries the level unkeyed, and a
+    config-option harness binds it to the model it serves at start. The spawn
+    receipt reports that delivery there, and keeps the drop on the kiro family,
+    whose unpinned ``auto`` takes no level."""
+
+    def _verdict(self, model: str, backend: str) -> tuple[str, str]:
+        from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+
+        with _hermetic_cfg(backend=backend):
+            return (
+                effort_drop_reason(model, "high", ""),
+                effort_applied_note(model, "high", ""),
+            )
+
+    @pytest.mark.parametrize("backend", ["claude", "codex", "deepseek", "pi"])
+    @pytest.mark.parametrize("model", ["", "auto"])
+    def test_config_option_harness_reports_the_bind_not_a_drop(self, backend, model):
+        drop, note = self._verdict(model, backend)
+        assert drop == ""
+        assert "bound at start to the model the backend serves" in note
+
+    @pytest.mark.parametrize("backend", ["", "kas"])
+    def test_kiro_family_still_reports_the_drop(self, backend):
+        drop, note = self._verdict("", backend)
+        assert "auto" in drop
+        assert note == ""
+
+    @pytest.mark.parametrize("backend", ["", "claude", "pi"])
+    def test_verdict_agrees_with_what_the_factory_carries(self, backend, tmp_path):
+        """The receipt claims delivery exactly when the factory hands the
+        provider an unbound level on a harness whose start-up push applies it."""
+        from kiro_crew.agent_sdk.capabilities import capabilities_for
+        from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+
+        with _hermetic_cfg(backend=backend) as cfg:
+            with patch("kiro_crew.providers.acp.AcpProvider") as provider_cls:
+                cfg.create_provider_factory()(
+                    "parity-key",
+                    agent=None,
+                    model_override=None,
+                    cwd=str(tmp_path),
+                    reasoning_effort_override="high",
+                )
+            drop = effort_drop_reason("", "high", "")
+            note = effort_applied_note("", "high", "")
+        kwargs = provider_cls.call_args.kwargs
+        assert kwargs["acp_backend"] == backend
+        assert kwargs["effort_per_model"] == {}
+        assert kwargs["unbound_effort"] == "high"
+        applies = capabilities_for(backend).effort_via_config_option
+        assert (note != "") == applies
+        assert (drop == "") == applies
 
 
 class TestAppliedLineRendering:
