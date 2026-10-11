@@ -1,8 +1,8 @@
-import { useContext } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import type { Element as HastElement } from 'hast'
 import { safeHttpUrl } from '../../lib/safeUrl'
 import { sessionKeyFrom, sessionKeyFromShort } from '../../utils/sessionKeys'
-import { LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
+import { ClosedSessionCtx, LinkUnfurlCtx, type SessionActions, type SidebarFolderActions } from './contexts'
 
 /**
  * Where a rendered link or chip points: an in-app artifact route, whether an
@@ -114,6 +114,143 @@ export function resolveSessionChip(raw: string, actions: SessionActions): { key:
   const title = actions.sessions.get(key)
   if (title === undefined) return null
   return { key, title }
+}
+
+type ClosedRow = { key: string; title: string }
+/** A probe's answer: the row, a definite "no such session", or a failed request. */
+type ClosedAnswer = ClosedRow | null | 'failed'
+
+/**
+ * One probe per key per page life. A found row and a definite "no such
+ * session" are both kept; a failed request is not, so a later mount retries.
+ * A session resumed from here becomes open and resolves through the roster
+ * first, so a kept row never shadows a live tab.
+ */
+const closedProbes = new Map<string, Promise<ClosedAnswer>>()
+const closedAnswers = new Map<string, ClosedRow | null>()
+
+function probeClosed(key: string, lookup: (key: string) => Promise<ClosedRow | null>, fresh = false): Promise<ClosedAnswer> {
+  let pending = fresh ? undefined : closedProbes.get(key)
+  if (!pending) {
+    pending = lookup(key).then(
+      (row): ClosedAnswer => { closedAnswers.set(key, row); return row },
+      (): ClosedAnswer => { closedProbes.delete(key); return 'failed' },
+    )
+    closedProbes.set(key, pending)
+  }
+  return pending
+}
+
+/** Test seam: forget every probe answer. */
+export function resetClosedSessionProbes(): void {
+  closedProbes.clear()
+  closedAnswers.clear()
+}
+
+/**
+ * Set on a closed-session target whose check failed (the background probe, or
+ * the check a click runs). The probe itself says nothing; the reader learns of
+ * the failure only when they click, through an inline notice at that spot.
+ */
+export type ClosedSessionFailure = {
+  /** The reader clicked, so the inline notice is up. */
+  shown: boolean
+  /** A retry is in flight. */
+  busy: boolean
+  /** Check again; open the session if it is there. */
+  retry: () => void
+}
+
+export type SessionChipTarget = {
+  key: string
+  title: string
+  open: (key: string) => void
+  /** Present only while the closed session's check is failing. */
+  failure?: ClosedSessionFailure
+}
+
+/**
+ * `resolveSessionChip`, widened to a CLOSED session the page can resume.
+ *
+ * An open session resolves exactly as before, and opens through
+ * `onSessionOpen`. A miss falls back to `ClosedSessionCtx.lookup` for a FULL key
+ * only (a short name like `chat-7` has no timestamp, so it cannot say which past
+ * session it means), and only when the open roster is wired, so an offline or
+ * no-controller render stays as it was. Until the probe answers there is no
+ * target, and a key the gateway says does not exist never gets one.
+ *
+ * A probe that FAILED (not a 404) still gives a target, carrying `failure`: its
+ * click shows the inline notice instead of opening, and the notice's retry asks
+ * again. `open` is the activation the caller must use, since the kinds of target
+ * act differently.
+ */
+export function useSessionChip(raw: string | null, actions: SessionActions): SessionChipTarget | null {
+  const closed = useContext(ClosedSessionCtx)
+  const live = raw ? resolveSessionChip(raw, actions) : null
+  const full = !live && raw && closed.lookup && closed.open && actions.onSessionOpen && actions.sessions ? sessionKeyFrom(raw) : null
+  const candidate = full && full !== actions.activeSession && !actions.sessions!.has(full) ? full : null
+  const [answer, setAnswer] = useState<{ for: string; value: ClosedAnswer } | null>(null)
+  const [notice, setNotice] = useState<{ for: string; busy: boolean } | null>(null)
+  useEffect(() => {
+    if (!candidate || !closed.lookup || closedAnswers.has(candidate)) return
+    let current = true
+    void probeClosed(candidate, closed.lookup).then((value) => { if (current) setAnswer({ for: candidate, value }) })
+    return () => { current = false }
+  }, [candidate, closed.lookup])
+  if (live) {
+    // Open now: the roster speaks for it. Forget a closed-time answer, so a
+    // title it had then is not shown if the session is closed again later.
+    const key = live.key
+    if (closedAnswers.has(key)) { closedAnswers.delete(key); closedProbes.delete(key) }
+    return { ...live, open: actions.onSessionOpen! }
+  }
+  if (!candidate || !closed.open || !closed.lookup) return null
+  // This chip's own failed check wins; otherwise the shared answer, then ours.
+  const mine = answer?.for === candidate ? answer : null
+  const value: ClosedAnswer = mine?.value === 'failed'
+    ? 'failed'
+    : closedAnswers.has(candidate) ? closedAnswers.get(candidate)! : mine ? mine.value : null
+  if (value === null) return null
+  const openClosed = closed.open
+  const lookup = closed.lookup
+  const key = candidate
+  const settle = (next: ClosedAnswer) => setAnswer({ for: key, value: next })
+  // `open` checks again that the session still exists: the cached answer can
+  // be older than a delete. Gone since: the target drops. Check failed: the
+  // inline notice comes up at the spot the reader clicked.
+  const openRow = (row: ClosedRow) => {
+    void openClosed(row).then((outcome) => {
+      if (outcome === 'gone') {
+        closedProbes.delete(key)
+        closedAnswers.set(key, null)
+        setNotice(null)
+        settle(null)
+      } else if (outcome === 'failed') {
+        // Local to this chip: the shared answer stays, so another chip for the
+        // same key is not dropped by this one's failed check.
+        settle('failed')
+        setNotice({ for: key, busy: false })
+      } else {
+        setNotice(null)
+      }
+    })
+  }
+  if (value !== 'failed') return { key, title: value.title, open: () => openRow(value) }
+  const shown = notice?.for === key
+  const failure: ClosedSessionFailure = {
+    shown,
+    busy: shown && notice!.busy,
+    retry: () => {
+      setNotice({ for: key, busy: true })
+      void probeClosed(key, lookup, true).then((next) => {
+        if (next === 'failed') { setNotice({ for: key, busy: false }); return }
+        settle(next)
+        if (next === null) { setNotice(null); return }
+        openRow(next)
+      })
+    },
+  }
+  return { key, title: key, open: () => setNotice({ for: key, busy: false }), failure }
 }
 
 /**

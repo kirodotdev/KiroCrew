@@ -191,6 +191,7 @@ internal-secret caller whose calling session belongs to an app) by ownership:
   autonudge, subagents or the task runner are never resolvable by an app, and
   `GET /api/approvals`, which lists only those, is empty for an app.
 - `GET /api/sessions`, `GET /api/sessions/search`, `GET /api/sessions/{key}`,
+  `GET /api/sessions/{key}/meta`,
   `DELETE /api/sessions/{key}` and `POST /api/sessions/summarize` reach only
   transcripts whose metadata records the calling app as owner. A delete is also
   refused when the live slot it would close is not the app's, because the slot

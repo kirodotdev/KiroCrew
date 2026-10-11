@@ -159,6 +159,30 @@ export type SessionActions = {
 export const SessionActionCtx = createContext<SessionActions>({})
 
 /**
+ * How a session chip reaches a session that is NOT open: a closed conversation
+ * whose transcript is still on disk.
+ *
+ * `lookup` asks the gateway about ONE full key (`GET /api/sessions/{key}/meta`)
+ * and answers that session's transcript key and title, or null when no such
+ * session exists, so a forged key still gets no chip. It is a background read
+ * and raises nothing itself: a failed read keeps the chip live, and only the
+ * reader's click on it shows `ClosedSessionNotice` at that spot. `open` resumes it,
+ * the same way the sidebar's Older-sessions row does. Both absent (every host but
+ * the chat page) keeps today's rule: only an open session chips.
+ *
+ * Provided ONCE by the page, like `SidebarFolderCtx`, so every renderer under
+ * it offers the same chip without each re-plumbing it. Only consulted while the
+ * open roster is wired (`SessionActions.sessions`), so offline it stays off too.
+ */
+export type ClosedSessionActions = {
+  lookup?: (key: string) => Promise<{ key: string; title: string } | null>
+  /** Resumes the session after checking again that it still exists, and says
+   *  so itself when it cannot. `gone` tells the chip to drop. */
+  open?: (session: { key: string; title: string }) => Promise<'opened' | 'gone' | 'failed'>
+}
+export const ClosedSessionCtx = createContext<ClosedSessionActions>({})
+
+/**
  * Where a SIDEBAR-folder chip sends its activation, plus the folder list that
  * decides whether a chip is offered at all.
  *
