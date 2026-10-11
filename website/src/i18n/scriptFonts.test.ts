@@ -87,7 +87,21 @@ const COMMON_ALIASES = [
   'KC Bengali Fallback',
 ] as const
 
-const ALIASES = [...SC_ALIASES, ...REGIONAL_ALIASES, ...COMMON_ALIASES] as const
+/**
+ * Kana-only and Hangul-only faces added to the DEFAULT token (#13085). Unlike the
+ * REGIONAL faces, these carry NO Han range, so they draw only the kana/Hangul code
+ * points that render as tofu under a non-ja/ko UI and leave bare Han to the OS
+ * cascade. They are regular aliases for the generic face checks (local()-only,
+ * out of Latin, real 400+700 pair).
+ */
+const DEFAULT_CJK_ALIASES = [
+  'KC Kana Fallback',
+  'KC Kana Mono Fallback',
+  'KC Hangul Fallback',
+  'KC Hangul Mono Fallback',
+] as const
+
+const ALIASES = [...SC_ALIASES, ...REGIONAL_ALIASES, ...DEFAULT_CJK_ALIASES, ...COMMON_ALIASES] as const
 
 /**
  * Ranges that must stay OUT of every alias. Latin proper plus general punctuation:
@@ -308,6 +322,20 @@ describe('script fallback faces', () => {
     }
   })
 
+  it('tries the dedicated JP face before the pan-CJK Droid Sans Fallback in KC Kana Fallback', () => {
+    // 'Droid Sans Fallback' is a broad pan-CJK face; 'Source Han Sans JP' is a
+    // dedicated Japanese face. A kana glyph should be drawn by the dedicated face
+    // when both are installed, so the dedicated name must come first in the stack.
+    for (const block of faceBlocks('KC Kana Fallback')) {
+      const droid = block.indexOf("local('Droid Sans Fallback')")
+      const han = block.indexOf("local('Source Han Sans JP")
+      expect(droid, "KC Kana Fallback must list 'Droid Sans Fallback'").toBeGreaterThan(-1)
+      expect(han, "KC Kana Fallback must list a 'Source Han Sans JP' face").toBeGreaterThan(-1)
+      expect(han, "'Source Han Sans JP' must precede 'Droid Sans Fallback' in KC Kana Fallback")
+        .toBeLessThan(droid)
+    }
+  })
+
   it('declares both tokens in :root so every consumer inherits them', () => {
     // If either moved into a [data-theme=…] block or was renamed, every --font-body
     // would become guaranteed-invalid at computed-value time and `font-family:
@@ -364,6 +392,151 @@ describe('script fallback faces', () => {
     expect(bareZh, 'bare :lang(zh) matches Traditional Chinese tags').toBeNull()
     expect(INDEX_CSS).toMatch(/html:lang\(zh-CN\)/)
     expect(INDEX_CSS).not.toMatch(/:lang\(zh-Hans\)/)
+  })
+})
+
+/**
+ * CJK content fallback in the DEFAULT token (#13085). The default
+ * `--script-fallbacks` / `--script-fallbacks-mono` tokens (the ones that apply
+ * under a non-ja/ko UI, e.g. an English display language) named no face that
+ * draws kana or Hangul, so Japanese and Korean CONTENT fell to the browser's
+ * per-script OS fallback and rendered as tofu on the Linux Electron AppImage —
+ * everywhere, because every surface inherits these tokens.
+ *
+ * The fix adds kana-only and Hangul-only faces to those default tokens. Three
+ * properties are pinned here, none visible from reading the token alone:
+ *  1. The default token carries the kana and Hangul faces (sans), and the mono
+ *     token carries their mono variants. This is what reaches every surface.
+ *  2. Those faces DRAW kana (U+3042) and Hangul (U+AC00) but carry NO Han range,
+ *     so bare Han (U+4E00) is left to the OS/locale cascade — a Japanese/Korean
+ *     Han glyph form is never forced onto all content under an English UI, which
+ *     is the regression the :root/html:lang() split exists to prevent. (The
+ *     "out of Latin" and "real 400/700" guarantees are already covered for these
+ *     faces by the generic alias checks above.)
+ *  3. These are added to the DEFAULT token specifically, not to a per-container
+ *     selector — so session titles, the sidebar, file names and every other
+ *     non-message surface are covered too.
+ */
+describe('CJK content fallback in the default token (#13085)', () => {
+  const DEFAULT_FACES = [
+    { script: 'kana', body: 'KC Kana Fallback', mono: 'KC Kana Mono Fallback', draws: 0x3042, han: false },
+    { script: 'Hangul', body: 'KC Hangul Fallback', mono: 'KC Hangul Mono Fallback', draws: 0xac00, han: false },
+  ] as const
+
+  const rootBlock = ruleBody(/:root\s*\{([^}]*)\}/)
+  const rootSans = scriptToken(rootBlock)
+  const rootMono = scriptToken(rootBlock, true)
+
+  it('has a :root block with both tokens', () => {
+    expect(rootBlock, 'no :root block found in index.css').not.toBe('')
+    expect(rootSans, 'no --script-fallbacks in :root').not.toBe('')
+    expect(rootMono, 'no --script-fallbacks-mono in :root').not.toBe('')
+  })
+
+  it.each(DEFAULT_FACES)('puts $script coverage in the default sans and mono tokens', ({ body, mono }) => {
+    expect(rootSans, `${body} missing from the default --script-fallbacks token`).toContain(body)
+    expect(rootMono, `${mono} missing from the default --script-fallbacks-mono token`).toContain(mono)
+  })
+
+  it.each(DEFAULT_FACES)('draws $script but NOT bare Han, so Han stays locale-neutral', ({ body, mono, draws }) => {
+    for (const family of [body, mono]) {
+      expect(covers(family, draws), `'${family}' must cover ${draws.toString(16)}`).toBe(true)
+      // A Han range would force this region's ideograph forms onto all content.
+      expect(covers(family, 0x4e00), `'${family}' must NOT claim bare Han U+4E00`).toBe(false)
+    }
+  })
+
+  it('leads the mono token with the mono variants, falling through to the proportional faces', () => {
+    for (const { body, mono } of DEFAULT_FACES) {
+      expect(rootMono, `${mono} missing from the default mono token`).toContain(mono)
+      expect(rootMono, `${body} must follow ${mono} in the default mono token`).toContain(body)
+      expect(rootMono.indexOf(mono), `${mono} must lead ${body} in the default mono token`)
+        .toBeLessThan(rootMono.indexOf(body))
+    }
+  })
+
+  it('fixes CJK content without a per-container data-content-script hook', () => {
+    // The default-token fix reaches every surface by inheritance, so the earlier
+    // per-container detector and its selectors must be gone.
+    expect(INDEX_CSS, 'per-container data-content-script rules should be removed').not.toMatch(
+      /\.msg-content\[data-content-script/,
+    )
+  })
+})
+
+/**
+ * Cross-script coverage inside each html:lang() token (#13085). Each
+ * `html:lang(ja|ko|zh-CN)` rule REPLACES the default `--script-fallbacks`
+ * token with its own regional face, and a regional face draws only its own
+ * script's CJK: `KC Japanese Fallback` has no Hangul, `KC Korean Fallback` has
+ * no kana, and `KC Han Fallback` has neither. So without this, kana under a ko
+ * UI, Hangul under a ja or zh-CN UI, and both under a zh-CN UI fall to the OS
+ * cascade and render as tofu — the SAME #13085 bug, just in a different UI
+ * language.
+ *
+ * The fix appends the kana-only / Hangul-only aliases (the ones the regional
+ * face omits) AFTER the regional face in each token. They carry no Han range,
+ * so the leading regional face still wins every shared ideograph; they only add
+ * coverage for the script that was previously tofu. Pinned here per locale:
+ *  - the kana/Hangul alias the regional face lacks is present in both the sans
+ *    and mono tokens;
+ *  - it follows the regional face, never leads it, so Han glyph forms are never
+ *    overridden;
+ *  - the mono token still leads its mono variant before the proportional one.
+ */
+describe('cross-script CJK coverage in html:lang() tokens (#13085)', () => {
+  // Per locale: the regional face that must lead, and the alias(es) the regional
+  // face does NOT cover and so must follow it. `probe` is a code point only the
+  // appended alias can draw, proving the token actually reaches it.
+  const CASES = [
+    {
+      lang: 'zh-CN',
+      lead: 'KC Han Fallback',
+      leadMono: 'KC Han Mono Fallback',
+      appended: [
+        { sans: 'KC Kana Fallback', mono: 'KC Kana Mono Fallback', probe: 0x3042, script: 'kana' },
+        { sans: 'KC Hangul Fallback', mono: 'KC Hangul Mono Fallback', probe: 0xac00, script: 'Hangul' },
+      ],
+    },
+    {
+      lang: 'ja',
+      lead: 'KC Japanese Fallback',
+      leadMono: 'KC Japanese Mono Fallback',
+      appended: [
+        { sans: 'KC Hangul Fallback', mono: 'KC Hangul Mono Fallback', probe: 0xac00, script: 'Hangul' },
+      ],
+    },
+    {
+      lang: 'ko',
+      lead: 'KC Korean Fallback',
+      leadMono: 'KC Korean Mono Fallback',
+      appended: [
+        { sans: 'KC Kana Fallback', mono: 'KC Kana Mono Fallback', probe: 0x3042, script: 'kana' },
+      ],
+    },
+  ] as const
+
+  it.each(CASES)('$lang carries the kana/Hangul its regional face omits', ({ lang, lead, leadMono, appended }) => {
+    const block = htmlLangRuleBody(lang)
+    expect(block, `no html:lang(${lang}) block found in index.css`).not.toBe('')
+    const sans = scriptToken(block)
+    const mono = scriptToken(block, true)
+
+    for (const { sans: s, mono: m, probe, script } of appended) {
+      // Present in both tokens.
+      expect(sans, `${s} missing from the ${lang} sans token`).toContain(s)
+      expect(mono, `${m} missing from the ${lang} mono token`).toContain(m)
+      // Follows the regional face, never leads it: a cross-script alias must not
+      // sit in front of the UI language's own face.
+      expect(sans.indexOf(lead), `${s} must follow ${lead} in the ${lang} sans token`)
+        .toBeLessThan(sans.indexOf(s))
+      expect(mono.indexOf(leadMono), `${m} must follow ${leadMono} in the ${lang} mono token`)
+        .toBeLessThan(mono.indexOf(m))
+      // The appended alias actually draws the previously-tofu script, and still
+      // carries no Han range, so the regional face keeps every shared ideograph.
+      expect(covers(s, probe), `'${s}' must cover ${script} U+${probe.toString(16)}`).toBe(true)
+      expect(covers(s, 0x4e00), `'${s}' must NOT claim bare Han U+4E00`).toBe(false)
+    }
   })
 })
 
