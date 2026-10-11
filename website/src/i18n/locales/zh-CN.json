@@ -15774,7 +15774,17 @@
         "sound_save_failed": "无法保存提示音设置。请在浏览器设置中为此网站释放存储空间，然后重试。",
         "custom_sound_deleted": "已删除 {{name}}。",
         "custom_sound_undo": "撤销",
-        "custom_sound_option": "{{name}}（自定义）"
+        "custom_sound_option": "{{name}}（自定义）",
+        "mouse_haptics": "Logitech 鼠标触觉反馈",
+        "mouse_haptics_description": "每次播放通知提示音时，通过 Logi Options+ 的 {{productName}} 插件让支持触觉反馈的 Logitech 鼠标振动。振动不受音量影响，音量为 0% 时只振动、不出声。",
+        "mouse_haptics_needs_sound": "开启“收到新通知时播放提示音”后才能使用鼠标触觉反馈。",
+        "mouse_haptics_checking": "正在查找 {{productName}} 插件…",
+        "mouse_haptics_connected": "插件已连接。可在 Logi Options+ 的“触觉反馈”中为每种提醒选择振动效果。",
+        "mouse_haptics_not_found": "未找到插件。请在 Logi Options+ 中打开你的鼠标 → 触觉反馈 → 安装和卸载插件，并在该页面打开时打开插件文件。<guide>如何获取插件</guide>",
+        "mouse_haptics_unreachable": "无法连接到这台电脑上的插件。Logi Options+ 可能已关闭，或插件可能尚未安装。",
+        "mouse_haptics_save_failed": "无法保存此设置。此浏览器的存储空间可能已满或被阻止。",
+        "mouse_haptics_install_guidance": "请在 Logi Options+ 中打开你的鼠标 → 触觉反馈 → 安装和卸载插件，并在该页面打开时打开插件文件。<guide>如何获取插件</guide>",
+        "mouse_haptics_loopback_only": "仅在 {{productName}} 桌面应用中可用，或在连接鼠标的电脑上用浏览器通过 localhost 地址打开仪表板时可用。"
       },
       "privacyPanel": {
         "recordMetricsLabel": "记录指标",

@@ -2144,6 +2144,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "description": "Plays a sound when dictation stops before you end it"
   },
   {
+    "id": "notifications.logitech-mouse-haptics",
+    "label": "Logitech mouse haptics",
+    "labelKey": "pages.settings.notificationsPanel.mouse_haptics",
+    "description": "Buzzes a Logitech mouse with haptic feedback whenever a notification sound plays, through the Kiro Crew plugin for Logi Options+. The buzz ignores the volume, so at 0% you feel alerts without hearing them.",
+    "tab": "notifications",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sound"
+    }
+  },
+  {
     "id": "notifications.mark-sessions-unread-only-when-they-need-you",
     "label": "Mark sessions unread only when they need you",
     "labelKey": "pages.settings.notificationsPanel.unread_only_when_done_or_waiting",

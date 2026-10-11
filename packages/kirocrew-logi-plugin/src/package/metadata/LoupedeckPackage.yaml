@@ -1,0 +1,24 @@
+type: plugin4
+
+name: KiroCrew # brand-ok: Logi package id; displayName below is what Options+ shows
+displayName: Kiro Crew
+description: Feel Kiro Crew alerts on your MX Master 4. The Kiro Crew app tells this plugin when an agent finishes, needs your input, or posts a notification, and Options+ plays the haptic you choose for each. # wokeignore:rule=master
+
+pluginFileName: KiroCrewPlugin.dll
+version: 1.0
+author: Kiro Crew
+copyright: Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+
+pluginFolderWin: bin
+pluginFolderMac: bin
+
+pluginCapabilities:
+    - HasHapticMapping
+
+# Haptic events arrived in Plugin API 6.2.1 (Logi Options+ 1.95).
+minimumLoupedeckVersion: 6.2
+
+license: Apache-2.0
+licenseUrl: https://github.com/kirodotdev/KiroCrew/blob/main/LICENSE
+supportPageUrl: https://github.com/kirodotdev/KiroCrew/issues
+homePageUrl: https://github.com/kirodotdev/KiroCrew

@@ -15786,7 +15786,17 @@
         "sound_save_failed": "소리 설정을 저장하지 못했습니다. 브라우저 설정에서 이 사이트의 저장 공간을 확보한 뒤 다시 시도하세요.",
         "custom_sound_deleted": "{{name}}을(를) 삭제했습니다.",
         "custom_sound_undo": "실행 취소",
-        "custom_sound_option": "{{name}}(내 사운드)"
+        "custom_sound_option": "{{name}}(내 사운드)",
+        "mouse_haptics": "Logitech 마우스 햅틱",
+        "mouse_haptics_description": "알림음이 울릴 때마다 Logi Options+용 {{productName}} 플러그인을 통해 햅틱 피드백을 지원하는 Logitech 마우스를 진동시킵니다. 진동은 음량과 관계없으므로 음량이 0%여도 소리 없이 알림을 느낄 수 있습니다.",
+        "mouse_haptics_needs_sound": "마우스 햅틱을 사용하려면 ‘새 알림에 소리 재생’을 켜세요.",
+        "mouse_haptics_checking": "{{productName}} 플러그인을 찾는 중…",
+        "mouse_haptics_connected": "플러그인이 연결되었습니다. 알림별 진동은 Logi Options+의 햅틱 피드백에서 선택하세요.",
+        "mouse_haptics_not_found": "플러그인을 찾을 수 없습니다. Logi Options+에서 사용 중인 마우스 → 햅틱 피드백 → 플러그인 설치 및 제거를 연 다음, 그 페이지가 열려 있는 상태에서 플러그인 파일을 여세요. <guide>플러그인 받는 방법</guide>",
+        "mouse_haptics_unreachable": "이 컴퓨터에서 플러그인에 연결할 수 없습니다. Logi Options+가 닫혀 있거나 플러그인이 아직 설치되지 않았을 수 있습니다.",
+        "mouse_haptics_save_failed": "이 설정을 저장할 수 없습니다. 이 브라우저의 저장 공간이 가득 찼거나 차단되어 있을 수 있습니다.",
+        "mouse_haptics_install_guidance": "Logi Options+에서 사용 중인 마우스 → 햅틱 피드백 → 플러그인 설치 및 제거를 연 다음, 그 페이지가 열려 있는 상태에서 플러그인 파일을 여세요. <guide>플러그인 받는 방법</guide>",
+        "mouse_haptics_loopback_only": "{{productName}} 데스크톱 앱에서, 또는 마우스가 연결된 컴퓨터의 브라우저에서 localhost 주소로 대시보드를 열었을 때만 작동합니다."
       },
       "postureDisclosure": {
         "filter": "{{label}} 필터",

@@ -246,6 +246,7 @@ _EXTERNAL_REPO_MARKERS: tuple[str, ...] = (
 # The check is deliberately data-driven rather than a grep, so that adding a
 # coupling is a one-line change here and is impossible to forget silently.
 CODE_COUPLED_DOCS: dict[str, tuple[str, ...]] = {
+    "src/kiro_crew/docs/dashboard.md": ("website/src/pages/settings/NotificationsPanel.tsx",),
     "src/kiro_crew/docs/discord-integration.md": ("website/src/pages/settings/DiscordPanel.tsx",),
     "src/kiro_crew/docs/feishu-integration.md": ("website/src/pages/settings/FeishuPanel.tsx",),
     "src/kiro_crew/docs/imessage-integration.md": ("website/src/pages/settings/IMessagePanel.tsx",),

@@ -7412,7 +7412,17 @@
         "sound_save_failed": "Could not save the sound setting. Free up space for this site in your browser settings, then try again.",
         "custom_sound_deleted": "Deleted {{name}}.",
         "custom_sound_undo": "Undo",
-        "custom_sound_option": "{{name}} (yours)"
+        "custom_sound_option": "{{name}} (yours)",
+        "mouse_haptics": "Logitech mouse haptics",
+        "mouse_haptics_description": "Buzzes a Logitech mouse with haptic feedback whenever a notification sound plays, through the {{productName}} plugin for Logi Options+. The buzz ignores the volume, so at 0% you feel alerts without hearing them.",
+        "mouse_haptics_needs_sound": "Turn on “Play sound on new notifications” to use mouse haptics.",
+        "mouse_haptics_checking": "Looking for the {{productName}} plugin…",
+        "mouse_haptics_connected": "Plugin connected. Choose each alert’s vibration in Logi Options+, under Haptic feedback.",
+        "mouse_haptics_not_found": "Plugin not found. In Logi Options+, open your mouse → Haptic feedback → Install and uninstall plugins, then open the plugin file while that page is showing. <guide>How to get the plugin</guide>",
+        "mouse_haptics_unreachable": "The plugin could not be reached on this computer. Logi Options+ may be closed, or the plugin may not be installed yet.",
+        "mouse_haptics_save_failed": "Could not save this setting. This browser’s storage may be full or blocked.",
+        "mouse_haptics_install_guidance": "In Logi Options+, open your mouse → Haptic feedback → Install and uninstall plugins, then open the plugin file while that page is showing. <guide>How to get the plugin</guide>",
+        "mouse_haptics_loopback_only": "Works only in the {{productName}} desktop app, or in a browser that opens the dashboard at a localhost address on the computer your mouse is connected to."
       },
       "securityPanel": {
         "all_allowed": "All allowed",

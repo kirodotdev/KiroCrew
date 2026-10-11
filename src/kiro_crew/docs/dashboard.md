@@ -57,6 +57,17 @@ Multi-session parallel chat with full Markdown rendering, syntax-highlighted cod
 
 Settings uses tabbed panels for Overview, Imports, Agent Harness, Chat, Display, Voice, Notifications, Shortcuts, Skills, Channels, Browser, Computer Use, Webhooks, Remote Crew, Privacy, Security, Connections, Secrets, Developer, Releases, and About. `/overview` redirects to `/settings/overview`.
 
+#### Mouse haptics
+
+A Logitech MX Master 4 can buzz whenever a notification sound plays, which helps when the computer is muted. The dashboard sends each alert to the Kiro Crew plugin for Logi Options+, and Options+ plays the vibration. The dashboard needs no access to the mouse and no Input Monitoring permission. <!-- wokeignore:rule=master -->
+
+1. Build the plugin file, `KiroCrew.lplug4`. Until it is in the Logi Marketplace, it is built from a checkout of the Kiro Crew repository. Install the .NET 8 SDK and Logitech's packaging tool with `dotnet tool install --global LogiPluginTool --version 6.1.4.22672`. If Logi Plugin Service is not installed, create `packages/kirocrew-logi-plugin/lib/` and copy `PluginApi.dll` into it from `~/.dotnet/tools/.store/logiplugintool/6.1.4.22672/logiplugintool/6.1.4.22672/tools/net8.0/any/`. Then, in `packages/kirocrew-logi-plugin`, run `dotnet build src/KiroCrewPlugin.csproj -c Release` and `logiplugintool pack ./bin/Release ./KiroCrew.lplug4`.
+2. In Logi Options+, open MX Master 4 → Haptic feedback → Install and uninstall plugins. <!-- wokeignore:rule=master -->
+3. With that page showing, open `KiroCrew.lplug4`. Opening the file from any other Options+ page does nothing.
+4. In Kiro Crew, open Settings → Notifications → Sound and turn on **Logitech mouse haptics**. The switch starts off, and it needs **Play sound on new notifications** on. Under it, the line says "Plugin connected".
+
+Choose the vibration for each kind of alert in Options+, under Haptic feedback: a finished conversation, a question or approval, and every other notification. The **Play sound on new notifications** switch and the categories set to Silent apply to the buzz too. The volume does not, so at 0% you feel alerts without hearing them. Haptics work only when the dashboard is open at `localhost` or `127.0.0.1` on the computer running Options+, which includes the desktop app. Turn **Logitech mouse haptics** off to stop the buzz without uninstalling the plugin.
+
 ### Customize (`/capabilities`)
 
 Tabbed management for crewmates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.

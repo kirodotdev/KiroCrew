@@ -16254,7 +16254,17 @@
         "sound_save_failed": "Impossible d'enregistrer le réglage du son. Libère de l'espace pour ce site dans les paramètres du navigateur, puis réessaie.",
         "custom_sound_deleted": "{{name}} supprimé.",
         "custom_sound_undo": "Annuler",
-        "custom_sound_option": "{{name}} (le tien)"
+        "custom_sound_option": "{{name}} (le tien)",
+        "mouse_haptics": "Retour haptique de la souris Logitech",
+        "mouse_haptics_description": "Fait vibrer une souris Logitech à retour haptique à chaque son de notification, via le plug-in {{productName}} pour Logi Options+. La vibration ne dépend pas du volume : à 0 %, tu sens les alertes sans les entendre.",
+        "mouse_haptics_needs_sound": "Active « Jouer un son pour les nouvelles notifications » pour utiliser le retour haptique de la souris.",
+        "mouse_haptics_checking": "Recherche du plug-in {{productName}}…",
+        "mouse_haptics_connected": "Plug-in connecté. Choisis la vibration de chaque alerte dans Logi Options+, sous Retour haptique.",
+        "mouse_haptics_not_found": "Plug-in introuvable. Dans Logi Options+, ouvre ta souris → Retour haptique → Installer et désinstaller des plug-ins, puis ouvre le fichier du plug-in pendant que cette page est affichée. <guide>Comment obtenir le plug-in</guide>",
+        "mouse_haptics_unreachable": "Impossible de joindre le plug-in sur cet ordinateur. Logi Options+ est peut-être fermé, ou le plug-in n’est peut-être pas encore installé.",
+        "mouse_haptics_save_failed": "Impossible d’enregistrer ce réglage. Le stockage de ce navigateur est peut-être plein ou bloqué.",
+        "mouse_haptics_install_guidance": "Dans Logi Options+, ouvre ta souris → Retour haptique → Installer et désinstaller des plug-ins, puis ouvre le fichier du plug-in pendant que cette page est affichée. <guide>Comment obtenir le plug-in</guide>",
+        "mouse_haptics_loopback_only": "Fonctionne uniquement dans l’application de bureau {{productName}}, ou dans un navigateur qui ouvre le tableau de bord à une adresse localhost, sur l’ordinateur auquel ta souris est connectée."
       },
       "privacyPanel": {
         "recordMetricsDescription": "Collecter les métriques de performance sur cette machine.",
