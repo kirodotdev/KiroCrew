@@ -22,6 +22,7 @@ if TYPE_CHECKING:
         _foreign_private_copy_owner,
         _get_config_lock,
         _is_ghost_shaped,
+        _lineage_unverifiable_error,
         _model_pin_rejected,
         _name_would_be_masked,
         _pin_entitlement_backend,
@@ -374,10 +375,10 @@ async def _api_kirocrew_agents_create(request: web.Request) -> web.Response:
         # round-34, same shape as the locked rebind's in-mutate check).
         try:
             owner = await asyncio.to_thread(_foreign_private_copy_owner, name, kiro_agent)
-        except _UnverifiableLineage:
+        except _UnverifiableLineage as exc:
             return web.json_response(
                 {
-                    "error": f"Cannot verify whether '{kiro_agent}' is a private copy; retry.",
+                    "error": _lineage_unverifiable_error(kiro_agent, exc),
                     "code": "lineage_unverifiable",
                 },
                 status=409,

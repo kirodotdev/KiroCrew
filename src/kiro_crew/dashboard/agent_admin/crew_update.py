@@ -26,6 +26,7 @@ if TYPE_CHECKING:
         _ForeignPrivateCopy,
         _get_config_lock,
         _is_ghost_shaped,
+        _lineage_unverifiable_error,
         _live_avatar_file,
         _model_pin_rejected,
         _pin_entitlement_backend,
@@ -201,10 +202,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 },
                 status=409,
             )
-        except _UnverifiableLineage:
+        except _UnverifiableLineage as exc:
             return web.json_response(
                 {
-                    "error": f"Cannot verify whether '{new_target}' is a private copy; retry.",
+                    "error": _lineage_unverifiable_error(new_target, exc),
                     "code": "lineage_unverifiable",
                 },
                 status=409,
@@ -342,11 +343,10 @@ async def api_kirocrew_agent_update(request: web.Request) -> web.Response:
                 owner = await asyncio.to_thread(
                     _foreign_private_copy_owner, name, body["kiro_agent"]
                 )
-            except _UnverifiableLineage:
+            except _UnverifiableLineage as exc:
                 return web.json_response(
                     {
-                        "error": f"Cannot verify whether '{body['kiro_agent']}' is a "
-                        "private copy; retry.",
+                        "error": _lineage_unverifiable_error(body["kiro_agent"], exc),
                         "code": "lineage_unverifiable",
                     },
                     status=409,

@@ -216,6 +216,23 @@ and `lineage_unverifiable` (the copy's lineage cannot be read). A default
 whose template is gone is reset by the owner's catalog fetch (see
 [Execution-choice catalog](#execution-choice-catalog)).
 
+Every binding writer answers the same `409 lineage_unverifiable` when it cannot
+verify whether its target is another crew's private copy: crew create
+(`POST /api/agents`), both crew-update paths (`PUT /api/agents/{name}`), the
+default-agent write, publish and reset. Its `error` sentence depends on the
+cause, which `_UnverifiableLineage.reason` classifies, because only one cause
+clears by itself:
+`ambiguous_template_name` (two or more spec files resolve to the target; the
+sentence lists their paths and asks to keep one or rename the others),
+`ownership_record_unreadable` (the lineage sidecar `agent_model_state.json` is
+not a plain JSON object within the reader's size cap, is symlinked or
+hard-linked, or refuses the read; the sentence names the file and the error,
+asks to restore it, and warns against deleting it, which would make every
+private copy read as a shared template) and `read_failed` (any other read
+error, including a Windows sharing or lock violation while another process
+holds the file open; the sentence keeps the retry hint). The refusal still
+fails closed in every case and writes nothing.
+
 `GET /api/agents/templates` returns every global discovery row, every
 externally controlled string rendered through `_roster_mask` — the control
 `GET /api/agents` and the chat catalog apply — so a credential- or

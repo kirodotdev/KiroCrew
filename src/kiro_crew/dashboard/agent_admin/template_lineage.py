@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _WINDOWS_RESERVED_NAMES,
         CapabilityError,
         _read_agent_spec,
+        _roster_mask,
         agent_spec_candidates,
         agent_state,
         agents_spec_lock,
@@ -72,7 +73,15 @@ def _write_spec_file(dest: Path, data: dict) -> None:
 
 
 class _AmbiguousTemplateName(Exception):
-    """More than one spec file resolves to the requested name."""
+    """More than one spec file resolves to the requested name.
+
+    ``paths`` lists those files when the raiser scanned them, so a refusal can
+    name what the operator has to tidy.
+    """
+
+    def __init__(self, name: str, paths: tuple[Path, ...] = ()):
+        super().__init__(name)
+        self.paths = paths
 
 
 def _load_template_specs(
@@ -110,7 +119,7 @@ def _load_template_specs(
                 source_name = declared or f.stem
                 source_path = f
     if len(matches) > 1:
-        raise _AmbiguousTemplateName(name)
+        raise _AmbiguousTemplateName(name, tuple(matches))
     return source, source_name, taken, source_path
 
 
@@ -188,9 +197,98 @@ def _rebind_crew_locked(
 
 
 class _UnverifiableLineage(Exception):
-    """The sidecar or spec dir could not be read while checking whether a
-    binding target is a private copy — ownership cannot be verified, so the
-    binding is refused rather than allowed."""
+    """Whether a binding target is a private copy cannot be verified, so the
+    binding is refused rather than allowed.
+
+    ``reason`` names the failure class, because each one is repaired
+    differently and only one of them clears by itself:
+
+    * ``ambiguous_template_name``: two or more spec files resolve to the target
+      (``paths`` lists them). It persists until all but one are removed or
+      given another name.
+    * ``ownership_record_unreadable``: the lineage sidecar (``paths``) exists
+      but does not read as a JSON object, or its permissions refuse the read.
+      It persists until the file is restored.
+    * ``read_failed``: any other read error, which a retry can clear.
+
+    ``cause`` is the underlying error, whose type and text the refusal quotes.
+    """
+
+    def __init__(
+        self,
+        target: str,
+        reason: str = "read_failed",
+        *,
+        paths: tuple[Path, ...] = (),
+        cause: BaseException | None = None,
+    ):
+        super().__init__(target)
+        self.target = target
+        self.reason = reason
+        self.paths = paths
+        self.cause = cause
+
+
+def _sidecar_unverifiable(target: str, exc: BaseException) -> _UnverifiableLineage:
+    """Classify a failed strict read of the lineage sidecar.
+
+    ``agent_state._read`` raises ``ValueError`` for a file that is not JSON, not
+    an object, not a single-link regular file, or over its size cap, and a
+    ``PermissionError`` when the mode refuses the open. Each is the file's own
+    state and meets the next read unchanged. Any other ``OSError`` can clear by
+    itself, and so can a Windows ``PermissionError`` carrying a sharing or lock
+    violation: an indexer, antivirus scanner or concurrent writer holding the
+    file open for a moment, not a fault in the file.
+    """
+    # 32 ERROR_SHARING_VIOLATION, 33 ERROR_LOCK_VIOLATION.
+    transient = getattr(exc, "winerror", None) in (32, 33)
+    if isinstance(exc, (ValueError, PermissionError)) and not transient:
+        try:
+            where: tuple[Path, ...] = (agent_state._state_path(),)
+        except Exception:
+            where = ()
+        return _UnverifiableLineage(target, "ownership_record_unreadable", paths=where, cause=exc)
+    return _UnverifiableLineage(target, cause=exc)
+
+
+def _lineage_unverifiable_error(name: str, exc: _UnverifiableLineage) -> str:
+    """The ``error`` sentence of a ``lineage_unverifiable`` refusal for *name*.
+
+    Only ``read_failed`` asks for a retry; the two persistent causes name the
+    file to change, since a retry meets the same state. The sidecar's remedy is
+    restoring it and never deleting it: with the file gone, every recorded
+    private copy reads as a shared template, which is what this refusal guards.
+    The quoted error is the reader's own (a JSON position, an ``OSError``),
+    never file contents. Each externally written part -- the name, every path,
+    the error text -- goes through ``_roster_mask``, the control the agents API
+    applies to every string it returns from the agents directory: spec file
+    names are written by whoever writes that directory, so a credential-shaped
+    one arrives as the mask sentinel rather than verbatim.
+    """
+    head = f"Cannot verify whether '{_roster_mask(name)}' is a private copy"
+    why = (
+        f" ({type(exc.cause).__name__}: {_roster_mask(str(exc.cause))})"
+        if exc.cause is not None
+        else ""
+    )
+    if exc.reason == "ambiguous_template_name":
+        listed = f" ({', '.join(_roster_mask(str(p)) for p in exc.paths)})" if exc.paths else ""
+        return (
+            f"{head}: more than one agent spec file resolves to that name{listed}. "
+            "Keep one of them, or give each other copy its own name and file name, "
+            "then try again."
+        )
+    if exc.reason == "ownership_record_unreadable":
+        where = _roster_mask(str(exc.paths[0])) if exc.paths else agent_state._STATE_FILENAME
+        return (
+            f"{head}: its ownership record {where} cannot be read{why}. "
+            "Restore that file as a plain JSON object under "
+            f"{agent_state.STATE_MAX_BYTES // (1024 * 1024)} MiB (from a backup, "
+            "or by fixing its syntax or permissions, or by replacing a symlinked or "
+            "hard-linked file with a regular copy), then try again. Do not delete it: "
+            "without it every crew's private copy reads as a shared template."
+        )
+    return f"{head}{why}; retry."
 
 
 def _foreign_private_copy_owner(crew: str, target: str) -> str | None:
@@ -202,24 +300,35 @@ def _foreign_private_copy_owner(crew: str, target: str) -> str | None:
     sidecar degrade to an allowed bind, and the spawn gate — which validates
     governance, not ownership — would then run the foreign crew's sessions on
     the private definition once the sidecar recovered. An unverifiable read
-    raises ``_UnverifiableLineage``; every binding writer maps it to a 409.
+    raises ``_UnverifiableLineage``, classified by which read failed and how;
+    every binding writer maps it to a 409 whose sentence follows that ``reason``.
     """
     try:
         info = agent_state.get_fork_info(target, strict=True)
-        if info is None and target:
-            # Lineage is keyed by the DECLARED name, but a binding can carry
-            # the file STEM where the two differ — and that binding resolves
-            # the same file. Resolve the target to its declared name before
-            # concluding "not a copy" (the bind-side twin of the
-            # cleanup's stem coverage). Ambiguity or an unreadable dir raises
-            # like an unreadable sidecar — fail closed.
+    except Exception as exc:
+        raise _sidecar_unverifiable(target, exc) from exc
+    if info is None and target:
+        # Lineage is keyed by the DECLARED name, but a binding can carry
+        # the file STEM where the two differ — and that binding resolves
+        # the same file. Resolve the target to its declared name before
+        # concluding "not a copy" (the bind-side twin of the
+        # cleanup's stem coverage). Ambiguity or an unreadable dir raises
+        # like an unreadable sidecar — fail closed.
+        try:
             _spec, declared, _taken, spec_path = _load_template_specs(
                 kiro_agents_dir_path(), target, "foreign_private_copy_check"
             )
-            if spec_path is not None and declared != target:
+        except _AmbiguousTemplateName as exc:
+            raise _UnverifiableLineage(
+                target, "ambiguous_template_name", paths=exc.paths, cause=exc
+            ) from exc
+        except Exception as exc:
+            raise _UnverifiableLineage(target, cause=exc) from exc
+        if spec_path is not None and declared != target:
+            try:
                 info = agent_state.get_fork_info(declared, strict=True)
-    except Exception as exc:
-        raise _UnverifiableLineage(target) from exc
+            except Exception as exc:
+                raise _sidecar_unverifiable(target, exc) from exc
     owner = (info or {}).get("private_to")
     return owner if isinstance(owner, str) and owner and owner != crew else None
 
