@@ -40,13 +40,17 @@ from __future__ import annotations
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Any, Final
 
 from kiro_crew.dashboard_agentic import Instance
+
+if TYPE_CHECKING:  # the manifest reaches the projection registry, so not at run time
+    from kiro_crew.dashboard_templates.manifest import TemplateManifest
 
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PACKAGE_MANIFEST_SOURCE",
     "PACKAGE_STATES",
     "STATE_EMPTY",
     "STATE_ERROR",
@@ -86,37 +90,134 @@ class PackageReadError(Exception):
 
 
 @dataclass(frozen=True)
+class _ReadModel:
+    """The three values :func:`_manifest_of` reads, and nothing else.
+
+    A local holder rather than the gate's fuller Model view, because this reader needs
+    the field table, the slug and the version, and none of the binding, the layout
+    fingerprint or the block subscriptions. Keeping it local also keeps the gate free to
+    shape its own view without this module following it.
+    """
+
+    slug: str
+    version: int
+    fields: dict[str, Any]
+
+
+@dataclass(frozen=True)
 class PackageRead:
     """What the write path is told about a member's current dashboard package."""
 
-    #: The Model as the write path needs it, or ``None`` when there is none to check
-    #: against -- every non-live state, and a live PACKAGE, which this build does not
-    #: translate.
+    #: The Model as the write path needs it, or ``None`` for every non-live state.
     #:
     #: :class:`~kiro_crew.dashboard_agentic.Instance` is REUSED rather than a new type
     #: minted beside it, and that reuse is what keeps this seam one function:
     #: ``check_write`` already accepts exactly this narrow view -- the field specs plus
     #: the version a write is stamped with -- so it is not touched by the move off
-    #: templates.
+    #: templates. ``instance_version`` carries the PACKAGE's version here.
     model: Instance | None
     #: One of :data:`PACKAGE_STATES`.
     state: str
     #: One sentence a person can be shown, and the one the refusal quotes.
     state_reason: str
-    #: Whether a real dashboard PACKAGE was read, as opposed to the template instance
-    #: this read falls through to when no package is bound.
-    #:
-    #: PROVENANCE, and nothing more. What it means for a write is the write route's to
-    #: decide -- today that route refuses, because the page a crewmate is shown still
-    #: renders the template -- and keeping the meaning there is what stops this module
-    #: from having to know what any page draws.
-    from_package: bool = False
 
 
 #: The ``bound_to`` scope a MEMBER's package is spelled under. The other scope the
 #: binding grammar admits is ``session:<slot key>``, which names a slot and not a
 #: crewmate, so it is never what a member resolves to.
 _CREWMATE_SCOPE: Final[str] = "crewmate:"
+
+#: The ``source`` a synthesized manifest declares. See :data:`manifest.SOURCES`: its own
+#: word, so the render gate and the catalogue scan can still tell a package from a
+#: template a person wrote.
+PACKAGE_MANIFEST_SOURCE: Final[str] = "package"
+
+#: One package data type -> the manifest type it is checked as.
+#:
+#: EXPLICIT and declarative, which is the shape this has to be while it is the only
+#: spelling. ``timestamp`` and ``enum`` both land on ``string``, so this is information
+#: the package catalogue does not carry yet and this table is the second place the
+#: mapping is written down. The package line has offered to put ``manifest_type`` and
+#: ``manifest_shape`` on its ``FieldType``; when that lands, a table lookup off the
+#: catalogue SUPERSEDES this dict and
+#: ``test_every_package_data_type_has_a_manifest_type`` is what names a type added
+#: upstream with no row here in the meantime.
+_PACKAGE_TYPE_TO_MANIFEST: Final[dict[str, str]] = {
+    "number": "number",
+    "text": "string",
+    "bool": "boolean",
+    # An instant is checked as the ISO string it is written as. The manifest has no
+    # temporal type, and inventing one here would be a type no page knows how to draw.
+    "timestamp": "string",
+    # A label out of a fixed set: a string, plus the choices as the field's own Shape,
+    # which is what makes a value outside the set refusable rather than merely odd.
+    "enum": "string",
+}
+
+
+class _ModelUntranslatable(Exception):
+    """A validated package this reader cannot express as manifest field specs."""
+
+
+def _manifest_of(model: object) -> "TemplateManifest":
+    """A package's Model as the ``TemplateManifest`` the write path checks against.
+
+    The translation lives in this module because the write path must not learn the
+    package's vocabulary -- that is the whole point of one seam. Every row of it is
+    recorded in ``INTERFACE.md``.
+
+    ``id`` is the SLUG. A package is not a template and has no template id, and this
+    string is read aloud to the agent in two refusal sentences ("is not a field of
+    template 'report'"), so it has to name something the agent can actually go and
+    look at. Rewording those two sentences for v3 belongs to the agent line.
+    """
+    from kiro_crew.dashboard_templates.manifest import (
+        FieldSpec,
+        Shape,
+        TemplateManifest,
+    )
+
+    slug = str(getattr(model, "slug", "") or "")
+    version = int(getattr(model, "version", 0) or 0)
+    specs: dict[str, FieldSpec] = {}
+    for name, spec in getattr(model, "fields", {}).items():
+        declared = str(spec.get("type") or "")
+        mapped = _PACKAGE_TYPE_TO_MANIFEST.get(declared)
+        if mapped is None:
+            raise _ModelUntranslatable(
+                f"this dashboard package declares field {name!r} as type {declared!r}, "
+                "which this gateway cannot check a write against -- it is newer than "
+                "this build's data-type mapping"
+            )
+        source = spec.get("source") or {}
+        agentic = source.get("agentic") is True
+        choices = spec.get("choices")
+        shape = (
+            Shape(type=mapped, enum=tuple(choices))
+            if agentic and declared == "enum" and isinstance(choices, list) and choices
+            # A fold-backed field declares no shape: the manifest refuses one there,
+            # because the fold writes the value and a shape would promise something no
+            # write path checks.
+            else None
+        )
+        specs[str(name)] = FieldSpec(
+            name=str(name),
+            type=mapped,
+            fold=str(source.get("fold")) if not agentic else None,
+            path=str(source.get("path")) if not agentic else None,
+            agentic=agentic,
+            shape=shape,
+        )
+    return TemplateManifest(
+        id=slug,
+        # A positive int or the manifest refuses it, and version 0 is what an artifact
+        # with no version reads as.
+        version=max(version, 1),
+        title=f"dashboard package {slug}" if slug else "dashboard package",
+        description="a dashboard composed by this crewmate",
+        source=PACKAGE_MANIFEST_SOURCE,
+        fields=specs,
+    )
 
 
 def read_package_model(member: str) -> PackageRead:
@@ -187,29 +288,34 @@ def _from_package(member: str) -> PackageRead:
         return PackageRead(
             None, STATE_ERROR, f"the dashboard package at {slug!r} does not load: {exc}"
         )
+    # The three values ``_manifest_of`` reads, taken off the parsed package rather than
+    # through a projection of it: the field table IS ``model.types``, and the slug and
+    # version are this read's own. Nothing here needs the binding, the layout
+    # fingerprint or the block subscriptions a fuller Model view would carry.
     types = (package.get("model") or {}).get("types")
     if not isinstance(types, Mapping):
         # The gate validated the package and this reader cannot find a field table in
         # it. A disagreement between two readers of one record, so it is a state with a
-        # sentence rather than a raise, and it stays AHEAD of the live answer below: a
-        # package that is present and malformed is told so, rather than being folded
-        # into the one answer every readable package gets.
+        # sentence rather than a raise -- the same answer an untranslatable type gets.
         return PackageRead(
             None, STATE_ERROR, f"the dashboard package at {slug!r} declares no field table"
         )
-    version = int(getattr(loaded, "version", 0) or 0)
-    # LIVE, and carrying NO Model. A package's field table is not translated into
-    # manifest field specs on this base, because the one caller refuses a package-bound
-    # write before it would check one: the page a crewmate is shown still renders the
-    # template instance, so checking the write against the package while the page draws
-    # something else is what lets an undrawable value land. The translation ships with
-    # the change that makes the display read the same package, which is the first place
-    # its output is used for anything.
+    model = _ReadModel(
+        slug=slug,
+        version=int(getattr(loaded, "version", 0) or 0),
+        fields=dict(types),
+    )
+    try:
+        manifest = _manifest_of(model)
+    except _ModelUntranslatable as exc:
+        # The gate validated the package and this reader cannot express it as field
+        # specs -- a data type the mapping below has no row for. A disagreement between
+        # two readers, so it is a state with a sentence rather than a raise.
+        return PackageRead(None, STATE_ERROR, str(exc))
     return PackageRead(
-        None,
+        Instance(manifest=manifest, instance_version=model.version),
         STATE_LIVE,
-        f"package {slug!r} version {version}, bound to {bound_to}",
-        from_package=True,
+        f"package {slug!r} version {model.version}, bound to {bound_to}",
     )
 
 

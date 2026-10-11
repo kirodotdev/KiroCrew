@@ -1361,10 +1361,10 @@ class TestTheRealPackagePath:
         self.gate(monkeypatch)
         got = self.read()
         assert got.state == dashboard_package.STATE_LIVE
-        assert got.from_package is True
-        # The slug the binding resolved, which is the point of this case, reaches the
-        # caller through the sentence: a package read carries no Model on this base.
-        assert "dash-atlas" in got.state_reason
+        assert got.model is not None
+        # The PACKAGE's artifact version, which is the number a write is stamped with.
+        assert got.model.instance_version == 3
+        assert got.model.manifest.id == "dash-atlas"
 
     def test_nothing_bound_is_empty_and_not_an_error(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """v3 ships no default page, so nothing is stored until the agent composes a
@@ -1425,72 +1425,121 @@ class TestTheRealPackagePath:
         with pytest.raises(dashboard_package.PackageReadError):
             self.read(slug="dash-atlas")
 
-    # -- what a live package answers, with no Model to check against --------- #
+    # -- the translation ---------------------------------------------------- #
 
-    def test_a_readable_package_is_live_and_carries_no_model(
+    def test_a_fold_field_stays_fold_backed_and_is_not_writable(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A package that parses is ``live`` and brings NO manifest field specs.
+        """The source key the package line made required is what this turns on. Without
+        it the only available guess is ``agentic: true``, which would make every field
+        on every page agent-writable and erase the fold-backed half of the dashboard."""
+        self.gate(monkeypatch)
+        manifest = self.read().model.manifest
+        spec = manifest.fields["open_prs"]
+        assert spec.agentic is False
+        assert (spec.fold, spec.path) == ("work", "conductor.entries")
+        assert "open_prs" not in dashboard_agentic.agentic_fields(manifest)
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(self.read().model, "open_prs", 4)
+        assert refused.value.code == "field_not_agentic"
 
-        The translation into field specs ships with the change that makes the display
-        read the same package, because that change is the first place its output is used
-        for anything: here, every package-bound write is refused before a Model would be
-        checked, so translating one would build a manifest and throw it away.
+    @pytest.mark.parametrize(
+        ("field", "manifest_type"),
+        [
+            ("open_prs", "number"),
+            ("headline", "string"),
+            ("blocked", "boolean"),
+            ("seen_at", "string"),
+            ("lane", "string"),
+        ],
+    )
+    def test_each_package_type_is_checked_as_its_manifest_type(
+        self, monkeypatch: pytest.MonkeyPatch, field: str, manifest_type: str
+    ) -> None:
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields[field].type == manifest_type
 
-        ``from_package`` is what the write route turns on, and it is PROVENANCE -- the
-        only thing this module can honestly say. What a package-sourced read means for a
-        write is the route's own decision, which is why the refusal lives there.
-        """
+    def test_an_enums_choices_become_the_fields_shape(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``enum`` and ``timestamp`` both collapse to ``string``, so the choices are
+        the only thing that keeps a value outside the set refusable."""
+        self.gate(monkeypatch)
+        model = self.read().model
+        assert model.manifest.fields["lane"].shape is not None
+        assert model.manifest.fields["lane"].shape.enum == ("green", "red")
+        assert dashboard_agentic.check_write(model, "lane", "green")["value"] == {"v": "green"}
+        with pytest.raises(dashboard_agentic.WriteRefused) as refused:
+            dashboard_agentic.check_write(model, "lane", "purple")
+        assert refused.value.code == "wrong_shape"
+
+    def test_a_fold_field_declares_no_shape(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The manifest refuses a shape on a fold field: the fold writes that value, so
+        a shape there would promise something no write path checks."""
+        self.gate(monkeypatch)
+        assert self.read().model.manifest.fields["open_prs"].shape is None
+
+    def test_the_synthesized_manifest_does_not_claim_to_be_a_template(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``source`` gets its own fourth value rather than borrowing ``user``, so the
+        render gate and the catalogue scan can still tell a package from a template a
+        person wrote. ``id`` is the slug, because there is no template to name and the
+        string is read aloud to the agent in two refusal sentences."""
         from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import manifest as manifest_mod
 
         self.gate(monkeypatch)
-        got = self.read()
-        assert got.state == dashboard_package.STATE_LIVE
-        assert got.model is None
-        assert got.from_package is True
-        # The slug and the version still reach a person through the sentence, which is
-        # what the refusal quotes.
-        assert "dash-atlas" in got.state_reason
-        assert "3" in got.state_reason
+        manifest = self.read().model.manifest
+        assert manifest.source == dashboard_package.PACKAGE_MANIFEST_SOURCE == "package"
+        assert manifest.source in manifest_mod.SOURCES
+        assert manifest.id == "dash-atlas"
 
-    def test_the_fall_through_to_a_template_is_not_marked_as_a_package(
+    def test_a_package_source_is_not_renderable(self) -> None:
+        """A package is agent-composed, and the set that decides whether a page may
+        EXECUTE admits only provenance a person here has looked at. v3's View carries
+        no script, but making a package-sourced manifest adoptable as a running page is
+        the display line's to earn with the minted wrapper -- nothing on the write path
+        reads this set, so widening it here would buy nothing and open that path."""
+        from kiro_crew import dashboard_package
+        from kiro_crew.dashboard_templates import catalog
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        assert dashboard_package.PACKAGE_MANIFEST_SOURCE not in instance_store.RENDERABLE_SOURCES
+        assert instance_store.RENDERABLE_SOURCES == frozenset({catalog.BUILTIN_SOURCE})
+
+    def test_a_type_this_build_cannot_map_is_an_error_not_a_crash(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The other ``live`` answer, and the reason the flag exists.
-
-        With no package bound, this read falls through to the template instance store
-        and answers ``live`` WITH a Model. Keying the write route's refusal on the state
-        would refuse that too -- every write this product already serves.
-        """
-        self.gate(monkeypatch, resolved=None)
-        got = self.read()
-        assert got.model is not None
-        assert got.from_package is False
-
-    def test_a_package_with_no_field_table_is_an_error_not_a_live_answer(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A present and malformed package is told so, rather than folded into the one
-        answer every readable package gets. The gate validated it and this reader cannot
-        find a field table, which is a disagreement between two readers of one record --
-        so a state with a sentence, and it stays ahead of the live answer."""
+        """A package the gate validated and this reader cannot express: a disagreement
+        between two readers, so a state with a sentence rather than a raise."""
         from kiro_crew import dashboard_package
 
-        self.gate(monkeypatch)
-        # The stand-in gate's own parse, replaced to answer a package with no field
-        # table: the helper above always builds one, and what this case is about is a
-        # record the gate accepted and this reader cannot read a table out of.
-        gate = sys.modules["kiro_crew.artifact_store.dashboard_package"]
-        monkeypatch.setattr(
-            gate,
-            "parse_package",
-            lambda _content: {"bound_to": "crewmate:atlas", "model": {}},
-            raising=False,
+        self.gate(
+            monkeypatch,
+            fields={"when": {"type": "duration", "source": {"agentic": True}}},
         )
         got = self.read()
         assert got.state == dashboard_package.STATE_ERROR
-        assert "no field table" in got.state_reason
-        assert got.from_package is False
+        assert "duration" in got.state_reason
+
+    def test_every_package_data_type_has_a_manifest_type(self) -> None:
+        """The drift pin on the mapping, for as long as the mapping is the only spelling.
+
+        ``timestamp`` and ``enum`` both collapse to ``string``, so the package catalogue
+        does not carry this information and the table here is a SECOND place it is
+        written down. The package line has offered ``manifest_type`` / ``manifest_shape``
+        on its ``FieldType``, which supersedes the table; until then this is what names
+        a type added upstream with no row here.
+
+        The catalogue is imported PLAINLY. A pin whose import can skip is a pin that
+        reports green on a build where the gate module failed to load, which is the one
+        build where the two spellings are most likely to have drifted.
+        """
+        from kiro_crew import dashboard_package
+        from kiro_crew.artifact_store import dashboard_package as gate
+
+        assert set(gate.data_type_catalog()) == set(dashboard_package._PACKAGE_TYPE_TO_MANIFEST)
 
 
 class TestTheRealGateAndStore:
@@ -1517,7 +1566,7 @@ class TestTheRealGateAndStore:
             "theme": {"tokens": {"--panel-bg": "oklch(21% 0 0)"}},
         }
 
-    def test_a_stored_package_is_found_and_not_mistaken_for_a_template(
+    def test_a_stored_package_is_the_model_the_write_path_validates_against(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any
     ) -> None:
         from kiro_crew import dashboard_package
@@ -1528,12 +1577,10 @@ class TestTheRealGateAndStore:
         )
         got = dashboard_package.read_package_model("atlas")
         assert got.state == dashboard_package.STATE_LIVE
-        # The STORED package is what was found, not the template a fall-through would
-        # have handed back: that is the thing this case is about, and ``from_package``
-        # is what says so now that a package read carries no Model.
-        assert got.from_package is True
-        assert got.model is None
-        assert art.slug in got.state_reason
+        assert got.model is not None
+        assert got.model.manifest.id == art.slug
+        # The declared SHAPE, which is the thing a fall-through gets wrong.
+        assert got.model.manifest.fields["for_you"].type == "string"
 
     def test_a_package_the_validator_rejects_is_an_error_and_not_a_fall_through(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Any

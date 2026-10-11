@@ -1722,29 +1722,11 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
         unusable = dashboard_agentic.package_refusal(package.state, package.state_reason, field)
         if unusable is not None:
             raise unusable
-        # AND a Model that came from the PACKAGE is refused too, on this base. The
-        # decision is HERE rather than in the mapping above because it is not about the
-        # package's state: it is about the DISPLAY. This route's sibling
-        # ``api_member_dashboard`` renders the template instance and reads no package,
-        # so checking the write against the package's Model while the page draws a
-        # different one lets a value land that the page cannot draw -- a string where it
-        # reads a list renders as nothing, and the cards already there disappear with no
-        # error raised anywhere.
-        #
-        # Keyed on WHERE THE READ CAME FROM, not on the state: `read_package_model`
-        # answers `live` for a template instance as well, because it falls through to
-        # one when no package is bound. Refusing every `live` would refuse every write
-        # this product already serves. Only a read of a real PACKAGE names the half the
-        # display cannot draw yet.
-        #
-        # Fails CLOSED, and it costs no crewmate anything today: a package exists only
-        # once an agent composes one through the gate on this stack, so the population
-        # this refuses is empty until the display can draw it. The change that makes
-        # the display read the same package is what lifts this, and it is also where
-        # the package's field table is first translated into something to check against
-        # -- which is why a package read carries no Model here.
-        if package.from_package:
-            raise dashboard_agentic.display_pending_refusal(field)
+        # A Model whose manifest is sourced from the PACKAGE is checked and written like
+        # any other, because the display selects the same one: this route's sibling
+        # ``api_member_dashboard`` composes its page from that package. So a value this
+        # check admits is a value the page can draw, which is the property that makes
+        # one check enough for both halves.
         entry = dashboard_agentic.check_write(package.model, field, value, mistakes)
     except dashboard_agentic.WriteRefused as refused:
         # RECORDED BEFORE THE RESPONSE. The refusal is already decided, so this

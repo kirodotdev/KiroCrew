@@ -1134,6 +1134,69 @@ class BindingLookupIncomplete(ArtifactValidationError):
     """
 
 
+@dataclass(frozen=True)
+class DashboardModel:
+    """The Model of the package currently stored for one ``bound_to``.
+
+    What the data line needs in order to decide whether a value it is about to
+    write has a home, and which blocks should hear about it:
+
+    * ``fields`` -- field name -> its canonical shape (``type`` plus that
+      type's own keys). A value whose field name is absent here has no home on
+      this page and must not be written.
+    * ``subscriptions`` -- block id -> the field names that block renders, which
+      is what a first load names its blocks from. Narrowing a PUSH to the blocks
+      one fold moved is the renderer's own
+      ``dashboard_package_render.blocks_reading``, not a second lookup here.
+    * ``layout_fingerprint`` -- the layout this Model came from, so a caller
+      holding one can tell whether the page has been recomposed under it
+      without re-reading the whole package.
+    """
+
+    slug: str
+    version: int
+    bound_to: str
+    layout_fingerprint: str
+    fields: Mapping[str, Mapping[str, Any]]
+    subscriptions: Mapping[str, tuple[str, ...]]
+
+    def agentic_fields(self) -> Mapping[str, Mapping[str, Any]]:
+        """The fields the crewmate may write itself, by name.
+
+        A fold-backed field is NOT here: its value is read from the crew log and
+        no agent can write it. The same split
+        ``dashboard_agentic.agentic_fields`` makes over a template manifest.
+        """
+        return {
+            name: spec
+            for name, spec in self.fields.items()
+            if spec.get("source", {}).get("agentic") is True
+        }
+
+    @property
+    def folds(self) -> frozenset[str]:
+        """The crew-log folds this page subscribes to."""
+        return frozenset(
+            fold
+            for spec in self.fields.values()
+            if (fold := spec.get("source", {}).get("fold")) is not None
+        )
+
+
+def model_of(package: Mapping[str, Any], *, slug: str = "", version: int = 0) -> DashboardModel:
+    """Project a canonical package into the :class:`DashboardModel` view of it."""
+    fields = dict(package["model"]["types"])
+    subscriptions = {block["id"]: tuple(block["fields"]) for block in package["view"]["blocks"]}
+    return DashboardModel(
+        slug=slug,
+        version=version,
+        bound_to=package["bound_to"],
+        layout_fingerprint=_layout_fingerprint(package),
+        fields=fields,
+        subscriptions=subscriptions,
+    )
+
+
 def resolve_bound_slug(bound_to: str, *, store: "ArtifactStore | None" = None) -> str | None:
     """The slug of the dashboard artifact bound to ``bound_to``, or ``None``.
 
