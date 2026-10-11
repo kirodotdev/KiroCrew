@@ -285,7 +285,40 @@ verifies the saved materialization off-loop before provider construction. It
 passes the immutable template explicitly while preserving the canonical member,
 member memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
-that disagrees with the saved Parent identity refuses startup.
+that disagrees with the saved Parent identity refuses startup. Beside `cwd`,
+`cwd_identity` (the slot's recorded `(st_dev, st_ino)` of the bound directory,
+`state.spawn_project_identity`) rides the same factory kwargs into
+`AcpProvider(work_dir_identity=...)` and on to the client and runtime, where
+the spawn re-verifies the working directory against it
+(`sandbox.verify_agent_workspace_for_spawn`; `None` means not examined) and holds
+what it verified through process creation -- on POSIX the hold pins the child's
+working directory (`chdir_fd`), not the spelling the spawn's preparation reads
+still take (#17395; `security.md` states the residual); on Windows the held
+chain pins the spelling too. The
+allocation body behind the facade's `get_or_create` is THE seam for that
+identity: a `cwd` handed over with no `cwd_identity` is resolved there once the
+directory the spawn enters is final -- the explicit `cwd`, the one the session
+map restored for a resume that named none (the eager respawn after a hard stop),
+or the member's project -- and before the warm-pool decision reads it, through
+the resolver the dashboard installs (`set_cwd_identity_resolver`, wired in
+`DashboardState.__init__`) -- the record of the slot(s) bound to that directory,
+their restart re-pin, or the governed refusal (`sandbox.WorkspacePinFailed`, let
+through to the producer with nothing claimed or allocated); `None` stays only for
+a directory no slot is bound to, or with no resolver installed (no dashboard). A
+spawn carrying an identity never claims a pooled child (`bypass_cwd_identity`):
+a bound directory is entered by a cold-started, verified child or refused, an
+unbound slot keeps the warm path. The task run's shared-runtime bootstrap
+(`_get_or_bootstrap_run_runtime`), the one factory call outside `get_or_create`
+that spawns into a caller-named directory, resolves through the same resolver.
+The producers pass the identity themselves; the seam is the safety net under them.
+The allocation's own touches of a bound directory's NAME -- the runtime
+preparation's resolve, the provider construction's effort-overlay read and write,
+the saved-capability recheck -- each run only while the directory is verified
+against that identity and held through the no-follow pin
+(`session_allocation.verified_hold`, the spawn sites' own primitive), so a
+directory swapped for a link since its binding is refused with the re-bind remedy
+before any of them follows the name, whoever supplied the identity; a directory
+with no identity is not held, as it is not examined.
 When no caller model is supplied, allocation resolves the member's model pin by
 its canonical alias, including members that have not enrolled capabilities. The id
 it hands the provider is stamped on the registered session, because the allocation

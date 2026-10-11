@@ -326,6 +326,138 @@ def test_revive_without_a_folder_keeps_the_previous_placement(tmp_path):
     assert state._slots[key].folder_id == "f1"
 
 
+def test_revive_into_a_bound_folder_is_the_filing_decision_and_refused_before_anything_revives(
+    tmp_path,
+):
+    """A revive that names a folder MOVES the archived session from where it was archived into."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    state._folders.append(
+        {
+            "id": "bound",
+            "name": "Bound",
+            "parent_id": None,
+            "position": 0,
+            "project_dir": str(bound),
+            "hidden": True,
+        }
+    )
+    caller = _slot(state, "chat-1")  # an agent at the top level
+    key = _archive(state, caller, _slot(state, "chat-2"))  # archived at the top level
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        _revive(state, caller, key, folder_id="bound")
+
+    assert exc.value.code == "folder_project_dir_forbidden"
+    assert exc.value.status == 403
+    assert key not in state._slots  # nothing revived
+    assert state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("folder_id")
+    assert next(f for f in state._folders if f["id"] == "bound")["hidden"] is True  # not unhidden
+    assert "bound" not in (getattr(state, "_folders_filed_into", None) or set())  # not noted
+
+
+def test_revive_into_a_folder_conferring_the_same_binding_is_filed(tmp_path):
+    """The decision is by what the session inherits, not by a folder's name."""
+    state = _make_state(tmp_path)
+    bound = tmp_path / "bound"
+    bound.mkdir()
+    state._folders.append(
+        {
+            "id": "bound",
+            "name": "Bound",
+            "parent_id": None,
+            "position": 0,
+            "project_dir": str(bound),
+        }
+    )
+    state._folders.append({"id": "inside", "name": "Inside", "parent_id": "bound", "position": 0})
+    caller = _slot(state, "chat-1")
+    peer = _slot(state, "chat-2")
+    peer.folder_id = "bound"  # archived under the binding
+    key = _archive(state, caller, peer)
+
+    result = _revive(state, caller, key, folder_id="inside")
+
+    assert result["folder_id"] == "inside"
+    assert result["filed"] is True
+    assert state._slots[key].folder_id == "inside"
+
+
+def _declare_binding(folder: dict, tmp_path) -> None:
+    folder["project_dir"] = str(tmp_path / "bound")
+
+
+def _declare_steering(folder: dict, tmp_path) -> None:
+    folder["steering_dirs"] = [str(tmp_path / "notes")]
+
+
+@pytest.mark.parametrize(
+    "declare, code",
+    [
+        (_declare_binding, "folder_project_dir_forbidden"),
+        (_declare_steering, "steering_dirs_forbidden"),
+    ],
+    ids=["binding", "steering"],
+)
+def test_a_folder_mutation_landing_between_the_decision_and_the_write_is_declined_at_the_write(
+    tmp_path, monkeypatch, declare, code
+):
+    """The early decision judges a snapshot before the resume; the resume awaits."""
+    state = _make_state(tmp_path)
+    (tmp_path / "bound").mkdir()
+    (tmp_path / "notes").mkdir()
+    state._folders.append(
+        {"id": "target", "name": "Target", "parent_id": None, "position": 0, "hidden": True}
+    )
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))  # archived at the top level
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kw: audits.append(kw))
+
+    def _lands_in_the_window(_built):
+        declare(next(f for f in state._folders if f["id"] == "target"), tmp_path)
+
+    seen = _drift_in_window(monkeypatch, _lands_in_the_window)
+    result = _revive(state, caller, key, folder_id="target")
+
+    assert result["ok"] is True
+    assert result["filed"] is False
+    assert result["filing_refused"] == code
+    assert result["folder_id"] == ""
+    assert seen == {"resolvable": False, "in_table": False}, seen
+    assert key in state._slots  # the revive committed ...
+    assert state._slots[key].folder_id == ""  # ... where the session was archived
+    assert not state.conversation_log.get_metadata(f"dashboard:{key}").get("closed")
+    assert next(f for f in state._folders if f["id"] == "target")["hidden"] is True
+    assert "target" not in (getattr(state, "_folders_filed_into", None) or set())
+    allowed = [a for a in audits if a["operation"] == "revive" and a["outcome"] == "allowed"]
+    assert [a["detail"]["filed"] for a in allowed] == ["false"]
+
+
+def test_a_window_mutation_that_leaves_the_inheritance_unchanged_still_files(tmp_path, monkeypatch):
+    """The re-check at the write is the same comparison, not a stricter one."""
+    state = _make_state(tmp_path)
+    state._folders.append(
+        {"id": "target", "name": "Target", "parent_id": None, "position": 0, "hidden": True}
+    )
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))
+
+    def _rename(_built):
+        next(f for f in state._folders if f["id"] == "target")["name"] = "Renamed"
+
+    _drift_in_window(monkeypatch, _rename)
+    result = _revive(state, caller, key, folder_id="target")
+
+    assert result["filed"] is True
+    assert result["filing_refused"] == ""
+    assert state._slots[key].folder_id == "target"
+    assert next(f for f in state._folders if f["id"] == "target")["hidden"] is False
+    assert "target" in state._folders_filed_into
+
+
 # ── Resolution refusals ──────────────────────────────────────────────────────
 
 
@@ -1186,6 +1318,48 @@ def test_a_cancellation_while_waiting_for_the_filing_lock_still_audits_once(tmp_
     allowed = [a for a in audits if a["operation"] == "revive" and a["outcome"] == "allowed"]
     assert len(allowed) == 1 and allowed[0]["slot_key"] == key
     assert allowed[0]["detail"]["filed"] == "false"
+
+
+def test_a_refile_landing_while_the_filing_waits_for_the_lock_is_the_placement_judged(
+    tmp_path, monkeypatch
+):
+    """The revive is published before its filing takes the slot-metadata lock."""
+    from kiro_crew.dashboard import chat_folders
+
+    state = _make_state(tmp_path)
+    (tmp_path / "notes").mkdir()
+    _folder(state, "steered", "Steered")
+    _declare_steering(next(f for f in state._folders if f["id"] == "steered"), tmp_path)
+    _folder(state, "target", "Target")
+    caller = _slot(state, "chat-1")
+    key = _archive(state, caller, _slot(state, "chat-2"))  # archived at the top level
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kw: audits.append(kw))
+
+    async def _run():
+        lock = chat_folders._slot_meta_txn_lock(state)
+        async with lock:  # the person's refile holds the state-wide lock first
+            task = asyncio.ensure_future(
+                sc.revive_session(
+                    state, caller_session_key=_key(caller), target=key, folder_id="target"
+                )
+            )
+            for _ in range(500):  # let the revive publish and reach the lock wait
+                await asyncio.sleep(0.01)
+                if key in state._slots and lock._bound()._waiters:
+                    break
+            assert key in state._slots and lock._bound()._waiters
+            state._slots[key].folder_id = "steered"  # the refile commits under its lock
+        return await task
+
+    result = asyncio.run(_run())
+
+    assert result["ok"] is True
+    assert result["filed"] is False
+    assert result["filing_refused"] == "steering_dirs_forbidden"
+    assert state._slots[key].folder_id == "steered", "the person's placement was overwritten"
+    allowed = [a for a in audits if a["operation"] == "revive" and a["outcome"] == "allowed"]
+    assert [a["detail"]["filed"] for a in allowed] == ["false"]
 
 
 def test_a_target_that_goes_live_during_the_scan_is_reported_live(tmp_path, monkeypatch):

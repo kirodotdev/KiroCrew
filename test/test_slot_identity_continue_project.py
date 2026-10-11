@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import sys as _sys
 import threading
 from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from chat_test_helpers import stamp_the_person
 
 from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard.chat import api_chat_slot_continue, api_chat_slot_project
@@ -32,20 +34,33 @@ _HANG_GUARD_SECS = 30
 
 
 async def _yield_until(predicate: Callable[[], bool]) -> bool:
+    # Scheduler turns first (the cheap path a loop-only handler needs), then
+    # short real slices: the project route resolves the person's path and the
+    # voice-runtime check on worker threads before it reaches the lock, and a
+    # thread hop lands back on the loop after a bare ``sleep(0)`` budget ran out.
+    # Bounded by the hang guard, released the turn the predicate turns true.
     for _ in range(_MAX_TURNS):
         if predicate():
             return True
         await asyncio.sleep(0)
+    deadline = asyncio.get_running_loop().time() + _HANG_GUARD_SECS
+    while not predicate() and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.005)
     return predicate()
 
 
 def _make_app(state: DashboardState) -> web.Application:
     # Mirror production: token_auth sets request["app"] on every authenticated
     # path ("" = dashboard user); the isolation guards fail closed without it.
+    # The project route keys WHO on the positive person stamp the same
+    # middleware writes for the dashboard's own browser (``chat_folders.
+    # _is_the_person``): without it the request is an agent's, and its path
+    # goes through the pinned walk instead of main's by-name resolve.
     @web.middleware
     async def dashboard_auth_marker(request, handler):
         if "app" not in request:
             request["app"] = ""
+        stamp_the_person(request)
         return await handler(request)
 
     app = web.Application(middlewares=[dashboard_auth_marker])
@@ -106,14 +121,24 @@ def eager_spawn(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 
 
 @pytest.fixture(autouse=True)
-def _no_side_effects(monkeypatch: pytest.MonkeyPatch, eager_spawn: MagicMock) -> None:
+def _no_side_effects(
+    _floor_monkeypatch: pytest.MonkeyPatch,
+    eager_spawn: MagicMock,
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    # Through the floor's own MonkeyPatch, never the shared one: an autouse pin on
+    # the shared instance is lifted by any test that calls ``monkeypatch.undo()``.
+    monkeypatch = _floor_monkeypatch
     # Continue's children guard reaches well past the seam under test and does not
     # decide the outcome here; the tests that park ON it re-patch it themselves.
     monkeypatch.setattr(chat_handlers, "_subagents_attached_response", AsyncMock(return_value=None))
     monkeypatch.setattr(chat_handlers, "_save_recent_project", MagicMock(return_value=None))
-    # Project validates the path against the real filesystem before the lock.
-    monkeypatch.setattr(chat_handlers.os.path, "isdir", lambda p: True)
-    monkeypatch.setattr(chat_handlers, "voice_runtime_workspace_conflict", lambda p: None)
+    # Project validates the path against the real filesystem before the lock, and
+    # the binding records the directory's identity off the handle that opened it
+    # -- so the new project is a real directory, not a stubbed ``isdir``.
+    new_project = tmp_path_factory.mktemp("new-project")
+    monkeypatch.setattr(_sys.modules[__name__], "_NEW_PROJECT", str(new_project))
+    monkeypatch.setattr(chat_handlers, "voice_runtime_workspace_conflict", lambda p, **_kw: None)
 
 
 async def _collect(task: asyncio.Task) -> tuple[int, dict]:
@@ -367,7 +392,7 @@ async def test_project_replacement_before_lock(
         await release.wait()
         return result
 
-    def parked_validation(project):
+    def parked_validation(project, **_kw):
         loop.call_soon_threadsafe(entered.set)
         assert thread_release.wait(_HANG_GUARD_SECS)
         return "workspace conflict"

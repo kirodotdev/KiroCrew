@@ -3230,6 +3230,123 @@ the tool layer could only drift or race. What the tool layer still decides is th
 one question the endpoint cannot: whether the caller can be placed at all, since
 an unverifiable or delegated caller has no scope to bound a write to.
 
+**A folder's project directory is the person's to bind, and the routes refuse
+everyone else's.** A chat the person opens inside a folder
+(`POST /api/chat/slots`) inherits the nearest ancestor's `project_dir` at
+creation — before its context is built — the only zero-cost path to a
+project-scoped session (`project_scope_satisfied()` fails closed without one;
+`set_project` afterwards tears the session down at the turn boundary).
+`session_create` resolves its child's project from the caller's workspace, not
+the folder (#11680 adds that inheritance). An agent that creates a folder still
+cannot bind it (#10432): no tool on this server carries `project_dir`, and the
+folder routes refuse a non-person caller's `project_dir` whole — at create and
+on the PATCH, set or clear, before the path is looked at
+(`chat_folders._agent_binding_refusal`, 403 `folder_project_dir_forbidden`,
+audited under `app_isolation` against attested identity only: the caller's
+principal, else the validated token subject, else the kernel-attested
+`X-Session-Key` of an AF_UNIX peer, else `unattributable`). WHO is the person
+is two POSITIVE facts (`_is_the_person`): `request["is_dashboard_user"] is
+True`, the stamp the token middleware writes only when a non-app dashboard
+token validated, AND the repo's owner predicate
+(`handlers.source_providers.is_owner_dashboard_request`: the subject is
+`KIROCREW_OWNER_ID`, or with no owner configured the machine-local bootstrap
+identity). The stamp alone proves the token's class — an allow-listed messaging
+user's `!dashboard` link holds the same stamp — so the owner conjunct keeps that
+user's binding out of the owner's chats. A session signed in before the owner
+was configured carries `local-app`/`local-startup` for life and is not admitted;
+every refusal the predicate decides runs through one tail,
+`_person_gate_refusal`, which answers that caller with the repo's
+`401 stale_session_reauth` (`stale_owner_session_response`) instead of the
+agent's 403. The internal-secret transport (every agent session's tool call)
+never sets the stamp, an app's own token sets it `False`, and a request that met
+no middleware is refused; no caller is sorted by its key. An admitted way for an
+agent to bind a folder is a follow-up (#14120): a containment rule on the
+agent's own tree drew a finding on every head (a bound directory inside it can
+be swapped for a link after the check), so it ships as nothing rather than as a
+rule with a known hole.
+
+The path checks are the endpoint's. The PERSON's request takes
+`chat_folders._validate_project_dir`, main's own resolution by name (absolute
+or `~`-prefixed, `realpath`, never a sensitive location, an existing directory
+— a share by its UNC spelling included), run off-loop at the create and PATCH
+routes and the slot project endpoint. Every OTHER principal's path goes through
+`screen_and_resolve_project_dir`, two halves: the lexical UNC refusal
+(`project_dir_unc_refusal` over the repo's one UNC gate `hooks.is_unc_shape` /
+`unc_probe_allowed`: `\\host\share`, `//host/share`, `\\?\UNC\host\share`
+refused before any filesystem call, on every host — at the `set_project`
+directive, the slot project endpoint's non-person arm, and any folder route a
+non-person `project_dir` reaches, which none does), and the pinned resolve: the
+spelling is anchored only (`_anchored_spelling`; on Windows the Win32 parser
+folds `..` before any filesystem sees a name, so `abspath` there is the
+platform's rule), matched lexically for the sensitive locations, then opened
+component by component with no link followed (`pinned_fs.real_dir_path_pinned`
+over an `O_NOFOLLOW`/`O_PATH` `openat` chain on POSIX, a root-first handle chain
+opened with `FILE_FLAG_OPEN_REPARSE_POINT` and held without `FILE_SHARE_DELETE`
+on Windows, `platform_compat.pin_directory`; a cloud-files placeholder that
+redirects nothing passes as the directory it is, and a VOLUME mount point --
+the junction's tag whose reparse data names a device, `\\?\Volume{GUID}\`,
+never a path -- is followed once into the mounted volume and the walk holds that
+volume's root, confirmed off the handle; a junction whose data is a path, a
+symlink, and a point whose data cannot be read stay refused). A link or a
+non-directory at
+ANY component is refused at the open with `PROJECT_DIR_LINK_REFUSAL` (code
+`project_dir_link`, audited `link on the way`) — an agent-named path through a
+link is refused, not re-spelled, and nothing reads where a link points; no
+by-name step precedes the pin. The sensitive verdict is taken on the pinned real
+path (or the link-free spelling when nothing was found) as it stands
+(`project_dir_sensitive_refusal` over `is_sensitive_resolved_path`, on the
+worker thread), never by resolving the name again. The READ path
+(`_resolve_folder_project_dir`) is main's by-name resolution for every stored
+value: only the person binds, so every stored binding is a path the operator
+chose, honoured as before. The person's path is contained to no root. The
+identity the pin records, how it travels to the spawn, and the hold both ACP
+spawn sites take BEFORE any pathname probe and release once on every exit are
+specified once, in `security.md` ("Bound working directory re-verified at
+spawn"). A directory bound with no identity spawns by name as it always did.
+
+Two more rules key on the same bit. A reparent reaches every session filed in
+the moved subtree through inheritance, so the PATCH's `_apply` refuses a
+`parent_id` change by a non-person caller when the binding the two places
+confer differs (`_move_changes_inherited_binding` over `_inherited_project_dir`,
+same 403, decided under the store lock); a folder carrying its own binding is
+exempt (nearest wins), and a move between places conferring the same binding
+lands. The same branch compares the STEERING the subtree would inherit
+(`_inherited_steering_dirs`, root-first, validation-free under the lock) and
+refuses a non-person move that changes it with the steering gate's 403. Filing
+is the one way a session ACQUIRES a folder's binding and steering, so every
+request-driven filing goes through ONE decision,
+`chat_folders.refuse_filing_across_inheritance`, and the decision and the WRITE
+share one section under the folder store lock (`file_slot_across_inheritance`
+under `state.hold_folders`): at `PATCH /api/chat/slots/{slot}/folder` (behind
+`chat_folder_move_session` and `chat_folder_file_self`) and at
+`POST /api/chat/slots` with a `folder_id` (a refusal at the write retracts the
+slot the request minted; the filing runs before the title pin and the artifact
+binding, so a refused existing slot returns exactly as found). `session_create`
+and `session_fork` apply the same comparison (`filing_crosses_inheritance`, from
+the creator's or the source's own placement) before the mint and again adjacent
+to the child's assignment; a folder write in flight there refuses
+(`folder_store_busy`) and a refusal retracts the child. `session_revive` takes
+the decision from the archived placement to the named folder before the revive
+commits and again at the write under `hold_folders`; a filing refused there
+declines without failing the revive (`filed: false`, code `filing_refused`), and
+the session comes back where it was archived. The person is never confined; any
+other principal may not place a session where it would inherit a binding or
+steering it does not have today, judged over the COMMITTED folder tree
+(`read_folders`) with the slot revalidated after that read. A structural test
+(`test_chat_folder_ownership.py::TestEveryWriterOfASessionsFolderOrProjectIsAccountedFor`)
+holds every request-driven writer of a session's folder or project to that
+decision and names why the rest (restores, a fork's copy, channel and cron
+placements, a session's own project) are not a filing. The `steering_dirs`
+declaration fence at both write sites (`_refuse_agent_steering_dirs`) keys on
+the same bit: a declaration is a gateway host-file read that lands in the
+person's chats, so every non-person caller is refused it with that gate's 403 —
+the person alone declares; clearing to `[]` stays allowed for every principal,
+as it only removes reads. The read side — what a binding confers — is main's,
+unchanged. The conductor grants are unchanged. Precedents for the tool surface
+this leaves in place: #2761 made folders agent-creatable, #6118 made sessions
+agent-filable at creation; the binding is the one step in that progression that
+stays with the person.
+
 **Filing your own session is a separate verb, `chat_folder_file_self`, because
 the grant is name-scoped.** `chat_folder_move_session` takes its target from an
 argument, so it is the one dashboard tool that writes a session OTHER than the

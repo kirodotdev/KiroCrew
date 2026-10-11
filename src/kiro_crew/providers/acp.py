@@ -453,6 +453,7 @@ class AcpProvider(LLMProvider):
         work_dir: str | Path | None = None,
         model: str | None = None,
         agent: str | None = None,
+        work_dir_identity: tuple[int, int] | None = None,
         sandbox_mode: str = "auto",
         session_key: str | None = None,
         channel_id: str | None = None,
@@ -484,6 +485,7 @@ class AcpProvider(LLMProvider):
             )
         kwargs: dict[str, Any] = {
             "work_dir": work_dir,
+            "work_dir_identity": work_dir_identity,
             "model": model,
             "sandbox_mode": sandbox_mode,
             "session_key": session_key,
@@ -1270,6 +1272,7 @@ class AcpProvider(LLMProvider):
 
         runtime = AcpRuntime(
             work_dir=work_dir,
+            work_dir_identity=getattr(self._client, "_work_dir_identity", None),
             agent=agent or "kirocrew",
             sandbox_mode=sandbox_mode,
             extra_env=extra_env,
@@ -1420,6 +1423,13 @@ class AcpProvider(LLMProvider):
                         pass
                     runtime = AcpRuntime(
                         work_dir=work_dir,
+                        # The session's recorded identity rides into the replacement
+                        # exactly as it rode into the first spawn (above): a bound
+                        # working directory is re-verified at THIS spawn too, so a
+                        # swap planted while the first runtime was dying is refused
+                        # here as it would have been there -- a replacement built
+                        # without it would spawn by name, unexamined (review-caught).
+                        work_dir_identity=getattr(self._client, "_work_dir_identity", None),
                         agent=agent or "kirocrew",
                         sandbox_mode=sandbox_mode,
                         extra_env=extra_env,

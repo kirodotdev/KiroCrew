@@ -1745,6 +1745,8 @@ _THIS_FILE = Path(__file__).resolve().relative_to(_SRC.parents[2]).as_posix()
 _UNRESOLVED_FACADE_PATCHES: dict[tuple[str, str], int] = {
     ("test/acp_launch_capture.py", "_capture_runtime_served"): 2,
     ("test/acp_launch_capture.py", "_stub_common"): 4,
+    ("test/test_acp_client.py", "TestResolveKiroBinEnvOverride._bind_spy"): 1,
+    ("test/test_acp_client.py", "TestResolveKiroBinEnvOverride._spawn_harness"): 4,
     ("test/test_acp_pod_home_remap.py", "_remap_calls"): 1,
     ("test/test_harness_parity.py", "test_is_kiro_cli_is_positive"): 2,
     **{

@@ -264,13 +264,31 @@ def _parent() -> dict[str, Any]:
     return {"role": "assistant", "content": "Overnight triage: 9 new issues."}
 
 
-def _arm_turn(state, monkeypatch, *, answer: str, backend: str = ACP_BACKEND_KIRO):
+def _arm_turn(
+    state,
+    monkeypatch,
+    *,
+    answer: str,
+    backend: str = ACP_BACKEND_KIRO,
+    verify_workspace: bool = False,
+):
     """A fake cold session that answers *answer*; returns the recorded calls."""
     calls: list[dict[str, Any]] = []
     provider = MagicMock()
 
     async def _fake_get_or_create(key, **kwargs):
         calls.append({"key": key, **kwargs})
+        if verify_workspace:
+            from kiro_crew import sandbox
+            from kiro_crew.acp.client import AcpError
+
+            try:
+                _real, fd = sandbox.verify_agent_workspace_for_spawn(
+                    kwargs["cwd"], kwargs.get("cwd_identity")
+                )
+            except sandbox.AgentWorkspacePinRefused as exc:
+                raise AcpError(str(exc)) from exc
+            sandbox.release_agent_workspace_fd(fd)
         return provider, True, False
 
     state.sessions.get_or_create = _fake_get_or_create
@@ -1724,3 +1742,129 @@ async def test_a_signed_out_harness_says_so(tmp_path, monkeypatch):
     assert final["is_error"] is True
     assert final["content"]
     assert _threads(state, slot) == {}
+
+
+# ── The bound project directory is verified at the thread's spawn ──
+
+
+def _bind(state, slot, tmp_path):
+    """Bind *slot* to a real directory with the identity a binding records."""
+    from kiro_crew import sandbox
+    from kiro_crew.dashboard.state import record_project_identity
+
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    slot.project = str(proj)
+    record_project_identity(slot, sandbox.directory_identity_pinned(proj))
+    return proj
+
+
+def _swap(proj) -> None:
+    """A DIFFERENT directory now sits at the bound name, after the binding."""
+    other = proj.parent / ".proj.other"
+    other.mkdir()
+    proj.rmdir()
+    other.rename(proj)
+
+
+@pytest.mark.asyncio
+async def test_thread_spawn_refuses_a_bound_directory_swapped_since_the_binding(
+    tmp_path, monkeypatch
+):
+    """The thread turn spawns in the slot's project and passes the identity the binding."""
+    from kiro_crew.dashboard.state import spawn_project_identity
+
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot, mid = _member_slot(state)
+    proj = _bind(state, slot, tmp_path)
+    recorded = spawn_project_identity(slot)
+    assert recorded is not None
+    _swap(proj)
+    calls = _arm_turn(state, monkeypatch, answer=_ANSWER, verify_workspace=True)
+    async with _client(state) as client:
+        resp = await client.post(
+            f"/api/chat/threads/{mid}/reply",
+            json={"slot_key": _MEMBER_SLOT, "text": "the other 8?"},
+        )
+        assert resp.status == 202
+        for task in list(state._background_tasks):
+            await task
+        detail = await (
+            await client.get(f"/api/chat/threads/{mid}", params={"slot": _MEMBER_SLOT})
+        ).json()
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["cwd"] == str(proj)
+    assert acquired["cwd_identity"] == recorded, "the thread turn spawned without the identity"
+    assert not [c for c in calls if "message" in c], "the turn streamed into a swapped directory"
+    final = _finals(events)[-1]
+    assert final.get("is_error") is True
+    assert "not the directory the session was bound to" in final["content"]
+    assert "re-bind the project directory" in final["content"]
+    # The user's reply is kept; no answer is stored; the thread is free again.
+    assert [r["role"] for r in detail["replies"]] == ["user"]
+    assert detail["in_flight"] is False
+    # Nothing was acquired, so nothing is released or destroyed.
+    state.sessions.release.assert_not_called()
+    state.sessions.destroy.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_thread_spawn_passes_the_slots_identity_for_an_unchanged_directory(
+    tmp_path, monkeypatch
+):
+    """The same identity, an unchanged directory."""
+    from kiro_crew.dashboard.state import spawn_project_identity
+
+    state = _make_state(tmp_path)
+    slot, mid = _member_slot(state)
+    proj = _bind(state, slot, tmp_path)
+    calls = _arm_turn(state, monkeypatch, answer=_ANSWER, verify_workspace=True)
+    async with _client(state) as client:
+        resp = await client.post(
+            f"/api/chat/threads/{mid}/reply",
+            json={"slot_key": _MEMBER_SLOT, "text": "the other 8?"},
+        )
+        assert resp.status == 202
+        for task in list(state._background_tasks):
+            await task
+        detail = await (
+            await client.get(f"/api/chat/threads/{mid}", params={"slot": _MEMBER_SLOT})
+        ).json()
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["cwd"] == str(proj)
+    assert acquired["cwd_identity"] == spawn_project_identity(slot)
+    assert [r["role"] for r in detail["replies"]] == ["user", "assistant"]
+    assert detail["replies"][1]["content"] == _ANSWER
+
+
+@pytest.mark.asyncio
+async def test_thread_refuses_a_bound_directory_it_cannot_re_pin(tmp_path, monkeypatch):
+    """A bound slot with no record in this process (a restart) whose directory the pin refuses."""
+    state = _make_state(tmp_path)
+    events = _capture_broadcasts(state)
+    slot, mid = _member_slot(state)
+    proj = _bind(state, slot, tmp_path)
+    slot.project_identity = None  # what a restart leaves
+    proj.rmdir()
+    proj.write_text("planted")
+    calls = _arm_turn(state, monkeypatch, answer="answered anyway")
+    await _run_thread_turn(
+        state, slot, mid, "run-1", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    assert not [c for c in calls if "key" in c], "a session was acquired for a refused turn"
+    final = _finals(events)[-1]
+    assert final.get("is_error") is True
+    assert "could not be re-pinned" in final["content"]
+    assert "re-bind the project directory" in final["content"]
+    assert _threads(state, slot) == {}
+
+    # Unbound: no identity, no check, the turn runs.
+    slot.project = ""
+    slot.project_identity = None
+    await _run_thread_turn(
+        state, slot, mid, "run-2", "hi", _parent(), [], f"{slot.key}:{mid}", _identity(state, slot)
+    )
+    acquired = next(c for c in calls if "key" in c)
+    assert acquired["cwd"] is None and acquired["cwd_identity"] is None
+    assert _finals(events)[-1]["content"] == "answered anyway"

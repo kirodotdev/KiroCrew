@@ -411,7 +411,41 @@ def _make_app(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
+def stamp_the_person(request: web.Request) -> None:
+    """Model the dashboard's own browser on *request* -- the person the folder fences admit."""
+    request["is_dashboard_user"] = True
+    if "app" not in request:
+        request["app"] = request.headers.get("X-Test-App", "")
+    if "user" not in request:
+        request["user"] = request.headers.get("X-Test-User", "local-app")
+
+
+def pin_the_owners_store_step(monkeypatch) -> None:
+    """Neutralize the agent-store step slot create runs for the OWNER alone."""
+    from types import SimpleNamespace
+
+    async def _no_private_store(*_args, **_kwargs) -> str:
+        return ""
+
+    async def _no_selection_record(*_args, **_kwargs) -> None:
+        return None
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.pin_private_agent_store", _no_private_store
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
+        lambda cfg, name, project_dir=None, **kwargs: SimpleNamespace(
+            selection_kind=kwargs.get("selection_kind") or "template"
+        ),
+    )
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers._record_explicit_agent_selection",
+        _no_selection_record,
+    )
+
+
+def _make_app_with_agent_routes(state: DashboardState, *, person: bool = True) -> web.Application:
     """Minimal aiohttp app with chat endpoints including agent and create routes."""
     from kiro_crew.dashboard.chat import (
         api_chat_slot_agent,
@@ -426,7 +460,13 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
         api_chat_slots,
     )
 
-    app = web.Application(middlewares=[slot_ownership_middleware])
+    @web.middleware
+    async def _stamp_person(request: web.Request, handler):
+        if person and "is_dashboard_user" not in request:
+            request["is_dashboard_user"] = True
+        return await handler(request)
+
+    app = web.Application(middlewares=[_stamp_person, slot_ownership_middleware])
     app["state"] = state
     app.router.add_get("/api/chat/slots", api_chat_slots)
     app.router.add_post("/api/chat/slots", api_chat_slot_create)
@@ -441,7 +481,7 @@ def _make_app_with_agent_routes(state: DashboardState) -> web.Application:
     return app
 
 
-def _make_folder_app(state: DashboardState) -> web.Application:
+def _make_folder_app(state: DashboardState, *, dashboard_user: bool = False) -> web.Application:
     """Minimal aiohttp app with folder endpoints."""
     from kiro_crew.dashboard.chat import api_chat_slots
     from kiro_crew.dashboard.chat_folders import (
@@ -455,6 +495,14 @@ def _make_folder_app(state: DashboardState) -> web.Application:
 
     app = web.Application()
     app["state"] = state
+    if dashboard_user:
+
+        @web.middleware
+        async def _stamp_person(request: web.Request, handler: web.Handler) -> web.StreamResponse:
+            stamp_the_person(request)
+            return await handler(request)
+
+        app.middlewares.append(_stamp_person)
     app.router.add_get("/api/chat/folders", api_chat_folders)
     app.router.add_post("/api/chat/folders", api_chat_folder_create)
     app.router.add_patch("/api/chat/folders/{id}", api_chat_folder_update)

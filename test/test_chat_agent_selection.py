@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 from dataclasses import replace
 from unittest.mock import AsyncMock, MagicMock
@@ -2181,3 +2182,46 @@ async def test_restricted_member_session_persists_transcript_but_no_owner_record
     assert rebound.memory_mode == mode
     assert rebound.store.store_id == member_store
     assert "memory_store" not in restarted.conversation_log.get_metadata(key)
+
+
+@pytest.mark.asyncio
+async def test_a_bound_project_that_cannot_be_re_pinned_refuses_the_turn_without_a_child(
+    tmp_path, monkeypatch
+):
+    """After a restart the slot's project carries no identity record."""
+    from kiro_crew import sandbox
+
+    state = _turn_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("repinned", agent="default")
+    target = tmp_path / "target"
+    target.mkdir()
+    link = tmp_path / "link"
+    try:
+        os.symlink(target, link, target_is_directory=True)
+        slot.project = str(link)
+    except (OSError, NotImplementedError):
+        slot.project = str(tmp_path / "gone")  # no link granted: a missing leaf
+    slot.project_identity = None  # what a restart leaves
+    await chat_runner._run_chat(state, slot, "hello")
+    state.sessions.get_or_create.assert_not_awaited()
+    shown = " ".join(str(m.get("content", "")) for m in slot.messages if m.get("role") != "user")
+    assert "could not be re-pinned" in shown, slot.messages
+    assert "re-bind the project directory" in shown
+
+    # Unchanged directory: re-pinned at this first spawn, and the turn runs.
+    good = state.get_or_create_slot("unchanged", agent="default")
+    good.project = str(target)
+    good.project_identity = None
+    await chat_runner._run_chat(state, good, "hello")
+    info = os.stat(target)
+    assert good.project_identity == (str(target), info.st_dev, info.st_ino)
+    kwargs = state.sessions.get_or_create.await_args.kwargs
+    assert kwargs["cwd_identity"] == (info.st_dev, info.st_ino)
+
+    # No binding at all: nothing pinned, nothing examined.
+    state.sessions.get_or_create.reset_mock()
+    bare = state.get_or_create_slot("bare", agent="default")
+    bare.project = ""
+    await chat_runner._run_chat(state, bare, "hello")
+    assert state.sessions.get_or_create.await_args.kwargs["cwd_identity"] is None
+    assert sandbox is not None
