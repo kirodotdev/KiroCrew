@@ -1561,6 +1561,8 @@ class TestStartKiroRuntimeModelEntitlement:
         handle.session_id = "kiro-sess-1"
         handle.store_session_config = MagicMock()
         handle.set_model = AsyncMock()
+        # A real AcpSessionHandle starts with no refusal recorded.
+        handle.model_pin_refused = ""
         handle.available_models = [{"modelId": m, "name": m} for m in advertised]
         # The spawn-time withhold revalidates once via refresh_available_models
         # before dropping a pin. Default: the probe agrees with the startup
@@ -1593,6 +1595,20 @@ class TestStartKiroRuntimeModelEntitlement:
     async def test_unusable_configured_model_is_never_sent(self):
         handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
         handle.set_model.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_withheld_configured_model_is_recorded_as_refused(self):
+        # The pin never ran, so a caller that bills or labels a turn by it (the
+        # cron acquire step) reads it from the handle's model_pin_refused.
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6"])
+        handle.set_model.assert_not_awaited()
+        assert handle.model_pin_refused == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
+    async def test_an_applied_configured_model_records_no_refusal(self):
+        handle = await self._run("claude-opus-4.8", ["claude-sonnet-4.6", "claude-opus-4.8"])
+        handle.set_model.assert_awaited_once_with("claude-opus-4.8")
+        assert handle.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_usable_configured_model_is_applied(self):

@@ -440,6 +440,11 @@ its own once the cache refreshes with a list that carries it.
   and the session keeps its model, the same contract as the config-option branch,
   so the dashboard pick answers 4xx instead of resetting. No reply within the wait
   is read as accepted and the model is recorded, as it was before the wait existed.
+  A startup pin that a kiro session withholds because the account does not serve
+  it (`AcpClient._apply_startup_model` on the dedicated runtime, the kiro start in
+  `providers/acp.py` on the shared one) is recorded in `model_pin_refused` the same
+  way, so the cron acquire step in `slack/gateway.py` annotates the result and
+  blanks the pinned model on the usage row instead of billing a model that never ran.
   Both refusals carry `advertised_but_refused` from the same verdict, which selects
   the adapter-mismatch wording; `AcpModelUnavailable` requires `backend=` and shows
   the `kiro-cli whoami` hint only for backends that sign in through the host

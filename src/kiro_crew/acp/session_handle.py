@@ -1402,9 +1402,11 @@ class AcpSessionHandle:
         # (mirrors AcpClient._resolved_model_id; avoids the profile-id
         # pinning trap where a resolved profile id poisons slot.model).
         self._resolved_model_id: str = ""
-        # The model a non-strict config-option push was refused on, or ``""``
-        # (mirrors AcpClient.model_pin_refused). The refusal stays on the
-        # backend default without raising, so this is the only trace of it.
+        # The model a non-strict config-option push was refused on, or the
+        # startup pin the provider factory withheld because the account does not
+        # serve it, or ``""`` (mirrors AcpClient.model_pin_refused). Either way
+        # the session stays on the backend default without raising, so this is
+        # the only trace of it.
         self.model_pin_refused: str = ""
         # The bare model a pair pin landed as when its effort was refused
         # (mirrors AcpClient.model_pin_partial).

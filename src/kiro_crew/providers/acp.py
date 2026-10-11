@@ -1567,6 +1567,9 @@ class AcpProvider(LLMProvider):
                         configured_model,
                         ", ".join(_advertised),
                     )
+                    # The pin never runs: record it where a caller billing or
+                    # labelling the turn by the pin reads (model_pin_refused).
+                    handle.model_pin_refused = configured_model
                 elif _send_model:
                     _t_model = time.monotonic()
                     try:

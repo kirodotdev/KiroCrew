@@ -624,10 +624,11 @@ def provider_model_pin_refused(provider: LLMProvider) -> bool:
     """True when *provider*'s adapter refused its pinned model at startup.
 
     A config-option backend applies a pin non-strictly: a refusal leaves the
-    session on the backend default and raises nothing. The session records the
-    refused id as ``model_pin_refused``. Callers treat a True here exactly as a
-    caught model-unavailable error: annotate the downgrade and blank the
-    explicit pin on the usage row.
+    session on the backend default and raises nothing. A kiro session withholds
+    a startup pin the account does not serve, with the same result. The session
+    records the refused or withheld id as ``model_pin_refused``. Callers treat a
+    True here exactly as a caught model-unavailable error: annotate the
+    downgrade and blank the explicit pin on the usage row.
     """
     # Declared on LLMProvider. The str check keeps a test double's auto-made
     # attribute from reading as a refusal.

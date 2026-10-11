@@ -12562,6 +12562,17 @@ class TestModelEntitlementPreflight:
         assert client._resolved_model_id == "claude-sonnet-4.6"
 
     @pytest.mark.asyncio
+    async def test_startup_withhold_records_the_pin_as_refused(self):
+        """The withheld pin never ran, so it is recorded in ``model_pin_refused``,
+        the field a caller that bills or labels a turn by the pin reads."""
+        client = self._client(["claude-sonnet-4.6"], "claude-opus-4.8")
+        client._send_request = _record([])
+
+        await client._apply_startup_model()
+
+        assert client.model_pin_refused == "claude-opus-4.8"
+
+    @pytest.mark.asyncio
     async def test_startup_auto_keeps_the_backend_default(self):
         from kiro_crew.acp.client import DEFAULT_MODEL
 
@@ -12588,6 +12599,7 @@ class TestModelEntitlementPreflight:
         assert sent[0][1]["modelId"] == "gpt-6-astra"
         assert client._model == "gpt-6-astra"
         assert client._resolved_model_id == "gpt-6-astra"
+        assert client.model_pin_refused == ""
 
     @pytest.mark.asyncio
     async def test_startup_resolves_namespaced_pin_to_advertised_spelling(self):

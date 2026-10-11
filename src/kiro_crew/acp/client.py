@@ -2147,10 +2147,11 @@ class AcpClient:
         # model the gateway will actually serve (the advisory carries no
         # sessionId, so the first attempt creates nothing). None = no substitution.
         self._last_substitution_model: str | None = None
-        # The pinned model a startup config-option push was refused on, or
-        # ``""``. That push is non-strict, so a refusal leaves the session on
-        # the backend default without raising. Callers that bill or label a
-        # turn by the pin read this to learn the pin never ran.
+        # The pinned model a startup config-option push was refused on, or a
+        # startup pin kiro withheld because the account does not serve it, or
+        # ``""``. Neither raises: the session stays on the backend default.
+        # Callers that bill or label a turn by the pin read this to learn the
+        # pin never ran.
         self.model_pin_refused: str = ""
         # The bare model a ``<model>[<effort>]`` pin landed as when its effort
         # half was refused, or ``""``. Set by ``_push_model_via_effort_split``.
@@ -5478,7 +5479,10 @@ class AcpClient:
                 # Record the session as running the default rather than the value we
                 # declined: the "!= DEFAULT_MODEL" test above is also what the
                 # warm-pool re-apply path reads (session_provider), so leaving the
-                # unusable id here would re-offer it on every claim.
+                # unusable id here would re-offer it on every claim. The declined
+                # pin never runs, so it is recorded where a caller billing or
+                # labelling the turn by the pin looks for that.
+                self.model_pin_refused = self._model
                 self._model = DEFAULT_MODEL
                 # Now inheriting, so the same served-default check applies: the
                 # default we fall back to can itself be one the account lacks.
