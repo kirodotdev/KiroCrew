@@ -41,6 +41,7 @@ from kiro_crew.acp.types import (
     STOP_REASON_CANCELLED,
     STOP_REASON_COMPACTION_FAILED,
     STOP_REASON_END_TURN,
+    STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.agent_discovery import (
     SensitiveAgentSpecPathError,
@@ -699,6 +700,14 @@ _COMPACTION_FAILED_RETRIES = 2
 # persists nothing and mirrors nothing, so the conversation log records the
 # message once, with the reply the replay produces.
 _COMPACTION_RETRY_NOTICE = "⟳ Compaction failed — retrying…"
+
+# Terminals the session handle synthesizes for a turn the backend never
+# finished: its own turn ceiling ("timeout") and a stale turn its probe
+# confirmed wedged. The runtime still reads alive after either one, so the turn
+# is failed, the thread is told, and the session is reset so the next message
+# starts a fresh runtime.
+_UNFINISHED_STOP_REASONS = frozenset({"timeout", STOP_REASON_STALE_RECOVER})
+_TIMEOUT_REPLY = "⏱️ Request timed out. Please try again."
 
 
 @dataclass(frozen=True)
@@ -2141,6 +2150,7 @@ async def handle_message(
                     # Expected terminal state after a failed auto-compaction;
                     # handled below with a session reset, so not "unexpected".
                     and _stop_reason != STOP_REASON_COMPACTION_FAILED
+                    and _stop_reason not in _UNFINISHED_STOP_REASONS
                 ):
                     logger.warning(
                         "Unexpected stop_reason %r for %s — treating as normal completion",
@@ -2152,6 +2162,31 @@ async def handle_message(
         if _stop_reason == STOP_REASON_CANCELLED:
             logger.info("Turn cancelled by user for %s", session_key)
             task.complete()
+        elif _stop_reason in _UNFINISHED_STOP_REASONS:
+            # Booked like a raised AcpTimeoutError (failed task, a failure
+            # toward the breaker), with the partial text kept and the timeout
+            # notice after it, so the thread does not read a half answer as the
+            # reply. The reset replaces the silent runtime and keeps the
+            # conversation, as the COMPACTION_FAILED branch below does.
+            logger.warning("Turn for %s ended unfinished (%s)", session_key, _stop_reason)
+            _had_error = True
+            answer.accumulated = (
+                f"{answer.accumulated}\n\n{_TIMEOUT_REPLY}"
+                if answer.accumulated
+                else _TIMEOUT_REPLY
+            )
+            task.fail("timeout")
+            await sessions.record_failure(session_key)
+            Stats().inc_timeout()
+            Stats().inc_message_failed()
+            try:
+                await sessions.reset(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to reset session %s after an unfinished turn",
+                    session_key,
+                    exc_info=True,
+                )
         else:
             task.complete()
             # Success accounting is deferred to after the answer-carrying delivery
@@ -2237,7 +2272,7 @@ async def handle_message(
                 )
             else:
                 sessions.close_replay_gap(session_key)
-        else:
+        elif _stop_reason not in _UNFINISHED_STOP_REASONS:
             # Check context usage — fires background compaction at configured
             # threshold, never blocks. This runs AFTER ``_turn_completed_ok`` is
             # set (the model already finished cleanly), so a raise here must NOT
@@ -2260,11 +2295,23 @@ async def handle_message(
 
     except AcpTimeoutError as e:
         _had_error = True
-        answer.accumulated = e.partial_output or "⏱️ Request timed out. Please try again."
+        # The per-process client raises at its prompt deadline and leaves its
+        # process running, so this ending is handled like the stop-reason one:
+        # the text that streamed (or the partial output the error carries) is
+        # kept with the notice after it, and the session this turn held is reset.
+        _partial = e.partial_output or answer.accumulated
+        answer.accumulated = f"{_partial}\n\n{_TIMEOUT_REPLY}" if _partial else _TIMEOUT_REPLY
         task.fail("timeout")
         await sessions.record_failure(session_key)
         Stats().inc_timeout()
         Stats().inc_message_failed()
+        if _acquired:
+            try:
+                await sessions.reset(session_key)
+            except Exception:
+                logger.debug(
+                    "Failed to reset session %s after a timed-out turn", session_key, exc_info=True
+                )
     except AcpProcessDied:
         _had_error = True
         answer.accumulated = answer.accumulated or "💀 Agent process died. Please try again."

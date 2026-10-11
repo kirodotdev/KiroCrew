@@ -1519,7 +1519,7 @@ _GOLDEN_DIGESTS: dict[str, str] = {
     "error_from_trusted_bot": "f347570f5f67a5ca3659343ec439a0802b29970f757e66c3a5330e530afac193",
     "error_process_died": "d35a33b0b576068801e5fe522cc02df56a62acf4d66d4e58e7e294311cd15815",
     "error_prompt_busy": "3617d636151fb29f5ff88ac9e803a226a1f77bec56fc013e1bf32f9a65484de6",
-    "error_timeout": "0625bccb70ce8ed8e7e690e5a83b1aa394f5ef1d435188f58e1aa07d9deb2f80",
+    "error_timeout": "608f9764fe3ed40a4e758a69d881f2c829e08a6aa89302e9f007a1c1b463db44",
     "error_unexpected": "ae7bc265f3ffd8441f818df443f1586b1e0f3c6d2009d7b707220f0b6e92829a",
     "hook_auto_reply": "f976c5ff2c752a2259381bcfd9fbf6e2fb72ca95fcdb1bbfa53c5ddf98f68f53",
     "hook_deny_and_flag": "128570569dc7d30d1327ba223a903e3d1da2c190df536c018cc8555f04bfb1da",
