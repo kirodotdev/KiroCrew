@@ -308,6 +308,34 @@ one shielded worker-thread transaction. If revocation or deletion cannot complet
 the old seed is restored or re-recorded so a later session can repair it rather
 than leaving an unowned permission mode on disk.
 
+That transaction runs from `shutdown`, and not every provider is torn down through
+`shutdown`. A provider the session layer abandons — a start that was cancelled or
+refused after the spawn, a warm-pool claim that failed, a `shutdown` that hung past
+its bound — reaches `session_pid._sync_kill_provider` through `_dispatch_hard_kill`
+and its client object is dropped afterwards. That path hands the client's
+registrations back itself (`AcpClient.release_settings_seed_claim`), once the kill
+gate has said what stands behind the pid: released when the teardown is
+authorized, when there is no pid, or when the recorded root is known to be gone or
+recycled; kept while a lease or tenancy still holds the runtime and while the
+root's identity cannot be read, so a successor never re-seeds the permission file
+under a runtime that may still be running (the conditions are the funnel's spec,
+[runtime-ownership.md](runtime-ownership.md) § *The one kill gate*). The hand-back
+withdraws the owner claim through `seed_provenance.release` and a reader lease
+through `seed_provenance.unshare`, composed as `seed_provenance.release_held` and
+gated on what the client's own token holds, so a client that holds nothing — every
+kiro-backend client — performs no sidecar I/O. The release is the durable one, not
+the in-memory `release_local`: the persisted owner holder carries this process's
+live identity and `claim` re-reads it under the cross-process lock, so an in-memory
+drop alone leaves the next client refused. The file and its record stay — this is
+the recorded-orphan shape, which the next session on that `work_dir` adopts,
+re-seeds for itself and removes on its own teardown. Without the hand-back a stale
+live claim outlives its client for the rest of the gateway process: a resumed chat
+whose first provider is torn down as leaked keeps every later provider on that
+`work_dir` out of its own seed, and one whose payload the stale seed cannot be
+shared with runs with the whole `mcpServers` array withheld
+(`test_seed_claim_released_on_teardown.py`, which also pins the kept claim under a
+live tenancy: the successor cannot re-write the file).
+
 **One relaxation: a sibling seed that governs this session is SHARED, not refused.**
 Two sessions of the same agent in the same `work_dir` render the same permissions,
 and refusing the second one bought nothing — it ran with the whole `mcpServers` array

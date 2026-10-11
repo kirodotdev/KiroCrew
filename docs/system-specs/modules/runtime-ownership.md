@@ -227,6 +227,36 @@ other session's lease. It is best effort by design: a release that did not happe
 costs an honest refusal, while an exception raised out of it would cost a wedged
 process its only remaining kill.
 
+The funnel also ends a registration that is not a lease. A provider reaching
+`_sync_kill_provider` is being abandoned — its client's `shutdown` will never run —
+so the funnel calls the client's own synchronous hand-back for its
+`settings.local.json` seed (`AcpClient.release_settings_seed_claim`, resolved by
+name so this leaf stays ignorant of the ACP layer). Without it the client's live
+claim on that seed outlived the client for the life of the gateway and every later
+session on the same work dir read the path as a live sibling's. The hand-back
+follows the gate's verdict rather than running ahead of it, because a successor
+that adopts the seed re-writes `permissions.defaultMode` on disk, and that must not
+happen under a runtime that may still be running:
+
+- **released** when the teardown is authorized and committed, immediately before
+  the first signal (ahead of the grace, so a replacement spawn on the same work dir
+  finds the slot free when it seeds); when there is no pid at all (a seed is
+  written before the spawn publishes one, so the claim belongs to the client
+  object and no runtime stands behind it); and when the recorded root is known to
+  be gone or recycled (`_root_identity_refuted`: the pid names no process, or a
+  live start identity was read and differs from the recorded one);
+- **kept** while the gate refuses the kill because a lease or a tenancy still
+  holds the runtime, and when the root's identity cannot be read (the pid exists
+  but its start identity is unavailable, or none was recorded at spawn). A kept
+  claim keeps the successor on the live-sibling rule — it declines its own seed
+  rather than re-seeding the file — and is handed back by a later teardown of the
+  same runtime or reclaimed as stale once this process exits.
+
+Like the lease release it is best effort and never lets an exception out. Which
+registrations it withdraws, and why the durable half, is the seed's own spec
+([claude-code-provider.md](claude-code-provider.md) § *Session-scoped Claude
+settings*).
+
 ### Kill owed, and the hand-back
 
 A refusal on tenancy grounds would otherwise lose the teardown: the owner has

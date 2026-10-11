@@ -2303,6 +2303,52 @@ def _reap_provider_root(pid: int, recorded_start: str | None, *, gated: bool) ->
         pass
 
 
+def _release_client_seed_registrations(client: object) -> None:
+    """Run the client's synchronous settings-seed hand-back, if it has one.
+
+    ``AcpClient.release_settings_seed_claim`` withdraws the owner claim or reader
+    lease the client holds on its ``settings.local.json`` seed; a torn-down client
+    whose ``shutdown`` never runs otherwise keeps that registration for the life of
+    the gateway, and every later session on the same work dir reads the path as a
+    live sibling's. Resolved by name rather than by type, as every client
+    read in this leaf is: ``session_pid`` imports nothing from the ACP layer. A
+    client without the method -- a test stand-in, a provider shape that never
+    seeds -- costs nothing, and one that holds no registration performs no I/O.
+    Never lets an exception out: the teardown that follows is the process's only
+    remaining end, and a hand-back that did not land is the recorded-orphan shape
+    a later session already repairs.
+    """
+    hand_back = getattr(client, "release_settings_seed_claim", None)
+    if not callable(hand_back):
+        return
+    try:
+        hand_back()
+    except Exception:
+        logger.debug(
+            "_sync_kill_provider: the client's settings-seed hand-back failed", exc_info=True
+        )
+
+
+def _root_identity_refuted(pid: int, recorded_start: str | None, live_start: str | None) -> bool:
+    """Whether an unverified recorded root is KNOWN to be gone or recycled.
+
+    Decides the settings-seed hand-back for a root whose identity did not hold.
+    True when the pid names no process at all (the runtime is gone) or when a live
+    start identity was read and differs from the recorded one (the pid was handed to
+    a stranger): in both, the process that read the seed is not the one behind this
+    pid, so handing the claim back lets the next session on the work dir adopt the seed.
+    False when nothing can be read -- the pid exists but its start identity is
+    unavailable, or no identity was recorded at spawn -- because an unreadable
+    identity cannot tell our live runtime from a stranger's, and a successor must not
+    re-seed the permission file under a runtime that may still be ours.
+    """
+    if not platform_compat.pid_exists(pid):
+        return True
+    return (
+        isinstance(recorded_start, str) and live_start is not None and live_start != recorded_start
+    )
+
+
 def _sync_kill_provider(provider: object) -> None:
     """Synchronously kill a provider's whole process tree.
 
@@ -2333,6 +2379,18 @@ def _sync_kill_provider(provider: object) -> None:
     """
     # ACP provider: long-lived process via client._pid
     client = getattr(provider, "_client", None)
+    # The provider is being abandoned: nothing will call its client's shutdown, so
+    # the registrations that client took on its settings seed are handed back by
+    # this funnel -- but only once the gates below have said what stands behind the
+    # pid. A seed is written before the spawn publishes a pid and the claim belongs
+    # to the client OBJECT, so with no pid at all there is no runtime to protect and
+    # the claim is handed back at once. With a pid, the hand-back follows the gate's
+    # verdict: released when the teardown is authorized (before the first signal, so
+    # it lands ahead of the grace), when the recorded root is known to be gone or
+    # recycled, and otherwise KEPT -- while a lease or tenancy still holds the
+    # runtime, and while the root's identity cannot be read -- because a successor
+    # adopting the seed would re-write ``permissions.defaultMode`` under a runtime
+    # that may still be live. Duck-typed like every other client read in this leaf.
     pid = getattr(client, "_pid", None) if client else None
     # Whether the pid is a RECORDED number (staleness-prone, so identity-gated
     # below) or one read from a live handle this process owns.
@@ -2347,6 +2405,7 @@ def _sync_kill_provider(provider: object) -> None:
         if proc is not None and proc.returncode is None:
             pid = proc.pid
     if pid is None:
+        _release_client_seed_registrations(client)
         return
     # Only ever signal a real, positive, non-init PID. Test stand-ins are the
     # sharp edge: a Mock attribute passes the None check and coerces to 1 via
@@ -2355,6 +2414,9 @@ def _sync_kill_provider(provider: object) -> None:
     # excludes the kill(0)/kill(-n) process-group semantics outright.
     if not isinstance(pid, int) or pid <= 1:
         logger.debug("_sync_kill_provider: refusing to signal invalid pid %r", pid)
+        # No process stands behind an invalid pid, so the seed claim is handed back
+        # exactly as for no pid.
+        _release_client_seed_registrations(client)
         return
     # Asked ONCE, here, before any signal. Everything below is one careful
     # escalation -- a group resolved while the leader was alive, a SIGTERM grace,
@@ -2385,6 +2447,16 @@ def _sync_kill_provider(provider: object) -> None:
         reason="leaked provider teardown",
         caller="session_pid._sync_kill_provider",
     ):
+        # The runtime is still leased or in use, so its settings seed stays
+        # claimed: a successor must not re-seed the permission file under a
+        # process another party is still mid-flight on. The claim is handed back
+        # only by a later teardown of this runtime, or when this process exits
+        # and the persisted holder reads as stale.
+        logger.debug(
+            "_sync_kill_provider: keeping the settings-seed claim of pid %d; the "
+            "runtime is still leased or in use",
+            pid,
+        )
         return
     # The verdict above is a statement about the past, and this function is where
     # that matters most: it runs on an EXECUTOR thread while a session-sharing
@@ -2418,6 +2490,9 @@ def _sync_kill_provider(provider: object) -> None:
     # recycled pid would still send ``taskkill /T`` down a foreign tree.
     root_verified = True
     recorded_start: str | None = None
+    # Set once the seed claim has been handed back on this path, so the authorized
+    # arms below do not hand it back a second time.
+    seed_claim_handed_back = False
     if pid_from_client:
         recorded_start = getattr(client, "_start_time", None)
         live_start = platform_compat.get_process_start_id(pid)
@@ -2434,6 +2509,21 @@ def _sync_kill_provider(provider: object) -> None:
                 recorded_start,
                 live_start,
             )
+            # The seed claim follows what the identity read established. A root
+            # that is gone or recycled has none of our processes behind its pid,
+            # so the claim is handed back here (the Windows
+            # arm below returns without signalling, and the POSIX arm may still
+            # sweep recorded descendants). An identity that could not be read is
+            # kept: it cannot tell our live runtime from a stranger's.
+            if _root_identity_refuted(pid, recorded_start, live_start):
+                _release_client_seed_registrations(client)
+                seed_claim_handed_back = True
+            else:
+                logger.debug(
+                    "_sync_kill_provider: keeping the settings-seed claim of pid %d; the "
+                    "root's identity could not be read",
+                    pid,
+                )
     # On Windows there is no SIGTERM/SIGKILL distinction (taskkill /F is a hard
     # kill) and no os.waitpid for non-child PIDs, so a single kill suffices.
     if platform_compat.IS_WINDOWS:
@@ -2451,6 +2541,12 @@ def _sync_kill_provider(provider: object) -> None:
         # between the verdict and a claim taken while the tree comes down.
         if not _commit_teardown(pid, tenancy_token):
             return
+        # Authorized and committed: the runtime is coming down, so its seed claim
+        # is handed back now, ahead of the kill, and the replacement spawn on the
+        # same work dir finds the slot free when it seeds.
+        if not seed_claim_handed_back:
+            _release_client_seed_registrations(client)
+            seed_claim_handed_back = True
         try:
             if pid_from_client:
                 # PINNED: the query handle that verified this identity is held
@@ -2535,6 +2631,17 @@ def _sync_kill_provider(provider: object) -> None:
     # answer that holds for the duration of a kill that cannot be taken back.
     if not _commit_teardown(pid, tenancy_token):
         return
+    # Authorized and committed: the runtime is coming down, so its seed claim is
+    # handed back here, before the first signal. Ahead of the grace on purpose --
+    # the replacement spawn on the same work dir runs beside this teardown and
+    # reads the live slot when it seeds; a hand-back that waited out the grace
+    # would land after that read and the replacement would decline its own seed
+    # as a live sibling's. Verified roots only: an unverified root is never
+    # signalled below (only its recorded descendants are swept), so a root whose
+    # identity could not be read may still be running and keeps its claim.
+    if root_verified and not seed_claim_handed_back:
+        _release_client_seed_registrations(client)
+        seed_claim_handed_back = True
     try:
         for sig in (platform_compat.SIGTERM, platform_compat.SIGKILL):
             # killpg is authorized by GROUP OWNERSHIP, not by the root still being
