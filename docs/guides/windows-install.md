@@ -676,6 +676,45 @@ POSIX-only and let a Windows junction redirect a trashed note out of the vault.
 A *file* symlink has no junction equivalent, so the few tests that plant one
 stay Windows-skipped in `test/windows-expected-failures.txt`.
 
+## Running the gateway without the desktop app
+
+The desktop app is a window around the gateway, not the gateway itself. On a
+host where that window cannot render — a VMware or VirtualBox guest reached over
+RDP, a VDI session, a server nobody signs in to — `kirocrew gateway` runs the
+same server and dashboard with no Electron process at all, and you use the
+dashboard from a browser. Try this when the desktop window still fails after the
+software-rendering relaunch described under [Troubleshooting](#troubleshooting).
+
+1. **Start the gateway.** From a source install, run `kirocrew gateway`. The
+   desktop installer does not add the CLI to `PATH`, so from a desktop install
+   call the bundled shim by its full path:
+
+   ```powershell
+   & "<install dir>\resources\backend-dist\kirocrew-backend\bin\kirocrew.cmd" gateway
+   ```
+
+   Leave that window open; closing it stops the gateway.
+2. **Open the dashboard.** In a second shell on the same host, run
+   `kirocrew token` (the same shim, with `token` in place of `gateway`) and open
+   the link it prints within five minutes.
+3. **Stay signed in.** The link sets an access cookie and a 30-day refresh
+   cookie, and the dashboard rotates both before the access cookie expires, so
+   you do not need a new link every 20 hours. You need one again only after
+   30 days without opening the dashboard. The clocks are described under
+   [Session duration](remote-and-mobile.md#session-duration).
+
+Only one gateway listens on a port (`5476` by default). If you open the desktop
+app while this gateway is serving, the app reuses it instead of starting a
+second one, so you can switch between the browser and the app without stopping
+anything.
+
+What this does **not** give you is supervision. `kirocrew service install` has
+no Windows backend: it prints that service management is supported only on
+systemd and launchd. A gateway started this way stops when you sign out or close
+its window, does not start at boot, and is not restarted if it exits. Windows
+supervision is a separate piece of work, proposed in
+[#11289](https://github.com/kirodotdev/KiroCrew/pull/11289).
+
 ## Troubleshooting
 
 - **The desktop app starts and exits within seconds, no window** — on a host
