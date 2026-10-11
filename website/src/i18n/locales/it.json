@@ -14605,7 +14605,7 @@
         "add_tool": "Aggiungi strumento",
         "add_tool_placeholder": "es. fs_write o @github/…",
         "spawn_tool_hint": "Consenti a questo agente di eseguire altri agenti in background, ognuno con un riquadro attività e Interrompi nella chat.",
-        "spawn_tool_add": "Aggiungi agenti in background",
+        "spawn_tool_add": "Consenti agenti in background",
         "remove_item": "Rimuovi {{item}}",
         "remove_item_hint": "Rimuovi — senza effetto finché non salvi l’agente personalizzato.",
         "skills": "Skill",

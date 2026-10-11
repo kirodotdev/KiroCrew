@@ -17,6 +17,7 @@ if TYPE_CHECKING:
         MAX_AGENT_SKILLS,
         TEMPLATE_DEFINITION_KEYS,
         CapabilityError,
+        ControlPlaneNotDeclarable,
         DashboardState,
         SharedAgentHomeRefused,
         SkillCatalogSnapshot,
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
         apply_skill_mapping,
         clear_list_agents_cache,
         clear_model_pin,
+        control_plane_declarations,
         discovery_executor,
         enumerate_skill_catalog,
         is_markdown_spec,
@@ -405,6 +407,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 (f.stem, spec_str(fresh, "name") or f.stem)
                             ):
                                 require_unmanaged_template(identity)
+                            # Asked before the bookkeeping too, for the same reason:
+                            # a tools save naming a control-plane server it cannot
+                            # declare is refused with the model sidecar untouched.
+                            declared = (
+                                control_plane_declarations(
+                                    patch_body["tools"],  # type: ignore[index]
+                                    fresh.get("mcpServers"),
+                                )
+                                if "tools" in patch_body  # type: ignore[operator]
+                                else {}
+                            )
                             if "model" in patch_body:  # type: ignore[operator]
                                 data["model"] = patch_body["model"] or None  # type: ignore[index]
                                 if data["model"] is None:
@@ -424,16 +437,17 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                                 if key not in data and key != "resources":
                                     fresh.pop(key, None)
                             _merge_resources_delta(fresh, before_patch, data, mapped_uris)
-                            if "tools" in patch_body:  # type: ignore[operator]
+                            if declared:
                                 # On the FRESH read, not the pre-lock snapshot: adding
                                 # one entry to the snapshot's map would make the whole
                                 # map a changed key and overwrite a concurrent writer's
                                 # ``mcpServers`` edit.
-                                from kiro_crew.dashboard.handlers.agent_templates import (
-                                    declare_granted_control_plane,
-                                )
-
-                                declare_granted_control_plane(fresh)
+                                # An existing declaration is never replaced.
+                                servers = fresh.get("mcpServers")
+                                servers = dict(servers) if isinstance(servers, dict) else {}
+                                for server_name, entry in declared.items():
+                                    servers.setdefault(server_name, entry)
+                                fresh["mcpServers"] = servers
                             sanitize_agent_config_governance(fresh)
                             # Atomic replace: a direct write truncates first,
                             # so ENOSPC mid-write would destroy the existing
@@ -483,6 +497,13 @@ async def api_agent_detail(request: web.Request) -> web.Response:
                     except CapabilityError as exc:
                         return web.json_response(
                             {"error": exc.code, "code": exc.code}, status=exc.status
+                        )
+                    except ControlPlaneNotDeclarable as exc:
+                        # Refused, not saved as a grant that mounts nothing: the
+                        # save bar shows the sentence, and the file is untouched.
+                        return web.json_response(
+                            {"error": str(exc), "code": exc.code, "server": exc.server},
+                            status=409,
                         )
                     except _AmbiguousTemplateName:
                         return web.json_response(

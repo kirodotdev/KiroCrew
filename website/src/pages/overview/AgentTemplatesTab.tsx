@@ -169,6 +169,20 @@ const CREW_CORE_SERVER = 'kirocrew-core'
 const CREW_SPAWN_TOOL_NAMES = ['spawn_run', 'spawn_list', 'spawn_status', 'spawn_steer', 'spawn_continue', 'spawn_release'] as const
 const CREW_CORE_REF = `@${CREW_CORE_SERVER}`
 const CREW_SPAWN_TOOL_REFS: readonly string[] = CREW_SPAWN_TOOL_NAMES.map(name => `${CREW_CORE_REF}/${name}`)
+/** The family as one label, the tooltip of the one-click button that adds it. */
+const CREW_SPAWN_FAMILY_LABEL = `${CREW_CORE_REF}/spawn_*`
+
+/**
+ * The spawn refs a template's tools still lack, or none when it already gets
+ * the whole family: `@kirocrew-core` grants it, and so does `*` once the spec
+ * declares the server (`*` grants every DECLARED server and declares none).
+ * `*` with the server undeclared mounts nothing, so the family is offered
+ * there too; the save then declares the server for the explicit refs.
+ */
+const missingSpawnRefs = (tools: readonly string[], coreDeclared: boolean): string[] => {
+  if (tools.includes(CREW_CORE_REF) || (tools.includes('*') && coreDeclared)) return []
+  return CREW_SPAWN_TOOL_REFS.filter(ref => !tools.includes(ref))
+}
 
 const referenceHref = (ref: TemplateReference): string | null => {
   switch (ref.kind) {
@@ -618,6 +632,7 @@ export default function AgentTemplatesTab() {
     })
     : []
   const resources = strList(detailQuery.data?.resources).filter(u => !u.startsWith('skill://'))
+  const spawnRefsToAdd = draft ? missingSpawnRefs(draft.tools, mcpServers.some(([n]) => n === CREW_CORE_SERVER)) : []
   // Offered, not enforced: kiro-cli's native tool names plus whatever this
   // template already grants (an MCP tool is `@server/tool`), so the reader
   // has valid spellings to pick from without the input refusing anything.
@@ -831,17 +846,20 @@ export default function AgentTemplatesTab() {
                           addPlaceholder={i18nT('pages.overview.agentTemplatesTab.add_tool_placeholder')}
                           suggestions={toolSuggestions}
                         />
-                        {!detailReadOnly && !detailDraft.tools.some(t => t === CREW_CORE_REF || t === CREW_SPAWN_TOOL_REFS[0]) && (
+                        {!detailReadOnly && spawnRefsToAdd.length > 0 && (
                           <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 mt-2 text-[12px]">
                             <span className="text-muted">{i18nT('pages.overview.agentTemplatesTab.spawn_tool_hint')}</span>
+                            {/* The refs it adds are optional context, so they sit in the
+                                tooltip: code-like text inside a label gives a newcomer a
+                                reason not to click it. */}
                             <Btn
                               type="button"
                               className="inline-flex items-center gap-1.5 border-dashed"
-                              onClick={() => setD({ tools: [...detailDraft.tools, CREW_SPAWN_TOOL_REFS[0]] })}
+                              title={CREW_SPAWN_FAMILY_LABEL}
+                              onClick={() => setD({ tools: [...detailDraft.tools, ...spawnRefsToAdd] })}
                             >
                               <Plus className="lucide-inline" aria-hidden />
                               {i18nT('pages.overview.agentTemplatesTab.spawn_tool_add')}
-                              <code className="font-mono text-muted">{CREW_SPAWN_TOOL_REFS[0]}</code>
                             </Btn>
                           </div>
                         )}

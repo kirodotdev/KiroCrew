@@ -14605,7 +14605,7 @@
         "add_tool": "Ajouter un outil",
         "add_tool_placeholder": "p. ex. fs_write ou @github/…",
         "spawn_tool_hint": "Permets à cet agent de lancer d’autres agents en arrière-plan, chacun avec un encadré de tâche et Arrêter dans le chat.",
-        "spawn_tool_add": "Ajouter des agents en arrière-plan",
+        "spawn_tool_add": "Autoriser les agents en arrière-plan",
         "remove_item": "Retirer {{item}}",
         "remove_item_hint": "Retirer — sans effet tant que l’agent personnalisé n’est pas enregistré.",
         "skills": "Compétences",

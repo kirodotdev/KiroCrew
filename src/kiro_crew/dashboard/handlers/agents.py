@@ -295,7 +295,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
 )
 from kiro_crew.dashboard.handlers.agent_templates import (  # noqa: F401
     TEMPLATE_DEFINITION_KEYS,
+    ControlPlaneNotDeclarable,
     apply_definition_patch,
+    control_plane_declarations,
     read_only_reason_for_path,
     validate_definition_patch,
 )

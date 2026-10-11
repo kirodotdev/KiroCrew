@@ -115,7 +115,7 @@ FolderPin = tuple[str, str, str]
 #: ``resources`` (writing both would race), and an MCP server is a capability
 #: grant that has its own admission path (the MCP page and its quarantine). The
 #: one ``mcpServers`` write a tools edit makes is the declaration of a Crew
-#: control-plane server the new ``tools`` grants (``declare_granted_control_plane``).
+#: control-plane server the new ``tools`` grants (``control_plane_declarations``).
 TEMPLATE_DEFINITION_KEYS = frozenset({"description", "prompt", "tools", "allowedTools"})
 
 _READ_ONLY_PACKAGE = "package"
@@ -1034,8 +1034,23 @@ def apply_definition_patch(data: dict[str, Any], patch_body: dict[str, Any]) -> 
             data[key] = patch_body[key]
 
 
-def declare_granted_control_plane(data: dict[str, Any]) -> None:
-    """Declare each Crew control-plane server the spec's ``tools`` now grants.
+class ControlPlaneNotDeclarable(ValueError):
+    """A tools save names a Crew control-plane server the spec cannot declare.
+
+    Raised instead of writing the grant alone, which would mount nothing: the
+    tools list would show the tool while the agent never gets it. ``str()`` is
+    the sentence the save bar shows, so it names the server and the remedy.
+    """
+
+    code = "control_plane_not_declarable"
+
+    def __init__(self, server: str, reason: str) -> None:
+        super().__init__(reason)
+        self.server = server
+
+
+def control_plane_declarations(tools: Any, servers: Any) -> dict[str, dict[str, Any]]:
+    """The ``mcpServers`` entries a tools save must add for Crew's control plane.
 
     kiro-cli mounts a server only when the spec both grants it in ``tools`` and
     declares it under ``mcpServers``, so a template whose author adds
@@ -1050,42 +1065,59 @@ def declare_granted_control_plane(data: dict[str, Any]) -> None:
     declaration whose grant is later removed is left in place: ``tools`` is the
     allowlist, so an ungranted declaration mounts nothing.
 
-    Called on the spec as re-read under the spec lock, after the patch's keys
-    are merged onto it, so the one entry added lands beside whatever a
+    A server counts as named when *tools* carries ``@server`` or
+    ``@server/tool``, with or without ``*`` beside it. ``*`` alone grants every
+    DECLARED server and declares nothing; an explicit ref next to it is still a
+    request for that server, and skipping it would save a grant that mounts
+    nothing.
+
+    Each entry carries the registry marker while ``agent.mcp_registry_mode`` is
+    on, for the reason ``_managed_opt_in_entry`` gives: a registry-mode client
+    drops every unmarked entry, so the grant would mount nothing there.
+
+    Raises :class:`ControlPlaneNotDeclarable` when a named server cannot be
+    declared (*servers* is not an object, or the install cannot resolve the
+    managed launch), so the save is refused with a reason instead of written as
+    a grant that mounts nothing. The PATCH asks this BEFORE its bookkeeping, so
+    a refusal leaves the model sidecar and the file as they were, and adds the
+    answer to the spec as re-read under the spec lock, beside whatever a
     concurrent writer saved to ``mcpServers`` in the meantime.
     """
-    from kiro_crew.agent import managed_mcp_spec_entry
+    from kiro_crew.agent import _MCP_REGISTRY_TYPE, _mcp_registry_mode, managed_mcp_spec_entry
     from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
     from kiro_crew.mcp_cleanup import CONTROL_PLANE_SERVERS
 
-    tools = data.get("tools")
-    grant_all, granted = parse_tools_refs(tools if isinstance(tools, list) else [])
-    if grant_all:
-        # ``*`` grants every DECLARED server; it is not a request to declare one.
-        return
-    wanted = [name for name in CONTROL_PLANE_SERVERS if name in granted]
+    _grant_all, named = parse_tools_refs(tools if isinstance(tools, list) else [])
+    wanted = [name for name in CONTROL_PLANE_SERVERS if name in named]
     if not wanted:
-        return
-    servers = data.get("mcpServers")
-    if servers is None:
-        servers = {}
-    elif not isinstance(servers, dict):
+        return {}
+    if servers is not None and not isinstance(servers, dict):
         # A hand-edited non-object is the author's to fix; rewriting it would
-        # drop whatever they meant by it.
-        return
-    else:
-        servers = dict(servers)
-    added = False
-    for name in wanted:
-        if name in servers:
-            continue
+        # drop whatever they meant by it, and saving the grant beside it would
+        # mount nothing.
+        raise ControlPlaneNotDeclarable(
+            wanted[0],
+            f"Could not add {wanted[0]}: the MCP servers section of this agent's file is "
+            "malformed, so the tool would never load. Fix that section in the file, then "
+            "save again.",
+        )
+    missing = [name for name in wanted if name not in (servers or {})]
+    if not missing:
+        return {}
+    registry_mode = _mcp_registry_mode()
+    out: dict[str, dict[str, Any]] = {}
+    for name in missing:
         entry = managed_mcp_spec_entry(name)
         if entry is None:
-            continue
-        servers[name] = entry
-        added = True
-    if added:
-        data["mcpServers"] = servers
+            raise ControlPlaneNotDeclarable(
+                name,
+                f"Could not add {name}: Kiro Crew cannot find how to start it on this "
+                "install, so the tool would never load. The Logs panel in a chat shows why.",
+            )
+        if registry_mode:
+            entry["type"] = _MCP_REGISTRY_TYPE
+        out[name] = entry
+    return out
 
 
 def read_only_reason_for_path(path: Path) -> str | None:

@@ -1347,33 +1347,95 @@ async def test_tools_edits_that_grant_no_control_plane_declare_nothing(
 
 
 @pytest.mark.asyncio
-async def test_an_unresolvable_managed_launch_declares_nothing(agents_dir, monkeypatch):
-    """A closed gate or a broken install answers ``None``; the save goes ahead
-    with the grant alone rather than writing a launch nobody resolved."""
+async def test_an_explicit_ref_beside_star_declares_the_server(agents_dir, managed_core):
+    """``*`` grants every DECLARED server, so with ``kirocrew-core`` undeclared it
+    mounts nothing; an explicit ``@kirocrew-core/...`` beside it is a request for
+    that server, and saving it undeclared would be a grant that mounts nothing."""
+    _write(agents_dir, "orchestrator.json", tools=["*"])
+    _seed_config()
+    resp = await api_agent_detail(
+        _request("PATCH", "orchestrator", {"tools": ["*", "@kirocrew-core/spawn_run"]})
+    )
+    assert resp.status == 200, resp.text
+    spec = json.loads((agents_dir / "orchestrator.json").read_text(encoding="utf-8"))
+    assert spec["tools"] == ["*", "@kirocrew-core/spawn_run"]
+    assert spec["mcpServers"] == {"kirocrew-core": _MANAGED_CORE}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registry_mode", [True, False])
+async def test_the_declaration_carries_the_registry_marker_in_registry_mode(
+    agents_dir, managed_core, monkeypatch, registry_mode
+):
+    """A registry-mode client drops every ``mcpServers`` entry without
+    ``"type": "registry"``, so the declaration carries the marker exactly while
+    ``agent.mcp_registry_mode`` is on -- and never outside it, where the same
+    marker is what the client drops."""
+    monkeypatch.setattr("kiro_crew.agent._mcp_registry_mode", lambda: registry_mode)
+    _write(agents_dir, "orchestrator.json", tools=["fs_read"])
+    _seed_config()
+    resp = await api_agent_detail(
+        _request("PATCH", "orchestrator", {"tools": ["fs_read", "@kirocrew-core/spawn_run"]})
+    )
+    assert resp.status == 200, resp.text
+    spec = json.loads((agents_dir / "orchestrator.json").read_text(encoding="utf-8"))
+    expected = {**_MANAGED_CORE, "type": "registry"} if registry_mode else _MANAGED_CORE
+    assert spec["mcpServers"] == {"kirocrew-core": expected}
+
+
+async def _refused(agents_dir, body) -> dict:
+    """PATCH *body* onto ``orchestrator`` and require the declaration refusal."""
+    before = (agents_dir / "orchestrator.json").read_bytes()
+    resp = await api_agent_detail(_request("PATCH", "orchestrator", body))
+    assert resp.status == 409, resp.text
+    payload = await _body(resp)
+    assert payload["code"] == "control_plane_not_declarable"
+    assert payload["server"] == "kirocrew-core"
+    # Nothing is written: the tools list never shows a tool the agent cannot get.
+    assert (agents_dir / "orchestrator.json").read_bytes() == before
+    return payload
+
+
+@pytest.mark.asyncio
+async def test_an_unresolvable_managed_launch_refuses_the_save(agents_dir, monkeypatch):
+    """A broken install answers ``None`` for the managed launch. The save is
+    refused with a reason the save bar shows, never written as a grant alone."""
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry", lambda name, *, include_opt_in=False: None
     )
     _write(agents_dir, "orchestrator.json", tools=["fs_read"])
     _seed_config()
-    resp = await api_agent_detail(
-        _request("PATCH", "orchestrator", {"tools": ["@kirocrew-core/spawn_run"]})
-    )
-    assert resp.status == 200, resp.text
-    spec = json.loads((agents_dir / "orchestrator.json").read_text(encoding="utf-8"))
-    assert spec["tools"] == ["@kirocrew-core/spawn_run"]
-    assert "mcpServers" not in spec
+    payload = await _refused(agents_dir, {"tools": ["@kirocrew-core/spawn_run"]})
+    assert "cannot find how to start it" in payload["error"]
 
 
 @pytest.mark.asyncio
-async def test_a_non_object_mcp_servers_is_left_for_the_author(agents_dir, managed_core):
+async def test_a_non_object_mcp_servers_refuses_the_save(agents_dir, managed_core):
+    """A hand-edited non-object ``mcpServers`` is the author's to fix, so it is
+    left as it is -- and the grant is refused beside it with the fix named,
+    since saving it would mount nothing."""
     _write(agents_dir, "orchestrator.json", tools=["fs_read"], mcpServers=["oops"])
     _seed_config()
-    resp = await api_agent_detail(
-        _request("PATCH", "orchestrator", {"tools": ["@kirocrew-core/spawn_run"]})
+    payload = await _refused(agents_dir, {"tools": ["@kirocrew-core/spawn_run"]})
+    assert "MCP servers section of this agent's file is malformed" in payload["error"]
+    assert managed_core == []
+
+
+@pytest.mark.asyncio
+async def test_a_refused_grant_leaves_the_model_pin_alone(agents_dir, monkeypatch):
+    """The refusal is reached before the PATCH's bookkeeping, so a save that
+    also changes the model does not flip the model sidecar for a spec it then
+    declines to write."""
+    monkeypatch.setattr(
+        "kiro_crew.agent.managed_mcp_spec_entry", lambda name, *, include_opt_in=False: None
     )
-    assert resp.status == 200, resp.text
-    spec = json.loads((agents_dir / "orchestrator.json").read_text(encoding="utf-8"))
-    assert spec["mcpServers"] == ["oops"]
+    _write(agents_dir, "orchestrator.json", tools=["fs_read"])
+    _seed_config()
+    agent_state.set_model_managed("orchestrator", True)
+    await _refused(
+        agents_dir, {"model": "claude-x", "tools": ["fs_read", "@kirocrew-core/spawn_run"]}
+    )
+    assert agent_state.get_model_managed("orchestrator") is True
 
 
 @pytest.mark.asyncio
