@@ -379,7 +379,7 @@ _MOVED: dict[str, str] = {
 #: The signature of every function the facade defined, as it was at that base.
 _SIGNATURES: dict[str, str] = {
     "_apply_recent_session": "(state: 'DashboardState', key: 'str', slot_name: 'str', session: 'dict', meta: 'dict', messages: 'list[dict]', *, conv_log: \"'ConversationLog'\", kiro_model_map: 'dict[str, str]', restore_cfg: \"'KiroCrewConfig | None'\", member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False) -> 'None'",
-    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False) -> 'int'",
+    "_apply_restored_open_slot": "(state: 'DashboardState', key: 'str', *, meta: 'dict', readable: 'bool', messages: 'list[dict] | None', model_map: 'dict[str, str] | None', unrestored: 'set[str]', member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), agent: 'str | None' = None, effort_marker: 'bool' = False, conv_log: 'ConversationLog | None' = None, started: 'float | None' = None, preserve_remote_only: 'bool' = False, tail: 'list[dict] | None' = None) -> 'int'",
     "_approx_window_payload_bytes": "(window: 'list[dict]') -> 'int'",
     "_archive_dropped_lines": "(state: 'DashboardState', history_key: 'str', old_lines: 'list[str]', new_lines: 'list[str]') -> 'None'",
     "_attach_variants": "(slot: '_ChatSlot', m: 'dict') -> 'None'",
@@ -422,7 +422,7 @@ _SIGNATURES: dict[str, str] = {
     "_record_pending_memory_mode": "(slot: '_ChatSlot', memory_mode: 'str') -> 'None'",
     "_recover_mcp_app_claims": "(slot: '_ChatSlot') -> 'None'",
     "_recover_mcp_app_claims_async": "(slot: '_ChatSlot') -> 'None'",
-    "_rehydrate_slot_from_history": "(state: 'DashboardState', slot_name: 'str', *, kiro_model_map: 'dict[str, str] | None' = None, adopt_closed: 'bool' = False, _prefetched_meta: 'dict | None' = None, _prefetched_messages: 'list[dict] | None' = None, _prefetched_member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), _prefetched_agent: 'str | None' = None, _prefetched_effort_marker: 'bool' = False) -> '_ChatSlot | None'",
+    "_rehydrate_slot_from_history": "(state: 'DashboardState', slot_name: 'str', *, kiro_model_map: 'dict[str, str] | None' = None, adopt_closed: 'bool' = False, _prefetched_meta: 'dict | None' = None, _prefetched_messages: 'list[dict] | None' = None, _prefetched_member_identity: 'tuple[str, str] | None' = ('', '__unresolved__'), _prefetched_agent: 'str | None' = None, _prefetched_effort_marker: 'bool' = False, _lazy_tail: 'list[dict] | None' = None) -> '_ChatSlot | None'",
     "_rehydrate_slot_title": "(slot: '_ChatSlot', raw_title: 'str', *, titled: 'bool', metadata: 'Mapping[str, object]') -> 'None'",
     "_rehydrate_title_low_signal": "(stored: 'object') -> 'bool'",
     "_rehydrate_title_origin": "(titled: 'bool', stored: 'object') -> 'str'",

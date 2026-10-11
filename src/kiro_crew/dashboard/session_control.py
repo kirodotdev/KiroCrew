@@ -111,6 +111,7 @@ from kiro_crew.dashboard.state import (
     SlotOrigin,
     _normalize_slot_key,
     _safe_folder_tree,
+    load_window_off_loop,
 )
 from kiro_crew.dashboard.stop_retry import allow_escalation
 from kiro_crew.effort import EFFORT_LEVELS, is_valid_effort
@@ -2334,6 +2335,25 @@ def _resolve_slot(
     return found[0] if found else None
 
 
+async def load_target_window(state: "DashboardState", target: str) -> None:
+    """Load the pending window of the live session *target* names, off the loop.
+
+    For a verb whose gate and delivery read the target's rows with no suspension
+    between them: it runs before that verb's prewarm, the last suspension ahead
+    of the gate. It resolves *target* as the gate does and decides nothing, so a
+    target the gate then refuses has had only the load its next reader would do.
+    """
+    target = (target or "").strip()
+    if not target:
+        return
+    try:
+        slot = _resolve_slot(state, target)
+    except SessionControlError:
+        return
+    if slot is not None:
+        await load_window_off_loop(slot)
+
+
 def _broadcast_resolution_slots(
     state: "DashboardState",
     *,
@@ -3542,6 +3562,10 @@ async def fork_session(
         )
 
     audit_caller = f"session:{caller_key}"
+    # The copy below reads the source's rows: a source restored as a sidebar
+    # row loads its window first, off the loop. The source is re-admitted after
+    # these awaits, as it already is for the ones that follow.
+    await load_window_off_loop(source_slot)
     fork_source = await resolve_fork_source(
         source_slot, audit_caller=audit_caller, audit_operation="session_control.fork"
     )
@@ -5254,6 +5278,9 @@ async def retry_target(
 
     ``caller_fenced`` has the meaning :func:`stop_target` documents.
     """
+    # The retry re-reads the target's last turn: a target restored as a
+    # sidebar row loads its window first, ahead of the prewarm below.
+    await load_target_window(state, target)
     # Same prewarm ordering as `close_target`: the SEL and config reads must be
     # warm before the synchronous gate, and the fence verdict is resolved once so
     # the re-check under the slot lock never loads config on the loop.
@@ -7346,6 +7373,9 @@ async def send_to_target(
         _delivery_progress if _delivery_progress is not None else _DeliveryProgress()
     )
 
+    # The delivery appends to the target's rows: a target restored as a
+    # sidebar row loads its window first, ahead of the prewarm below.
+    await load_target_window(state, target)
     # Same prewarm ordering as `stop_target`, for the same reasons: the SEL
     # write inside `authorize_target`'s deny path must be a cache hit, and the
     # config warm must be the LAST suspension before the synchronous gate.

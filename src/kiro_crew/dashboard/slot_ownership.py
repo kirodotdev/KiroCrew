@@ -59,7 +59,7 @@ from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     slot_history_key,
 )
-from kiro_crew.dashboard.state import SlotOrigin
+from kiro_crew.dashboard.state import SlotOrigin, load_window_off_loop
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -577,15 +577,40 @@ async def slot_route_denial(request: web.Request) -> web.Response | None:
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
+async def load_routed_slot_window(request: web.Request) -> None:
+    """Load the window of the live slot a per-slot route names, off the loop.
+
+    A tab the startup restore built as a sidebar row holds no rows until
+    something reads them, and almost every handler under ``/api/chat/slots/``
+    reads them: opening the tab, forking, regenerating, rewinding, editing the
+    queue, exporting. Awaiting the load here, once for the whole family, keeps
+    each of those first reads off the event loop. Closing the tab is the one
+    route that does not read a row, so it does not pay for a load.
+    """
+    resource = request.match_info.route.resource
+    canonical = resource.canonical if resource is not None else ""
+    param = slot_route_param(canonical)
+    if param is None:
+        return
+    if request.method == "DELETE" and canonical == f"/api/chat/slots/{{{param}}}":
+        return
+    name = request.match_info.get(param, "")
+    slot = getattr(request.app.get("state"), "_slots", {}).get(name) if name else None
+    if slot is not None:
+        await load_window_off_loop(slot)
+
+
 @web.middleware
 async def slot_ownership_middleware(request: web.Request, handler: Handler) -> web.StreamResponse:
     """Refuse an app caller on a per-slot route it may not act on, before the handler.
 
     Registered inner to ``token_auth_middleware``, which publishes the ``app``
     claim this reads, and inner to ``sel_audit_middleware`` so a refusal here is in
-    that request record too.
+    that request record too. A request the checkpoint admits then has its slot's
+    pending window loaded (:func:`load_routed_slot_window`).
     """
     denied = await slot_route_denial(request)
     if denied is not None:
         return denied
+    await load_routed_slot_window(request)
     return await handler(request)

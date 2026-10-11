@@ -188,6 +188,7 @@ from kiro_crew.dashboard.state import (
     SUBAGENT_BATCH_COMPLETION_PREFIX,
     SUBAGENT_COMPLETION_PREFIX,
     DashboardState,
+    load_window_off_loop,
 )
 from kiro_crew.dashboard.token_auth import MAX_SESSION_TTL_SECS, generate_token
 from kiro_crew.dashboard.turn_dispatch import bounded_chat_turn, spawn_guarded_turn
@@ -3115,6 +3116,12 @@ class GatewayOrchestrator:
                         slot = await rehydrate_slot_from_history_async(
                             self.dashboard_state, slot_key
                         )
+                    elif getattr(slot, "window_pending", False) is True:
+                        # A tab restored as a sidebar row: its window loads
+                        # before the delivery below appends to it, off the loop
+                        # for the same reason, and the tab is read again after.
+                        await load_window_off_loop(slot)
+                        slot = self.dashboard_state.get_slot(slot_key)
                     label = redact(job.name)
                     if slot:
                         wrapped = f'[Cron notification: "{label}"]\n{message}\n[/Cron notification]'
@@ -7319,6 +7326,14 @@ class GatewayOrchestrator:
                 loop.slot_key,
                 loop.id,
             )
+        elif getattr(slot, "window_pending", False) is True:
+            # A tab restored as a sidebar row (a paused loop's tab can be one)
+            # loads its window before the nudge appends to it, with the read off
+            # the loop for the reason above. The same tab must still be live
+            # after the await; a tab closed meanwhile takes no nudge.
+            await load_window_off_loop(slot)
+            if self.dashboard_state.get_slot(loop.slot_key) is not slot:
+                return _delivery_result(wake_message, MonitorDispatchResult.UNAVAILABLE)
         # STRUCTURAL-TERMINAL GUARD (message loops only). If the slot's LAST
         # delivered turn ended on a malformed-request rejection, the backend
         # refused the payload's SHAPE, deterministically -- re-injecting the same
@@ -9080,6 +9095,23 @@ class GatewayOrchestrator:
                 "Heartbeat: failed to persist slot title for %s", slot.key, exc_info=True
             )
 
+    async def _resolve_loaded_slot(self, slot_name: str) -> Any:
+        """The dashboard slot *slot_name* names, with a pending window loaded off the loop.
+
+        For a background delivery about to append to or prompt that tab. A tab
+        restored as a sidebar row loads its window on a worker thread first, and
+        the name is resolved again after the await, so a tab closed meanwhile
+        reads as gone.
+        """
+        state = self.dashboard_state
+        if state is None:
+            return None
+        slot = state.resolve_slot(slot_name)
+        if slot is not None and getattr(slot, "window_pending", False) is True:
+            await load_window_off_loop(slot)
+            slot = state.resolve_slot(slot_name)
+        return slot
+
     async def _deliver_result(
         self,
         title: str,
@@ -9134,7 +9166,7 @@ class GatewayOrchestrator:
                 logger.debug("Heartbeat prompt:dashboard: missing slot name, skipping")
                 return
             if self.dashboard_state:
-                slot = self.dashboard_state.resolve_slot(slot_name)
+                slot = await self._resolve_loaded_slot(slot_name)
                 if slot:
                     # Truncate the variable-size *content* separately so the title/prefix
                     # can never be sliced at a multi-byte boundary. errors='ignore'
@@ -9195,7 +9227,7 @@ class GatewayOrchestrator:
         if deliver.startswith("dashboard:"):
             slot_name = deliver.removeprefix("dashboard:")
             if self.dashboard_state:
-                slot = self.dashboard_state.resolve_slot(slot_name)
+                slot = await self._resolve_loaded_slot(slot_name)
                 if slot:
                     sel().log_api_access(
                         caller="heartbeat",
@@ -9709,6 +9741,13 @@ class GatewayOrchestrator:
                 _injection_slot = _slot_for_parent(self.dashboard_state, parent_key)
                 if _injection_slot is None:
                     _injection_slot = self.dashboard_state.get_slot(_parent_slot_name)
+                if getattr(_injection_slot, "window_pending", False) is True:
+                    # A parent tab restored as a sidebar row loads its window
+                    # before the completion is delivered into it, off the loop.
+                    await load_window_off_loop(_injection_slot)
+                    _injection_slot = _slot_for_parent(
+                        self.dashboard_state, parent_key
+                    ) or self.dashboard_state.get_slot(_parent_slot_name)
             _completion_key = getattr(_injection_slot, "key", "")
             _injection_slot_name = (
                 _completion_key
@@ -11004,6 +11043,11 @@ class GatewayOrchestrator:
             if etype == "subagent_injection_failed":
                 # Show error in UI + queue for LLM context on next turn.
                 slot = self.dashboard_state.get_slot(slot_name)
+                if slot is not None and getattr(slot, "window_pending", False) is True:
+                    # A parent tab restored as a sidebar row loads its window
+                    # before the card is appended, with the read off the loop.
+                    await load_window_off_loop(slot)
+                    slot = self.dashboard_state.get_slot(slot_name)
                 if slot:
                     task_preview = redact_and_truncate(info.task or "", 100)
                     error_text, _ = redact_exfiltration_urls(extra.get("error", "timed out"))
@@ -11103,6 +11147,11 @@ class GatewayOrchestrator:
             if not self.dashboard_state or not slot_name:
                 return False
             slot = self.dashboard_state.get_slot(slot_name)
+            if slot is not None and getattr(slot, "window_pending", False) is True:
+                # A parent tab restored as a sidebar row loads its window before
+                # the notice is appended, with the read off the loop.
+                await load_window_off_loop(slot)
+                slot = self.dashboard_state.get_slot(slot_name)
             if not slot:
                 return False
             safe_msg, _ = redact_exfiltration_urls(msg)

@@ -53,6 +53,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Tuple
 
 from kiro_crew.config.paths import config_dir
+from kiro_crew.dashboard.slot_projection import summary_rows
 from kiro_crew.metrics.events import (
     TASKQ_DEPTH,
     TASKQ_EFFECTIVE_CAP,
@@ -354,6 +355,13 @@ def _getattr_soft(obj: Any, name: str, default: Any = None) -> Any:
         return default
 
 
+def _summary_rows_soft(slot: Any) -> Any:
+    try:
+        return summary_rows(slot) or []
+    except Exception:
+        return []
+
+
 def snapshot_slot(
     slot: Any, *, children_running: int = 0, mono_now: float | None = None
 ) -> SlotSnapshot:
@@ -377,7 +385,10 @@ def snapshot_slot(
         val = _getattr_soft(slot, attr, 0)
         if isinstance(val, int) and not isinstance(val, bool) and val > 0:
             snap.recovery_kinds.append(f"{label}x{val}")
-    messages = _getattr_soft(slot, "messages", None) or []
+    # The summary rows: a restored sidebar row answers from its bounded tail,
+    # stable across polls while it stays unopened, instead of loading its whole
+    # transcript on the loop for one count and one timestamp.
+    messages = _summary_rows_soft(slot)
     try:
         n_messages = len(messages)
         snap.last_message_ts = str(messages[-1].get("ts") or "") if n_messages else ""

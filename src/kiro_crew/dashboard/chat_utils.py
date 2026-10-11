@@ -4163,6 +4163,13 @@ def _broadcast_expired_oauth_banners(state: "DashboardState", slot: "_ChatSlot")
     # and the live-child probe reads the session pool — a side effect the
     # common case must not pay (and one that would burn a pool read at every
     # teardown site this helper rides).
+    #
+    # A restored sidebar row whose window is still pending has sent no row to
+    # any tab in this process (opening the tab loads the window first), so no
+    # tab shows one of its banners to withdraw; asking would load its whole
+    # transcript on the loop for nothing.
+    if getattr(slot, "window_pending", False) is True:
+        return
     candidates = [
         message
         for message in slot.messages

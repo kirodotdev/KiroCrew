@@ -298,6 +298,18 @@ def register_guarded_history_write(slot: _ChatSlot, save: "asyncio.Future[bool]"
     save.add_done_callback(writes.discard)
 
 
+def _loaded_window(slot: _ChatSlot) -> list[dict]:
+    """The window in memory, without loading a pending one.
+
+    A restored row whose window was never loaded holds no row that is not
+    already on disk, so its save takes the metadata-only merge and leaves the
+    transcript as it is. Loading the window here instead would read a whole
+    transcript in the flush thread for a save that writes none of it.
+    """
+    loaded = getattr(slot, "loaded_messages", None)
+    return loaded() if callable(loaded) else slot.messages
+
+
 def paired_window_snapshot(
     slot: _ChatSlot,
     messages: list[dict] | None,
@@ -357,7 +369,7 @@ def paired_window_snapshot(
         for _ in range(_FLUSH_SNAPSHOT_RETRIES):
             disk_older = slot._disk_older_count
             queue_snapshot, queue_candidates = slot.durable_queue_view()
-            window = list(slot.messages)
+            window = list(_loaded_window(slot))
             if (
                 slot._disk_older_count == disk_older
                 and slot.durable_queue_entries() == queue_snapshot
@@ -366,7 +378,7 @@ def paired_window_snapshot(
         else:
             disk_older = slot._disk_older_count
             queue_snapshot, queue_candidates = slot.durable_queue_view()
-            window = list(slot.messages)
+            window = list(_loaded_window(slot))
             if slot.durable_queue_entries() != queue_snapshot:
                 # The pair could not be proven inside the retry budget. Refuse
                 # rather than commit a file that may show neither the entry nor

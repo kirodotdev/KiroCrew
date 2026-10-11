@@ -47,6 +47,7 @@ if TYPE_CHECKING:
         durable_row_count,
         effective_session_key,
         is_channel_session_key,
+        load_window_off_loop,
         logger,
         members_mod,
         note_crew_log_class,
@@ -254,6 +255,10 @@ async def _live_slot_for_resume(
 
 async def _live_slot_resume_payload(state, existing) -> dict:
     """The resume endpoint's dedup body: the already-open slot's live window."""
+    # The live slot a resume resolves to can be a restored sidebar row, under a
+    # name the per-slot route's own lookup did not match (``dashboard:<key>``):
+    # its window loads here, with the read off the loop, before anything reads it.
+    await load_window_off_loop(existing)
     await _reconcile_slot_window(state, existing)
     window = _collapse_wire_rows(existing.messages)
     total = len(window)
