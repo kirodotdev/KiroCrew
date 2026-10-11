@@ -2527,6 +2527,7 @@ class TestDiscordRotatesWithoutHandingOverAKey:
         "_maybe_send_redaction_notice": "a generated count, no model text, and it trails the reply",
         "on_prompt_choice": "ends with the literal '`?' after the tool name, so no key can meet it",
         "on_compaction": "one fixed literal",
+        "_seal_rotated_part": "one fixed literal in place of a lost part, recorded for the next",
         "on_done": "the empty-turn placeholder, and the turn's last message either way",
     }
 

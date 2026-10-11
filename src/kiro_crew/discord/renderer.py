@@ -119,6 +119,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+#: Sent in place of a length-rotation part that could not be delivered, so the
+#: parts on either side of the gap do not read as one continuous answer.
+LOST_PART_NOTICE = "Part of this reply may not have been delivered."
+
 _UPLOAD_LIMITS = ExtractLimits(
     max_files=DISCORD_MAX_FILES_PER_MESSAGE,
     max_total_bytes=DISCORD_MAX_TOTAL_UPLOAD_BYTES,
@@ -1044,7 +1048,7 @@ class DiscordRenderer(Renderer):
             for chunk in chunks[:-1]:
                 self._buf = []
                 self._delivery_text = chunk
-                await self._seal_current(extract_uploads=False)
+                await self._seal_rotated_part()
                 self._open_new_message()
             tail = chunks[-1] if chunks else ""
             self._buf = []
@@ -1171,10 +1175,39 @@ class DiscordRenderer(Renderer):
         for ch in sealed:
             self._buf = [ch]
             self._delivery_text = None
-            await self._seal_current(extract_uploads=False)
+            await self._seal_rotated_part()
             self._open_new_message()
         self._buf = [tail + protocol_suffix]
         self._delivery_text = None
+
+    async def _seal_rotated_part(self) -> None:
+        """Seal one length-rotation part, and mark its place when it never landed.
+
+        A rotation drops the part's text once it is sealed and moves on, so a part
+        whose every send failed is gone for good while the parts after it still go
+        out. Without a mark the reader sees the parts on either side of the gap as
+        one continuous answer. A part with nothing to send attempts nothing and
+        gets no mark; a part whose fallback send landed is delivered and gets none.
+
+        The notice is not counted as a delivery: ``delivery_failed`` stays about
+        whether any of the reply reached the reader.
+        """
+        attempted = self._seals_attempted
+        if await self._seal_current(extract_uploads=False):
+            return
+        if self._seals_attempted == attempted:
+            return
+        logger.warning("discord: a reply part could not be delivered; marking its place")
+        try:
+            mid = await self._client.send_message(self._channel_id, LOST_PART_NOTICE)
+        except Exception:
+            logger.warning("discord: the notice for a lost reply part failed", exc_info=True)
+            return
+        if mid is not None:
+            # The notice is now the last message the reader sees, so the next
+            # part's seam is graded against it, and it lands below a held note.
+            self._record_sent(LOST_PART_NOTICE)
+            self._pending_note_tail = ""
 
     def _open_new_message(self) -> None:
         """Next render creates a fresh message instead of editing the old one."""
