@@ -3166,9 +3166,13 @@ class SessionManager:
         """Retire a session while preserving its resumable mapping."""
         await self._lifecycle_boundary().remove(key)
 
-    async def retire_kiro_identity_sessions(self, fingerprint: str = "") -> tuple[list[str], bool]:
+    async def retire_kiro_identity_sessions(
+        self, fingerprint: str = "", *, spare_children: bool = False
+    ) -> tuple[list[str], bool]:
         """Retire idle processes that loaded a superseded Kiro identity."""
-        return await self._lifecycle_boundary().retire_kiro_identity_sessions(fingerprint)
+        return await self._lifecycle_boundary().retire_kiro_identity_sessions(
+            fingerprint, spare_children=spare_children
+        )
 
     async def flag_identity_stamp_mismatches(self, live: str) -> list[str]:
         """Mark sessions whose child provably spawned under a different account."""

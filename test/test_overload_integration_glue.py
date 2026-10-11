@@ -1988,6 +1988,128 @@ class TestStoreOffLoop:
         await mgr.cancel_all()
 
     @pytest.mark.asyncio
+    async def test_has_pending_store_children_sees_a_durable_only_waiter(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The deferral's store-side half, read off the loop against a real store.
+
+        A durable-only spawn (accepted into the store, no in-memory run) is
+        invisible to the live/queued sets ``has_live_or_queued_children`` reads
+        in process, yet the identity-retire teardown cancels it. So the sweep asks
+        the store too, through ``has_pending_store_children`` -- on the writer
+        thread (``store.run``), BEFORE it takes the registry locks, so no store
+        read runs on the event loop. ``STRICT_ON_LOOP_ENV`` is armed to prove the
+        read goes off-loop.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        bridge = mgr._admission
+
+        # No rows for this parent yet.
+        assert await mgr.has_pending_store_children("cron:j1:planner") is False
+        assert await mgr.has_pending_store_children("") is False
+
+        rec = bridge.taskq_build_record(
+            "durable0",
+            {"task": "t0", "parent_session_key": "cron:j1:planner"},
+            parent_session_key="cron:j1:planner",
+            memory_store="",
+            app="",
+            model="",
+            allowed_tools=None,
+            approval_mode=None,
+        )
+        assert bridge.taskq_accept_record(rec) is None
+
+        # The store-only waiter is now seen, and only for its own parent. The read
+        # goes off the loop: ``STRICT_ON_LOOP_ENV`` is armed around it to prove so.
+        monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
+        try:
+            assert await mgr.has_pending_store_children("cron:j1:planner") is True
+            assert await mgr.has_pending_store_children("cron:j1:idle") is False
+        finally:
+            monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
+
+        # A failed read propagates rather than answering False: the sweep records
+        # the parent as a defer, so an accepted durable child is never read as
+        # absent and cancelled on an unreadable store.
+        def _boom(*_a, **_k):
+            raise RuntimeError("store read failed")
+
+        monkeypatch.setattr(bridge.taskq_store(), "list_pending", _boom)
+        with pytest.raises(RuntimeError):
+            await mgr.has_pending_store_children("cron:j1:planner")
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_identity_sweep_fence_records_but_does_not_suppress_delivery(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The identity sweep's tentative fence records admissions for the
+        retire-vs-defer re-check, but does NOT suppress an expiring row's delivery.
+
+        A committed teardown fence (``open_teardown_fence`` was once the same thing)
+        makes ``accepted_before_open_teardown`` drop a row's delivery as "accepted
+        for a conversation that ended". The identity sweep opens its fence BEFORE it
+        decides retire-vs-defer, and may spare the parent -- so its fence must not
+        suppress delivery. It is a separate, tentative fence: it records admissions
+        (``has_fenced_children`` sees them) but ``accepted_before_open_teardown``
+        ignores it. A committed teardown fence still suppresses.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        canc = mgr._cancellation
+        key = "cron:j1:planner"
+
+        # Tentative identity-sweep fence open: records admissions, no suppression.
+        fence = mgr.open_teardown_fence(key)
+        assert fence is not None
+        canc.note_teardown_store_accept(key, "child-1")
+        assert mgr.has_fenced_children(key) is True
+        # A row NOT in the fence must still deliver -- the parent may be spared.
+        assert canc.accepted_before_open_teardown(key, "other-row") is False
+        mgr.release_teardown_fence(key, fence)
+        assert mgr.has_fenced_children(key) is False
+
+        # A COMMITTED teardown fence (the real cancel) DOES suppress a non-fenced row.
+        canc.note_teardown_snapshot(key)
+        assert canc.accepted_before_open_teardown(key, "other-row") is True
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_commit_identity_sweep_retire_is_atomic_against_admission(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The final commit-vs-defer and the committed-fence open are atomic.
+
+        A child admitted into the tentative fence after the sweep's childless read
+        must defer, not be cancelled; and a commit must promote the tentative fence
+        to the committed one so a concurrent admission already recorded is carried
+        into the cancel's ``accepted_since``.
+        """
+        mgr = await self._manager_with_store(monkeypatch)
+        canc = mgr._cancellation
+        key = "cron:j1:planner"
+
+        # A child arrived in the tentative fence -> commit refuses (defer).
+        fence_a = mgr.open_teardown_fence(key)
+        assert fence_a is not None
+        canc.note_teardown_store_accept(key, "late-child")
+        assert mgr.commit_identity_sweep_retire(key, fence_a) is False
+        mgr.release_teardown_fence(key, fence_a)
+
+        # Empty tentative fence -> commit promotes it to the committed fence, and a
+        # row recorded concurrently rides in it (so the cancel spares it).
+        fence_b = mgr.open_teardown_fence(key)
+        assert fence_b is not None
+        assert mgr.commit_identity_sweep_retire(key, fence_b) is True
+        # It is now the COMMITTED fence: an admission recorded into it is in
+        # accepted_since (not swept), i.e. accepted_before_open_teardown is False.
+        canc.note_teardown_store_accept(key, "rode-in")
+        assert canc.accepted_before_open_teardown(key, "rode-in") is False
+        # The tentative fence is gone (promoted), so has_fenced_children is False.
+        assert mgr.has_fenced_children(key) is False
+        await mgr.cancel_all()
+
+    @pytest.mark.asyncio
     async def test_the_attached_children_guard_reads_the_store_off_loop(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

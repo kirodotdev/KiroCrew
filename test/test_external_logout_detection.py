@@ -1494,7 +1494,9 @@ class TestLatchNarrowingPolicy:
             self._complete = complete
             self.calls = 0
 
-        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
+        async def retire_kiro_identity_sessions(
+            self, fingerprint: str = "", *, spare_children: bool = False
+        ):
             self.calls += 1
             return ([], self._complete)
 
@@ -1666,11 +1668,15 @@ class TestReturnToBaselineAfterIncompleteSweep:
             self._complete = complete
             self.calls = 0
             self.swept_with: list[str] = []
+            self.spare_children_calls: list[bool] = []
             self.pending_identity_sweep_fingerprint = ""
 
-        async def retire_kiro_identity_sessions(self, fingerprint: str = ""):
+        async def retire_kiro_identity_sessions(
+            self, fingerprint: str = "", *, spare_children: bool = False
+        ):
             self.calls += 1
             self.swept_with.append(fingerprint)
+            self.spare_children_calls.append(spare_children)
             # Kept while a sweep stays incomplete; cleared the moment one completes.
             self.pending_identity_sweep_fingerprint = "" if self._complete else fingerprint
             return ([], self._complete)
@@ -1693,7 +1699,9 @@ class TestReturnToBaselineAfterIncompleteSweep:
         state = self._State(service, sessions)
         await chat_runner._retire_sessions_on_identity_change(state)
         assert sessions.calls == 1
-        # Incomplete, so the baseline stayed at A while B is outstanding.
+        # The per-turn identity-change path opts into the live-children deferral
+        # (sign-out keeps the default and cancels).
+        assert sessions.spare_children_calls == [True]
         assert service._session_identity == fp_a
         pending_b = sessions.pending_identity_sweep_fingerprint
         assert pending_b and pending_b != fp_a
@@ -1719,6 +1727,130 @@ class TestReturnToBaselineAfterIncompleteSweep:
         assert sessions.calls == 2, "the B holders were left serving under B"
         # The retry is captured afresh under the account now in use, not B's.
         assert sessions.swept_with[-1] != pending_b
+
+    @pytest.mark.asyncio
+    async def test_an_external_logout_cancels_children_on_the_per_turn_path(
+        self, tmp_path: Path
+    ) -> None:
+        """An external ``kiro-cli logout`` is the fail-safe case, not a defer.
+
+        The per-turn sweep is the only path that catches an external logout (it
+        never goes through the sign-out handler). There the live fingerprint is
+        empty, the account is gone, and an idle parent's children MUST be
+        cancelled rather than deferred -- so the per-turn caller passes
+        ``spare_children=bool(live)``, which is False here. Only a switch
+        between two real accounts (non-empty live) defers.
+        """
+
+        from kiro_crew.dashboard import chat_runner
+
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        _write_store(db)
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        fp_a = await service.current_identity_fingerprint()
+        service._stamp_probe(fp_a)
+        service.note_sessions_reconciled(fp_a)
+
+        # External logout: the store is wiped, so the live read is empty.
+        con = sqlite3.connect(str(db))
+        with con:
+            con.execute("DELETE FROM auth_kv")
+            con.execute("DELETE FROM state")
+        con.close()
+        _expire_identity_cache(service)
+
+        changed, live = await service.identity_changed_since_sessions()
+        assert changed is True and live == ""
+
+        sessions = self._Sessions(complete=True)
+        state = self._State(service, sessions)
+        await chat_runner._retire_sessions_on_identity_change(state)
+
+        assert sessions.calls == 1
+        assert sessions.swept_with == [""]
+        # Empty live => the deferral is NOT requested => children are cancelled.
+        assert sessions.spare_children_calls == [False]
+
+    def test_identity_component_dropped_detects_a_partial_logout(self, tmp_path: Path) -> None:
+        """A credential source present in the baseline but EMPTY in live dropped.
+
+        An external ``kiro-cli logout`` wipes the store component while the Crew
+        vault stays populated, so the combined live fingerprint is still nonempty
+        but its store half is gone. That is a credential loss, not a switch.
+        """
+        sep, vault = kp._API_KEY_FINGERPRINT_SEP, kp._CREW_VAULT_FINGERPRINT_SEP
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+
+        # Baseline: store s1 + vault v1. Live: store gone, vault still v1.
+        service._session_identity = f"s1{vault}v1"
+        assert service.identity_component_dropped(f"{vault}v1") is True
+        # The vault itself dropping (store kept) is also a drop.
+        assert service.identity_component_dropped("s1") is True
+        # The API-key component dropping is a drop too.
+        service._session_identity = f"s1{sep}k1"
+        assert service.identity_component_dropped("s1") is True
+
+    def test_identity_component_added_is_not_a_drop(self, tmp_path: Path) -> None:
+        """A component that APPEARS or merely CHANGES is a switch, not a loss, so
+        the children are still spared.
+        """
+        vault = kp._CREW_VAULT_FINGERPRINT_SEP
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+
+        # A vault component appears on top of the same store: nothing dropped.
+        service._session_identity = "s1"
+        assert service.identity_component_dropped(f"s1{vault}v1") is False
+        # A plain account switch (store changes, nothing lost): not a drop.
+        service._session_identity = "s1"
+        assert service.identity_component_dropped("s2") is False
+        # Both present, both changed (a two-account switch): not a drop.
+        service._session_identity = f"s1{vault}v1"
+        assert service.identity_component_dropped(f"s2{vault}v2") is False
+
+    def test_identity_component_dropped_is_false_with_no_baseline(self, tmp_path: Path) -> None:
+        """An unset baseline answers False: nothing was there to drop, and that
+        case already sweeps once on its own.
+        """
+        vault = kp._CREW_VAULT_FINGERPRINT_SEP
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        assert service._session_identity is None
+        assert service.identity_component_dropped("") is False
+        assert service.identity_component_dropped(f"s1{vault}v1") is False
+
+    @pytest.mark.asyncio
+    async def test_a_partial_logout_cancels_children_like_main(self, tmp_path: Path) -> None:
+        """The gate's fail-safe: a dropped credential source forces the cancel path.
+
+        When a source present in the baseline is gone from live (a partial
+        external logout), the per-turn caller passes ``spare_children=False`` even
+        though ``live`` is nonempty, so an idle parent with live children is
+        retired and its children cancelled, exactly as the sign-out path does.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        db = kp.kiro_identity_store_path("linux", tmp_path, {})
+        _write_store(db)
+        service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
+        fp_a = await service.current_identity_fingerprint()
+        service._stamp_probe(fp_a)
+        # Baseline carries BOTH the store and a vault component.
+        vault = kp._CREW_VAULT_FINGERPRINT_SEP
+        service.note_sessions_reconciled(f"{fp_a}{vault}v1")
+
+        # The store is unchanged, so the live read is still fp_a -- but the vault
+        # component that was in the baseline is gone, so a source dropped.
+        _expire_identity_cache(service)
+        _, live = await service.identity_changed_since_sessions()
+        assert live == fp_a  # nonempty: bool(live) alone would wrongly spare
+        assert service.identity_component_dropped(live) is True
+
+        sessions = self._Sessions(complete=True)
+        state = self._State(service, sessions)
+        await chat_runner._retire_sessions_on_identity_change(state)
+
+        assert sessions.calls == 1
+        # A dropped source forces the cancel path even though live is nonempty.
+        assert sessions.spare_children_calls == [False]
 
     @pytest.mark.asyncio
     async def test_an_incomplete_sweep_retries_even_for_the_live_account(

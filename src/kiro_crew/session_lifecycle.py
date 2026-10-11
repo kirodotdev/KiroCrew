@@ -20,9 +20,10 @@ from collections import OrderedDict
 from collections.abc import Awaitable, Callable, MutableMapping, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
-from typing import Any, Literal, Protocol
+from typing import AbstractSet, Any, Literal, Protocol
 
 from kiro_crew.kiro_prerequisite import (
+    identity_component_dropped,
     identity_park_grace_remaining,
     identity_stamp_mismatch,
     mark_identity_parked,
@@ -509,6 +510,24 @@ class _ChildTeardownHandler(Protocol):
     """
 
     def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]: ...
+
+    def snapshot_teardown_children_only(self, parent_session_key: str) -> tuple[str, ...]: ...
+
+    def has_live_or_queued_children(self, parent_session_key: str) -> bool: ...
+
+    async def has_pending_store_children(self, parent_session_key: str) -> bool: ...
+
+    def open_teardown_fence(self, parent_session_key: str) -> "AbstractSet[str] | None": ...
+
+    def has_fenced_children(self, parent_session_key: str) -> bool: ...
+
+    def commit_identity_sweep_retire(
+        self, parent_session_key: str, expected: "AbstractSet[str]"
+    ) -> bool: ...
+
+    def release_teardown_fence(
+        self, parent_session_key: str, expected: "AbstractSet[str] | None" = None
+    ) -> None: ...
 
     async def cancel_for_teardown(
         self,
@@ -1696,6 +1715,45 @@ class SessionLifecycleService:
         # caller's own identity is not lost: the line's ``key`` carries it.
         await self._cancel_parent_children(key, teardown_children, verb="end_children_for")
 
+    def _open_teardown_fence(self, key: str) -> "AbstractSet[str] | None":
+        """Open the teardown fence for *key* while the registry lock is held.
+
+        Arms the admission path to record every child it accepts for this parent
+        from here on (``note_teardown_store_accept``), so the async retire-vs-defer
+        decision below sees a child that arrives between this point and its
+        off-loop store read instead of racing it. Takes no in-memory snapshot, so a
+        parent that is then spared keeps its children's completions.
+
+        Returns the fence handle so the async decision can release exactly this
+        fence if it defers, never a newer one a concurrent teardown opened.
+        """
+        handler = self._child_teardown
+        if handler is None or not key:
+            return None
+        return handler.open_teardown_fence(key)
+
+    async def _parent_has_sparable_child(self, key: str) -> bool:
+        """Whether *key* still owns a child the retirement must spare, read at the
+        async teardown under the fence opened by :meth:`_open_teardown_fence`.
+
+        True when a child is live or queued in memory, held only by the task store
+        (a durable-only or window-held row), OR admitted into the open fence since
+        it opened -- i.e. any child the retirement teardown would otherwise cancel.
+        A store read that FAILS raises, and the caller defers (fail-safe): a parent
+        with an accepted child read as childless would be retired and its child
+        cancelled.
+        """
+        handler = self._child_teardown
+        if handler is None or not key:
+            return False
+        if handler.has_live_or_queued_children(key):
+            return True
+        if handler.has_fenced_children(key):
+            return True
+        # Off-loop (writer thread): pre-existing durable rows the fence did not
+        # record because they were accepted before it opened. Raises on failure.
+        return await handler.has_pending_store_children(key)
+
     def _snapshot_parent_children(self, key: str) -> tuple[str, ...]:
         """The runs *key* owns, read synchronously so the answer cannot drift.
 
@@ -1962,7 +2020,9 @@ class SessionLifecycleService:
             )
         return flagged
 
-    async def retire_kiro_identity_sessions(self, fingerprint: str = "") -> tuple[list[str], bool]:
+    async def retire_kiro_identity_sessions(
+        self, fingerprint: str = "", *, spare_children: bool = False
+    ) -> tuple[list[str], bool]:
         """Retire idle Kiro-backed processes after an identity-store change.
 
         The start-permit barrier is acquired before the registry scan, making
@@ -1980,145 +2040,397 @@ class SessionLifecycleService:
         nor counted against completeness -- because retiring it buys nothing
         and costs its in-flight children (see the loop). Empty means the store
         could not be read: nothing is spared (and see the comment at the fence).
+
+        *spare_children* is the per-turn identity-change path opting an idle
+        parent with live ``spawn_run`` children OUT of retirement: the sweep
+        there fires on every chat turn, so cancelling those children as a
+        "provider shutdown" each turn is a regression, and deferring the parent
+        lets them finish. It is False by default so the sign-out path
+        (``_retire_runtimes_after_sign_out``) keeps the cancel behaviour: on
+        sign-out the parent and its children MUST be retired, or the children
+        keep running on the signed-out account's in-memory credential. The
+        chat-turn caller passes ``bool(live) and not identity_component_dropped``:
+        it defers only a whole switch between two real accounts; an empty live
+        fingerprint (an external logout, which never reaches the sign-out
+        handler) and a PARTIAL loss (a source present in the retire baseline but
+        gone from live) both keep the cancel path.
+
+        When ``spare_children`` is set the retire-vs-defer choice is NOT made
+        here under the registry lock: a candidate is left registered, its
+        teardown fence is opened (so a child the admission path accepts while the
+        decision runs is seen, not raced), and the choice is made at the ASYNC
+        teardown off the loop -- any child (live, queued, fenced or durable in the
+        store), or a failed store read, defers; a childless parent is retired
+        under a re-taken lock. One per-holder exception stays synchronous: a
+        parent whose OWN spawn stamp lost a component is retired and its children
+        cancelled (the fail-safe for an external logout the baseline missed).
         """
         owner = self._owner
-        logger = self._deps.logger
         doomed: list[tuple[str, Any]] = []
+        # The spare_children subset committed at the async teardown: (key, provider).
+        # Torn down in the ``maybe_spare`` finally, shielded, so a cancellation of
+        # the sweep cannot leave a committed parent half torn down (its children
+        # still running on a logged-out credential).
+        committed_teardown: list[tuple[str, Any]] = []
+        retired: list[str] = []
         teardown_children_by_key: dict[str, tuple[str, ...]] = {}
+        # Candidates whose retire-vs-defer is resolved at the async teardown, which
+        # reads the store off the loop under the teardown fence: (key, session,
+        # fence) -- the fence handle is kept so a defer releases exactly its own.
+        maybe_spare: list[tuple[str, Any, "AbstractSet[str] | None"]] = []
         skipped = False
         waiting_on: list[str] = []
         # One sweep at a time: the drain below is not re-entrant (a second
         # concurrent drain raises), so a peer sweep waits here for this one.
-        async with self._identity_sweep_lock:
-            # Before the barrier, and before any key becomes claimable: every
-            # provider already queued in the warm pool authenticated as the
-            # previous account, and a pool claim takes no cold-start permit, so
-            # the barrier below cannot hold one back. Stamping the pool here is
-            # what stops a cleared key from being handed one of those providers
-            # while ``_retire_kiro_warm_pool`` (which must run outside the
-            # barrier -- see ``mark_identity_epoch``) is still pending.
-            owner._mark_identity_epoch()
-            # The barrier: every cold-start permit, collected ahead of both start
-            # priorities (``PrioritySemaphore.drain``), so a stream of person-started
-            # cold starts cannot keep taking the permits this sweep waits for.
-            async with owner._start_sem.drain():
-                async with owner._lock:
-                    # An outstanding sweep is its own retirement trigger, so the
-                    # pending fingerprint is recorded before anything is retired
-                    # and survives until a sweep COMPLETES. Without it, a switch
-                    # back to the reconciled account compares equal and the
-                    # holders started under the interim one keep serving turns on
-                    # its credential.
-                    self.state.identity_sweep_fingerprint = fingerprint
-                    # Selection and unregistering share one lock hold so a
-                    # chosen idle object cannot start a turn before its pop.
-                    #
-                    # Telling a new-account successor from an old-account holder
-                    # needs the identity each session authenticated under, and
-                    # registration order does not carry it: a cold start that
-                    # began before the switch registers after it. The spawn
-                    # stamp does carry it, so a session whose stamp EQUALS the
-                    # live fingerprint is spared -- not retired, not flagged,
-                    # and not counted against completeness -- while an
-                    # unstamped or differently-stamped one is retired as before.
-                    #
-                    # The spare is what lets a sweep on a busy host FINISH. Its
-                    # completeness is what advances the baseline and clears the
-                    # pending fingerprint; without the spare it required every
-                    # kiro-backed session to be idle at once, which a gateway
-                    # with a dozen live chats never is, so every turn re-swept,
-                    # recycled every idle session -- and a parent that ended
-                    # its turn with ``spawn_run`` children still running IS
-                    # idle by the semaphore test, so its retirement cancelled
-                    # them ("provider shutdown") on every turn any chat took.
-                    # A retired live-account session also costs a fresh native
-                    # conversation for nothing. The spare needs exact equality
-                    # (``spawned_under``); sparing the wrong one is the
-                    # signature rejection this sweep exists to prevent, and an
-                    # unstamped child keeps the pre-stamping treatment.
-                    retired_keys: list[str] = []
-                    invalidated_keys: list[str] = []
-                    for key in list(owner._sessions):
-                        sess = owner._sessions[key]
-                        if not self._deps.provider_uses_kiro_identity_store(sess.provider):
-                            continue
-                        if spawned_under(sess.provider, fingerprint):
-                            continue
-                        if sess.semaphore.locked():
-                            sess.retire_on_identity_change = True
-                            invalidated_keys.append(key)
-                            skipped = True
-                            holder = (
-                                "channel member"
-                                if getattr(sess, "lifecycle_lease", False)
-                                else "busy"
+        # Wrapped in a try whose finally drains the committed retirements OUTSIDE
+        # ``identity_sweep_lock`` (so a slow child shutdown cannot hold the lock
+        # against a following account change) AND cancellation-safe (so a cancel
+        # of the sweep -- the chat closing mid-sweep -- cannot leave an
+        # already-unregistered parent's children running on the logged-out
+        # credential). Both conditions must hold at once, which is why the drain
+        # is a method-level finally after the lock rather than under it.
+        teardown_drained = False
+        try:
+            async with self._identity_sweep_lock:
+                # Before the barrier, and before any key becomes claimable: every
+                # provider already queued in the warm pool authenticated as the
+                # previous account, and a pool claim takes no cold-start permit, so
+                # the barrier below cannot hold one back. Stamping the pool here is
+                # what stops a cleared key from being handed one of those providers
+                # while ``_retire_kiro_warm_pool`` (which must run outside the
+                # barrier -- see ``mark_identity_epoch``) is still pending.
+                owner._mark_identity_epoch()
+                # The barrier: every cold-start permit, collected ahead of both start
+                # priorities (``PrioritySemaphore.drain``), so a stream of person-started
+                # cold starts cannot keep taking the permits this sweep waits for.
+                async with owner._start_sem.drain():
+                    async with owner._lock:
+                        # An outstanding sweep is its own retirement trigger, so the
+                        # pending fingerprint is recorded before anything is retired
+                        # and survives until a sweep COMPLETES. Without it, a switch
+                        # back to the reconciled account compares equal and the
+                        # holders started under the interim one keep serving turns on
+                        # its credential.
+                        self.state.identity_sweep_fingerprint = fingerprint
+                        # Selection and unregistering share one lock hold so a
+                        # chosen idle object cannot start a turn before its pop.
+                        #
+                        # Telling a new-account successor from an old-account holder
+                        # needs the identity each session authenticated under, and
+                        # registration order does not carry it: a cold start that
+                        # began before the switch registers after it. The spawn
+                        # stamp does carry it, so a session whose stamp EQUALS the
+                        # live fingerprint is spared -- not retired, not flagged,
+                        # and not counted against completeness -- while an
+                        # unstamped or differently-stamped one is retired as before.
+                        #
+                        # The spare is what lets a sweep on a busy host FINISH. Its
+                        # completeness is what advances the baseline and clears the
+                        # pending fingerprint; without the spare it required every
+                        # kiro-backed session to be idle at once, which a gateway
+                        # with a dozen live chats never is, so every turn re-swept,
+                        # recycled every idle session -- and a parent that ended
+                        # its turn with ``spawn_run`` children still running IS
+                        # idle by the semaphore test, so its retirement cancelled
+                        # them ("provider shutdown") on every turn any chat took.
+                        # A retired live-account session also costs a fresh native
+                        # conversation for nothing. The spare needs exact equality
+                        # (``spawned_under``); sparing the wrong one is the
+                        # signature rejection this sweep exists to prevent, and an
+                        # unstamped child keeps the pre-stamping treatment.
+                        retired_keys: list[str] = []
+                        invalidated_keys: list[str] = []
+                        for key in list(owner._sessions):
+                            sess = owner._sessions[key]
+                            if not self._deps.provider_uses_kiro_identity_store(sess.provider):
+                                continue
+                            if spawned_under(sess.provider, fingerprint):
+                                continue
+                            if sess.semaphore.locked():
+                                sess.retire_on_identity_change = True
+                                invalidated_keys.append(key)
+                                skipped = True
+                                holder = (
+                                    "channel member"
+                                    if getattr(sess, "lifecycle_lease", False)
+                                    else "busy"
+                                )
+                                waiting_on.append(f"{key} ({holder})")
+                                continue
+                            # An idle parent that ended its turn with ``spawn_run``
+                            # children still running passes the semaphore test above.
+                            # Whether to retire it (cancelling those children) or defer
+                            # it is NOT decided here under the lock: a durable-only child
+                            # lives in the task store, and reading the store on the loop
+                            # under this lock waits on the store's busy wait and freezes
+                            # the gateway. Instead the decision is made at the ASYNC
+                            # teardown, which reads the store off the loop under the
+                            # teardown fence -- the same ``_teardown_fence_lock`` the
+                            # admission path records a new child into
+                            # (``note_teardown_store_accept``), so a child admitted while
+                            # the decision runs is seen or ordered rather than raced.
+                            #
+                            # The one case decided synchronously is a parent whose OWN
+                            # spawn stamp lost a credential component: that is the
+                            # identity its children loaded, so a component gone from it
+                            # means they may be running on a credential that is gone.
+                            # That parent is retired and its children cancelled, exactly
+                            # as the sign-out path does -- the fail-safe direction. An
+                            # unstamped parent (empty spawn identity) proves no drop, so
+                            # it takes the ordinary defer-at-teardown path.
+                            #
+                            # ``spare_children`` is the per-turn identity-change opt-in
+                            # (it fires every turn, so cancelling live children each turn
+                            # is the regression). The sign-out path and an empty live
+                            # fingerprint leave it False and keep the retire-and-cancel
+                            # path, because there the account is gone.
+                            spawn_source_dropped = identity_component_dropped(
+                                spawn_identity_of(sess.provider), fingerprint
                             )
-                            waiting_on.append(f"{key} ({holder})")
-                            continue
-                        del owner._sessions[key]
-                        owner._advance_session_generation(key)
-                        owner._compact_cooldown_until.pop(key, None)
-                        self._suppress_replay.discard(key)
-                        self._origin_links.pop(key, None)
-                        self.state.stop_requests.pop(key, None)
-                        self._discard_replay_gap(key)
-                        self.state.orphaned_holders.pop(key, None)
-                        retired_keys.append(key)
-                        invalidated_keys.append(key)
-                        teardown_children_by_key[key] = self._snapshot_parent_children(key)
-                        # Do not clear _compact_pending_verdict: the identity
-                        # recycle preserves that deferred verdict.
-                        doomed.append((key, sess.provider))
-                    # Same lock hold as the removals, not down in the shutdown
-                    # loop below: that loop awaits, and a replacement session can
-                    # register under a retired key while it does. Recorded as one
-                    # set so the awaited unlink cannot be cancelled between two
-                    # keys and leave the rest behind as fabricated crashes.
-                    await record_sessions_ended(retired_keys, end_reason=END_REASON_RETIRED)
-                # Drop the pointer to each identity-changed session's NATIVE
-                # conversation, the same reason a provider switch drops it: the
-                # account that minted it is not the account that would reload it.
-                # An extended-thinking model's stored thinking blocks carry a
-                # provider signature bound to the conversation they were minted
-                # in, so replaying them under the new account is rejected whole
-                # ("Invalid `signature` in `thinking` block") and every later turn
-                # on that key fails the same way -- the recycle replaces the
-                # process but the successor's ``session/load`` walks straight back
-                # into the previous account's history. Only the pointer goes; the
-                # conversation stays on disk under ``discarded_sid``, and the
-                # dashboard transcript is a separate record that survives.
-                #
-                # Inside the permit barrier and after ``owner._lock`` is released:
-                # every cold-start permit is still held here, so no successor can
-                # publish a sid for these keys, while ``clear_sid`` persists to
-                # disk and must not run under the registry lock.
-                for key in invalidated_keys:
-                    owner._session_map.clear_sid(key)
+                            if spare_children and not spawn_source_dropped:
+                                # Defer the COMMIT to the async teardown. Open the fence
+                                # now (synchronously, under the lock) so an admission
+                                # between here and the off-loop read is recorded, and keep
+                                # the session registered -- nothing irreversible happens
+                                # for it under the lock, so "defer" there is simply not
+                                # retiring, never a rollback. The in-memory snapshot is
+                                # NOT taken here: it arms the delivery gate and tears down
+                                # follow-ups, which the parent must keep if it is spared;
+                                # the async decision takes it only if it commits.
+                                opened_fence = self._open_teardown_fence(key)
+                                maybe_spare.append((key, sess, opened_fence))
+                                continue
+                            del owner._sessions[key]
+                            owner._advance_session_generation(key)
+                            owner._compact_cooldown_until.pop(key, None)
+                            self._suppress_replay.discard(key)
+                            self._origin_links.pop(key, None)
+                            self.state.stop_requests.pop(key, None)
+                            self._discard_replay_gap(key)
+                            self.state.orphaned_holders.pop(key, None)
+                            retired_keys.append(key)
+                            invalidated_keys.append(key)
+                            teardown_children_by_key[key] = self._snapshot_parent_children(key)
+                            # Do not clear _compact_pending_verdict: the identity
+                            # recycle preserves that deferred verdict.
+                            doomed.append((key, sess.provider))
+                        # Same lock hold as the removals, not down in the shutdown
+                        # loop below: that loop awaits, and a replacement session can
+                        # register under a retired key while it does. Recorded as one
+                        # set so the awaited unlink cannot be cancelled between two
+                        # keys and leave the rest behind as fabricated crashes. The
+                        # spare_children candidates committed at the async teardown
+                        # below record their ends there, under their own lock hold.
+                        await record_sessions_ended(retired_keys, end_reason=END_REASON_RETIRED)
+                    # Drop the pointer to each identity-changed session's NATIVE
+                    # conversation, the same reason a provider switch drops it: the
+                    # account that minted it is not the account that would reload it.
+                    # An extended-thinking model's stored thinking blocks carry a
+                    # provider signature bound to the conversation they were minted
+                    # in, so replaying them under the new account is rejected whole
+                    # ("Invalid `signature` in `thinking` block") and every later turn
+                    # on that key fails the same way -- the recycle replaces the
+                    # process but the successor's ``session/load`` walks straight back
+                    # into the previous account's history. Only the pointer goes; the
+                    # conversation stays on disk under ``discarded_sid``, and the
+                    # dashboard transcript is a separate record that survives.
+                    #
+                    # Inside the permit barrier and after ``owner._lock`` is released:
+                    # every cold-start permit is still held here, so no successor can
+                    # publish a sid for these keys, while ``clear_sid`` persists to
+                    # disk and must not run under the registry lock.
+                    for key in invalidated_keys:
+                        owner._session_map.clear_sid(key)
 
-        retired: list[str] = []
-        for key, provider in doomed:
-            children = teardown_children_by_key.get(key, ())
-            try:
-                try:
-                    await provider.shutdown()
-                finally:
-                    # See ``destroy``: the key was retired under the lock above, so a
-                    # shutdown that raises must not skip the cancel. The outer ``except``
-                    # turns a failure into a warning and leaves the key unretired, and the
-                    # children are ended either way.
-                    await self._cancel_parent_children(
-                        key, children, verb="retire_kiro_identity_sessions"
-                    )
-                    await owner.release_subagent_runtime(key)
-                retired.append(key)
-            except Exception:
-                logger.warning(
-                    "Failed to retire session %s after an identity change",
-                    key,
-                    exc_info=True,
-                )
-                skipped = True
-                waiting_on.append(f"{key} (shutdown failed)")
+                    # Resolve the deferred spare_children candidates HERE, still inside
+                    # the permit barrier (no successor can register a sid) but off the
+                    # registry lock, so the store read runs on the writer thread. For
+                    # each, ask whether a child the retirement would cancel still
+                    # exists -- live or queued in memory, held only by the store, or
+                    # admitted into the fence since it opened under the lock above.
+                    #
+                    #   * A child exists (or the store read FAILS): DEFER. Flag the
+                    #     session for retirement on its next turn, cancel nothing, drop
+                    #     the fence, and leave the sweep incomplete so the next sweep
+                    #     re-checks. Nothing irreversible happened for this key under
+                    #     the lock, so a defer is simply not retiring -- no rollback.
+                    #   * No child: COMMIT the retirement now. Re-take the registry lock
+                    #     to unregister (a successor that registered under the key while
+                    #     the store read ran is left alone -- the pop is guarded on the
+                    #     session identity), then shut the provider down and run the
+                    #     cancel, which stops nothing because there is no child.
+                    committed_spare: list[str] = []
+                    # Fences still held by candidates this loop has not resolved yet, so
+                    # a cancellation (the chat closing mid-sweep) releases them in the
+                    # ``finally`` rather than leaking a tentative fence that would keep
+                    # recording every later child admitted under the key.
+                    unresolved_fences: dict[str, "AbstractSet[str] | None"] = {
+                        key: fence for key, _sess, fence in maybe_spare
+                    }
+                    handler = self._child_teardown
+                    try:
+                        for key, sess, fence in maybe_spare:
+                            try:
+                                has_child = await self._parent_has_sparable_child(key)
+                            except Exception:
+                                self._deps.logger.warning(
+                                    "Identity sweep: reading the children of %s failed; "
+                                    "deferring its retirement",
+                                    key,
+                                    exc_info=True,
+                                )
+                                has_child = True
+                            if has_child:
+                                sess.retire_on_identity_change = True
+                                if handler is not None:
+                                    handler.release_teardown_fence(key, fence)
+                                unresolved_fences.pop(key, None)
+                                # Drop the old-account sid the same way a retired key
+                                # does: a deferred parent is evicted and cold-started on
+                                # its next turn, and reloading the previous account's
+                                # conversation is the signed-thinking rejection the
+                                # sweep's sid drop prevents. Inside the permit barrier.
+                                owner._session_map.clear_sid(key)
+                                skipped = True
+                                waiting_on.append(f"{key} (subagents)")
+                                continue
+                            # No child so far: commit under the registry lock.
+                            async with owner._lock:
+                                if owner._sessions.get(key) is not sess:
+                                    # A successor registered under the key while the
+                                    # read ran; not ours to retire.
+                                    if handler is not None:
+                                        handler.release_teardown_fence(key, fence)
+                                    unresolved_fences.pop(key, None)
+                                    skipped = True
+                                    waiting_on.append(f"{key} (successor)")
+                                    continue
+                                if sess.semaphore.locked():
+                                    # A turn took the semaphore during the off-loop read
+                                    # (a channel or cron path, not the dashboard gate).
+                                    # Retiring now would ``provider.shutdown()`` a live
+                                    # turn, so defer and let the next sweep catch it idle.
+                                    sess.retire_on_identity_change = True
+                                    if handler is not None:
+                                        handler.release_teardown_fence(key, fence)
+                                    unresolved_fences.pop(key, None)
+                                    owner._session_map.clear_sid(key)
+                                    skipped = True
+                                    waiting_on.append(f"{key} (busy)")
+                                    continue
+                                # An in-memory child that appeared during the read defers.
+                                if handler is not None and handler.has_live_or_queued_children(key):
+                                    sess.retire_on_identity_change = True
+                                    handler.release_teardown_fence(key, fence)
+                                    unresolved_fences.pop(key, None)
+                                    owner._session_map.clear_sid(key)
+                                    skipped = True
+                                    waiting_on.append(f"{key} (subagents)")
+                                    continue
+                                # The final commit-vs-defer, ATOMIC against admission:
+                                # under the fence lock, defer if the tentative fence
+                                # recorded any child since it opened, else promote it to
+                                # the committed teardown fence so a concurrent /api/spawn
+                                # is carried into the cancel's accepted_since rather than
+                                # cancelled (GPT F1). ``fence`` None (no store) commits.
+                                committed = (
+                                    handler is None
+                                    or fence is None
+                                    or handler.commit_identity_sweep_retire(key, fence)
+                                )
+                                if not committed:
+                                    sess.retire_on_identity_change = True
+                                    if handler is not None:
+                                        handler.release_teardown_fence(key, fence)
+                                    unresolved_fences.pop(key, None)
+                                    owner._session_map.clear_sid(key)
+                                    skipped = True
+                                    waiting_on.append(f"{key} (subagents)")
+                                    continue
+                                del owner._sessions[key]
+                                owner._advance_session_generation(key)
+                                owner._compact_cooldown_until.pop(key, None)
+                                self._suppress_replay.discard(key)
+                                self._origin_links.pop(key, None)
+                                self.state.stop_requests.pop(key, None)
+                                self._discard_replay_gap(key)
+                                self.state.orphaned_holders.pop(key, None)
+                                # Selection only -- the committed fence is already open
+                                # (promoted above); re-opening it would discard the
+                                # concurrent admissions it carries.
+                                if handler is not None:
+                                    teardown_children_by_key[key] = (
+                                        handler.snapshot_teardown_children_only(key)
+                                    )
+                                committed_spare.append(key)
+                                unresolved_fences.pop(key, None)
+                                # Record the end HERE, under the same lock hold that
+                                # removed the session -- not batched after the loop. A
+                                # later candidate's off-loop store probe awaits, and a
+                                # same-key successor can register through
+                                # ``open_task_session`` during that await; a bulk record
+                                # that ran after the await would consume the successor's
+                                # live-start entry and delete its crash crumb. Recording
+                                # under this key's lock, before any later probe can
+                                # suspend the sweep, keeps it bound to this retirement.
+                                await record_sessions_ended([key], end_reason=END_REASON_RETIRED)
+                            owner._session_map.clear_sid(key)
+                            # Teardown is deferred to the finally, not this loop body,
+                            # so a cancellation between here and the drain cannot skip
+                            # it: the finally always runs and drains it shielded.
+                            committed_teardown.append((key, sess.provider))
+                    finally:
+                        # The committed retirements' provider teardown runs OUTSIDE
+                        # this lock (and outside ``identity_sweep_lock``), in the
+                        # method-level finally below -- a slow child shutdown must not
+                        # hold the sweep lock, or a following account change cannot
+                        # acquire it to recapture the fence. Here, under the lock, we
+                        # only release any tentative fence this loop never resolved.
+                        if handler is not None:
+                            for key, fence in unresolved_fences.items():
+                                handler.release_teardown_fence(key, fence)
+
+        finally:
+            # Runs after ``identity_sweep_lock`` is released (so a slow child
+            # shutdown here never holds the lock against a following account
+            # change) AND on cancellation (so the chat closing mid-sweep cannot
+            # abandon an already-unregistered parent). Both the stamp-dropped
+            # parents retired synchronously (``doomed``) and the spare candidates
+            # committed at the teardown (``committed_teardown``) are drained here:
+            # each is already unregistered, so leaving its children on the
+            # logged-out credential is exactly what this prevents. Guarded so the
+            # single drain runs once whether the sweep returns or is cancelled.
+            if not teardown_drained:
+                teardown_drained = True
+                for key, provider in (*doomed, *committed_teardown):
+                    children = teardown_children_by_key.get(key, ())
+                    try:
+                        try:
+                            await asyncio.shield(provider.shutdown())
+                        finally:
+                            # See ``destroy``: a shutdown that raises must not skip
+                            # the cancel. Shielded so a cancel of the sweep still
+                            # ends the children and releases the runtime before the
+                            # CancelledError propagates (we never swallow it).
+                            await asyncio.shield(
+                                self._cancel_parent_children(
+                                    key,
+                                    children,
+                                    verb="retire_kiro_identity_sessions",
+                                )
+                            )
+                            await asyncio.shield(owner.release_subagent_runtime(key))
+                        retired.append(key)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        self._deps.logger.warning(
+                            "Failed to retire session %s after an identity change",
+                            key,
+                            exc_info=True,
+                        )
+                        skipped = True
+                        waiting_on.append(f"{key} (shutdown failed)")
 
         # Warm-pool policy remains owned by the pool service; route through the
         # facade to retain direct manager monkeypatches and its fill-lock policy.

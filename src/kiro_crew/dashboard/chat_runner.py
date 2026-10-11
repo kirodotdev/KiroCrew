@@ -3156,7 +3156,21 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
             pending = getattr(sessions, "pending_identity_sweep_fingerprint", "")
             if not pending:
                 return
-        retired, complete = await sessions.retire_kiro_identity_sessions(fingerprint=live)
+        # Defer an idle parent's live children only while its credential is still
+        # VALID. An empty ``live`` is an external logout (or an unreadable store),
+        # where the children must be cancelled rather than left running on a
+        # credential that is gone -- the same fail-safe the sign-out path takes.
+        # ``bool(live)`` alone is not enough: a PARTIAL loss (an external
+        # ``kiro-cli logout`` while the Crew vault stays populated) leaves the
+        # combined fingerprint nonempty, so a credential source that DROPPED since
+        # the baseline must also force the cancel path -- otherwise the children
+        # keep running on the logged-out store's in-memory credential. Only a
+        # proven switch between two real accounts (non-empty ``live`` with no
+        # dropped source) defers, which is the per-turn regression being fixed.
+        spare_children = bool(live) and not service.identity_component_dropped(live)
+        retired, complete = await sessions.retire_kiro_identity_sessions(
+            fingerprint=live, spare_children=spare_children
+        )
         # Advance THIS consumer's baseline ONLY on a complete sweep AND a real
         # identity. Anything left running -- a busy session, a child that would not
         # shut down, a start still in flight -- is still holding the previous
