@@ -1410,8 +1410,8 @@ def _transport_failure(message: str, mark: bool) -> dict:
     reached the gateway before the response failed (a read timeout after spawn
     acceptance, say), so the caller must not declare a definite rejection nor
     retry on its own. Its readers (spawn_run's batch reconcile, the cron tool
-    proxy, learn_add) all post, so the flag stays opt-in per verb rather than
-    becoming a new field on every reply.
+    proxy, learn_add, mutating app requests) all post, so the flag stays
+    opt-in per verb rather than becoming a new field on every reply.
     """
     out: dict[str, object] = {"error": message}
     if mark:
@@ -1457,6 +1457,7 @@ def _send(
     method: str = "GET",
     timeout: float = 30,
     mark_transport_error: bool = False,
+    max_response_bytes: int | None = None,
 ) -> dict:
     """Send one gateway request, recovering from a refused connection.
 
@@ -1483,7 +1484,30 @@ def _send(
         )
         # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected -- URL is the loopback gateway (_resolve_api_target(): 127.0.0.1 plus a port from config/env or a run-marker whose ownership is re-verified per request) + a fixed internal path; never user-controlled  # noqa: E501
         with _api_urlopen(req, timeout=timeout, unix_socket_path=socket_path) as resp:
-            return json.loads(resp.read())
+            raw = (
+                resp.read(max_response_bytes + 1) if max_response_bytes is not None else resp.read()
+            )
+            if max_response_bytes is not None:
+                if len(raw) > max_response_bytes:
+                    return _transport_failure(
+                        f"response body exceeds the {max_response_bytes}-byte limit",
+                        mark_transport_error,
+                    )
+                declared_length = resp.headers.get("Content-Length")
+                if declared_length is not None and declared_length.isdigit():
+                    if len(raw) < int(declared_length):
+                        return _transport_failure(
+                            "response ended before its declared Content-Length",
+                            mark_transport_error,
+                        )
+                if not raw:
+                    return {}
+                decoded = raw.decode("utf-8", "replace")
+                try:
+                    return json.loads(decoded)
+                except json.JSONDecodeError:
+                    return {"text": decoded}
+            return json.loads(raw)
 
     def _refreshed_headers(base: str) -> dict[str, str]:
         """*headers* with the credential re-read for *base*, caller's dict intact.
@@ -1552,7 +1576,7 @@ def _send(
             try:
                 return _once(proven, _refreshed_headers(proven[0]))
             except urllib.error.HTTPError as exc:
-                return _http_error_body(exc)
+                return _http_error_body(exc, max_response_bytes=max_response_bytes)
             except urllib.error.URLError as exc:
                 if not isinstance(exc.reason, (ConnectionRefusedError, socket.gaierror)):
                     return _transport_failure(str(exc), mark_transport_error)
@@ -1573,7 +1597,7 @@ def _send(
         # Bad Request" — the structured {"error": ...} body lives in e.read().
         # Surface it so callers can act on the backend's actual error (e.g.
         # the learn_add "unknown session" mapping) instead of an opaque code.
-        return _http_error_body(e)
+        return _http_error_body(e, max_response_bytes=max_response_bytes)
     except urllib.error.URLError as e:
         if not isinstance(e.reason, (ConnectionRefusedError, socket.gaierror)):
             return _transport_failure(str(e), mark_transport_error)
@@ -1592,7 +1616,7 @@ def _send(
         try:
             return _once(retry_target)
         except urllib.error.HTTPError as retry_exc:
-            return _http_error_body(retry_exc)
+            return _http_error_body(retry_exc, max_response_bytes=max_response_bytes)
         except urllib.error.URLError as retry_exc:
             if isinstance(retry_exc.reason, (ConnectionRefusedError, socket.gaierror)):
                 # Both bases refused. The re-resolved one is the fresher
@@ -1620,6 +1644,8 @@ def _post(
     *,
     timeout: float = 30,
     session_key: str | None = None,
+    max_response_bytes: int | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict:
     """POST a gateway endpoint.
 
@@ -1634,6 +1660,7 @@ def _post(
     """
     data = json.dumps(body or {}).encode()
     headers = {
+        **(extra_headers or {}),
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
@@ -1646,9 +1673,10 @@ def _post(
     if sk:
         headers["X-Session-Key"] = sk
     # ``transport_error`` means acceptance is unknown. A caller that reads it
-    # (spawn_run's batch reconcile, the cron tool proxy, learn_add) must not
-    # report a definite failure; other _post callers treat the payload as a
-    # normal error.
+    # (spawn_run's batch reconcile, the cron tool proxy, learn_add, a mutating
+    # app_request) must not report a definite failure or replay a
+    # potentially-applied mutation; other _post callers treat the payload as
+    # a normal error.
     return _send(
         path,
         data=data,
@@ -1656,10 +1684,11 @@ def _post(
         method="POST",
         timeout=timeout,
         mark_transport_error=True,
+        max_response_bytes=max_response_bytes,
     )
 
 
-def _http_error_body(exc: urllib.error.HTTPError) -> dict:
+def _http_error_body(exc: urllib.error.HTTPError, *, max_response_bytes: int | None = None) -> dict:
     """Decode the JSON body of an ``HTTPError`` into the standard error dict.
 
     Prefers the structured ``{"error": ...}`` JSON body (so callers can match
@@ -1674,9 +1703,14 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     ``"unknown session"`` intact, so downstream matching is unaffected.
     """
     try:
-        raw = exc.read().decode("utf-8", "replace").strip()
+        raw_bytes = (
+            exc.read(max_response_bytes + 1) if max_response_bytes is not None else exc.read()
+        )
     except Exception:
-        raw = ""
+        raw_bytes = b""
+    if max_response_bytes is not None and len(raw_bytes) > max_response_bytes:
+        return {"error": f"response body exceeds the {max_response_bytes}-byte limit"}
+    raw = raw_bytes.decode("utf-8", "replace").strip()
     message = raw or str(exc)
     counted = False
     code = ""
@@ -1745,7 +1779,14 @@ def _http_error_body(exc: urllib.error.HTTPError) -> dict:
     return out
 
 
-def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> dict:
+def _get(
+    path: str,
+    session_key: str | None = None,
+    *,
+    timeout: float = 10,
+    max_response_bytes: int | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     """GET a loopback gateway path with the internal-secret handshake.
 
     ``session_key`` exists so a caller that has ALREADY verified its identity can
@@ -1764,6 +1805,7 @@ def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> d
     interpreter start that 10s cannot cover on a loaded host.
     """
     headers = {
+        **(extra_headers or {}),
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
         **_session_token_header(),
@@ -1774,10 +1816,18 @@ def _get(path: str, session_key: str | None = None, *, timeout: float = 10) -> d
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    return _send(path, headers=headers, timeout=timeout)
+    return _send(path, headers=headers, timeout=timeout, max_response_bytes=max_response_bytes)
 
 
-def _patch(path: str, body: dict | None = None, *, session_key: str | None = None) -> dict:
+def _patch(
+    path: str,
+    body: dict | None = None,
+    *,
+    session_key: str | None = None,
+    mark_transport_error: bool = False,
+    max_response_bytes: int | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     """PATCH a loopback gateway path with the internal-secret handshake.
 
     ``session_key``: as in :func:`_put`. A caller gated on
@@ -1787,6 +1837,7 @@ def _patch(path: str, body: dict | None = None, *, session_key: str | None = Non
     """
     data = json.dumps(body or {}).encode()
     headers = {
+        **(extra_headers or {}),
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
@@ -1798,10 +1849,25 @@ def _patch(path: str, body: dict | None = None, *, session_key: str | None = Non
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    return _send(path, data=data, headers=headers, method="PATCH")
+    return _send(
+        path,
+        data=data,
+        headers=headers,
+        method="PATCH",
+        mark_transport_error=mark_transport_error,
+        max_response_bytes=max_response_bytes,
+    )
 
 
-def _put(path: str, body: dict | None = None, session_key: str | None = None) -> dict:
+def _put(
+    path: str,
+    body: dict | None = None,
+    session_key: str | None = None,
+    *,
+    mark_transport_error: bool = False,
+    max_response_bytes: int | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     """PUT to a loopback gateway path with the internal-secret handshake.
 
     Same trust model as :func:`_post` / :func:`_patch` — the target path must be
@@ -1816,6 +1882,7 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
     """
     data = json.dumps(body or {}).encode()
     headers = {
+        **(extra_headers or {}),
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
@@ -1827,10 +1894,25 @@ def _put(path: str, body: dict | None = None, session_key: str | None = None) ->
         return {"error": _sk_err}
     if sk:
         headers["X-Session-Key"] = sk
-    return _send(path, data=data, headers=headers, method="PUT")
+    return _send(
+        path,
+        data=data,
+        headers=headers,
+        method="PUT",
+        mark_transport_error=mark_transport_error,
+        max_response_bytes=max_response_bytes,
+    )
 
 
-def _delete(path: str, body: dict | None = None, *, session_key: str | None = None) -> dict:
+def _delete(
+    path: str,
+    body: dict | None = None,
+    *,
+    session_key: str | None = None,
+    mark_transport_error: bool = False,
+    max_response_bytes: int | None = None,
+    extra_headers: dict[str, str] | None = None,
+) -> dict:
     """DELETE a loopback gateway path with the internal-secret handshake.
 
     ``session_key``: as in :func:`_patch`. A caller gated on
@@ -1838,6 +1920,7 @@ def _delete(path: str, body: dict | None = None, *, session_key: str | None = No
     """
     data = json.dumps(body or {}).encode() if body else None
     headers = {
+        **(extra_headers or {}),
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
         **_session_token_header(),
@@ -1850,7 +1933,15 @@ def _delete(path: str, body: dict | None = None, *, session_key: str | None = No
         headers["X-Session-Key"] = sk
     if data:
         headers["Content-Type"] = "application/json"
-    return _send(path, data=data, headers=headers, method="DELETE", timeout=10)
+    return _send(
+        path,
+        data=data,
+        headers=headers,
+        method="DELETE",
+        timeout=10,
+        mark_transport_error=mark_transport_error,
+        max_response_bytes=max_response_bytes,
+    )
 
 
 def _autonudge_binding_key(sk: str) -> str | None:

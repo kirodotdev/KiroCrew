@@ -39,6 +39,8 @@ APP_TOOLS = {
     "design-tweak": DESIGN_TWEAK_TOOLS,
 }
 ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS | DESIGN_TWEAK_TOOLS
+#: Tools that reach whichever app the call names, so no single app gates their listing.
+UNGATED_APP_TOOLS = frozenset({"app_request"})
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -56,6 +58,11 @@ def _listed() -> set[str]:
 def test_no_app_installed_lists_none_of_the_app_tools() -> None:
     """A fresh home has no app enabled, so the listing carries none of the app tools."""
     assert _listed() & ALL_APP_TOOLS == set()
+
+
+def test_an_ungated_app_tool_is_listed_with_no_app_installed() -> None:
+    """``app_request`` names its app per call, so it is listed even in a fresh home."""
+    assert UNGATED_APP_TOOLS <= _listed()
 
 
 def test_a_disabled_app_lists_none_of_its_tools() -> None:
@@ -79,7 +86,7 @@ def test_every_app_enabled_lists_every_app_tool_with_its_declared_shape() -> Non
         _write_installed(name, enabled=True)
     listed = {t["name"]: t for t in build_tool_list()}
     declared = {t["name"]: t for t in apps_tools.schemas()}
-    assert set(declared) == ALL_APP_TOOLS
+    assert set(declared) == ALL_APP_TOOLS | UNGATED_APP_TOOLS
     for name, spec in declared.items():
         assert listed[name] == spec, name
 
@@ -176,8 +183,8 @@ def test_declaration_and_handlers_cover_every_app_tool_regardless_of_enablement(
     ``schemas()`` is what ``test_mcp_tool_registry`` holds against ``HANDLERS``; both
     must keep naming every tool, or a disabled app would read as a registry drift.
     """
-    assert {t["name"] for t in apps_tools.schemas()} == ALL_APP_TOOLS
-    assert set(apps_tools.HANDLERS) == ALL_APP_TOOLS
+    assert {t["name"] for t in apps_tools.schemas()} == ALL_APP_TOOLS | UNGATED_APP_TOOLS
+    assert set(apps_tools.HANDLERS) == ALL_APP_TOOLS | UNGATED_APP_TOOLS
     assert set(apps_tools.TOOL_APPS) == ALL_APP_TOOLS
 
 

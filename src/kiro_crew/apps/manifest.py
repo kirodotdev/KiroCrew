@@ -2332,6 +2332,101 @@ class Contributes:
         return errors
 
 
+# ---------------------------------------------------------------------------
+# Agent-callable routes
+# ---------------------------------------------------------------------------
+#
+# ``agentRoutes`` is the one place an app says which of its OWN hook routes an
+# agent may call through the internal-secret transport. Everything an app serves
+# is cookie-only unless it is named here, so the list is enumerated rather than a
+# prefix: a route added to the app later stays unreachable to agents until the
+# publisher declares it and the signature covers the declaration.
+
+#: The verbs an ``agentRoutes`` entry may name. HEAD/OPTIONS are left out because
+#: no app hook route is registered for them.
+AGENT_ROUTE_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+
+#: Cap on declared agent routes. An app needing more is exposing a surface large
+#: enough to deserve a review of its own.
+MAX_AGENT_ROUTES_PER_APP = 32
+
+#: Maximum characters in one complete ``"METHOD /path"`` declaration. The
+#: registry applies the same parser before retaining a route, so a skipped
+#: install-time validation cannot leave an unbounded declaration resident.
+MAX_AGENT_ROUTE_ENTRY_LENGTH = 256
+
+#: One path segment: a literal of URL-unreserved characters, or a ``{param}`` with
+#: the same name grammar ``route_registry`` compiles.
+_AGENT_ROUTE_SEGMENT_RE = re.compile(r"[A-Za-z0-9._~-]+|\{[A-Za-z_][A-Za-z0-9_]*\}")
+# A URL path separator, not a filesystem one: HTTP paths use "/" on every OS.
+_URL_PATH_SEPARATOR = "/"
+
+
+def parse_agent_route(entry: object) -> tuple[tuple[str, str] | None, str]:
+    """Parse one ``"METHOD /relative/path"`` entry.
+
+    Returns ``((method, path), "")`` for a valid entry and ``(None, reason)``
+    otherwise. Shared by manifest validation and by ``RouteRegistry`` before it
+    retains a declaration, so the gateway can never hold a shape the install step
+    would have refused.
+    """
+    if not isinstance(entry, str):
+        return None, f"must be a string \"METHOD /path\", got {type(entry).__name__}"
+    if len(entry) > MAX_AGENT_ROUTE_ENTRY_LENGTH:
+        return None, f"must be at most {MAX_AGENT_ROUTE_ENTRY_LENGTH} characters"
+    method, sep, path = entry.partition(" ")
+    if not sep or method not in AGENT_ROUTE_METHODS:
+        return None, f"method must be one of {', '.join(sorted(AGENT_ROUTE_METHODS))}"
+    if not path.startswith("/"):
+        return None, "path must start with '/'"
+    if "?" in path or "#" in path:
+        return None, "path must not carry a query or fragment"
+    segments = path[1:].split(_URL_PATH_SEPARATOR)
+    for segment in segments:
+        if segment in ("", ".", ".."):
+            return None, "path must not contain an empty, '.' or '..' segment"
+        if not _AGENT_ROUTE_SEGMENT_RE.fullmatch(segment):
+            return None, f"path segment {segment!r} is not a literal or a {{param}}"
+    # Core mounts its own app-lifecycle handlers under ``/api/apps/<app>/`` BEFORE
+    # the app catch-all, so a request on one of those names never reaches the
+    # catch-all and so never arms the agent-route path. Refusing the declaration
+    # here tells the publisher at install time that such an entry can never be
+    # called, instead of leaving it to fail silently. A ``{param}`` in first
+    # position matches every one of those names, so it is refused for the same
+    # reason.
+    first = segments[0]
+    if first.startswith("{"):
+        return None, "first path segment must be a literal, not a {param}"
+    if first in CORE_APP_ROUTE_SEGMENTS:
+        return None, f"first path segment {first!r} is reserved by core"
+    return (method, path), ""
+
+
+def agent_route_matches(route_path: str, request_path: str) -> bool:
+    """Whether *request_path* is an instance of the declared *route_path*.
+
+    A ``{param}`` matches exactly one segment, the same rule ``route_registry``
+    dispatches by, so a declaration cannot admit a request the registry would route
+    to a different handler. An empty, ``.`` or ``..`` value is refused so a handler
+    never receives a traversal token as a parameter.
+    """
+    declared = route_path[1:].split(_URL_PATH_SEPARATOR)
+    actual = (
+        request_path[1:].split(_URL_PATH_SEPARATOR)
+        if request_path.startswith(_URL_PATH_SEPARATOR)
+        else []
+    )
+    if len(declared) != len(actual):
+        return False
+    for want, got in zip(declared, actual):
+        if want.startswith("{"):
+            if got in ("", ".", ".."):
+                return False
+        elif want != got:
+            return False
+    return True
+
+
 _KNOWN_FIELDS = frozenset(
     {
         "name",
@@ -2359,6 +2454,7 @@ _KNOWN_FIELDS = frozenset(
         "publishProvider",
         "notifications",
         "contributes",
+        "agentRoutes",
     }
 )
 
@@ -2428,6 +2524,15 @@ class AppManifest:
     # ``extra`` is by definition the un-checked bucket. Being a known field is what
     # makes ``validate()`` see it on every parse.
     contributes: Contributes = field(default_factory=Contributes)
+
+    # --- Agent-callable routes ---
+    #
+    # ``"METHOD /relative/path"`` entries naming the app's own hook routes an agent
+    # may call through ``app_request``. Every other route stays cookie-only. Kept
+    # exactly as written in the source, so ``validate()`` can report a malformed
+    # list or entry; coercing to a smaller list would install the app with routes
+    # silently missing.
+    agentRoutes: list[str] = field(default_factory=list)  # noqa: N815
 
     # --- Discovery ---
     tags: list[str] = field(default_factory=list)
@@ -2638,6 +2743,24 @@ class AppManifest:
                     "(no traversal, no other app's namespace, no core route)"
                 )
 
+        if not isinstance(self.agentRoutes, list):
+            errors.append(f"agentRoutes must be a list, got {type(self.agentRoutes).__name__}")
+        else:
+            if len(self.agentRoutes) > MAX_AGENT_ROUTES_PER_APP:
+                errors.append(
+                    f"agentRoutes: at most {MAX_AGENT_ROUTES_PER_APP} per app "
+                    f"(declared {len(self.agentRoutes)})"
+                )
+            seen_agent_routes: set[tuple[str, str]] = set()
+            for entry in self.agentRoutes:
+                parsed, reason = parse_agent_route(entry)
+                if parsed is None:
+                    errors.append(f"agentRoutes entry {entry!r}: {reason}")
+                elif parsed in seen_agent_routes:
+                    errors.append(f"agentRoutes entry {entry!r} is duplicated")
+                else:
+                    seen_agent_routes.add(parsed)
+
         return errors
 
     def signing_payload(self) -> bytes:
@@ -2809,6 +2932,18 @@ class AppManifest:
             # Included only when non-empty so manifests signed before platform was
             # covered keep producing the identical payload.
             body["platform"] = platform_d
+        if self.agentRoutes:
+            # Each entry opens one of the app's routes to the internal-secret
+            # transport, so appending one is a manifest-only way to widen what an
+            # unattended agent can call. Included only when non-empty so manifests
+            # signed before agentRoutes existed keep producing the identical payload.
+            # List order preserved.
+            # Keep malformed JSON values intact so validation can reject their shape.
+            body["agentRoutes"] = (
+                list(self.agentRoutes)
+                if isinstance(self.agentRoutes, list)
+                else self.agentRoutes
+            )
         return json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
     # -----------------------------------------------------------------
@@ -2870,6 +3005,8 @@ class AppManifest:
         contrib_d = self.contributes.to_dict()
         if contrib_d:
             d["contributes"] = contrib_d
+        if self.agentRoutes:
+            d["agentRoutes"] = list(self.agentRoutes)
         if self.tags:
             d["tags"] = self.tags
         if self.jobFamilies:
@@ -2947,6 +3084,14 @@ class AppManifest:
             else Contributes(bad_block=True)
         )
 
+        agent_routes_raw = data.get("agentRoutes", [])
+        # Copied when it is a list, else kept as written so ``validate()`` can
+        # name the wrong shape. A manifest that fails validation is refused before
+        # anything reads this field as a list.
+        agent_routes = (
+            list(agent_routes_raw) if isinstance(agent_routes_raw, list) else agent_routes_raw
+        )
+
         return cls(
             name=str(data.get("name", "")),
             version=str(data.get("version", "")),
@@ -2975,6 +3120,7 @@ class AppManifest:
             publishProvider=publish_provider,
             notifications=notifications,
             contributes=contributes,
+            agentRoutes=agent_routes,  # noqa: N815
             tags=[str(t) for t in data.get("tags", []) if t],
             jobFamilies=[str(j) for j in data.get("jobFamilies", []) if j],  # noqa: N815
             extra=extra,

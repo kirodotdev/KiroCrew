@@ -3511,6 +3511,77 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
 
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
+## 24. Agent-callable app routes are declared, signed and admitted once, in dispatch
+
+An app opens one of its own `hooks.routes` handlers to agents only by naming it in
+the manifest's `agentRoutes` (`"METHOD /relative/path"`, `{param}` segments
+allowed). `apps/manifest.py::parse_agent_route` is the one grammar: manifest
+validation refuses every other shape, a core-reserved or `{param}` first segment,
+duplicates, more than 32 entries and an entry over 256 characters. Those bounds
+are install-time diagnostics; the grammar is the only one of them the gateway
+re-applies. The list is part of `signing_payload()` when non-empty.
+
+Invariant: admission is decided exactly once, from the route the router will
+actually dispatch, inside `RouteRegistry.dispatch`. `token_auth` holds no
+declaration knowledge. Generic `app_request` traffic carries
+`X-KiroCrew-App-Request: 1`; `token_auth` refuses that marker on every static
+internal path, so those paths remain reachable only through their dedicated
+tools. Its gate, `hooks_integration.agent_route_arm`, handed to
+both `token_auth_middleware` call sites in `dashboard/server.py`, asks one
+question: did aiohttp select the registry catch-all. A LOCAL request (unix socket
+or loopback) presenting `X-Internal-Secret`, on a path no static internal set in
+`dashboard/server.py` already admits, whose resolved route IS the catch-all,
+takes the mixed-internal branch (`_verify_unix_peer`, the secret check, the
+app-scope check) and is marked `request["app_agent_route"]`. On that arm, a
+caller naming a dashboard slot that has already closed is refused before app
+scope is derived. A host-owned route
+at the same path, a core lifecycle handler under `/api/apps/<app>/`, and any path
+outside `/api/apps/` are not the catch-all, so they never arm. A path the static
+sets admit (Issue Radar, Ops Mission Control, Dev Fleet, the edition's own) refuses
+marked `app_request` traffic with 403; the same unmarked dedicated-tool request
+keeps its existing branch byte-for-byte. A browser request on the same route, and
+any non-local one, keeps the cookie flow unchanged.
+
+`dispatch` then refuses an armed request with 403, before any handler runs,
+unless `X-Session-Key` is present AND the route its single `_resolve_route` call
+selected (exact first, pattern second) is a declared `(method, path)` of that app
+whose pattern the request path instantiates with no empty, `.` or `..` segment.
+Only then does it set `request["kirocrew_agent_session"]`. Nothing else sets it,
+so a cookie request never carries it whatever headers it sends. An app's
+declarations are retained all or none, installed in the same generation as its
+routes: `register_app_routes` assigns them only after the hook module loaded and
+its routes are in the table, and a malformed entry, an over-cap list, or any
+load failure leaves the app with no agent routes and one warning. Deregistration
+clears them, so disabling an app closes its agent routes on the next request. A
+declaration a host route registered before the catch-all would shadow never arms:
+aiohttp selects the host route, which is not the catch-all.
+
+Attestation: the published session is pinned to the kernel-identified peer only
+on the unix-socket transport, and only when `_verify_unix_peer` can resolve that
+peer's tenancy. When the tenancy is unknown, and on TCP loopback, `X-Session-Key`
+is the caller's own claim, so an app must read `kirocrew_agent_session` as the session the call is
+FOR, never as proof of who made it.
+
+Audit: `token_auth` writes an `app_agent_route` granted row naming the calling
+session only after every refusal in the middleware, the app-scope check
+included, has passed. `dispatch` rows on this arm name the session as caller and
+the app in the resources; a refused undeclared route or missing key writes a
+denied row.
+
+The agent side is the `kirocrew-core` tool `app_request` (`mcp_tools/apps.py`). It
+resolves the caller through `require_strict_session_key`, refuses channel agents,
+refuses locally when the app is disabled, and sends the strict key on the wire.
+Whether the route is declared is checked in two places. `app_request` refuses an
+undeclared (method, path) locally before transport and marks every request so the
+gateway can reject static internal endpoints even if an editable installed
+manifest declares one. `RouteRegistry.dispatch` refuses any other
+undeclared agent-route call with 403 `agent_route_not_declared`. A path
+containing credential material is refused locally before transport, so no raw
+credential reaches the app. Every complete result, including local
+refusals, transport failures, app errors and success text, is redacted before the
+character cap is applied. Apps backed by their own process (`/apps/<app>/api/`)
+are out of scope. Tests: `test/test_app_agent_routes.py`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.
