@@ -19,6 +19,7 @@ import {
 } from './notifMeta'
 import NotificationPermissionHint from './NotificationPermissionHint'
 import NotificationCard, { CARD_RADIUS, type NotificationCardAction } from './NotificationCard'
+import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -96,6 +97,15 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
     }
     return list
   }, [items, filter, showMuted])
+
+  // Only a feed showing a crewmate's note reads the roster, so only that feed
+  // can report the roster read failing. While a crewmate note is selected its
+  // detail panel reports the failure, so the feed leaves it to that one copy.
+  const showsCrewmate = useMemo(() => filtered.some(n => noteMember(n)), [filtered])
+  const detailReportsRoster = useMemo(
+    () => !!selectedTs && items.some(n => n.ts === selectedTs && noteMember(n)),
+    [items, selectedTs],
+  )
 
   // First notification from a new app channel gets an inline keep/mute prompt
   // (attached to the newest such row). System channels never prompt; a channel
@@ -337,6 +347,7 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
           child needs one or the other. */}
       {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions -- delegates Up/Down from the rows' own buttons; the list itself is not a control */}
       <div ref={listRef} onKeyDown={stepSelectionWithArrowKeys} data-testid="notification-feed-list" className={`flex-1 overflow-y-auto ${mac ? 'px-4 -mx-4 pb-2' : 'scroll-shadow'}`}>
+        {showsCrewmate && !detailReportsRoster && <CrewmateRosterError className="mb-2 px-1" />}
         {filtered.length === 0 ? (
           <EmptyState testId="notification-feed-empty" icon={<Bell className="lucide-inline" />} title={i18nT('components.notifications.notificationFeed.no_notifications')} subtitle={filter ? i18nT('components.notifications.notificationFeed.try_a_different_search') : i18nT('components.notifications.notificationFeed.activity_will_appear_here')} />
         ) : (
@@ -347,6 +358,8 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                 : 'text-[11px] font-semibold text-muted uppercase tracking-[.04em] mb-1.5 px-1'}>{group}</div>
               {rows.map(({ n, stackKey, stackCount, stackExpanded, isStackChild }) => {
                 const km = KIND_META[n.kind] || DEFAULT_META
+                const member = noteMember(n)
+                const kindIcon = <span className="text-[13px] shrink-0">{km.icon}</span>
                 const active = selectedTs === n.ts
                 const prio = notePriority(n)
                 const silenced = !!n.silenced
@@ -452,8 +465,9 @@ export default function NotificationFeed({ selectedTs, onSelect, variant = 'pane
                         aria-label={i18nT('components.notifications.notificationFeed.open_notification', { title: n.title })}
                         className="flex items-center gap-2 flex-1 min-w-0 text-left cursor-pointer"
                       >
-                        <span className="text-[13px] shrink-0">{km.icon}</span>
+                        {member ? <CrewmateNoteFace member={member} size={18} fallback={kindIcon} /> : kindIcon}
                         <div className="flex-1 min-w-0">
+                          {member && <CrewmateNoteName member={member} className="block text-[11px] text-muted truncate leading-tight" />}
                           <div className={`text-[13px] font-semibold truncate leading-tight ${silenced ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
                           {approvalBody ?? (
                             <div className="text-[12px] text-muted mt-0.5 truncate">{stripMd(bodyText).slice(0, 80)}</div>

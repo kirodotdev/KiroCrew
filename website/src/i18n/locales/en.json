@@ -4892,6 +4892,10 @@
         "no_notifications": "No notifications",
         "reject": "Reject",
         "search": "Search…"
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "Couldn't load crewmate details, so the sender's name and avatar aren't shown.",
+        "retry": "Retry"
       }
     },
     "onboardingChapterShell": {

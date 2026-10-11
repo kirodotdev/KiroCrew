@@ -7560,6 +7560,10 @@
         "allow": "允许",
         "not_now": "暂不",
         "save_failed": "无法保存。请重试。"
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "无法加载队友信息，因此不显示发送者的名字和头像。",
+        "retry": "重试"
       }
     },
     "onboardingChapterShell": {

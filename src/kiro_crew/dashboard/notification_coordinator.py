@@ -46,6 +46,7 @@ class NotificationCoordinator:
         url: str | None,
         actions: list[dict[str, Any]] | None,
         channel: str | None = None,
+        member: dict[str, str] | None = None,
     ) -> None:
         """Validate a legacy notification and deliver it through the bus."""
         try:
@@ -57,6 +58,7 @@ class NotificationCoordinator:
                 url=url,
                 actions=actions,
                 channel=channel,
+                member=member,
             )
             state.notification_bus.push(payload)
         except self._validation_error:

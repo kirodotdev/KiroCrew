@@ -7786,6 +7786,10 @@
         "allow": "Permitir",
         "not_now": "Ahora no",
         "save_failed": "No se pudo guardar. Inténtalo de nuevo."
+      },
+      "crewmateNoteFace": {
+        "roster_load_failed": "No se pudieron cargar los datos del compañero, así que no se muestran el nombre ni el avatar de quien lo envió.",
+        "retry": "Reintentar"
       }
     },
     "onboardingChapterShell": {

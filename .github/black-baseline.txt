@@ -238,7 +238,6 @@ src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py
 src/kiro_crew/metrics/recorder.py
-src/kiro_crew/notifications/bus.py
 src/kiro_crew/notifications/resource_pressure.py
 src/kiro_crew/perf_sampler.py
 src/kiro_crew/platform/admission.py

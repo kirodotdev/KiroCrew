@@ -13,6 +13,7 @@ import { CronAckBar } from '../../pages/chat'
 import { api } from '../../api/client'
 import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
+import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
 
 import { i18nT } from '../../i18n/t'
@@ -45,6 +46,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
   const [handoffError, setHandoffError] = useState<string | null>(null)
   const handoffFailed = handoffError === n.ts
   const km = KIND_META[n.kind] || DEFAULT_META
+  const member = noteMember(n)
   const slots = useAppSelector(s => s.dashboard.slots)
 
   // The sentence names the button BY ITS OWN LABEL, interpolated rather than
@@ -99,7 +101,9 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
       {/* Header */}
       <div className="px-5 py-3 border-b border-border flex items-center justify-between bg-chrome shrink-0">
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[16px]">{km.icon}</span>
+          {member
+            ? <CrewmateNoteFace member={member} size={22} fallback={<span className="text-[16px]">{km.icon}</span>} />
+            : <span className="text-[16px]">{km.icon}</span>}
           <span className="text-sm font-semibold text-text-strong truncate">{n.title}</span>
         </div>
         <button className="text-muted text-[13px] cursor-pointer hover:text-text bg-transparent border-none font-body shrink-0 ml-2" onClick={onClose}><X className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.close')}</button>
@@ -108,6 +112,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
       {/* Meta bar */}
       <div className="px-5 py-3 border-b border-border flex items-center gap-3 flex-wrap bg-bg-elevated shrink-0">
         <span className={`px-2 py-[3px] rounded-full text-[12px] font-bold ${km.color} border border-[color-mix(in_srgb,currentColor_20%,transparent)]`}>{km.label}</span>
+        {member && <CrewmateNoteName member={member} className="text-[13px] font-semibold text-text" />}
         <span className="text-[13px] text-muted font-mono">{fmtFull(n.ts)}</span>
         {n.acked
           ? <Badge variant="ok">{i18nT('components.notifications.notificationDetailPanel.read')}</Badge>
@@ -117,6 +122,7 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
           ? <button className="text-[13px] text-muted cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(unackNotification(n.ts))} {...uiLocation('notifications.detail.mark-unread')}><MailOpen className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_unread')}</button>
           : <button className="text-[13px] text-ok cursor-pointer hover:text-text bg-transparent border-none font-body" onClick={() => dispatch(ackNotification(n.ts))}><Check className="lucide-inline" /> {i18nT('components.notifications.notificationDetailPanel.mark_read')}</button>
         }
+        {member && <CrewmateRosterError className="basis-full" />}
       </div>
 
       {/* Kind & navigation. The row prints the note's KIND (`km.label`, the same

@@ -1614,6 +1614,10 @@ export interface Notification {
   // RFC Phase 4: inline actions, stacking, dashboard-internal deep link
   group_key?: string; url?: string
   actions?: { id: string; label: string; url?: string }[]
+  /** The crewmate that published the note, stamped by the gateway from the
+   *  publishing session. Persisted rows are untrusted: read it through
+   *  `noteMember`, which checks the shape. */
+  member?: { slug: string; name: string }
 }
 
 /** One row from GET /api/notifications/channels. */
