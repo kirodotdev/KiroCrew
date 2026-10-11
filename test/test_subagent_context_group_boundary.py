@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from kiro_crew.mcp_shared import DeferredTool
 from kiro_crew.validation import SPAWN_RUN_SCHEMA, ValidationError, validate_tool_args
 
 
@@ -53,7 +54,12 @@ def _posted(args: dict[str, Any], tool: str = "spawn_run") -> list[dict]:
         patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:chat-1"),
         patch.object(mcp_core, "sel", MagicMock()),
     ):
-        mcp_core._call_tool_inner(tool, _through_solo_gate(args, tool))
+        result = mcp_core._call_tool_inner(tool, _through_solo_gate(args, tool))
+        # spawn_sub_agents parks and posts one member per step; drive the
+        # submission here so the bodies are observable.
+        if isinstance(result, DeferredTool):
+            while getattr(result, "phase", None) == "submit":
+                result.step()
     return bodies
 
 

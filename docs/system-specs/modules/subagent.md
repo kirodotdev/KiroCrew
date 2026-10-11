@@ -3109,8 +3109,21 @@ spawn_run(task="grep the 2 GB build log for the first traceback")
 spawn_run(tasks=["search docs for X", "check pipeline status", "review CR-123"])
 ```
 
+`tasks` and `agents` each hold at most `SPAWN_BATCH_MEMBERS_MAX` (128) members,
+the one bound `spawn_sub_agents.agents` shares, refused by the schema before any
+deferred state is built: a parked step retains its member list until submission
+finishes, so the count is bounded where it is retained, and the one spawn POST
+per deferred step is what bounds the work. Retained error, queued-reason and
+transport-error lines are bounded by `_SA_ERROR_MAX_CHARS`.
 All tasks are submitted in one call; admission, staggering, and the concurrency
-cap decide when each starts. The tool returns immediately with stable agent IDs.
+cap decide when each starts. Submission uses `_SpawnRunStep` deferred pool
+steps, one task per step without holding the shared MCP worker; the usual
+stable-ID receipt returns when the last member is handled. A call cancelled or
+abandoned after its first POST reports each task it never posted to
+`/api/spawn/lost` exactly once (`_close_unsubmitted`, from both `cancel()` and
+`abandon()`), so the wave reaches its `batch_total` and the digest releases the
+accepted children's results without waiting for the stuck-wave sweep; before
+the first POST the gateway holds no wave for the batch and nothing is reported.
 Results arrive as `[Subagent completion event]` messages in the session,
 processed by the LLM automatically.
 
@@ -3205,6 +3218,25 @@ Exposed via `kirocrew-core` MCP server. Unlike fire-and-forget `spawn_run`,
 parallel, waits until all of them finish, then returns their collected
 results inline to the calling tool invocation.
 
+Blocking for the CALLER only. Submission posts one member per bounded deferred
+step; polling the children every 2s, holding for the parent's slot grant and
+collecting results are also `mcp_shared.DeferredTool` phases
+(`spawn._SubAgentsStep`) the stdio dispatch loop times from its own tick, so a
+parent parked on its children holds no worker and other sessions' calls on the
+pooled backend are unaffected. Why that shape, and the in-flight report that
+keeps the gateway's wedge detector from recycling a backend full of parked
+parents: [`docs/architecture/mcp.md`](../../architecture/mcp.md#a-tool-that-only-waits-returns-a-deferredtool).
+If the server exits for a pruned install while the parent is still parked, the
+call is answered with the ids of the children it already spawned, marked still
+running and not to be spawned again, rather than told to retry; their
+completion events still arrive, while a mid-submission abandonment also names
+the count of members not submitted or spawned, which may be resubmitted.
+Collection steps only build result text;
+`on_settled` marks finished children collected after the driver accepts that
+text, with the call's identity installed. Cancellation discards a collect result
+without suppressing those children's completion events. The audited wrapper
+writes the tool's terminal invocation row once.
+
 Each sub-agent runs as its own Kiro Crew-owned ACP session (via
 `SubagentManager`), so its text and tool calls stream live to the Activity
 tab (`subagent_spawn` / `subagent_chunk` / `subagent_tool` / `subagent_done`
@@ -3224,19 +3256,19 @@ spawn_sub_agents(agents=[
 ```
 
 Parameters:
-- `agents` (list[dict], required): each item is `{prompt: str, agent_or_mode?: str}`. `prompt` is truncated to `MAX_MEDIUM_STRING`; `agent_or_mode` to `MAX_SHORT_STRING`. Entries with an empty prompt are skipped.
+- `agents` (list[dict], required): at most `SPAWN_BATCH_MEMBERS_MAX` (128) members, the one bound `spawn_run.tasks`/`agents` share, checked before any deferred state is built because the parked step retains the list until submission finishes; each deferred step posts one member; each item is `{prompt: str, agent_or_mode?: str}`; `prompt` is clamped to `MAX_MEDIUM_STRING`, `agent_or_mode` to `MAX_SHORT_STRING`, and the handler copies only those two fields into the parked step (a batch retains its members until each is submitted, and drops them once the last is posted), so any other key a caller sends is dropped, not retained and not refused. Entries with an empty prompt are skipped. Each retained spawn-refusal line is bounded to `_SA_ERROR_MAX_CHARS` (240).
 - `cwd` (str, optional): absolute path to launch all sub-agents in. Must be under a configured `subagent_cwd_allowed_roots` entry (default: `~/workspace`, `~/workspaces`, `~/workplace`, `~/workplaces`), same validation as `spawn_run`.
 - `include_memory` / `include_lessons` / `include_project` (bool, optional, default `true`): the same batch-wide context switches as `spawn_run`.
 
 Blocking poll semantics:
 - Each sub-agent is spawned via `POST /api/spawn` (with `parent_session`), then the handler polls `GET /api/spawn/{id}` every 2s until every sub-agent reports `done` (or `error`).
 - An errored/crashed sub-agent is treated as settled so one bad agent cannot keep the loop spinning until the deadline.
-- A member that is accepted but not started answers `queued: true` with `done: false`, and when the gate DEFERRED it (its own `reason_detail` sentence, sent only while the deferral is in force; the parent-wide `reason` label is last-writer-wins and not trusted for this) it SETTLES the wait: the call returns once every member is done, errored or deferral-held, so one gate-deferred member does not hold a dashboard parent's turn inside the tool for up to `max_wait`. A member queued only behind the concurrency cap (`concurrency_limit`) or waiting to resume is NOT settled: it drains with the wave, and the tool returns its result (a sub-agent parent still waits for its own slot grant afterwards, `_hold_for_parent_resume`, which follows its children). Done and queued members are not polled again; an error settles only the pass it was seen in, since it can be one failed poll of a running member. A queued member is reported ONCE, in the `{"status": "queued", "agents": {id: reason}}` record (the reason is its current wait, `queued_wait_text`), never as an `error` member too: a caller shown an error for accepted work dispatches it again. Its result arrives later as a completion event, and it is never marked collected. A queued member that already ran and waits to resume (`resuming: true`) is reported under `still_running` as `waiting_to_resume`, never as not started. "Held" is read off `queued: true` only, never off a 404's prose; a member the accept answer marked deferred whose final poll failed in transport keeps its error entry plus the hint "accepted at spawn time; its state couldn't be read now; check spawn_status before re-spawning".
+- A member that is accepted but not started answers `queued: true` with `done: false`, and when the gate DEFERRED it (its own `reason_detail` sentence, sent only while the deferral is in force; the parent-wide `reason` label is last-writer-wins and not trusted for this) it SETTLES the wait: the call returns once every member is done, errored or deferral-held, so one gate-deferred member does not hold a dashboard parent's turn inside the tool for up to `max_wait`. A member queued only behind the concurrency cap (`concurrency_limit`) or waiting to resume is NOT settled: it drains with the wave, and the tool returns its result (a sub-agent parent still waits for its own slot grant afterwards, `_ResumeHold`, which follows its children). Done and queued members are not polled again; an error settles only the pass it was seen in, since it can be one failed poll of a running member. A queued member is reported ONCE, in the `{"status": "queued", "agents": {id: reason}}` record (the reason is its current wait, `queued_wait_text`), never as an `error` member too: a caller shown an error for accepted work dispatches it again. Its result arrives later as a completion event, and it is never marked collected. A queued member that already ran and waits to resume (`resuming: true`) is reported under `still_running` as `waiting_to_resume`, never as not started. "Held" is read off `queued: true` only, never off a 404's prose; a member the accept answer marked deferred whose final poll failed in transport keeps its error entry plus the hint "accepted at spawn time; its state couldn't be read now; check spawn_status before re-spawning".
 - The loop pings `POST /api/session-keepalive` every 60s so the gateway's `is_responsive()` does not flag the (legitimately long-blocked) session as stale and SIGTERM the ACP subprocess mid-poll. The `wait` tool pings the same endpoint for the same reason but on a **5s** interval and with a body, because there the reply doubles as an early-end control channel (see `modules/learn-cron-dashboard.md` § Wait countdown and early end); this loop sends `{}` and ignores the reply, so 60s is sufficient.
-- `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()`.
+- `max_wait` defaults to 7200s (2 hours), clamped to `[60, 7200]`, and is configurable via the `KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT` environment variable. The deadline uses `time.monotonic()` and starts when the last submission step finishes.
 - Returns a newline-separated list of per-agent JSON results (`status`: `completed` / `error`), followed when they apply by the `still_running` envelope, the `queued` record of members not yet started, a `resume_pending` note and a `spawn_errors` record, all redacted for credentials and exfiltration URLs.
-- **The result is held until the parent holds its slot again.** A `subagent:<id>` parent yielded its lane slot for this wait (W3); once every child is settled the tool long-polls `GET /api/spawn/{parent}/resume?wait_secs=8` (`_hold_for_parent_resume`) until `granted` — each request is held server-side on the grant event, so there is no grant interval — bounded by the same `max_wait` deadline. `known=False` (finished run, other incarnation, legacy gateway error payload) and a chat-turn parent release the hold at once. If the deadline passes while the slot is still ungranted, the children's results are still returned, followed by `{"status": "resume_pending", "parent": id, "note": ...}`.
-- **The wait expiring is a fact about the call, not about the children.** When `max_wait` passes with sub-agents unsettled, the result ends with ONE envelope `{"status": "still_running", "task_ids": [...], "states": {id: "running" | "waiting_permission" | "waiting_to_resume"}, "waited_secs": N, "query": "spawn_status/spawn_list", "note": ...}`. Members accepted but not started are not in it: they are reported in the separate `{"status": "queued", "agents": {id: reason}}` record described above. Those children are NOT cancelled, NOT marked failed or timed out, NOT marked collected (so their completion events still inject), and keep their own execution budget (`subagent_timeout_secs`); the SEL outcome is `partial` with a `still_running` count. Settled siblings' results are still returned inline in the same reply.
+- **The result is held until the parent holds its slot again.** A `subagent:<id>` parent yielded its lane slot for this wait (W3); once every child is settled the tool long-polls `GET /api/spawn/{parent}/resume?wait_secs=8` (`_ResumeHold.probe`, one probe per deferred step) until `granted` — each request is held server-side on the grant event, so there is no grant interval — bounded by the same `max_wait` deadline. `known=False` (finished run, other incarnation, legacy gateway error payload) and a chat-turn parent release the hold at once. If the deadline passes while the slot is still ungranted, the children's results are still returned, followed by `{"status": "resume_pending", "parent": id, "note": ...}`.
+- **The wait expiring is a fact about the call, not about the children.** When `max_wait` passes with sub-agents unsettled, the result ends with ONE envelope `{"status": "still_running", "task_ids": [...], "states": {id: "running" | "waiting_permission" | "waiting_to_resume"}, "waited_secs": N, "query": "spawn_status/spawn_list", "note": ...}`. Members accepted but not started are not in it: they are reported in the separate `{"status": "queued", "agents": {id: reason}}` record described above. Those children are NOT cancelled, NOT marked failed or timed out, NOT marked collected (so their completion events still inject), and keep their own execution budget (`subagent_timeout_secs`); the tool invocation's terminal SEL row is `completed`, while the reply reports which children remain unfinished. Settled siblings' results are still returned inline in the same reply.
 
 Difference from `spawn_run`: `spawn_run` returns immediately and delivers
 results later via completion-event injection; `spawn_sub_agents` blocks and

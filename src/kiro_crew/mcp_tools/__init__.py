@@ -24,7 +24,10 @@ from __future__ import annotations
 
 import importlib
 import inspect
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from kiro_crew.mcp_shared import DeferredTool
 
 # Descriptor modules, in the order their tools are advertised.
 DOMAIN_MODULES: tuple[str, ...] = (
@@ -116,7 +119,7 @@ def _schemas_accepts_names_only(schemas: Any) -> bool:
         return False
 
 
-def dispatch(name: str, args: dict[str, Any]) -> str:
+def dispatch(name: str, args: dict[str, Any]) -> "str | DeferredTool":
     """Run the handler for *name*, or report the tool as unknown.
 
     Domains are searched in the order they are advertised. A name is claimed by

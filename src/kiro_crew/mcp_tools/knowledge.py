@@ -197,6 +197,12 @@ def schemas() -> list[dict[str, Any]]:
 # knows meaning-based (and CJK) matches were not tried.
 _KEYWORD_ONLY_NOTE = " (vector path unavailable; keyword results only)"
 
+#: Bound on the ``knowledge_add_document`` ingest POST: chunking, extraction and
+#: embedding of one document. A synchronous call on the pooled backend's worker,
+#: so it stays well under ``mcp_gateway.backend.PROGRESS_WEDGE_CEILING_SECS``
+#: (``test_mcp_gateway_inflight_report.py`` pins the relation).
+_ADD_DOCUMENT_TIMEOUT_SECS = 180.0
+
 
 def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
     args = validate_tool_args(args, LOCAL_KNOWLEDGE_SEARCH_SCHEMA)
@@ -348,7 +354,7 @@ def knowledge_add_document(name: str, args: dict[str, Any]) -> str:
             "reason": args.get("reason", ""),
             "source_uri": args.get("source_uri", ""),
         },
-        timeout=180,
+        timeout=_ADD_DOCUMENT_TIMEOUT_SECS,
     )
     # The title arrives straight from the tool call, so it reaches the audit
     # log before the server-side redaction the document body gets. SEL is

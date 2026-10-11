@@ -17,6 +17,7 @@ import asyncio
 import base64
 import binascii
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -47,6 +48,8 @@ from kiro_crew.json_line import (
 from kiro_crew.mcp_caller import (
     CALLER_CAPABILITY_KEY,
     CALLER_META_KEY,
+    INFLIGHT_CAPABILITY_KEY,
+    INFLIGHT_NOTIFICATION,
     TENANT_META_KEY,
     CallerContext,
     build_caller_meta,
@@ -243,6 +246,58 @@ PING_STALE_SECS = 150.0
 # that gap; the load-time clamp bounds how far.
 HARD_WEDGE_CEILING_SECS = float(SUBAGENT_TIMEOUT_SECS + 300)
 
+# The ceiling for a backend that REPORTS its in-flight progress
+# (``mcp_shared.INFLIGHT_CAPABILITY_KEY``): every call that legitimately runs
+# for a long time there is deferred and refreshes its own age every
+# ``INFLIGHT_REPORT_SECS``, so an age this old on such a backend is a call that
+# stopped progressing -- a worker call hung for a quarter of an hour, which no
+# shipped tool does on purpose (the longest synchronous one bounds itself at
+# 210s). Recycling then is the self-heal the 3h ceiling above cannot give.
+PROGRESS_WEDGE_CEILING_SECS = 900.0
+
+# How long a call a stub cancelled is remembered after the gateway drops it
+# from the pending table, so a progress frame or a log still tied to it is
+# dropped quietly instead of read as unattributable (a hazard that withdraws a
+# correct server's pooling recommendation). A server that honours the cancel
+# has nothing more to send; one that ignores it, as MCP allows, sends at most
+# one more progress frame per tick. The window only has to outlive the frames
+# already on the wire plus one tick of a slow server; a longer one would let a
+# progressToken reused by a later request that has already settled be
+# swallowed instead of flagged.
+CANCELLED_REQUEST_TOMBSTONE_SECS = 30.0
+
+# Upper bound on remembered cancelled calls. Same guard class as
+# ``_ORPHANED_LEASES_MAX``: entries are created by stub cancels, so a tenant
+# cancelling in a tight loop must not grow gateway memory without limit. Past
+# the cap the oldest entry is evicted, which risks at most one unfair hazard
+# row for a frame of that long-cancelled call.
+_CANCELLED_TOMBSTONES_MAX = 1024
+_PROGRESS_TOKEN_KEY_HEX_LEN = 32
+
+
+def _progress_token_key(token: Any) -> tuple[str, str] | None:
+    """Fingerprint client-chosen, transport-sized progress tokens.
+
+    Retention past a request's lifetime keeps only a fixed-size, type-preserving
+    key; live and tombstoned attribution compare that same representation.
+    """
+    if token is None:
+        return None
+    type_tag = "int" if isinstance(token, int) else "str" if isinstance(token, str) else "other"
+    digest = hashlib.sha256(repr(token).encode()).hexdigest()[:_PROGRESS_TOKEN_KEY_HEX_LEN]
+    return type_tag, digest
+
+
+def _stub_key(stub_uuid: str) -> str:
+    """Fingerprint a stub id for retention past the stub's own life.
+
+    A stub names itself at registration, so its id is transport-sized; a
+    tombstone keeps only this fixed-size digest, and attribution compares live
+    owners by the same digest before handing back the one live id.
+    """
+    return hashlib.sha256(stub_uuid.encode()).hexdigest()[:_PROGRESS_TOKEN_KEY_HEX_LEN]
+
+
 # Upper bound on a single stub's pending-delivery inbox. Backend->stub frames
 # are enqueued by the stdout pump without awaiting the stub's socket drain, so
 # a stub that has stopped reading must not let a chatty backend grow gateway
@@ -336,6 +391,34 @@ def _parse_initialize_response(response: dict[str, Any]) -> tuple[dict[str, Any]
     return result, supports_caller_identity
 
 
+def _reports_inflight(result: dict[str, Any]) -> bool:
+    """Whether a parsed ``initialize`` result advertises
+    ``mcp_shared.INFLIGHT_CAPABILITY_KEY`` under ``capabilities.experimental``."""
+    experimental = (result.get("capabilities") or {}).get("experimental") or {}
+    return isinstance(experimental, dict) and INFLIGHT_CAPABILITY_KEY in experimental
+
+
+def _inject_inflight_capability(msg: dict[str, Any]) -> dict[str, Any]:
+    """Return ``msg`` with ``capabilities.experimental[INFLIGHT_CAPABILITY_KEY]``
+    added to an ``initialize`` frame -- the gateway asking the backend to send
+    in-flight reports -- or ``msg`` unchanged when it is not a well-formed
+    initialize. Same copy discipline as :func:`_inject_client_extensions`."""
+    params = msg.get("params")
+    if not isinstance(params, dict):
+        return msg
+    out = dict(msg)
+    params = dict(params)
+    caps_raw = params.get("capabilities")
+    caps = dict(caps_raw) if isinstance(caps_raw, dict) else {}
+    exp_raw = caps.get("experimental")
+    experimental = dict(exp_raw) if isinstance(exp_raw, dict) else {}
+    experimental.setdefault(INFLIGHT_CAPABILITY_KEY, {})
+    caps["experimental"] = experimental
+    params["capabilities"] = caps
+    out["params"] = params
+    return out
+
+
 def _is_heartbeat_id(msg_id: Any) -> bool:
     """True if ``msg_id`` is the reserved heartbeat ping id (int or its
     string form, since some backends stringify response ids)."""
@@ -399,6 +482,11 @@ class _PendingRequest:
     original_id: Any
     method: str
     t_start_ms: float = 0.0
+    # Monotonic ms of the last in-flight report that named this request
+    # (``mcp_shared.INFLIGHT_NOTIFICATION``); 0 when never reported. The wedge
+    # detector ages a request from this rather than from ``t_start_ms``, so a
+    # parked call that keeps reporting never reads as hung.
+    t_progress_ms: float = 0.0
     # The request's ``params._meta.progressToken`` if it set one, so a
     # server-emitted ``notifications/progress`` can be routed back to the
     # owning stub instead of broadcast across co-pooled tenants.
@@ -914,6 +1002,10 @@ class Backend:
     created_at: float
     last_used_at: float
     supports_caller_identity: bool = False
+    # The backend advertised ``mcp_shared.INFLIGHT_CAPABILITY_KEY``: it sends
+    # ``notifications/kirocrew/inflight`` for its parked calls, so the wedge
+    # detector holds it to PROGRESS_WEDGE_CEILING_SECS instead of the 3h ceiling.
+    reports_inflight: bool = False
     # True only when the spawn that produced this process was Kiro Crew's own
     # packaged control plane -- the resolved command and args matched what the
     # managed spec emits, not merely a reserved server NAME. It gates the one
@@ -969,6 +1061,14 @@ class Backend:
     # original id restored.
     _forward_id_seq: int = 0
     _pending_requests: dict[str, "_PendingRequest"] = field(default_factory=dict)
+    # Calls a stub cancelled that left ``_pending_requests``:
+    # ``fid -> (progress_token_key, stub_uuid, expires_mono)``, see
+    # ``CANCELLED_REQUEST_TOMBSTONE_SECS``. Every entry gets the same TTL and
+    # dicts keep insertion order, so the oldest entry is always first and
+    # expires first.
+    _cancelled_tombstones: dict[str, tuple[tuple[str, str] | None, str, float]] = field(
+        default_factory=dict
+    )
     # Resource-subscription routing table: ``uri -> {stub_uuid}``, the set of
     # stubs whose ``resources/subscribe`` the server ACCEPTED. Grants are
     # recorded on the server's response, never at forward time, so an update
@@ -1748,6 +1848,28 @@ class Backend:
                         new_params = dict(_cparams)
                         new_params["requestId"] = cancel_fid
                         msg["params"] = new_params
+                        # The backend answers a cancelled call with NO
+                        # response, so the slot would otherwise age until the
+                        # wedge ceiling recycles the shared backend under every
+                        # co-tenant. A late response (the tool finished first)
+                        # takes the "response to unknown id" drop, as one to a
+                        # departed stub does; a late progress frame or log for
+                        # it is dropped by the tombstone check in
+                        # ``_route_backend_message``. A subscribe/unsubscribe
+                        # is kept: its verdict still settles the shared lease
+                        # tables.
+                        cancelled = self._pending_requests[cancel_fid]
+                        if not (
+                            cancelled.resource_uri
+                            and cancelled.method in (
+                                _RESOURCES_SUBSCRIBE_METHOD,
+                                _RESOURCES_UNSUBSCRIBE_METHOD,
+                            )
+                        ):
+                            self._pending_requests.pop(cancel_fid, None)
+                            self._remember_cancelled(
+                                cancel_fid, cancelled.progress_token, cancelled.stub_uuid
+                            )
             # Trust boundary: unconditionally strip any stub-supplied caller
             # identity on EVERY forwarded request regardless of method, then
             # inject the authoritative caller block when known.
@@ -1807,7 +1929,7 @@ class Backend:
         # MCP Apps: advertise the ui extension to the backend (no-op unless
         # the KIROCREW_MCP_APPS flag is on). Must follow the strip so the
         # injected frame is our copy, never the stub's.
-        forward_msg = _inject_client_extensions(forward_msg)
+        forward_msg = _inject_inflight_capability(_inject_client_extensions(forward_msg))
         self._upstream_init_frame = _without_id(forward_msg)
         forward_msg["id"] = fid
         self.touch()
@@ -1941,7 +2063,7 @@ class Backend:
             forward_msg = _strip_caller_meta(init_msg)
             # MCP Apps: same injection as _handle_initialize so a respawned
             # backend sees the identical ui capability (flag-gated no-op).
-            forward_msg = _inject_client_extensions(forward_msg)
+            forward_msg = _inject_inflight_capability(_inject_client_extensions(forward_msg))
             self._upstream_init_frame = _without_id(forward_msg)
             forward_msg["id"] = fid
             self.touch()
@@ -2715,6 +2837,12 @@ class Backend:
             await self._settle(pending, msg)
             return
         if method is not None and msg_id is None:
+            # Gateway-internal: the backend's in-flight report. Consumed here,
+            # never routed to a stub (it names gateway forward ids, which mean
+            # nothing to a stub and would read as an unattributable frame).
+            if method == INFLIGHT_NOTIFICATION:
+                self._apply_inflight_report(msg)
+                return
             # Subscription-scoped: ``notifications/resources/updated`` carries
             # no request id, so it is attributed by URI — delivered to every
             # stub subscribed to that URI and only those. This arm is
@@ -2759,6 +2887,17 @@ class Backend:
                 # Genuinely backend-wide state (identical for every tenant,
                 # e.g. tools/list_changed) — safe to fan out to all stubs.
                 await self._broadcast(msg)
+            elif self._is_cancelled_call_notification(msg):
+                # A frame for a call its stub cancelled (already on the wire,
+                # or from a server that ignores the cancel as MCP allows).
+                # Consulted only after ``_notification_owner`` found no
+                # unambiguous live owner across live requests and tombstones.
+                # The stub asked for the call to stop, so nothing is delivered,
+                # and the server did nothing wrong, so no hazard is recorded.
+                logger.debug(
+                    "backend pid=%s dropping %r for a cancelled call (no hazard)",
+                    self.pid, method,
+                )
             else:
                 # Unattributable request-scoped notification (progress/logging
                 # without a unique routing token, or a token that collided
@@ -2968,6 +3107,7 @@ class Backend:
         except ValueError as exc:
             await self._fail_init(str(exc))
             return
+        self.reports_inflight = _reports_inflight(result)
         self._init_result = result
         self._init_state = "ready"
         self._init_done_event.set()
@@ -3838,29 +3978,50 @@ class Backend:
             return set()
         return set(self._resource_subscriptions.get(uri, ()))
 
-    def _notification_owner(self, msg: dict[str, Any]) -> Optional[str]:
-        """Best-effort attribution of a server->client notification to the one
-        stub that owns the originating request, so a request-scoped
-        notification (progress, or a log tied to an in-flight call) is not
-        leaked to co-pooled tenants. Returns None for unattributable /
-        genuinely global notifications, which the caller broadcasts.
+    def _apply_inflight_report(self, msg: dict[str, Any]) -> None:
+        """Refresh ``t_progress_ms`` on every pending request the backend's
+        in-flight report names: its parked calls that are progressing and its
+        calls still queued behind the worker (never the one running there, so
+        the ceiling bounds one call's run). Unknown ids (already answered) are
+        ignored; a malformed report refreshes nothing."""
+        params = msg.get("params")
+        ids = params.get("requestIds") if isinstance(params, dict) else None
+        if not isinstance(ids, list):
+            return
+        now_ms = time.monotonic() * 1000.0
+        for rid in ids:
+            pending = self._pending_requests.get(str(rid))
+            if pending is not None:
+                pending.t_progress_ms = now_ms
 
-        progressToken collisions across tenants are possible (clients pick
-        their own), so only a UNIQUELY-owned token routes; an ambiguous token
-        falls through to broadcast (no worse than the pre-scoping behaviour)."""
+    def _notification_owner(self, msg: dict[str, Any]) -> Optional[str]:
+        """Attribute a request-scoped notification only to an unambiguous live
+        owner; cancellation removes a call from wedge aging, not attribution.
+
+        progressToken attribution includes live requests and unexpired
+        cancelled-call tombstones; only one owner with a live request routes.
+        Unattributable notifications return None for the caller to drop, while
+        genuinely global notifications follow its broadcast path."""
         params = msg.get("params")
         if not isinstance(params, dict):
             return None
         # progress notifications echo the request's progressToken.
-        token = params.get("progressToken")
-        if token is not None:
-            owners = {
+        key = _progress_token_key(params.get("progressToken"))
+        if key is not None:
+            self._prune_cancelled_tombstones(time.monotonic())
+            live_owners = {
                 p.stub_uuid
                 for p in self._pending_requests.values()
-                if p.progress_token == token and p.stub_uuid != "__init__"
+                if _progress_token_key(p.progress_token) == key and p.stub_uuid != "__init__"
             }
-            if len(owners) == 1:
-                return next(iter(owners))
+            owner_keys = {_stub_key(stub_uuid) for stub_uuid in live_owners} | {
+                stub_key
+                for cancelled_key, stub_key, _expires in self._cancelled_tombstones.values()
+                if cancelled_key == key
+            }
+            if len(owner_keys) == 1 and len(live_owners) == 1:
+                return next(iter(live_owners))
+            return None
         # logging / other notifications may carry _meta.relatedRequestId.
         meta = params.get("_meta")
         if isinstance(meta, dict):
@@ -3870,6 +4031,56 @@ class Backend:
                 if pending is not None and pending.stub_uuid != "__init__":
                     return pending.stub_uuid
         return None
+
+    def _prune_cancelled_tombstones(self, now: float) -> None:
+        """Drop expired cancelled-call entries. Every entry carries the same
+        TTL and the dict keeps insertion order, so expired ones lead."""
+        tombstones = self._cancelled_tombstones
+        while tombstones:
+            oldest = next(iter(tombstones))
+            if tombstones[oldest][2] > now:
+                break
+            del tombstones[oldest]
+
+    def _remember_cancelled(self, fid: str, progress_token: Any, stub_uuid: str) -> None:
+        """Remember a cancelled call for ``CANCELLED_REQUEST_TOMBSTONE_SECS``,
+        bounded by ``_CANCELLED_TOMBSTONES_MAX`` (oldest evicted first). Every
+        retained field is fixed-size: the gateway-minted forward id, the token
+        key and the stub key -- never the client's token or the stub's id."""
+        now = time.monotonic()
+        self._prune_cancelled_tombstones(now)
+        tombstones = self._cancelled_tombstones
+        tombstones.pop(fid, None)
+        while len(tombstones) >= _CANCELLED_TOMBSTONES_MAX:
+            del tombstones[next(iter(tombstones))]
+        tombstones[fid] = (
+            _progress_token_key(progress_token),
+            _stub_key(stub_uuid),
+            now + CANCELLED_REQUEST_TOMBSTONE_SECS,
+        )
+
+    def _is_cancelled_call_notification(self, msg: dict[str, Any]) -> bool:
+        """True when ``msg`` names a call its stub cancelled inside the
+        tombstone window: by that call's progressToken (never a None token),
+        or by ``_meta.relatedRequestId`` equal to its forwarded id."""
+        if not self._cancelled_tombstones:
+            return False
+        self._prune_cancelled_tombstones(time.monotonic())
+        params = msg.get("params")
+        if not isinstance(params, dict):
+            return False
+        key = _progress_token_key(params.get("progressToken"))
+        if key is not None and any(
+            cancelled_key == key
+            for cancelled_key, _stub_key_, _expires in self._cancelled_tombstones.values()
+        ):
+            return True
+        meta = params.get("_meta")
+        if isinstance(meta, dict):
+            related_id = meta.get("relatedRequestId")
+            if related_id is not None and str(related_id) in self._cancelled_tombstones:
+                return True
+        return False
 
     async def _maybe_intercept_ui_result(
         self, pending: _PendingRequest, msg: dict[str, Any]
@@ -4287,7 +4498,13 @@ class Backend:
         oldest_fid: Optional[str] = None
         oldest_pending: Optional[_PendingRequest] = None
         for fid, pending in self._pending_requests.items():
-            age = now - (pending.t_start_ms / 1000.0)
+            # A request the backend reported as still progressing is aged from
+            # that report: a parked ``wait`` is old, not stuck. "Reported" is
+            # the stamp being set, not it being the later of the two: a
+            # monotonic clock can read small (Windows counts from boot), so a
+            # start stamp can legitimately be below an unset 0.0.
+            since_ms = pending.t_progress_ms or pending.t_start_ms
+            age = now - (since_ms / 1000.0)
             if age > oldest_age:
                 oldest_age = age
                 oldest_fid = fid
@@ -4297,11 +4514,17 @@ class Backend:
             ping_age = now - self._last_ping_response_mono
             ping_stale = ping_age >= PING_STALE_SECS
 
-            # Hard ceiling: recycle regardless of ping freshness (pathological)
-            if oldest_age >= HARD_WEDGE_CEILING_SECS:
+            # Hard ceiling: recycle regardless of ping freshness (pathological).
+            # A backend that reports progress has refreshed every healthy
+            # long call's age above (parked and still-queued calls alike), so
+            # it is held to the short ceiling.
+            ceiling = (
+                PROGRESS_WEDGE_CEILING_SECS if self.reports_inflight else HARD_WEDGE_CEILING_SECS
+            )
+            if oldest_age >= ceiling:
                 self._dead_reason = (
                     f"wedged: in-flight request outstanding {oldest_age:.1f}s "
-                    f">= {HARD_WEDGE_CEILING_SECS:.0f}s hard ceiling "
+                    f">= {ceiling:.0f}s hard ceiling "
                     f"(ping_age={ping_age:.1f}s)"
                 )
                 logger.warning(
@@ -4814,7 +5037,7 @@ async def send_initialize(
         "method": "initialize",
         "params": {
             "protocolVersion": "2024-11-05",
-            "capabilities": {},
+            "capabilities": {"experimental": {INFLIGHT_CAPABILITY_KEY: {}}},
             "clientInfo": dict(client_info or {"name": "kirocrew-gateway", "version": "0"}),
         },
     }
@@ -4842,6 +5065,7 @@ async def send_initialize(
         ) from exc
 
     result, backend.supports_caller_identity = _parse_initialize_response(response)
+    backend.reports_inflight = _reports_inflight(result)
     # Seed the init cache so a multi-stub flow can replay the result to
     # later attachers without re-issuing the handshake. Single-stub callers
     # (the M1 path) never observe this cache but the tests that drive the

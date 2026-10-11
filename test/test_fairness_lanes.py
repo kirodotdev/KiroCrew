@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from overload_fakes import Clock, ManagerHarness, open_task_store
 
+from kiro_crew import mcp_shared
 from kiro_crew.dashboard.handlers import spawn_resume
 from kiro_crew.mcp_tools import spawn as spawn_tools
 from kiro_crew.subagent import SubagentInfo
@@ -863,6 +864,15 @@ class _Clock:
         return self.t
 
 
+def _hold_for_parent_resume(parent_session: str, deadline: float):
+    """Drive ``_ResumeHold`` probe by probe to its end, as the deferred step does."""
+    hold = spawn_tools._ResumeHold(parent_session, deadline)
+    while True:
+        done, note = hold.probe()
+        if done:
+            return note
+
+
 def test_hold_for_parent_resume_returns_when_granted(monkeypatch: pytest.MonkeyPatch) -> None:
     clock = _Clock()
     answers = [
@@ -879,8 +889,7 @@ def test_hold_for_parent_resume_returns_when_granted(monkeypatch: pytest.MonkeyP
 
     monkeypatch.setattr(spawn_tools.mcp_core, "_get", fake_get)
     monkeypatch.setattr(spawn_tools.mcp_core, "time", clock)
-    monkeypatch.setattr(spawn_tools, "is_tool_cancelled", lambda: False)
-    note = spawn_tools._hold_for_parent_resume("subagent:p1", clock.t + 60)
+    note = _hold_for_parent_resume("subagent:p1", clock.t + 60)
     assert note is None
     assert len(calls) == 3 and all(c.startswith("/api/spawn/p1/resume?wait_secs=") for c in calls)
     assert calls[0].endswith("8.0"), "each request is held server-side up to the bound"
@@ -895,11 +904,10 @@ def test_hold_for_parent_resume_deadline_reports_pending(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(spawn_tools.mcp_core, "_get", fake_get)
     monkeypatch.setattr(spawn_tools.mcp_core, "time", clock)
-    monkeypatch.setattr(spawn_tools, "is_tool_cancelled", lambda: False)
-    note = spawn_tools._hold_for_parent_resume("subagent:p1", clock.t + 20)
+    note = _hold_for_parent_resume("subagent:p1", clock.t + 20)
     assert note is not None and note["status"] == "resume_pending" and note["parent"] == "p1"
     # A deadline already spent on the children observes nothing about the slot.
-    assert spawn_tools._hold_for_parent_resume("subagent:p1", clock.t - 1) is None
+    assert _hold_for_parent_resume("subagent:p1", clock.t - 1) is None
 
 
 def test_hold_for_parent_resume_skips_chat_parents_and_unknown_runs(
@@ -914,15 +922,21 @@ def test_hold_for_parent_resume_skips_chat_parents_and_unknown_runs(
 
     monkeypatch.setattr(spawn_tools.mcp_core, "_get", fake_get)
     monkeypatch.setattr(spawn_tools.mcp_core, "time", clock)
-    monkeypatch.setattr(spawn_tools, "is_tool_cancelled", lambda: False)
-    assert spawn_tools._hold_for_parent_resume("dashboard:abc", clock.t + 60) is None
-    assert spawn_tools._hold_for_parent_resume("", clock.t + 60) is None
+    assert _hold_for_parent_resume("dashboard:abc", clock.t + 60) is None
+    assert _hold_for_parent_resume("", clock.t + 60) is None
     assert calls == []
-    assert spawn_tools._hold_for_parent_resume("subagent:gone", clock.t + 60) is None
+    assert _hold_for_parent_resume("subagent:gone", clock.t + 60) is None
     assert len(calls) == 1
     # Legacy gateway without the route: an error payload releases the hold.
     monkeypatch.setattr(spawn_tools.mcp_core, "_get", lambda *a, **k: {"error": "not found"})
-    assert spawn_tools._hold_for_parent_resume("subagent:p1", clock.t + 60) is None
+    assert _hold_for_parent_resume("subagent:p1", clock.t + 60) is None
+
+
+def _settle(result: "str | mcp_shared.DeferredTool") -> str:
+    """The handler's text: a deferred wait is driven inline, as kiro-cli sees it."""
+    if isinstance(result, mcp_shared.DeferredTool):
+        return mcp_shared.drive_deferred(result, clock=spawn_tools.mcp_core.time)
+    return result
 
 
 def test_spawn_sub_agents_holds_then_returns_children_results() -> None:
@@ -941,8 +955,10 @@ def test_spawn_sub_agents_holds_then_returns_children_results() -> None:
         patch("kiro_crew.mcp_core.sel"),
         patch.dict("os.environ", {"KIROCREW_SESSION_KEY": "subagent:p9"}),
     ):
-        out = spawn_tools.spawn_sub_agents(
-            "spawn_sub_agents", {"agents": [{"agent_or_mode": "w", "prompt": "do"}]}
+        out = _settle(
+            spawn_tools.spawn_sub_agents(
+                "spawn_sub_agents", {"agents": [{"agent_or_mode": "w", "prompt": "do"}]}
+            )
         )
     assert '"completed"' in out and "resume_pending" not in out
     holds = [p for p in seen if p.startswith("/api/spawn/p9/resume")]

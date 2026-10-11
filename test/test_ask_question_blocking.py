@@ -28,9 +28,19 @@ import kiro_crew.mcp_core as mcp_core
 from kiro_crew import session_directive
 from kiro_crew.dashboard.interaction_coordinator import QuestionCoordinator
 from kiro_crew.mcp_core import _call_tool_inner
+from kiro_crew.mcp_shared import DeferredTool, drive_deferred
 from kiro_crew.mcp_tools import control
 
 SK = "dashboard:chat-1"
+
+
+def _ask() -> str:
+    """Call the tool and drive its parked wait to the text kiro-cli receives."""
+    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    if isinstance(result, DeferredTool):
+        return drive_deferred(result, clock=mcp_core.time)
+    return result
+
 
 QUESTIONS = [
     {
@@ -64,10 +74,12 @@ class _FakeGateway:
         self.opens = list(opens or [])
         self.waits = list(waits)
         self.posts: list[tuple[str, dict, str | None]] = []
+        self.timeouts: dict[str, float] = {}
         self.ask_id = ""
 
     def __call__(self, path, body=None, *, timeout=30, session_key=None):
         self.posts.append((path, body or {}, session_key))
+        self.timeouts[path] = timeout
         if path == "/api/agent-ask/open":
             self.ask_id = (body or {}).get("ask_id", "")
             reply = self.opens.pop(0) if self.opens else self.open_reply
@@ -104,7 +116,7 @@ ANSWERED = {
 def test_answers_come_back_as_the_tool_result(dashboard_session):
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"status": "pending"}, ANSWERED])
     _install(dashboard_session, gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert result == (
         'User has answered your questions:\n"Which colour?" -> "Red"\n"Toppings?" -> "Cheese, Olives"'
     )
@@ -192,7 +204,7 @@ def test_a_credential_shaped_answer_survives_the_transport_redaction():
 def test_every_call_is_addressed_by_the_attested_session(dashboard_session):
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [ANSWERED])
     _install(dashboard_session, gw)
-    _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    _ask()
     assert gw.posts and all(sk == SK for _, _, sk in gw.posts)
 
 
@@ -200,7 +212,7 @@ def test_the_wait_carries_no_slice_the_server_would_honour(dashboard_session):
     """The slice is the gateway's constant; the tool sends an empty body."""
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"status": "pending"}, ANSWERED])
     _install(dashboard_session, gw)
-    _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    _ask()
     assert [b for p, b, _ in gw.posts if p.endswith("/wait")] == [{}, {}]
 
 
@@ -209,7 +221,7 @@ def test_a_keepalive_precedes_every_wait_slice(dashboard_session):
     slices is what lets the card wait for a person rather than a transport."""
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"status": "pending"}] * 3 + [ANSWERED])
     _install(dashboard_session, gw)
-    _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    _ask()
     paths = [p for p, _, _ in gw.posts if p != "/api/agent-ask/open"]
     waits = [i for i, p in enumerate(paths) if p.endswith("/wait")]
     assert len(waits) == 4
@@ -221,7 +233,7 @@ def test_only_the_servers_copy_of_a_question_is_quoted(dashboard_session):
     reply = dict(ANSWERED, answers={**ANSWERED["answers"], "Injected?": "yes"})
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [reply])
     _install(dashboard_session, gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert "Injected?" not in result
 
 
@@ -237,7 +249,7 @@ def test_only_the_servers_copy_of_a_question_is_quoted(dashboard_session):
 def test_each_ending_is_told_apart(dashboard_session, status, phrase):
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"status": status}])
     _install(dashboard_session, gw)
-    assert phrase in _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    assert phrase in _ask()
 
 
 def test_no_attached_client_says_the_card_could_not_be_shown(dashboard_session):
@@ -245,7 +257,7 @@ def test_no_attached_client_says_the_card_could_not_be_shown(dashboard_session):
     (ask in text), never a directive whose answer would return as a user message."""
     gw = _FakeGateway({"ask_id": "", "clients": 0}, [])
     _install(dashboard_session, gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert session_directive.decode(result, "ask_question") is None
     assert "could not be shown: no dashboard window is open" in result
     assert not any(p == "/api/session-directive" for p, _, _ in gw.posts)
@@ -257,7 +269,7 @@ def test_unattested_caller_never_opens_a_blocking_ask(monkeypatch):
     monkeypatch.setattr(mcp_core, "_resolve_session_key_strict", lambda: "")
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [ANSWERED])
     monkeypatch.setattr(mcp_core, "_post", gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert "only works from a dashboard chat session" in result
     assert gw.posts == []
 
@@ -268,39 +280,43 @@ def test_a_forgotten_ask_reports_withdrawn_instead_of_hanging(dashboard_session)
         [{"error": "nope", "code": "question_not_found"}],
     )
     _install(dashboard_session, gw)
-    assert "withdrawn" in _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    assert "withdrawn" in _ask()
 
 
 def test_exhausted_wait_retries_withdraw_the_card(dashboard_session):
     waits = [{"error": "boom"}] * control.ASK_WAIT_MAX_ERRORS
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, waits)
     _install(dashboard_session, gw)
-    assert "withdrawn" in _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    assert "withdrawn" in _ask()
     assert (f"/api/agent-ask/{gw.ask_id}/withdraw", {}, SK) in gw.posts
 
 
 def test_transport_blips_are_retried_before_giving_up(dashboard_session):
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"error": "reset"}] * 3 + [ANSWERED])
     _install(dashboard_session, gw)
-    assert _call_tool_inner("ask_question", {"questions": QUESTIONS}).startswith(
-        "User has answered"
-    )
+    assert _ask().startswith("User has answered")
 
 
 def test_cancellation_withdraws_the_card(dashboard_session):
+    """The wait is a deferred tool the dispatch loop parks; a cancel reaches it
+    as the deferred's ``cancel`` hook, which must withdraw the card."""
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [])
     _install(dashboard_session, gw)
-    dashboard_session.setattr(control, "is_tool_cancelled", lambda: True)
-    with pytest.raises(control.ToolCancelled):
-        _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    parked = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    assert isinstance(parked, DeferredTool)
+    assert parked.step() is None  # one pending slice
+    parked.cancel()
     assert (f"/api/agent-ask/{gw.ask_id}/withdraw", {}, SK) in gw.posts
+    # The hook runs on the dispatch loop's thread, so the withdraw carries the
+    # short keepalive bound rather than ``_post``'s default.
+    assert gw.timeouts[f"/api/agent-ask/{gw.ask_id}/withdraw"] == control._WAIT_PING_TIMEOUT_SECS
 
 
 def test_a_lost_open_reply_is_retried_with_the_same_id(dashboard_session):
     lost = {"error": "timed out", "transport_error": True}
     gw = _FakeGateway({"ask_id": "x", "clients": 1}, [ANSWERED], opens=[lost])
     _install(dashboard_session, gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert result.startswith("User has answered")
     ids = [b["ask_id"] for p, b, _ in gw.posts if p == "/api/agent-ask/open"]
     assert len(ids) == 2 and ids[0] == ids[1] and len(ids[0]) == 32
@@ -310,9 +326,7 @@ def test_an_open_whose_every_reply_was_lost_collects_the_card_by_its_id(dashboar
     lost = {"error": "timed out", "transport_error": True}
     gw = _FakeGateway(lost, [ANSWERED])
     _install(dashboard_session, gw)
-    assert _call_tool_inner("ask_question", {"questions": QUESTIONS}).startswith(
-        "User has answered"
-    )
+    assert _ask().startswith("User has answered")
     assert any(p == f"/api/agent-ask/{gw.ask_id}/wait" for p, _, _ in gw.posts)
 
 
@@ -320,7 +334,7 @@ def test_an_unconfirmed_open_the_gateway_never_saw_is_reported_not_shown(dashboa
     lost = {"error": "timed out", "transport_error": True}
     gw = _FakeGateway(lost, [{"error": "gone", "code": "question_not_found"}])
     _install(dashboard_session, gw)
-    result = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    result = _ask()
     assert "could not be shown" in result and "withdrawn" not in result
 
 
@@ -885,7 +899,7 @@ def test_answer_endpoint_keeps_a_queued_send_apart_from_a_dismissal(
 def test_a_queued_reply_is_told_apart_in_the_tool_result(dashboard_session):
     gw = _FakeGateway({"ask_id": "a1", "clients": 1}, [{"status": "queued"}])
     _install(dashboard_session, gw)
-    out = _call_tool_inner("ask_question", {"questions": QUESTIONS})
+    out = _ask()
     assert "queued" in out and "once this turn ends" in out
     assert "dismissed" not in out and "follows as the next user message" not in out
 
