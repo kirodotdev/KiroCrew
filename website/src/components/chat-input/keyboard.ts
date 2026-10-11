@@ -12,7 +12,7 @@ import type { usePromptHistory } from './draftHistory'
 import type { PromptHistoryItem } from '../composerPromptHistory'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { MentionKeyMods } from './props'
-import { applyTextareaListBreak } from './listContinuation'
+import { applyTextareaListBreak, isAndroid } from './listContinuation'
 
 /* The composer's keyboard and focus: autofocus on a session switch, the
    global `/` shortcut, the textarea's keydown (raw paste, undo, token keys,
@@ -260,21 +260,123 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
   }, [rawPasteRef, handleUndoKey, endUndoBurst, handleTokenKey, onMentionKey, promptOptimizer, connected, optimizePrompt, sendOnEnter, onChange, valueFromUserRef, optimizingRef, fireComposer, ime, sentMessages, onEditLastRequest, anyPickerOpenRef, promptHistory, valueRef, inputRef, pasteBlocksRef])
 }
 
+/** The `beforeinput` inputTypes the mention value-change seam handles: a
+ *  selection-replacing insert (type / paste / drop / autocorrect) or a delete.
+ *  Composition and formatting inputTypes are deliberately absent. */
+const EDIT_INPUT_TYPES = new Set([
+  'insertText', 'insertFromPaste', 'insertFromDrop', 'insertReplacementText',
+  'deleteByCut', 'deleteContentBackward', 'deleteContentForward', 'deleteContent',
+  'deleteWordBackward', 'deleteWordForward',
+])
+
 /** The editor's change handlers. Both mark the edit as the user's (the undo
  *  recorder tells it apart from a draft restore), hand the text to the host,
  *  open whichever picker the text at the caret calls for, and publish the
  *  caret the dictation splice reads. */
-export function useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef }: {
+export function useEditorInput({ onChange, valueFromUserRef, openPickersForText, recordCaret, lexicalControlRef, voiceCaretRef, mentionEditRange, inputRef }: {
   onChange: (v: string) => void
   valueFromUserRef: React.MutableRefObject<boolean>
   openPickersForText: (text: string, before: string) => void
   recordCaret: () => void
   lexicalControlRef: React.RefObject<ComposerControl>
   voiceCaretRef: Partial<ComposerVoiceInputProps>['voiceCaretRef']
+  /** The value-change seam (#18263), structural. Given the pre-edit text and
+   *  the selection [s, e) the browser is about to replace, returns that range
+   *  EXPANDED to cover the whole of every staged `@mention` it cuts into, or
+   *  null when it touches none (then the browser's own edit is left alone).
+   *  Textarea only — the Lexical composer is tracked separately (#18186). */
+  mentionEditRange?: (text: string, selStart: number, selEnd: number) => { start: number; end: number } | null
+  inputRef: React.RefObject<HTMLTextAreaElement>
 }) {
+  const detachRef = useRef<(() => void) | null>(null)
+  // The value-change seam, done ENTIRELY in a NATIVE `beforeinput` listener
+  // from the event's own inputType + the pre-edit selection (React 18's
+  // synthetic onBeforeInput is unreliable, so the composer hooks the native
+  // event — same pattern as list continuation). For an edit whose selection
+  // cuts into a staged mention, expand the replaced range to the whole
+  // mention(s), preventDefault the browser's partial edit, and apply the whole
+  // replacement through the controlled onChange path. No after-the-fact diff of
+  // before/after text exists anywhere, so the reconstruction corner cases a
+  // diff kept re-opening (prefix-sharing paste, duplicate mention, left-boundary
+  // rebuild, rAF clobber) cannot arise.
+  const beforeInputRef = useCallback((textarea: HTMLTextAreaElement | null) => {
+    detachRef.current?.()
+    detachRef.current = null
+    if (!textarea) return
+    const onBeforeInput = (e: InputEvent) => {
+      // Composition stays hands-off: rewriting the textarea mid-composition
+      // desyncs the composition range (a CJK type-over over a mention would be
+      // corrupted). insertCompositionText / isComposing fall through to the
+      // browser; the mention is reconciled on a later non-composing edit.
+      if (e.isComposing || e.inputType === 'insertCompositionText') return
+      // A non-cancelable beforeinput cannot be stopped: on Chromium Android an
+      // IME edit (e.g. a Backspace inside a mention, delivered as a
+      // non-cancelable `deleteContentBackward` the keyCode-229 keydown path also
+      // misses) arrives this way, so `preventDefault()` is a no-op and the
+      // browser applies its own partial edit ON TOP of this seam's `onChange`
+      // rewrite, corrupting the draft and leaving `pendingSeamCaretRef` pointing
+      // at a value that never landed. Stand down and let the browser own the
+      // edit — the same guard the list-continuation sibling uses.
+      if (!e.cancelable || isAndroid()) return
+      if (!mentionEditRange || !EDIT_INPUT_TYPES.has(e.inputType)) return
+      const s = textarea.selectionStart ?? 0
+      const en = textarea.selectionEnd ?? s
+      // The seam only reconciles a SELECTION-replacing edit (cut / type-over /
+      // paste-over / drop over a range). A non-delete edit with a COLLAPSED
+      // caret is a plain insertion the user is making INSIDE or beside a
+      // mention — typing a character at `@src/|main.ts` must insert that
+      // character, not expand the empty range to the whole mention and delete
+      // it (GPT 6.1 review). Leave a collapsed insertion to the browser; a
+      // collapsed Backspace/Delete is already handled atomically by the keydown
+      // path (`onMentionKey`), so the seam does not need to act on it here
+      // either.
+      const isDeleteType = e.inputType.startsWith('delete')
+      if (s === en && !isDeleteType) return
+      const text = textarea.value
+      const range = mentionEditRange(text, s, en)
+      if (!range) return // selection touches no staged mention — let the browser edit
+      // The data this edit inserts in place of the selection. A delete inserts
+      // nothing; insertText/replacement carry `data`; a paste/drop carries
+      // `data` too (plain text) or, when the browser only exposes it on the
+      // DataTransfer, `dataTransfer.getData('text')`.
+      const data = e.data ?? e.dataTransfer?.getData('text') ?? ''
+      // FAIL-SAFE (Design review): an INSERT whose data this engine did not put
+      // on the event (both `data` and `dataTransfer` empty) must NOT be rewritten
+      // — doing so would delete the mention AND drop the user's inserted text,
+      // which is worse than the half-reference this fixes. Fall back to the
+      // browser's own edit instead: unknown shape -> do nothing, so the result
+      // degrades to the pre-existing recoverable behaviour, never silent loss.
+      // (A delete legitimately carries no data, so the guard is insert-only.)
+      if (!isDeleteType && data === '') return
+      // deleteByCut must still put the selected text on the clipboard. The
+      // browser's own `cut` writes it before this `beforeinput`, so letting the
+      // range expand and preventing only the delete keeps the clipboard intact;
+      // we never read or clear the clipboard here.
+      e.preventDefault()
+      const next = text.slice(0, range.start) + data + text.slice(range.end)
+      const caret = range.start + data.length
+      valueFromUserRef.current = true
+      onChange(next)
+      // We prevented the browser's edit, so no `input`/`change` event follows —
+      // this path owns everything `handleTextareaChange` would do. After the
+      // controlled value commits, restore the caret (guarded: only while the
+      // live value still equals `next`, so a newer edit that landed first is
+      // never clobbered), open whichever picker the caret calls for, and
+      // publish the caret the dictation splice reads.
+      requestAnimationFrame(() => {
+        const el = inputRef.current
+        if (el && el.value === next) el.setSelectionRange(caret, caret)
+      })
+      openPickersForText(next, next.slice(0, caret))
+      recordCaret()
+    }
+    textarea.addEventListener('beforeinput', onBeforeInput as EventListener)
+    detachRef.current = () => textarea.removeEventListener('beforeinput', onBeforeInput as EventListener)
+  }, [mentionEditRange, onChange, valueFromUserRef, inputRef, openPickersForText, recordCaret])
   const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
     valueFromUserRef.current = true // real DOM edit, not a parent-driven draft restore
-    const val = e.target.value; onChange(val)
+    const val = e.target.value
+    onChange(val)
     openPickersForText(val, val.slice(0, e.target.selectionStart ?? val.length))
     recordCaret()
   }, [onChange, openPickersForText, recordCaret, valueFromUserRef])
@@ -286,5 +388,6 @@ export function useEditorInput({ onChange, valueFromUserRef, openPickersForText,
     openPickersForText(nextValue, nextValue.slice(0, caret))
     if (selection && voiceCaretRef) voiceCaretRef.current = selection
   }, [onChange, openPickersForText, voiceCaretRef, valueFromUserRef, lexicalControlRef])
-  return { handleTextareaChange, handleLexicalChange }
+  useEffect(() => () => { detachRef.current?.(); detachRef.current = null }, [])
+  return { handleTextareaChange, handleLexicalChange, beforeInputRef }
 }

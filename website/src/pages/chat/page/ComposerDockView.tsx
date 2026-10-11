@@ -196,6 +196,7 @@ interface ComposerDockViewProps {
   handleAddToContext: (absPath: string, kind: 'file' | 'dir', dropAt?: number | null) => void
   mentionKeyEdit: ReturnType<typeof useFileMentionActions>['mentionKeyEdit']
   optimizerMentionGuard: (draft: string) => (rewrite: string) => boolean
+  mentionEditRange: ReturnType<typeof useFileMentionActions>['mentionEditRange']
   removeDirChip: (rel: string) => void
   removeFileChip: (p: string) => void
   selectPickedFile: ReturnType<typeof useFileMentionActions>['selectPickedFile']
@@ -266,7 +267,7 @@ export default function ComposerDockView({
   handleFileOpen, handleOptimizeResult, search, tabsCtl, uploadCount, sendHeld, composerBandRef, scrollBottom, handleResumeSession, composerRootChange, composerUserEdit, followUpMulti,
   followUpOptions, followUpPicked, followUpPickedRef, followUpSourceKey, toggleFollowUpOption, dashCfg, jevAutoConsented, refusedPress, setRefusedPress, send, pickModel, setProject, switchAgent,
   currentSlot, activeFolderName, anchorSessionControl, openSessionControl, refreshSessionControlStatuses, sessionControlKey, sessionControlRect, sessionControls, setOpenSessionControl,
-  activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
+  activeAgentName, attachmentAnnouncement, clampOutOfTokens, handleAddToContext, mentionKeyEdit, optimizerMentionGuard, mentionEditRange, removeDirChip, removeFileChip, selectPickedFile, followupAddToSession,
   followupStartInNewChat, followupStartInWorktree, displayMode, _modelPinActive, _modelPinAgent, _modelPinPinned, _pinShownModel, _slotProject, defaultEffort, effectiveEffort, effortLevelsOverride,
   effortSupported, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
@@ -508,6 +509,7 @@ export default function ComposerDockView({
               clampDropOffset={clampOutOfTokens}
               onMentionKey={mentionKeyEdit}
               optimizerMentionGuard={optimizerMentionGuard}
+              mentionEditRange={mentionEditRange}
               project={currentSlot?.project || ''}
               projectBranch={projectBranch}
               projectDetached={!projectGitError && !!projectGit?.detached}

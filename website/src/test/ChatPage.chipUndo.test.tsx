@@ -669,6 +669,359 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
     // ...but the user's typed draft the gate protects is untouched.
     expect(ta.value).toContain('keep me')
   })
+  // #18263: the keydown atomic delete covers Backspace/Delete only. A staged
+  // mention erased through the textarea's VALUE-CHANGE seam -- a type-over, a
+  // cut, or a paste-over, where a selection overlapping the mention is replaced
+  // in one `change` event -- is not a keydown. The seam handles it STRUCTURALLY
+  // in a native `beforeinput` listener: it reads the pre-edit selection, and if
+  // that selection cuts into a staged mention it expands the replaced range to
+  // the whole mention, preventDefault's the browser's partial edit, and applies
+  // the whole replacement through the controlled value. No after-the-fact diff.
+
+  // Drive one real selection-replace edit the way the browser delivers it: set
+  // the selection [selStart, selEnd), then dispatch a native `beforeinput`
+  // InputEvent carrying the edit's own inputType and inserted `data`. The
+  // component (not the test) computes the resulting value, exactly as in a
+  // browser. jsdom supports InputEvent.inputType/data; it has no fireEvent
+  // helper for beforeinput, so dispatch the native event directly.
+  function seamEdit(ta: HTMLTextAreaElement, selStart: number, selEnd: number, inputType: string, data: string | null) {
+    ta.setSelectionRange(selStart, selEnd)
+    ta.dispatchEvent(new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', {
+      bubbles: true, cancelable: true, inputType, data: data ?? undefined,
+    }))
+  }
+
+  // Type-over: select the mention's tail and type `x` over it. The seam expands
+  // to the whole mention and replaces it with `x`, so no `@src/` half-reference
+  // survives and the chip unstages. (On origin/main the native edit left
+  // `@src/x` and silently unstaged the chip.)
+  it('typing over a selection that overlaps a staged mention removes the whole mention (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertText', 'x')
+
+    await waitFor(() => expect(ta.value).toBe('please review x for the bug'))
+    expect(ta.value).not.toContain('@src/')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+    const llm = await send(ta)
+    expect(llm).not.toMatch(/\[attached_file \d\]/)
+    expect(llm).not.toContain('@src/')
+  })
+
+  // Cut (deleteByCut): a selection overlapping the mention is cut. The seam
+  // expands to the whole mention and removes it (empty inserted data); the
+  // clipboard is written by the browser's own cut, which this does not touch.
+  it('cutting a selection that overlaps a staged mention removes the whole mention (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts for'.length
+    seamEdit(ta, selStart, selEnd, 'deleteByCut', null)
+
+    // Whole mention gone; `for` (inside the selection) gone too; no `@src/`.
+    await waitFor(() => expect(ta.value).toBe('please review  the bug'))
+    expect(ta.value).not.toContain('@src/')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+    const llm = await send(ta)
+    expect(llm).not.toMatch(/\[attached_file \d\]/)
+  })
+
+  // Paste-over (insertFromPaste): paste text over a selection overlapping the
+  // mention. The seam expands to the whole mention and replaces it with the
+  // pasted text; no `@src/` fragment survives.
+  it('pasting over a selection that overlaps a staged mention removes the whole mention (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertFromPaste', 'README.md')
+
+    await waitFor(() => expect(ta.value).toBe('please review README.md for the bug'))
+    expect(ta.value).not.toContain('@src/')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+    const llm = await send(ta)
+    expect(llm).not.toMatch(/\[attached_file \d\]/)
+  })
+
+  // Pasting text that STARTS with the mention's own characters keeps the whole
+  // paste: the inserted data comes straight from the event, never inferred from
+  // a text diff that would read the shared `main.` as unchanged and drop it.
+  it('pasting text sharing the mention\'s prefix keeps the whole paste (#18263, no data loss)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertFromPaste', 'main.py')
+
+    await waitFor(() => expect(ta.value).toBe('please review main.py for the bug'))
+    expect(ta.value).not.toContain('@src/')
+    expect(ta.value).toContain('main.py')
+  })
+
+  // Selecting the ENTIRE mention and typing `@`: the selection fully COVERS the
+  // mention (its boundaries are not strictly inside), so the seam expands
+  // nothing and the browser's own edit runs. The chip reconciliation then
+  // unstages the chip because `@` is not a staged alias. No data is lost.
+  it('typing @ over a fully selected mention keeps the typed @ and unstages (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Fully covering selection -> seam no-ops -> native edit; model the native result.
+    ta.setSelectionRange('please review '.length, 'please review @src/main.ts'.length)
+    ta.dispatchEvent(new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: '@' }))
+    fireEvent.change(ta, { target: { value: 'please review @ for the bug', selectionStart: 'please review @'.length, selectionEnd: 'please review @'.length } })
+
+    expect(ta.value).toBe('please review @ for the bug')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // While an IME composition is live, the seam must stay hands-off: an
+  // insertCompositionText beforeinput (or isComposing) is left to the browser,
+  // so a CJK type-over over a mention is not corrupted mid-composition.
+  it('a composition edit over a staged mention does not corrupt the composed text (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    ta.setSelectionRange(selStart, selEnd)
+    fireEvent.compositionStart(ta)
+    // insertCompositionText beforeinput: the seam ignores it (no preventDefault).
+    const ev = new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertCompositionText', data: '\u3042', isComposing: true })
+    ta.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    // The browser then applies the composition; model that native result.
+    fireEvent.change(ta, { target: { value: 'please review @src/\u3042 for the bug', selectionStart: 'please review @src/\u3042'.length, selectionEnd: 'please review @src/\u3042'.length } })
+    expect(ta.value).toBe('please review @src/\u3042 for the bug')
+  })
+
+  // An edit that does NOT touch the mention leaves it (and its chip) alone --
+  // the seam only acts on a selection that cuts into a staged mention.
+  it('an edit elsewhere in the text leaves an untouched staged mention and its chip (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Type-over `bug` (far from the mention) with `issue`: seam no-ops, native edit.
+    ta.setSelectionRange('please review @src/main.ts for the '.length, 'please review @src/main.ts for the bug'.length)
+    ta.dispatchEvent(new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: 'issue' }))
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the issue', selectionStart: 40, selectionEnd: 40 } })
+
+    expect(ta.value).toContain('@src/main.ts')
+    expect(screen.getByLabelText('Remove')).toBeInTheDocument()
+    const llm = await send(ta)
+    expect(llm).toContain('[attached_file 1] /repo/src/main.ts')
+  })
+
+  // A cut whose selection fully COVERS the mention (plus surrounding text) is a
+  // clean whole removal: the boundaries are not strictly inside the mention, so
+  // the seam expands nothing and the browser's own delete runs. The chip
+  // unstages because the mention is gone.
+  it('cutting a selection that fully covers a staged mention removes it cleanly (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Selection `review @src/main.ts for` fully covers the mention (starts
+    // before the `@`, ends after the mention) -> seam no-ops, native cut.
+    ta.setSelectionRange('please '.length, 'please review @src/main.ts for'.length)
+    ta.dispatchEvent(new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'deleteByCut', data: null as unknown as string }))
+    fireEvent.change(ta, { target: { value: 'please  the bug', selectionStart: 'please '.length, selectionEnd: 'please '.length } })
+
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+    expect(ta.value).toBe('please  the bug')
+    const llm = await send(ta)
+    expect(llm).not.toMatch(/\[attached_file \d\]/)
+  })
+
+  // Left-boundary rebuild: select `review @` (so the selection's end is strictly
+  // inside the mention, cutting it) and type `@`. The seam expands to the whole
+  // mention and replaces it with the typed `@`, so the unselected `src/main.ts`
+  // tail cannot survive as a half-reference. (A per-span survival diff missed
+  // this; the structural range-expansion handles it directly.)
+  it('typing @ over a selection whose end cuts into the mention removes it whole (#18263, left-boundary rebuild)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please '.length // start of `review`
+    const selEnd = 'please review @'.length // just past the mention's `@` (strictly inside)
+    seamEdit(ta, selStart, selEnd, 'insertText', '@')
+
+    // Whole mention removed; the typed `@` kept; no `src/main.ts` fragment.
+    await waitFor(() => expect(ta.value).toBe('please @ for the bug'))
+    expect(ta.value).not.toContain('src/main.ts')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // Drop (insertFromDrop): dropping text over a selection overlapping the
+  // mention expands to the whole mention and replaces it with the dropped text.
+  it('dropping text over a selection that overlaps a staged mention removes the whole mention (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertFromDrop', 'dropped')
+
+    await waitFor(() => expect(ta.value).toBe('please review dropped for the bug'))
+    expect(ta.value).not.toContain('@src/')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // insertReplacementText (autocorrect / spellcheck replace) over a selection
+  // overlapping the mention is handled the same way.
+  it('an autocorrect replacement over a staged mention removes the whole mention (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertReplacementText', 'fixed')
+
+    await waitFor(() => expect(ta.value).toBe('please review fixed for the bug'))
+    expect(ta.value).not.toContain('@src/')
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+  })
+
+  // A keystroke that lands right after a seam edit is not clobbered: the seam
+  // applies through the controlled value and restores the caret only while the
+  // live value still matches, so a newer edit always wins.
+  it('a keystroke right after a seam edit is not clobbered (#18263, no data loss)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertText', 'x')
+    await waitFor(() => expect(ta.value).toBe('please review x for the bug'))
+    // A second character lands before the seam's caret-restore frame runs.
+    const caret = 'please review x'.length
+    fireEvent.change(ta, { target: { value: 'please review xy for the bug', selectionStart: caret + 1, selectionEnd: caret + 1 } })
+    await new Promise(r => requestAnimationFrame(() => r(null)))
+    expect(ta.value).toBe('please review xy for the bug')
+  })
+
+  // When the SAME mention is staged twice, a selection that cuts into the first
+  // occurrence while the edit rebuilds a complete mention must NOT delete the
+  // other, still-intact occurrence. Structurally the seam only expands and
+  // replaces the range that actually cuts a mention; the unselected second
+  // occurrence is outside the replaced range and is preserved.
+  it('a cut into one of two identical mentions keeps the other intact occurrence (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: '@src/main.ts @src/main.ts' } })
+    await waitFor(() => expect(ta.value).toBe('@src/main.ts @src/main.ts'))
+    await screen.findByLabelText('Remove')
+    // Select from strictly inside the FIRST mention to the end of the SECOND and
+    // paste `main.ts @src/main.ts` back -> the net text is unchanged, but the
+    // first mention was cut, so the seam expands [5, end) to [0, end) and
+    // replaces with the pasted data, rebuilding both occurrences intact.
+    const selStart = '@src/'.length
+    const selEnd = '@src/main.ts @src/main.ts'.length
+    seamEdit(ta, selStart, selEnd, 'insertFromPaste', 'main.ts @src/main.ts')
+
+    await waitFor(() => expect(ta.value).toBe('@src/main.ts @src/main.ts'))
+    expect(screen.getByLabelText('Remove')).toBeInTheDocument()
+  })
+
+  // FAIL-SAFE (Design review): an INSERT beforeinput whose engine put the
+  // inserted text on neither `data` nor `dataTransfer` must NOT be claimed --
+  // deleting the mention and inserting nothing would be WORSE than the
+  // half-reference this fixes (silent text loss). The seam leaves the event
+  // un-prevented so the browser applies its own edit; the mention is reconciled
+  // on a later edit that does carry its data. A delete legitimately carries no
+  // data and is still claimed (its own test above covers that).
+  it('an insert beforeinput with no data over a mention is left to the browser (#18263, fail-safe)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    ta.setSelectionRange(selStart, selEnd)
+    // insertText with null data and no dataTransfer: the seam must not claim it.
+    const ev = new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: null })
+    ta.dispatchEvent(ev)
+    expect(ev.defaultPrevented).toBe(false)
+    // The mention text is untouched (the seam did not rewrite it to nothing).
+    expect(ta.value).toContain('@src/main.ts')
+  })
+
+  // A COLLAPSED-caret insertion inside a mention (no selection) is a plain edit
+  // the user is making, not a selection-replace: typing a character at
+  // `@src/|main.ts` must insert it, never expand the empty range to the whole
+  // mention and delete it (GPT 6.1 review). The seam leaves a non-delete edit
+  // with selectionStart === selectionEnd to the browser.
+  it('typing a character with the caret INSIDE a mention (no selection) is left to the browser (#18263)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    // Collapsed caret strictly inside the mention (`@src/|main.ts`).
+    const caret = 'please review @src/'.length
+    ta.setSelectionRange(caret, caret)
+    const ev = new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: true, inputType: 'insertText', data: 'x' })
+    ta.dispatchEvent(ev)
+    // The seam must NOT claim it: the browser applies its own one-char insert.
+    expect(ev.defaultPrevented).toBe(false)
+    // The mention is not nuked to `@src/x`; its text is still fully present.
+    expect(ta.value).toContain('@src/main.ts')
+  })
+
+  // A NON-CANCELABLE beforeinput cannot be stopped: on Chromium Android an IME
+  // edit over a mention (e.g. a Backspace delivered as a non-cancelable
+  // `deleteContentBackward`) arrives this way, so preventDefault is a no-op and
+  // the browser would apply its own partial edit on top of the seam's rewrite,
+  // corrupting the draft. The seam stands down -- it neither prevents the event
+  // nor rewrites the value -- and lets the browser own the edit (Opus 5.5
+  // review). The list-continuation sibling guards the same case.
+  it('a non-cancelable beforeinput over a mention is left to the browser (#18263, Chromium Android)', async () => {
+    const store = makeStore('slot-a', [{ key: 'slot-a', project: '/repo' }])
+    await renderPage(store)
+    const ta = await pickFile()
+    fireEvent.change(ta, { target: { value: 'please review @src/main.ts for the bug' } })
+    await waitFor(() => expect(ta.value).toContain('@src/main.ts'))
+    const selStart = 'please review @src/'.length
+    const selEnd = 'please review @src/main.ts'.length
+    ta.setSelectionRange(selStart, selEnd)
+    // cancelable: false -- the one bit that distinguishes the Android IME path.
+    const ev = new (window as unknown as { InputEvent: typeof InputEvent }).InputEvent('beforeinput', { bubbles: true, cancelable: false, inputType: 'deleteContentBackward', data: null })
+    ta.dispatchEvent(ev)
+    // The seam did not call preventDefault (it would be a no-op anyway) and did
+    // not rewrite the controlled value -- the mention text is still fully there.
+    expect(ta.value).toContain('@src/main.ts')
+  })
 })
 
 /** Render the page, let `prepare` shape the draft and return the textarea,

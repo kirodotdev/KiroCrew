@@ -65,7 +65,7 @@ export function applyTextareaListBackspace(
 
 /** True on Android, where Chromium can ignore preventDefault on a
  *  `deleteContentBackward` beforeinput. */
-function isAndroid(): boolean {
+export function isAndroid(): boolean {
   return typeof navigator !== 'undefined' && /Android/i.test(navigator.userAgent ?? '')
 }
 

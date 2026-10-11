@@ -674,7 +674,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const announceAttachmentChange = useCallback((text: string) => {
     setAttachmentAnnouncement(prev => ({ text, nonce: prev.nonce + 1 }))
   }, [])
-  const { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile, mentionKeyEdit, optimizerMentionGuard } = useFileMentionActions({
+  const { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile, mentionKeyEdit, optimizerMentionGuard, mentionEditRange } = useFileMentionActions({
     staging,
     inputRef,
     setInput,
@@ -1057,7 +1057,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
               sessionControlKey={sessionControlKey} sessionControlRect={sessionControlRect} sessionControls={sessionControls} setOpenSessionControl={setOpenSessionControl}
               activeAgentName={activeAgentName} attachmentAnnouncement={attachmentAnnouncement} clampOutOfTokens={clampOutOfTokens} handleAddToContext={handleAddToContext}
-              mentionKeyEdit={mentionKeyEdit} optimizerMentionGuard={optimizerMentionGuard} removeDirChip={removeDirChip} removeFileChip={removeFileChip} selectPickedFile={selectPickedFile}
+              mentionKeyEdit={mentionKeyEdit} optimizerMentionGuard={optimizerMentionGuard} mentionEditRange={mentionEditRange} removeDirChip={removeDirChip} removeFileChip={removeFileChip} selectPickedFile={selectPickedFile}
               followupAddToSession={followupAddToSession} followupStartInNewChat={followupStartInNewChat} followupStartInWorktree={followupStartInWorktree} displayMode={displayMode}
               _modelPinActive={_modelPinActive} _modelPinAgent={_modelPinAgent} _modelPinPinned={_modelPinPinned} _pinShownModel={_pinShownModel} _slotProject={_slotProject}
               defaultEffort={defaultEffort} effectiveEffort={effectiveEffort} effortLevelsOverride={effortLevelsOverride} effortSupported={effortSupported} modelMarker={modelMarker}

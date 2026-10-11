@@ -811,6 +811,45 @@ export function useFileMentionActions({
   // free Backspace/Delete on a collapsed caret. Only the recorded aliases of
   // currently-staged files are treated atomically: a leftover alias of a
   // removed chip is ordinary text the user is editing by hand.
+  // Every whole-mention span [at, end) of a CURRENTLY-STAGED file in `text`,
+  // as original-string indices (the fold is 1:1). Shared by the keydown atomic
+  // delete (`mentionKeyEdit`) and the value-change seam (`mentionEditRange`,
+  // #18263) so the two can never disagree about where a staged mention is or
+  // how long it runs. Only aliases of staged files count: a leftover alias of
+  // a removed chip is ordinary text the user is editing by hand.
+  const stagedMentionSpans = (text: string): { at: number; end: number }[] => {
+    const slotTokens = currentSlotTokens()
+    if (!slotTokens) return []
+    const staged = new Set(pendingFilesRef.current)
+    const fold = foldWinSep(isWindowsShapedPath(currentProjectRef.current || ''))
+    const folded = fold(text)
+    // Every alias of every currently-staged file, each with the sibling set
+    // the shared matcher needs so one mention is never read as the prefix of
+    // a longer sibling's (`report` vs `report,`). Separators are folded on a
+    // Windows-shaped project so a respelled mention is still found; the fold
+    // is 1:1, so indices on the folded copy are the original's.
+    const aliases: string[] = []
+    for (const p of staged) for (const t of slotTokens[p] ?? []) aliases.push(fold(t.slice(1)))
+    // Longest alias first: when one staged mention is a prefix of another
+    // (`@report` vs `@report final.pdf`), the complete mention must win the
+    // scan, else the short alias matches inside the long one and leaves a
+    // half-reference whose chip then unstages (GPT 6.1 review).
+    aliases.sort((a, b) => b.length - a.length)
+    const siblingSet = new Set(aliases)
+    const spans: { at: number; end: number }[] = []
+    for (const bare of aliases) {
+      const others = new Set([...siblingSet].filter(a => a !== bare))
+      const re = mentionTokenRegex(bare, 'g', others)
+      for (let m = re.exec(folded); m !== null; m = re.exec(folded)) {
+        if (m[0].length === 0) { re.lastIndex++; continue }
+        const at = m.index + m[1].length // the `@`
+        const end = m.index + m[0].length // just past the token (boundary is a lookahead)
+        if (!spans.some(s => s.at === at && s.end === end)) spans.push({ at, end })
+      }
+    }
+    return spans
+  }
+
   const mentionKeyEdit = (
     text: string, selStart: number, selEnd: number, key: string, mods: MentionKeyMods,
   ): { value: string; caret: number } | null => {
@@ -831,66 +870,43 @@ export function useFileMentionActions({
     if (mods.meta) return null
     if (!wordDelete && (mods.alt || mods.ctrl)) return null
     const hasSelection = selStart !== selEnd
-    const slotTokens = currentSlotTokens()
-    if (!slotTokens) return null
-    const staged = new Set(pendingFilesRef.current)
     const fold = foldWinSep(isWindowsShapedPath(currentProjectRef.current || ''))
     const folded = fold(text)
     const caret = selStart
-    // Every alias of every currently-staged file, each with the sibling set
-    // the shared matcher needs so one mention is never read as the prefix of
-    // a longer sibling's (`report` vs `report,`). Separators are folded on a
-    // Windows-shaped project so a respelled mention is still found; the fold
-    // is 1:1, so indices on the folded copy are the original's.
-    const aliases: string[] = []
-    for (const p of staged) for (const t of slotTokens[p] ?? []) aliases.push(fold(t.slice(1)))
-    // Longest alias first: when one staged mention is a prefix of another
-    // (`@report` vs `@report final.pdf`), the complete mention must win the
-    // scan, else the short alias matches inside the long one and leaves a
-    // half-reference whose chip then unstages (GPT 6.1 review).
-    aliases.sort((a, b) => b.length - a.length)
-    const siblingSet = new Set(aliases)
     // The whole-mention spans [at, end) this keystroke should remove, each as
     // original-string indices (the fold is 1:1). A collapsed caret keeps at
     // most one; a selection keeps every mention the range overlaps.
     const hits: { at: number; end: number }[] = []
-    for (const bare of aliases) {
-      const others = new Set([...siblingSet].filter(a => a !== bare))
-      const re = mentionTokenRegex(bare, 'g', others)
-      for (let m = re.exec(folded); m !== null; m = re.exec(folded)) {
-        if (m[0].length === 0) { re.lastIndex++; continue }
-        const at = m.index + m[1].length // the `@`
-        const end = m.index + m[0].length // just past the token (boundary is a lookahead)
-        let take: boolean
-        if (hasSelection) {
-          // A selection that overlaps any part of the mention takes it whole —
-          // a partial cover would otherwise slice it to a half-reference.
-          take = selStart < end && selEnd > at
-        } else if (wordDelete) {
-          // Word-delete chord (Ctrl/Alt+Backspace / +Delete): use the SAME
-          // predicate as a plain delete — the caret inside the mention or just
-          // at its near edge — so the two paths agree (a plain Backspace inside
-          // `@src/main.ts` is already atomic, so the word-delete must be too),
-          // AND treat the whitespace between the caret and the mention end as
-          // adjacent: a word delete deletes back/forward across spaces to the
-          // token, so Ctrl/Alt+Backspace with the caret after the trailing
-          // space of `@src/main.ts ` must take the whole mention, not leave the
-          // half-reference `@src/main.` the chip then unstages (crew-pr-reviewer).
-          const onlySpaceBetween = (a: number, b: number) => {
-            for (let i = a; i < b; i++) if (folded[i] !== ' ' && folded[i] !== '\t') return false
-            return true
-          }
-          take = key === 'Backspace'
-            ? (caret > at && caret <= end) || (caret > end && onlySpaceBetween(end, caret))
-            : (caret >= at && caret < end) || (caret < at && onlySpaceBetween(caret, at))
-        } else {
-          // Plain (or Shift-held) Backspace fires when the caret is just past
-          // the mention or inside it; Delete when it is just before or inside.
-          // Strictly inside is covered by both so a mid-mention edit is atomic.
-          take = key === 'Backspace' ? caret > at && caret <= end : caret >= at && caret < end
+    for (const { at, end } of stagedMentionSpans(text)) {
+      let take: boolean
+      if (hasSelection) {
+        // A selection that overlaps any part of the mention takes it whole —
+        // a partial cover would otherwise slice it to a half-reference.
+        take = selStart < end && selEnd > at
+      } else if (wordDelete) {
+        // Word-delete chord (Ctrl/Alt+Backspace / +Delete): use the SAME
+        // predicate as a plain delete — the caret inside the mention or just
+        // at its near edge — so the two paths agree (a plain Backspace inside
+        // `@src/main.ts` is already atomic, so the word-delete must be too),
+        // AND treat the whitespace between the caret and the mention end as
+        // adjacent: a word delete deletes back/forward across spaces to the
+        // token, so Ctrl/Alt+Backspace with the caret after the trailing
+        // space of `@src/main.ts ` must take the whole mention, not leave the
+        // half-reference `@src/main.` the chip then unstages (crew-pr-reviewer).
+        const onlySpaceBetween = (a: number, b: number) => {
+          for (let i = a; i < b; i++) if (folded[i] !== ' ' && folded[i] !== '\t') return false
+          return true
         }
-        if (take && !hits.some(h => h.at === at && h.end === end)) hits.push({ at, end })
+        take = key === 'Backspace'
+          ? (caret > at && caret <= end) || (caret > end && onlySpaceBetween(end, caret))
+          : (caret >= at && caret < end) || (caret < at && onlySpaceBetween(caret, at))
+      } else {
+        // Plain (or Shift-held) Backspace fires when the caret is just past
+        // the mention or inside it; Delete when it is just before or inside.
+        // Strictly inside is covered by both so a mid-mention edit is atomic.
+        take = key === 'Backspace' ? caret > at && caret <= end : caret >= at && caret < end
       }
+      if (take && !hits.some(h => h.at === at && h.end === end)) hits.push({ at, end })
     }
     if (hits.length === 0) return null
     hits.sort((a, b) => a.at - b.at)
@@ -929,6 +945,37 @@ export function useFileMentionActions({
     else if (s > 0 && text[s - 1] === ' ') s--
     return { value: text.slice(0, s) + text.slice(e), caret: s }
   }
+  // The value-change seam (#18263), done STRUCTURALLY from the pre-edit text
+  // and selection alone -- no after-the-fact before/after diff. Given the text
+  // and the selection [selStart, selEnd) the browser is about to replace (read
+  // at `beforeinput`, before the DOM changes), return the range EXPANDED to
+  // cover the whole of every staged `@mention` the selection cuts into, or null
+  // when the selection touches no staged mention (then the browser handles the
+  // edit untouched). The caller replaces this expanded range with the edit's
+  // own inserted data, so a cut / type-over / paste-over / drop can never leave
+  // a half-reference whose chip then silently unstages. Working from the real
+  // selection (never a text diff) means the inserted data is kept verbatim and
+  // an intact mention elsewhere is never rewritten, closing the whole class of
+  // reconstruction corner cases (prefix-sharing paste, duplicate mention,
+  // left-boundary rebuild) a diff kept re-opening.
+  const mentionEditRange = (
+    text: string, selStart: number, selEnd: number,
+  ): { start: number; end: number } | null => {
+    const s = Math.max(0, Math.min(selStart, text.length))
+    const e = Math.max(s, Math.min(selEnd, text.length))
+    // A staged mention is affected only when the selection CUTS INTO it -- a
+    // boundary strictly inside the span, so a fragment would otherwise survive
+    // attached to the edit. A selection fully covering a mention (clean whole
+    // delete), entirely outside it, or merely abutting it (`@` edge or end
+    // edge) is left to expand nothing: the browser's own edit is already whole.
+    const cut = stagedMentionSpans(text).filter(m =>
+      (m.at < s && s < m.end) || (m.at < e && e < m.end))
+    if (cut.length === 0) return null
+    // Expand to the nearest start and furthest end across the selection and
+    // every cut-into mention, so a partial cover never strands a fragment and a
+    // prefix sibling sharing a start can never truncate the longer mention.
+    return { start: Math.min(s, ...cut.map(m => m.at)), end: Math.max(e, ...cut.map(m => m.end)) }
+  }
   /** The folder chip's remove (ChatInput `onRemoveDir`). */
   const removeDirChip = (rel: string) => {
     // The chip derives from the `@rel/` token, so removing the
@@ -952,5 +999,5 @@ export function useFileMentionActions({
     if (token) recordSlotToken(canon, token)
     setPendingFiles(prev => addPendingFile(prev, canon))
   }
-  return { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile, mentionKeyEdit, optimizerMentionGuard }
+  return { clampOutOfTokens, handleAddToContext, removeFileChip, removeDirChip, selectPickedFile, mentionKeyEdit, optimizerMentionGuard, mentionEditRange }
 }
