@@ -8,7 +8,7 @@
 import { describe, expect, it, afterEach } from 'vitest'
 import { unregisteredMarkers } from '../test/guideTargets'
 import { UI_OPENER_FACT_PREDICATES } from './conditions'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
 import * as path from 'node:path'
 import * as React from 'react'
@@ -30,6 +30,7 @@ import {
   scanMarkerSource,
   serializeIndex,
 } from '../../scripts/lib/ui-index.mjs'
+import { freshnessVerdict, STALE_EXIT, strictFromEnv } from '../../scripts/lib/ui-index-freshness.mjs'
 import AddJobSplitButton from '../components/AddJobSplitButton'
 import { Glass } from '../components/Glass'
 import { MemoryModeChip } from '../components/MemoryModeChip'
@@ -1194,6 +1195,78 @@ describe('gen:ui --out', () => {
     expect(fs.existsSync(path.join(path.dirname(COMMITTED), 'ui-index.auto.json'))).toBe(false)
     expect(run('--auto-out').stderr).toMatch(/--auto-out needs a file path/)
   })
+})
+
+describe('gen:ui --check freshness modes', () => {
+  const STALE = [{ file: 'src/kiro_crew/docs/ui-index.generated.json', missing: false }]
+
+  it('passes a fresh tree in every mode', () => {
+    for (const warnIfStale of [false, true]) for (const strict of [false, true]) {
+      expect(freshnessVerdict({ stale: [], warnIfStale, strict }).exitCode).toBe(0)
+    }
+  })
+
+  it('fails a stale tree under plain --check with the stale exit code (what CI reads)', () => {
+    const v = freshnessVerdict({ stale: STALE, warnIfStale: false, strict: false })
+    expect(v.exitCode).toBe(STALE_EXIT)
+    expect(STALE_EXIT).toBe(3)
+    expect(v.lines.join('\n')).toMatch(/ui-index\.generated\.json is stale\. Run `npm run gen:ui`/)
+  })
+
+  it('only warns on a stale tree under --warn-if-stale (npm run build, nightly, PR builds)', () => {
+    const v = freshnessVerdict({ stale: STALE, warnIfStale: true, strict: false })
+    expect(v.exitCode).toBe(0)
+    expect(v.level).toBe('warning')
+    expect(v.lines[0]).toMatch(/WARNING: .*is stale\. Run `npm run gen:ui`/)
+  })
+
+  it('fails a stale tree again when KC_UI_INDEX_STRICT is set (release builds)', () => {
+    const v = freshnessVerdict({ stale: STALE, warnIfStale: true, strict: true })
+    expect(v.exitCode).toBe(STALE_EXIT)
+    expect(v.lines[0]).toMatch(/KC_UI_INDEX_STRICT is set/)
+  })
+
+  it('names a missing plans module as missing', () => {
+    const v = freshnessVerdict({ stale: [{ file: 'website/src/uiLocations/guidePlans.gen.ts', missing: true }], warnIfStale: false, strict: false })
+    expect(v.lines[0]).toMatch(/guidePlans\.gen\.ts is missing/)
+  })
+
+  it('reads KC_UI_INDEX_STRICT as strict unless it is empty, 0 or false', () => {
+    expect(strictFromEnv({ KC_UI_INDEX_STRICT: '1' })).toBe(true)
+    expect(strictFromEnv({ KC_UI_INDEX_STRICT: 'true' })).toBe(true)
+    for (const v of [undefined, '', '0', 'false', ' FALSE ']) expect(strictFromEnv({ KC_UI_INDEX_STRICT: v })).toBe(false)
+  })
+
+  it('runs npm run build with --warn-if-stale, and refuses --warn-if-stale without --check', () => {
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf-8'))
+    expect(pkg.scripts.build).toMatch(/^node scripts\/gen-ui-index\.mjs --check --warn-if-stale /)
+    const r = spawnSync(process.execPath, [path.resolve(__dirname, '../../scripts/gen-ui-index.mjs'), '--warn-if-stale'], { encoding: 'utf-8' })
+    expect(r.status).toBe(2)
+    expect(r.stderr).toMatch(/pass --check too/)
+  })
+
+  // The real generator on THIS tree, which may be fresh or stale (main goes
+  // stale between regen commits), so the assertions are relations between the
+  // three modes rather than fixed codes: warn-only never fails, and
+  // KC_UI_INDEX_STRICT gives back exactly what plain --check says.
+  it('wires the flag and the env into the real generator', async () => {
+    const script = path.resolve(__dirname, '../../scripts/gen-ui-index.mjs')
+    const run = (args: string[], strict: string) => new Promise<{ code: number | null, stderr: string }>((resolve) => {
+      const child = spawn(process.execPath, [script, ...args], { env: { ...process.env, KC_UI_INDEX_STRICT: strict, GITHUB_ACTIONS: '' } })
+      let stderr = ''
+      child.stderr.on('data', (d) => { stderr += d })
+      child.on('close', (code) => resolve({ code, stderr }))
+    })
+    const [plain, warn, strict] = await Promise.all([
+      run(['--check'], ''),
+      run(['--check', '--warn-if-stale'], ''),
+      run(['--check', '--warn-if-stale'], '1'),
+    ])
+    expect([0, STALE_EXIT]).toContain(plain.code)
+    expect(warn.code).toBe(0)
+    expect(strict.code).toBe(plain.code)
+    if (plain.code === STALE_EXIT) expect(warn.stderr).toMatch(/WARNING: .*is stale/)
+  }, 120_000)
 })
 
 describe('labels that are runtime data (label.from description)', () => {

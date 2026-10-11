@@ -413,6 +413,11 @@ jobs:
     uses: ./.github/workflows/build-wheel.yml
     with:
       wheel_version: ${{ needs.version.outputs.wheel_version }}
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
 
   build-desktop:
     name: Build Desktop
@@ -435,6 +440,11 @@ jobs:
       # is written -- a soft-failed leg here would let the other lanes burn
       # this version on a release that can never complete.
       mac_single_arch: true
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike
@@ -455,6 +465,11 @@ jobs:
       version: ${{ needs.version.outputs.version }}
       soft_fail: true
       use_prod_environment: true
+      # A stale committed find_ui index fails this build instead of warning
+      # (KC_UI_INDEX_STRICT=1 in `npm run build`), so a release branch that
+      # merged past a regen fails before any lane publishes. nightly.yml does
+      # not pass it. Runbook: docs/build/release.md step 2.
+      ui_index_strict: true
     # Explicit passthrough, not `secrets: inherit`: the callee declares
     # the secret it consumes, so this hands over that one and nothing
     # else. Pinned by test_workflow_permissions.py.

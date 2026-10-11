@@ -20,7 +20,10 @@
  *   single-step `ui.show` plan, at their one render site.
  *
  *   node scripts/gen-ui-index.mjs                  # write the committed index
- *   node scripts/gen-ui-index.mjs --check          # fail if the committed index is stale
+ *   node scripts/gen-ui-index.mjs --check          # fail (exit 3) if the committed index is stale
+ *   node scripts/gen-ui-index.mjs --check --warn-if-stale
+ *                                                  # warn instead (what `npm run build` runs);
+ *                                                  # KC_UI_INDEX_STRICT=1 makes it fail again
  *   node scripts/gen-ui-index.mjs --auto-out <f>   # also write the auto tier to <f>
  *   node scripts/gen-ui-index.mjs --sites-out <f>  # also write the auto stamp manifest to <f>
  *                                                  # (what the Vite marker transform stamps)
@@ -48,7 +51,15 @@
  *
  * `--check` regenerates in memory and byte-compares the COMMITTED index only;
  * it writes nothing (except `--auto-out`), so it is safe in CI and in
- * `npm run build`, and an unregistered button never makes it fail. The digest
+ * `npm run build`, and an unregistered button never makes it fail. A stale
+ * committed file exits 3 (1 is a generator problem). `npm run build` passes
+ * `--warn-if-stale`: there a stale index WARNS and the build goes on, because
+ * PRs merge onto a moved main and a stale main used to break every build until
+ * a regen commit landed. Release builds set `KC_UI_INDEX_STRICT=1`, which turns
+ * that warning back into a failure, and CI's PR freshness job runs plain
+ * `--check` and fails only a PR that made a fresh base stale
+ * (`.github/scripts/ui_index_freshness.py`). The modes live in
+ * `scripts/lib/ui-index-freshness.mjs`. The digest
  * covers the bytes of every input read (markers included, whether or not git
  * tracks them), never a clock or a git hash, so the same tree always yields
  * the same file.
@@ -89,6 +100,7 @@ import {
   SHELL_SURFACE,
   TRUST_ROOT_PARENTS,
 } from './lib/ui-index.mjs'
+import { freshnessVerdict, strictFromEnv } from './lib/ui-index-freshness.mjs'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = path.resolve(__dirname, '..')
@@ -99,6 +111,7 @@ const PLANS_OUT = path.join(SRC, 'uiLocations/guidePlans.gen.ts')
 
 const args = process.argv.slice(2)
 const CHECK = args.includes('--check')
+const WARN_IF_STALE = args.includes('--warn-if-stale')
 const reportIdx = args.indexOf('--report')
 const REPORT_PATH = reportIdx >= 0 ? args[reportIdx + 1] : null
 const outIdx = args.indexOf('--out')
@@ -109,9 +122,13 @@ const sitesIdx = args.indexOf('--sites-out')
 const SITES_OUT = sitesIdx >= 0 ? args[sitesIdx + 1] : null
 const valueAt = new Set([reportIdx, outIdx, autoIdx, sitesIdx].filter((i) => i >= 0).map((i) => i + 1))
 for (const [i, a] of args.entries()) {
-  if (a === '--check' || a === '--report' || a === '--out' || a === '--auto-out' || a === '--sites-out') continue
+  if (a === '--check' || a === '--warn-if-stale' || a === '--report' || a === '--out' || a === '--auto-out' || a === '--sites-out') continue
   if (valueAt.has(i)) continue
   console.error(`gen-ui-index: unknown argument ${a}`)
+  process.exit(2)
+}
+if (WARN_IF_STALE && !CHECK) {
+  console.error('gen-ui-index: --warn-if-stale only changes what --check does; pass --check too')
   process.exit(2)
 }
 if (reportIdx >= 0 && !REPORT_PATH) {
@@ -434,17 +451,20 @@ const summary = `committed index: ${built.index.locations.length} locations (${O
 if (REPORT_PATH) writeReport(REPORT_PATH)
 
 if (CHECK) {
+  const stale = []
   for (const [file, want] of [[OUT, bytes], [PLANS_OUT, planBytes]]) {
     const current = fs.existsSync(file) ? fs.readFileSync(file, 'utf-8') : null
-    if (current !== want) {
-      console.error(
-        `gen-ui-index: ${path.relative(REPO, file)} is ${current === null ? 'missing' : 'stale'}. `
-        + 'Run `npm run gen:ui` in website/ and commit the result.',
-      )
-      process.exit(1)
-    }
+    if (current !== want) stale.push({ file: path.relative(REPO, file), missing: current === null })
   }
-  console.log(`gen-ui-index: up to date — ${summary}`)
+  const verdict = freshnessVerdict({ stale, warnIfStale: WARN_IF_STALE, strict: strictFromEnv(process.env) })
+  for (const line of verdict.lines) console.error(line)
+  // An Actions annotation, so a warn-only stale index shows on the run page
+  // and not only in a log nobody opens on a green build.
+  if (verdict.level === 'warning' && process.env.GITHUB_ACTIONS === 'true') {
+    console.log(`::warning title=find_ui index is stale::${verdict.lines[0].replace(/^gen-ui-index: WARNING: /, '')}`)
+  }
+  if (verdict.exitCode !== 0) process.exit(verdict.exitCode)
+  if (verdict.level === 'ok') console.log(`gen-ui-index: up to date — ${summary}`)
 } else if (OUT_PATH) {
   fs.writeFileSync(OUT_PATH, bytes)
   console.log(`gen-ui-index: wrote ${OUT_PATH} (not the committed index) — ${summary}`)
@@ -453,8 +473,10 @@ if (CHECK) {
   fs.writeFileSync(PLANS_OUT, planBytes)
   console.log(`gen-ui-index: wrote ${path.relative(REPO, OUT)} and ${path.relative(REPO, PLANS_OUT)} — ${summary}`)
 }
-// Last, so a stale committed index under --check never leaves a fresh auto
-// tier behind (its base_input_digest would not match the shipped index anyway).
+// Last, so a failing --check never leaves a fresh auto tier behind (its
+// base_input_digest would not match the shipped index anyway). Under
+// --warn-if-stale it IS written, because the build needs it to go on; the
+// runtime then refuses it against the stale index and says so.
 if (AUTO_OUT) {
   fs.mkdirSync(path.dirname(path.resolve(AUTO_OUT)), { recursive: true })
   fs.writeFileSync(AUTO_OUT, autoBytes)

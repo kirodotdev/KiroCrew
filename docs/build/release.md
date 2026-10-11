@@ -221,7 +221,13 @@ code.
    `test_stable_version_display.py` + the `version_display` tests — a stamped
    stable build must show `X.Y.Z` on the version chip, the Settings footer, the
    available-update line, AND the update popup); no existing bare
-   `vX.Y.Z` tag. Then tag `vX.Y.Z-rc.N`.
+   `vX.Y.Z` tag. Also run `cd website && npm ci && npm run gen:ui -- --check`
+   on the target commit: release builds are strict about the committed find_ui
+   index (`ui_index_strict: true`), while `main` and nightly only warn, so a
+   release branch cut from a `main` that merged past a regen fails every build
+   lane. If it reports stale, run `npm run gen:ui`, commit the two regenerated
+   files to `release/X.Y` and target THAT commit, all before tagging the RC:
+   step 3 allows no pushes between soak and release. Then tag `vX.Y.Z-rc.N`.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
    change to the release branch between soak and release** — stable is rebuilt
    from this commit, so a commit that lands after the soak ships code nobody ran.
