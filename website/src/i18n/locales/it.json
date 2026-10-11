@@ -11758,7 +11758,9 @@
         "approval_hint": "Approva esegue solo questo comando. Rifiuta lo salta; l’agente continua senza.",
         "retry": "Riprova",
         "running_on_header": "Su {{name}}",
-        "approval_elsewhere": "L’agente su {{name}} attende un’approvazione a cui questa finestra non può rispondere. Rispondi nella dashboard dell’equipaggio."
+        "approval_elsewhere": "L’agente su {{name}} attende un’approvazione a cui questa finestra non può rispondere. Rispondi nella dashboard dell’equipaggio.",
+        "yolo_elsewhere": "YOLO vale per ogni sessione su {{name}}. Cambialo nella dashboard della crew.",
+        "mode_unknown": "Impossibile leggere la modalità di approvazione su {{name}}. Nuovo tentativo…"
       },
       "messageContextMenu": {
         "copy_link_text": "Copia testo del link",

@@ -12,6 +12,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import type { RootState } from '../store'
 
@@ -20,7 +21,7 @@ const mocks = vi.hoisted(() => ({
   // The LOCAL slot routes. A crew window must never reach them: on a remote
   // slot they are what answered 409.
   continueSlot: vi.fn(), regenerateSlot: vi.fn(), rewind: vi.fn(), approveChatSlot: vi.fn(),
-  chatSlotModel: vi.fn(), chatSlotAgent: vi.fn(),
+  chatSlotModel: vi.fn(), chatSlotAgent: vi.fn(), chatMode: vi.fn(), instancesApprovalState: vi.fn(),
 }))
 // Every other client call (the shared composer's own reads) answers empty.
 vi.mock('../api/client', async () => ({
@@ -39,6 +40,7 @@ import { createCrewWindowRenderers, PEER_SAFE_ROWS } from '../pages/chat/crew-wi
 import { createTranscriptRenderers } from '../pages/chat/transcriptRenderers'
 import {
   openCrewWindow, closeCrewWindow, useCrewWindow, reloadCrewWindowForTest, writeCrewDraft,
+  capsRetryInterval,
 } from '../pages/chat/crew-window/crewWindowStore'
 
 class FakeEventSource {
@@ -70,7 +72,7 @@ function renderWindow() {
   })
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}><Provider store={store}><Host /></Provider></QueryClientProvider>,
+    <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter><Host /></MemoryRouter></Provider></QueryClientProvider>,
   )
 }
 
@@ -127,6 +129,7 @@ beforeEach(() => {
     Promise.resolve(path === 'api/chat/slots' ? [{ key: 'other' }, slotRow] : detail))
   mocks.crewPeerPost.mockResolvedValue({ ok: true })
   mocks.instancesCapabilities.mockResolvedValue({ version_match: true, version: '0.9.0', local_version: '0.9.0' })
+  mocks.instancesApprovalState.mockResolvedValue({ yolo: false, disabled_approval_modes: [] })
   openCrewWindow({ instanceId: 'cd-1', key: 'k1' })
 })
 
@@ -164,11 +167,11 @@ describe('CrewChatWindow', () => {
     })
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const pane = (open: boolean, late: boolean) => (
-      <QueryClientProvider client={qc}><Provider store={store}><div>
+      <QueryClientProvider client={qc}><Provider store={store}><MemoryRouter><div>
         {open && <div data-crew-cover><CrewChatWindow target={{ instanceId: 'cd-1', key: 'k1' }} /></div>}
         <div data-testid="local-composer"><button>Allow once</button></div>
         {late && <div data-testid="late-sibling" />}
-      </div></Provider></QueryClientProvider>
+      </div></MemoryRouter></Provider></QueryClientProvider>
     )
     const { rerender } = render(pane(true, false))
     await screen.findByTestId('crew-chat-window')
@@ -491,7 +494,7 @@ describe('CrewChatWindow', () => {
     mocks.listInstances.mockResolvedValue({ instances: [{ id: 'cd-1', name: 'devbox', status: { state: 'connected' } }] })
     const store = createTestStore({ instances: { warm: {} } as unknown as RootState['instances'] })
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-    render(<QueryClientProvider client={qc}><Provider store={store}><Host /></Provider></QueryClientProvider>)
+    render(<QueryClientProvider client={qc}><Provider store={store}><MemoryRouter><Host /></MemoryRouter></Provider></QueryClientProvider>)
     const box = await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
     await waitFor(() => expect(box).not.toBeDisabled())
   })
@@ -750,15 +753,176 @@ describe('CrewChatWindow', () => {
     expect(await screen.findByText(/effort_overlay_busy/)).toBeTruthy()
   })
 
-  it('hides the composer controls that would act on this machine', async () => {
-    slotRow = { ...slotRow, agent: 'builder' }
+  it('hides attach, which would upload to this machine', async () => {
     renderWindow()
     await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
-    // Attach (a hub upload), the agent picker (the hub's roster) and the
-    // approval-mode picker (the hub's mode) are not drawn at all.
     expect(screen.queryByRole('button', { name: /attach|add files/i })).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Agent:/ })).toBeNull()
-    expect(screen.queryByRole('button', { name: /approval mode/i })).toBeNull()
+  })
+
+  describe('agent and approval mode on the peer', () => {
+    const peerCaps = {
+      version_match: true, version: '0.9.0', local_version: '0.9.0', unavailable: {},
+      default_agent: 'kirocrew',
+      agents: [
+        { name: 'kirocrew', description: '', scope: 'global', model: '' },
+        { name: 'builder', description: 'Builds things', scope: 'local', model: '' },
+      ],
+    }
+    beforeEach(() => { mocks.instancesCapabilities.mockResolvedValue(peerCaps) })
+
+    it('shows the peer slot\'s agent and lists the PEER\'s roster', async () => {
+      slotRow = { ...slotRow, agent: 'builder' }
+      // This machine's own roster must never reach the list.
+      mocks.listInstances.mockResolvedValue({ instances: [{ id: 'cd-1', name: 'devbox' }] })
+      renderWindow()
+      const chip = await screen.findByRole('button', { name: 'Agent: builder' }, PEER_ROW_WAIT)
+      fireEvent.click(chip)
+      const list = await screen.findByRole('listbox', { name: 'Agent list' })
+      expect(within(list).getByText('kirocrew')).toBeTruthy()
+      expect(within(list).getByText('builder')).toBeTruthy()
+    })
+
+    it('marks an agent-less peer slot as the PEER\'s default', async () => {
+      renderWindow()
+      expect(await screen.findByRole('button', { name: /kirocrew/ }, PEER_ROW_WAIT)).toHaveTextContent('kirocrew · default')
+    })
+
+    it('switches the agent on the PEER\'s slot, never this machine\'s', async () => {
+      renderWindow()
+      fireEvent.click(await screen.findByRole('button', { name: /kirocrew/ }, PEER_ROW_WAIT))
+      fireEvent.click(within(await screen.findByRole('listbox', { name: 'Agent list' })).getByText('builder'))
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat/slots/k1/agent', { agent: 'builder' }]))
+      expect(mocks.chatSlotAgent).not.toHaveBeenCalled()
+    })
+
+    it('shows the peer\'s refusal of an agent switch on the window', async () => {
+      mocks.crewPeerPost.mockRejectedValueOnce(new Error('agent not found on peer'))
+      renderWindow()
+      fireEvent.click(await screen.findByRole('button', { name: /kirocrew/ }, PEER_ROW_WAIT))
+      fireEvent.click(within(await screen.findByRole('listbox', { name: 'Agent list' })).getByText('builder'))
+      expect(await screen.findByText('agent not found on peer')).toBeTruthy()
+      expect(screen.getByText('devbox refused that action. Try again, or open the crew\'s own dashboard.')).toBeTruthy()
+    })
+
+    it('offers no agent list when the peer roster could not be read', async () => {
+      mocks.instancesCapabilities.mockResolvedValue({ ...peerCaps, agents: [], default_agent: '', unavailable: { agents: 'timeout' } })
+      renderWindow()
+      await screen.findByRole('textbox', { name: 'Message the agent on devbox…' })
+      expect(await screen.findByText('Couldn\'t load the agent list.')).toBeTruthy()
+      expect(screen.queryByRole('button', { name: /^Agent:/ })).toBeNull()
+    })
+
+    it('asks the peer again until a failed roster read lands', async () => {
+      mocks.instancesCapabilities
+        .mockResolvedValueOnce({ ...peerCaps, agents: [], default_agent: '', unavailable: { agents: 'capability_unreachable' } })
+        .mockResolvedValue(peerCaps)
+      renderWindow()
+      expect(await screen.findByText('Couldn\'t load the agent list.', undefined, PEER_ROW_WAIT)).toBeTruthy()
+      expect(await screen.findByRole('button', { name: /kirocrew/ }, { timeout: 8000 })).toBeTruthy()
+      expect(screen.queryByText('Couldn\'t load the agent list.')).toBeNull()
+    }, 15000)
+
+    it('asks the capabilities again only for a passing failure', () => {
+      const matched = { version_match: true }
+      expect(capsRetryInterval(undefined, 5)).toBe(5)
+      expect(capsRetryInterval({ version_match: false }, 5)).toBe(5)
+      expect(capsRetryInterval(matched, 5)).toBe(false)
+      expect(capsRetryInterval({ ...matched, unavailable: { agents: 'capability_unreachable' } }, 5)).toBe(5)
+      expect(capsRetryInterval({ ...matched, unavailable: { models: 'capability_peer_revalidating' } }, 5)).toBe(5)
+      expect(capsRetryInterval({ ...matched, unavailable: { agents: 'capability_unauthorized' } }, 5)).toBe(false)
+    })
+
+    it('reads the approval mode from the PEER slot\'s own trust flags', async () => {
+      slotRow = { ...slotRow, trust_reads: true }
+      renderWindow()
+      await waitFor(() => expect(screen.getByRole('button', { name: /approval mode/i })).toHaveTextContent('Reads'), PEER_ROW_WAIT)
+    })
+
+    it('sets the mode on the PEER\'s slot, never this machine\'s', async () => {
+      renderWindow()
+      const trigger = await screen.findByRole('button', { name: /approval mode/i }, PEER_ROW_WAIT)
+      fireEvent.pointerDown(trigger, { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^Trust/ }))
+      await waitFor(() => expect(posted()).toContainEqual(['api/chat/mode', { mode: 'trust', slot: 'k1' }]))
+      expect(mocks.chatMode).not.toHaveBeenCalled()
+    })
+
+    it('never offers YOLO, the peer\'s machine-wide switch', async () => {
+      renderWindow()
+      fireEvent.pointerDown(await screen.findByRole('button', { name: /approval mode/i }, PEER_ROW_WAIT), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      await screen.findByRole('menuitem', { name: /^Normal/ })
+      expect(screen.queryByRole('menuitem', { name: /YOLO/ })).toBeNull()
+      expect(screen.queryByTestId('approval-mode-remote-note')).toBeNull()
+    })
+
+    it('does not hide a mode because THIS machine\'s policy denies it', async () => {
+      const store = createTestStore({
+        instances: { warm: { 'cd-1': { local_port: 1, token: 't' } } } as unknown as RootState['instances'],
+      })
+      store.dispatch({ type: 'dashboard/sseStatus', payload: { disabled_approval_modes: ['trust'] } })
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+      render(<QueryClientProvider client={qc}><Provider store={store}><MemoryRouter><Host /></MemoryRouter></Provider></QueryClientProvider>)
+      fireEvent.pointerDown(await screen.findByRole('button', { name: /approval mode/i }, PEER_ROW_WAIT), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      expect(await screen.findByRole('menuitem', { name: /^Trust/ })).not.toHaveAttribute('data-disabled')
+    })
+
+    it('hides a mode the PEER\'s policy denies, as its own picker does', async () => {
+      mocks.instancesApprovalState.mockResolvedValue({ yolo: false, disabled_approval_modes: ['trust'] })
+      renderWindow()
+      fireEvent.pointerDown(await screen.findByRole('button', { name: /approval mode/i }, PEER_ROW_WAIT), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      await screen.findByRole('menuitem', { name: /^Reads/ })
+      expect(screen.queryByRole('menuitem', { name: /^Trust/ })).toBeNull()
+    })
+
+    it('shows the peer\'s YOLO and offers no row that would end it', async () => {
+      mocks.instancesApprovalState.mockResolvedValue({ yolo: true, disabled_approval_modes: [] })
+      slotRow = { ...slotRow, trust_reads: true }
+      renderWindow()
+      await waitFor(() => expect(screen.getByRole('button', { name: /approval mode/i })).toHaveTextContent('YOLO'), PEER_ROW_WAIT)
+      fireEvent.pointerDown(screen.getByRole('button', { name: /approval mode/i }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      expect(await screen.findByTestId('approval-mode-remote-note')).toHaveTextContent('YOLO covers every session on devbox.')
+      expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+    })
+
+    it('draws no approval-mode picker while the peer\'s YOLO state is unknown', async () => {
+      mocks.instancesApprovalState.mockResolvedValue({ yolo: null, disabled_approval_modes: [] })
+      renderWindow()
+      // Wait for the approval-state answer itself, then for the slot row.
+      expect(await screen.findByText('Couldn\'t read the approval mode on devbox. Trying again…', undefined, PEER_ROW_WAIT)).toBeTruthy()
+      await screen.findByRole('button', { name: /kirocrew/ }, PEER_ROW_WAIT)
+      expect(screen.queryByRole('button', { name: /approval mode/i })).toBeNull()
+    })
+
+    it('writes a pick made while an earlier one is still on its way', async () => {
+      let land: (v: unknown) => void = () => {}
+      mocks.crewPeerPost.mockImplementationOnce(() => new Promise(r => { land = r }))
+      renderWindow()
+      await waitFor(() => expect(screen.getByRole('button', { name: /approval mode/i })).toHaveTextContent('Normal'), PEER_ROW_WAIT)
+      fireEvent.pointerDown(screen.getByRole('button', { name: /approval mode/i }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^Trust/ }))
+      // The slot still reads Normal: the Trust write has not landed.
+      fireEvent.pointerDown(screen.getByRole('button', { name: /approval mode/i }), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^Normal/ }))
+      // Serialized: Normal is not sent until the Trust write has landed.
+      await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve() })
+      expect(posted().filter(c => c[0] === 'api/chat/mode')).toEqual([['api/chat/mode', { mode: 'trust', slot: 'k1' }]])
+      land({ ok: true })
+      await waitFor(() => expect(posted().filter(c => c[0] === 'api/chat/mode')).toEqual([
+        ['api/chat/mode', { mode: 'trust', slot: 'k1' }], ['api/chat/mode', { mode: 'normal', slot: 'k1' }],
+      ]))
+    })
+
+    it('shows the peer\'s policy refusal of a mode on the window', async () => {
+      const { ApiError } = await import('../api/client')
+      mocks.crewPeerPost.mockRejectedValueOnce(new ApiError(403, 'forbidden', JSON.stringify({ code: 'mode_disabled_by_policy' })))
+      renderWindow()
+      fireEvent.pointerDown(await screen.findByRole('button', { name: /approval mode/i }, PEER_ROW_WAIT), { button: 0, ctrlKey: false, pointerType: 'mouse' })
+      fireEvent.click(await screen.findByRole('menuitem', { name: /^Trust/ }))
+      // As the local picker: the menu reopens with the reason, and no
+      // "try again" banner offers a retry that policy will refuse again.
+      expect(await screen.findByRole('menu')).toHaveTextContent(/Disabled by your organization's security policy/)
+      expect(screen.queryByText('devbox refused that action. Try again, or open the crew\'s own dashboard.')).toBeNull()
+    })
   })
 
   it('draws a code fence in a peer USER row copy-only too', async () => {

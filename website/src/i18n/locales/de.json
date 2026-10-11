@@ -11593,7 +11593,9 @@
         "approval_hint": "Genehmigen führt nur diesen einen Befehl aus. Ablehnen überspringt ihn; der Agent macht ohne ihn weiter.",
         "retry": "Erneut versuchen",
         "running_on_header": "Auf {{name}}",
-        "approval_elsewhere": "Der Agent auf {{name}} wartet auf eine Genehmigung, die dieses Fenster nicht beantworten kann. Beantworte sie im Dashboard der Crew."
+        "approval_elsewhere": "Der Agent auf {{name}} wartet auf eine Genehmigung, die dieses Fenster nicht beantworten kann. Beantworte sie im Dashboard der Crew.",
+        "yolo_elsewhere": "YOLO gilt für jede Sitzung auf {{name}}. Ändere es im Dashboard der Crew.",
+        "mode_unknown": "Der Genehmigungsmodus auf {{name}} konnte nicht gelesen werden. Neuer Versuch läuft…"
       },
       "messageContextMenu": {
         "copy_link_text": "Linktext kopieren",

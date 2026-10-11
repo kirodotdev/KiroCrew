@@ -247,6 +247,11 @@ _LOOPBACK = "127.0.0.1"
 #: the ``api/agents`` mutating verbs stay unreachable even though the roster read
 #: lives under the same prefix. Adding a row is a security decision — it grants
 #: the local gateway a new read against every connected peer.
+#:
+#: ``/api/status`` is read only by ``api_instances_approval_state``, for exactly
+#: two fields: the peer's live YOLO flag and the approval modes its policy
+#: denies, so a crew window's approval-mode picker shows the mode the peer is
+#: really in. That handler forwards nothing else from the reply.
 _PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
     {
         "/api/version",
@@ -254,6 +259,7 @@ _PEER_CAPABILITY_PATHS: frozenset[str] = frozenset(
         "/api/models",
         "/api/effort-levels",
         "/api/workspaces",
+        "/api/status",
     }
 )
 # Poll cadence while waiting for the forward to come up.
@@ -5380,8 +5386,8 @@ class SshTunnelManager:
         This is deliberately a NARROW CARRIER, not a general proxy. The generic
         ``/api/instances/{id}/proxy/*`` route forwards a caller-supplied path and
         is therefore fenced to the ``api/chat`` / ``api/stream`` prefixes; the
-        five paths a local session needs in order to render a peer-bound header
-        (version, agent roster, model list, effort levels, workspaces) sit
+        paths a local session needs in order to render a peer-bound header
+        (version, agent roster, model list, effort levels, workspaces, status) sit
         outside those prefixes. Widening the prefix list would have granted the
         whole ``api/agents`` surface — including its mutating ``PUT`` — so the
         capability read gets its own carrier whose target is chosen from a fixed
@@ -5412,7 +5418,7 @@ class SshTunnelManager:
         # /api/models is the one read whose cold path runs bounded work on the
         # peer (up to 5s sandbox-backend detection + up to 10s `kiro-cli chat
         # --list-models` + up to 3s entitlement revalidation, ~18s worst case),
-        # so it gets its own budget; the four cheap reads keep the short one.
+        # so it gets its own budget; the cheap reads keep the short one.
         # See both constants for sizing.
         total = (
             _MODELS_CAPABILITY_PROXY_TIMEOUT if path == "/api/models" else _CAPABILITY_PROXY_TIMEOUT

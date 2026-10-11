@@ -6,6 +6,7 @@ import type { AutomationRecord } from '../../monitoring/automation'
 import type { PasteBlock } from '../../utils/pasteTokens'
 import type { FileKind } from '../FilePickerMenu'
 import type { PromptHistoryItem } from '../composerPromptHistory'
+import type { ApprovalModeRemote } from '../ApprovalModePicker'
 
 /* The composer's public prop contract. `components/ChatInput.tsx` takes it
    and re-exports `ComposerBusyMode`; the owners under this directory take the
@@ -276,6 +277,8 @@ export interface ChatInputProps {
    *  compacting; the next press is the force stop and the armed Stop says so. */
   stopDeclined?: boolean
   approvalMode?: string
+  /** The approval-mode picker drives another machine's session (crew window). */
+  approvalModeRemote?: ApprovalModeRemote
   reasoningEffort?: string
   /** True when `reasoningEffort` is the configured default rather than a
    *  per-slot pick. Only the chip's hover / accessible name says so: outside

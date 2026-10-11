@@ -11428,7 +11428,9 @@
         "approval_hint": "批准只运行这一条命令。拒绝会跳过它；代理会在没有它的情况下继续。",
         "retry": "重试",
         "running_on_header": "在 {{name}} 上",
-        "approval_elsewhere": "{{name}} 上的代理正在等待一项此窗口无法回应的批准。请在该团队自己的控制台中回应。"
+        "approval_elsewhere": "{{name}} 上的代理正在等待一项此窗口无法回应的批准。请在该团队自己的控制台中回应。",
+        "yolo_elsewhere": "YOLO 作用于 {{name}} 上的所有会话。请在该机组自己的仪表盘中更改。",
+        "mode_unknown": "无法读取 {{name}} 上的审批模式。正在重试…"
       },
       "messageContextMenu": {
         "copy_link_text": "复制链接文本",

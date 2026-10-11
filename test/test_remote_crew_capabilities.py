@@ -190,6 +190,67 @@ class TestPayloadShapes:
 
 
 @pytest.mark.asyncio
+class TestPeerApprovalState:
+    """``/approval-state``: only the peer's YOLO flag and denied modes cross."""
+
+    @staticmethod
+    async def _read(status_reply=None, *, raises=False):
+        replies = {} if status_reply is None else {"/api/status": status_reply}
+        state = _state(replies, raises={"/api/status"} if raises else None)
+        return await hi.api_instances_approval_state(_request(state))
+
+    async def test_the_peers_yolo_and_denied_modes_are_carried(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        status = {
+            "yolo": True,
+            "disabled_approval_modes": ["trust", "yolo", "bogus"],
+            "owner_id_hash": "h",
+        }
+        body = await _body(await self._read((True, status)))
+        assert body == {"yolo": True, "disabled_approval_modes": ["trust"]}
+
+    async def test_an_unreadable_status_reports_yolo_as_unknown(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        body = await _body(await self._read((False, {"code": "capability_peer_refused"})))
+        assert body == {"yolo": None, "disabled_approval_modes": []}
+
+    async def test_a_raising_read_reports_yolo_as_unknown(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        resp = await self._read(raises=True)
+        assert resp.status == 200
+        assert (await _body(resp))["yolo"] is None
+
+    @pytest.mark.parametrize("reply", [{"yolo": "yes"}, {}, {"yolo": 1}])
+    async def test_a_missing_or_non_boolean_yolo_is_unknown_not_off(self, monkeypatch, reply):
+        _enable_instances(monkeypatch)
+        body = await _body(await self._read((True, reply)))
+        assert body["yolo"] is None
+
+    async def test_a_non_owner_dashboard_subject_is_refused(self, monkeypatch):
+        _enable_instances(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+            lambda _r: False,
+        )
+        state = _state({"/api/status": (True, {"yolo": True})})
+        resp = await hi.api_instances_approval_state(_request(state))
+        assert resp.status in (401, 403)
+
+    async def test_the_capability_read_does_not_read_the_status(self, monkeypatch):
+        """The roster read stays five paths: the window polls approval-state alone."""
+        _enable_instances(monkeypatch)
+        seen: list[str] = []
+
+        async def _peer_capability(_iid, path):
+            seen.append(path)
+            return _all_ok().get(path, (False, {"code": "capability_error"}))
+
+        state = SimpleNamespace(instances_manager=SimpleNamespace(peer_capability=_peer_capability))
+        await hi.api_instances_capabilities(_request(state))
+        assert "/api/status" not in seen
+
+
+@pytest.mark.asyncio
 class TestVersionGate:
     async def test_an_equal_version_reports_a_match(self, monkeypatch):
         _enable_instances(monkeypatch)
@@ -451,6 +512,7 @@ class TestPeerCapabilityCarrier:
                 "/api/models",
                 "/api/effort-levels",
                 "/api/workspaces",
+                "/api/status",
             }
         )
 

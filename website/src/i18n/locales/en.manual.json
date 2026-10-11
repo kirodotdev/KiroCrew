@@ -5234,7 +5234,9 @@
         "file_on_crew": "The agent on {{name}} sent {{file}}. The file stays on {{name}}.",
         "retry": "Retry",
         "running_on_header": "On {{name}}",
-        "approval_elsewhere": "The agent on {{name}} is waiting for an approval this window cannot answer. Answer it on the crew's own dashboard."
+        "approval_elsewhere": "The agent on {{name}} is waiting for an approval this window cannot answer. Answer it on the crew's own dashboard.",
+        "yolo_elsewhere": "YOLO covers every session on {{name}}. Change it on the crew's own dashboard.",
+        "mode_unknown": "Couldn't read the approval mode on {{name}}. Trying again…"
       }
     },
     "chatPage": {

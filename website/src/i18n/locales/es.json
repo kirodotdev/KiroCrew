@@ -11758,7 +11758,9 @@
         "approval_hint": "Aprobar ejecuta solo este comando. Rechazar lo omite; el agente continúa sin él.",
         "retry": "Reintentar",
         "running_on_header": "En {{name}}",
-        "approval_elsewhere": "El agente en {{name}} espera una aprobación que esta ventana no puede responder. Respóndela en el panel propio de la tripulación."
+        "approval_elsewhere": "El agente en {{name}} espera una aprobación que esta ventana no puede responder. Respóndela en el panel propio de la tripulación.",
+        "yolo_elsewhere": "YOLO afecta a todas las sesiones de {{name}}. Cámbialo en el panel de la propia tripulación.",
+        "mode_unknown": "No se pudo leer el modo de aprobación de {{name}}. Reintentando…"
       },
       "messageContextMenu": {
         "copy_link_text": "Copiar texto del enlace",

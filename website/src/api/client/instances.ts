@@ -4,7 +4,7 @@
  * connected peer's federated session search, capabilities and live slots.
  */
 
-import type { RemoteCrewCapabilities } from '../../types'
+import type { RemoteCrewApprovalState, RemoteCrewCapabilities } from '../../types'
 import { toApiError } from '../apiError'
 import type { ClientTransport } from './transport'
 
@@ -268,6 +268,10 @@ export function createInstancesEndpoints({ get, post, del, patch, j, jfetch: fet
      *  roster disables exactly its own control instead of blanking the shelf. */
     instancesCapabilities: (instanceId: string) =>
       fetch('/api/instances/' + encodeURIComponent(instanceId) + '/capabilities').then(j) as Promise<RemoteCrewCapabilities>,
+    /** A connected peer's YOLO flag and policy-denied approval modes, for the
+     *  crew window's approval-mode picker. `yolo` is null when unread. */
+    instancesApprovalState: (instanceId: string) =>
+      fetch('/api/instances/' + encodeURIComponent(instanceId) + '/approval-state').then(j) as Promise<RemoteCrewApprovalState>,
 
     // A CONNECTED remote instance's LIVE sessions, read through an owner-only,
     // GET-only hub route. NOT the generic instance proxy, which this first used: the

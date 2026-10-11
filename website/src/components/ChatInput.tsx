@@ -174,6 +174,7 @@ function ChatInput({
   isQueued = false,
   stopState,
   approvalMode,
+  approvalModeRemote,
   reasoningEffort,
   effortIsDefault = false,
   hasEffort,
@@ -1222,7 +1223,7 @@ function ChatInput({
                 </Suspense>
               )}
               {!isMobile && approvalMode && (
-                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+                <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
               )}
               </div>
               {/* Edge cues: the row itself fades out at a clipped edge (`edge-fade-x`,
@@ -1231,7 +1232,7 @@ function ChatInput({
                   over the translucent composer. */}
             </div>
             {isMobile && approvalMode && (
-              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
+              <ApprovalModePicker mode={approvalMode} slotKey={activeSlot || ''} remote={approvalModeRemote} compact onPicked={focusComposerAfterPick} openSignal={approvalPickerSignal} nudge={approvalNudgeActive} onNudgeDismiss={dismissApprovalNudge} onNudgeHide={hideApprovalNudge} />
             )}
           </div>
           <div className={`flex items-center gap-1 shrink-0${terminal.active ? ' ml-auto max-w-full justify-end [&>button]:shrink-0' : ''}`}>

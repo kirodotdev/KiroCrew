@@ -31,9 +31,10 @@ import { SlotProvider } from '../../../providers/SlotContext'
 import { i18nT } from '../../../i18n/t'
 import { errMessage } from '../../../utils/thunkError'
 import type { ChatMessage } from '../../../types'
-import { closeCrewWindow, coverSiblings, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
+import { capsRetryInterval, closeCrewWindow, coverSiblings, markCrewWindowShown, readCrewDraft, subscribeCrewDraft, writeCrewDraft, type CrewWindowTarget } from './crewWindowStore'
 import { createCrewWindowRenderers, crewWindowSlot } from './crewWindowRenderers'
 import { useCrewWindowModelPicker, type PeerModelFields } from './crewWindowModelPicker'
+import { useCrewWindowAgentMode, type PeerAgentModeFields } from './crewWindowAgentMode'
 import { mergeRecoveredDraft } from '../../../utils/chatDrafts'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
 import { isSystemNoticeRow } from '../CompactionCard'
@@ -41,7 +42,7 @@ import { useMessageQuote } from '../../../chat-core/composer/useMessageQuote'
 import type { MessageQuote } from '../../../chat-core/composer/messageQuote'
 
 interface PeerApproval { origin?: string; request_id?: string; request_mid?: string }
-interface PeerSlot extends PeerModelFields { key?: string; title?: string; running?: boolean; interrupted?: boolean; agent?: string; pending_approval_info?: PeerApproval | null }
+interface PeerSlot extends PeerModelFields, PeerAgentModeFields { key?: string; title?: string; running?: boolean; interrupted?: boolean; pending_approval_info?: PeerApproval | null }
 interface PeerDetail { title?: string; running?: boolean; messages?: ChatMessage[] }
 
 /** How long a burst of peer frames waits before one transcript re-read. */
@@ -80,7 +81,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // re-ask until the versions match so a reconnect unlocks the window.
   const capsQ = useQuery({
     queryKey: ['instance-caps', instanceId], queryFn: () => api.instancesCapabilities(instanceId),
-    refetchInterval: q => (q.state.data?.version_match === true ? false : CAPS_RETRY_MS),
+    refetchInterval: q => capsRetryInterval(q.state.data, CAPS_RETRY_MS),
   })
   const versionOk = capsQ.data?.version_match === true
   // The tunnel's own state, not the warm map: `warm` tracks only crews whose
@@ -309,6 +310,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   const picker = useCrewWindowModelPicker({
     instanceId, slotKey: crewWindowSlot(instanceId, key), slotPath, slot: slotQ.data, caps: capsQ.data, enabled: versionOk, onWritten: settle,
   })
+  const agentMode = useCrewWindowAgentMode({ instanceId, slotKey: key, slotPath, name, slot: slotQ.data, caps: capsQ.data, enabled: versionOk, onWritten: settle })
   const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const root = rootRef.current
@@ -372,8 +374,12 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
           {action.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(action.error)} onDismiss={() => action.reset()} />}
           {/* No hand-off: the composer below may hold an unsent draft. */}
           {!!picker.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={errMessage(picker.error)} onDismiss={picker.clearError} />}
+          {/* No hand-off: same draft. The peer refused an agent or approval-mode change. */}
+          {!!agentMode.error && <ErrorNotice title={i18nT('pages.chat.crewWindow.action_failed', { name })} message={agentMode.error} onDismiss={agentMode.clearError} />}
           {/* No hand-off: same draft. The capability read retries in place. */}
           {picker.effortCapsFailed && <ErrorNotice variant="inline" message={i18nT('pages.chatPage.effort_options_unavailable')} />}
+          {agentMode.readFailed.agents && <ErrorNotice variant="inline" message={i18nT('components.agentSelector.roster_load_failed')} />}
+          {agentMode.readFailed.mode && <ErrorNotice variant="inline" message={i18nT('pages.chat.crewWindow.mode_unknown', { name })} />}
           {!connected && <div className="text-muted">{i18nT('pages.chat.crewWindow.offline', { name })}</div>}
           {rewindTs && (
             <div className="flex items-center gap-2 text-muted">
@@ -385,7 +391,8 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
         {/* The shared composer, under a slot key no local session can carry:
             its store reads (approvals, tool log, busy mode) then find nothing
             of the hub's own sessions. Menus, the optimizer and the approval
-            chrome are off, as in the side panel: each acts on a LOCAL slot.
+            bar are off, as in the side panel: each acts on a LOCAL slot. (The
+            approval-MODE picker is on, wired to the peer.)
             Offline, a disabled fieldset turns the whole composer off, as the
             RFC's "input disabled" says; the composer's own offline state would
             name the hub's gateway, not this crew. */}
@@ -403,10 +410,11 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
             typedCommandMenus={false}
             slotApprovalChrome={false}
             promptOptimizer={false}
-            // Model + effort write the PEER's slot. Attach, the agent picker
-            // and the approval-mode picker are not passed, so the composer
-            // does not draw them: each writes THIS gateway's state.
+            // Model, effort, agent and approval mode write the PEER's slot.
+            // Attach is not passed, so the composer does not draw it: it
+            // uploads to THIS gateway.
             {...picker.chipProps}
+            {...agentMode.chipProps}
             pendingQuote={rewindTs ? null : messageQuote.pendingQuote}
             onRemoveQuote={messageQuote.clearQuote}
           />
@@ -415,6 +423,7 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
       </Glass>
       </div>
       {picker.portal}
+      {agentMode.portal}
       </div>
     </div>
   )
