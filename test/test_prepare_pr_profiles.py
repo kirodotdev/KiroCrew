@@ -481,6 +481,12 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # without that run, and kirocrew-prepare-pr does not boot gateways in its
         # repeated static floor -- the layer's proof stays in CI, like E2E.
         "scripts/check_integration_route_coverage.py",
+        # Lives under .github/scripts. It runs the same `gen:ui -- --check` the
+        # floor already runs, and only adds a second run on the PR's base
+        # (`base.sha` from the Actions event) to tell a PR that caused a stale
+        # index from one that inherited it. The floor has no event and no base
+        # to compare, so the local verdict is the plain check it already holds.
+        "scripts/ui_index_freshness.py",
     }
 
     invoked = set(re.findall(r"\bscripts/[A-Za-z0-9_.-]+\.(?:py|sh)", run_text))

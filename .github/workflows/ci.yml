@@ -2464,17 +2464,6 @@ jobs:
           export I18N_BASE_REF
           npm run i18n:check
 
-      - name: Check the find_ui location index is fresh
-        # The packaged index the guide server's find_ui reads is generated from
-        # the dashboard source (surfaces, Settings tabs, the settings extraction,
-        # registered uiLocation() markers and the 12 catalogs). A stale index
-        # answers "where is X?" with a path the dashboard no longer draws, and
-        # nothing else notices. Regenerates in memory and byte-compares; writes
-        # nothing. `npm run build` runs the same check, so a release cannot ship
-        # an index that disagrees with its own bundle.
-        working-directory: website
-        run: npm run gen:ui -- --check
-
       # The Python goldens that run the REAL generator (test_find_ui_auto.py's
       # `built` fixture: `gen-ui-index.mjs --out --auto-out` into a scratch dir)
       # skip wherever node or website/node_modules is missing, which is every
@@ -2491,6 +2480,29 @@ jobs:
           cache-dependency-glob: |
             pyproject.toml
             setup.cfg
+
+      - name: Check the find_ui location index is fresh
+        # The packaged index the guide server's find_ui reads is generated from
+        # the dashboard source (surfaces, Settings tabs, the settings extraction,
+        # registered uiLocation() markers and the 12 catalogs). A stale index
+        # answers "where is X?" with a path the dashboard no longer draws, and
+        # nothing else notices. Regenerates in memory and byte-compares; writes
+        # nothing.
+        #
+        # It fails a PR only when the PR CAUSED the staleness: when the merge
+        # ref is stale the script also checks the base (`base.sha`, the commit
+        # the merge ref was computed against) and only warns when that base is
+        # already stale. A PR is fresh at its own head and can still merge onto
+        # a main that moved, so main goes stale between regen commits; a
+        # whole-tree check here failed every open PR for it. On a push to main
+        # it only warns. `npm run build` WARNS too (`--warn-if-stale`); only
+        # release.yml's build lanes are strict (`ui_index_strict` ->
+        # KC_UI_INDEX_STRICT=1), so a release cannot ship an index that
+        # disagrees with its own bundle. See docs/ci/ci-and-reviews.md.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || '' }}
+        run: python3 "$GITHUB_WORKSPACE/.github/scripts/ui_index_freshness.py"
 
       - name: Run the find_ui goldens that need the real generator
         env:

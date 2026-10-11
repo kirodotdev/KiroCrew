@@ -2209,7 +2209,10 @@ the committed file byte-identical and does not stale it. `npm run gen:ui -- --ch
 byte-compares the COMMITTED index (generated and curated tiers only; the auto
 tier below is never compared); it runs in `frontend-lint` and as the first step
 of `npm run build`, the build every packaging path (`make frontend`,
-`build-wheel.yml`) runs. Pass `--report <file>` for a coverage report: which
+`build-wheel.yml`) runs. Only a release build and a PR that made a fresh base
+stale fail on it; everywhere else a stale index warns. See "The find_ui index
+is strict only where the PR caused it, and at release" in
+`docs/ci/ci-and-reviews.md`. Pass `--report <file>` for a coverage report: which
 file holds which tier, core control coverage (curated + auto), registered
 controls, unregistered interactive candidates with their resolved label keys,
 unresolved candidates per file, and missing translations.
