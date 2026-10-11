@@ -111,6 +111,16 @@ CLAUDE_BIN = os.environ.get("AUTO_IMPROVEMENT_CLAUDE_BIN", "claude")
 #: next status. `-c` overrides on OUR argv beat the repo config. Raised by the GPT review.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
+#: The stop reason on the ``EVENT_COMPLETE`` the ACP session handle yields when a prompt
+#: times out before the backend finished the turn (``acp/session_handle.py``). It has no
+#: constant in ``acp.types``.
+_STOP_REASON_PROMPT_TIMEOUT = "timeout"
+
+#: How the error of a turn the backend ended unfinished begins (see ``_run_async``). Bug and
+#: perf authoring read it as a bounded exit, like ``timeout after Ns``: the run was cut off,
+#: so an edit already on disk still goes to the deterministic gate.
+_UNFINISHED_TURN_ERROR = "the backend did not finish the turn"
+
 
 @dataclass
 class AgentResult:
@@ -1471,6 +1481,7 @@ class SessionAgentRunner:
             EVENT_TEXT_CHUNK,
             EVENT_TOOL_CALL,
             EVENT_TOOL_CALL_UPDATE,
+            STOP_REASON_STALE_RECOVER,
         )
 
         # Stable across processes (Python's builtin hash() is per-run salted): the
@@ -1542,6 +1553,12 @@ class SessionAgentRunner:
                     duration_s=time.monotonic() - t0,
                 )
 
+            # Stop reasons with which the backend ends a turn it never finished. Set
+            # ``unfinished`` when the turn ends that way, or when the stream ends with no
+            # EVENT_COMPLETE at all.
+            unfinished_reasons = (_STOP_REASON_PROMPT_TIMEOUT, STOP_REASON_STALE_RECOVER)
+            unfinished = ""
+
             while True:
                 if self._stop_check is not None and self._stop_check():
                     return _finish(ok=False, error="stopped by request")
@@ -1555,6 +1572,7 @@ class SessionAgentRunner:
                 try:
                     ev = await asyncio.wait_for(ait.__anext__(), timeout=remaining)
                 except StopAsyncIteration:
+                    unfinished = f"{_UNFINISHED_TURN_ERROR} (the provider stream ended first)"
                     break
                 except (asyncio.TimeoutError, TimeoutError):
                     # In-turn stall exceeded the budget — force-cancel and harvest text.
@@ -1729,8 +1747,15 @@ class SessionAgentRunner:
                         text_parts.append(txt)  # full text kept for the return value
                         text_buf.feed(txt)  # feed → flushes whole lines to the feed
                 elif kind == EVENT_COMPLETE:
+                    stop_reason = str(getattr(ev, "stop_reason", "") or "")
+                    if stop_reason in unfinished_reasons:
+                        unfinished = f"{_UNFINISHED_TURN_ERROR} (stop reason {stop_reason!r})"
                     break
             text_buf.flush()  # emit any trailing partial line at turn end
+            if unfinished:
+                # Not a success, whatever text arrived. The partial text is kept for the
+                # caller, as the watchdog's timeout keeps it.
+                return _finish(ok=False, error=unfinished)
             return _finish(ok=True)
         finally:
             if not cost_accounted:
@@ -2040,11 +2065,15 @@ def author_bug_fix(
     # until the cap fires): the completed fix is already on disk, so we still harvest it and
     # let the deterministic RED→GREEN gate decide. Both are the runner's bounded "expected"
     # exits — the session path returns ``max_turns (N) reached`` for the ACP turn cap, the
-    # subprocess path returns ``timeout after Ns`` — so they are treated identically. Only a
+    # subprocess path returns ``timeout after Ns`` — so they are treated identically. A turn
+    # the backend ended unfinished (its own prompt timeout, a stale_recover, a stream that
+    # ended first) is cut off the same way, so it is harvested too. Only a
     # genuine failure (provider died, agent binary missing, explicit stop) means there's
     # nothing trustworthy to harvest — bail so we don't gate a half-written tree.
     err = (res.error or "").lower()
-    is_bounded_exit = "timeout after" in err or "max_turns" in err
+    is_bounded_exit = (
+        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
+    )
     if not res.ok and not is_bounded_exit:
         return False
     # Require an ACTUAL change — the agent's prose is not trusted; the worktree state is.
@@ -2208,11 +2237,13 @@ def author_perf_fix(
         timeout_s=600,
     )
     # Same harvest rule as the bug track: the WORKTREE, not the agent's prose, is the
-    # source of truth, and a bounded exit (timeout / max_turns) is an EXPECTED outcome
-    # whose finished work is already on disk. Only a genuine runner failure means there
-    # is nothing trustworthy to measure.
+    # source of truth, and a bounded exit (timeout / max_turns / a turn the backend ended
+    # unfinished) is an EXPECTED outcome whose finished work is already on disk. Only a
+    # genuine runner failure means there is nothing trustworthy to measure.
     err = (res.error or "").lower()
-    is_bounded_exit = "timeout after" in err or "max_turns" in err
+    is_bounded_exit = (
+        "timeout after" in err or "max_turns" in err or err.startswith(_UNFINISHED_TURN_ERROR)
+    )
     if not res.ok and not is_bounded_exit:
         return False
     require_pinned(worktree)

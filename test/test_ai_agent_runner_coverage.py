@@ -37,6 +37,8 @@ from kiro_crew.acp.types import (
     EVENT_TEXT_CHUNK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
+    STOP_REASON_END_TURN,
+    STOP_REASON_STALE_RECOVER,
 )
 from kiro_crew.apps.builtins.auto_improvement.spine import agent_runner as R
 
@@ -1351,6 +1353,65 @@ async def _drive(runner, provider, **kw):
     return await runner._run_async("prompt", factory=lambda key, **k: provider, **kw)
 
 
+_CUT_OFF = '[{"title": "Fix the retry loop", "file": "src/a.py", "evidence": "the loo'
+
+
+def _cut_off_turn(*tail):
+    """Half of a findings array, then *tail*: a turn that stopped mid-answer."""
+    return _FakeProvider(
+        [
+            _ev(kind=EVENT_TEXT_CHUNK, text=_CUT_OFF[:30]),
+            _ev(kind=EVENT_TEXT_CHUNK, text=_CUT_OFF[30:]),
+            *tail,
+        ]
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    # "timeout" is the stop reason the ACP session handle sends when a prompt times
+    # out before the backend finished the turn; acp.types has no constant for it.
+    "stop_reason",
+    ["timeout", STOP_REASON_STALE_RECOVER],
+)
+async def test_run_async_a_turn_the_backend_never_finished_is_not_ok(stop_reason):
+    provider = _cut_off_turn(_ev(kind=EVENT_COMPLETE, stop_reason=stop_reason))
+    res = await _drive(R.SessionAgentRunner(), provider)
+    assert res.ok is False, (
+        f"a turn that ended with stop_reason={stop_reason!r} was reported ok={res.ok} "
+        f"error={res.error!r} with the cut-off text {res.text!r}"
+    )
+    assert stop_reason in res.error, res.error
+    assert res.text == _CUT_OFF, "the partial text is kept for the caller"
+
+
+@pytest.mark.asyncio
+async def test_run_async_a_stream_that_ends_before_the_turn_completes_is_not_ok():
+    res = await _drive(R.SessionAgentRunner(), _cut_off_turn())
+    assert res.ok is False, (
+        f"a stream that ended with no EVENT_COMPLETE was reported ok={res.ok} "
+        f"error={res.error!r} with the cut-off text {res.text!r}"
+    )
+    assert res.error == "the backend did not finish the turn (the provider stream ended first)"
+    assert res.text == _CUT_OFF
+
+
+@pytest.mark.asyncio
+async def test_run_async_a_finished_turn_is_ok():
+    """Control: a turn the backend finished stays a success."""
+    provider = _cut_off_turn(_ev(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN))
+    res = await _drive(R.SessionAgentRunner(), provider)
+    assert (res.ok, res.error, res.text) == (True, "", _CUT_OFF)
+
+
+@pytest.mark.asyncio
+async def test_run_async_the_runners_own_timeout_is_not_ok():
+    """Control: the wall-clock watchdog already reports a timeout as a failure."""
+    provider = _FakeProvider([_ev(kind=EVENT_COMPLETE)], stall_s=5.0)
+    res = await _drive(R.SessionAgentRunner(), provider, timeout_s=0.3)
+    assert (res.ok, res.error) == (False, "timeout after 0.3s")
+
+
 @pytest.mark.asyncio
 async def test_run_async_auto_approves_an_unrestricted_tool(fake_sel, allow_governance):
     provider = _FakeProvider(
@@ -1520,14 +1581,6 @@ async def test_run_async_degrades_gracefully_for_a_non_iterator_stream(fake_sel)
     res = await _drive(R.SessionAgentRunner(), provider)
     assert res.ok is True
     assert res.text == ""
-
-
-@pytest.mark.asyncio
-async def test_run_async_treats_an_exhausted_stream_as_success(fake_sel):
-    provider = _FakeProvider([_ev(kind=EVENT_TEXT_CHUNK, text="all done")])
-    res = await _drive(R.SessionAgentRunner(), provider)
-    assert res.ok is True
-    assert res.text == "all done"
 
 
 # ── _reject / _approve ──────────────────────────────────────────────────────
@@ -1759,6 +1812,50 @@ def test_author_perf_fix_bails_on_a_genuine_runner_failure(tmp_path, fake_git):
     runner = _FakeAgentRunner(R.AgentResult(ok=False, error="stopped by request"))
     assert R.author_perf_fix(runner, candidate=_candidate(), worktree=tmp_path) is False
     assert fake_git["argv"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("author", ["author_bug_fix", "author_perf_fix"])
+@pytest.mark.parametrize(
+    "tail",
+    [
+        pytest.param([_ev(kind=EVENT_COMPLETE, stop_reason="timeout")], id="timeout"),
+        pytest.param(
+            [_ev(kind=EVENT_COMPLETE, stop_reason=STOP_REASON_STALE_RECOVER)], id="stale_recover"
+        ),
+        pytest.param([], id="stream-ended"),
+    ],
+)
+async def test_an_edit_on_disk_is_harvested_after_a_turn_the_backend_cut_off(
+    tmp_path, fake_git, author, tail
+):
+    """The run is reported not ok, and authoring still keeps the edit already on disk.
+
+    Through the real ``SessionAgentRunner._run_async``: the result it returns for a turn
+    the backend ended unfinished goes to the real author, as a bounded exit does.
+    """
+    res = await _drive(R.SessionAgentRunner(), _cut_off_turn(*tail))
+    assert res.ok is False, res
+    fake_git["stdout"] = " M src/pkg/core.py\n"  # the fix is on disk
+    harvested = getattr(R, author)(_FakeAgentRunner(res), candidate=_candidate(), worktree=tmp_path)
+    assert harvested is True, (
+        f"{author} dropped the edit on disk: the runner returned ok={res.ok} "
+        f"error={res.error!r}, which it did not read as a bounded exit"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("author", ["author_bug_fix", "author_perf_fix"])
+async def test_an_edit_on_disk_is_harvested_after_the_runners_own_timeout(
+    tmp_path, fake_git, author
+):
+    """Control: the runner's own deadline, ``timeout after Ns``, through the real runner."""
+    provider = _FakeProvider([_ev(kind=EVENT_COMPLETE)], stall_s=5.0)
+    res = await _drive(R.SessionAgentRunner(), provider, timeout_s=0.3)
+    assert (res.ok, res.error) == (False, "timeout after 0.3s")
+    fake_git["stdout"] = " M src/pkg/core.py\n"
+    harvested = getattr(R, author)(_FakeAgentRunner(res), candidate=_candidate(), worktree=tmp_path)
+    assert harvested is True
 
 
 def test_author_perf_fix_prompt_forbids_editing_the_ruler(tmp_path, fake_git):

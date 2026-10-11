@@ -1102,6 +1102,10 @@ Three tiers, each where it fits:
    Stop and timeout cancel the active assignment and release its session.
    Deadline errors use the existing `timeout after Ns` contract so bug and
    performance authoring retain completed edits for the deterministic gate.
+   A turn the backend ends unfinished (stop reason `timeout` or
+   `stale_recover`, or a stream that ends with no turn end) returns `ok=False`
+   with an error that begins `the backend did not finish the turn`; authoring
+   reads it the same way and retains completed edits.
    Per-role provider-reported USD totals feed the existing combined run budget.
    Kiro credit usage is not converted to dollars; the USD cap does not bound
    credit spend. Cycle, time and tool-call limits still apply. The deterministic
