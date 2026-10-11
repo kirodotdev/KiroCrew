@@ -857,7 +857,9 @@ def _check_ws_origin(request: web.Request) -> None:
         raise web.HTTPForbidden(text="WebSocket origin not allowed")
 
 
-async def api_ws(request: web.Request) -> web.WebSocketResponse:
+async def _serve_ws(
+    request: web.Request, registered: list[web.WebSocketResponse]
+) -> web.WebSocketResponse:
     """GET /api/ws — single multiplexed WebSocket for all real-time events."""
     _check_ws_origin(request)
 
@@ -934,6 +936,7 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             return ws
 
     state.register_ws(ws, owner=owner_request)
+    registered.append(ws)
 
     # Store app identity on the WS connection so the broadcast chokepoint can
     # filter. ``_is_dashboard_user`` comes from a POSITIVE signal produced by
@@ -1778,5 +1781,24 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
         note_foreground(state, id(ws), None)
         state.unsubscribe_logs(ws)
         state.unsubscribe_subagents(ws)
-        state.unregister_ws(ws)
     return ws
+
+
+async def api_ws(request: web.Request) -> web.WebSocketResponse:
+    """GET /api/ws: serve the socket, and unregister it on every exit.
+
+    ``_serve_ws`` registers the socket before it sends the connect-time frames and
+    hands it back through *registered*. Those frames are awaited before the
+    handler's own ``try``/``finally``, so the release lives here, around the whole
+    handler: it runs on a clean close, on an exception, on the ``CancelledError`` a
+    cancelled handler raises at any of its awaits, and on the ``GeneratorExit``
+    that closes a suspended one.
+    """
+    registered: list[web.WebSocketResponse] = []
+    try:
+        return await _serve_ws(request, registered)
+    finally:
+        if registered:
+            state: DashboardState = request.app["state"]
+            for ws in registered:
+                state.unregister_ws(ws)
