@@ -472,6 +472,7 @@ class _SendMessageOutcome:
     sent_channel: bool = False
     channel_code: str = ""
     channel_detail: str = ""
+    sent_telegram: bool = False
 
 
 async def _read_send_message(
@@ -852,6 +853,50 @@ async def _deliver_send_message_fallback(
             reply_broadcast=reply_broadcast,
             session_link_url=session_link_url,
         )
+    # ── Telegram owner-DM fallback ────────────────────────────────────────
+    # When send_to_slack is True (session="slack" or a cron-originated send)
+    # but no Slack client is configured — or Slack was attempted and failed —
+    # deliver to the owner's Telegram DM instead.  This is the primary
+    # proactive path for Telegram-only installs.
+    #
+    # Resolution: TelegramTransport.configured_targets() returns
+    # "user:<numeric_id>" entries; in a Telegram private DM the chat_id
+    # equals the user_id (confirmed by TelegramTransport.resolve_conversation
+    # which is just ``return user_id``), so the first allowed entry IS the
+    # owner's DM channel.
+    #
+    # TelegramTransport.send_message uses no parse_mode (plaintext only), so
+    # we never emit Markdown here — the title and text are already redacted
+    # upstream and we concatenate them as plain strings.
+    tg_should_try = send_to_slack and not outcome.sent_telegram and (
+        not state.slack_client
+        or (outcome.slack_attempted and not outcome.sent_slack)
+    )
+    if tg_should_try:
+        from kiro_crew.telegram.transport import TelegramTransport  # noqa: E402
+
+        tg_transport = state.get_channel_transport("telegram")
+        if tg_transport is not None and isinstance(tg_transport, TelegramTransport):
+            owner_chat_id: str | None = None
+            for _tgt in tg_transport.configured_targets():
+                if _tgt.target_id.startswith("user:"):
+                    owner_chat_id = _tgt.target_id[len("user:"):]
+                    break
+            if owner_chat_id:
+                try:
+                    tg_text = (
+                        f"{title}\n\n{channel_text}"
+                        if title and title != "Agent Message"
+                        else channel_text
+                    )
+                    await tg_transport.send_message(owner_chat_id, tg_text)
+                    outcome.sent_telegram = True
+                    logger.info(
+                        "send_message: delivered via Telegram owner DM chat_id=%s",
+                        owner_chat_id,
+                    )
+                except Exception:
+                    logger.exception("send_message: Telegram fallback failed")
 
 
 async def _post_send_message_to_slack(
@@ -1072,6 +1117,8 @@ def _audit_send_message(
             downstream_service = channel_target or channel_type
         elif outcome.sent_slack:
             downstream_service = "slack"
+        elif outcome.sent_telegram:
+            downstream_service = "telegram"
         else:
             downstream_service = "dashboard"
         # A refused or failed channel delivery is an error for the same reason a
@@ -1082,7 +1129,7 @@ def _audit_send_message(
         # session injection is not one, which is the same condition that guard
         # uses, so this row and the HTTP status cannot disagree.
         failed = (
-            (outcome.slack_attempted and not outcome.sent_slack)
+            (outcome.slack_attempted and not outcome.sent_slack and not outcome.sent_telegram)
             or bool(outcome.channel_code)
             or bool(channel_type and not outcome.sent_channel and not sent_session)
         )
@@ -1126,7 +1173,7 @@ def _send_message_response(
         return web.json_response(
             {"ok": False, "error": detail, "code": outcome.channel_code}, status=502
         )
-    if outcome.slack_attempted and not outcome.sent_slack:
+    if outcome.slack_attempted and not outcome.sent_slack and not outcome.sent_telegram:
         safe_error, _ = redact_credentials(outcome.slack_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
         return web.json_response(
@@ -1161,11 +1208,14 @@ def _send_message_response(
         delivered_to = channel_target or channel_type
     elif outcome.sent_slack:
         delivered_to = "slack"
+    elif outcome.sent_telegram:
+        delivered_to = "telegram"
     else:
         delivered_to = "notification"
     resp_body: dict[str, Any] = {
         "ok": True,
         "slack": outcome.sent_slack,
+        "telegram": outcome.sent_telegram,
         "session": sent_session,
         "delivered_to": delivered_to,
     }
