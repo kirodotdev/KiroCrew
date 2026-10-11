@@ -220,6 +220,12 @@ class _Host:
             },
         )
         mp.setattr(channels, "channel_readiness", lambda cfg, creds: tuple(self.readiness))
+        import kiro_crew.doctor_checks.resources as resources
+
+        # Added after the sections moved, so the facade does not forward it: the
+        # marker goes on the family that defines it. The real section reads the
+        # host's process table, which no frozen report can pin.
+        mp.setattr(resources, "_doctor_acp_runtimes", self._marker("_doctor_acp_runtimes"))
         mp.setitem(sys.modules, "faiss", None)
         mp.setitem(sys.modules, "amazon_transcribe", None)
         mp.setitem(sys.modules, "amazon_transcribe.client", None)
@@ -384,6 +390,7 @@ Configuration
   <<_doctor_live_target_pointer>>
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
+  <<_doctor_acp_runtimes>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>
@@ -547,6 +554,7 @@ Configuration
   <<_doctor_live_target_pointer>>
   <<_doctor_masked_credential_aliases>>
   <<_doctor_memory_pressure>>
+  <<_doctor_acp_runtimes>>
   <<_doctor_runtime_tmpfs>>
   <<_doctor_cli_installer_residue>>
   <<_doctor_cron_health>>

@@ -131,7 +131,7 @@ class TestPerProcessReads:
             b"1234 (\xff) \xfe) S 7 8 9 " + b"0 " * 15 + b"4242 0 55"
         )
         assert platform_compat.read_proc_stat(1234, proc_root=tmp_path) == platform_compat.ProcStat(
-            state="S", ppid=7, pgrp=8, session=9, start_ticks=4242, rss_pages=55
+            state="S", ppid=7, pgrp=8, session=9, start_ticks=4242, rss_pages=55, cpu_ticks=0
         )
         assert platform_compat._parse_ppid((tmp_path / "1234" / "stat").read_bytes()) == 7
 

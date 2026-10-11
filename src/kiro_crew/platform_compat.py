@@ -9162,6 +9162,7 @@ class ProcStat(NamedTuple):
     session: int | None = None
     start_ticks: int | None = None
     rss_pages: int | None = None
+    cpu_ticks: int | None = None
 
 
 def _linux_proc_root(proc_root: "Path | None") -> "Path | None":
@@ -9183,7 +9184,9 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
     same read, so a caller needing several never mixes two processes behind a
     recycled pid. ``start_ticks`` is in clock ticks since boot;
     :func:`process_age_secs` turns it into an age. ``rss_pages`` is in pages of
-    ``SC_PAGE_SIZE``.
+    ``SC_PAGE_SIZE``. ``cpu_ticks`` is utime plus stime in clock ticks, so a
+    caller differencing two reads gets a CPU rate whose identity check
+    (``start_ticks``) came from the same read; it is None unless both are present.
 
     None when the file cannot be read (gone, permission, no ``/proc``) or the
     line has no ``)``; otherwise a :class:`ProcStat` whose fields may each be
@@ -9199,6 +9202,7 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
     tokens = _stat_tokens(raw)
     if tokens is None:
         return None
+    utime, stime = _stat_token_int(tokens, 11), _stat_token_int(tokens, 12)
     return ProcStat(
         state=tokens[0].decode("ascii", "replace") if tokens else None,
         ppid=_stat_token_int(tokens, 1),
@@ -9206,6 +9210,7 @@ def read_proc_stat(pid: int, *, proc_root: "Path | None" = None) -> "ProcStat | 
         session=_stat_token_int(tokens, 3),
         start_ticks=_stat_token_int(tokens, 19),
         rss_pages=_stat_token_int(tokens, 21),
+        cpu_ticks=None if utime is None or stime is None else utime + stime,
     )
 
 
