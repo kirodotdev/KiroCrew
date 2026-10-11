@@ -28,6 +28,8 @@ from unittest.mock import MagicMock
 import pytest
 
 from kiro_crew import model_registry as mr
+from kiro_crew import runtime_ownership as ro
+from kiro_crew import session_pid
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp import seed_provenance as sp
 from kiro_crew.acp.client import AcpClient
@@ -44,6 +46,11 @@ _SERVED = [
 # pinned below so the teardown's identity checks answer deterministically.
 _TORN_DOWN_PID = 2**22 + 7
 _TORN_DOWN_START_ID = "torn-down-process-incarnation"
+# A recorded pid the gate-following tests present as a runtime that may still be
+# alive. It names no process on this host either; each test pins the probes it
+# needs, or returns at the ownership gate before any probe is read.
+_LIVE_PID = 2**22 + 11
+_LIVE_START_ID = "live-process-incarnation"
 
 
 @pytest.fixture(autouse=True)
@@ -320,3 +327,135 @@ class TestTeardownTouchesNothingItDoesNotHold:
 
         assert sp._LIVE[key] == owner._seed_owner
         assert owner._seed_owner in sp._read_disk_seeds()[key]["holders"][sp._HOLDER_OWNERS]
+
+
+class _RuntimeStandIn:
+    """A tenancy target for the ownership table: a pid and a liveness answer.
+
+    A real object rather than a ``MagicMock``: the table rejects a mock's pid (it
+    coerces to 1 through ``__index__``) and would read ``is_alive`` as a truthy mock.
+    """
+
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+
+    def is_alive(self) -> bool:
+        return True
+
+
+@pytest.fixture
+def ownership_table(_floor_monkeypatch: pytest.MonkeyPatch):
+    """A clean runtime-ownership table, restored after the test."""
+    ro._reset_for_tests()
+    yield ro
+    ro._reset_for_tests()
+
+
+class TestClaimFollowsTheGate:
+    """The hand-back follows the kill gate's verdict, not the teardown's dispatch.
+
+    A seed claim is released when the teardown is authorized, when there is no pid,
+    or when the recorded root is known to be gone or recycled. It is KEPT while a
+    lease or a tenancy still holds the runtime and while the root's identity cannot
+    be read: in both the process that read the seed may still be running, and a
+    successor adopting the seed would re-write ``permissions.defaultMode`` under it.
+    """
+
+    def test_a_replacement_spawn_cannot_reseed_under_a_live_tenancy(
+        self, tmp_path, ownership_table
+    ):
+        """The race: a successor seeds while the gate refuses the old runtime's kill.
+
+        A party that does not own the runtime is mid-flight on it, so the kill is
+        refused and the runtime stays alive. The successor that starts on the same
+        ``work_dir`` beside that teardown must find the seed held: it cannot adopt
+        it, cannot put its own ``permissions.defaultMode`` on disk, and runs with
+        its array withheld -- the live-sibling rule -- instead of re-seeding the
+        permission file under a running process.
+        """
+        owner = _client(tmp_path, permission_mode="bypassPermissions")
+        owner._write_claude_local_settings()
+        path = _settings(tmp_path)
+        key = os.fspath(path)
+        before = path.read_text(encoding="utf-8")
+        owner._pid = _LIVE_PID
+        owner._start_time = _LIVE_START_ID
+        handle = ownership_table.RUNTIME_TENANCY.claim(
+            _RuntimeStandIn(_LIVE_PID), holder="test:shared-turn"
+        )
+        assert handle is not None
+
+        _sync_kill_provider(_stub_provider(owner))
+
+        # The gate refused: the claim and its persisted holder both stand.
+        assert sp._LIVE[key] == owner._seed_owner
+        assert owner._seed_owner in sp._read_disk_seeds()[key]["holders"][sp._HOLDER_OWNERS]
+        assert owner._claude_settings_authored is True
+
+        successor = _client(tmp_path, permission_mode="default")
+        successor._write_claude_local_settings()
+
+        assert successor._claude_settings_authored is False
+        assert successor._claude_settings_shared is False
+        assert sp._LIVE[key] == owner._seed_owner
+        assert path.read_text(encoding="utf-8") == before
+        assert '"bypassPermissions"' in path.read_text(encoding="utf-8")
+        ownership_table.release_runtime_tenancy(handle)
+
+    def test_a_held_lease_keeps_the_claim(self, tmp_path, ownership_table, monkeypatch):
+        """The other refusal ground: a lease that outlived its release site."""
+        owner = _client(tmp_path)
+        owner._write_claude_local_settings()
+        key = os.fspath(_settings(tmp_path))
+        owner._pid = _LIVE_PID
+        owner._start_time = _LIVE_START_ID
+        # The gate reads the lease count through its own module's name.
+        monkeypatch.setattr(ro, "outstanding_leases", lambda target: 1)
+
+        _sync_kill_provider(_stub_provider(owner))
+
+        assert sp._LIVE[key] == owner._seed_owner
+        assert owner._seed_owner in sp._read_disk_seeds()[key]["holders"][sp._HOLDER_OWNERS]
+
+    def test_an_unreadable_identity_keeps_the_claim(self, tmp_path, monkeypatch):
+        """The pid exists but its start identity cannot be read: our runtime or not?
+
+        Deny-by-default for the kill, and the same answer for the seed: a claim
+        released here would let a successor re-seed under a process that may be
+        ours and still running.
+        """
+        owner = _client(tmp_path)
+        owner._write_claude_local_settings()
+        key = os.fspath(_settings(tmp_path))
+        owner._pid = _LIVE_PID
+        owner._start_time = _LIVE_START_ID
+        monkeypatch.setattr(sp.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(sp.platform_compat, "get_process_start_id", lambda pid: None)
+
+        _sync_kill_provider(_stub_provider(owner))
+
+        assert sp._LIVE[key] == owner._seed_owner
+        assert owner._seed_owner in sp._read_disk_seeds()[key]["holders"][sp._HOLDER_OWNERS]
+
+    def test_a_recycled_pid_releases_the_claim(self, tmp_path, monkeypatch):
+        """The pid now names a stranger: the runtime that read the seed is gone."""
+        owner = _client(tmp_path)
+        owner._write_claude_local_settings()
+        path = _settings(tmp_path)
+        key = os.fspath(path)
+        owner._pid = _LIVE_PID
+        owner._start_time = _LIVE_START_ID
+        monkeypatch.setattr(sp.platform_compat, "pid_exists", lambda pid: True)
+        monkeypatch.setattr(
+            sp.platform_compat, "get_process_start_id", lambda pid: "a-strangers-incarnation"
+        )
+        # The root is unverified, so the teardown signals nothing and sweeps the
+        # recorded descendants only (the stub records none); the grace it would
+        # wait out for them is pinned to zero, since this test asserts on the claim.
+        monkeypatch.setattr(session_pid, "_PROVIDER_TERM_GRACE_SECONDS", 0.0)
+
+        _sync_kill_provider(_stub_provider(owner))
+
+        assert key not in sp._LIVE
+        assert owner._seed_owner not in sp._read_disk_seeds()[key]["holders"][sp._HOLDER_OWNERS]
+        assert sp.held_by_another(path, "a-later-session") is False
