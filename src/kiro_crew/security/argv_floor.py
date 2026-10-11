@@ -2706,6 +2706,35 @@ def _proxyjump_value_targets_self(value: str) -> bool:
     return any(_operand_targets_self(hop) for hop in value.split(","))
 
 
+# A ``-R`` ``[bind:]port`` field is treated as a real reverse-SOCKS port unless it
+# PROVABLY cannot be one -- fail closed. OpenSSH accepts ``0`` (the server picks
+# the port) and /etc/services names, and the shell can turn ``{8080,}``, ``$P``,
+# ``~``, a glob or an extglob ``@(/|0)`` into a port before ssh runs, so none of
+# those may be trusted as "not a port". The one shape that cannot be and cannot
+# expand to a port is a LITERAL path or ``owner/repo`` the remote command owns:
+# a ``/``-bearing token drawn ONLY from the characters a path holds. This is an
+# ALLOWLIST, not a denylist of metacharacters, so a shell operator the denylist
+# never named (extglob ``(`` / ``|`` / ``@``) cannot slip through the exemption.
+_LITERAL_PATH_RE = re.compile(r"\A[a-z0-9][a-z0-9/._-]*\Z")
+
+
+def _might_be_forward_port(field: str) -> bool:
+    """True unless a single ``-R`` port field PROVABLY cannot be a port.
+
+    Fails closed: a number, ``0``, a service name, or any token the shell could
+    expand to a port (brace, glob, extglob, variable, tilde, command sub) all
+    count as a port, so the forward self-check fires. Only a ``/``-bearing token
+    drawn solely from literal path characters (``[a-z0-9/._-]``) is a non-forward
+    value (``gh ... -R o/r``). A multi-field spec never reaches here (see caller):
+    its last field can be a local SOCKET path (``-R 2222:/run/docker.sock``), a
+    real reverse forward into this host, so it must not take the path exemption.
+    """
+    tok = field.strip().strip("\"'[]")
+    if "/" in tok and _LITERAL_PATH_RE.match(tok):
+        return False
+    return True
+
+
 def _remote_forward_value_targets_self(value: str) -> bool:
     """True if a remote-forward (``-R`` / RemoteForward) spec dials THIS host.
 
@@ -2719,8 +2748,16 @@ def _remote_forward_value_targets_self(value: str) -> bool:
     dials a destination from here.  Spec shapes, colon-split OUTSIDE
     brackets: ``[bind:]port:host:hostport`` (3-4 fields) checks the host
     field as a connection target (DNS-classified like any host value);
-    ``[bind:]port`` (1-2 fields) is reverse-SOCKS, where the REMOTE chooses
-    every local dial destination -- loopback included -- so it fails closed.
+    ``[bind:]port`` is reverse-SOCKS, where the REMOTE chooses every local
+    dial destination -- loopback included -- so it fails closed.  A SINGLE
+    field (no bind) is exempt only when it provably cannot be a port: a
+    literal ``/``-bearing token with no shell metacharacter -- a remote
+    command's own flag value such as ``gh ... -R owner/repo`` -- which is not a
+    forward spec and dials nothing from here.  A TWO-field value always fails
+    closed, because its last field can be a local SOCKET path on this host
+    (``-R 2222:/run/docker.sock``, ``-R /tmp/r.sock:/run/docker.sock``), a real
+    reverse forward in.  The host-bearing 3-4 field shape checks the host
+    field, so a real ``-R 2222:localhost:22`` fails closed.
     The config spelling ``RemoteForward listen dest`` is whitespace-joined
     onto ``:`` first, which reduces it to the same shape.
     """
@@ -2737,7 +2774,13 @@ def _remote_forward_value_targets_self(value: str) -> bool:
             fields.append(spec[start:i])
             start = i + 1
     fields.append(spec[start:])
-    if len(fields) <= 2:
+    if len(fields) == 1:
+        # ``[bind:]port`` with no bind: self unless the one field cannot be a port.
+        return _might_be_forward_port(fields[0])
+    if len(fields) == 2:
+        # ``bind:port`` OR ``[bind:]port:local_socket`` where the last field can be
+        # a LOCAL SOCKET path on this host (``-R 2222:/run/docker.sock``): a real
+        # reverse forward into this machine, so a 2-field spec always fails closed.
         return True
     dest = fields[-2].strip().strip("[]")
     return bool(dest) and _operand_targets_self(dest)
