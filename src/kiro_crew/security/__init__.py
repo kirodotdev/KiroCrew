@@ -1342,7 +1342,13 @@ def is_denied(
                 ungated_pattern,
                 "Matched structurally on the command's argv, not by the pattern text above: "
                 "shell substitution or expansion fuses text into the push target, so the "
-                "destination branch cannot be determined before the push runs.",
+                "destination branch cannot be determined before the push runs."
+                + (
+                    " If the push shares a line with a multi-line quoted argument, put the "
+                    "push on its own line."
+                    if "\n" in lower
+                    else ""
+                ),
                 rule="git-publish-target-unverifiable",
                 component="git-publish-floor",
             )

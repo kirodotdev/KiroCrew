@@ -1744,10 +1744,50 @@ grammar admits no quotes, so a quote can only sit in the target group;
 refusing the whole token for it had mislabelled the shape), while fragment
 tokens (open quote state) still poison the split protectively. Quoted operator characters are data and none of this fires. A segment
 whose CUMULATIVE quote/escape state is still open at its end continues into the
-next line — bash line continuation (`\<newline>` vanishes) and quoted newlines
-splice words across the newline segment boundary, so `origin ma\` + newline +
+next line — bash line continuation (`\<newline>` vanishes) splices words across
+the newline segment boundary, so `origin ma\` + newline +
 `in` pushes `main` while no scanned token spells it — and lands on the ungated
-sentinel (the `ma$in` posture); a mid-segment open whose quote closes before
+sentinel (the `ma$in` posture). A literal newline INSIDE quotes is word data
+and does not end the segment. Of the two layers that read such a command, only
+one is the deny authority: the per-line reading judges every push line exactly
+as a single-line command, dropping its ungated sentinel only where the
+whole-text walk enters the line inside a quote that closes before the push and
+ends its word (the tail of a quoted multi-line word; a fragment glued to the
+closing quote keeps the word going) and judging the code after that close in full,
+and only when that word is inert data: its owner is `git commit`, the one owner
+the reported failure names, a double-quoted word holds no
+substitution, and the rest of the command passes one closed allowlist: with its
+other quoted words masked (an empty one, or one opening with `-`, stays an option
+bash dequotes and fails the check, as does an inert word that opens with `-` or
+is glued to text other than a long option's `=`; a `$'…'` word is read from its
+decoded body cut at the NUL, so an escape-spelled option such as `$'\x2de'` is
+seen as `-e`), only word characters and `;`,
+`&` or newline remain,
+and every segment is `cd <dir>` or a `git` verb (`add`, `commit`, `push`) whose
+every flag is on that verb's lowercase allowlist, where only `-m`/`--message` take
+a value (so no `--author`/`--date` can swallow a `-m`), a commit carrying its
+message (so no `git config`,
+`--edit`, `-c` or bare `--amend` opens an editor on the text; option scanning
+stops at `--`, so a pathspec after it, even one named `--no-edit`, is not read as
+a flag and cannot satisfy that message rule). Adding a verb, owner or
+flag to `_INERT_FLAGS` widens an allow on the push gate, so
+it needs a matching row in the real-bash oracle corpus
+(`test_no_command_real_bash_runs_as_a_protected_push_is_allowed`); the list holds
+only the flags issue #12631's refused commands use, each with its row. A refused
+multi-line command's reason adds that the push can go on its own line, which the
+per-line reading allows. A pipe, redirect
+(`exec > f` included), expansion, glob, brace, comment, function or alias
+definition, or `source`d helper therefore keeps the sentinel, as does a word
+`trap` decodes or expands,
+so a quote the walk gets wrong cannot hide a protected, bare or unverifiable
+push. The construct list only narrows ALLOWS, by limiting where a quoted newline
+is kept: a heredoc, a command, parameter or process substitution, a backtick, a
+real `#` comment, or any backslash-newline outside a plain single quote (where
+bash reads every character literally) keeps the split at every newline, because
+the walk models none of their bodies and bash deletes a backslash-newline before
+it reads quotes or openers; no denial depends on it. A merged segment that
+does not parse as a push (quoted text that merely mentions one) is read line by
+line instead; a mid-segment open whose quote closes before
 segment end stays on the disableable fallback, because in-segment joining can
 only fuse whitespace into a word (never a valid refname) and the pieces stay
 visible to the superset scan. The invariant

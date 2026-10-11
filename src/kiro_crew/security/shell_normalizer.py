@@ -2759,7 +2759,100 @@ _CMD_SEPARATOR_RE = re.compile(r"&&|\|\||[;|\n]")
 _SHELL_SEGMENT_SEPARATORS = ("&&", "||", ";", "|")
 
 
-def _split_push_command_segments(text: str) -> list[str]:
+#: Constructs the quote walk does not model (heredoc, ``$(``, ``${``, backtick and
+#: process-substitution bodies, and a backslash-newline, which bash deletes before
+#: it reads an opener or a quote and which the per-line cut restarts the walk at).
+_QUOTE_WALK_UNMODELLED_RE = re.compile(r"<<|\$\(|\$\{|`|[<>]\(|\\\n")
+
+#: A quoted word is inert data only as a ``git commit`` argument, the one owner the
+#: reported failure names. The rest of the command must then be PLAIN, one closed
+#: allowlist checked whole: once every other quoted word is masked (bash pairs
+#: ``'``/``"`` left to right when no ``\``, ``$`` or ``#`` remains), only word
+#: characters and the separators ``;``/``&``/newline may be left, and every
+#: segment must be a command in ``_inert_segment``'s closed grammar. No pipe,
+#: redirect, expansion, glob, brace, comment, definition, config write, editor or
+#: other command can then appear. The text arrives lowercased, so every flag is
+#: listed lowercase, and only ``-m``/``--message`` take a value. The flags are the
+#: ones an add/commit/push chain uses, each with a real-bash oracle row.
+_INERT_FLAGS = {
+    verb: frozenset(flags.split() + ["--"])
+    for verb, flags in {
+        "commit": "-m --message -q --quiet -a --all",
+        "add": "-a --all",
+        "push": "-u --set-upstream -q --quiet --force-with-lease",
+    }.items()
+}
+_INERT_WORD_OWNER_RE = re.compile(
+    r"git(?:\s+-c\s+(?:user|author|committer)\.\w+=(?:'[^']*'|\"[^\"]*\"|[^\s'\"]+))*\s+commit\s"
+)
+_INERT_MASK_RE = re.compile(r"'[^']*'|\"[^\"$`\\]*\"")
+_INERT_PLAIN_RE = re.compile(r"[\w./:=@%+, \t\n;&-]*")
+
+
+def _quoted_word_is_inert(text: str, seg: int, opened: int, end: int) -> bool:
+    """Whether the quote opened at *opened* (segment from *seg*) holds data."""
+    head = text[seg:opened].lstrip()
+    if not _INERT_WORD_OWNER_RE.match(head):
+        return False
+    if text[opened] == '"' and re.search(r"\$[({\[]|`", text[opened:end]):
+        return False
+    start = opened - (text[opened - 1 : opened] == "$")
+    # Bash decodes a ``$'…'`` word before building the argv, so the first
+    # character it hands over is the decoded one, cut at a NUL.  Reading the raw
+    # ``text[opened + 1]`` let ``$'\x2de\0'`` -- which bash passes as ``-e`` --
+    # look like a ``\`` and slip past, turning ``git commit`` into one that opens
+    # a configured editor.  Decode the body so a leading-option ``-`` is seen
+    # whatever its spelling; a plain/double/``$"…"`` word is literal and unchanged.
+    if text[opened] == "'" and start == opened - 1:
+        lead = _decode_ansi_c_body(text[opened + 1 : end])
+    else:
+        lead = text[opened + 1 : end]
+    if text[start - 1 : start] not in (" ", "\t", "=") or lead[:1] == "-":
+        return False
+    rest = (
+        _INERT_MASK_RE.sub(_inert_mask, text[:start])
+        + " "
+        + _INERT_MASK_RE.sub(_inert_mask, text[end + 1 :])
+    )
+    return bool(_INERT_PLAIN_RE.fullmatch(rest)) and all(
+        _inert_segment(p.split()) for p in re.split(r"[;&\n]", rest) if p.strip()
+    )
+
+
+def _inert_mask(m: re.Match[str]) -> str:
+    """A masked quoted word as ``_``, or a ``'`` that fails the plain check when it is
+    empty or opens with ``-``: bash dequotes ``'-e'`` and ``''-e`` into the option.
+    """
+    return "_" if m.group()[1:2] not in ("", "-", m.group()[:1]) else "'"
+
+
+def _inert_segment(words: list[str]) -> bool:
+    """Whether one masked segment is ``cd <dir>`` or an allowlisted ``git`` verb whose
+    every flag is allowlisted, so nothing opens an editor, pager or config write that
+    could run the text; a commit needs a message.
+    """
+    head, *args = words
+    if head == "cd":
+        return len(args) == 1 and not args[0].startswith("-")
+    if head != "git":
+        return False
+    while len(args) > 1 and args[0] == "-c":
+        if not re.fullmatch(r"(?:user|author|committer)\.\w+=\S*", args[1]):
+            return False
+        args = args[2:]
+    verb, args = (args or [""])[0], args[1:]
+    # ``--`` ends option parsing: every later word is a pathspec, not a flag. A
+    # tracked file named ``-m`` after ``--`` must not satisfy the message
+    # requirement below.
+    opts = args[: args.index("--")] if "--" in args else args
+    flags = {w.split("=", 1)[0] for w in opts if w.startswith("--")}
+    flags |= {"-" + c for w in opts if w.startswith("-") and not w.startswith("--") for c in w[1:]}
+    if verb not in _INERT_FLAGS or not flags <= _INERT_FLAGS[verb]:
+        return False
+    return verb != "commit" or bool(flags & {"-m", "--message"})
+
+
+def _split_push_command_segments(text: str, keep_quoted_newlines: bool = True) -> list[str]:
     """Split *text* into the shell's TRUE command segments, honouring quoting.
 
     A separator only separates where the SHELL reads one. Inside quotes, or
@@ -2771,14 +2864,14 @@ def _split_push_command_segments(text: str) -> list[str]:
     boundary, so an ordinary unprotected refname was denied by the protective
     fallback (and by its ungated sentinel, which no catalog row can switch off).
 
-    A NEWLINE always separates, escaped or not, and the backslash is KEPT in the
+    An UNQUOTED newline separates, escaped or not, and the backslash is KEPT in the
     segment it ends. That is not an inconsistency: a backslash-newline VANISHES
     in bash, fusing the words on either side into one that neither segment can
     reconstruct (``origin ma\\`` + newline + ``in`` publishes MAIN), and the
     retained trailing escape is exactly the signal the cumulative-open-state
     check ungates on. Every other escaped separator survives as a LITERAL
     character in the word, so the fused word necessarily contains it and can
-    never equal a protected branch name.
+    never equal a protected branch name. A newline INSIDE quotes is word data.
 
     Distinct from :func:`_split_shell_segments`, which serves the ``cd``-tracking
     pass: that one wants FEWER segments (a wrong split corrupts the tracked
@@ -2794,6 +2887,19 @@ def _split_push_command_segments(text: str) -> list[str]:
     """
     segments: list[str] = []
     rest = text
+    # A quoted newline is kept as word data only when the quote walk can be trusted
+    # across lines. This only narrows allows; the per-line reading in argv_floor is
+    # the deny authority. The walk models no comment, heredoc, substitution body or
+    # backslash-newline, so any of those outside a plain single quote (where bash
+    # reads every character literally) keeps the conservative split at every newline.
+    keep_quoted_newlines = keep_quoted_newlines and not any(
+        (step.active and step.char == "#" and _opens_comment(text, step.offset))
+        or (
+            (step.active or step.state != 1 or step.ansi)
+            and _QUOTE_WALK_UNMODELLED_RE.match(text, step.offset)
+        )
+        for step in _iter_shell_chars(text)
+    )
     while True:
         buf: list[str] = []
         resume_at: int | None = None
@@ -2802,12 +2908,12 @@ def _split_push_command_segments(text: str) -> list[str]:
                 buf.append(step.text)
                 break
             if step.char == "\n":
-                # A NEWLINE always separates. When it was ESCAPED the backslash
-                # is kept, because that is the splice signal: bash makes the
-                # backslash-newline vanish, fusing the words on either side into
-                # one that neither segment can reconstruct.
+                # A quoted newline is word data; an escaped one keeps "\" (see docstring).
                 if step.text.startswith("\\"):
                     buf.append("\\")
+                elif not step.active and keep_quoted_newlines:
+                    buf.append(step.text)
+                    continue
                 resume_at = step.offset + len(step.text)
                 break
             if step.active:

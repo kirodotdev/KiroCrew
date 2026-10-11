@@ -118,6 +118,7 @@ from .shell_normalizer import (
     _push_option_matches,
     _push_token_redirection,
     _push_token_shell_read,
+    _quoted_word_is_inert,
     _redirect_consumes_next,
     _resolve_param_defaults,
     _shell_join_continuations,
@@ -4350,12 +4351,20 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     """
     tags: set[str] = set()
     saw_push = False
-    for command in _split_push_command_segments(text_lower):
+    pending = _split_push_command_segments(text_lower)
+    while pending:
+        command = pending.pop(0)
         # ``_is_git_publish`` (not ``_git_push_args``) gates the checks so that
         # glue-evasion forms — which do NOT tokenize to a clean ``git`` token —
         # are still recognized as pushes and cannot slip past the ambiguity /
         # fail-closed guards below.
         if not _is_git_publish(command):
+            continue
+        # A kept quoted newline that does not leave a parseable push behind (a
+        # multi-line ``echo``/``--body`` quoting a push line) is judged line by
+        # line, the conservative reading, rather than as one unparseable word.
+        if "\n" in command and _git_push_args(command) is None:
+            pending[:0] = _split_push_command_segments(command, keep_quoted_newlines=False)
             continue
         saw_push = True
         # Substitution / expansion glue anywhere in a push command makes it
@@ -4414,6 +4423,42 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         # A push was detected upstream (e.g. glue-evasion ``git_push``) but no
         # clean ``push`` segment survived splitting — deny to be safe.
         tags.add(_GIT_PUBLISH_UNGATED)
+    if "\n" in text_lower:
+        # The per-line reading still judges every push line on its own, exactly as
+        # a single-line command, so a quote the walk gets wrong cannot hide one.
+        # Its ungated sentinel is dropped only where the whole-text walk ENTERS the
+        # line inside a quote and closes it before the push begins, and the quote
+        # also ends the word: that head is the tail of a quoted word, and the code
+        # after it is judged in full. A fragment glued to the quote keeps the word,
+        # and the word must be inert data (``_quoted_word_is_inert``).
+        entries = [(0, False, 0, 0)]
+        seg = opened = prev = 0
+        for s in _iter_shell_chars(text_lower):
+            if s.char == "\n":
+                entries.append((s.state, s.ansi, seg, opened))
+            if s.active and s.char in ";&|(){}\n":
+                seg = s.offset + 1
+            if not prev and s.state:
+                opened = s.offset
+            prev = s.state
+        start = 0
+        for line, (entry, ansi, seg, opened) in zip(text_lower.split("\n"), entries):
+            line_start, start = start, start + len(line) + 1
+            if not _is_git_publish(line):
+                continue
+            line_tags = set(_git_publish_floor_tags(line))
+            walk = _iter_shell_chars(line, entry, ansi) if entry else ()
+            close = next((s.offset for s in walk if not s.state), -1)
+            ends_word = line[close + 1 : close + 2] in ("", " ", "\t", ";", "&", "|")
+            if (
+                close >= 0
+                and ends_word
+                and _quoted_word_is_inert(text_lower, seg, opened, line_start + close)
+                and not _is_git_publish(line[: close + 1])
+            ):
+                line_tags.discard(_GIT_PUBLISH_UNGATED)
+                line_tags |= _git_publish_floor_tags(line[close + 1 :])
+            tags |= line_tags
     return frozenset(tags)
 
 

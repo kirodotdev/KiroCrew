@@ -230,7 +230,15 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#: Raised again, from 28,741, for the quoted-newline rule in the push segment
+#: split: a newline inside quotes stays in its word, so a literal feature push after
+#: a multi-line ``git commit`` message parses as the push it is. Constructs the
+#: quote walk does not model keep the per-line split, and the per-line reading still
+#: judges every push line, dropping its ungated sentinel only behind a quoted word
+#: ``_quoted_word_is_inert`` accepts: a ``git commit`` message in a command that
+#: passes one closed lowercase allowlist (``cd <dir>``, ``git add``/``commit``/``push``
+#: with allowlisted flags, no editor, config write, pipe, redirect or expansion).
+_PACKAGE_LINE_BUDGET = 28_898
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
