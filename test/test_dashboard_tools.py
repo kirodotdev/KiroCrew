@@ -572,6 +572,52 @@ class TestDashboardApplyTool:
         assert out.startswith("Error:") and "preview one first" in out
 
 
+class TestTheReplyNamesTheFeaturePreview:
+    """The Dashboard tab draws this page only for readers with the preview on.
+
+    With the 'Dynamic Dashboard' Feature Preview off, which is the default, the tab draws the
+    panel_publish record instead. An agent told only "your page is now version 4"
+    believes a person can see it, so the replies that touch the page say who can.
+    """
+
+    @staticmethod
+    def _note() -> str:
+        import kiro_crew.mcp_panel as mcp_panel
+
+        note = getattr(mcp_panel, "DASHBOARD_PREVIEW_NOTE", None)
+        assert note is not None, "mcp_panel must declare the feature-preview sentence"
+        return str(note)
+
+    def test_the_sentence_names_the_preview_and_the_fallback(self) -> None:
+        note = self._note()
+        # The switch's own label, so a person told it can find the row.
+        assert "'Dynamic Dashboard' Feature Preview" in note
+        assert "panel_publish" in note
+
+    def test_apply_says_who_can_see_the_page(self, _verified_caller: Any) -> None:
+        body = {"ok": True, "instance_version": 4, "template_id": "fixture-board"}
+        with patch("kiro_crew.mcp_panel._post", return_value=body):
+            out = _call_tool_inner("dashboard_apply", {})
+        assert self._note() in out
+
+    def test_a_refused_apply_does_not_carry_it(self, _verified_caller: Any) -> None:
+        with patch("kiro_crew.mcp_panel._post", return_value={"error": "nothing staged"}):
+            out = _call_tool_inner("dashboard_apply", {})
+        assert self._note() not in out
+
+    def test_write_says_who_can_see_the_page(self, _verified_caller: Any) -> None:
+        body = {"ok": True, "written": {"field": "credits", "type": "number"}}
+        with patch("kiro_crew.mcp_panel._post", return_value=body):
+            out = _call_tool_inner("dashboard_write", {"field": "credits", "value": 3})
+        assert self._note() in out
+
+    def test_fields_says_who_can_see_the_page(self) -> None:
+        out = _render_fields(
+            {"template": {"id": "fixture-board", "version": 1}, "instance_version": 2}
+        )
+        assert self._note() in out
+
+
 class TestDashboardRollbackTool:
     def test_it_reports_the_version_it_landed_on_not_the_one_asked_for(
         self, _verified_caller: Any

@@ -1493,9 +1493,18 @@ exact member), its `CREW_WEBVIEW_SANDBOX` (`allow-scripts` only), and its
 single-use mint rule; the `CrewWebview` drawer itself is unchanged. Its
 "Opening the conversation" line is withheld while the main column already says
 it (`activeSlot` unset), so two live regions never say it at once. The tab is a
-standing entry whatever `PREVIEW_DASHBOARD` says: that preview gates the Dynamic
-Dashboard (the Command Center and its in-chat dock), but the crewmate's own
-published page is not that surface. This page never passes the in-chat Command
+standing entry whatever `PREVIEW_DASHBOARD` says, but what fills it moves with
+the flag: off (the default) it renders this frame; on, it renders the crewmate's
+dynamic dashboard (`CrewDashboardTab`). With the flag off and an adopted dynamic
+dashboard, the frame shows one line saying where to turn it on. Over the published
+view the line names that view; over the empty state it says nothing is
+published yet, so it never contradicts the bubble below. It learns that from its own
+`member-dashboard-adopted` read of `GET /api/members/{slug}/dashboard`
+(owner-only; `instance_version > 0`, 60 s `staleTime`, no retry), kept outside
+the `member-dashboard` prefix so fold frames do not re-read it. A refused or
+failed read shows no line. The line's "Open Feature Previews" button leaves
+through the page's leave guard, so a Schedules draft or editor pane is asked
+about first. This page never passes the in-chat Command
 Center dock opener into its `ChatPane`, regardless of the preview flag: the
 permanent Dashboard tab is the one entrance here, so a second control would point
 at a different dashboard concept from the same conversation. With no Command

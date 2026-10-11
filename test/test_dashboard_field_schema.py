@@ -273,6 +273,8 @@ class TestTheTurnBlock:
         version = _builtin("project-report").version
         assert block.startswith("[DASHBOARD]\n"), block
         assert f"template project-report v{version}" in block
+        # Which readers see it: the tab draws it only with the feature preview on.
+        assert "'Dynamic Dashboard' Feature Preview on" in block
         assert "Fields you write: ci, for_you, verdict." in block
         assert "mistake" not in block.lower(), "the mistake book stays behind dashboard_fields"
         assert len(block.splitlines()) <= 4

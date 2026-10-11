@@ -9,6 +9,10 @@ triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another d
 A crewmate's Dashboard tab is ONE page, and it belongs to the person reading it. You
 change it for them; you do not decide it for them.
 
+The tab draws this page only for a reader who turned on the "Dynamic Dashboard"
+Feature Preview. With it off, the default, the tab draws your `panel_publish`
+record instead, so after an apply tell the person where that switch is.
+
 Everything here is three phrases a person actually says.
 
 ## 1. "Show me another one" / "I want one that shows X"
