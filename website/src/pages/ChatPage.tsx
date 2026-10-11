@@ -302,6 +302,11 @@ import { SidePanelDockHost, SidePanelGlyph } from '../components/SidePanelGlyph'
 
 import SlotTagPopover from '../components/SlotTagPopover'
 import { TagPopoverProvider } from '../hooks/useTagPopover'
+import { MergeBackDialogProvider } from '../hooks/useMergeBackDialog'
+import MergeBackDialog from '../components/MergeBackDialog'
+import MergedFromLabel from './chat/MergedFromLabel'
+import { useOpenMergedFork } from './chat/useOpenMergedFork'
+import { mergedFromOf } from '../types/mergeBack'
 
 import { AnimatePresence, motion, useMotionValue, useTransform } from 'framer-motion'
 import DetailPanel from '../components/DetailPanel'
@@ -4295,6 +4300,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   }, [messages])
   const slotStateRef2 = useRef(slotState); slotStateRef2.current = slotState
 
+  // Opens the fork a merge card names: switched to when open, reopened from
+  // History when not. One identity for the renderer memo below.
+  const openMergedFork = useOpenMergedFork()
+
   // ── Registry-driven row dispatch (chat-core P5-a) ──
   // Every transcript row on this page resolves through the SAME renderer
   // registry the other surfaces consume (app-sdk/messageRenderers), so a role
@@ -4371,6 +4380,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
             (() => {
               const cronLabel = (m.meta?.cronLabel as string) || ''
               const appLabel = (m.meta?.appLabel as string) || ''
+              const mergedFrom = mergedFromOf(m.meta)
               // Strip wrapper tags — LLM needs them for context but user sees clean content
               const stripped = cronLabel
                 ? m.content.replace(/^\[Cron notification from ".*"\]\n/, '').replace(/\n\[End of cron notification\]$/, '')
@@ -4383,6 +4393,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               return <>
                 {cronLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1"><Clock className="lucide-inline" /> {cronLabel}</span>}
                 {!cronLabel && appLabel && <span className="text-muted text-[11px] leading-4 font-medium px-1 mb-1 cursor-help" title={i18nT('components.mcpApp.from_app_tooltip')}><AppWindow className="lucide-inline" /> {i18nT('components.mcpApp.from_app', { app: appLabel.split('/')[0] })}</span>}
+                {!cronLabel && !appLabel && mergedFrom && <MergedFromLabel block={mergedFrom} onOpen={() => openMergedFork(mergedFrom)} />}
                 {/* Same session wiring as the assistant branch. Without it `resolveSessionChip`
                     refuses at its first guard and a `/chat?sid=` link gains `target="_blank"`. */}
                 <div className="mc-message-font-scope msg-content px-4 py-3 leading-relaxed rounded-lg bg-warn-subtle text-text ring-1 ring-inset forced-colors:border ring-warn/30 rounded-bl-[4px] overflow-hidden min-w-0" style={{ overflowWrap: 'anywhere', wordBreak: 'break-word', fontSize: 'var(--mc-message-font-size, 14px)' }}><MessageErrorBoundary rawContent={cleanContent}><MarkdownRenderer content={cleanContent} onSessionOpen={selectSessionTab} sessions={connected ? sessionTitles : undefined} activeSession={activeSlot || undefined} messageTs={m.ts} softBreaks /></MessageErrorBoundary></div>
@@ -4515,7 +4526,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       bubble,
     ])
     return { renderers, fallback: bubble }
-  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, sessionTitles, connected, handleFork, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen])
+  }, [slotRunning, handleFileOpen, handleArtifactOpen, selectSessionTab, openMergedFork, sessionTitles, connected, handleFork, handleQuote, handleAsk, quoteWholeMessage, handleJumpToQuote, chatConfig, activeSlot, regenerating, activeSlotRemoteBound, handleRegenerate, handleEditResend, editLast, handleEditConsumed, slotHasMore, loadingOlder, cursorIsForActiveSlot, slotOldestIndex, handleLoadEarlier, renderUserContentCb, highlightTs, activeSlotTitle, mode, embedded, popout, handleOpenDiff, planTaskId, artifactPaths, automationId, toolDisclosure, setToolDisclosureFor, linkPreviewsOn, socialShareOn, voiceRecoverySlot, handleSubagentPanelOpen, isPinned, handleTogglePinForMessage, showRefusedPress, transcriptHot, revealAppInPanel, continuable, interrupted, continuing, handleContinue, openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, handleFolderOpen, handleSpeak, handleApplyPlan, mcpAppPanel, redactionCoachTs, setAutomationOpen])
 
   const renderMessage = useCallback((i: number, m: ChatMessage) => {
     // Key identity rules (clientTs preference + streaming->assistant role
@@ -5367,6 +5378,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         right, so every panel glyph on this page resolves against that. */}
     <SidePanelDockHost value={!!activitySlot}>
     <TagPopoverProvider>
+    {/* Merge into parent is offered exactly where a fork is (the `onFork` gate
+        below): the dashboard and a popped-out window, not the embedded panes. */}
+    <MergeBackDialogProvider enabled={!embedded || !!popout}>
     {/* Self-hosted Jira allowlist for every markdown anchor in the page --
         message bodies, previews, and panels alike -- so a pasted Jira URL
         chips identically wherever it renders. Cloud URLs need no provider. */}
@@ -5621,6 +5635,8 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       {/* Per-slot tag picker — a single connected popover, opened from any session
           menu (sidebar row or header) via the ChatPage-scoped TagPopover context. */}
       <SlotTagPopover />
+      {/* Merge a fork into its parent -- one dialog, opened from any session menu. */}
+      <MergeBackDialog />
       <ComposerDraftSync store={composerDraft} inputRef={inputRef} onCommit={onComposerDraftCommit} />
 
       {/* Chat pane */}
@@ -6814,6 +6830,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     </div>
     </SidebarFolderCtx.Provider>
     </JiraHostsCtx.Provider>
+    </MergeBackDialogProvider>
     </TagPopoverProvider>
     </SidePanelDockHost>
     </RowDisclosureProvider>

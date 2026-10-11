@@ -19,6 +19,7 @@ if TYPE_CHECKING:
         _RESUME_APP_NOT_FOUND,
         _STRUCTURED_CONTENT_MAX_CHARS,
         _STRUCTURED_CONTENT_PLACEHOLDER,
+        MERGED_FROM_MAX_CREATED_AT_CHARS,
         DashboardState,
         ResumeOutcome,
         ResumeRefusal,
@@ -59,6 +60,7 @@ if TYPE_CHECKING:
         slot_history_key,
         slot_transcript_key,
         time,
+        transcripts_share_file,
     )
 
 
@@ -222,7 +224,9 @@ async def _live_slot_for_resume(
     existing = state._slots.get(name)
     if not existing:
         for slot in state._slots.values():
-            if effective_session_key(slot) == canonical:
+            if effective_session_key(slot) == canonical or transcripts_share_file(
+                slot_history_key(slot), history_key
+            ):
                 existing = slot
                 break
     if existing:
@@ -250,6 +254,58 @@ async def _live_slot_for_resume(
             )
         return ResumeOutcome(slot=existing, already_live=True)
     return None
+
+
+async def _pinned_live_outcome(
+    state, outcome: ResumeOutcome, expected_created_at: str | None
+) -> ResumeOutcome:
+    """Hold a live-slot answer to the transcript the caller pinned.
+
+    A refusal passes through as it is: an app gets the same isolation 404 with a
+    pin as without one, so a pin cannot tell it that a session it does not own is
+    open, and a member pin refusal keeps its own reason. Only a live slot whose
+    transcript is not the pinned one becomes ``resume_identity_mismatch``.
+
+    The slot's transcript identity is the ``created_at`` of the transcript it
+    HOLDS, never ``slot.created_at``: that field is the constructor's clock
+    reading, and a save carries the disk line's own ``created_at`` forward
+    (``metadata_line.build_full_line``) and records it as
+    ``_disk_meta_created_at``. A ``workflow-<run_id>`` slot bound to a closed
+    chat's session, or a chat minted by name over an existing transcript, holds a
+    transcript whose identity its stamp never matches. The observed value is the
+    answer when the slot has one, the same identity ``mergedFrom.createdAt`` is
+    recorded from and ``resolve_turn_transcript_identity`` answers with. A slot
+    that has neither saved nor hydrated will carry the disk line forward on its
+    first save, so its transcript's identity is the one on disk now, read off the
+    event loop as this file reads every metadata line. A slot that never writes
+    a transcript (a non-persistent memory mode), an unreadable line, a missing
+    file and a legacy line with no ``created_at`` all have no identity, which no
+    pin can equal.
+    """
+    if expected_created_at is None or outcome.refusal is not None:
+        return outcome
+    held_identity = ""
+    if outcome.slot is not None:
+        held_identity = str(getattr(outcome.slot, "_disk_meta_created_at", "") or "")
+        if (
+            not held_identity
+            and outcome.slot.memory_mode == "persistent"
+            and state.conversation_log
+        ):
+            meta, meta_readable = await asyncio.to_thread(
+                state.conversation_log.get_metadata_status, slot_history_key(outcome.slot)
+            )
+            if meta_readable:
+                held_identity = str(meta.get("created_at") or "")
+    if held_identity and held_identity == expected_created_at:
+        return outcome
+    return ResumeOutcome(
+        refusal=ResumeRefusal(
+            "the requested session is no longer available",
+            "resume_identity_mismatch",
+            409,
+        )
+    )
 
 
 async def _live_slot_resume_payload(state, existing) -> dict:
@@ -605,6 +661,7 @@ def _hydrate_slot_from_history(
             folder_unhidden=folder_unhidden,
             folder_checked_id=folder_checked_id,
             disk_meta_observed=disk_meta_observed,
+            history_key=slot_history_key(slot),
         ),
     )
     disk_total = len(all_messages)
@@ -704,6 +761,22 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
     if body_err is not None:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
+    expected_created_at: str | None = None
+    if "expected_created_at" in body:
+        candidate = body.get("expected_created_at")
+        if (
+            not isinstance(candidate, str)
+            or not candidate
+            or len(candidate) > MERGED_FROM_MAX_CREATED_AT_CHARS
+        ):
+            return web.json_response(
+                {
+                    "error": "expected transcript identity is invalid",
+                    "code": "invalid_expected_created_at",
+                },
+                status=400,
+            )
+        expected_created_at = candidate
     outcome = await resume_slot_from_history(
         state,
         name=name,
@@ -711,6 +784,7 @@ async def api_chat_slot_resume(request: web.Request) -> web.Response:
         request_app=request_app,
         caller_label=request.remote or "",
         request_title=body.get("title", ""),
+        expected_created_at=expected_created_at,
     )
     if outcome.refusal is not None:
         return _resume_refusal_response(outcome.refusal)
@@ -755,6 +829,7 @@ async def resume_slot_from_history(
     request_app: str = "",
     caller_label: str = "",
     request_title: str = "",
+    expected_created_at: str | None = None,
     containment: "Callable[[_ChatSlot], Awaitable[ResumeRefusal | None]] | None" = None,
     final_check: "Callable[[_ChatSlot], ResumeRefusal | None] | None" = None,
 ) -> ResumeOutcome:
@@ -767,7 +842,10 @@ async def resume_slot_from_history(
     under (any spelling ``_normalize_slot_key`` folds), ``history_key`` the
     transcript to load (``None`` means ``name``), ``request_app`` the app token's
     scope when the caller is an app (empty for the dashboard user and for
-    session control), and ``caller_label`` what SEL records as the caller.
+    session control), ``caller_label`` what SEL records as the caller,
+    ``request_title`` the fallback title when the transcript stores none, and
+    ``expected_created_at`` an optional transcript identity that must match before
+    an existing or hydrated slot is returned.
 
     ``containment`` is a caller's LAST gate before publish. It runs once the slot
     is hydrated -- so it reads the fields the slot actually carries, not a
@@ -839,8 +917,8 @@ async def resume_slot_from_history(
         return ResumeOutcome(refusal=_RESUME_APP_NOT_FOUND)
 
     # If slot already exists (active session), just return it — no duplicate.
-    # Check both by slot name AND by canonical session key to prevent two
-    # slots sharing the same kiro-cli process.
+    # Check by slot name, by canonical session key and by transcript file, so two
+    # slots never share one kiro-cli process or write one file.
     #
     # INVARIANT: both sides of this comparison derive identity through the same
     # rule. A slot answers with ``effective_session_key``, which for a
@@ -848,11 +926,16 @@ async def resume_slot_from_history(
     # the same way, via the session map. Two rules in play and a channel
     # transcript matches nothing here: it gets a second tab, so one conversation
     # shows as two sidebar rows backed by two kiro-cli processes.
+    #
+    # The file check covers what the session map cannot bind: an unbound channel
+    # tab's ``slack_<ts>`` stem and its ``slack:<ts>`` key name one file
+    # (``transcripts_share_file``). A second slot over it would write that file
+    # beside the first and restore its held notes and merge-card context again.
     resume_outcome = await _live_slot_for_resume(
         state, request_app, history_key, name, caller_label
     )
     if resume_outcome is not None:
-        return resume_outcome
+        return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
     # No live slot: an app's resume builds a NEW slot of its own over this
     # transcript, so it is admitted only to one the app already owns (both the
     # transcript it reads and the one its key would save to). Before any side
@@ -880,7 +963,31 @@ async def resume_slot_from_history(
     # persisted origin stays empty (get_or_create_slot then derives APP for an
     # app token, otherwise leaves it untagged, which is invisible to cross-slot
     # scopes) rather than claiming USER on a conversation we cannot attribute.
-    meta = state.conversation_log.get_metadata(history_key)
+    #
+    # The identity pin is compared against this same read. A dashboard caller
+    # gets its answer here. An app caller gets it only AFTER ``_app_resume_refusal``
+    # below has admitted the app to the transcript: a missing key reads as
+    # ``{}`` and so can never match a pin, which would answer 409 where the
+    # isolation rule answers 404 for a key holding somebody else's session. Two
+    # distinct answers would let an app tell "nothing here" from "another owner's
+    # session exists", the oracle ``_pinned_live_outcome`` closes on the
+    # live-slot path. Judging the pin only on a transcript the app owns gives a
+    # missing key and a foreign one the identical 404.
+    pin_refusal: ResumeRefusal | None = None
+    if expected_created_at is None:
+        meta = await asyncio.to_thread(state.conversation_log.get_metadata, history_key)
+    else:
+        meta, meta_readable = await asyncio.to_thread(
+            state.conversation_log.get_metadata_status, history_key
+        )
+        if not meta_readable or str(meta.get("created_at") or "") != expected_created_at:
+            pin_refusal = ResumeRefusal(
+                "the requested session is no longer available",
+                "resume_identity_mismatch",
+                409,
+            )
+        if pin_refusal is not None and not request_app:
+            return ResumeOutcome(refusal=pin_refusal)
 
     # An app may open only a transcript it owns, and only under a name it may
     # hold. A persisted conversation has no live slot for the per-slot checkpoint
@@ -888,11 +995,14 @@ async def resume_slot_from_history(
     # Identity is positive: a transcript with no recorded app is the person's,
     # never an app's. Checked before every mutation below and before the
     # member-mode 409, so the refusal is the same 404 a missing transcript gets
-    # and reveals nothing about the session.
+    # and reveals nothing about the session. The pin is judged only once this
+    # has passed, so its 409 names a transcript the app already owns.
     if request_app:
         refusal = await _app_resume_refusal(state, request_app, name, history_key, meta)
         if refusal is not None:
             return ResumeOutcome(refusal=refusal)
+        if pin_refusal is not None:
+            return ResumeOutcome(refusal=pin_refusal)
 
     # ── Member-thread EARLY refusal, before any persistent mutation ────────
     # ``_unhide_folder`` and ``clear_closed`` below write durable state. A
@@ -1020,7 +1130,7 @@ async def resume_slot_from_history(
         state, request_app, history_key, name, caller_label
     )
     if resume_outcome is not None:
-        return resume_outcome
+        return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
 
     destination_refusal = None
     if request_app:
@@ -1038,7 +1148,7 @@ async def resume_slot_from_history(
                 state, request_app, history_key, name, caller_label
             )
             if resume_outcome is not None:
-                return resume_outcome
+                return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
 
     # Re-check DELETION in the same window and for the same reason. The transcript
     # loaded above can be permanently deleted while we are suspended, and
@@ -1052,17 +1162,17 @@ async def resume_slot_from_history(
     # deletion would discard a LIVE session -- its docstring says to prefer this
     # wherever an empty result triggers something destructive.
     #
-    # Synchronous, like the ``get_metadata`` above it, so this adds no suspension
-    # point between the re-checks and the publish -- the property the comment on
-    # the awaits above depends on.
+    # The ``get_metadata`` above ran off the loop; this read stays ON the loop, so
+    # it adds no suspension point between the re-checks and the publish -- the
+    # property the comment on the awaits above depends on.
     post_read_meta, meta_readable = state.conversation_log.get_metadata_status(history_key)
     # Did this session exist when we looked? Both re-checks below need that, and
     # ``all_messages`` alone is the wrong witness: a METADATA-ONLY session -- a
     # metadata line with no messages, which ``update_metadata`` creates on upsert --
     # has an empty transcript, so gating on it silently disabled both guards for
     # exactly the sessions least able to survive it. The pre-read ``meta`` is the
-    # right witness, and it costs nothing: it is already read synchronously above,
-    # so consulting it adds no suspension point.
+    # right witness, and it costs nothing: it was already read off the loop above,
+    # so consulting it adds no suspension point here.
     #
     # A UNION rather than a swap, so the witness is never narrower than it was: a
     # transcript we managed to read is also evidence of prior existence, even where
@@ -1188,7 +1298,7 @@ async def resume_slot_from_history(
             state, request_app, history_key, name, caller_label
         )
         if resume_outcome is not None:
-            return resume_outcome
+            return await _pinned_live_outcome(state, resume_outcome, expected_created_at)
         if _member_binding is None or history_key != _history_key_for(name):
             sel().log_api_access(
                 caller=caller_label,

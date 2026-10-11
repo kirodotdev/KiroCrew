@@ -1034,6 +1034,55 @@ class TestTranscriptOwnershipWithoutALiveSlot:
         assert "b1" not in state._slots_under_construction
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "published_incarnation", ["pinned", "replacement"], ids=["pinned", "replacement"]
+    )
+    async def test_a_pinned_resume_dedups_onto_a_concurrent_publish_only_of_the_pinned_transcript(
+        self, state, monkeypatch, published_incarnation
+    ) -> None:
+        from kiro_crew.dashboard import chat_handlers
+
+        log = state.conversation_log
+        source_key = "dashboard:a1"
+        await asyncio.to_thread(
+            log.update_metadata, source_key, {"app": APP, "closed": True, "closed_at": 1.0}
+        )
+        pinned_created_at = (await asyncio.to_thread(log.get_metadata, source_key))["created_at"]
+        published_created_at = (
+            pinned_created_at if published_incarnation == "pinned" else "1999-01-01T00:00:00+00:00"
+        )
+        loop = asyncio.get_running_loop()
+        read_owner = chat_handlers.transcript_acquisition_reason
+        published = []
+
+        async def publish_same_transcript():
+            slot = state.get_or_create_slot("a1", app=APP)
+            slot._disk_meta_created_at = published_created_at
+            published.append(slot)
+
+        def inspect_destination(log_arg, key, app):
+            reason = read_owner(log_arg, key, app)
+            if key == "dashboard:b1" and "b1" in state._slots_under_construction:
+                asyncio.run_coroutine_threadsafe(publish_same_transcript(), loop).result(timeout=5)
+            return reason
+
+        monkeypatch.setattr(chat_handlers, "transcript_acquisition_reason", inspect_destination)
+        async with _client(state, APP) as client:
+            resp = await client.post(
+                "/api/chat/slots/b1/resume",
+                json={"key": source_key, "expected_created_at": pinned_created_at},
+            )
+            body = await resp.json()
+        assert published, "the publish during the destination read did not occur"
+        if published_incarnation == "pinned":
+            assert (resp.status, body.get("key")) == (200, "a1"), body
+        else:
+            assert (resp.status, body.get("code")) == (409, "resume_identity_mismatch"), body
+        assert state._slots["a1"] is published[0]
+        assert "b1" not in state._slots
+        assert "b1" not in state._slots_under_construction
+
+    @pytest.mark.asyncio
     async def test_an_app_resumes_its_own_closed_session(self, state) -> None:
         await _persist_and_close(state, state.get_or_create_slot("a1", app=APP))
         async with _client(state, APP) as client:

@@ -14,6 +14,9 @@ from typing import Any, NamedTuple
 
 from kiro_crew.jsonl_util import bounded_records
 from kiro_crew.sel import sel
+from kiro_crew.session_lifecycle import STOP_DECLINED_KEY_MAX_CHARS
+
+logger = logging.getLogger(__name__)
 
 # Bounds the visible lines a caller can park on one in-flight turn. Matches the
 # per-source context cap so neither half of /note outlives the other by much.
@@ -30,14 +33,117 @@ MAX_DEFERRED_NOTES = 10
 # read and rewritten whole under the cross-process history lock on every /note
 # POST): 2x the bound per note, at most 2x MAX_DEFERRED_NOTES entries.
 MAX_DEFERRED_NOTE_CHARS = 4000
+MAX_DEFERRED_NOTE_ID_CHARS = 12
+MAX_DEFERRED_NOTE_CLASS_CHARS = 64
+MAX_DEFERRED_NOTE_SESSION_CHARS = STOP_DECLINED_KEY_MAX_CHARS
 
-# Hard ceiling on the durable hold's entry count: live notes (<= the cap) plus
-# entries retained for delivered-but-unsaved rows (<= the cap under normal
-# save cadence). Exceeding it means saves have not landed for multiple full
-# turn cycles; the enqueue path REFUSES new holds at that point rather than
-# evicting a retained entry, because every retained entry is the only durable
-# copy of a 200-acknowledged note.
-_MAX_DURABLE_HOLD_ENTRIES = 2 * MAX_DEFERRED_NOTES
+# A held note carrying this key is kept back by the flush. ``deliver_note``
+# sets it on a note it makes durable before acknowledging and clears it once
+# that write settles, so no turn end shows the note, or hands it to the
+# slot's agent, while the write can still fail or find its source chat
+# private. Only that write makes it durable (persistable_deferred_notes), and
+# the serializers copy named fields, so the key itself never reaches disk.
+AWAITING_DURABLE_WRITE = "awaiting_durable_write"
+
+# Ceiling on the plain notes in the durable hold: live notes (<= the cap) plus
+# entries retained for delivered-but-unsaved rows (<= the cap under normal save
+# cadence). Exceeding it means saves have not landed for multiple full turn
+# cycles; the enqueue path REFUSES new holds at that point rather than evicting
+# a retained entry, because every retained entry is the only durable copy of a
+# 200-acknowledged note.
+_MAX_PLAIN_DURABLE_HOLD_ENTRIES = 2 * MAX_DEFERRED_NOTES
+
+# Hard ceiling on the durable hold's whole entry count: the plain notes above,
+# plus one live cap of undrained merge cards, which keep their entries until
+# their context drains and so can outlive the save cadence that retires plain
+# notes. Only merge cards may fill the third share.
+_MAX_DURABLE_HOLD_ENTRIES = _MAX_PLAIN_DURABLE_HOLD_ENTRIES + MAX_DEFERRED_NOTES
+
+# The ``meta`` key on a note row that a merged fork wrote into its parent. The
+# merge planner reads it to learn which fork messages the parent already has,
+# and the dashboard reads it to label the card.
+MERGED_FROM_META_KEY = "mergedFrom"
+
+_MERGED_FROM_MAX_ID_CHARS = 512
+#: The longest message key a merged-fork block may name, and a merge request carry.
+MERGED_FROM_MAX_KEY_CHARS = 256
+MERGED_FROM_MAX_TITLE_CHARS = 200
+MERGED_FROM_MAX_CREATED_AT_CHARS = 128
+_MERGE_DIGEST = re.compile(r"[0-9a-f]{64}")
+
+#: The longest parent session key a fork keeps: the session-key bound the note hold uses.
+MAX_FORK_PARENT_KEY_CHARS = STOP_DECLINED_KEY_MAX_CHARS
+
+
+def bounded_transcript_created_at(value: object) -> str:
+    """A transcript's `created_at` when it fits `MERGED_FROM_MAX_CREATED_AT_CHARS`.
+
+    Anything else becomes the empty value a fork made before this field carries.
+    """
+    if isinstance(value, str) and len(value) <= MERGED_FROM_MAX_CREATED_AT_CHARS:
+        return value
+    return ""
+
+
+def is_merge_digest(value: object) -> bool:
+    """True for a merge fingerprint: a SHA-256 in lowercase hex."""
+    return isinstance(value, str) and _MERGE_DIGEST.fullmatch(value) is not None
+
+
+def sanitize_merged_from(raw: object) -> dict[str, Any] | None:
+    """A merged-fork block with every field re-checked, or None when it is malformed.
+
+    ``session`` is the fork's session key, ``slot`` its slot key, ``title`` its
+    title when merged, ``createdAt`` the fork transcript's persisted creation
+    identity (empty when the fork's metadata line records none), ``after`` the
+    key of the fork message the covered range starts after (empty when it starts
+    at the fork's first row), ``through`` the key of the last fork message the
+    merge covered (a key is the message's id, or one derived from a row written
+    before rows carried ids), ``digest`` the fingerprint of the covered messages,
+    and ``messages`` how many fork messages it covered. Every one of those keys
+    must be present; keys this build does not read are left out of the result
+    and do not make the block malformed.
+
+    A held merge note carries this block in the metadata line, which is a trust
+    boundary like every other field of the hold, so the restore re-checks it
+    rather than stamping the delivered row with whatever the file says. The merge
+    route runs the same check on the block it builds, so it never accepts a
+    block a restart would then drop.
+    """
+    if not isinstance(raw, dict):
+        return None
+    session, slot, through = raw.get("session"), raw.get("slot"), raw.get("through")
+    for value in (session, slot):
+        if not isinstance(value, str) or not value or len(value) > _MERGED_FROM_MAX_ID_CHARS:
+            return None
+    if not isinstance(through, str) or not through or len(through) > MERGED_FROM_MAX_KEY_CHARS:
+        return None
+    title = raw.get("title")
+    if not isinstance(title, str) or len(title) > MERGED_FROM_MAX_TITLE_CHARS:
+        return None
+    created_at = raw.get("createdAt")
+    if not isinstance(created_at, str) or len(created_at) > MERGED_FROM_MAX_CREATED_AT_CHARS:
+        return None
+    after = raw.get("after")
+    if not isinstance(after, str) or len(after) > MERGED_FROM_MAX_KEY_CHARS:
+        return None
+    digest = raw.get("digest")
+    if not is_merge_digest(digest):
+        return None
+    messages = raw.get("messages")
+    if isinstance(messages, bool) or not isinstance(messages, int) or messages < 1:
+        return None
+    return {
+        "session": session,
+        "slot": slot,
+        "title": title,
+        "createdAt": created_at,
+        "after": after,
+        "through": through,
+        "digest": digest,
+        "messages": messages,
+    }
+
 
 # The source label's single bound, defined here and imported by the writer in
 # chat_handlers the way ``MAX_DEFERRED_NOTE_CHARS`` already is, so the admit
@@ -154,8 +260,26 @@ def serialize_deferred_notes(notes: list[dict[str, Any]]) -> list[dict[str, Any]
         source = note.get("source")
         if isinstance(source, str):
             entry["source"] = source
+        merged_from = note.get("merged_from")
+        if isinstance(merged_from, dict):
+            entry["merged_from"] = dict(merged_from)
+            delivered = note.get("delivered")
+            if isinstance(delivered, bool):
+                entry["delivered"] = delivered
         out.append(entry)
     return out
+
+
+def persistable_deferred_notes(
+    notes: list[dict[str, Any]], ensure: dict[str, Any] | None = None
+) -> list[dict[str, Any]]:
+    """The held notes a writer may make durable: all but those awaiting their own write.
+
+    A note carrying :data:`AWAITING_DURABLE_WRITE` is written by its own writer
+    alone (passed as *ensure*), which holds its source's publication hold, so
+    no save or sibling write puts it on disk before that check.
+    """
+    return [note for note in notes if not note.get(AWAITING_DURABLE_WRITE) or note is ensure]
 
 
 def union_deferred_notes(
@@ -250,24 +374,22 @@ def _finite_number(value: int | float) -> bool:
 def committed_filtered_note_ids(
     before: list[dict[str, Any]], after: list[dict[str, Any]]
 ) -> set[str]:
-    """Ids that :func:`drop_committed_restored_notes` filtered from *before*.
+    """Ids of committed plain notes filtered from *before*.
 
-    The restore records these in ``slot._dropped_note_ids`` so the next full
-    save retires their durable entries ROW-LESSLY. Without that record, an
-    entry whose delivered row was committed by a rows-only handover save can
-    never be retired: the row lives in the transcript's frozen prefix, so no
-    later save's own window carries it, and the union writer retains the
-    id-bearing disk entry forever — each occurrence permanently consumes one
-    of the durable hold's ceiling slots until every mid-turn /note POST on
-    the session answers 429. A committed entry has the same retirement shape
-    as a dropped one: no remaining delivery obligation (the transcript owns
-    the row), and a durable copy only a save can remove.
+    Plain notes have no context obligation after their row commits, so the
+    restore records their ids for row-less retirement. A merge card keeps its
+    durable entry until the re-queued context drains and records the id then.
     """
     kept = {entry.get("id") for entry in after}
     filtered: set[str] = set()
     for entry in before:
         entry_id = entry.get("id")
-        if isinstance(entry_id, str) and entry_id and entry_id not in kept:
+        if (
+            isinstance(entry_id, str)
+            and entry_id
+            and entry_id not in kept
+            and not isinstance(entry.get("merged_from"), dict)
+        ):
             filtered.add(entry_id)
     return filtered
 
@@ -275,25 +397,20 @@ def committed_filtered_note_ids(
 def drop_committed_restored_notes(
     messages: list[dict[str, Any]] | None, notes: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Drop restored hold entries whose delivered row is already in *messages*.
+    """Leave committed note rows out of the restored visible-note hold.
 
-    The rows-only handover save writes the delivered row (``meta.noteId``)
-    while deferring the metadata rewrite, so a restart in that window restores
-    a hold whose note the transcript permanently carries — replaying it would
-    deliver the acknowledged note a second time. A row-committed entry has an
-    owner (the transcript); everything else is kept.
+    Replaying an entry whose ``meta.noteId`` row is loaded would duplicate the
+    visible line. Plain entries are retired by the next full save. Merge cards
+    separately re-queue their context and keep the durable entry until it drains.
 
     PURE and loop-safe: it scans the message rows the restore already loaded
-    off-loop (never re-opens the transcript — both restore paths run ON the
-    event loop, and a synchronous file rescan there is exactly what the
-    no-blocking-call-on-event-loop rule forbids). A row missing from the
-    loaded window reads as NOT committed, i.e. toward a possible duplicate
-    rather than a possible loss.
+    and never re-opens the transcript. A row missing from the loaded window is
+    still recognized by the delivered mark committed atomically with that row.
     """
-    if not notes or not messages:
+    if not notes:
         return notes
     committed: set[str] = set()
-    for row in messages:
+    for row in messages or []:
         if not isinstance(row, dict):
             continue
         row_meta = row.get("meta")
@@ -301,9 +418,51 @@ def drop_committed_restored_notes(
             note_id = row_meta.get("noteId")
             if isinstance(note_id, str) and note_id:
                 committed.add(note_id)
-    if not committed:
-        return notes
-    return [entry for entry in notes if entry.get("id") not in committed]
+    return [
+        entry
+        for entry in notes
+        if entry.get("id") not in committed and entry.get("delivered") is not True
+    ]
+
+
+def committed_merge_card_contexts(
+    messages: list[dict[str, Any]] | None,
+    notes: list[dict[str, Any]],
+    transcript_key: str,
+) -> list[dict[str, Any]]:
+    """Context halves of committed merge cards, stamped for one later drain."""
+    if not notes:
+        return []
+    committed = {
+        note_id
+        for row in messages or []
+        if isinstance(row, dict)
+        and isinstance((row_meta := row.get("meta")), dict)
+        and isinstance((note_id := row_meta.get("noteId")), str)
+        and note_id
+    }
+    contexts: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for note in notes:
+        note_id = note.get("id")
+        context = note.get("context")
+        session = note.get("session")
+        if (
+            isinstance(note_id, str)
+            and (note_id in committed or note.get("delivered") is True)
+            and note_id not in seen
+            and isinstance(note.get("merged_from"), dict)
+            and isinstance(context, dict)
+            and isinstance(session, str)
+            and session
+        ):
+            restored = dict(context)
+            restored["noteSession"] = session
+            restored["noteId"] = note_id
+            restored["noteTranscript"] = transcript_key
+            contexts.append(restored)
+            seen.add(note_id)
+    return contexts
 
 
 def _sanitize_restored_context(raw: object) -> dict[str, Any] | None:
@@ -371,10 +530,13 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
     - the context half is validated against the pending-context schema by
       :func:`_sanitize_restored_context` and dropped alone when malformed, so
       a corrupted entry cannot crash the flush or the next turn's drain;
+    - a merge note's merged-fork block is re-checked by
+      :func:`sanitize_merged_from` and dropped alone when malformed;
     - the result is capped at :data:`_MAX_DURABLE_HOLD_ENTRIES` — the SAME
       ceiling the persist path admits, NOT the live enqueue cap: the durable
-      hold legitimately carries up to 2x the cap (retained
-      delivered-but-unsaved entries plus live ones), every one of them a
+      hold legitimately carries up to 3x the cap (2x of live and
+      delivered-but-unsaved plain notes, plus one cap of undrained merge
+      cards), every one of them a
       200-acknowledged note whose caller was told not to re-post, so a
       restore that kept only the live cap's worth would silently discard
       acknowledged content. The live cap still binds NEW enqueues, and the
@@ -397,7 +559,11 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
         # restore path adds no content rewriting — that would re-normalize every
         # legitimate note body on every boot. Only the type/length bound is
         # enforced on the restored copy.
-        if not isinstance(session, str) or not session:
+        if (
+            not isinstance(session, str)
+            or not session
+            or len(session) > MAX_DEFERRED_NOTE_SESSION_CHARS
+        ):
             continue
         cls = item.get("cls")
         note_id = item.get("id")
@@ -418,19 +584,62 @@ def sanitize_restored_deferred_notes(raw: object) -> list[dict[str, Any]]:
             and not SOURCE_LABEL_CTRL_RE.search(raw_source)
             else ""
         )
-        notes.append(
-            {
-                # A missing or invalid id gets a fresh one so the entry stays
-                # addressable by the enqueue persist's merge after the restore.
-                "id": note_id if isinstance(note_id, str) and note_id else uuid.uuid4().hex[:12],
-                "content": content,
-                "cls": cls if isinstance(cls, str) and cls else "reconcile-note",
-                "context": _sanitize_restored_context(item.get("context")),
-                "session": session,
-                "source": source,
-            }
-        )
+        restored: dict[str, Any] = {
+            # A missing or invalid id gets a fresh one so the entry stays
+            # addressable by the enqueue persist's merge after the restore.
+            "id": (
+                note_id
+                if isinstance(note_id, str)
+                and note_id
+                and len(note_id) <= MAX_DEFERRED_NOTE_ID_CHARS
+                else uuid.uuid4().hex[:MAX_DEFERRED_NOTE_ID_CHARS]
+            ),
+            "content": content,
+            "cls": (
+                cls
+                if isinstance(cls, str) and cls and len(cls) <= MAX_DEFERRED_NOTE_CLASS_CHARS
+                else "reconcile-note"
+            ),
+            "context": _sanitize_restored_context(item.get("context")),
+            "session": session,
+            "source": source,
+        }
+        # Dropped alone when malformed, like the context half: the content is
+        # still an acknowledged note and is delivered without the card label.
+        merged_from = sanitize_merged_from(item.get("merged_from"))
+        if merged_from is not None:
+            restored["merged_from"] = merged_from
+            delivered = item.get("delivered")
+            if isinstance(delivered, bool):
+                restored["delivered"] = delivered
+        notes.append(restored)
     return notes
+
+
+def restore_deferred_note_hold(
+    slot: Any,
+    raw_notes: object,
+    messages: list[dict[str, Any]] | None,
+    transcript_key: str,
+) -> None:
+    """Restore held notes and committed merge-card context into *slot*.
+
+    The three session hydration paths feed this helper the messages they already
+    loaded. A committed visible row stays in the window, while its merge card's
+    context is queued for one later turn. Uncommitted notes remain in the hold,
+    and committed plain-note ids are recorded for row-less retirement.
+    """
+    sanitized = sanitize_restored_deferred_notes(raw_notes)
+    restored = drop_committed_restored_notes(messages, sanitized)
+    slot._deferred_notes = restored
+    for context in committed_merge_card_contexts(messages, sanitized, transcript_key):
+        if not slot.append_pending_context(context):
+            logger.warning(
+                "Slot %s could not restore merge-card context: "
+                "the pending-context queue had no seat",
+                slot.key,
+            )
+    slot._dropped_note_ids.update(committed_filtered_note_ids(sanitized, restored))
 
 
 def persist_deferred_notes_sync(
@@ -442,9 +651,10 @@ def persist_deferred_notes_sync(
     """Write the slot's held notes into its metadata line, merged under lock.
 
     A MERGE writer: goes through :func:`union_deferred_notes`, so it never
-    shrinks the durable hold (only the full save's row-derived rebuild retires
-    entries). ``ensure`` pins the note being acknowledged into the write even
-    when a concurrent flush drained it from the live list first — without it,
+    shrinks the durable hold. The full save retires plain notes with their rows
+    and retires merge cards only after their context drains. ``ensure`` pins the
+    note being acknowledged into the write even when a concurrent flush drained
+    it from the live list first — without it,
     a POST racing the turn-end flush could return 200 with no durable copy
     anywhere. The pin covers exactly ONE state: not held, not durable, not
     dropped, and not committed. Under the lock, the note is skipped when its
@@ -488,7 +698,10 @@ def persist_deferred_notes_sync(
     Merges only into an EXISTING metadata line (``written=False`` when there
     is none): a slot with no line does not survive a restart at all, so there
     is no durable identity for the hold to outlive — and upserting here could
-    resurrect a session a concurrent deletion just removed.
+    resurrect a session a concurrent deletion just removed. Nor into a line
+    whose ``created_at`` is not the one the slot observed: that transcript was
+    created on the key after the slot's was deleted, and the save's delete
+    guard refuses the same write.
 
     An UNREADABLE record is a different outcome from an absent one:
     ``update_metadata_if`` returns ``False`` for both, but for an unreadable
@@ -560,9 +773,15 @@ def persist_deferred_notes_sync(
         if not meta:
             evidence_box["value"] = NoteEvidence(durable=False, committed=_committed())
             return False
+        observed = getattr(slot, "_disk_meta_created_at", "")
+        if observed and meta.get("created_at") and meta.get("created_at") != observed:
+            # Another transcript, created on the key after this slot's was deleted:
+            # the hold would restore the deleted conversation's notes into it.
+            evidence_box["value"] = NoteEvidence(durable=False, committed=_committed())
+            return False
         merged = union_deferred_notes(
             meta.get("deferred_notes"),
-            serialize_deferred_notes(slot._deferred_notes[:]),
+            serialize_deferred_notes(persistable_deferred_notes(slot._deferred_notes[:], ensure)),
         )
         if ensure_id is not None:
             present = {entry.get("id") for entry in merged if entry.get("id")}
@@ -576,10 +795,12 @@ def persist_deferred_notes_sync(
                 # replay a second copy of a line the transcript
                 # permanently carries.
                 merged.append(serialize_deferred_notes([ensure])[0])
-        if len(merged) > _MAX_DURABLE_HOLD_ENTRIES:
+        plain = sum(1 for entry in merged if not isinstance(entry.get("merged_from"), dict))
+        if len(merged) > _MAX_DURABLE_HOLD_ENTRIES or plain > _MAX_PLAIN_DURABLE_HOLD_ENTRIES:
             raise DeferredHoldFull(
-                f"slot {getattr(slot, 'key', '?')} durable hold has {len(merged)} entries "
-                f"(ceiling {_MAX_DURABLE_HOLD_ENTRIES}); refusing to evict a retained entry",
+                f"slot {getattr(slot, 'key', '?')} durable hold has {len(merged)} entries, "
+                f"{plain} of them plain notes (ceilings {_MAX_DURABLE_HOLD_ENTRIES} and "
+                f"{_MAX_PLAIN_DURABLE_HOLD_ENTRIES}); refusing to evict a retained entry",
                 evidence=_evidence_now(),
             )
         fields["deferred_notes"] = merged
@@ -733,25 +954,28 @@ class SlotBufferCoordinator:
         """Flush held notes in order, restoring the unwritten suffix on failure.
 
         Purely an in-memory drain: the flush NEVER writes the durable hold.
-        Each delivered inject row carries its note id in
-        ``meta.noteId``, and the full save retires a durable entry exactly
-        when the window it writes contains that id — so the delivered row and
-        the retirement land in one atomic file write, whatever the
-        flush/save/enqueue interleaving is. A note dropped at the rebind
-        seam records its id in ``slot._dropped_note_ids`` instead, and the
-        next save retires it from there. A crash before the save re-delivers
-        the note on restore: at-least-once, the correct failure direction for
-        a delivery promise.
+        A plain note's entry retires when the full save commits its visible row.
+        A merge card's queued context is stamped with its note id and transcript;
+        its durable entry retires only after that context leaves the queue. A note
+        dropped at the rebind seam records its id for the next full save. A crash
+        before retirement restores the remaining delivery obligation. The first
+        note still awaiting its durable write
+        (:data:`AWAITING_DURABLE_WRITE`) and its suffix stay held because letting
+        later notes pass would reorder the transcript and agent context.
         """
         if not slot._deferred_notes:
             return 0
-        from kiro_crew.dashboard.chat_utils import effective_session_key
+        # circular import: chat_utils imports the state facade, which imports this module.
+        from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 
         held = slot._deferred_notes[:]
         slot._deferred_notes.clear()
         live_session = effective_session_key(slot)
         written = 0
         for index, note in enumerate(held):
+            if note.get(AWAITING_DURABLE_WRITE):
+                slot._deferred_notes[:0] = held[index:]
+                break
             authorized_session = note.get("session")
             if authorized_session is not None and authorized_session != live_session:
                 sel().log_api_access(
@@ -778,8 +1002,6 @@ class SlotBufferCoordinator:
                     slot._dropped_note_ids.add(dropped_id)
                 continue
 
-            # Pop is a retry marker: if the visible row fails after the context
-            # was queued, the restored note must not enqueue that context twice.
             context = note.pop("context", None)
             note_id = note.get("id")
             row_meta: dict[str, Any] = {"noteSession": live_session}
@@ -791,20 +1013,23 @@ class SlotBufferCoordinator:
                 # running turn.
                 row_meta["appLabel"] = note_source
             if isinstance(note_id, str) and note_id:
-                # The delivered row carries its note id, and the full save
-                # retires a durable entry exactly when the window it writes
-                # contains that id — row and retirement land in one atomic
-                # file write, whatever the flush/save interleaving was.
                 row_meta["noteId"] = note_id
+            merged_from = note.get("merged_from")
+            if isinstance(merged_from, dict):
+                row_meta[MERGED_FROM_META_KEY] = dict(merged_from)
+            pending_before = slot._pending_context[:] if context is not None else None
             try:
                 if context is not None:
                     context["noteSession"] = live_session
+                    if isinstance(merged_from, dict) and isinstance(note_id, str) and note_id:
+                        context["noteId"] = note_id
+                        context["noteTranscript"] = slot_history_key(slot)
                     if not slot.append_pending_context(context):
-                        # The pop above already retired the retry marker. The
-                        # warning is the loss signal; the normal full-queue case
-                        # is refused earlier, at /note admission, so this fires
-                        # only on a race (an unexpiring /context takes the seat
-                        # between admission and flush) or a restart edge.
+                        # Admission refuses a context half the queue has no seat for,
+                        # so this is reachable only by a race or a restart edge. For a
+                        # plain note the warning is the loss signal. A merge card's
+                        # durable entry keeps its context, and the delivered mark lets
+                        # the next restore queue it again: late rather than lost.
                         logger.warning(
                             "Slot %s delivered a held note without its context: "
                             "the pending-context queue had no seat",
@@ -818,11 +1043,11 @@ class SlotBufferCoordinator:
                     meta=row_meta,
                 )
             except Exception:
-                # New arrivals stay after this older, unwritten suffix. The
-                # durable copy still holds every note (delivered rows
-                # included) and the next full save trues it up against live
-                # state; see the docstring for why no metadata write happens
-                # here.
+                # Restore both halves. Otherwise a save before the retry can
+                # replace a card's durable entry with this context-less live copy.
+                if pending_before is not None:
+                    slot._pending_context[:] = pending_before
+                    note["context"] = context
                 slot._deferred_notes[:0] = held[index:]
                 raise
             written += 1

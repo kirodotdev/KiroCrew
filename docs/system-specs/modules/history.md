@@ -1338,7 +1338,8 @@ no longer destroy older turns.
   body) rides onto the user row it becomes and reaches every
   reader unchanged: ingress drops only `RESERVED_ROW_META_KEYS`
   (`chat_handlers.py`: the keys the gateway mints itself -- `decisions_strip`,
-  its receipt carrier, the human-turn marker and the turn-actor stamp), plus
+  its receipt carrier, the human-turn marker, the turn-actor stamp, and the note
+  identity keys `mergedFrom` and `noteId` that make a row a merge card), plus
   `mid` on an app's send to a user session through `permissions.sessionApproval`,
   where the gateway mints the row id (see
   [app-kit-platform](app-kit-platform.md)); `_redact_meta` (`chat_utils.py`) redacts credential- and exfiltration-shaped

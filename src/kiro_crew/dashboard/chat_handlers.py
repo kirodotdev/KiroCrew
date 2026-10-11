@@ -53,6 +53,7 @@ from kiro_crew.dashboard.chat_api.resume import (  # noqa: F401
     _live_slot_resume_payload,
     _materialise_slot_from_history,
     _normalise_structured_content,
+    _pinned_live_outcome,
     _reconcile_slot_window,
     _redact_history_rows,
     _resume_refusal_response,
@@ -133,6 +134,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
     _rehydrate_slot_title,
     _remember_reasoning_effort_for_restore,
     _restore_dismissed_source_links,
+    _restore_fork_lineage,
     _restore_model_fields,
     _restored_agent_name,
     _restored_mode,
@@ -203,6 +205,9 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
 from kiro_crew.dashboard.chat_utils import (
     tighten_replacement_to_restricted_original as _tighten_replacement_to_restricted_original,
 )
+from kiro_crew.dashboard.chat_utils import (  # noqa: F401
+    transcripts_share_file,
+)
 from kiro_crew.dashboard.handlers._shared import (
     _SLOT_SCOPED_TRUST_MODES,
     _owner_denial_response,
@@ -214,13 +219,18 @@ from kiro_crew.dashboard.handlers._shared import (
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
 from kiro_crew.dashboard.relay_archive import relay_archive_refusal
 from kiro_crew.dashboard.request_priority import owner_start_priority
+from kiro_crew.dashboard.slot_buffers import MERGED_FROM_MAX_CREATED_AT_CHARS  # noqa: F401
 from kiro_crew.dashboard.slot_buffers import (
+    AWAITING_DURABLE_WRITE,
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
     MAX_SOURCE_LABEL_LEN,
+    MERGED_FROM_META_KEY,
     SOURCE_LABEL_CTRL_RE,
     DeferredHoldFull,
+    DeferredHoldOutcome,
     DeferredHoldRebound,
+    NoteEvidence,
     note_hold_durable,
     persist_deferred_notes_sync,
 )
@@ -251,6 +261,7 @@ from kiro_crew.dashboard.slot_retention import (  # noqa: F401
     select_idle_slot_keys,
 )
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONTEXT_PER_SOURCE,
     _MAX_DISMISSED_SOURCE_LINKS,
     DashboardState,
     _ChatSlot,
@@ -270,6 +281,8 @@ from kiro_crew.dashboard.system_notices import SESSION_RELOAD_KIND, is_system_no
 from kiro_crew.dashboard.turn_dispatch import spawn_guarded_turn
 from kiro_crew.history import (  # noqa: F401
     HUMAN_TURN_META_KEY,
+    TranscriptBusy,
+    TranscriptWithheld,
     carry_provenance,
     is_incognito_transcript,
 )
@@ -591,7 +604,8 @@ def _deny_app_session_settings(request_app: str, slot_key: str, trigger: str) ->
 
 
 #: Row-meta keys a REQUEST may never supply, because the gateway mints them and a
-#: surface reads them as the gateway's own claim. ``decisions_strip`` is a Jev
+#: surface reads them as the gateway's own claim. Merge-card identity and note
+#: retirement fields are server-minted for the same reason. ``decisions_strip`` is a Jev
 #: decision receipt with a verdict control attached (``decisions/points/
 #: message_steer.py``, ``website/src/pages/chat/SteerDecisionLine.tsx``), so a
 #: caller-supplied one would render a decision nobody made. ``HUMAN_TURN_META_KEY``
@@ -601,7 +615,9 @@ def _deny_app_session_settings(request_app: str, slot_key: str, trigger: str) ->
 #: could displace human sessions. Stripped here so the gateway re-applies it below
 #: only for a genuine human send. ``TURN_ACTOR_META_KEY`` is the gateway's record
 #: that an app sent the row, which the title counter reads (``chat_title``).
-RESERVED_ROW_META_KEYS = frozenset({"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY})
+RESERVED_ROW_META_KEYS = frozenset(
+    {"decisions_strip", HUMAN_TURN_META_KEY, TURN_ACTOR_META_KEY, MERGED_FROM_META_KEY, "noteId"}
+)
 
 #: The ``steer`` value that means "let Jev choose between the two paths" rather
 #: than naming one. A STRING beside the boolean the two manual modes send, so the
@@ -10198,7 +10214,6 @@ async def api_chat_slot_color(request: web.Request) -> web.Response:
     )
 
 
-_MAX_CONTEXT_PER_SOURCE = 10
 _MAX_CONTEXT_CONTENT = 40000
 # Default expiry for a note's context half: if the user never sends a follow-up
 # within 24h, the stale entry is dropped at drain rather than attaching itself to
@@ -10394,12 +10409,10 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     ``contextSkipped``. The same predicate decides both, so a count and a drain
     cannot disagree about which entries are live.
 
-    Entries HELD for the deferred-note flush count as well. They are not in the
-    queue yet, so a cap that reads the queue alone admits every one of them:
-    ten same-source notes posted during one turn each see a clear cap, and the
-    flush then promotes all ten at once, carrying that source past its
-    per-source ceiling. Counting the held halves here holds the ceiling at
-    admission so the flush never overfills the bucket.
+    Entries HELD for the deferred-note flush and merge-card contexts IN FLIGHT
+    on the running turn count as well. Neither is in the queue, so a cap that
+    reads the queue alone admits replacements before the existing obligations
+    return there. Counting both holds the per-source ceiling at admission.
     """
     if not source:
         return False
@@ -10407,7 +10420,7 @@ def _source_cap_reached(slot: _ChatSlot, source: str) -> bool:
     held = [n["context"] for n in slot._deferred_notes if n.get("context") is not None]
     pending = sum(
         1
-        for e in (*slot._pending_context, *held)
+        for e in (*slot._pending_context, *held, *slot._inflight_merge_contexts)
         if e.get("source") == source and not context_entry_expired(e, now)
     )
     return pending >= _MAX_CONTEXT_PER_SOURCE
@@ -10596,9 +10609,10 @@ def _discard_held_note(slot: _ChatSlot, note: dict[str, object]) -> None:
 def _note_delivered_live(slot: _ChatSlot, note: dict[str, object]) -> bool:
     """True when a delivered row stamped with this note's id is in the slot's
     LIVE message list — evidence clause (a): the flush delivered the note this
-    lifetime, and the save that commits the row retires its durable entry.
-    In-memory and synchronous, so every branch can afford it. A note with no
-    id has no row stamp to look for and reads as not-delivered, toward the
+    lifetime. A plain note retires with its committed row; a merge card remains
+    durable until its stamped context drains. In-memory and synchronous, so every
+    branch can afford the check. A note with no id has no row stamp to look for
+    and reads as not-delivered, toward the
     branch's refusal (retryable, never a silent unkept promise)."""
     note_id = note.get("id")
     if not isinstance(note_id, str) or not note_id:
@@ -10615,6 +10629,11 @@ async def _persist_deferred_note_hold(
     slot: _ChatSlot,
     note: dict[str, object],
     authorized_history_key: str,
+    source_key: str | None = None,
+    source_expected_keys: tuple[str, ...] | None = None,
+    source_expected_created_at: str | None = None,
+    source_check: Callable[[], bool] | None = None,
+    target_expected_keys: tuple[str, ...] | None = None,
 ) -> web.Response | None:
     """Make a just-held /note durable before the 200 acknowledges it.
 
@@ -10687,14 +10706,52 @@ async def _persist_deferred_note_hold(
     had_durable_identity = bool(getattr(slot, "_disk_meta_observed", False)) or (
         await asyncio.to_thread(conversation_log.mtime_of, authorized_history_key) is not None
     )
+
+    def _write_target() -> DeferredHoldOutcome:
+        if target_expected_keys is None:
+            return persist_deferred_notes_sync(conversation_log, slot, note, authorized_history_key)
+        with conversation_log.publication_hold(
+            authorized_history_key, expected_keys=target_expected_keys
+        ):
+            return persist_deferred_notes_sync(conversation_log, slot, note, authorized_history_key)
+
+    source_identity_changed = False
+    source_check_failed = False
+
+    def _write() -> DeferredHoldOutcome:
+        nonlocal source_check_failed, source_identity_changed
+        if source_key is None:
+            return _write_target()
+        # The note was derived from another transcript, so that transcript's
+        # privacy line and exact chain are held through this write. The identity
+        # check runs under the same hold before the target write, so deleting or
+        # replacing the source cannot publish its stale content into the target.
+        with conversation_log.publication_hold(source_key, expected_keys=source_expected_keys):
+            source_meta, readable = conversation_log.get_metadata_status(source_key)
+            if not readable:
+                raise TranscriptBusy(
+                    f"source transcript {source_key!r} could not be read during publication"
+                )
+            if source_expected_created_at is not None and (
+                str(source_meta.get("created_at") or "") != source_expected_created_at
+            ):
+                source_identity_changed = True
+                return DeferredHoldOutcome(
+                    written=False, evidence=NoteEvidence(durable=False, committed=False)
+                )
+            if source_check is not None and not source_check():
+                source_check_failed = True
+                return DeferredHoldOutcome(
+                    written=False, evidence=NoteEvidence(durable=False, committed=False)
+                )
+            return _write_target()
+
     try:
-        outcome = await asyncio.to_thread(
-            persist_deferred_notes_sync,
-            conversation_log,
-            slot,
-            note,
-            authorized_history_key,
-        )
+        outcome = await asyncio.to_thread(_write)
+    except TranscriptWithheld:
+        # Raised entering the source's or the target's hold, before anything was written.
+        _discard_held_note(slot, note)
+        raise
     except DeferredHoldRebound as exc:
         if exc.evidence.durable or exc.evidence.committed or _note_delivered_live(slot, note):
             return None
@@ -10746,6 +10803,12 @@ async def _persist_deferred_note_hold(
             },
             status=503,
         )
+    if source_check_failed:
+        _discard_held_note(slot, note)
+        raise SourceCheckFailed("source changed before note publication")
+    if source_identity_changed:
+        _discard_held_note(slot, note)
+        return _slot_not_found()
     if outcome.written:
         if (
             outcome.evidence.durable
@@ -10853,9 +10916,9 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     When a turn is already running BOTH halves are held and written at that
     turn's end, so ``appended`` is false and ``visibleDeferred`` is true. Its
     order is preserved, and the hold is DURABLE: it is persisted
-    into the slot's own metadata line before the 200 is returned, replayed by
-    both slot-restore paths after a gateway restart, and retired by the save
-    that commits the delivered rows. A caller therefore never needs to re-post
+    into the slot's own metadata line before the 200 is returned and replayed by
+    both slot-restore paths after a gateway restart. A plain note retires when its
+    row commits; a merge card retires when its queued context drains. A caller therefore never needs to re-post
     after a restart; the one retry signal is a 503 ``deferred_note_persist_failed``,
     which means the hold could not be made durable and was not accepted.
     Appending mid-turn would take the row the replay path skips and cause the
@@ -10935,6 +10998,119 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     if stale is not None:
         return stale
 
+    delivery = await deliver_note(
+        state,
+        slot,
+        content=content,
+        source=source,
+        display_source=display_source,
+        max_age=body.get("maxAge", _UNSET),
+        ephemeral=body.get("ephemeral", True),
+    )
+    if isinstance(delivery, web.Response):
+        return delivery
+    deferred = delivery.deferred
+    context_skipped = delivery.context_skipped
+
+    sel().log_api_access(
+        caller=request_app or request.get("user", "dashboard"),
+        operation="note_post",
+        outcome="ok",
+        source="app_kit",
+        resources=f"slot={name}",
+    )
+
+    # A hold is delivered only if the slot still routes to the same session at
+    # flush; a rebind during the hold drops it. An IMMEDIATE note is equally
+    # conditional while the slot is UNBOUND, because both halves resolve their
+    # destination late and every binding site claims an EMPTY binding
+    # (``if not slot.linked_session_key``) -- so an already-bound slot cannot be
+    # re-claimed and its immediate note is genuinely unconditional.
+    delivery_conditional = deferred or not slot.linked_session_key
+    return web.json_response(
+        {
+            "ok": True,
+            "appended": not deferred,
+            "visibleDeferred": deferred,
+            "deliveryConditional": delivery_conditional,
+            "contextSkipped": context_skipped,
+            "pending": len(slot._pending_context) + slot.deferred_context_count(),
+        }
+    )
+
+
+class SourceCheckFailed(Exception):
+    """A source changed after a note was derived but before publication."""
+
+
+class NoteDelivery(NamedTuple):
+    """What :func:`deliver_note` did with an accepted note."""
+
+    deferred: bool
+    """A turn was running, so the note is HELD and written when that turn ends."""
+
+    context_skipped: bool
+    """A context cap had no seat, so only the visible line was written."""
+
+
+async def deliver_note(
+    state: DashboardState,
+    slot: _ChatSlot,
+    *,
+    content: str,
+    source: str,
+    max_age: Any = _UNSET,
+    ephemeral: Any = True,
+    display_source: str = "",
+    merged_from: dict[str, Any] | None = None,
+    durable: bool = False,
+    source_key: str | None = None,
+    source_expected_keys: tuple[str, ...] | None = None,
+    source_expected_created_at: str | None = None,
+    source_check: Callable[[], bool] | None = None,
+    target_expected_keys: tuple[str, ...] | None = None,
+    on_context_full: Callable[[], web.Response] | None = None,
+) -> NoteDelivery | web.Response:
+    """Write one validated note into *slot*: its visible row and its context half.
+
+    The delivery half of ``POST /api/chat/slots/{slot}/note``, shared with the
+    merge-back route, which posts a merged fork's summary into its parent. The
+    caller has validated ``content``, ``source`` and ``max_age`` and re-authorized
+    *slot* after its last await, and nothing between that check and the first
+    write below suspends. ``max_age`` left unset takes the note's 24h default and
+    ``None`` means no expiry. ``merged_from`` is a merge card's block, already
+    checked by ``sanitize_merged_from``; it rides into the row's ``meta``, and
+    with a held note into the durable hold, so the delivered row carries it
+    either way. ``display_source`` is the authenticated caller's label for the
+    note bubble's author pill, already bounded like the restore sanitizer bounds
+    it: a held note persists it as ``source`` and its flush stamps
+    ``meta.appLabel``, an immediate row stamps ``meta.appLabel`` here, and an
+    empty one, a dashboard user's, stamps nothing.
+
+    ``durable`` sends the note through the durable hold even when the slot could
+    take it now, so the note survives a restart before this returns, then
+    delivers it from the hold at once when no turn is running. Until that write
+    settles the note is kept back from every flush, so a turn that ends
+    meanwhile does not deliver it. The visible row is otherwise written by the
+    next periodic flush. The merge-back route asks for it because its card is
+    the record of what the parent already has.
+
+    ``source_key`` names the transcript a held note was derived from. That
+    transcript's publication hold is held through the durable write, so a source
+    made private, or busy, meanwhile writes nothing: the note leaves the hold and
+    :class:`~kiro_crew.history.TranscriptWithheld`, or its subclass
+    ``TranscriptBusy``, reaches the caller. ``source_expected_keys`` names the
+    exact source chain whose rows shaped the note, and
+    ``source_expected_created_at`` pins its transcript identity under that hold.
+    ``source_check`` runs synchronously inside the same hold immediately before
+    the target write and refuses publication when it returns false.
+    ``target_expected_keys`` likewise names the target chain whose rows shaped
+    the note and is revalidated around the target's durable write.
+    ``on_context_full`` returns the caller's refusal when either context ceiling
+    has no seat; without it, the visible note lands with context skipped.
+
+    Returns a :class:`NoteDelivery`, or the refusal as a finished response.
+    """
     # A turn in flight owns the tail of the transcript: the replay path skips
     # exactly one recall-eligible row to drop the current-turn user message, and
     # an `inject` row appended now would take that slot and get skipped in its
@@ -10943,7 +11119,8 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # This is decided BEFORE either write: a note rejected for a full hold must
     # not leave its context half behind to reach the next turn anyway.
     deferred = slot.running
-    if deferred and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
+    held = deferred or durable
+    if held and len(slot._deferred_notes) >= _MAX_DEFERRED_NOTES:
         return web.json_response(
             {
                 "error": f"slot already holds {_MAX_DEFERRED_NOTES} deferred notes",
@@ -10951,7 +11128,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             },
             status=429,
         )
-    if deferred and len(content) > MAX_DEFERRED_NOTE_CHARS:
+    if held and len(content) > MAX_DEFERRED_NOTE_CHARS:
         # A held note is persisted VERBATIM before the 200, so
         # what the 200 accepts is exactly what a restart replays — truncating
         # the durable copy would replay altered content for an acknowledged
@@ -10979,31 +11156,17 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # null means no expiry, the same as it does on /context.
     context_skipped = False
     context_entry: dict[str, object] | None = None
-    if _source_cap_reached(slot, source):
-        context_skipped = True
-    elif deferred and not slot.has_pending_context_seat():
-        # The HELD path must refuse the context half at admission, the same way
-        # the immediate arm does when ``append_pending_context`` returns False.
-        # A held note's context is seated later, by ``flush_deferred_notes`` ->
-        # ``append_pending_context`` at turn end; if the queue is already at the
-        # seat ceiling now, that append refuses, and the only trace is a log
-        # warning -- nothing the caller ever sees. So the note would be
-        # acknowledged (200, ``visibleDeferred``) with its context silently
-        # dropped: the acknowledge-then-lose behaviour this endpoint
-        # exists to remove, moved onto the held path. ``has_pending_context_seat``
-        # counts live entries PLUS each held note's reserved context half, so the
-        # check is accurate: a later ``/context`` arrival cannot take the seat the
-        # flush would need, and expiry between now and the flush can only free
-        # seats, never consume them. We hold the VISIBLE line regardless (the
-        # audit record the caller came for) and report contextSkipped=true.
+    if _source_cap_reached(slot, source) or (held and not slot.has_pending_context_seat()):
+        # A held note's context half is seated later, by the flush. Refusing it
+        # here when the queue has no seat keeps a 200 from acknowledging a half the
+        # flush would then drop; once held, the half counts toward that ceiling.
+        if on_context_full is not None:
+            return on_context_full()
         context_skipped = True
     else:
-        max_age = body.get("maxAge", _UNSET)
         if max_age is _UNSET:
             max_age = _NOTE_CONTEXT_MAX_AGE
-        context_entry, err = _build_pending_context_entry(
-            slot, content, source, body.get("ephemeral", True), max_age
-        )
+        context_entry, err = _build_pending_context_entry(slot, content, source, ephemeral, max_age)
         if err is not None:
             return err
         assert context_entry is not None
@@ -11011,14 +11174,14 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         # inside the turn and after its task is assigned, so an entry queued now
         # is read by the turn already running -- the note would shape the request
         # it was written after, and the next turn would find nothing.
-        if not deferred:
+        if not held:
             # Both immediate halves resolve their destination LATE, so each
             # records the session it was authorized against -- same reason the
             # deferred arm below does, and checked at those later seams.
             context_entry["noteSession"] = effective_session_key(slot)
             if not slot.append_pending_context(context_entry):
-                # The visible line is still written; contextSkipped carries the
-                # refused half, the same surface the per-source cap uses.
+                if on_context_full is not None:
+                    return on_context_full()
                 context_skipped = True
 
     # Caller-controlled content reaching the visible transcript (SSE plus the
@@ -11030,7 +11193,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
     # format-char normalization is layered on the content here.
     visible_content, _ = redact_exfiltration_urls(content)
     visible_content, _ = redact_credentials(visible_content)
-    if deferred and len(visible_content) > MAX_DEFERRED_NOTE_CHARS:
+    if held and len(visible_content) > MAX_DEFERRED_NOTE_CHARS:
         # The bound must hold on the PERSISTED string, not just the raw input:
         # redaction can GROW content (each flagged URL becomes a longer
         # [REDACTED: ...] tag), and a persisted entry over the bound is dropped
@@ -11049,7 +11212,7 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             },
             status=413,
         )
-    if deferred:
+    if held:
         note: dict[str, object] = {
             # Identity for the durable hold's merge (slot_buffers.
             # persist_deferred_notes_sync): a disk entry whose id is absent
@@ -11070,13 +11233,39 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
             # is held, and the flush resolves its target late.
             "session": effective_session_key(slot),
         }
+        if merged_from is not None:
+            note["merged_from"] = dict(merged_from)
         # The transcript this authorization resolves to, captured in the SAME
         # routing observation as the session stamp above: the durable write
         # targets this key and re-verifies the slot still resolves to it
         # under the store lock, so a rebind during the persist window cannot
         # land app-authorized content in a foreign transcript's metadata.
         authorized_history_key = slot_history_key(slot)
+        if durable:
+            # Kept back from every flush until the write below settles: a turn
+            # that ends meanwhile neither shows the note nor hands it to the
+            # agent, so nothing delivers it before it is durable, or before a
+            # source's privacy line is checked under its publication hold.
+            note[AWAITING_DURABLE_WRITE] = True
         slot._deferred_notes.append(note)
+
+        def _deliver_held_notes_if_idle() -> None:
+            # The notes held after this one wait for its write, so however the
+            # write settles they are delivered when nothing owns the tail. A
+            # merge card's durable copy remains until its queued context drains.
+            if not durable or state._slots.get(slot.key) is not slot:
+                return
+            if slot.running or (slot._queue and slot._queue[0].get("kind")):
+                return
+            try:
+                slot.flush_deferred_notes()
+            except Exception:
+                # The flush puts the unwritten notes back, so the next flush
+                # delivers them.
+                logger.warning(
+                    "Slot %s: held notes wait for the next flush", slot.key, exc_info=True
+                )
+
         # Make the hold durable BEFORE the 200 acknowledges it:
         # ``visibleDeferred: true`` is a delivery promise for a transcript
         # line, and an in-memory-only hold silently voids it on a gateway
@@ -11084,54 +11273,57 @@ async def api_chat_slot_note(request: web.Request) -> web.Response:
         # metadata line under the history lock, off the event loop, and the
         # restore paths replay it into ``_deferred_notes`` on the first boot
         # after a restart.
-        err = await _persist_deferred_note_hold(state, slot, note, authorized_history_key)
+        try:
+            err = await _persist_deferred_note_hold(
+                state,
+                slot,
+                note,
+                authorized_history_key,
+                source_key=source_key,
+                source_expected_keys=source_expected_keys,
+                source_expected_created_at=source_expected_created_at,
+                source_check=source_check,
+                target_expected_keys=target_expected_keys,
+            )
+        except Exception:
+            _deliver_held_notes_if_idle()
+            raise
         if err is not None:
+            _deliver_held_notes_if_idle()
             return err
+        if durable:
+            note.pop(AWAITING_DURABLE_WRITE, None)
+            if state._slots.get(slot.key) is not slot:
+                # Closed, or deleted and replaced, while the note was written: a
+                # flush now would show it to whatever chat has the key. Its durable
+                # copy is delivered when this chat is opened again, if it still is.
+                _discard_held_note(slot, note)
+                return NoteDelivery(deferred=True, context_skipped=context_skipped)
+            # Read after the write: a turn that ended during it left the note held.
+            _deliver_held_notes_if_idle()
+            deferred = any(held_note is note for held_note in slot._deferred_notes)
     else:
+        row_meta: dict[str, object] = {"noteSession": effective_session_key(slot)}
+        if display_source:
+            # Attribute the note through the SAME app-label pill an app
+            # inject row already uses (``meta.appLabel`` ->
+            # ``components.mcpApp.from_app``): ``display_source`` is the
+            # authenticated caller identity (``request_app``), so a reader
+            # sees "Sent by app {X}" on the note bubble. Omit the key when
+            # the caller gave no identity (a dashboard user), since the
+            # renderer draws the pill only on a truthy value -- a sourceless
+            # note stays unattributed.
+            row_meta["appLabel"] = display_source
+        if merged_from is not None:
+            row_meta[MERGED_FROM_META_KEY] = dict(merged_from)
         slot.append(
             role="inject",
             content=visible_content,
             cls="reconcile-note",
             broadcast=True,
-            meta={
-                "noteSession": effective_session_key(slot),
-                # Attribute the note through the SAME app-label pill an app
-                # inject row already uses (``meta.appLabel`` ->
-                # ``components.mcpApp.from_app``): ``display_source`` is the
-                # authenticated caller identity (``request_app``), so a reader
-                # sees "Sent by app {X}" on the note bubble. Omit the key when
-                # the caller gave no identity (a dashboard user), since the
-                # renderer draws the pill only on a truthy value -- a sourceless
-                # note stays unattributed.
-                **({"appLabel": display_source} if display_source else {}),
-            },
+            meta=row_meta,
         )
-
-    sel().log_api_access(
-        caller=request_app or request.get("user", "dashboard"),
-        operation="note_post",
-        outcome="ok",
-        source="app_kit",
-        resources=f"slot={name}",
-    )
-
-    # A hold is delivered only if the slot still routes to the same session at
-    # flush; a rebind during the hold drops it. An IMMEDIATE note is equally
-    # conditional while the slot is UNBOUND, because both halves resolve their
-    # destination late and every binding site claims an EMPTY binding
-    # (``if not slot.linked_session_key``) -- so an already-bound slot cannot be
-    # re-claimed and its immediate note is genuinely unconditional.
-    delivery_conditional = deferred or not slot.linked_session_key
-    return web.json_response(
-        {
-            "ok": True,
-            "appended": not deferred,
-            "visibleDeferred": deferred,
-            "deliveryConditional": delivery_conditional,
-            "contextSkipped": context_skipped,
-            "pending": len(slot._pending_context) + slot.deferred_context_count(),
-        }
-    )
+    return NoteDelivery(deferred=deferred, context_skipped=context_skipped)
 
 
 # Every function the owners define runs on this module's globals, so a patch of

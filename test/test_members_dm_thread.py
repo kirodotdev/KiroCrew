@@ -1575,6 +1575,92 @@ class TestPinEnforcement:
         )
 
     @pytest.mark.asyncio
+    async def test_a_vetoed_switch_returns_the_turns_merge_card(self, tmp_path, monkeypatch):
+        """A reset before a real ``end_turn`` wins over landing for the card.
+
+        The veto breaks the stream with no terminal, so the turn LANDS, yet the
+        finally's reset kills a runtime that may still be mid-answer and the
+        reloaded session may lack the prompt that carried the card's frame. The
+        card goes back on the queue with its durable hold, delivered again
+        rather than lost.
+        """
+        from kiro_crew.dashboard.chat_handlers import deliver_note
+        from kiro_crew.dashboard.chat_merge_back import MERGE_NOTE_SOURCE
+        from kiro_crew.dashboard.chat_utils import slot_history_key
+        from kiro_crew.dashboard.slot_buffers import sanitize_merged_from
+        from kiro_crew.providers.base import (
+            EVENT_AGENT_SWITCHED,
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            LLMEvent,
+        )
+
+        state, slot, _run_chat = self._runner_harness(tmp_path, monkeypatch, mode=DM_SLOT_MODE)
+        merged_from = sanitize_merged_from(
+            {
+                "session": "dashboard:fork",
+                "slot": "fork",
+                "title": "fork",
+                "createdAt": "",
+                "after": "",
+                "through": "m1",
+                "digest": "0" * 64,
+                "messages": 1,
+            }
+        )
+        assert merged_from is not None
+        # The slot's transcript must exist for the card's durable hold to land.
+        state.flush_slot_now(slot)
+        delivery = await deliver_note(
+            state,
+            slot,
+            content="vetoed-switch summary",
+            source=MERGE_NOTE_SOURCE,
+            max_age=None,
+            merged_from=merged_from,
+            durable=True,
+        )
+        assert not isinstance(delivery, web.Response), await delivery.text()
+        [card] = slot._pending_context
+        note_id = card["noteId"]
+        assert slot._dropped_note_ids == set()
+        key = slot_history_key(slot)
+
+        def _held_ids() -> list[str]:
+            held = state.conversation_log.get_metadata(key).get("deferred_notes") or []
+            return [entry.get("id") for entry in held]
+
+        # Positive control: the hold is on disk before the turn takes the card.
+        assert _held_ids() == [note_id]
+
+        sent: list[str] = []
+
+        async def _stream(msg):
+            sent.append(msg)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            yield LLMEvent(kind=EVENT_AGENT_SWITCHED, text=OTHER)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="foreign agent output after switch")
+            yield LLMEvent(kind=EVENT_COMPLETE)
+
+        client = state.sessions.get_or_create.return_value[0]
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await asyncio.gather(*state._background_tasks)
+
+        # The frame went out once, inside this turn's prompt, and the veto held.
+        assert len(sent) == 1 and sent[0].count("vetoed-switch summary") == 1
+        assert slot.agent == CREW
+        state.sessions.reset.assert_awaited()
+        # The reset before any terminal returns the card for the next turn.
+        assert [entry["noteId"] for entry in slot._pending_context] == [note_id]
+        assert note_id not in slot._dropped_note_ids
+        assert slot._inflight_merge_contexts == []
+        state.flush_slot_now(slot)
+        assert _held_ids() == [note_id]
+
+    @pytest.mark.asyncio
     async def test_mid_turn_agent_switch_still_lands_on_ordinary_slots(self, tmp_path, monkeypatch):
         """Control for the veto: the same event MOVES a non-member slot.
 
@@ -1816,6 +1902,42 @@ class TestResumeGuards:
         # The loser did NOT hydrate a second copy of the transcript.
         hellos = [m for m in slot.messages if m.get("content") == "hello"]
         assert len(hellos) == 1, f"history duplicated: {len(hellos)} copies: {hellos!r}"
+
+    @pytest.mark.asyncio
+    async def test_pinned_member_resume_refuses_late_live_replacement(self, tmp_path, monkeypatch):
+        """A late member-slot winner must still match the transcript identity pin."""
+        from chat_test_helpers import _make_app
+
+        import kiro_crew.dashboard.chat_handlers as handlers
+
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        log = state.conversation_log
+        log.append(key, "user", "original")
+        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        expected_created_at = log.get_metadata(key)["created_at"]
+
+        replacement = state.get_or_create_slot(member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE)
+        replacement._disk_meta_created_at = "1999-01-01T00:00:00+00:00"
+        live_slot_probe = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                handlers.ResumeOutcome(slot=replacement, already_live=True, total=0),
+            ]
+        )
+        monkeypatch.setattr(handlers, "_live_slot_for_resume", live_slot_probe)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{member_slot_key(CREW)}/resume",
+                json={"key": key, "expected_created_at": expected_created_at},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert live_slot_probe.await_count == 3
 
     @pytest.mark.asyncio
     async def test_resume_of_a_closed_member_thread_succeeds(self, tmp_path):

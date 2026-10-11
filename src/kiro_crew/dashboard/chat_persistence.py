@@ -2993,6 +2993,7 @@ from kiro_crew.dashboard.slot_persistence.metadata_codec import (  # noqa: E402,
     _rehydrate_title_origin,
     _rehydrate_title_refresh_mark,
     _restore_dismissed_source_links,
+    _restore_fork_lineage,
     _restore_model_fields,
     _restored_mode,
     _validate_autocompact_pct,
@@ -3044,11 +3045,13 @@ from kiro_crew.dashboard.slot_persistence.turn_marker import (  # noqa: E402,F40
 )
 from kiro_crew.dashboard.slot_persistence.write_guards import (  # noqa: E402,F401
     _FLUSH_SNAPSHOT_RETRIES,
+    DeleteWitness,
     _keep_owed_after_refusal,
     _line_is_this_slots,
     _queue_snapshot_is_stale,
     _stable_durable_queue,
     register_guarded_history_write,
+    session_delete_witness,
     session_transcript_remains,
     session_was_deleted,
 )
