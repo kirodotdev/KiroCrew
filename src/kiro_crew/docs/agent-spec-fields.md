@@ -453,7 +453,10 @@ entry, so a hand-added `autoApprove` reaches the map and, by default, survives.
 What removes one is governance — `_strip_ungoverned_auto_approve` drops any the
 ceiling has not cleared, and drops any verb no server spec declares once the
 operator sets `mcp.honour_auto_approve` to `false`. A verb a managed or edition
-spec declares is kept on an ungoverned host either way. Both decisions are
+spec declares is kept on an ungoverned host either way. The same filter also
+drops the whole `autoApprove` of a server that a `hooks.confirm_tools` pattern
+in `config.json` names, so the operator's confirm list outranks any verb a
+spec declares. Both decisions are
 recorded as security events: `mcp_auto_approve_withheld` for a grant taken away,
 `mcp_auto_approve_honoured` for an owner-written one kept.
 

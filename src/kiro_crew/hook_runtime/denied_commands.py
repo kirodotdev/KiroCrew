@@ -73,10 +73,20 @@ def hooks_config_from_config_dict(hooks_section: dict) -> HooksConfig:
     ``denied_commands.json`` file (config.json's ``hooks.denied_commands`` is
     ignored — the keystone file is the sole source, so an agent that edits
     config.json cannot affect the deny ceiling).
+
+    An empty ``confirm_tools`` is checked against the files on disk: a load
+    that stood in defaults can keep a base file's ``auto_approve_tools`` while
+    dropping a torn overlay's ``confirm_tools``, and the gate must not approve
+    from the half it kept (``HooksConfig.confirm_tools_unknown``).
     """
     merged = dict(hooks_section) if isinstance(hooks_section, dict) else {}
     merged["denied_commands"] = load_denied_commands_state()
-    return HooksConfig.from_dict(merged)
+    config = HooksConfig.from_dict(merged)
+    if not config.confirm_tools:
+        from kiro_crew.platform.governance import confirm_tools_unknown
+
+        config = dataclasses_replace(config, confirm_tools_unknown=confirm_tools_unknown())
+    return config
 
 
 def splice_denied_commands(base: HooksConfig, denied_state: dict | None = None) -> HooksConfig:

@@ -347,6 +347,59 @@ SEL, `mcp_auto_approve_withheld` when a grant is taken away and
 `mcp_auto_approve_honoured` when an owner-written one is kept, so an operator can
 see both why a template tool prompts and which calls are skipping the gate.
 
+### Servers the operator asked to confirm
+
+A user-added server is granted in `allowedTools` as soon as it is mounted, so
+steering prose such as "confirm before making changes" is the only thing between
+the model and its write tools. `hooks.confirm_tools` in `config.json` is the
+structural opt-in: a list of tool patterns in the `auto_approve_tools` spelling
+(`@server`, `@server/tool*`, `Running: @server/*`, or `*` for every MCP server
+the agent's spec grants, Crew's own `@kirocrew-*` servers included; a builtin
+app agent's calls to its own app-scoped server are approved by the gate's
+`app-own-server` tier, which runs before this list is read, so `*` does not
+reach them). The static side withholds a server's grant whenever a pattern could match any of the gate's identity spellings for a call on it (`@server`, `@server/tool`, `Running: @server/tool`, case-insensitive, wildcards spanning `/`), judged from the pattern's literal prefix, so it errs toward a prompt and never keeps a grant the gate would refuse. A pattern that names a call only by its title acts at the gate alone.
+`may_skip_gate_now`, the chokepoint every static grant writer calls (the rebuild's
+shared-server sync and final pass, the dashboard enable paths, app-agent
+materialization and doctor's repair), answers "no" for any `@server` or
+`@server/tool` ref on a server a pattern names. The server stays in `tools`, gets
+no `allowedTools` grant and no `autoApprove` from any writer, and each of its
+calls raises a permission request that reaches the PreToolUse gate. The writers
+record that as their usual `mcp_auto_approve_withheld` event. At the gate a
+`confirm_tools` match outranks an `auto_approve_tools` grant; deny tiers and the
+read-only classifier are unchanged, and a session in Trust or YOLO mode still
+approves what the user told it to.
+
+The gate side follows the live `hooks` section. The spec side is decided when a
+writer runs, so a grant already in `kirocrew.json` is withdrawn at the next
+rebuild (a gateway restart) or the next dashboard enable of that server. The
+schema declares `hooks.confirm_tools` with `restart=True`, so a saved change
+reports that a restart is needed rather than claiming it applied. With the key
+unset, both the spec and the gate behave as before.
+
+When the load could not read the settings (a read that raises, a load that
+stood in defaults for an unparseable `config.json` or `config.local.json`, a
+`hooks` section that is not an object), its values cannot show the list is empty
+or set, so the files on disk decide. If a config file does not read as written
+now (it cannot be read, does not parse as an object, or holds a non-object
+`hooks`) and some config file names the `confirm_tools` key, or a file cannot
+be read at all, the list is unknown. The static writers then withhold every MCP
+grant, Crew's own included, and the boot and reload `HooksConfig` carries
+`confirm_tools_unknown`, so the gate withholds every `auto_approve_tools` grant
+too: a torn overlay can drop its `confirm_tools` while the base file's grants
+survive the load. If no file names the key, the operator never asked for a
+prompt, and everything behaves exactly as with the key unset (a trailing comma
+in a `config.json` without the key changes nothing). The loader keeps a
+degradation flagged for the life of the process; once every file reads as
+written again the flag is stale and the loaded values are used, so the next
+rebuild or dashboard enable writes the grants back.
+
+A grant ref is a pattern too. A ref with a wildcard in its server segment, such
+as `*`, `@*` or `@ser*`, covers servers the writer cannot list. While any
+`confirm_tools` pattern is set (or the list is unknown), every writer
+withholds that ref, so the agent gets no namespace-wide `allowedTools` entry.
+Refs that cannot begin with `@`, such as `fs_*`, cover no MCP call and are left
+to the builtin floor.
+
 ### Two writers, one lock
 
 `~/.kiro/agents/kirocrew.json` has two independent writers: this whole-file

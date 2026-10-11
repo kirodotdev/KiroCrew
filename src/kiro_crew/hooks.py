@@ -89,6 +89,7 @@ from kiro_crew.hook_runtime.descriptor_identity import (  # noqa: F401
 )
 from kiro_crew.hook_runtime.gate_tiers import (  # noqa: F401
     GateFacts,
+    _operator_confirms,
     _rule_exfil,
     _rule_sensitive_bash,
     _rule_sensitive_path,
@@ -674,6 +675,18 @@ class HooksConfig:
     auto_approve_subagent_spawn: bool = False
     auto_approve_subagent_tools: bool = False
     auto_deny_tools: list[str] = field(default_factory=list)
+    #: Tool patterns that always ask before running, in the ``auto_approve_tools``
+    #: spelling (``@server``, ``@server/tool*``, ``*``). A matching user-added MCP
+    #: server stays mounted but is kept off the agent's blanket auto-approve list,
+    #: so its calls reach the approval gate, and a match here outranks an
+    #: ``auto_approve_tools`` grant. Empty by default: nothing changes unless the
+    #: operator lists something.
+    confirm_tools: list[str] = field(default_factory=list)
+    #: Set when ``confirm_tools`` is empty only because the load could not read a
+    #: config file that names the key (``governance.confirm_tools_unknown``). The
+    #: gate then withholds every ``auto_approve_tools`` grant, since the patterns
+    #: it would have checked are not known. Derived state, never serialized.
+    confirm_tools_unknown: bool = field(default=False, compare=False)
     auto_replies: list[AutoReplyHook] = field(default_factory=list)
     transforms: list[TransformHook] = field(default_factory=list)
     context_rules: list[ContextRule] = field(default_factory=list)
@@ -767,6 +780,7 @@ class HooksConfig:
                 data.get("auto_approve_subagent_tools", False), default=False
             ),
             auto_deny_tools=_str_list(data.get("auto_deny_tools", [])),
+            confirm_tools=_str_list(data.get("confirm_tools", [])),
             auto_replies=auto_replies,
             transforms=transforms,
             context_rules=context_rules,
@@ -794,6 +808,7 @@ class HooksConfig:
             "auto_approve_subagent_spawn": self.auto_approve_subagent_spawn,
             "auto_approve_subagent_tools": self.auto_approve_subagent_tools,
             "auto_deny_tools": list(self.auto_deny_tools),
+            "confirm_tools": list(self.confirm_tools),
             "auto_replies": [asdict(h) for h in self.auto_replies],
             "transforms": [asdict(h) for h in self.transforms],
             "context_rules": [asdict(r) for r in self.context_rules],
