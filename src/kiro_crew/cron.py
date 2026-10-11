@@ -2188,8 +2188,14 @@ class CronService:
 
         Raises :class:`CronStoreBusy` on lock contention; see
         :meth:`remove_job_async` for the event-loop-safe variant.
+
+        A caller-requested removal also deletes the job's run history, whichever
+        surface asked for it. An automated one-shot removal keeps it: the run
+        path appends that run's record after the removal.
         """
         ok = self._remove_job_locked(job_id)
+        if ok and one_shot_path is None:
+            self._delete_history_of([job_id])
         self._audit_requested_removal(
             job_id,
             removed=ok,
@@ -2214,6 +2220,8 @@ class CronService:
         Raises :class:`CronStoreBusy` (retryable) on sustained contention.
         """
         ok = await asyncio.to_thread(self._remove_job_locked, job_id)
+        if ok and one_shot_path is None:
+            await asyncio.to_thread(self._delete_history_of, [job_id])
         self._audit_requested_removal(
             job_id,
             removed=ok,
@@ -2224,6 +2232,22 @@ class CronService:
         if ok:
             self._arm_timer()
         return ok
+
+    def _delete_history_of(self, job_ids: list[str]) -> None:
+        """Delete the run history of removed jobs. WORKER-THREAD or loop-less only.
+
+        Best-effort, like the audit: the jobs are already gone from the store,
+        so a history failure is logged and never fails the removal.
+        """
+        for job_id in job_ids:
+            try:
+                self._history.delete_job_history_sync(job_id)
+            except Exception:
+                logger.warning(
+                    "History cleanup failed for cron %s (job already removed)",
+                    job_id,
+                    exc_info=True,
+                )
 
     def _audit_requested_removal(
         self,
@@ -2615,6 +2639,8 @@ class CronService:
         """
         requested = list(job_ids)
         removed, missing = await asyncio.to_thread(self._remove_jobs_locked, requested)
+        if removed:
+            await asyncio.to_thread(self._delete_history_of, removed)
         self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
         if removed:
             self._arm_timer()
@@ -2654,10 +2680,13 @@ class CronService:
 
         Synchronous: only for loop-less callers / the offloaded ``CronSDK``
         facade (the ``_file_lock`` loop-safety guard rejects it on a running
-        loop). On the loop use :meth:`remove_jobs`.
+        loop). On the loop use :meth:`remove_jobs`. Like :meth:`remove_jobs`, it
+        deletes the removed jobs' run history.
         """
         requested = list(job_ids)
         removed, missing = self._remove_jobs_locked(requested)
+        if removed:
+            self._delete_history_of(removed)
         self._audit_requested_batch_removal(requested, removed, missing, actor=actor, source=source)
         if removed:
             self._arm_timer()

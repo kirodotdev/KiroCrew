@@ -744,6 +744,20 @@ class CronHistoryStore:
             self._degrade("delete_job_history", exc)
             return False
 
+    def delete_job_history_sync(self, job_id: str) -> bool:
+        """Synchronous :meth:`delete_job_history`, for a loop-less caller.
+
+        Blocking filesystem I/O under the history lock, so it never runs on an
+        event loop; there, await :meth:`delete_job_history`.
+        """
+        if not self._enabled:
+            return False
+        try:
+            return self._delete_job_history_sync(job_id)
+        except OSError as exc:
+            self._degrade("delete_job_history", exc)
+            return False
+
     def _delete_job_history_sync(self, job_id: str) -> bool:
         fd = self._lock()
         try:

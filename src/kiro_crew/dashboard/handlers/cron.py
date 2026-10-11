@@ -1022,7 +1022,6 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     except CronStoreUnreadable as exc:
         return _cron_unreadable_response(exc)
     if ok:
-        await state.crons.get_history().delete_job_history(job_id)
         state.push_refresh("crons")
     return web.json_response({"ok": ok})
 
@@ -1082,19 +1081,6 @@ async def api_cron_batch_delete(request: web.Request) -> web.Response:
         logger.warning("Batch delete failed", exc_info=True)
         failed = unique_ids
         deleted = []
-    for job_id in deleted:
-        # The job is gone now, so it is unconditionally a successful delete.
-        # History cleanup is best-effort: a failure there must NOT reclassify a
-        # completed delete as "failed" — that would make the UI offer a retry
-        # that can never succeed (the job no longer exists).
-        try:
-            await state.crons.get_history().delete_job_history(job_id)
-        except Exception:
-            logger.warning(
-                "History cleanup failed for cron %s (job already removed)",
-                job_id,
-                exc_info=True,
-            )
     if deleted:
         state.push_refresh("crons")
     # ok reflects whether anything was actually deleted — consistent with the

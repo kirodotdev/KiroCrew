@@ -65,8 +65,8 @@ class TestApiCronDeleteAudit:
             "job-1", actor="dashboard", source="api_cron_delete"
         )
         stub_sel.log_api_access.assert_not_called()
-        # Delete behavior itself is unchanged: history purged + refresh pushed.
-        state.crons.get_history().delete_job_history.assert_awaited_once_with("job-1")
+        # remove_job_async deletes the history; the route does not repeat it.
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         state.push_refresh.assert_called_once_with("crons")
 
     @pytest.mark.asyncio
@@ -95,35 +95,33 @@ class TestApiCronDeleteAudit:
         stub_sel.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_audit_lands_before_history_cleanup(self, stub_sel):
-        # The job is already gone from the store when history cleanup runs, so
-        # a history-store failure must not lose the audit record of the
-        # completed delete.
+    async def test_route_does_not_touch_the_history_store(self, stub_sel):
+        # remove_job_async owns the history cleanup and absorbs its failures,
+        # so a failing history store cannot turn a completed delete into a 500.
         state = _make_state(["job-1"])
         state.crons.get_history.return_value.delete_job_history = AsyncMock(
             side_effect=RuntimeError("history store blip")
         )
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons/job-1")
-            # The handler does not swallow the history failure; the audit must
-            # already have been written regardless of how the response ends.
-            assert resp.status == 500
+            assert resp.status == 200
         state.crons.remove_job_async.assert_awaited_once_with(
             "job-1", actor="dashboard", source="api_cron_delete"
         )
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         stub_sel.log_api_access.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_audit_failure_never_fails_a_completed_delete(self, stub_sel):
         # The first sel() of a process CONSTRUCTS the log (trust-dir creation,
         # HMAC key validation) and can raise. The job is already gone by then:
-        # the delete must still report success, purge history, and refresh.
+        # the delete must still report success and refresh.
         state = _make_state(["job-1"])
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.delete("/api/crons/job-1")
             assert resp.status == 200
             data = await resp.json()
             assert data["ok"] is True
-        state.crons.get_history().delete_job_history.assert_awaited_once_with("job-1")
+        state.crons.get_history().delete_job_history.assert_not_awaited()
         state.push_refresh.assert_called_once_with("crons")
         stub_sel.log_api_access.assert_not_called()
