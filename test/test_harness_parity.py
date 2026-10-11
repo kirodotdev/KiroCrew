@@ -74,6 +74,7 @@ from kiro_crew.acp_backends import (
     selectable_backends,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.loader import AgentConfig, _normalize_acp_backend
 from kiro_crew.providers import acp as providers_acp
 from kiro_crew.providers import mirrors
@@ -677,8 +678,14 @@ def test_effort_channel_is_opt_in() -> None:
     """
     assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION <= ACP_BACKENDS_KNOWN
     assert ACP_BACKENDS_KIRO_SLASH_COMMANDS <= ACP_BACKENDS_KNOWN
-    # Disjoint: a harness must not be told to push effort down both channels.
-    assert not (ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS)
+    # A harness in both sets is told to push effort down ONE channel: KAS is
+    # kiro-family for its other slash commands but takes effort only as a config
+    # option, so the capability answers never name both channels.
+    assert ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION & ACP_BACKENDS_KIRO_SLASH_COMMANDS == {
+        ACP_BACKEND_KAS
+    }
+    caps = capabilities_for(ACP_BACKEND_KAS)
+    assert caps.effort_via_config_option and not caps.effort_via_slash_command
     assert ACP_BACKEND_KIRO in ACP_BACKENDS_KIRO_SLASH_COMMANDS
     assert ACP_BACKEND_CODEX in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
     assert ACP_BACKEND_CODEX not in ACP_BACKENDS_KIRO_SLASH_COMMANDS

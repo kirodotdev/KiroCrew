@@ -50,6 +50,9 @@ class Wire:
         self._work_dir = project
         self.backend = backend
         self._session_id = "native-conversation"
+        # Read by the startup effort push on a config-option harness (KAS); no
+        # model means no level resolves, so nothing is pushed.
+        self._model = ""
         self.process_instance = "process-one"
         self.messages = []
         self.events = [

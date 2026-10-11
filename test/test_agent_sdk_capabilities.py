@@ -359,7 +359,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
 #: backend named instead of passing tautologically.
 EXPECTED_CAPABILITIES = {
     "": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
-    "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
+    "kas": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, True, False, False),
     "claude": (PROVIDER_CLAUDE_CODE, "claude_code", True, True, True, True),
     "codex": (PROVIDER_ACP, "codex", True, True, True, False),
     "nope": (PROVIDER_ACP, MODEL_NAMESPACE_ACP, False, False, False, False),
@@ -773,13 +773,16 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
 
 def test_effort_via_slash_command_membership_is_the_kiro_family() -> None:
     """``effort_via_slash_command`` translates ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
-    for every known backend, and no backend carries effort down both channels:
-    a change sent down the one the harness does not implement is answered with
-    method-not-found."""
+    minus the config-option channel's members for every known backend, and no
+    backend carries effort down both channels: a change sent down the one the
+    harness does not implement is answered with method-not-found (KAS, which sits
+    in both sets, answers ``_kiro.dev/commands/execute`` with -32603)."""
     for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
         caps = capabilities_for(backend)
         assert caps.effort_via_slash_command == (
             backend in sdk_backends.ACP_BACKENDS_KIRO_SLASH_COMMANDS
+            and backend not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
         ), backend
         assert not (caps.effort_via_slash_command and caps.effort_via_config_option), backend
+    assert capabilities_for(sdk_backends.ACP_BACKEND_KAS).effort_via_slash_command is False
     assert capabilities_for("some-harness-nobody-registered").effort_via_slash_command is False
