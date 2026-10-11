@@ -23,6 +23,7 @@ if TYPE_CHECKING:
         _holds_every_loopback_family,
         _is_spa_shell_request,
         _mixed_internal_api_paths,
+        agent_route_arm,
         audit_actor,
         build_allowed_origins,
         build_host_canonical_redirect,
@@ -228,6 +229,7 @@ def _install_dashboard_middlewares(
             local_only=local_only,
             spa_shell_handler=handlers.index,
             tailnet_trust=tailnet_trust,
+            agent_route_arm=agent_route_arm,
         ),
         sel_audit_middleware,
         # Inner to token auth (it reads the ``app`` claim) and to the audit
@@ -342,6 +344,7 @@ def _install_api_middlewares(
             # outright, never served an HTML shell (there is no UI to boot).
             spa_shell_handler=None,
             tailnet_trust=tailnet_trust,
+            agent_route_arm=agent_route_arm,
         ),
         sel_audit_middleware,
         # Same per-slot app-ownership checkpoint as the dashboard chain, so a

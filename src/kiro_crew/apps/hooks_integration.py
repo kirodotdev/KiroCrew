@@ -315,6 +315,22 @@ def get_route_registry() -> RouteRegistry | None:
     return _route_registry
 
 
+def _declared_agent_routes(manifest: Any) -> list[object]:
+    """The manifest dict's ``agentRoutes`` list, or empty when absent or malformed."""
+    declared = manifest.get("agentRoutes") if isinstance(manifest, dict) else None
+    return list(declared) if isinstance(declared, list) else []
+
+
+def agent_route_arm(resolved_route: object) -> bool:
+    """Whether *resolved_route* is the live registry's catch-all.
+
+    The predicate ``token_auth`` consults before arming the agent-route path.
+    False before the hooks system is initialized, so nothing arms during startup.
+    """
+    registry = _route_registry
+    return registry is not None and registry.agent_route_arm(resolved_route)
+
+
 def get_lifecycle_dispatcher() -> LifecycleDispatcher | None:
     """Get the global LifecycleDispatcher instance."""
     return _lifecycle_dispatcher
@@ -470,7 +486,9 @@ async def on_app_enable(
     routes_hook = hooks.get("routes", "")
     if routes_hook and _route_registry:
         app_root = _app_hook_root(app_name)
-        registered = await _route_registry.register_app_routes(app_name, app_root, routes_hook, ctx)
+        registered = await _route_registry.register_app_routes(
+            app_name, app_root, routes_hook, ctx, agent_routes=_declared_agent_routes(manifest)
+        )
         if registered:
             result["hooks_routes"] = registered
 
@@ -864,7 +882,13 @@ async def on_gateway_startup(
         # Register routes (if declared)
         routes_hook = hooks.get("routes", "")
         if routes_hook and _route_registry:
-            await _route_registry.register_app_routes(name, _app_hook_root(name), routes_hook, ctx)
+            await _route_registry.register_app_routes(
+                name,
+                _app_hook_root(name),
+                routes_hook,
+                ctx,
+                agent_routes=_declared_agent_routes(manifest),
+            )
 
         # Invoke on_startup hook (if declared)
         startup_hook = hooks.get("on_startup", "")

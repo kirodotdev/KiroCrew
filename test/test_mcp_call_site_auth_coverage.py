@@ -70,11 +70,17 @@ Scope, and what this deliberately does not check:
 from __future__ import annotations
 
 import ast
+import asyncio
 import re
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
 
+from kiro_crew.apps import hooks_integration
+from kiro_crew.apps.route_registry import RouteRegistry
 from kiro_crew.dashboard.server import (
     _MIXED_INTERNAL_API_PATHS,
     _STRICT_INTERNAL_API_PATHS,
@@ -176,6 +182,49 @@ _KNOWN_UNRESOLVED = frozenset(
 # here: every resolved call site matches an allowlist today. It is kept, empty,
 # so the exception set stays visible rather than implied.
 _KNOWN_UNREACHABLE: frozenset[str] = frozenset()
+
+# Paths admitted by the agent-route arm instead of an allowlist. ``app_request``
+# builds ``/api/apps/<app><path>`` from its arguments, so neither half is known
+# statically. Their grant is checked below against the real aiohttp catch-all and
+# the production ``agent_route_arm`` predicate. ``RouteRegistry.dispatch`` then
+# refuses with 403 any route the app did not declare in ``agentRoutes``;
+# ``test_app_agent_routes.py`` covers that declaration half.
+_AGENT_ROUTE_ARM_PATHS: frozenset[str] = frozenset({"/api/apps/{X}{X}"})
+
+
+async def _static_route(_request: web.Request) -> web.Response:
+    """Stand in for a host-owned route registered ahead of the app catch-all."""
+    return web.Response(text="ok")
+
+
+async def _production_agent_route_gate_async(path: str) -> bool:
+    """Resolve *path* and ask the production predicate whether it arms."""
+    app = web.Application()
+    app.router.add_route("*", "/api/spawn", _static_route)
+    registry = RouteRegistry(app)
+    registry.ensure_catch_all()
+    request = make_mocked_request("GET", path, app=app)
+    match_info = await app.router.resolve(request)
+    previous_registry = hooks_integration.get_route_registry()
+    hooks_integration._route_registry = registry
+    try:
+        is_static = internal_path_matches(
+            path, _STRICT_INTERNAL_API_PATHS | _MIXED_INTERNAL_API_PATHS
+        )
+        return not is_static and hooks_integration.agent_route_arm(match_info.route)
+    finally:
+        hooks_integration._route_registry = previous_registry
+
+
+@lru_cache(maxsize=None)
+def _production_agent_route_gate(path: str) -> bool:
+    """Run the production gate once per representative concrete path."""
+    return asyncio.run(_production_agent_route_gate_async(path))
+
+
+def _agent_route_sample(path: str) -> str:
+    """Fill the two runtime spans in the path built by ``app_request``."""
+    return path.replace(_UNKNOWN, "sample-app", 1).replace(_UNKNOWN, "/subscriptions", 1)
 
 
 def _normalise(path: str) -> str:
@@ -663,6 +712,8 @@ def _is_prefix_path(path: str) -> bool:
 
 def _is_granted(path: str, methods: frozenset[str]) -> bool:
     """Reachability for a concrete path; family-granted for a prefix path."""
+    if path in _AGENT_ROUTE_ARM_PATHS:
+        return _production_agent_route_gate(_agent_route_sample(path))
     if not _is_prefix_path(path):
         return _is_reachable(path, methods)
     head = path[: path.find(_UNKNOWN)]
@@ -849,6 +900,21 @@ class TestMcpCallSiteAuthCoverage:
             f"_KNOWN_UNREACHABLE lists path(s) that are now reachable: {stale}. "
             "Remove them so the ratchet keeps tightening."
         )
+
+    def test_agent_route_arm_paths_are_still_called(self):
+        """The agent-route exemption may only name a path a call site still uses."""
+        stale = sorted(_AGENT_ROUTE_ARM_PATHS - set(_call_sites()))
+        assert not stale, (
+            f"_AGENT_ROUTE_ARM_PATHS lists path(s) no MCP call site reaches: {stale}. "
+            "Remove them so the exemption cannot outlive its caller."
+        )
+
+    def test_agent_route_arm_gate_is_not_vacuous(self):
+        """Only the production catch-all may earn the dynamic route grant."""
+        sample = _agent_route_sample(next(iter(_AGENT_ROUTE_ARM_PATHS)))
+        assert sample == "/api/apps/sample-app/subscriptions"
+        assert _production_agent_route_gate(sample)
+        assert not _production_agent_route_gate("/api/spawn")
 
     def test_extraction_is_not_vacuous(self):
         """If extraction silently found nothing, the coverage test passes free."""

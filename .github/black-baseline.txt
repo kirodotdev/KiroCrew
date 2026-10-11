@@ -233,7 +233,6 @@ src/kiro_crew/mcp_gateway/spill.py
 src/kiro_crew/mcp_gateway/stub.py
 src/kiro_crew/mcp_gateway/transport.py
 src/kiro_crew/mcp_gateway/verdict_cache.py
-src/kiro_crew/mcp_tools/apps.py
 src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/metrics/http_metrics.py
 src/kiro_crew/metrics/provider.py

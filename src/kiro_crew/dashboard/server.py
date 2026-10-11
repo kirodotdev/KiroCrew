@@ -29,6 +29,7 @@ from kiro_crew.apps.backend import (  # noqa: F401
 from kiro_crew.apps.hook_reconcile import init_hook_reconciler, stop_hook_reconciler  # noqa: F401
 from kiro_crew.apps.hooks_integration import (  # noqa: F401
     _stop_spawned_backends,
+    agent_route_arm,
     init_hooks_system,
     on_gateway_shutdown,
     on_gateway_startup,

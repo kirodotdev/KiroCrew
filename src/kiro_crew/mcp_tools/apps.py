@@ -30,7 +30,10 @@ from typing import Any
 from urllib.parse import quote
 
 from kiro_crew import mcp_core
+from kiro_crew.apps import manager as app_manager
 from kiro_crew.apps.manager import app_enabled_state
+from kiro_crew.apps.manifest import agent_route_matches, parse_agent_route
+from kiro_crew.constants import APP_REQUEST_HEADER, APP_REQUEST_HEADER_VALUE
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
@@ -160,7 +163,7 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "JSON object for POST bodies, serialized as a string — "
-                            "e.g. '{\"id\": \"INV-42\", \"status\": \"resolved\"}' for "
+                            'e.g. \'{"id": "INV-42", "status": "resolved"}\' for '
                             "/incident/transition"
                         ),
                     },
@@ -517,6 +520,49 @@ def schemas() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
+        {
+            "name": "app_request",
+            "description": (
+                "Call an installed app's declared agent route: one of the "
+                '`"METHOD /path"` entries in the app\'s `agentRoutes` manifest '
+                "field. Apps document their agent routes, and what each one "
+                "expects, in the skills they ship, so read the app's skill first. "
+                "The gateway refuses an undeclared route, and this tool refuses "
+                "a disabled app. The app is told which session is calling, so "
+                "an unidentified caller is refused. A refusal before the gateway is "
+                "safe to retry; a transport failure after a mutation has an unknown "
+                "outcome and must be read back with GET instead of resent. Otherwise "
+                "the tool returns the gateway's or app's answer. This is the ONLY way "
+                "to reach an app's routes: raw HTTP has no credential and is refused "
+                "with 403."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "description": "The installed app's name, e.g. 'slack-poller'",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["DELETE", "GET", "PATCH", "POST", "PUT"],
+                        "description": "HTTP method of the declared route",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Route path relative to the app, with parameters filled "
+                            "in, e.g. '/subscriptions/42'. No query string"
+                        ),
+                    },
+                    "body": {
+                        "type": "object",
+                        "description": "JSON body for POST, PUT, PATCH or DELETE",
+                    },
+                },
+                "required": ["app", "method", "path"],
+            },
+        },
     ]
 
 
@@ -680,7 +726,9 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     _omc_url = "/api/apps/ops-mission-control" + _omc_path
     if _omc_query:
         _omc_url += "?" + _omc_query
-    _omc_resp = mcp_core._get(_omc_url) if _omc_method == "GET" else mcp_core._post(_omc_url, _omc_body)
+    _omc_resp = (
+        mcp_core._get(_omc_url) if _omc_method == "GET" else mcp_core._post(_omc_url, _omc_body)
+    )
     # Serialize compactly and redact on the way OUT: signals, incident
     # titles and ledger entries carry text from external monitoring
     # systems and prior LLM turns, so a credential or exfil URL quoted
@@ -692,8 +740,7 @@ def ops_mission_control_api(name: str, args: dict[str, Any]) -> str:
     _omc_cap = 60_000
     if len(_omc_text) > _omc_cap:
         _omc_text = (
-            _omc_text[:_omc_cap]
-            + f"\n… truncated ({len(_omc_text)} chars total). Narrow the "
+            _omc_text[:_omc_cap] + f"\n… truncated ({len(_omc_text)} chars total). Narrow the "
             "call (e.g. query filters) to see the rest."
         )
     return _omc_text
@@ -746,10 +793,7 @@ def design_tweak_update_thread(name: str, args: dict[str, Any]) -> str:
     _dt_text_out = redact(json.dumps(_dt_resp, ensure_ascii=False, default=str))
     _dt_cap = 20_000
     if len(_dt_text_out) > _dt_cap:
-        _dt_text_out = (
-            _dt_text_out[:_dt_cap]
-            + f"\n… truncated ({len(_dt_text_out)} chars total)."
-        )
+        _dt_text_out = _dt_text_out[:_dt_cap] + f"\n… truncated ({len(_dt_text_out)} chars total)."
     return _dt_text_out
 
 
@@ -946,16 +990,12 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
     # mentioning labels at all, so the store kept the previous set and the
     # crew's record claimed labels it had just taken off the issue.
     if "labels_applied" in args:
-        _cw_body["labels_applied"] = [
-            redact(s) for s in (args.get("labels_applied") or []) if s
-        ]
+        _cw_body["labels_applied"] = [redact(s) for s in (args.get("labels_applied") or []) if s]
     # Names, forwarded as names: the route turns each into an explicit null in the
     # work-item patch, which is how a field is emptied. Every field above is gated
     # on truthiness, so this list is the ONLY way a clear reaches the ledger.
     if "clear" in args:
-        _cw_body["clear"] = [
-            s for s in (args.get("clear") or []) if isinstance(s, str) and s
-        ]
+        _cw_body["clear"] = [s for s in (args.get("clear") or []) if isinstance(s, str) and s]
     # The flat ci_* args are re-assembled into the store's `ci_state` dict
     # (crew_store merges it key-by-key). `ci_state` the ARG is the forge's
     # verdict word and becomes the dict's `state`; an int reading of 0 is
@@ -1034,6 +1074,143 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
     return redact("\n".join(_cw_lines))
 
 
+#: One number, two bounds. First it caps the RAW BYTES ``mcp_core._send`` reads
+#: from the wire before decoding (``max_response_bytes``), so an app cannot flood
+#: this process with a body it never finishes reading. Then it caps the
+#: CHARACTERS of the redacted text returned to the model, so a cut cannot split a
+#: credential the redactor would have matched. The units differ, the figure is
+#: shared because neither bound needs to be tighter than the other.
+_APP_REQUEST_RESPONSE_CAP = 60_000
+_APP_REQUEST_HEADERS = {APP_REQUEST_HEADER: APP_REQUEST_HEADER_VALUE}
+
+
+def _declares_agent_route(app: str, method: str, path: str) -> bool:
+    """Whether installed *app* declares *method* *path* for agent calls."""
+    manifest = app_manager.get_app_manifest(app)
+    if manifest is None or not isinstance(manifest.agentRoutes, list):
+        return False
+    for parsed, _reason in map(parse_agent_route, manifest.agentRoutes):
+        if parsed is not None and parsed[0] == method and agent_route_matches(parsed[1], path):
+            return True
+    return False
+
+
+def app_request(name: str, args: dict[str, Any]) -> str:
+    _ar_sk, _ar_err = mcp_core.require_strict_session_key(
+        "Error: app_request needs a directly-identified session. The app is told "
+        "which session is calling, and a subagent resolves to its parent's session, "
+        "which would act as the parent."
+    )
+    if not _ar_sk:
+        return _redact_and_cap_app_response(_ar_err)
+    _ar_chan_deny = mcp_core._deny_channel_agent_messaging(_ar_sk, "app_request")
+    if _ar_chan_deny:
+        return _redact_and_cap_app_response(_ar_chan_deny)
+    _ar_app = args["app"]
+    _ar_method = args["method"]
+    _ar_path = args["path"]
+    if redact(_ar_path) != _ar_path:
+        return _redact_and_cap_app_response(
+            f"Error: app_request refused {_ar_method} {_ar_path} because the path contains "
+            "credential material. The request did not reach the app or gateway."
+        )
+    if not app_manager.is_app_enabled(_ar_app):
+        return _redact_and_cap_app_response(
+            f"Error: app_request refused {_ar_method} {_ar_path} before the request reached "
+            "the gateway, so it is safe to retry after correcting the refusal. "
+            f"{_ar_app!r} is not an enabled installed app."
+        )
+    # Keep the manifest check as a cheap defense in depth. The static dashboard
+    # allowlists cannot be imported here without reversing the mcp_tools ->
+    # dashboard dependency, so token_auth authoritatively refuses marked
+    # app_request traffic on every static internal path.
+    if not _declares_agent_route(_ar_app, _ar_method, _ar_path):
+        return _redact_and_cap_app_response(
+            f"Error: app_request refused {_ar_method} {_ar_path} before the request reached "
+            "the gateway, so it is safe to retry after correcting the refusal. The route "
+            f"is not declared by app {_ar_app!r} in its manifest `agentRoutes`."
+        )
+    _ar_url = f"/api/apps/{quote(_ar_app)}{_ar_path}"
+    # Redacted on the way IN: the body reaches app code that may persist or forward
+    # it, so a credential quoted into it is scrubbed before it leaves this process.
+    _ar_body = mcp_core._redact_json_strings(sanitize_json_values(args.get("body") or {}))
+    if _ar_method == "GET":
+        _ar_resp = mcp_core._get(
+            _ar_url,
+            session_key=_ar_sk,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "POST":
+        _ar_resp = mcp_core._post(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "PUT":
+        _ar_resp = mcp_core._put(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "PATCH":
+        _ar_resp = mcp_core._patch(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    else:
+        _ar_resp = mcp_core._delete(
+            _ar_url,
+            _ar_body or None,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    # Redact each complete result before its cap. This covers path and app names as
+    # well as app-controlled response text, and prevents a cut from splitting a
+    # credential that the redactor would otherwise match.
+    if isinstance(_ar_resp, dict) and _ar_resp.get("error"):
+        _ar_err_text = str(_ar_resp["error"])
+        if _ar_resp.get("refused"):
+            return _redact_and_cap_app_response(
+                f"Error: {_ar_method} {_ar_path} was refused before reaching the gateway, "
+                f"so it is safe to retry: {_ar_err_text}"
+            )
+        if _ar_resp.get("transport_error"):
+            return _redact_and_cap_app_response(
+                f"Error: outcome unknown: the {_ar_method} {_ar_path} request may have been "
+                "applied; read state back with a GET instead of resending. "
+                f"Transport failure: {_ar_err_text}"
+            )
+        return _redact_and_cap_app_response(
+            f"Error: {_ar_app} answered {_ar_method} {_ar_path} with: {_ar_err_text}"
+        )
+    _ar_text = json.dumps(_ar_resp, ensure_ascii=False, default=str)
+    return _redact_and_cap_app_response(f"OK {_ar_method} {_ar_path}\n{_ar_text}")
+
+
+def _redact_and_cap_app_response(text: str) -> str:
+    """Redact a complete app_request result, then apply its character cap."""
+    return _cap_app_response(redact(text))
+
+
+def _cap_app_response(text: str) -> str:
+    """Truncate an already-redacted app_request result to the response cap."""
+    if len(text) <= _APP_REQUEST_RESPONSE_CAP:
+        return text
+    return text[:_APP_REQUEST_RESPONSE_CAP] + f"\n… truncated ({len(text)} chars total)."
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
@@ -1044,4 +1221,5 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "pod_ls": pod_ls,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
+    "app_request": app_request,
 }

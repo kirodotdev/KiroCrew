@@ -806,6 +806,30 @@ those (now or in a later version), a real, probe-usable virtual environment at
 behalf whenever no provisioned deps tree is active, even when it holds no
 packages at all.
 
+#### `agentRoutes` — Hook Routes an Agent May Call
+
+Every `hooks.routes` handler is cookie-only by default: a browser reaches it, an
+agent does not. To let an agent call one, name it in the top-level `agentRoutes`
+list as `"METHOD /relative/path"`. Agents then call it with the `app_request`
+tool, and the handler reads the calling session from
+`request["kirocrew_agent_session"]`, which is set only for those calls.
+
+```json
+{
+  "agentRoutes": ["GET /subscriptions", "DELETE /subscriptions/{id}"]
+}
+```
+
+The method is one of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`. The path starts with
+`/`, has no query string and no `.` or `..` segment, and each segment is a literal
+or a `{param}`. The first segment must be a literal and must not be one core
+reserves under `/api/apps/<app>/` (`config`, `dev`, `disable`, `enable`,
+`manifest`, `migrate-cleanup`, `open`, `token`, `uninstall`, `update`, `_jobs`);
+such an entry is refused at install. At most 32 entries and 256 characters per
+entry, with no duplicates. The list is covered by the manifest signature. An
+undeclared route, and every route of a disabled app, refuses agents. Tell agents
+which routes exist in a skill the app ships.
+
 ## Permissions
 
 ### `permissions` — Declared Capabilities

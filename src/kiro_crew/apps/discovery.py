@@ -67,6 +67,11 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
     if contrib_d:
         d["contributes"] = contrib_d
 
+    # Same reason again: a builtin's declared agent routes would be dropped from the
+    # persisted app.json the hooks system registers routes from.
+    if manifest.agentRoutes:
+        d["agentRoutes"] = list(manifest.agentRoutes)
+
     if manifest.mcpServers:
         d["mcpServers"] = manifest.mcpServers
 

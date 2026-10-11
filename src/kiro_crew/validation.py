@@ -3097,6 +3097,41 @@ POD_STATUS_SCHEMA = ToolSchema(
 # what makes an unexpected argument an "Error:" string instead of unvalidated input.
 POD_LS_SCHEMA = ToolSchema(tool_name="pod_ls", fields=[])
 
+# ``app_request`` calls one of an installed app's declared ``agentRoutes``. The
+# path is a CONCRETE path (parameters filled in), restricted to characters that
+# survive the gateway's URL decoding unchanged, so the route the tool checks
+# locally is the route the gateway matches. No ``%``: a decoded ``%2F`` would add
+# a segment after the local check passed.
+APP_REQUEST_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE"})
+# ``\Z``, not ``$``: ``$`` also matches before a trailing newline, so ``"/x\n"``
+# would pass the pattern as ``/x``.
+_APP_REQUEST_APP_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*\Z")
+_APP_REQUEST_PATH_RE = re.compile(r"^(?:/[A-Za-z0-9._~:@+-]+)+\Z")
+# Same bound as the Ops Mission Control body, the nearest existing agent surface.
+_APP_REQUEST_MAX_BODY = 32_768
+
+
+def _validate_app_request(cleaned: dict[str, Any]) -> None:
+    body = cleaned.get("body")
+    if body is None:
+        return
+    if cleaned.get("method") == "GET":
+        raise ValidationError("body", "GET calls take no body")
+    if len(json.dumps(body, ensure_ascii=False, default=str)) > _APP_REQUEST_MAX_BODY:
+        raise ValidationError("body", f"body exceeds {_APP_REQUEST_MAX_BODY} characters")
+
+
+APP_REQUEST_SCHEMA = ToolSchema(
+    tool_name="app_request",
+    fields=[
+        FieldSpec("app", str, required=True, max_len=64, pattern=_APP_REQUEST_APP_RE),
+        FieldSpec("method", str, required=True, allowed=APP_REQUEST_METHODS),
+        FieldSpec("path", str, required=True, max_len=512, pattern=_APP_REQUEST_PATH_RE),
+        FieldSpec("body", dict),
+    ],
+    custom_validator=_validate_app_request,
+)
+
 ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     tool_name="issue_radar_record_investigation",
     fields=[
@@ -4215,6 +4250,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "pod_down": POD_DOWN_SCHEMA,
     "pod_status": POD_STATUS_SCHEMA,
     "pod_ls": POD_LS_SCHEMA,
+    "app_request": APP_REQUEST_SCHEMA,
     # Registered even though ``issue_radar_crew_read`` takes no arguments: an
     # unregistered tool's args pass through raw, and the empty-field schema is
     # also what makes an unknown arg an "Error:" string instead of a stdio-loop
