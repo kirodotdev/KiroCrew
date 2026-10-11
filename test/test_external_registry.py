@@ -1587,7 +1587,7 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1635,7 +1635,7 @@ class TestInstallPathCredentialPosture:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1832,7 +1832,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1882,7 +1882,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -1934,7 +1934,7 @@ class TestSameRepoCredentialCarveOut:
 
         captured = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             captured["mode"] = mode
             return argv, None
 
@@ -2440,7 +2440,7 @@ class TestStaleCloneOriginVerification:
             patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
             patch(
                 "kiro_crew.apps.registry.wrap_argv",
-                side_effect=lambda a, mode="standard": (a, None),
+                side_effect=lambda a, mode="standard", **_k: (a, None),
             ),
             # cgroup_scope_argv wraps the argv on Linux (identity on macOS) —
             # pin it so the captured commands are platform-independent.
@@ -2485,7 +2485,7 @@ class TestStaleCloneOriginVerification:
             patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
             patch(
                 "kiro_crew.apps.registry.wrap_argv",
-                side_effect=lambda a, mode="standard": (a, None),
+                side_effect=lambda a, mode="standard", **_k: (a, None),
             ),
             # cgroup_scope_argv wraps the argv on Linux (identity on macOS) —
             # pin it so the captured commands are platform-independent.
@@ -2575,7 +2575,7 @@ class TestManifestOriginGate:
             patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
             patch(
                 "kiro_crew.apps.registry.wrap_argv",
-                side_effect=lambda a, mode="standard": (a, None),
+                side_effect=lambda a, mode="standard", **_k: (a, None),
             ),
             patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
             patch("kiro_crew.apps.registry.create_subprocess_limited", new=spawn),
@@ -2689,7 +2689,7 @@ class TestStaleCloneDeletionFailsClosed:
             patch("kiro_crew.apps.registry.is_clone_host_trusted", return_value=True),
             patch(
                 "kiro_crew.apps.registry.wrap_argv",
-                side_effect=lambda a, mode="standard": (a, None),
+                side_effect=lambda a, mode="standard", **_k: (a, None),
             ),
             patch("kiro_crew.apps.registry.cgroup_scope_argv", side_effect=lambda a: a),
             patch("kiro_crew.apps.registry.create_subprocess_limited", new=_spawn),
@@ -2734,7 +2734,7 @@ class TestOriginMismatchDeleteOrder:
         # Marker proving old content survived.
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _FailProc:
@@ -2800,7 +2800,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "old-file.txt").write_text("old", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -2882,7 +2882,7 @@ class TestOriginMismatchDeleteOrder:
                 raise OSError("Permission denied: locked files")
             return original_rename(self_path, target)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         # Mock create_subprocess_limited to simulate `git remote get-url origin`
@@ -2940,7 +2940,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _HangingProc:
@@ -3019,7 +3019,7 @@ class TestOriginMismatchDeleteOrder:
         # Marker proving old content survived.
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         # First call: _clone_origin_url reads the stale origin.
@@ -3093,7 +3093,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         call_count = 0
@@ -3164,7 +3164,7 @@ class TestOriginMismatchDeleteOrder:
         )
         (dest / "local-changes.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         call_count = 0
@@ -3306,7 +3306,7 @@ class TestUnreadableOriginAbort:
             encoding="utf-8",
         )
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3379,7 +3379,7 @@ class TestBuildFailureRestoresOldCheckout:
         )
         (pkg_dir / "my-local-work.txt").write_text("important", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3457,7 +3457,7 @@ class TestBuildFailureRestoresOldCheckout:
             encoding="utf-8",
         )
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3535,7 +3535,7 @@ class TestRestoreCollision:
         )
         (dest / "local-work.txt").write_text("precious", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _FailProc:
@@ -3637,7 +3637,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
         )
         (pkg_dir / "local-edits.txt").write_text("precious data", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -3726,7 +3726,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
             async def communicate(self):
                 return (b"script failed", None)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         with (
@@ -4049,7 +4049,7 @@ class TestInstallScriptFailurePreservesStaleCheckout:
             async def communicate(self):
                 return (b"script failed", None)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         with (
@@ -4533,7 +4533,7 @@ class TestSubdirectoryEscapeRefusalNeverWritesOutsideCheckout:
         evil_link = app_source / "evil"
         evil_link.symlink_to(outside)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _GitProc:
@@ -5825,7 +5825,7 @@ class TestManifestBranchGate:
             ),
             patch(
                 "kiro_crew.apps.registry.wrap_argv",
-                side_effect=lambda a, mode="standard": (a, None),
+                side_effect=lambda a, mode="standard", **_k: (a, None),
             ),
             patch(
                 "kiro_crew.apps.registry.cgroup_scope_argv",
@@ -6084,7 +6084,7 @@ class TestCloneFailureDiagnostics:
     """
 
     @staticmethod
-    def _fake_wrap_argv(argv, mode="standard"):
+    def _fake_wrap_argv(argv, mode="standard", **_kwargs):
         return list(argv), None
 
     class _FailProc:
@@ -6232,7 +6232,7 @@ class TestDetachedHeadNeverMovedAside:
         dest = tmp_path / "app-sources" / "tag-pinned-app"
         self._make_detached_checkout(dest, origin_url)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _PullProc:
@@ -6296,7 +6296,7 @@ class TestDetachedHeadNeverMovedAside:
         dest = tmp_path / "app-sources" / "tag-pinned-app"
         self._make_detached_checkout(dest, origin_url)
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _PullProc:
@@ -6355,7 +6355,7 @@ class TestDetachedHeadNeverMovedAside:
         )
         (git_dir / "HEAD").write_text("ref: refs/heads/old-branch\n", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -6437,7 +6437,7 @@ class TestOriginMismatchLogsBeforeMoveAside:
         )
         (git_dir / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         class _SuccessProc:
@@ -6695,7 +6695,7 @@ class TestInstallFailureReportsStaleCheckout:
             async def communicate(self):
                 raise asyncio.TimeoutError
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return list(argv), None
 
         with (
@@ -8225,7 +8225,7 @@ async def _run_index_clone_failure(tmp_path, output: bytes, *, index_originated:
     ``git clone failed`` body."""
     from kiro_crew.apps import registry as reg
 
-    def _fake_wrap_argv(argv, mode="standard"):
+    def _fake_wrap_argv(argv, mode="standard", **_kwargs):
         return argv, None
 
     async def _fake_create(*args, **kwargs):
@@ -8503,7 +8503,7 @@ class TestCloneLocaleIsPinnedForDeterministicClassifier:
 
         captured: dict = {}
 
-        def _fake_wrap_argv(argv, mode="standard"):
+        def _fake_wrap_argv(argv, mode="standard", **_kwargs):
             return argv, None
 
         async def _fake_create(*args, **kwargs):
@@ -8785,3 +8785,110 @@ class TestSiblingFailureShapesUseCodeNotError:
         assert result["code"] == "unreadable_clone_origin"
         assert result["error"] != "unreadable_clone_origin"
         assert "message" not in result
+
+
+# --- Owner registry clones keep the ssh-agent socket; index-chosen clones do not ---
+#
+# On a host whose git server takes only agent-held SSH keys, a registry clone run
+# with ``SSH_AUTH_SOCK`` unset can never authenticate. The owner's own clones (the
+# configured registry index, an owner-designated install) ask ``wrap_argv`` to
+# forward the socket; ``wrap_argv`` still re-judges it per tier. A clone whose URL
+# came from an index entry (``index_originated``) must never ask -- that is the
+# confused-deputy guard.
+
+_SSH_REGISTRY_URL = "git@code.example.com:team/apps-index.git"
+
+
+class _SshFakeProc:
+    def __init__(self, returncode: int, stderr: bytes = b"") -> None:
+        # Above every pid_max, so a cleanup signal reaches no live process.
+        self.pid = 99_999_999_999
+        self.returncode = returncode
+        self._stderr = stderr
+
+    async def communicate(self) -> tuple[bytes, bytes]:
+        return b"", self._stderr
+
+    def kill(self) -> None:  # pragma: no cover - only the timeout path calls this
+        return None
+
+
+def _ssh_capture(monkeypatch, module, calls: list[dict], stderr: bytes = b"") -> None:
+    """Record each ``wrap_argv_async`` call's argv + kwargs; every network spawn fails."""
+    from kiro_crew.apps.registry_pipeline import checkout
+
+    async def _wrap(argv: list[str], **kwargs: object) -> tuple[list[str], None]:
+        calls.append({"argv": list(argv), **kwargs})
+        return list(argv), None
+
+    async def _spawn(*argv: str, **kwargs: object) -> _SshFakeProc:
+        # init / remote add succeed so the pinned path reaches its network fetch.
+        ok = any(tok in ("init", "remote") for tok in argv[:12]) and "fetch" not in argv
+        return _SshFakeProc(0 if ok else 128, stderr)
+
+    async def _noop(*a: object, **k: object) -> None:
+        return None
+
+    monkeypatch.setattr(module, "wrap_argv_async", _wrap)
+    monkeypatch.setattr(module, "cgroup_scope_argv", lambda argv: list(argv))
+    monkeypatch.setattr(module, "create_subprocess_limited", _spawn)
+    monkeypatch.setattr(checkout, "_git_transport_env", lambda *a, **k: {})
+    monkeypatch.setattr(checkout, "_rmtree_force_settled", _noop)
+    monkeypatch.setattr(checkout, "is_clone_host_trusted", lambda url: True)
+
+
+def _ssh_calls_with(calls: list[dict], sub: str) -> list[dict]:
+    return [c for c in calls if sub in c["argv"]]
+
+
+@pytest.mark.asyncio
+async def test_owner_configured_index_clone_forwards_the_agent_socket(monkeypatch):
+    from kiro_crew.apps.registry_pipeline import indexes
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, indexes, calls)
+    monkeypatch.setattr(indexes, "_context_clone_sandbox_mode", lambda url: "standard")
+    assert await indexes._fetch_external_registry_index(_SSH_REGISTRY_URL, "main") is None
+    (clone,) = _ssh_calls_with(calls, "clone")
+    assert clone["mode"] == "standard"
+    assert clone["forward_ssh_auth_sock"] is True
+
+
+@pytest.mark.asyncio
+async def test_index_clone_failure_logs_a_bounded_stderr_tail(monkeypatch, caplog):
+    from kiro_crew.apps.registry_pipeline import indexes
+
+    calls: list[dict] = []
+    stderr = b"x" * 2000 + b"Permission denied (publickey)."
+    _ssh_capture(monkeypatch, indexes, calls, stderr=stderr)
+    monkeypatch.setattr(indexes, "_context_clone_sandbox_mode", lambda url: "standard")
+    with caplog.at_level(logging.WARNING, logger=indexes.logger.name):
+        await indexes._fetch_external_registry_index(_SSH_REGISTRY_URL, "main")
+    (record,) = [r for r in caplog.records if "registry clone failed" in r.getMessage()]
+    assert "Permission denied (publickey)." in record.getMessage()
+    assert len(record.args[0]) <= 400
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids=["branch", "pinned-commit"])
+@pytest.mark.parametrize("index_originated", [False, True], ids=["owner", "index-entry"])
+@pytest.mark.asyncio
+async def test_install_clone_forwards_the_agent_socket_only_for_an_owner_install(
+    monkeypatch, tmp_path: Path, index_originated: bool, pinned: bool
+):
+    from kiro_crew.apps.registry_pipeline import checkout
+
+    calls: list[dict] = []
+    _ssh_capture(monkeypatch, checkout, calls)
+    monkeypatch.setattr(checkout, "_context_clone_sandbox_mode", lambda url: "standard")
+    dest = tmp_path / "apps" / "demo"
+    commit = "a" * 40 if pinned else ""
+    result = await checkout._git_clone_or_pull(
+        _SSH_REGISTRY_URL, "main", dest, [], index_originated=index_originated, commit=commit
+    )
+    assert result is not None and result["ok"] is False
+    network = _ssh_calls_with(calls, "fetch" if pinned else "clone")
+    assert network, calls
+    assert all(c["forward_ssh_auth_sock"] is (not index_originated) for c in network)
+    # The socket is for the network step only: local init/checkout never get it.
+    local = [c for c in calls if c not in network]
+    assert all(c.get("forward_ssh_auth_sock", False) is False for c in local)

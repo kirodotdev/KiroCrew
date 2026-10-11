@@ -1021,7 +1021,7 @@ async def test_reused_checkout_pull_never_repoints_origin(monkeypatch, tmp_path)
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     err = await registry._git_clone_or_pull("https://example.com/new-home.git", "main", dest, [])
@@ -1065,7 +1065,7 @@ async def test_clone_stream_never_emits_embedded_https_credentials(
     spawned: list[tuple[list[str], dict[str, object]]] = []
 
     monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry,
@@ -1153,7 +1153,7 @@ async def test_credentialed_pull_appends_exec_neutralizers_after_inherited_confi
 
     monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
     monkeypatch.setattr(registry, "_read_clone_branch", lambda clone_dir: "main")
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry,
@@ -1601,7 +1601,7 @@ async def test_pinned_fetch_isolates_credentials_to_network_transport(monkeypatc
     spawned: list[tuple[list[str], dict[str, object]]] = []
     wrapped: list[list[str]] = []
 
-    def _fake_wrap(cmd, mode=""):
+    def _fake_wrap(cmd, mode="", **_kwargs):
         wrapped.append(list(cmd))
         return cmd, None
 
@@ -1701,7 +1701,7 @@ async def test_branch_fetch_materializes_tracking_branch_with_real_git(monkeypat
     )
     _git("clone", "--quiet", "--bare", str(work), str(remote), cwd=tmp_path)
 
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     result = await registry._git_fetch_branch(
         str(remote),
@@ -1805,7 +1805,7 @@ async def test_double_cancel_waits_for_fetch_cleanup_before_restoring_checkout(
 
     monkeypatch.setattr(registry, "is_clone_host_trusted", lambda _url: True)
     monkeypatch.setattr(registry, "_clone_origin_url", _origin)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(registry, "create_subprocess_limited", _spawn)
     monkeypatch.setattr(registry, "_kill_process_group", AsyncMock())
@@ -1892,7 +1892,7 @@ async def test_failed_pull_aborts_instead_of_installing_stale_code(monkeypatch, 
         return _Proc(next(rcs))
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     err = await registry._git_clone_or_pull(
@@ -2021,7 +2021,7 @@ async def test_admission_rejection_rolls_back_preexisting_checkout(monkeypatch, 
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     result = await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
@@ -2136,7 +2136,7 @@ async def test_postscript_admission_rejection_rolls_back_preexisting_checkout(
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     reaped: list[int] = []
@@ -2261,7 +2261,7 @@ async def test_onInstall_rewriting_the_manifest_loses_the_desktop_requirements_w
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2337,7 +2337,7 @@ async def test_a_script_that_leaves_the_waiver_intact_still_installs(monkeypatch
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2433,7 +2433,7 @@ async def test_an_entry_file_the_script_generates_is_judged_at_the_final_pass(
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2615,7 +2615,7 @@ async def test_a_final_desktop_refusal_removes_the_layout_files_that_appeared(
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2762,7 +2762,7 @@ async def test_every_post_script_refusal_removes_the_layout_files_that_appeared(
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2859,7 +2859,7 @@ async def test_the_removal_runs_before_the_rollback_restores_tracked_files(
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -2934,7 +2934,7 @@ def _fresh_checkout_refused_by_the_final_pass(monkeypatch, tmp_path):
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(
         registry.platform_compat, "kill_process_tree_async", AsyncMock(), raising=False
@@ -3531,7 +3531,7 @@ async def test_moveaside_reclone_retained_not_restored_on_rejection(monkeypatch,
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     result = await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
@@ -3603,7 +3603,7 @@ async def test_rejection_restores_users_pre_update_manifest_bytes(monkeypatch, t
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     result = await registry.install_from_registry("demoapp")
@@ -3650,7 +3650,7 @@ async def test_identity_refusal_rolls_back_preexisting_checkout(monkeypatch, tmp
         return _Proc()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_spawn)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
 
     result = await registry._clone_build_app("https://example.com/demo.git", "demoapp", [])
@@ -4700,7 +4700,7 @@ def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[s
         return _Ok()
 
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="standard": (list(cmd), None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="standard", **_k: (list(cmd), None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: list(cmd))
     _pin_pip_importable(monkeypatch)
     return captured
@@ -5176,7 +5176,7 @@ async def test_manifest_and_index_temp_roots_remove_read_only_git_children(monke
 def _fresh_clone_harness(monkeypatch, dest, *, mode):
     """Patch registry so a fresh clone into *dest* fails in *mode*."""
     monkeypatch.setattr(registry, "is_clone_host_trusted", lambda url: True)
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(registry, "_kill_process_group", AsyncMock())
     monkeypatch.setattr(registry, "_CLONE_TIMEOUT", 0.05)
@@ -5241,7 +5241,7 @@ async def test_failed_pinned_fetch_removes_read_only_partial_checkout(
     """The pinned path materialises its own destination with `git init`; a failed
     fetch must discard it as completely as the clone path does."""
     dest = tmp_path / "app-sources" / "pinnedapp"
-    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="": (cmd, None))
+    monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="", **_kwargs: (cmd, None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: cmd)
     monkeypatch.setattr(registry, "_kill_process_group", AsyncMock())
 

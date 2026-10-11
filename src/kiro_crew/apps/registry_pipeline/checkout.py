@@ -364,6 +364,7 @@ async def _git_fetch_ref(
     clone_env: dict[str, str],
     sandbox_mode: str,
     mask_local_git_config: bool = False,
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, Any] | None:
     """Materialise *dest* from one remote ref. Returns None on success.
 
@@ -443,7 +444,10 @@ async def _git_fetch_ref(
         # checkout. ``argv[0]`` is always ``git``; the ``-c`` overrides go right after
         # it so they precede the subcommand.
         argv = [argv[0], *_HOOKS_NEUTRALIZER_ARGV, *argv[1:]]
-        sandboxed, _cleanup = await wrap_argv_async(argv, mode=sandbox_mode, _prepare=wrap_argv)
+        fwd = forward_ssh_auth_sock and network  # the agent socket is for the network step only
+        sandboxed, _cleanup = await wrap_argv_async(
+            argv, mode=sandbox_mode, forward_ssh_auth_sock=fwd, _prepare=wrap_argv
+        )
         sandboxed = cgroup_scope_argv(sandboxed)
         if network:
             process_env = _git_transport_env(credential_target, git_url, clone_env)
@@ -660,6 +664,7 @@ async def _git_fetch_commit(
     credential_target: str | None = None,
     clone_env: dict[str, str],
     sandbox_mode: str,
+    forward_ssh_auth_sock: bool = False,
 ) -> dict[str, Any] | None:
     """Materialise *dest* at exactly *commit*. Returns None on success."""
     return await _git_fetch_ref(
@@ -670,6 +675,7 @@ async def _git_fetch_commit(
         credential_target=credential_target,
         clone_env=clone_env,
         sandbox_mode=sandbox_mode,
+        forward_ssh_auth_sock=forward_ssh_auth_sock,
     )
 
 
@@ -765,6 +771,7 @@ async def _git_clone_or_pull(
 
     clone_env = anonymous_git_env() if index_originated else minimal_env()
     sandbox_mode = "strict" if index_originated else _context_clone_sandbox_mode(git_url)
+    forward_sock = not index_originated  # an index entry never reaches the owner's ssh-agent
     # SSRF gate: refuse to clone/pull from a host the owner does not explicitly
     # trust (public forge or configured registry). The git_url may originate
     # from an untrusted external registry index; this prevents a clone against
@@ -1012,6 +1019,7 @@ async def _git_clone_or_pull(
             pull_cmd, _cleanup = await wrap_argv_async(
                 ["git", *_HOOKS_NEUTRALIZER_ARGV, "pull", "--ff-only", git_url, branch],
                 mode=sandbox_mode,
+                forward_ssh_auth_sock=forward_sock,
                 _prepare=wrap_argv,
             )
             pull_cmd = cgroup_scope_argv(pull_cmd)
@@ -1072,6 +1080,7 @@ async def _git_clone_or_pull(
                 credential_target=credential_target,
                 clone_env=clone_env,
                 sandbox_mode=sandbox_mode,
+                forward_ssh_auth_sock=forward_sock,
             )
             if result is not None:
                 return result
@@ -1108,7 +1117,7 @@ async def _git_clone_or_pull(
             str(dest),
         ]
         sandboxed_cmd, _cleanup = await wrap_argv_async(
-            clone_cmd, mode=sandbox_mode, _prepare=wrap_argv
+            clone_cmd, mode=sandbox_mode, forward_ssh_auth_sock=forward_sock, _prepare=wrap_argv
         )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         transport_env = _git_transport_env(credential_target, git_url, clone_env)
