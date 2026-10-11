@@ -72,26 +72,16 @@ describe('CrewmateSwitcher closed chip', () => {
 })
 
 describe('CrewmateSwitcher roster action', () => {
-  it('offers to show the full roster, then to hide it, and is absent with no handler', async () => {
-    const onToggleRoster = vi.fn()
-    const { unmount } = render(
-      <CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} onToggleRoster={onToggleRoster} />,
-    )
-    let list = await open()
+  it('offers to show the full roster and closes the list on pick', async () => {
+    const onShowRoster = vi.fn()
+    render(<CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} onShowRoster={onShowRoster} />)
+    const list = await open()
     const action = within(list).getByTestId('crewmate-switcher-roster')
     expect(action).toHaveTextContent('Show the full roster')
-    expect(action).toHaveAttribute('aria-pressed', 'false')
     fireEvent.click(action)
-    expect(onToggleRoster).toHaveBeenCalledTimes(1)
+    expect(onShowRoster).toHaveBeenCalledTimes(1)
     // Picking the action closes the list, like every other footer action.
     await waitFor(() => expect(screen.queryByTestId('crewmate-switcher-list')).toBeNull())
-    unmount()
-
-    render(<CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} onToggleRoster={onToggleRoster} rosterShown />)
-    list = await open()
-    const hide = within(list).getByTestId('crewmate-switcher-roster')
-    expect(hide).toHaveTextContent('Hide the roster')
-    expect(hide).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('draws no roster action when the page passes no handler', async () => {

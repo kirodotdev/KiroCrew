@@ -1602,6 +1602,24 @@ export default function MembersPage() {
   // stays beside the pane there, pinned or not.
   const [rosterPinned, setRosterPinned] = useState(false)
   const rosterShown = !activeName || rosterPinned
+  // The switcher chip fades out while the pin holds (the column IS its list),
+  // so each of the two controls that flip the pin goes away under the press:
+  // the chip's footer action, and the column's own X. Each asks for focus to
+  // move to what replaced it -- the column's search, then the chip again --
+  // so a keyboard user is not dropped on the page body.
+  const rosterAsideRef = useRef<HTMLElement>(null)
+  const switcherSlotRef = useRef<HTMLDivElement>(null)
+  const pinFocusRef = useRef<'roster' | 'chip' | null>(null)
+  const setRosterPin = useCallback((pinned: boolean) => {
+    pinFocusRef.current = pinned ? 'roster' : 'chip'
+    setRosterPinned(pinned)
+  }, [])
+  useEffect(() => {
+    const target = pinFocusRef.current
+    pinFocusRef.current = null
+    if (target === 'roster' && rosterPinned) rosterAsideRef.current?.querySelector('input')?.focus()
+    if (target === 'chip' && !rosterPinned) switcherSlotRef.current?.querySelector('button')?.focus()
+  }, [rosterPinned])
   const beside = panelSitsBeside({ winW, rosterW: rosterShown ? roster.width : 0, isMobile })
   // On a phone the overlay must FILL its scrim. SidePanel's own mobile
   // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
@@ -3658,6 +3676,7 @@ export default function MembersPage() {
         // md: class consumes it, so resizing the window across 768px reacts
         // without any JS media-query snapshot going stale.
         style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
+        ref={rosterAsideRef}
         data-testid="member-roster"
       >
         <div className={LIST_HEADER_CLS}>
@@ -3751,7 +3770,7 @@ export default function MembersPage() {
           {rosterPinned && activeName && (
             <button
               type="button"
-              onClick={() => setRosterPinned(false)}
+              onClick={() => setRosterPin(false)}
               className="hidden md:flex items-center justify-center w-7 h-7 rounded-md transition-colors bg-transparent border-none shrink-0 text-muted hover:text-text hover:bg-bg-hover cursor-pointer"
               aria-label={t('pages.membersPage.roster_hide')}
               title={t('pages.membersPage.roster_hide')}
@@ -4254,9 +4273,19 @@ export default function MembersPage() {
                     returns to the full-width roster instead. It carries the
                     same per-row signals the roster's status filters read
                     (`signalsOf`), so a crewmate parked on a question stays
-                    visible while the roster column is folded away. */}
+                    visible while the roster column is folded away. With the
+                    column pinned open beside the thread the chip only repeats
+                    that list, so it fades out in place (`invisible` keeps its
+                    box, so the identity pill does not move) until the column
+                    closes; reduced motion cuts instead of fading. Only the
+                    hide transitions `visibility`: on show it flips at once, or
+                    the chip would still be hidden on the frame focus moves to it. */}
+                <div
+                  ref={switcherSlotRef}
+                  className={`hidden md:flex duration-200 motion-reduce:transition-none ${rosterPinned ? 'opacity-0 invisible transition-[opacity,visibility]' : 'opacity-100 visible transition-opacity'}`}
+                  data-testid="crewmate-switcher-slot"
+                >
                 <CrewmateSwitcher
-                  className="hidden md:flex"
                   members={orderedMembers}
                   defaultAgent={defaultAgent}
                   activeName={active.name}
@@ -4266,9 +4295,9 @@ export default function MembersPage() {
                     if (m) void openMember(m)
                   }}
                   onCreate={createHeld ? undefined : () => openGuided()}
-                  rosterShown={rosterPinned}
-                  onToggleRoster={() => setRosterPinned((v) => !v)}
+                  onShowRoster={() => setRosterPin(true)}
                 />
+                </div>
                 <Glass
                   as="button"
                   variant="chip"
