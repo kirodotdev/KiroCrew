@@ -2183,6 +2183,11 @@ class SessionManager:
             raise live.ConfigDeferred(change.changed)
         if change.touched(*self._FACTORY_CONFIG_PATHS):
             await self.refresh_defaults(cfg=change.new)
+            if change.touched("agent.env"):
+                # The shared background runtime is a long-lived process with the
+                # environment it was spawned with; the factory rebuild above does
+                # not reach it, so free its slot for one that reads the new map.
+                await self._background_runtime.retire_for_agent_env_change()
         else:
             async with self._lock:
                 self._cfg = change.new

@@ -17,20 +17,163 @@ The contract under test:
 from __future__ import annotations
 
 import logging
+import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import acp_launch_capture as capture_mod
 import pytest
+from _hot_reload_helpers import change as _change
+from test_update_provider import _UNALLOCATABLE_PID
 
 from kiro_crew.acp import agent_env as agent_env_mod
 from kiro_crew.acp import client as client_mod
 from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.agent_sdk.backends import ACP_BACKENDS_ACP_RUNTIME, ACP_BACKENDS_KNOWN
+from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config import sections as sections_mod
 from kiro_crew.config.sections import AgentConfig, agent_env_refusal, coerce_agent_env
+from kiro_crew.kiro_prerequisite import identity_park_grace_remaining
+from kiro_crew.session import SessionManager
 
 _PROXY = {"HTTPS_PROXY": "http://proxy.example:3128", "NO_PROXY": "localhost,127.0.0.1"}
+
+#: Names that make a shell, the loader, a runtime or a tool run code the command
+#: did not name. None is an owned, home-override or credential-shaped name, so the
+#: code-running layers are the only check that refuses each one.
+_EXEC_NAMES = [
+    # Named in review: bash options and prompts, zsh start-up, git.
+    "SHELLOPTS",
+    "BASHOPTS",
+    "PS4",
+    "ZDOTDIR",
+    "GIT_SSH_COMMAND",
+    "GIT_SSH",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_VALUE_0",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_ASKPASS",
+    "GIT_PAGER",
+    "GIT_EDITOR",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_PROXY_COMMAND",
+    "GIT_EXEC_PATH",
+    "GIT_TEMPLATE_DIR",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_A_FUTURE_RELEASE_NAME",
+    # Shell start-up, options, prompts and word splitting.
+    "PS0",
+    "PS1",
+    "PS2",
+    "PS3",
+    "IFS",
+    "CDPATH",
+    "FPATH",
+    "FCEDIT",
+    "BASH_LOADABLES_PATH",
+    "BASH_XTRACEFD",
+    "CONFIG_SHELL",
+    # A helper program a tool runs from its environment.
+    "EDITOR",
+    "VISUAL",
+    "PAGER",
+    "MANPAGER",
+    "AWS_PAGER",
+    "GH_PAGER",
+    "GH_EDITOR",
+    "SUDO_ASKPASS",
+    "SSH_ASKPASS",
+    "SSH_ASKPASS_REQUIRE",
+    "BROWSER",
+    "LESS",
+    "LESSOPEN",
+    "LESSCLOSE",
+    "CVS_RSH",
+    "CVS_SERVER",
+    "RSYNC_RSH",
+    "RSYNC_CONNECT_PROG",
+    "SVN_SSH",
+    "HGMERGE",
+    "HGRCPATH",
+    "WGETRC",
+    "AWS_CONFIG_FILE",
+    "KUBECONFIG",
+    "DOCKER_CONFIG",
+    "CLAUDE_CODE_EXECUTABLE",
+    "NPM_CONFIG_SCRIPT_SHELL",
+    "NPM_CONFIG_NODE_OPTIONS",
+    "NPM_CONFIG_USERCONFIG",
+    "NPM_CONFIG_GLOBALCONFIG",
+    "NPM_CONFIG_GIT",
+    "NPM_CONFIG_ONLOAD_SCRIPT",
+    "RUSTC_WRAPPER",
+    "CARGO_BUILD_RUSTC_WRAPPER",
+    "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER",
+    "CARGO_HOME",
+    "GOENV",
+    "GOFLAGS",
+    "MAKEFLAGS",
+    "CFLAGS",
+    "RUSTFLAGS",
+    # Interpreter and runtime hooks.
+    "PERL5DB",
+    "PERL5SHELL",
+    "RUBYSHELL",
+    "GEM_PATH",
+    "GEM_HOME",
+    "BUNDLE_GEMFILE",
+    "LUA_INIT",
+    "LUA_PATH",
+    "LUA_CPATH",
+    "NODE_REPL_EXTERNAL_MODULE",
+    "CLASSPATH",
+    "JAVA_OPTS",
+    "MAVEN_OPTS",
+    "GRADLE_OPTS",
+    "ERL_FLAGS",
+    "ERL_LIBS",
+    "PHPRC",
+    "PHP_INI_SCAN_DIR",
+    "R_PROFILE",
+    "R_PROFILE_USER",
+    "R_ENVIRON",
+    "R_ENVIRON_USER",
+    "R_LIBS",
+    "R_LIBS_USER",
+    "R_LIBS_SITE",
+    "DOTNET_STARTUP_HOOKS",
+    "DOTNET_ADDITIONAL_DEPS",
+    "COR_PROFILER",
+    "COR_ENABLE_PROFILING",
+    "CORECLR_PROFILER",
+    "VIMINIT",
+    "GVIMINIT",
+    "EXINIT",
+    "JULIA_LOAD_PATH",
+    "TCLLIBPATH",
+    # The loader, the C library and the libraries it loads plugins for.
+    "OPENSSL_CONF",
+    "OPENSSL_ENGINES",
+    "OPENSSL_MODULES",
+    "GETCONF_DIR",
+    "NLSPATH",
+    "GSS_MECH_CONFIG",
+    "KRB5_CONFIG",
+    "KRB5_KTNAME",
+    "GTK_MODULES",
+    "GIO_EXTRA_MODULES",
+    "QT_PLUGIN_PATH",
+    "LIBPATH",
+    # The per-user base directories git and shells read config from.
+    "XDG_CONFIG_DIRS",
+    "XDG_CACHE_HOME",
+    "XDG_STATE_HOME",
+]
 
 
 class TestTheConfigKey:
@@ -38,6 +181,8 @@ class TestTheConfigKey:
         assert AgentConfig().env == {}
 
     def test_the_issue_examples_are_accepted_as_written(self) -> None:
+        # Every data name the issue lists. Its two git names that run or inject
+        # code (GIT_SSH_COMMAND, GIT_CONFIG_GLOBAL) are refused below instead.
         wanted = {
             "HTTP_PROXY": "http://proxy.example:3128",
             "HTTPS_PROXY": "http://proxy.example:3128",
@@ -48,15 +193,25 @@ class TestTheConfigKey:
             "AWS_CA_BUNDLE": "/etc/ssl/certs/corp-root.pem",
             "AWS_PROFILE": "dev",
             "AWS_REGION": "us-west-2",
-            "GIT_SSH_COMMAND": "ssh -o StrictHostKeyChecking=accept-new",
-            "GIT_CONFIG_GLOBAL": "/home/me/.gitconfig-work",
+            "AWS_DEFAULT_REGION": "us-west-2",
             "GIT_TERMINAL_PROMPT": "0",
+            "GIT_SSL_CAINFO": "/etc/ssl/certs/corp-root.pem",
             "JAVA_HOME": "/opt/jdk",
             "NPM_CONFIG_REGISTRY": "https://registry.example/npm/",
             "PIP_INDEX_URL": "https://registry.example/pypi/simple",
+            "SSL_CERT_DIR": "/etc/ssl/certs",
+            "CURL_CA_BUNDLE": "/etc/ssl/certs/corp-root.pem",
+            "LANG": "C.UTF-8",
             "EMPTY_IS_A_VALUE": "",
         }
         assert AgentConfig(env=dict(wanted)).env == wanted
+
+    def test_the_data_only_git_names_are_inside_a_refused_family(self) -> None:
+        # The exemption is what keeps them: without it the GIT_ prefix refuses them.
+        for name in sections_mod.AGENT_ENV_DATA_ONLY_NAMES:
+            assert name.startswith(sections_mod.AGENT_ENV_DENIED_PREFIXES), name
+            assert agent_env_refusal(name) is None, name
+            assert agent_env_refusal(name.lower()) is None, name
 
     @pytest.mark.parametrize(
         "name",
@@ -96,6 +251,38 @@ class TestTheConfigKey:
     def test_a_refused_name_is_dropped(self, name: str) -> None:
         assert agent_env_refusal(name) is not None
         assert coerce_agent_env({name: "v", "AWS_PROFILE": "dev"}) == {"AWS_PROFILE": "dev"}
+
+    @pytest.mark.parametrize("name", _EXEC_NAMES)
+    def test_a_name_that_can_run_code_is_dropped(self, name: str) -> None:
+        # Each of these makes a shell, the loader, a runtime or a tool the agent
+        # runs execute code the command did not name, so set once here it would
+        # ride along with every later command, approved ones included.
+        assert agent_env_refusal(name) is not None, name
+        assert agent_env_refusal(name.lower()) is not None, name
+        assert coerce_agent_env({name: "v", "AWS_PROFILE": "dev"}) == {"AWS_PROFILE": "dev"}
+
+    @pytest.mark.parametrize("prefix", sections_mod.AGENT_ENV_DENIED_PREFIXES)
+    def test_every_later_name_in_a_refused_namespace_is_dropped(self, prefix: str) -> None:
+        assert agent_env_refusal(f"{prefix}A_LATER_RELEASE_NAME") is not None
+        assert agent_env_refusal(f"{prefix}a_later_release_name".lower()) is not None
+
+    @pytest.mark.parametrize("suffix", sections_mod.AGENT_ENV_DENIED_SUFFIXES)
+    def test_every_name_of_a_refused_shape_is_dropped(self, suffix: str) -> None:
+        assert agent_env_refusal(f"SOME_TOOL{suffix}") is not None
+        assert agent_env_refusal(f"some_tool{suffix}".lower()) is not None
+
+    def test_every_name_the_command_floor_says_decides_what_runs_is_refused(self) -> None:
+        # The command floor keeps its own list of assignments that decide WHICH
+        # code runs. A name it distrusts for one command must not be settable for
+        # every command, so its list is pinned as a subset here.
+        from kiro_crew import name_grant
+
+        for name in name_grant._EXEC_ENV_VARS:
+            assert agent_env_refusal(name) is not None, name
+        for prefix in name_grant._EXEC_ENV_PREFIXES:
+            assert agent_env_refusal(f"{prefix}X") is not None, prefix
+        for suffix in name_grant._EXEC_ENV_SUFFIXES:
+            assert agent_env_refusal(f"X{suffix}") is not None, suffix
 
     def test_every_harness_home_override_is_refused(self) -> None:
         # The credential read gate anchors these from the gateway's environment,
@@ -180,8 +367,6 @@ def _overlay_patches(overlay: dict[str, str]) -> tuple:
     """Hand both drivers' launch tail *overlay* as the ``agent.env`` answer, and
     put the REAL agent environment scrub back (the golden capture stubs it), so the
     order of the overlay against the scrub is what is measured."""
-    from unittest.mock import patch
-
     from kiro_crew.sandbox import scrub_agent_subprocess_env
 
     return (
@@ -313,8 +498,6 @@ def test_one_spawn_reads_agent_env_once(tmp_path, monkeypatch) -> None:
 def test_the_spawn_carries_the_values_its_read_back_checked(harness, tmp_path, gateway_proxy):
     """A config save between the read-back and the launch must not reach the child:
     the launch tail lays over the reading the read-back took, not a fresh one."""
-    from unittest.mock import patch
-
     from kiro_crew.acp.harness import deepseek as deepseek_mod
     from kiro_crew.acp.harness import opencode as opencode_mod
     from kiro_crew.acp.harness import pi as pi_mod
@@ -358,3 +541,73 @@ def test_on_windows_a_name_is_folded_to_the_inherited_spelling(monkeypatch) -> N
     )
     monkeypatch.setattr(agent_env_mod.os, "name", "nt")
     assert agent_env_overlay() == {"HTTPS_PROXY": "http://p:1"}
+
+
+class TestTheSharedBackgroundRuntime:
+    """An ``agent.env`` change frees the shared background runtime's slot.
+
+    That runtime is one long-lived process every background and cron session
+    demuxes onto, so it must not serve the old map until it goes stale (up to
+    its 6 h age ceiling).
+    """
+
+    @staticmethod
+    def _manager() -> SessionManager:
+        return SessionManager(KiroCrewConfig(), provider_factory=lambda *a, **kw: AsyncMock())
+
+    @staticmethod
+    def _runtime(*, busy: bool) -> AsyncMock:
+        rt = AsyncMock()
+        rt.pid = _UNALLOCATABLE_PID
+        rt.is_alive = lambda: True
+        rt.has_active_or_initializing_sessions = lambda: busy
+        rt.kill = AsyncMock()
+        return rt
+
+    @staticmethod
+    async def _apply(mgr: SessionManager, *paths: str) -> None:
+        with patch.object(mgr, "refresh_defaults", AsyncMock()):
+            await mgr._on_config_change(_change(KiroCrewConfig(), *paths))
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy", [False, True], ids=["idle", "busy"])
+    async def test_an_agent_env_change_parks_the_runtime_and_frees_the_slot(self, busy) -> None:
+        mgr = self._manager()
+        rt = self._runtime(busy=busy)
+        mgr._bg_runtime = rt
+
+        await self._apply(mgr, "agent.env.HTTPS_PROXY")
+
+        # The next get_bg_session spawns a replacement, which reads the new map.
+        assert mgr._bg_runtime is None
+        assert mgr._draining_bg_runtimes == [rt]
+        # Parked, not killed: its in-flight sessions finish on it, and a claim
+        # pinned just before the change has the park grace to open its scope.
+        rt.kill.assert_not_awaited()
+        assert identity_park_grace_remaining(rt, time.monotonic()) > 0.0
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_another_factory_change_leaves_the_runtime_alone(self) -> None:
+        mgr = self._manager()
+        rt = self._runtime(busy=False)
+        mgr._bg_runtime = rt
+
+        await self._apply(mgr, "agent.model")
+
+        assert mgr._bg_runtime is rt
+        assert mgr._draining_bg_runtimes == []
+        await mgr.close_all()
+
+    @pytest.mark.asyncio
+    async def test_no_runtime_and_a_closing_manager_park_nothing(self) -> None:
+        mgr = self._manager()
+        assert await mgr._background_runtime.retire_for_agent_env_change() is False
+
+        rt = self._runtime(busy=False)
+        mgr._bg_runtime = rt
+        mgr._closing = True
+        assert await mgr._background_runtime.retire_for_agent_env_change() is False
+        assert mgr._bg_runtime is rt
+        mgr._closing = False
+        await mgr.close_all()

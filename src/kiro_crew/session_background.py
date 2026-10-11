@@ -28,6 +28,7 @@ from kiro_crew.agent_scratch import SharedScratchJoinError
 from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.kiro_prerequisite import (
     identity_park_grace_remaining,
+    mark_identity_parked,
     pre_spawn_identity,
     spawn_pid,
     stamp_spawn_identity,
@@ -443,9 +444,10 @@ class BackgroundSessionRuntime:
         stays parked for the next pass; a failed kill also stays parked so the
         process is retried rather than orphaned. ``kill()`` is called even on an
         already-dead runtime so it can release PID bookkeeping. A runtime the
-        spawn-identity gate parked additionally keeps a kill grace on top of
-        the busy probe (see ``identity_park_grace_remaining``); backend-switch
-        parks carry no mark and keep their original timing.
+        spawn-identity gate or an ``agent.env`` change parked additionally keeps
+        a kill grace on top of the busy probe (see
+        ``identity_park_grace_remaining``); backend-switch parks carry no mark
+        and keep their original timing.
         """
         logger = self._deps.logger
         now = time.monotonic()
@@ -629,6 +631,35 @@ class BackgroundSessionRuntime:
                 f"idle and stale by {stale_reason} (periodic sweep)",
                 park_only=True,
             )
+            return True
+
+    async def retire_for_agent_env_change(self) -> bool:
+        """Free the shared runtime's slot after an ``agent.env`` change.
+
+        The runtime is one long-lived process that every background and cron
+        session demuxes onto, and it carries the environment it was spawned with.
+        Left in its slot it would serve the old ``agent.env`` until it went
+        stale (up to the 6 h age ceiling). Freeing the slot makes the next
+        ``get_bg_session`` spawn a replacement that reads the new map.
+
+        The runtime is PARKED, busy or idle, never killed here: its in-flight
+        sessions finish on it, and the drain reap kills it once they have. It
+        carries the park grace, because ``get_bg_session`` pins the runtime under
+        the lock and only opens its init scope after releasing it, so an idle
+        reading taken in that window is wrong. Returns True when the slot was
+        freed.
+        """
+        async with self._bg_runtime_lock:
+            if self._owner._closing:
+                # Same gate as every other park: a shutdown has already swept
+                # past, so parking now would strand a shielded process.
+                return False
+            await self._owner._reap_drained_bg_runtimes_locked()
+            runtime = self._bg_runtime
+            if runtime is None:
+                return False
+            mark_identity_parked(runtime, time.monotonic())
+            await self._detach_bg_runtime_locked(runtime, "agent.env changed", park_only=True)
             return True
 
     async def _provider_backed_bg_session(

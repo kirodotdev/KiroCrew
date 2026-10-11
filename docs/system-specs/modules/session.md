@@ -511,6 +511,19 @@ awaited staleness probe, so a concurrent displacement that replaced it is never
 acted on with the old reading. Both probes fail toward PRESERVING the runtime: a
 session or staleness probe that raises retires nothing.
 
+An **`agent.env` change** is the third trigger. The runtime carries the
+environment it was spawned with, and the factory rebuild `refresh_defaults()`
+runs for a `_FACTORY_CONFIG_PATHS` change never reaches it, so without this it
+would serve the old map until it went stale. `SessionManager._on_config_change`
+calls `retire_for_agent_env_change()` after `refresh_defaults()` when the change
+touches `agent.env`: under `_bg_runtime_lock` it parks the current runtime, busy
+or idle, with `park_only=True` and the spawn-identity park grace
+(`mark_identity_parked`), for the same claim window, and the next
+`get_bg_session()` spawns a replacement that reads the new map. The persistent
+`_bg` session of a backend without a shared runtime, and `_hb`, are registered
+sessions (`_PERSISTENT_KEYS`) and keep the environment they started with, like
+any running session.
+
 `close_all()` detaches both holders atomically under
 `_bg_runtime_lock` and kills the detached snapshot; its counterpart `_closing`
 gate in `get_bg_session()` — and in the idle-staleness sweep — refuses to spawn
