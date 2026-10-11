@@ -142,6 +142,9 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
     from kiro_crew.validation_parts.app_schemas import (  # noqa: F401
+        _APP_REQUEST_APP_RE,
+        _APP_REQUEST_MAX_BODY,
+        _APP_REQUEST_PATH_RE,
         _DESIGN_TWEAK_ALLOWED_STATUSES,
         _DESIGN_TWEAK_MAX_TEXT,
         _GIT_SHA_RE,
@@ -158,6 +161,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OMC_MAX_BODY,
         _OMC_QUERY_RE,
         _POD_WORKTREE_MAX_LEN,
+        APP_REQUEST_METHODS,
+        APP_REQUEST_SCHEMA,
         DESIGN_TWEAK_UPDATE_THREAD_SCHEMA,
         ISSUE_RADAR_CREW_READ_SCHEMA,
         ISSUE_RADAR_CREW_RECORD_SCHEMA,
@@ -168,6 +173,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         POD_LS_SCHEMA,
         POD_STATUS_SCHEMA,
         POD_UP_SCHEMA,
+        _validate_app_request,
         _validate_crew_record_couples_phase_to_an_event,
         _validate_omc_api,
     )

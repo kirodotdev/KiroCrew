@@ -84,6 +84,7 @@
     "pod_ls": "List pods",
     "issue_radar_crew_read": "Read crew progress",
     "issue_radar_crew_record": "Log crew progress",
+    "app_request": "Call app route",
     "browser": "Drive browser"
   },
   "kirocrew-dashboard": {
