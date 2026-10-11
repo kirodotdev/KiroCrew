@@ -89,6 +89,14 @@ from kiro_crew.apps.official_category_order import forget_cache as forget_catego
 from kiro_crew.apps.official_category_order import load_category_order
 from kiro_crew.apps.official_editorial import forget_cache as forget_editorial_cache
 from kiro_crew.apps.official_editorial import load_sections
+from kiro_crew.apps.proxy_auth import (
+    PRINCIPAL_AGENT_TOOL,
+    PRINCIPAL_APP_TOKEN,
+    PRINCIPAL_NONE,
+    PRINCIPAL_OWNER_SESSION,
+    PROXY_PRINCIPAL_HEADER,
+    sign_proxy_principal_claim,
+)
 from kiro_crew.apps.registry import (
     _ART_IMAGE_EXTENSIONS,
     _ART_MANIFEST_FIELDS,
@@ -4277,6 +4285,13 @@ _PROXY_HOP_HEADERS = frozenset(
 # subprocess that also serves content from the user's own projects. The HMAC is
 # all the backend needs to trust a proxied request, so dropping the rest is a
 # pure hardening with no functional loss.
+#
+# The two gateway-authored proxy headers are stripped too. For an app that has
+# not opted in to ``backend.signedPrincipal``, a caller-sent
+# ``x-kirocrew-principal`` would otherwise reach a backend that never asked for
+# one, and could pass for the gateway's. For ``x-kirocrew-proxy``, stripping the
+# caller's copy first keeps the outgoing request from depending on which spelling
+# of a header the HTTP client lets win when the gateway sets its own value below.
 _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
     {
         "cookie",
@@ -4285,6 +4300,8 @@ _PROXY_STRIP_HEADERS = _PROXY_HOP_HEADERS | frozenset(
         "x-session-token",
         "x-session-key",
         "x-internal-caller",
+        "x-kirocrew-proxy",
+        "x-kirocrew-principal",
     }
 )
 
@@ -4322,6 +4339,33 @@ def _resolve_app_backend_url(name: str) -> str | None:
     # app resolves a backend here and is then refused below with 502 "has no
     # secret", which is not detectable at registration time.
     return resolve_mcp_backend_url(manifest.mcpServers)
+
+
+def _proxy_principal(request: web.Request) -> tuple[str, str]:
+    """The ``(kind, owner_id)`` an opted-in backend's principal claim carries.
+
+    Read only from what ``token_auth_middleware`` already authenticated, never from
+    a request header, and checked in this order:
+
+    1. ``agent-tool``: internal authentication granted the call. MCP tools, agents,
+       subagents and crons reach admitted routes this way. It is checked first so a
+       request that also carries an owner cookie can never inherit the owner's trust.
+    2. ``app-token``: the caller holds an app token.
+    3. ``owner-session``: a dashboard session cookie authenticated the request, not a
+       ``?token=`` link, and the shared owner predicate matches. Only this kind names
+       an owner.
+    4. ``none``: everything else.
+    """
+    if request.get("internal_auth") is True:
+        return PRINCIPAL_AGENT_TOOL, ""
+    if request.get("app"):
+        return PRINCIPAL_APP_TOKEN, ""
+    if request.get("is_dashboard_user") is True and request.get("auth_from_query_token") is False:
+        from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+
+        if is_owner_dashboard_request(request):
+            return PRINCIPAL_OWNER_SESSION, str(request.get("user") or "")
+    return PRINCIPAL_NONE, ""
 
 
 async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
@@ -4448,6 +4492,33 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
             {"error": "proxy auth failed: cannot read app secret"},
             status=502,
         )
+
+    # Opt-in only: an app without ``backend.signedPrincipal`` receives no principal
+    # header. Read off the loop, like the enablement gate above, because it is a file.
+    manifest = await asyncio.to_thread(get_app_manifest, name)
+    if manifest is not None and manifest.backend.signedPrincipal:
+        principal_kind, owner_id = _proxy_principal(request)
+        try:
+            headers[PROXY_PRINCIPAL_HEADER] = sign_proxy_principal_claim(
+                kind=principal_kind,
+                owner_id=owner_id,
+                method=request.method,
+                target=wire_target,
+                body=body or b"",
+                secret=secret,
+            )
+        except ValueError as exc:
+            # The signer refuses a claim outside its one valid shape, such as an owner
+            # id with a control character. Forwarding the request without its claim
+            # would hand an opted-in backend a request it cannot classify, so refuse.
+            logger.warning("Failed to sign the principal claim for %s: %s", name, exc)
+            return web.json_response(
+                {
+                    "code": "proxy_principal_sign_failed",
+                    "error": "proxy auth failed: cannot sign principal claim",
+                },
+                status=502,
+            )
 
     # Set once the relay has begun. The two handlers below consult it: after
     # the head has gone out, no status of the gateway's own can be sent any more.
