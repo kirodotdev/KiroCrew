@@ -28,6 +28,7 @@ from kiro_crew.dashboard.handlers.files import _PathProbeBusy, _run_path_probe
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
+from kiro_crew.notifications.attribution import system_origin
 from kiro_crew.notifications.bus import NotificationBus, NotificationPayload
 from kiro_crew.sandbox import _PYTHON_ENV_PREFIXES, RLIMIT_PROFILE_NONE, spawn_shim_argv
 from kiro_crew.security import (
@@ -1242,7 +1243,7 @@ def _notify_shell_failed(bus: NotificationBus, sess: _TerminalSession, status: i
                 title=title,
                 body=body,
                 group_key="terminal-exit",
-                meta={"status": status},
+                meta=system_origin(status=status),
             )
         )
     except Exception:  # noqa: BLE001 -- the reap must not depend on the feed

@@ -239,6 +239,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _doctor_kiro_internal_sandbox,
         _doctor_live_target_pointer,
         _doctor_masked_credential_aliases,
+        _doctor_notification_settings_pointer,
         _doctor_sandbox,
         _doctor_sandbox_apparmor,
         _doctor_sandbox_backend,
@@ -2091,6 +2092,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     # who just read the backend verdict is the one who needs to know a spawn will be
     # refused for a reason the backend line cannot express.
     confinement._doctor_live_target_pointer(issues)
+    confinement._doctor_notification_settings_pointer(issues)
     confinement._doctor_masked_credential_aliases(issues)
 
     # ── Memory pressure preparedness (swap / userspace OOM killer) ──
@@ -2310,6 +2312,7 @@ _EXPORTS: dict[str, str] = {
             "_doctor_kiro_internal_sandbox",
             "_doctor_live_target_pointer",
             "_doctor_masked_credential_aliases",
+            "_doctor_notification_settings_pointer",
             "_doctor_sandbox",
             "_doctor_sandbox_apparmor",
             "_doctor_sandbox_backend",

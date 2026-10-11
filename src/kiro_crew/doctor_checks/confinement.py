@@ -530,6 +530,45 @@ def _doctor_live_target_pointer(issues: list[str]) -> None:
         )
 
 
+def _doctor_notification_settings_pointer(issues: list[str]) -> None:
+    """Report a notification-settings leaf the notification bridge refuses to deliver off.
+
+    ``sandbox`` masks that leaf so an in-sandbox write cannot arm ``deliver_to``. A symlink
+    or a second hard link at the leaf leaves a name the mask does not cover, so the bridge
+    treats every route as unproven and delivers nothing, while agent spawns proceed. The
+    shapes that trigger it are ORDINARY operation -- ``cp -al`` and rsnapshot raise link
+    counts, a dotfile manager keeps the file as a link -- so the condition appears without
+    anybody doing anything wrong, and its only other symptom is that bridged notes stop
+    arriving.
+
+    This leaf is NOT in ``_CREW_HARDLINK_REFUSED_LEAVES`` (its bytes are a routing config,
+    not a credential), so ``_doctor_masked_credential_aliases`` does not cover it and
+    ``live_target_pointer_unfitness`` names a different file.
+
+    Every platform, because the bridge's refusal is: it reads the same classifier
+    (``sandbox.notification_settings_pointer_unfitness``) on every host, so the sentence
+    printed here is the one the bridge acts on.
+    """
+    try:
+        unfit = cli_doctor.sandbox.notification_settings_pointer_unfitness()
+    except Exception as exc:  # noqa: BLE001 — doctor must survive a broken probe
+        print("\nNotification Settings Leaf")
+        print(f"  leaf:        ⚠️  could not check ({render._safe_display(exc)})")
+        return
+    if unfit is None:
+        return
+    print("\nNotification Settings Leaf")
+    print(f"  leaf:        ❌ notification routing DISABLED — {unfit.path}")
+    # Whole tokens: the remedy names a path and a ``find`` invocation the operator copies,
+    # and the default wrap splits both.
+    render._print_wrapped(unfit.detail)
+    render._print_wrapped(
+        "Until this is fixed the notification bridge delivers no notes to chat; the "
+        "dashboard bell still receives them and agent spawns are unaffected."
+    )
+    issues.append("notification-settings leaf")
+
+
 def _doctor_masked_credential_aliases(issues: list[str]) -> None:
     """Report a masked credential leaf that will refuse the next agent spawn.
 

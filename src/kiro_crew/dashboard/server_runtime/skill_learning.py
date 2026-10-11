@@ -179,11 +179,20 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
 
                 def _emit() -> None:
                     try:
+                        # Dashboard-only, deliberately. This notice is produced by the
+                        # agent that generated the skill, but its generating identity is
+                        # not threaded to this hook, so it cannot carry real producer
+                        # attribution. Rather than tag it ``system_origin()`` (which would
+                        # let the bridge forward requester-shaped text to a routed chat
+                        # transport without consulting the generating agent's profile), it
+                        # names no producer: the bridge's deny-unattributed rule then keeps
+                        # it on the dashboard, where it already belonged. Fail-safe; it
+                        # becomes bridge-eligible only once it carries attribution.
                         state.notify(
                             "skills",
                             title,
                             body,
-                            meta=payload,
+                            meta=dict(payload),
                             url=review_url,
                             actions=actions,
                         )

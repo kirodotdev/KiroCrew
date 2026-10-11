@@ -2012,7 +2012,12 @@ async def test_a_staged_skill_rings_the_bell_on_the_serving_loop(
     payload = {"slug": "tidy-up", "candidate_kind": "update", "target": "tidy"}
     title, body, url, actions = server._pending_skill_notification(info)
     state.notify.assert_called_once_with(
-        "skills", title, body, meta=payload, url=url, actions=actions
+        "skills",
+        title,
+        body,
+        meta=dict(payload),
+        url=url,
+        actions=actions,
     )
     state.broadcast_ws.assert_called_once_with("skills.pending_changed", payload)
     await asyncio.to_thread(on_consumed, {"slug": "tidy-up", "consumed_at": "t1"})
@@ -2237,7 +2242,7 @@ async def test_a_prior_crash_dump_is_reported_once_with_its_stacks(
         "The previous gateway stopped responding and exited 2.0h ago, then restarted. "
         "Work in flight at that moment was interrupted and not saved. "
         f"It was running cron nightly. Thread stacks: {dump}",
-        meta={"url": "/settings", "dump": str(dump)},
+        meta={"producer_system": "1", "url": "/settings", "dump": str(dump)},
     )
 
     def _unattributable(path: Path, home: Path) -> Any:

@@ -77,6 +77,9 @@ from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     guard_owner_surface_routes,
     internal_memory_scope,
     pip_extra_install_command,
+)
+from kiro_crew.dashboard.handlers._shared import producer_identity_meta as _producer_identity_meta
+from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     read_bounded_json,
 )
 from kiro_crew.dashboard.handlers.browser_view_relay import ROUTE_PREFIX
@@ -702,11 +705,13 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # was, so refusing centrally would also refuse the person's own in-flight
     # calls on every internal route. This route refuses because of what it
     # publishes -- ``source="system"`` on the system.agent channel.
-    if caller_names_a_missing_slot(
-        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
-    ):
+    # Read ONCE and reused below as the note's producing session: the refusal
+    # and the attribution must be judging the same string, and the bridge's
+    # governance subject is exactly what this check has just vouched for.
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if caller_names_a_missing_slot(getattr(state, "_slots", None), caller_key):
         _sel().log_api_access(
-            caller=str(request.headers.get("X-Session-Key") or ""),
+            caller=caller_key,
             operation="notification_agent_push",
             outcome="denied",
             source="notifications_api",
@@ -746,6 +751,29 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         url=body.get("url"),
         group_key=body.get("group_key"),
         actions=actions,
+        # The producing session, so the notification bridge vets the AGENT's own
+        # governance profile and not just the host's. A publish with no
+        # ``X-Session-Key`` still reaches the dashboard, but names no producer, so the
+        # bridge refuses it as unattributed rather than egressing it under only the
+        # permissive HOST profile -- the fail-closed rule lives there, for every
+        # producer, not here.
+        #
+        # Server-set on THIS route, unlike the note claims the bridge normally
+        # reads: the agent publish path never passes the request body's ``meta``
+        # into the payload, so this key cannot be body-supplied here, and the
+        # missing-slot check above has already refused a ``dashboard:`` key whose
+        # slot is gone. It is still only ADDED to the bridge's subjects, never
+        # substituted for the host's, because the bridge cannot tell a server-set
+        # claim from a body-set one and the added-only polarity is what keeps a
+        # forged claim unable to widen anything.
+        meta=(
+            {
+                "session_key": caller_key,
+                **_producer_identity_meta(state, caller_key, persisted=False),
+            }
+            if caller_key
+            else {}
+        ),
     )
     try:
         note = state.notification_bus.push(payload)
@@ -1128,6 +1156,15 @@ async def api_send_message(request: web.Request) -> web.Response:
                 declared_session=declared_session,
                 is_cron_caller=is_cron_caller,
                 send_to_slack=send_to_slack,
+                # The kernel-attested owning app, server-set by the auth
+                # middleware (``request["app"]``) and NEVER a body field, so it
+                # cannot be forged to an app the caller does not own. Carried
+                # into the fallback as the bell note's ``producer_app`` subject
+                # so the bridge vets THAT app's own profile: without it an app
+                # permitted messaging but denied ``channels/slack`` reaches the
+                # owner's Slack DM through this fallback once ``system.agent`` is
+                # routed to Slack (GPT 6.1 F1).
+                caller_app=str(request.get("app") or ""),
             )
     finally:
         _audit_send_message(
