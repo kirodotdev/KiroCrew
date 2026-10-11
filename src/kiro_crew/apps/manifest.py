@@ -717,6 +717,10 @@ class BackendConfig:
     healthCheck: str = "/health"  # health check endpoint path  # noqa: N815
     routes: str = ""  # base route path, e.g. /api/apps/oncall-watchtower
     type: str = ""  # "python", "asgi", "node", "exec", or "" (auto-detect)
+    # Opt in to a request-bound principal claim from the gateway's reverse proxy.
+    # Only the literal JSON boolean true enables it: a string or a number keeps
+    # the default off, so a malformed manifest never widens what a backend trusts.
+    signedPrincipal: bool = False  # noqa: N815
     hooks: HooksConfig = field(default_factory=HooksConfig)
 
     def to_dict(self) -> dict[str, Any]:
@@ -731,6 +735,8 @@ class BackendConfig:
             d["routes"] = self.routes
         if self.type:
             d["type"] = self.type
+        if self.signedPrincipal:
+            d["signedPrincipal"] = True
         hooks_d = self.hooks.to_dict()
         if hooks_d:
             d["hooks"] = hooks_d
@@ -746,6 +752,7 @@ class BackendConfig:
             healthCheck=str(data.get("healthCheck", "/health")),  # noqa: N815
             routes=str(data.get("routes", "")),
             type=str(data.get("type", "")),
+            signedPrincipal=data.get("signedPrincipal") is True,  # noqa: N815
             hooks=hooks,
         )
 

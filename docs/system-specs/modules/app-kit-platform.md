@@ -3511,6 +3511,49 @@ slot another create path made first (ChatEmbed's own POST) carries neither.
 
 Writers: `apps/worker_slots.py`. Tests: `test/test_apps_worker_slots.py`.
 
+## 24. A backend's principal claim is opt-in and bound to one request
+
+`X-KiroCrew-Proxy` proves only that the gateway forwarded a request. An app whose
+manifest sets `backend.signedPrincipal: true` also receives
+`X-KiroCrew-Principal`, which says which kind of caller the gateway authenticated.
+The claim is signed with the same per-app secret, under its own domain tag, and
+the HMAC binds the encoded claim, the method, the raw target, the body digest and
+the issue time. The wire format and the verifier's steps are in
+[api-reference](../../app-kit/api-reference.md#signed-principal-claim).
+
+`apps/routes.py::_proxy_principal` reads the kind only from marks that
+`token_auth_middleware` set, never from a request header, and the first match wins:
+
+1. `agent-tool` when `internal_auth` is true. MCP tools, agents, subagents and
+   crons reach admitted routes through internal authentication, so this kind is
+   checked first and an internal caller cannot inherit the owner's trust.
+2. `app-token` when the request carries an app claim.
+3. `owner-session` when `is_dashboard_user` is true, `auth_from_query_token` is
+   false, and `is_owner_dashboard_request` matches. Only this kind carries an
+   owner id.
+4. `none` for every other request.
+
+The proxy strips any caller-sent `X-KiroCrew-Proxy` and `X-KiroCrew-Principal`
+for every app, opted in or not, so a backend sees only the gateway's values. An
+app that does not opt in receives exactly the headers it received before. A
+signer refusal returns 502 `proxy_principal_sign_failed` rather than forwarding
+an opted-in request without its claim.
+
+`apps/proxy_auth.py::verify_proxy_principal_claim` fails closed on every
+malformed field, an issue time outside 60 seconds, and a signature mismatch, and
+compares the HMAC as bytes in constant time. It consumes each `requestId` once
+through a `ProxyPrincipalReplayCache` held for the life of the backend process.
+A full cache refuses new ids instead of evicting a live one. The claim
+authenticates who the gateway saw. It does not authorize an action or a resource:
+that stays the backend's own check.
+
+The flag is part of the manifest's `backend` dict, so an admission signature
+covers it. Only the JSON boolean `true` turns it on.
+
+Writers: `apps/routes.py`, `apps/proxy_auth.py`, `apps/manifest.py`. Tests:
+`test/test_app_proxy_auth.py`, `test/test_app_manifest.py`,
+`test/test_gateway_appkit_endpoints.py`.
+
 ## Windows stale-backend cleanup capacity
 
 Stale-backend tree reaping shares the Windows cleanup admission budget with ACP.

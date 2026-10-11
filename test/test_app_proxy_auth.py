@@ -1,7 +1,9 @@
 """Tests for the gateway → app-backend proxy HMAC verifier (CWE-306)."""
 
+import base64
 import hashlib
 import hmac
+import json
 import time
 
 import pytest
@@ -168,3 +170,385 @@ def test_raw_request_target_no_query_appends_nothing():
     """No query string means no '?' on either side of the HMAC."""
     req = make_mocked_request("GET", "/api/vaults")
     assert raw_request_target(req) == "/api/vaults"
+
+
+# ---------------------------------------------------------------------------
+# X-KiroCrew-Principal: the opt-in, request-bound principal claim
+# ---------------------------------------------------------------------------
+
+_REQUEST_ID = "0123456789abcdef0123456789abcdef"
+_BODY = b'{"action":"approve"}'
+
+
+def _principal(
+    *,
+    kind: str = "owner-session",
+    owner_id: str = "demo-owner",
+    method: str = "POST",
+    target: str = "/api/write",
+    body: bytes = _BODY,
+    now: int = 1_000,
+    request_id: str = _REQUEST_ID,
+) -> str:
+    from kiro_crew.apps.proxy_auth import sign_proxy_principal_claim
+
+    return sign_proxy_principal_claim(
+        kind=kind,
+        owner_id=owner_id,
+        method=method,
+        target=target,
+        body=body,
+        secret=SECRET,
+        now=now,
+        request_id=request_id,
+    )
+
+
+def _verify_principal(
+    header: str,
+    *,
+    method: str = "POST",
+    target: str = "/api/write",
+    body: bytes = _BODY,
+    now: float = 1_000,
+    replay_cache=None,
+):
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_principal_claim
+
+    return verify_proxy_principal_claim(
+        header,
+        method=method,
+        target=target,
+        body=body,
+        secret=SECRET,
+        now=now,
+        replay_cache=replay_cache if replay_cache is not None else ProxyPrincipalReplayCache(),
+    )
+
+
+def _resign(payload: dict, *, method: str = "POST", target: str = "/api/write") -> str:
+    """Sign an arbitrary payload with the real secret, as only the gateway could."""
+    encoded = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    lines = (
+        "kirocrew-proxy-principal-v1",
+        str(payload.get("issuedAt")),
+        method,
+        target,
+        hashlib.sha256(_BODY).hexdigest(),
+        encoded,
+    )
+    sig = hmac.new(SECRET.encode(), "\n".join(lines).encode(), hashlib.sha256).hexdigest()
+    return f"{encoded}.{sig}"
+
+
+def _payload(**overrides) -> dict:
+    payload = {
+        "version": 1,
+        "kind": "owner-session",
+        "ownerId": "demo-owner",
+        "issuedAt": 1_000,
+        "requestId": _REQUEST_ID,
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_principal_valid_owner_claim_returns_its_fields():
+    claim = _verify_principal(_principal())
+    assert claim is not None
+    assert (claim.kind, claim.owner_id, claim.issued_at, claim.request_id, claim.version) == (
+        "owner-session",
+        "demo-owner",
+        1_000,
+        _REQUEST_ID,
+        1,
+    )
+
+
+@pytest.mark.parametrize(
+    "field, value",
+    [
+        ("method", "PUT"),
+        ("target", "/api/write?force=1"),
+        ("body", b'{"action":"merge"}'),
+    ],
+)
+def test_principal_is_bound_to_method_target_and_body(field, value):
+    """A claim lifted onto a different request does not verify."""
+    assert _verify_principal(_principal(), **{field: value}) is None
+
+
+def test_principal_tampered_claim_fails_the_signature():
+    encoded, sig = _principal().rsplit(".", 1)
+    payload = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    payload["ownerId"] = "other-owner"
+    forged = (
+        base64.urlsafe_b64encode(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    assert _verify_principal(f"{forged}.{sig}") is None
+
+
+def test_principal_wrong_secret_fails():
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_principal_claim
+
+    assert (
+        verify_proxy_principal_claim(
+            _principal(),
+            method="POST",
+            target="/api/write",
+            body=_BODY,
+            secret="another-app-secret",
+            now=1_000,
+            replay_cache=ProxyPrincipalReplayCache(),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("verify_at, accepted", [(1_060, True), (1_061, False), (939, False)])
+def test_principal_freshness_window_is_sixty_seconds(verify_at, accepted):
+    assert (_verify_principal(_principal(now=1_000), now=verify_at) is not None) is accepted
+
+
+def test_principal_request_id_is_accepted_once():
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache
+
+    cache = ProxyPrincipalReplayCache()
+    header = _principal()
+    assert _verify_principal(header, replay_cache=cache) is not None
+    assert _verify_principal(header, replay_cache=cache) is None
+
+
+def test_principal_rejected_claim_takes_no_cache_entry():
+    """A forged claim must not burn the request id of the real one."""
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache
+
+    cache = ProxyPrincipalReplayCache()
+    encoded, _sig = _principal().rsplit(".", 1)
+    assert _verify_principal(f"{encoded}.{'0' * 64}", replay_cache=cache) is None
+    assert _verify_principal(_principal(), replay_cache=cache) is not None
+
+
+def test_principal_replay_cache_refuses_when_full_instead_of_evicting():
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache
+
+    cache = ProxyPrincipalReplayCache(max_entries=2)
+    assert cache.accept("a" * 32, expires_at=1_060, now=1_000)
+    assert cache.accept("b" * 32, expires_at=1_060, now=1_000)
+    assert not cache.accept("c" * 32, expires_at=1_060, now=1_000)
+    # The live ids are still remembered, so neither is replayable.
+    assert not cache.accept("a" * 32, expires_at=1_060, now=1_000)
+    # Once their window has closed they are dropped and room returns.
+    assert cache.accept("c" * 32, expires_at=1_121, now=1_061)
+
+
+def test_principal_replay_cache_needs_a_positive_bound():
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache
+
+    with pytest.raises(ValueError):
+        ProxyPrincipalReplayCache(max_entries=0)
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"version": 2},
+        {"kind": "admin"},
+        {"issuedAt": True},
+        {"issuedAt": 1_000.0},
+        {"issuedAt": "1000"},
+        {"ownerId": ""},
+        {"ownerId": "owner\nname"},
+        {"ownerId": "o" * 257},
+        {"kind": "app-token"},
+        {"kind": "agent-tool"},
+        {"kind": "none"},
+        {"requestId": _REQUEST_ID.upper()},
+        {"requestId": _REQUEST_ID[:-1]},
+        {"extra": "field"},
+    ],
+)
+def test_principal_correctly_signed_but_malformed_claim_is_rejected(overrides):
+    """Even with a valid HMAC, only the one shape the gateway signs is accepted.
+
+    The ``app-token``/``agent-tool``/``none`` rows keep the owner id the base payload
+    carries: only ``owner-session`` may name an owner.
+    """
+    assert _verify_principal(_resign(_payload(**overrides))) is None
+
+
+def test_principal_resign_helper_matches_the_gateway():
+    """The malformed-claim cases above are only meaningful if ``_resign`` is faithful."""
+    assert _verify_principal(_resign(_payload())) is not None
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"kind": []},
+        {"kind": {}},
+        {"issuedAt": 10**400},
+        {"issuedAt": -(10**400)},
+    ],
+)
+def test_principal_unhashable_kind_or_huge_issue_time_is_a_verdict_not_an_exception(overrides):
+    """A local process can send these straight to the backend's loopback port.
+
+    Each value reaches a check that runs before the HMAC compare: an unhashable
+    ``kind`` meets the set lookup, and an ``issuedAt`` past float range meets the
+    freshness check. Both must return a verdict, or a backend answers 500 instead of
+    403. The clock is a float because a real backend's clock is ``time.time()``.
+    """
+    assert _verify_principal(_resign(_payload(**overrides)), now=1_000.5) is None
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "",
+        "no-period",
+        ".deadbeef",
+        "abc.",
+        "!!!not-base64!!!.deadbeef",
+        "x" * 5000 + ".deadbeef",
+        "eyJ\udc80.deadbeef",
+    ],
+)
+def test_principal_malformed_header_is_rejected_without_raising(header):
+    assert _verify_principal(header) is None
+
+
+def test_principal_non_ascii_signature_is_a_verdict_not_a_type_error():
+    encoded, _sig = _principal().rsplit(".", 1)
+    assert _verify_principal(f"{encoded}.é\udc80") is None
+
+
+def test_principal_missing_secret_fails_closed(monkeypatch):
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_principal_claim
+
+    monkeypatch.delenv("KIROCREW_PROXY_SECRET", raising=False)
+    assert (
+        verify_proxy_principal_claim(
+            _principal(),
+            method="POST",
+            target="/api/write",
+            body=_BODY,
+            now=1_000,
+            replay_cache=ProxyPrincipalReplayCache(),
+        )
+        is None
+    )
+
+
+def test_principal_missing_replay_cache_fails_closed():
+    from kiro_crew.apps.proxy_auth import verify_proxy_principal_claim
+
+    assert (
+        verify_proxy_principal_claim(
+            _principal(),
+            method="POST",
+            target="/api/write",
+            body=_BODY,
+            secret=SECRET,
+            now=1_000,
+            replay_cache=None,  # type: ignore[arg-type]
+        )
+        is None
+    )
+
+
+def test_principal_secret_falls_back_to_the_backend_environment(monkeypatch):
+    from kiro_crew.apps.proxy_auth import ProxyPrincipalReplayCache, verify_proxy_principal_claim
+
+    monkeypatch.setenv("KIROCREW_PROXY_SECRET", SECRET)
+    claim = verify_proxy_principal_claim(
+        _principal(),
+        method="POST",
+        target="/api/write",
+        body=_BODY,
+        now=1_000,
+        replay_cache=ProxyPrincipalReplayCache(),
+    )
+    assert claim is not None
+
+
+@pytest.mark.parametrize(
+    "kind, owner_id",
+    [("owner-session", ""), ("app-token", "demo-owner"), ("admin", ""), ("none", "x\x00")],
+)
+def test_principal_signer_refuses_an_invalid_claim(kind, owner_id):
+    with pytest.raises(ValueError):
+        _principal(kind=kind, owner_id=owner_id)
+
+
+def test_principal_signer_refuses_an_empty_secret():
+    from kiro_crew.apps.proxy_auth import sign_proxy_principal_claim
+
+    with pytest.raises(ValueError):
+        sign_proxy_principal_claim(
+            kind="none", owner_id="", method="GET", target="/api/x", body=b"", secret=""
+        )
+
+
+def test_principal_signature_comparison_is_constant_time_over_bytes(monkeypatch):
+    compared: list[tuple[object, object]] = []
+    real = hmac.compare_digest
+
+    def record(left, right):
+        compared.append((left, right))
+        return real(left, right)
+
+    monkeypatch.setattr("kiro_crew.apps.proxy_auth.hmac.compare_digest", record)
+    assert _verify_principal(_principal()) is not None
+    assert len(compared) == 1
+    assert all(isinstance(value, bytes) for value in compared[0])
+
+
+def _reference_verify(header: str, *, method: str, target: str, body: bytes, now: int):
+    """The documented algorithm, written from the API reference without the module.
+
+    A backend that cannot import ``kiro_crew`` implements exactly these steps, so the
+    gateway signer has to stay byte-compatible with them.
+    """
+    encoded, _, sig = header.rpartition(".")
+    payload = json.loads(base64.b64decode(encoded + "=" * (-len(encoded) % 4), altchars=b"-_"))
+    assert set(payload) == {"version", "kind", "ownerId", "issuedAt", "requestId"}
+    assert payload["version"] == 1
+    assert abs(now - payload["issuedAt"]) <= 60
+    lines = (
+        "kirocrew-proxy-principal-v1",
+        str(payload["issuedAt"]),
+        method,
+        target,
+        hashlib.sha256(body).hexdigest(),
+        encoded,
+    )
+    expected = hmac.new(SECRET.encode(), "\n".join(lines).encode(), hashlib.sha256).hexdigest()
+    assert hmac.compare_digest(expected.encode(), sig.encode())
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    assert encoded == base64.urlsafe_b64encode(canonical).decode().rstrip("=")
+    return payload
+
+
+def test_principal_gateway_signer_matches_the_documented_algorithm():
+    header = _principal(target="/api/write?page=2", request_id="fedcba9876543210" * 2)
+    payload = _reference_verify(
+        header, method="POST", target="/api/write?page=2", body=_BODY, now=1_000
+    )
+    assert payload == {
+        "issuedAt": 1_000,
+        "kind": "owner-session",
+        "ownerId": "demo-owner",
+        "requestId": "fedcba9876543210" * 2,
+        "version": 1,
+    }

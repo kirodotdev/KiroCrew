@@ -18,21 +18,47 @@ directly and bypass the gateway's token auth + per-app scope enforcement
 
 The gateway's own health probe hits the backend directly (unsigned), so callers
 must leave the health endpoint unauthenticated — see the backends' dispatch.
+
+An app whose manifest sets ``backend.signedPrincipal`` also receives
+``X-KiroCrew-Principal``: a base64url canonical-JSON claim naming the kind of
+caller the gateway authenticated, a period, and an HMAC that binds that exact
+claim to the method, target, body digest and issue time. A backend trusts the
+claim only through :func:`verify_proxy_principal_claim`, called with one
+:class:`ProxyPrincipalReplayCache` that lives as long as the backend process.
 """
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import hmac
+import json
 import os
+import secrets
+import threading
 import time
-from typing import TYPE_CHECKING
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:  # typing only — ThreadingHTTPServer backends never need aiohttp
     from aiohttp import web
 
 _ENV_KEY = "KIROCREW_PROXY_SECRET"
 _MAX_SKEW_SECONDS = 60
+
+PROXY_PRINCIPAL_HEADER = "X-KiroCrew-Principal"
+PRINCIPAL_OWNER_SESSION = "owner-session"
+PRINCIPAL_APP_TOKEN = "app-token"
+PRINCIPAL_AGENT_TOOL = "agent-tool"
+PRINCIPAL_NONE = "none"
+_PRINCIPAL_KINDS = frozenset(
+    {PRINCIPAL_OWNER_SESSION, PRINCIPAL_APP_TOKEN, PRINCIPAL_AGENT_TOOL, PRINCIPAL_NONE}
+)
+_PRINCIPAL_KEYS = frozenset({"version", "kind", "ownerId", "issuedAt", "requestId"})
+_PRINCIPAL_SIGNATURE_DOMAIN = "kirocrew-proxy-principal-v1"
+_MAX_PRINCIPAL_HEADER_BYTES = 4096
+_MAX_OWNER_ID_LENGTH = 256
+_REQUEST_ID_HEX_LENGTH = 32
 
 
 def raw_request_target(request: web.Request) -> str:
@@ -96,3 +122,211 @@ def verify_proxy_request(
     return hmac.compare_digest(
         expected.encode("utf-8", "surrogatepass"), sig.encode("utf-8", "surrogatepass")
     )
+
+
+@dataclass(frozen=True)
+class ProxyPrincipalClaim:
+    """One verified principal classification, bound to one proxied request."""
+
+    kind: str
+    owner_id: str
+    issued_at: int
+    request_id: str
+    version: int = 1
+
+
+class ProxyPrincipalReplayCache:
+    """Remember each accepted request id until its freshness window closes.
+
+    Hold ONE cache for the life of the backend process. A cache built per request
+    remembers nothing, so it would accept a replayed claim. When ``max_entries``
+    live ids are held, the cache refuses a new id instead of evicting one, because
+    evicting a live id would make that request replayable again.
+    """
+
+    def __init__(self, *, max_entries: int = 4096) -> None:
+        if max_entries < 1:
+            raise ValueError("max_entries must be positive")
+        self._max_entries = max_entries
+        self._seen: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def accept(self, request_id: str, *, expires_at: float, now: float) -> bool:
+        """Record a fresh *request_id*; refuse a replay or a full cache."""
+        with self._lock:
+            expired = [key for key, expiry in self._seen.items() if expiry < now]
+            for key in expired:
+                del self._seen[key]
+            if request_id in self._seen or len(self._seen) >= self._max_entries:
+                return False
+            self._seen[request_id] = expires_at
+            return True
+
+
+def _claim_shape_valid(
+    *, kind: Any, owner_id: Any, issued_at: Any, request_id: Any, version: Any
+) -> bool:
+    """Whether the claim fields have the one shape the gateway ever signs."""
+    # The claim is attacker-chosen until the HMAC check, so a list or dict ``kind``
+    # must be a ``False`` verdict here, not a ``TypeError`` from the set lookup.
+    if version != 1 or not isinstance(kind, str) or kind not in _PRINCIPAL_KINDS:
+        return False
+    # ``bool`` is an ``int`` subclass, and ``true`` is not an issue time.
+    if isinstance(issued_at, bool) or not isinstance(issued_at, int):
+        return False
+    if not isinstance(owner_id, str) or len(owner_id) > _MAX_OWNER_ID_LENGTH:
+        return False
+    if any(ord(char) < 32 or ord(char) == 127 for char in owner_id):
+        return False
+    # Only an owner session names an owner. Every other kind carries an empty id,
+    # so a backend can never read an identity off a claim that does not vouch for one.
+    if (kind == PRINCIPAL_OWNER_SESSION) != bool(owner_id):
+        return False
+    if not isinstance(request_id, str) or len(request_id) != _REQUEST_ID_HEX_LENGTH:
+        return False
+    return all(char in "0123456789abcdef" for char in request_id)
+
+
+def _encode_claim(claim: ProxyPrincipalClaim) -> str:
+    payload = {
+        "version": claim.version,
+        "kind": claim.kind,
+        "ownerId": claim.owner_id,
+        "issuedAt": claim.issued_at,
+        "requestId": claim.request_id,
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_claim(encoded: str) -> ProxyPrincipalClaim | None:
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.b64decode(padded, altchars=b"-_", validate=True))
+    except (ValueError, UnicodeError):
+        # ``binascii.Error`` and ``json.JSONDecodeError`` are both ``ValueError``.
+        return None
+    if not isinstance(payload, dict) or set(payload) != _PRINCIPAL_KEYS:
+        return None
+    if not _claim_shape_valid(
+        kind=payload["kind"],
+        owner_id=payload["ownerId"],
+        issued_at=payload["issuedAt"],
+        request_id=payload["requestId"],
+        version=payload["version"],
+    ):
+        return None
+    return ProxyPrincipalClaim(
+        kind=payload["kind"],
+        owner_id=payload["ownerId"],
+        issued_at=payload["issuedAt"],
+        request_id=payload["requestId"],
+        version=payload["version"],
+    )
+
+
+def _principal_signature(
+    key: str, encoded_claim: str, issued_at: int, *, method: str, target: str, body: bytes
+) -> str:
+    """The principal HMAC: a domain tag, then each bound field on its own line."""
+    message = "\n".join(
+        (
+            _PRINCIPAL_SIGNATURE_DOMAIN,
+            str(issued_at),
+            method,
+            target,
+            hashlib.sha256(body or b"").hexdigest(),
+            encoded_claim,
+        )
+    )
+    return hmac.new(key.encode("utf-8"), message.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def sign_proxy_principal_claim(
+    *,
+    kind: str,
+    owner_id: str,
+    method: str,
+    target: str,
+    body: bytes,
+    secret: str,
+    now: float | None = None,
+    request_id: str | None = None,
+) -> str:
+    """Build the ``X-KiroCrew-Principal`` value for one proxied request.
+
+    Raises ``ValueError`` for an empty secret or a claim outside the one valid
+    shape, so the gateway refuses the request rather than forwarding an unsigned
+    or ambiguous principal.
+    """
+    claim = ProxyPrincipalClaim(
+        kind=kind,
+        owner_id=owner_id,
+        issued_at=int(time.time() if now is None else now),
+        request_id=request_id or secrets.token_hex(_REQUEST_ID_HEX_LENGTH // 2),
+    )
+    if not secret or not _claim_shape_valid(
+        kind=claim.kind,
+        owner_id=claim.owner_id,
+        issued_at=claim.issued_at,
+        request_id=claim.request_id,
+        version=claim.version,
+    ):
+        raise ValueError("invalid proxy principal claim")
+    encoded = _encode_claim(claim)
+    signature = _principal_signature(
+        secret, encoded, claim.issued_at, method=method, target=target, body=body
+    )
+    return f"{encoded}.{signature}"
+
+
+def verify_proxy_principal_claim(
+    header_value: str,
+    *,
+    method: str,
+    target: str,
+    body: bytes,
+    replay_cache: ProxyPrincipalReplayCache,
+    secret: str | None = None,
+    now: float | None = None,
+) -> ProxyPrincipalClaim | None:
+    """Verify and consume one ``X-KiroCrew-Principal`` value.
+
+    Returns the claim, or ``None`` for a missing secret or cache, an oversized or
+    malformed header, a claim outside the one valid shape, an issue time outside
+    ±60s, a signature mismatch, a request id already accepted, or a full cache.
+    The replay check runs last, so only a claim that passed every other check
+    takes a cache entry.
+    """
+    key = proxy_secret() if secret is None else secret
+    if not key or replay_cache is None or not header_value or "." not in header_value:
+        return None
+    if len(header_value.encode("utf-8", "surrogatepass")) > _MAX_PRINCIPAL_HEADER_BYTES:
+        return None
+    encoded, _, signature = header_value.rpartition(".")
+    if not encoded or not signature:
+        return None
+    claim = _decode_claim(encoded)
+    if claim is None:
+        return None
+    clock = time.time() if now is None else now
+    # Python compares an int with a float exactly, so this chained form returns a
+    # verdict for an ``issuedAt`` past float range. Subtracting such a value from
+    # the float clock would raise ``OverflowError`` before the HMAC check.
+    if not clock - _MAX_SKEW_SECONDS <= claim.issued_at <= clock + _MAX_SKEW_SECONDS:
+        return None
+    expected = _principal_signature(
+        key, encoded, claim.issued_at, method=method, target=target, body=body
+    )
+    # Compared as bytes for the reason ``verify_proxy_request`` gives above: the
+    # signature is attacker-chosen header text, and a non-ASCII ``str`` would make
+    # ``compare_digest`` raise instead of returning a verdict.
+    if not hmac.compare_digest(
+        expected.encode("utf-8", "surrogatepass"), signature.encode("utf-8", "surrogatepass")
+    ):
+        return None
+    if not replay_cache.accept(
+        claim.request_id, expires_at=claim.issued_at + _MAX_SKEW_SECONDS, now=clock
+    ):
+        return None
+    return claim

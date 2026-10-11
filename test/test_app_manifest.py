@@ -1990,3 +1990,36 @@ class TestShippedManifestsAreWellFormedJson:
                 "the effective value is whichever comes last, which is not what the "
                 "file appears to say."
             )
+
+
+class TestSignedPrincipalManifest:
+    """``backend.signedPrincipal`` is a strict, default-off opt-in."""
+
+    def test_defaults_off_and_stays_out_of_the_canonical_dict(self):
+        manifest = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "server.py"}))
+        assert manifest.backend.signedPrincipal is False
+        assert "signedPrincipal" not in manifest.to_dict()["backend"]
+
+    def test_true_round_trips(self):
+        manifest = AppManifest.from_dict(
+            _valid_manifest(backend={"entryPoint": "server.py", "signedPrincipal": True})
+        )
+        assert manifest.backend.signedPrincipal is True
+        assert manifest.to_dict()["backend"]["signedPrincipal"] is True
+        assert AppManifest.from_dict(manifest.to_dict()).backend.signedPrincipal is True
+
+    @pytest.mark.parametrize("raw", ["true", "false", 1, 0, {}, [], None])
+    def test_only_the_json_boolean_true_turns_it_on(self, raw):
+        manifest = AppManifest.from_dict(
+            _valid_manifest(backend={"entryPoint": "server.py", "signedPrincipal": raw})
+        )
+        assert manifest.backend.signedPrincipal is False
+        assert "signedPrincipal" not in manifest.to_dict()["backend"]
+
+    def test_admission_signature_covers_the_flag(self):
+        ordinary = AppManifest.from_dict(_valid_manifest(backend={"entryPoint": "server.py"}))
+        opted_in = AppManifest.from_dict(
+            _valid_manifest(backend={"entryPoint": "server.py", "signedPrincipal": True})
+        )
+        assert b"signedPrincipal" not in ordinary.signing_payload()
+        assert b'"signedPrincipal":true' in opted_in.signing_payload()
