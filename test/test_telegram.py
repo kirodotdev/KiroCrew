@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import html
+import json
 import re
 import threading
 import time
@@ -5981,6 +5982,138 @@ class TestRichMessageAvailabilityLatch:
             asyncio.run(c.send_rich_message(1, "| a |\n| - |"))  # 400
             asyncio.run(c.send_rich_message(1, "| a |\n| - |"))  # success
         assert c._rich_unsupported is False, "streak reset by each success"
+
+
+_GATEWAY_PAGE = "<html><head><title>502 Bad Gateway</title></head><body>nginx</body></html>"
+
+
+class _NonJsonResponse:
+    """A response whose body ``text`` is parsed the way aiohttp's ``json()`` parses it."""
+
+    def __init__(self, status: int, text: str) -> None:
+        self.status = status
+        self._text = text
+
+    async def json(self, content_type: Any = None) -> Any:
+        return json.loads(self._text)
+
+    async def __aenter__(self) -> "_NonJsonResponse":
+        return self
+
+    async def __aexit__(self, *a: Any) -> None:
+        return None
+
+
+class _NonJsonSession:
+    """Answers ``method`` calls from ``replies`` in turn, everything else with ok."""
+
+    closed = False
+
+    def __init__(self, *replies: _NonJsonResponse, method: str = "sendMessage") -> None:
+        self._replies = list(replies)
+        self._method = method
+        self.calls: list[tuple[str, dict[str, Any], bool]] = []
+
+    def post(self, url: str, **kwargs: Any) -> _NonJsonResponse:
+        method = url.rsplit("/", 1)[-1]
+        payload = dict(kwargs.get("json") or {})
+        if method == self._method and self._replies:
+            self.calls.append((method, payload, False))
+            return self._replies.pop(0)
+        self.calls.append((method, payload, True))
+        sends = ("sendMessage", "sendRichMessage")
+        result: Any = {"message_id": 100 + len(self.calls)} if method in sends else True
+        return _NonJsonResponse(200, json.dumps({"ok": True, "result": result}))
+
+
+class TestNonJsonErrorBody:
+    """A response body that is not JSON (an HTML error page) is a failed call.
+
+    ``_api_request`` returns None for it, as for any other failed call, and
+    reports its HTTP status as the error code, so callers take their failure
+    paths instead of meeting a decode error.
+    """
+
+    @staticmethod
+    def _client(session: _NonJsonSession) -> TelegramClient:
+        client = TelegramClient(token="12345:testtoken")
+        client._session = session  # type: ignore[assignment]
+        return client
+
+    def test_a_502_html_page_is_a_failed_call_with_its_status(self) -> None:
+        client = self._client(_NonJsonSession(_NonJsonResponse(502, _GATEWAY_PAGE)))
+        err: dict[str, Any] = {}
+
+        result = asyncio.run(client._api("sendMessage", {"chat_id": 42}, err_out=err))
+
+        assert result is None
+        assert err["error_code"] == 502
+
+    def test_send_message_returns_none_for_a_502_html_page(self) -> None:
+        client = self._client(_NonJsonSession(_NonJsonResponse(502, _GATEWAY_PAGE)))
+
+        assert asyncio.run(client.send_message(42, "hello")) is None
+
+    def test_the_answer_still_reaches_the_chat_after_a_502_html_page(self) -> None:
+        session = _NonJsonSession(_NonJsonResponse(502, _GATEWAY_PAGE))
+        renderer = TelegramRenderer(  # type: ignore[arg-type]
+            self._client(session), 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0"
+        )
+        answer = "The build passed on all three targets."
+
+        async def _turn() -> None:
+            await renderer.on_turn_start()
+            await renderer.on_text_chunk(answer)
+            await renderer._seal_current()
+
+        asyncio.run(_turn())
+
+        landed = [
+            payload.get("text", "")
+            for method, payload, ok in session.calls
+            if ok and method in ("sendMessage", "editMessageText")
+        ]
+        assert any(answer in text for text in landed), session.calls
+
+    @pytest.mark.parametrize("status", [400, 502], ids=["400", "502"])
+    def test_a_json_error_body_is_reported_as_before(self, status) -> None:
+        body = {"ok": False, "error_code": status, "description": "Bad Request: chat not found"}
+        client = self._client(_NonJsonSession(_NonJsonResponse(status, json.dumps(body))))
+        err: dict[str, Any] = {}
+
+        result = asyncio.run(client._api("sendMessage", {"chat_id": 42}, err_out=err))
+
+        assert result is None
+        assert err == {"error_code": status, "description": "Bad Request: chat not found"}
+
+    def test_a_successful_send_is_unchanged(self) -> None:
+        session = _NonJsonSession()
+
+        assert asyncio.run(self._client(session).send_message(42, "hello")) == 101
+        assert [method for method, _payload, _ok in session.calls] == ["sendMessage"]
+
+    def test_one_proxy_error_page_does_not_turn_rich_messages_off(self) -> None:
+        # A Bot API server without sendRichMessage answers every call with a JSON
+        # 4xx, which latches rich rendering off. One HTML 403 page from an edge or
+        # a proxy is not that server's verdict: the next rich send still goes out.
+        page = "<html><head><title>403 Forbidden</title></head><body>blocked</body></html>"
+        session = _NonJsonSession(_NonJsonResponse(403, page), method="sendRichMessage")
+        client = self._client(session)
+        table = "| a |\n|---|\n| 1 |"
+
+        async def scenario() -> tuple[Any, Any]:
+            first = await client.send_rich_message(42, table)
+            return first, await client.send_rich_message(42, table)
+
+        first, second = asyncio.run(scenario())
+
+        assert first is None
+        assert second is not None, (
+            "one non-JSON 403 page from a proxy turned sendRichMessage off for the "
+            f"process: server calls {[method for method, _payload, _ok in session.calls]}"
+        )
+        assert client._rich_unsupported is False
+        assert [method for method, _payload, _ok in session.calls] == ["sendRichMessage"] * 2
 
 
 class TestClientHealth:

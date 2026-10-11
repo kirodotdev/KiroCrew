@@ -969,7 +969,15 @@ class TelegramClient:
             self._rich_400_streak = 0
             return result.get("message_id")
         code = err.get("error_code")
-        if isinstance(code, int) and 400 <= code < 500 and code != 429:
+        # Only the Bot API's own answer can say the method is missing. An error
+        # page from an edge or a proxy (a body that is not JSON) is a failed call
+        # like a 5xx: it neither counts toward the 400 streak nor latches.
+        if (
+            err.get("body_is_json", True)
+            and isinstance(code, int)
+            and 400 <= code < 500
+            and code != 429
+        ):
             if code == 400:
                 self._rich_400_streak += 1
                 if self._rich_400_streak < _RICH_400_LATCH:
@@ -2080,7 +2088,22 @@ class TelegramClient:
                     allow_redirects=False,
                     **body(),
                 ) as resp:
-                    data = await resp.json(content_type=None)
+                    body_is_json = True
+                    try:
+                        data = await resp.json(content_type=None)
+                    except ValueError:
+                        # A body that is not JSON (an HTML error page from the edge
+                        # or a proxy) is a failed call like any other. Its HTTP
+                        # status stands in for the error code the body did not
+                        # carry, so the failure path below records and reports it.
+                        # That status is not the Bot API's verdict, and err_out
+                        # says so (``body_is_json``).
+                        body_is_json = False
+                        data = {
+                            "ok": False,
+                            "error_code": resp.status,
+                            "description": "response body is not JSON",
+                        }
                     if data and data.get("ok"):
                         if record:
                             _record_api_duration(method, _elapsed_ms(), ok=True, err_code=None)
@@ -2112,6 +2135,8 @@ class TelegramClient:
                     if err_out is not None:
                         err_out["error_code"] = err_code
                         err_out["description"] = err_desc
+                        if not body_is_json:
+                            err_out["body_is_json"] = False
                     logger.warning(
                         "Telegram API %s failed: code=%s desc=%s",
                         method,
