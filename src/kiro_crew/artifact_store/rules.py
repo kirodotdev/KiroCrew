@@ -44,6 +44,12 @@ ALLOWED_KINDS = frozenset(
         "text",  # plain text
         "image",  # generated image (source_path points to PNG/JPEG)
         "webapp",  # a deployed web application; rendered as an infra control card
+        # A dynamic dashboard's LAYOUT package -- bound_to / model / view / theme
+        # as JSON, never values. Validated on every write by
+        # :mod:`kiro_crew.artifact_store.dashboard_package`, which is also why
+        # it is absent from USER_SELECTABLE_KINDS: a prose document hand-flipped
+        # to this kind would hold content no reader can parse.
+        "dashboard",
     }
 )
 

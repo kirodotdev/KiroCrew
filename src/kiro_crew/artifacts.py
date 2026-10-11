@@ -78,6 +78,7 @@ from typing import List as _List
 from kiro_crew import hooks, pinned_fs, platform_compat
 from kiro_crew.artifact_source import is_verifiable_root
 from kiro_crew.artifact_store import comments as _threads
+from kiro_crew.artifact_store import dashboard_package as _dashboard
 from kiro_crew.artifact_store import records as _records
 from kiro_crew.artifact_store import rules as _rules
 from kiro_crew.artifact_store.comments import (  # noqa: F401 - facade surface
@@ -589,6 +590,22 @@ class ArtifactStore:
         if kind_auto:
             kind = "markdown"
         kind = _validate_kind(_infer_kind(content, source_path, kind))
+        if kind == _dashboard.DASHBOARD_KIND:
+            # A dashboard artifact's content is a LAYOUT PACKAGE, so the write
+            # gate runs here rather than at each caller: every create reaches
+            # this line, and the stored bytes are the canonical form so a later
+            # layout comparison cannot be perturbed by the author's whitespace.
+            #
+            # A live file pointer is refused outright. The store validates what
+            # it writes, but a linked file is read back from disk on every get,
+            # where an edit made outside the store would reach the page as a
+            # package nothing checked.
+            if source_path:
+                raise ArtifactValidationError(
+                    "a dashboard package is store-owned: kind='dashboard' takes no "
+                    "source_path, because a linked file is read back unvalidated"
+                )
+            content = _dashboard.canonical_package_content(content)
         source = _validate_source(source)
         description = _validate_description(description)
         tags_list = _validate_tags(tags)
@@ -1200,6 +1217,86 @@ class ArtifactStore:
                 art.kind_auto = False
             if webapp_metadata is not None:
                 art.webapp_metadata = webapp_metadata
+            # The dashboard write gate. ``art.kind`` is final by here, so this
+            # one block governs every update that lands on a dashboard artifact
+            # -- the dashboard tool path, the browser PATCH and a plain
+            # ``artifact_update`` all arrive through this method -- and decides
+            # three things the generic path cannot:
+            #
+            # 1. the content is a valid package, stored canonically;
+            # 2. a REVERT restores layout only: ``revert_package`` keeps the
+            #    LIVE ``bound_to`` so rolling back past a rebind cannot hand
+            #    this page to the crewmate the stale binding names (values need
+            #    no handling -- they were never in the package);
+            # 3. the version. A dashboard snapshots exactly when the layout
+            #    changed, overriding the caller's ``snapshot`` either way: an
+            #    MCP write defaults it to True and would version every
+            #    no-op recompose, while a browser write defaults it to False
+            #    and would leave a real layout change with no history to
+            #    revert to.
+            if art.kind == _dashboard.DASHBOARD_KIND:
+                # A dashboard is store-owned, and ``create`` already refuses a
+                # ``source_path`` for that reason. The same has to hold on the
+                # way IN to the kind: converting an artifact that keeps a live
+                # file pointer would leave a dashboard whose bytes are re-read
+                # from a file outside the store on every get, so the package a
+                # page renders is one nothing validated -- and a revert would
+                # then write the binding it recovered into that outside file.
+                if kind_changed and art.source_path and not art.source_copy_only:
+                    raise ArtifactValidationError(
+                        "switching an artifact to kind='dashboard' cannot keep a live "
+                        "source_path: a dashboard package is store-owned, so clear the "
+                        "pointer in the same write"
+                    )
+                if content is None:
+                    if kind_changed:
+                        raise ArtifactValidationError(
+                            "switching an artifact to kind='dashboard' needs the package "
+                            "content in the same write: there is nothing valid to store"
+                        )
+                    # No content, so no layout change, so no version -- this
+                    # also disarms the explicit-Snapshot path below, which would
+                    # otherwise re-version the live package unchanged.
+                    snapshot = False
+                    # Disarming that path removes a SECOND thing it does: it is
+                    # also where a snapshot-only update loads the live bytes off
+                    # disk. A caller that asked for a snapshot and got a
+                    # meta-only record back reads ``art.content`` as empty, and
+                    # an auto-sync publisher then uploads that emptiness over a
+                    # live dashboard and records the push as a success. So the
+                    # package is loaded here instead: the caller gets the bytes
+                    # it asked for, and the version count still does not move.
+                    art.content = self._read_text(self._artifact_dir(slug) / "current.html")
+                else:
+                    stored_package = self._read_text(self._artifact_dir(slug) / "current.html")
+                    if event_type == "reverted":
+                        content = _dashboard.revert_package(stored_package, content)
+                    else:
+                        content = _dashboard.canonical_package_content(content)
+                    art.content = content
+                    snapshot = _dashboard.layout_changed(stored_package, content)
+            # EVENT TYPE VALIDATED HERE, which is the FIRST point it can be: the
+            # effective ``snapshot`` flag is settled by the line above (a dashboard
+            # layout change forces it on) and nothing has been written yet.
+            #
+            # A REJECTED REQUEST MUST CHANGE NOTHING, and that is what fixes this spot.
+            # Everything downstream writes: the content token rotates, ``current.html``
+            # is replaced, the comment anchors are rescanned. A refusal raised from
+            # inside the version block further down therefore answers 400 for a write
+            # that has already landed, and landed with no version entry naming it. So
+            # the check belongs ahead of all three, not merely ahead of the version
+            # bump it guards.
+            #
+            # OUTSIDE the snapshot block on purpose, so the check does not depend on
+            # whether this particular write happens to version. An event type that is
+            # not a real lifecycle event is refused on every update, which is the
+            # honest answer to a caller naming one. ``None`` is not an event: it means
+            # "decide from the actor" and passes through.
+            if event_type is not None and event_type not in _records.ALLOWED_EVENT_TYPES:
+                raise ArtifactValidationError(
+                    f"invalid event type {event_type!r}: "
+                    f"must be one of {sorted(_records.ALLOWED_EVENT_TYPES)}"
+                )
             art.updated_at = _now_iso()
 
             # Snapshot of current live state (no new content provided).
@@ -1299,16 +1396,10 @@ class ArtifactStore:
                 self._rescan_comment_anchors_locked(slug, live_content)
 
                 if snapshot:
-                    # Validate event_type BEFORE side effects.
-                    # Otherwise an invalid event_type raises after the
-                    # version bump and versions/v{N}.html write, leaving an
-                    # orphaned file on disk because _write_meta is never
-                    # reached. Validate first; commit second.
-                    if event_type is not None and event_type not in _records.ALLOWED_EVENT_TYPES:
-                        raise ArtifactValidationError(
-                            f"invalid event type {event_type!r}: "
-                            f"must be one of {sorted(_records.ALLOWED_EVENT_TYPES)}"
-                        )
+                    # ``event_type`` is validated far earlier, ahead of this write's
+                    # first side effect. See the check beside the snapshot flag: it
+                    # must run before the content token and ``current.html``, both of
+                    # which this block is downstream of.
                     # Bump version + capture the new state under
                     # versions/v{N}.html so it's preserved in history.
                     art.version += 1
@@ -2191,6 +2282,21 @@ class ArtifactStore:
         source_root = _validate_source_path(source_root, "source_root") if source_path else ""
         with self._lock:
             art = self._load_meta(slug)
+            # A dashboard package is store-owned: ``create`` refuses a
+            # ``source_path`` and ``update`` refuses converting into the kind
+            # while one is kept, so this is the third door into the same state
+            # and it has to be shut too. Pointing a dashboard at a file makes
+            # every later get re-read the package from outside the store, past
+            # the write gate -- and a revert, which recovers the live binding
+            # from ``current.html``, would then write that binding into the
+            # file, handing the page to whoever the stale copy named. Clearing
+            # the pointer (an empty ``source_path``) stays allowed: that is the
+            # direction which RESTORES store ownership.
+            if source_path and art.kind == _dashboard.DASHBOARD_KIND:
+                raise ArtifactValidationError(
+                    "a dashboard package is store-owned: kind='dashboard' takes no "
+                    "source_path, so it cannot be relocated onto a file"
+                )
             art.source_path = source_path
             art.source_root = source_root
             # Relocate is an explicit "this artifact tracks THIS file" act, so
