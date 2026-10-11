@@ -1037,6 +1037,12 @@ export interface CrewDashboardFrameProps extends CrewWebviewProps {
    * prompt with nowhere to land is a dead control.
    */
   onAct?: (text: string) => void;
+  /**
+   * Leave for Settings → Developer → Feature Previews, through the page's own
+   * leave guard. The newer-dashboard hint offers its button only when this is
+   * given, because a raw navigate from here would drop the page's unsaved drafts.
+   */
+  onOpenPreviews?: () => void;
 }
 
 export function CrewDashboardFrame(props: CrewDashboardFrameProps) {
@@ -1049,7 +1055,7 @@ export function CrewDashboardFrame(props: CrewDashboardFrameProps) {
   );
 }
 
-function CrewDashboardFrameView({ slug, member, displayName, avatar, onAct }: CrewDashboardFrameProps) {
+function CrewDashboardFrameView({ slug, member, displayName, avatar, onAct, onOpenPreviews }: CrewDashboardFrameProps) {
   // A pull request the panel links to: this frame only, GitHub PR URLs only.
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   useFrameOpenLink([frameRef]);
@@ -1061,6 +1067,38 @@ function CrewDashboardFrameView({ slug, member, displayName, avatar, onAct }: Cr
     queryFn: () => api.memberPanel(slug, member),
     enabled: Boolean(slug) && Boolean(member),
   });
+  // Whether this crewmate ADOPTED a dynamic dashboard, which this tab does not draw
+  // while the Dashboard feature preview is off. Without a line saying so, a person
+  // told "your page is applied" opens this tab and sees the published record instead.
+  // Its own key, outside the `member-dashboard` prefix: every fold frame invalidates
+  // that prefix, and this read only needs the version, not a live page. A refused
+  // read (a non-owner) is an answer, so it is not retried and shows nothing.
+  // Finite staleTime: the client default is Infinity and nothing pushes on this key,
+  // so a page adopted while the tab is open shows the line on the next mount or focus.
+  const { data: adopted } = useQuery({
+    queryKey: ["member-dashboard-adopted", slug, member],
+    queryFn: () => api.memberDashboard(slug, member),
+    enabled: Boolean(slug) && Boolean(member),
+    select: (d) => (d?.instance_version ?? 0) > 0,
+    retry: false,
+    staleTime: 60_000,
+  });
+  // Two wordings, one per state below it: over the published view the line names
+  // that view; over the empty state it says nothing is published, so it never
+  // contradicts the bubble under it.
+  const newerHint = (key: string) => adopted ? (
+    <div
+      className="shrink-0 border-b border-border px-4 py-2 flex items-center gap-3 text-xs text-muted"
+      data-testid="crew-dashboard-newer-hint"
+    >
+      <p className="flex-1 min-w-0">{i18nT(key)}</p>
+      {onOpenPreviews && (
+        <Btn onClick={onOpenPreviews} className="shrink-0" data-testid="crew-dashboard-newer-hint-open">
+          {i18nT("pages.membersPage.webview_newer_dashboard_open")}
+        </Btn>
+      )}
+    </div>
+  ) : null;
   const html = data?.html ?? null;
   const meta = data?.panel ?? null;
   const srcdoc = useMemo(
@@ -1104,10 +1142,18 @@ function CrewDashboardFrameView({ slug, member, displayName, avatar, onAct }: Cr
     // publish. It publishes through `panel_publish` when asked or on its own
     // cycle, so the honest next step is asking it in the chat beside this --
     // which is what the empty state's prompts are, pre-written.
-    return <CrewDashboardEmpty member={member} displayName={displayName} avatar={avatar} onAct={onAct} />;
+    const empty = <CrewDashboardEmpty member={member} displayName={displayName} avatar={avatar} onAct={onAct} />;
+    const hint = newerHint("pages.membersPage.webview_newer_dashboard_hint_empty");
+    return hint ? (
+      <div className="h-full min-h-0 flex flex-col">
+        {hint}
+        {empty}
+      </div>
+    ) : empty;
   }
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-frame">
+      {newerHint("pages.membersPage.webview_newer_dashboard_hint")}
       {failed && (
         // A band above the frame, never over it: a document already on screen
         // keeps every pixel, and the sentence says which failure this is.

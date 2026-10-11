@@ -22,6 +22,7 @@ vi.mock("../lib/widgetSrcdoc", () => ({
 
 const mintSpy = vi.fn();
 const panelSpy = vi.fn();
+const dashboardSpy = vi.fn();
 // The face is the real `CrewAvatar`'s concern (own tests); here only the
 // identity it is handed matters, so it is a marker carrying its props.
 const avatarSpy = vi.fn();
@@ -36,6 +37,7 @@ vi.mock("../api/client", () => ({
   api: {
     sandboxDocUrl: (html: string) => mintSpy(html),
     memberPanel: (slug: string, member: string) => panelSpy(slug, member),
+    memberDashboard: (slug: string, member: string) => dashboardSpy(slug, member),
   },
   ApiError: class extends Error {},
 }));
@@ -45,7 +47,7 @@ import {
   CREW_WEBVIEW_SANDBOX,
 } from "../pages/members/CrewWebview";
 
-function mount(props: { displayName?: string; avatar?: unknown; onAct?: (text: string) => void } = {}) {
+function mount(props: { displayName?: string; avatar?: unknown; onAct?: (text: string) => void; onOpenPreviews?: () => void } = {}) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   });
@@ -61,6 +63,9 @@ describe("CrewDashboardFrame", () => {
     mintSpy.mockReset();
     mintSpy.mockResolvedValue({ url: DOC_URL });
     panelSpy.mockReset();
+    dashboardSpy.mockReset();
+    // Nothing adopted: the gateway answers `empty` with version 0.
+    dashboardSpy.mockResolvedValue({ instance_version: 0, state: "empty" });
     panelSpy.mockResolvedValue({
       panel: { template: "report", title: "Radar", crew: "Radar", published_at: "2026-10-02T10:00:00", data: {} },
       html: "<main>report</main>",
@@ -145,5 +150,64 @@ describe("CrewDashboardFrame", () => {
     await screen.findByTestId("crew-webview-error");
     expect(screen.queryByRole("button", { name: /ask the agent/i })).toBeNull();
     expect(screen.getByTestId("crew-webview-error-retry")).toBeInTheDocument();
+  });
+
+  describe("the newer-dashboard hint", () => {
+    const HINT =
+      "This tab shows the published view. This crewmate also has a dynamic dashboard: turn on Dynamic Dashboard in Feature Previews to see it.";
+    // Over the empty state the line says nothing is published yet, so it never
+    // asserts a page the bubble below says does not exist.
+    const HINT_EMPTY =
+      "This tab shows published views, and none exists yet. This crewmate's dynamic dashboard appears once you turn on Dynamic Dashboard in Feature Previews.";
+
+    it("says a newer dashboard exists when this crewmate adopted one", async () => {
+      dashboardSpy.mockResolvedValue({ instance_version: 3, state: "live" });
+      mount();
+      const hint = await screen.findByTestId("crew-dashboard-newer-hint", {}, { timeout: 2000 });
+      expect(hint).toHaveTextContent(HINT);
+      expect(dashboardSpy).toHaveBeenCalledWith("radar", "Radar");
+      // Above the frame, never instead of it: the published record still draws.
+      expect(await screen.findByTestId("crew-dashboard-iframe", {}, { timeout: 2000 })).toBeInTheDocument();
+    });
+
+    it("opens Feature Previews through the page's own exit when one is given", async () => {
+      dashboardSpy.mockResolvedValue({ instance_version: 2, state: "live" });
+      const onOpenPreviews = vi.fn();
+      mount({ onOpenPreviews });
+      const open = await screen.findByTestId("crew-dashboard-newer-hint-open", {}, { timeout: 2000 });
+      expect(open).toHaveTextContent("Open Feature Previews");
+      fireEvent.click(open);
+      expect(onOpenPreviews).toHaveBeenCalledTimes(1);
+    });
+
+    it("offers no button when there is no exit to take", async () => {
+      dashboardSpy.mockResolvedValue({ instance_version: 2, state: "live" });
+      mount();
+      await screen.findByTestId("crew-dashboard-newer-hint", {}, { timeout: 2000 });
+      expect(screen.queryByTestId("crew-dashboard-newer-hint-open")).toBeNull();
+    });
+
+    it("says it over the empty state too, where the reader most needs it", async () => {
+      panelSpy.mockResolvedValue({ panel: null, html: null });
+      dashboardSpy.mockResolvedValue({ instance_version: 1, state: "live" });
+      mount();
+      expect(await screen.findByTestId("crew-dashboard-newer-hint", {}, { timeout: 2000 })).toHaveTextContent(HINT_EMPTY);
+      expect(screen.getByTestId("crew-webview-empty")).toBeInTheDocument();
+    });
+
+    it("stays silent when nothing was adopted", async () => {
+      mount();
+      await screen.findByTestId("crew-dashboard-iframe", {}, { timeout: 2000 });
+      await waitFor(() => expect(dashboardSpy).toHaveBeenCalled(), { timeout: 2000 });
+      expect(screen.queryByTestId("crew-dashboard-newer-hint")).toBeNull();
+    });
+
+    it("stays silent when the dashboard read is refused", async () => {
+      dashboardSpy.mockRejectedValue(new Error("owner_only"));
+      mount();
+      await screen.findByTestId("crew-dashboard-iframe", {}, { timeout: 2000 });
+      await waitFor(() => expect(dashboardSpy).toHaveBeenCalled(), { timeout: 2000 });
+      expect(screen.queryByTestId("crew-dashboard-newer-hint")).toBeNull();
+    });
   });
 });

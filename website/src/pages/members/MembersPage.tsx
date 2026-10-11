@@ -4869,6 +4869,8 @@ export default function MembersPage() {
                     avatar={(activeView ?? active).avatar}
                     // A suggested prompt lands in this crewmate's chat box; the person sends it.
                     onAct={activeSlot ? (text: string) => mergePaneDraft(activeSlot, text, []) : undefined}
+                    // Through the leave guard, like every other exit from this page.
+                    onOpenPreviews={() => { const destination = '/settings/developer?highlight=developer.dynamic-dashboard'; leave(() => navigate(destination), destination) }}
                   />
                 )
               )}
