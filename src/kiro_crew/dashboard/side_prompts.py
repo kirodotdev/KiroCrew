@@ -9,7 +9,9 @@ SIDE_BOUNDARY_PROMPT = (
     "is read-only: lookups work here, but changes don't. Reading files, "
     "searching, fetching pages, and read-only shell commands such as ls, cat, "
     "pwd and git status run here without asking, so use them when a question "
-    "needs them. Writing or editing files, shell commands that modify "
+    "needs them. If a file-read, search or fetch tool is refused, use a "
+    "read-only shell command (cat, grep, ls) instead rather than retrying it. "
+    "Writing or editing files, shell commands that modify "
     "anything, and MCP tools are refused here, even when the user explicitly "
     "requests them. Never claim that a tool is unconfigured or suggest "
     "enabling it. If the user wants a change made, tell them to use the main "
@@ -50,8 +52,8 @@ def build_side_system_prompt(*, tools_available: bool = True) -> str:
     """Return the developer-instructions + boundary-prompt envelope.
 
     ``tools_available`` selects the boundary the policy enforces on this
-    harness: the read-only allowance (kiro-cli, ``READ_ONLY``) or no tools at
-    all (every other backend, ``REJECT_ALL``).
+    harness: the read-only allowance (``ACP_BACKENDS_SIDE_READONLY``, ``READ_ONLY``)
+    or no tools at all (every other backend, ``REJECT_ALL``).
     """
     boundary = SIDE_BOUNDARY_PROMPT if tools_available else SIDE_BOUNDARY_PROMPT_NO_TOOLS
     return f"{SIDE_DEVELOPER_INSTRUCTIONS}\n\n{boundary}"

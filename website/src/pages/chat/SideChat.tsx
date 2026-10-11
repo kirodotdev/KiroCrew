@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Check, MessageCircleQuestionMark, RotateCcw, CornerUpRight } from 'lucide-react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { api } from '../../api/client'
+import type { AcpBackendProbe } from '../../api/client/config'
 import { useAppSelector, useAppDispatch } from '../../store'
 import { sideClose, sideOptimisticAppend, sideOptimisticRollback, sseSideQueue, sideReleaseConsumed, queueEditBroadcastAt, stageToMainComposer } from '../../store/chatSlice'
 import QueueStack from '../../components/QueueStack'
@@ -77,23 +78,40 @@ function relativeTime(iso: string): string | null {  const diff = Date.now() - n
  *  lazy-loading (the Lexical editor) before it gives up on placing the caret. */
 const SEED_FOCUS_WAIT_MS = 5000
 
+// The capability line on the backend card that answers whether a side turn runs
+// read-only tools (`backend_cards.LINE_SIDE_CHAT_TOOLS`, built from
+// `ACP_BACKENDS_SIDE_READONLY`).
+const SIDE_CHAT_TOOLS_LINE = 'side_chat_tools'
+
 export default function SideChat({ slot }: { slot: string }) {
   const connected = useConnected()
   const dispatch = useAppDispatch()
   // The footer describes what the backend enforces, so it follows the selected
-  // harness: the derived `<agent>--readonly` spec is a kiro-cli mechanism, and on
-  // any other backend the side turn runs with no tools at all (REJECT_ALL). The
-  // kiro backend is the empty string (`ACP_BACKEND_KIRO`), so an unloaded or
-  // absent value reads as kiro — the default the gateway itself falls back to.
+  // harness and reads the server's own answer for it: the `side_chat_tools` line
+  // of that harness's card. The kiro backend is the empty string
+  // (`ACP_BACKEND_KIRO`), so an absent value reads as kiro — the default the
+  // gateway itself falls back to.
   const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
     queryKey: ['kirocrewConfig'],
     queryFn: () => api.kirocrewConfig(),
   })
-  // Mirrors the backend: the read-only allowance is granted only when the
-  // loaded config names the kiro backend; a turn whose config cannot load runs
-  // with no tools, so the footer claims nothing until the config is loaded and
-  // says so when the load failed.
-  const readOnlyToolsAvailable = cfgQ.isSuccess && !(cfgQ.data?.agent?.acp_backend ?? '')
+  const backendsQ = useQuery<{ backends: AcpBackendProbe[] }>({
+    queryKey: ['acpBackends'],
+    queryFn: () => api.acpBackends(),
+  })
+  // The footer claims nothing until both answers are loaded. Each failure is
+  // said in its own words: a config failure means the turn runs with no tools,
+  // while a card failure only means this panel cannot say which tools work. A
+  // line the card omits reads as no tools.
+  const postureError = cfgQ.isError
+  const cardError = !postureError && backendsQ.isError
+  const postureLoaded = cfgQ.isSuccess && backendsQ.isSuccess
+  const configuredBackend = cfgQ.data?.agent?.acp_backend ?? ''
+  const readOnlyToolsAvailable =
+    postureLoaded &&
+    backendsQ.data?.backends
+      ?.find(b => b.id === configuredBackend)
+      ?.capabilities?.find(c => c.id === SIDE_CHAT_TOOLS_LINE)?.available === true
   const reduxSide = useAppSelector(s => s.chat.slotSide[slot])
   const parentTurnCount = useAppSelector(s =>
     s.chat.messages.filter(m => m.role === 'user' || m.role === 'assistant').length
@@ -877,16 +895,27 @@ export default function SideChat({ slot }: { slot: string }) {
             promptOptimizer={false}
             connected={connected}
           />
-          {cfgQ.isError ? (
-            // No agent hand-off: the composer above still works (the turn runs
-            // without tools), so there is nothing for the agent to take over.
+          {postureError ? (
+            // No hand-off: navigating to the main chat would unmount Side Chat and
+            // discard the unsent side-question draft in its composer, which still
+            // works (the turn runs without tools).
             <ErrorNotice
               variant="inline"
               className="px-1 pt-1.5 text-[11px] leading-4"
               message={i18nT('pages.chat.sideChat.context_only_config_unavailable')}
               testId="side-chat-config-error"
             />
-          ) : cfgQ.isSuccess ? (
+          ) : cardError ? (
+            // No hand-off: navigating to the main chat would unmount Side Chat and
+            // discard the unsent side-question draft in its composer. The turn's own
+            // posture does not depend on this card.
+            <ErrorNotice
+              variant="inline"
+              className="px-1 pt-1.5 text-[11px] leading-4"
+              message={i18nT('pages.chat.sideChat.context_only_tools_unknown')}
+              testId="side-chat-tools-unknown"
+            />
+          ) : postureLoaded ? (
             <div role="note" className="px-1 pt-1.5 text-[11px] leading-4 text-muted">
               {i18nT(
                 readOnlyToolsAvailable

@@ -319,7 +319,9 @@ def test_the_default_harness_reads_as_the_most_capable() -> None:
 
     kiro-cli is the harness every capability set was written against, so a card
     that did not show it ahead of every adapter would mean a line was inverted --
-    the failure mode a two-level card is most exposed to.
+    the failure mode a two-level card is most exposed to. KAS is the one harness
+    pinned level with it, at the measured count: each carries two lines the other
+    lacks, and any change to either count must re-pin it here.
     """
     counts = {
         card.backend: sum(1 for line in card.capabilities if line.available)
@@ -327,7 +329,10 @@ def test_the_default_harness_reads_as_the_most_capable() -> None:
     }
     best = max(counts.values())
     assert counts[ACP_BACKEND_KIRO] == best
-    assert counts[ACP_BACKEND_KIRO] > counts[ACP_BACKEND_KAS]
+    assert counts[ACP_BACKEND_KIRO] == counts[ACP_BACKEND_KAS] == 8
+    for backend, count in counts.items():
+        if backend not in (ACP_BACKEND_KIRO, ACP_BACKEND_KAS):
+            assert counts[ACP_BACKEND_KIRO] > count, backend
 
 
 def test_crew_tools_are_available_on_both_channels_and_absent_on_neither() -> None:

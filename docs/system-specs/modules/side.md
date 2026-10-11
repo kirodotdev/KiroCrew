@@ -369,11 +369,19 @@ panel shows a generic message without it. The turn never runs under the base age
 **The allowance is a harness capability, granted by positive membership.**
 Whether a side turn may execute read-only tools at all is
 `ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends.py`, harness-parity H6) —
-kiro-cli only, because the derived spec is a kiro-cli agent-spec mechanism and
-another harness has its own pre-approval surface (claude-agent-acp
-`permissions.allow` / `bypassPermissions`, KAS `permissions` rules from its
-own store) that neither the derived spec nor the host gate can see: a call it
-pre-approves would run with no READ_ONLY decision and no SEL row. Off the set,
+kiro-cli and KAS. kiro-cli loads the derived spec off disk; KAS takes it over
+the wire (`acp/kas_agents` projects `<agent>--readonly` into `customAgents`),
+and the derivation empties its `permissions` block with the other grants, so
+every KAS tool call raises `session/request_permission` (measured on kiro-cli
+2.29.0, `--agent-engine v3`). A main-chat `allow_always` does not carry over: KAS
+keeps it for its own session only, so a side session on the same process asks
+again (measured the same way). On KAS the gate proves less than on kiro-cli: a
+read-only shell command is approved from the `_meta.kiro.command` the engine
+states, while `read_file` and `grep_search` frames carry no
+`_meta.kiro.toolName` and are refused. Another harness has its own
+pre-approval surface (claude-agent-acp `permissions.allow` /
+`bypassPermissions`) that neither the derived spec nor the host gate can see:
+a call it pre-approves would run with no READ_ONLY decision and no SEL row. Off the set,
 or with the harness unknown because the config never loaded, `_run_side_turn`
 keeps the pre-allowance posture — the base agent under `REJECT_ALL`, no
 derived spec — and the prompt (`SIDE_BOUNDARY_PROMPT_NO_TOOLS`), the

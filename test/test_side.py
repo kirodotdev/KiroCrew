@@ -1375,16 +1375,18 @@ def _configure_backend(monkeypatch, backend: str) -> None:
 
 
 @pytest.mark.asyncio
-async def test_side_turn_grants_read_only_tools_only_on_the_kiro_backend(
-    tmp_path, monkeypatch, _published_readonly_spec
+@pytest.mark.parametrize("backend", ["", "kas"], ids=["kiro", "kas"])
+async def test_side_turn_grants_read_only_tools_on_a_member_backend(
+    tmp_path, monkeypatch, _published_readonly_spec, backend
 ):
-    """On kiro-cli (``ACP_BACKENDS_SIDE_READONLY``) the turn derives the read-only
-    spec and streams READ_ONLY; the allowance is positive membership, never a
-    negation of some other backend."""
-    from kiro_crew.acp_backends import ACP_BACKEND_KIRO
+    """On a member of ``ACP_BACKENDS_SIDE_READONLY`` (kiro-cli, KAS) the turn
+    derives the read-only spec and streams READ_ONLY; the allowance is positive
+    membership, never a negation of some other backend."""
+    from kiro_crew.acp_backends import ACP_BACKENDS_SIDE_READONLY
     from kiro_crew.llm_helpers import ToolApprovalPolicy
 
-    _configure_backend(monkeypatch, ACP_BACKEND_KIRO)
+    assert backend in ACP_BACKENDS_SIDE_READONLY
+    _configure_backend(monkeypatch, backend)
     state = _make_state(tmp_path)
     _capture_broadcasts(state)
     parent = state.get_or_create_slot("parent")

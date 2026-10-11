@@ -10773,6 +10773,7 @@
         "context_only_tools_unavailable": "只读 · 这里可以查询信息，但不能做出更改。请在主对话中执行操作。",
         "context_only_tools_unavailable_backend": "仅使用上下文 · 当前代理后端下这里无法使用工具。请在主对话中执行操作。",
         "context_only_config_unavailable": "无法加载代理配置，因此侧边对话无法使用工具。请在主对话中执行操作。",
+        "context_only_tools_unknown": "无法确认此代理后端在这里允许使用哪些工具。请在主对话中执行操作。",
         "question_too_long": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}）",
         "question_too_long_with_paste": "问题过长 — 请缩减到约 {{max}} 个字符以内（当前：{{current}}，含已折叠的粘贴内容）。选中粘贴块后按 Backspace 删除它，或只粘贴较短的片段。",
         "queue_cancel_failed": "无法取消排队中的这个问题",
