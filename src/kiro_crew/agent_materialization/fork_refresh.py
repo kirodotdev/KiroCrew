@@ -23,6 +23,38 @@ from kiro_crew.agent_spec_format import is_markdown_spec
 #: The dashboard-author origin stem, digest-gated in :func:`_origin_is_owned`.
 _DASHBOARD_AUTHOR_STEM = Path(DASHBOARD_AUTHOR_AGENT_FILENAME).stem
 
+#: The SEL operation :func:`_report_mcp_json_merge_pinned_off` records.
+MCP_JSON_MERGE_PINNED_OP = "fork_mcp_json_merge_disabled"
+
+
+def _report_mcp_json_merge_pinned_off(fork_name: str, spec_path: Path) -> None:
+    """Say that a refresh turned off a fork's global ``mcp.json`` merge, and the remedy.
+
+    kiro-cli reads an absent ``includeMcpJson`` as true, so a fork that carried true
+    or no value reached every server in the global ``mcp.json``. The governed tail
+    pins it ``False``, and a server the fork reached only that way is absent from its
+    next session. The warning and the SEL record name the fork and tell the user to
+    list the server in the fork's own ``mcpServers``. The caller reports only a flip,
+    so a fork already at ``False`` records nothing. Best-effort: an audit failure
+    never fails the refresh.
+    """
+    message = (
+        f"fork refresh: {fork_name!r} ({spec_path.name}) had includeMcpJson true or unset; "
+        "the refresh set it to false, so servers from the global mcp.json are not loaded "
+        "for this agent. List any server it needs in the fork's own mcpServers."
+    )
+    agent_mod.logger.warning("%s", message)
+    try:
+        agent_mod.sel().log_api_access(
+            caller="system",
+            operation=MCP_JSON_MERGE_PINNED_OP,
+            outcome="ok",
+            source=f"fork-refresh:{fork_name}",
+            resources=message,
+        )
+    except Exception:  # noqa: BLE001 — the audit must not break the refresh
+        agent_mod.logger.debug("SEL audit unavailable for the mcp.json merge pin", exc_info=True)
+
 
 def _dashboard_author_file_is_installers(path: Path) -> bool:
     """True ONLY when the file at *path* positively confirms as the managed dashboard-author
@@ -326,6 +358,9 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                     # Unreadable spec: governance cannot be projected onto it.
                     failures.add(fork_name)
                     continue
+                # Read before any pass touches it, so the report below covers a
+                # flip by the plumbing refresh as well as by the governed tail.
+                merge_was_on = config.get("includeMcpJson") is not False
                 if plumb:
                     try:
                         agent_mod._refresh_dynamic_fields(config, gated_off=gated_off, fork=True)
@@ -336,20 +371,25 @@ def _refresh_forked_templates_locked(*, gated_off: "frozenset[str] | None" = Non
                         agent_mod.logger.debug(
                             "refresh failed for forked template %r", fork_name, exc_info=True
                         )
-                # Governance passes, same as every other spec writer:
+                # Governance passes, the same tail every other spec writer runs:
                 # allowedTools and autoApprove are the two paths that never
                 # reach the PreToolUse gate, so a fork carrying grants the
                 # ceiling later tightened against must be re-filtered on every
                 # refresh — this writer is exactly where a stale grant would
-                # otherwise persist verbatim.
-                auto_approve._apply_allowed_tools_ceiling(
-                    config, source=f"fork-refresh:{fork_name}"
-                )
-                servers_map = config.get("mcpServers")
-                if isinstance(servers_map, dict):
-                    config["mcpServers"] = auto_approve._strip_ungoverned_auto_approve(servers_map)
+                # otherwise persist verbatim. The tail also pins the global
+                # ``mcp.json`` merge off, which a fork of a custom template
+                # (no plumbing refresh above) would otherwise keep: a server
+                # arriving through that merge is outside every filter here. A
+                # fork is the user's file, so its KAS block is seeded when
+                # absent and never edited, the primary spec's rule. Turning the
+                # merge off removes servers the user may rely on, so a flip is
+                # logged and audited by fork name rather than made silently.
                 agent_state.lift_and_strip_bookkeeping(config, fork_name)
-                agent_mod._atomic_json_write(spec_path, config)
+                auto_approve.write_governed_spec(
+                    spec_path, config, source=f"fork-refresh:{fork_name}", kas_policy="seed"
+                )
+                if merge_was_on:
+                    _report_mcp_json_merge_pinned_off(fork_name, spec_path)
         except Exception:
             failures.add(fork_name)
             agent_mod.logger.warning(

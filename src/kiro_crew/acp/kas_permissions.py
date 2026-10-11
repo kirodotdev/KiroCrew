@@ -473,6 +473,19 @@ _MAX_PATTERNS_PER_RULE = 64
 _MAX_PATTERN_LENGTH = 1024
 
 
+def _asking_only(refs: str, outcome: str, reason: str) -> None:
+    """The ``audit_decision`` of :func:`projection_accepts`: a question, not a refusal."""
+
+
+def projection_accepts(raw: Any) -> bool:
+    """Whether :func:`parse_user_permissions` would relay *raw* rather than refuse it whole.
+
+    For a writer checking a block before it lands, so a block it then declines to
+    write is reported nowhere: the refusal it is avoiding never happens.
+    """
+    return parse_user_permissions(raw, audit_decision=_asking_only) is not None
+
+
 def _refuse_block(
     agent_id: str,
     why: str,
@@ -482,6 +495,8 @@ def _refuse_block(
     author's own file being declined rather than a grant quietly narrowed, and in
     the security event log because refusing a block the author wrote withholds
     every grant in it."""
+    if audit_decision is _asking_only:
+        return
     audit_decision("the authored `permissions` block", "withheld", f"refused: {why}")
     logger.warning(
         "agent %r: refusing its whole `permissions` block -- %s. None of it travels; "

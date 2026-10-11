@@ -725,12 +725,14 @@ def _conductor_spec(
         return None
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Derive the KAS policy from the FILTERED grant list instead of restating it
-    # as a literal: the rules come out byte-identical, a later edit to
-    # ``allowedTools`` carries through, and a ceiling that strips a grant strips
-    # its KAS rule with it (a hand-written ``kirocrew-core/*`` allow would have
-    # survived the filter on the KAS backend). The shared writer version-gates it.
-    auto_approve._write_derived_permissions(config, config["allowedTools"], filename)
+    # The KAS policy is NOT written here: the shared tail each installer writes
+    # through (``auto_approve.write_governed_spec``) derives it from the FILTERED
+    # grant list instead of restating it as a literal, so the rules come out
+    # byte-identical, a later edit to ``allowedTools`` carries through, and a
+    # ceiling that strips a grant strips its KAS rule with it (a hand-written
+    # ``kirocrew-core/*`` allow would have survived the filter on the KAS
+    # backend). The same tail pins the global ``mcp.json`` merge off and strips
+    # an ungoverned ``autoApprove``.
     return config
 
 
@@ -779,7 +781,7 @@ def _install_conductor_agent(*, clean: bool = False) -> bool:
         return False
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    auto_approve.write_governed_spec(path, config, source="_install_conductor_agent")
     agent_mod.logger.info("Installed conductor agent config: %s", path)
     return True
 
@@ -831,7 +833,7 @@ def _install_ledger_conductor_agent(*, clean: bool = False) -> bool:
         return False
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _LEDGER_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    auto_approve.write_governed_spec(path, config, source="_install_ledger_conductor_agent")
     agent_mod.logger.info("Installed ledger-conductor alias agent config: %s", path)
     return True
 
@@ -890,14 +892,11 @@ def _install_pipeline_conductor_agent(*, clean: bool = False) -> bool:
         return False
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Same derive-don't-restate rationale as the conductor above; the shared
-    # writer version-gates it.
-    auto_approve._write_derived_permissions(
-        config, config["allowedTools"], _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    )
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _PIPELINE_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    # The shared tail derives the KAS policy from the filtered grant list, on the
+    # same derive-don't-restate rationale as the conductor above.
+    auto_approve.write_governed_spec(path, config, source="_install_pipeline_conductor_agent")
     agent_mod.logger.info("Installed pipeline-conductor agent config: %s", path)
     return True
 
@@ -976,14 +975,10 @@ def _install_security_conductor_agent(*, clean: bool = False) -> bool:
         return False
     config["allowedTools"] = granted
     config["mcpServers"] = _conductor_mcp_servers(config)
-    # Derived from the FILTERED grant list rather than restated, so a ceiling
-    # that strips a grant strips its KAS rule with it; the shared writer
-    # version-gates it.
-    auto_approve._write_derived_permissions(
-        config, config["allowedTools"], _SECURITY_CONDUCTOR_AGENT_FILENAME
-    )
     agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
     path = agent_mod.kiro_agents_dir_path() / _SECURITY_CONDUCTOR_AGENT_FILENAME
-    agent_mod._atomic_json_write(path, config)
+    # The shared tail derives the KAS policy from the FILTERED grant list rather
+    # than restating it, so a ceiling that strips a grant strips its KAS rule too.
+    auto_approve.write_governed_spec(path, config, source="_install_security_conductor_agent")
     agent_mod.logger.info("Installed security-conductor agent config: %s", path)
     return True

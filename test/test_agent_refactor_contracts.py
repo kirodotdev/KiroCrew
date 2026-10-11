@@ -869,6 +869,7 @@ def test_the_lite_spec_is_the_bare_background_agent(
         "tools": [],
         "mcpServers": {},
         "prompt": "",
+        "includeMcpJson": False,
     }
     assert agent_state.get_cc_model("kirocrew-lite") == agent._BACKGROUND_CC_MODEL
 
