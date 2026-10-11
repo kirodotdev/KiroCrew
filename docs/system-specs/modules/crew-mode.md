@@ -485,8 +485,39 @@ MCP server reaches an already-running chat only after a relaunch.) The MCP serve
 the acronym ("external tool connections"). The Add tool
 input keeps the words "Add tool" visible as its label while open (one control
 in two states, not two controls), is wide enough for its example placeholder (`fs_write or @github/…`)
-and offers a datalist of kiro-cli's native tool names plus every name the
-template already grants (offered, not enforced); the enroll row says where
+and offers a datalist of kiro-cli's native tool names, Kiro Crew's
+background-subagent tools (`@kirocrew-core/spawn_run`, `spawn_list`,
+`spawn_status`, `spawn_steer`, `spawn_continue`, `spawn_release`), plus every name the
+template already grants (offered, not enforced). Until an editable template
+gets the whole spawn family (it grants `@kirocrew-core`, or `*` with
+`kirocrew-core` declared, or all six refs), a muted line under the
+tools says what background agents give it (`spawn_tool_hint`) beside a one-click
+**Allow background agents** button that adds every spawn ref the draft still
+lacks (`spawn_tool_add`, with `@kirocrew-core/spawn_*` as its tooltip rather than
+in the label), so
+`spawn_status` and `spawn_release` come with `spawn_run`. A tools save that names a
+Crew control-plane server (`kirocrew-core`, `kirocrew-cron`) by an explicit
+`@server` or `@server/tool` ref -- with or without `*` beside it -- that the spec
+does not declare also writes that server's managed `mcpServers` entry
+(`agent_templates.control_plane_declarations`, added to the spec re-read
+under the spec lock so a concurrent `mcpServers` edit survives): kiro-cli mounts a server
+only when the spec both grants and declares it, so the grant alone would mount
+nothing, and with both a custom agent's `spawn_run` is the same native
+session-attached spawn the built-in agent has (inline task box with Stop, an
+explicit `agent` / `crew` pin, completion delivered to the chat). The entry
+carries `"type": "registry"` while `agent.mcp_registry_mode` is on, because a
+registry-mode client drops every unmarked entry. Only the
+control plane is declared this way, because its launch is re-derived from the
+managed source at every session start; a third-party or opt-in server keeps
+its own admission path, `*` alone declares nothing, an existing declaration is
+never replaced, and removing the grant leaves the declaration in place
+(ungranted, it mounts nothing). A save whose named server cannot be declared --
+`mcpServers` is not an object, or the install cannot resolve the managed launch
+-- is refused `409 control_plane_not_declarable` with a sentence naming the
+server and the fix, shown in the save bar, and nothing is written (the check
+runs before the model sidecar is touched): a grant that mounts nothing is never
+saved silently. The grant
+is a mount, not an auto-approval: each spawn still asks unless the author ticks it. The enroll row says where
 the result lands (under Crewmates); the save bar's two buttons never wrap or
 shrink, and its instruction names the button by its label ("Save custom agent"). A private copy is never a dead end: its
 banner offers **Open crewmate** (the crew's **Built from** pane, where the copy is

@@ -6644,6 +6644,8 @@
         "tool_state_asks": "asks first",
         "add_tool": "Add tool",
         "add_tool_placeholder": "e.g. fs_write or @github/…",
+        "spawn_tool_hint": "Let this agent run other agents in the background, each with a task box and Stop in the chat.",
+        "spawn_tool_add": "Allow background agents",
         "remove_item": "Remove {{item}}",
         "remove_item_hint": "Remove — unsaved until you save the custom agent.",
         "skills": "Skills",

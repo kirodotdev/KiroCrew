@@ -95,6 +95,16 @@ function renderTab() {
   )
 }
 
+/** The spawn tests wait on a CHAINED load: the roster query, the auto-select
+ *  effect, the detail query, then the draft effect that seeds the editor (and,
+ *  after Save, the patch mutation). Each of those waits is bounded by this rather
+ *  than RTL's 1000ms default, which a loaded coverage shard can exceed. */
+const EDITOR_CHAIN_TIMEOUT_MS = 5000
+const EDITOR_CHAIN = { timeout: EDITOR_CHAIN_TIMEOUT_MS }
+
+/** The six background-subagent refs the one-click button adds, in order. */
+const SPAWN_FAMILY = ['spawn_run', 'spawn_list', 'spawn_status', 'spawn_steer', 'spawn_continue', 'spawn_release'].map(t => `@kirocrew-core/${t}`)
+
 const option = (name: string) => screen.getByRole('option', { name: new RegExp(`^${name}\\b`) })
 
 /** Open the detail pane's overflow menu. Radix opens on keyboard activation, a
@@ -596,6 +606,96 @@ describe('AgentTemplatesTab actions', () => {
     const input = screen.getByRole('combobox', { name: 'Add tool' })
     expect(input.closest('label')).toHaveTextContent('Add tool')
     expect(input).toHaveAttribute('placeholder', 'e.g. fs_write or @github/…')
+  })
+
+  it('names the spawn tool on an editable template until the template grants it', async () => {
+    renderTab()
+    // roster -> detail -> draft: the editor is seeded only at the end of the chain.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    const hint = await screen.findByText(/run other agents in the background/, {}, EDITOR_CHAIN)
+    expect(hint).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Add tool' }))
+    const input = screen.getByRole('combobox', { name: 'Add tool' })
+    // The datalist offers the spawn refs beside kiro-cli's own tool names.
+    const listId = input.getAttribute('list')
+    expect(listId).toBeTruthy()
+    const values = Array.from(document.getElementById(listId!)!.querySelectorAll('option')).map(o => o.getAttribute('value'))
+    expect(values).toEqual(expect.arrayContaining(['fs_read', '@kirocrew-core/spawn_run', '@kirocrew-core/spawn_list']))
+    // One click on the hint's button grants the whole spawn family, so the
+    // agent can also check on and release what it started; the hint then goes.
+    // The refs are the tooltip, not part of the label.
+    const add = screen.getByRole('button', { name: 'Allow background agents' })
+    expect(add).toHaveAttribute('title', '@kirocrew-core/spawn_*')
+    fireEvent.click(add)
+    for (const ref of SPAWN_FAMILY) {
+      expect(screen.getByRole('button', { name: `${ref}: asks first`, pressed: false })).toBeInTheDocument()
+    }
+    await waitFor(() => expect(screen.queryByText(/run other agents in the background/)).toBeNull(), EDITOR_CHAIN)
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['fs_read', '@docs/search', ...SPAWN_FAMILY],
+      allowedTools: ['@docs/search'],
+    }), EDITOR_CHAIN)
+  })
+
+  it('adds only the spawn refs a template still lacks', async () => {
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: ['fs_read', '@kirocrew-core/spawn_run'], allowedTools: [],
+      resources: [], mcpServers: { 'kirocrew-core': { command: 'kirocrew' } }, skills: [],
+    }))
+    renderTab()
+    // roster -> detail -> draft: the editor is seeded only at the end of the chain.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    fireEvent.click(await screen.findByRole('button', { name: /Allow background agents/ }, EDITOR_CHAIN))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['fs_read', '@kirocrew-core/spawn_run', ...SPAWN_FAMILY.slice(1)],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+  })
+
+  it('offers the spawn family under * only while the spec does not declare the server', async () => {
+    // `*` grants every DECLARED server: with kirocrew-core undeclared it mounts
+    // nothing, so the button stays and its explicit refs make the save declare it.
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: ['*'], allowedTools: [],
+      resources: [], mcpServers: {}, skills: [],
+    }))
+    const { unmount } = renderTab()
+    // roster -> detail -> draft: the editor is seeded only at the end of the chain.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    fireEvent.click(await screen.findByRole('button', { name: /Allow background agents/ }, EDITOR_CHAIN))
+    fireEvent.click(screen.getByRole('button', { name: 'Save custom agent' }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('reviewer', {
+      tools: ['*', ...SPAWN_FAMILY],
+      allowedTools: [],
+    }), EDITOR_CHAIN)
+    unmount()
+    // Declared, `*` already mounts the whole server: nothing to offer.
+    mockApi.agentDetail.mockImplementation(async (name: string) => ({
+      name, description: '', model: '', prompt: '', tools: ['*'], allowedTools: [],
+      resources: [], mcpServers: { 'kirocrew-core': { command: 'kirocrew' } }, skills: [],
+    }))
+    renderTab()
+    await screen.findByRole('button', { name: 'Add tool' }, EDITOR_CHAIN)
+    expect(screen.queryByRole('button', { name: /Allow background agents/ })).toBeNull()
+  })
+
+  it('reports a spawn grant the server cannot declare in the save bar', async () => {
+    const reason = "Could not add kirocrew-core: the MCP servers section of this agent's file is malformed, so the tool would never load. Fix that section in the file, then save again."
+    mockApi.agentPatch.mockRejectedValue(new StubApiError(409, reason, { error: reason, code: 'control_plane_not_declarable' }))
+    renderTab()
+    // roster -> detail -> draft: the editor is seeded only at the end of the chain.
+    await waitFor(() => expect(mockApi.agentDetail).toHaveBeenCalledWith('reviewer'), EDITOR_CHAIN)
+    fireEvent.click(await screen.findByRole('button', { name: /Allow background agents/ }, EDITOR_CHAIN))
+    const saveBtn = screen.getByRole('button', { name: 'Save custom agent' })
+    fireEvent.click(saveBtn)
+    // The refusal names the server and the fix beside the button that was
+    // pressed, and the draft is kept so nothing looks saved.
+    const alert = await screen.findByRole('alert', {}, EDITOR_CHAIN)
+    expect(alert).toHaveTextContent(reason)
+    expect(alert.closest('div')).toBe(saveBtn.closest('div'))
+    expect(screen.getByRole('button', { name: '@kirocrew-core/spawn_run: asks first', pressed: false })).toBeInTheDocument()
   })
 
   it('names the deleted template in the closure line over the next row', async () => {

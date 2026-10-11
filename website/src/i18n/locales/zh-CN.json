@@ -14154,6 +14154,8 @@
         "tool_state_asks": "先询问",
         "add_tool": "添加工具",
         "add_tool_placeholder": "例如 fs_write 或 @github/…",
+        "spawn_tool_hint": "让此智能体在后台运行其他智能体，每个都会在聊天中显示任务框和停止按钮。",
+        "spawn_tool_add": "允许后台智能体",
         "remove_item": "移除 {{item}}",
         "remove_item_hint": "移除 — 在保存自定义代理之前不会生效。",
         "skills": "技能",
