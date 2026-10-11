@@ -192,6 +192,24 @@ def test_an_edit_during_the_read_is_not_memoized(
     assert uncached_calls == 2, "the answer read across the edit must not be served again"
 
 
+def test_an_alias_named_read_sees_the_alias_appear(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revision leaves skill-view aliases out, so an alias write moves
+    nothing it pins to; a policy read BY an alias name reads ``<alias>.json``
+    by filename and is therefore never served from the memo."""
+    from kiro_crew.agent_spec_format import NATIVE_SKILL_ALIAS_PREFIX
+
+    alias = f"{NATIVE_SKILL_ALIAS_PREFIX}0123456789abcdef01234567"
+    _populate(tmp_path)
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, alias) is None
+    _write_spec(tmp_path / f"{alias}.json", {"managedToolPolicy": {"exclude": ["shell"]}})
+
+    assert sessions_mod._read_managed_tool_policy_sync(tmp_path, alias) == {"exclude": ["shell"]}
+    assert alias not in sessions_mod._TOOL_POLICY_MEMO._answers.get(str(tmp_path), (b"", {}))[1]
+
+
 def test_the_memo_is_disabled_when_the_platform_cannot_prove_freshness(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

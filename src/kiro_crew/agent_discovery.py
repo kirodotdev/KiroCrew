@@ -1737,7 +1737,9 @@ def agents_dir_revision(agents_dir: Path) -> AgentsDirRevision | None:
     revision can only be more sensitive than the scan, never less. The
     directory's own mtime is not part of it: every file a scan reads is named
     in the tuple, so a stray file or an alias written beside the specs neither
-    moves the revision nor withdraws the pin. A ``stat`` that fails records
+    moves the revision nor withdraws the pin. Nothing read from an alias is
+    pinned to it either: :class:`AgentsDirMemo` never stores an answer under
+    an alias name. A ``stat`` that fails records
     zeros: the entry is still named, so its appearance and disappearance are
     revisions. An entry whose kind cannot be determined gives ``None``, and so
     does a directory that cannot be listed: an unlistable directory is not an
@@ -1824,7 +1826,10 @@ class AgentsDirMemo(Generic[T]):
       keys cannot grow it;
     - the revision an answer set is pinned to is retained as its fixed-size
       digest (:func:`_revision_pin`), so what the memo holds per directory does
-      not grow with the number of specs in it.
+      not grow with the number of specs in it;
+    - a key that is a skill-view alias name is computed on every call and never
+      stored, because the revision leaves aliases out and a caller's
+      direct-filename fallback would read ``<alias>.json``.
 
     An in-process spec write that calls :func:`clear_list_agents_cache` moves
     the spec generation, which is part of every revision, so the stored answers
@@ -1843,7 +1848,15 @@ class AgentsDirMemo(Generic[T]):
         self._answers: dict[str, tuple[bytes, dict[str, T]]] = {}
 
     def get(self, agents_dir: Path, key: str, compute: Callable[[], T]) -> T:
-        """Return the memoized answer for *key* under *agents_dir*, or ``compute()``."""
+        """Return the memoized answer for *key* under *agents_dir*, or ``compute()``.
+
+        A *key* that is a skill-view alias name is always computed: every reader
+        keyed here is keyed by agent name and may read ``<key>.json`` by
+        filename, and the revision does not fingerprint aliases, so an answer
+        read from one could outlive the alias it was read from.
+        """
+        if is_native_skill_alias_name(key):
+            return compute()
         dir_key = str(agents_dir)
         revision = agents_dir_revision(agents_dir)
         if revision is None:
