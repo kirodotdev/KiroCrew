@@ -421,6 +421,8 @@
     "pages.overview.skillsTab.sort_default": "Sort option: keep the order the server lists skills in.",
     "pages.overview.skillsTab.sort_most_used": "Sort option: the skills loaded most often come first.",
     "pages.overview.skillsTab.sort_recently_used": "Sort option: the most recently loaded skills come first.",
+    "pages.overview.skillsTab.new_candidate": "Badge on a generated skill waiting in the review queue, marking a skill that does not exist yet (beside the Update badge for a change to an existing skill). An ADJECTIVE describing the skill, agreeing with the word for skill; not the create action.",
+    "pages.capabilitiesPage.skills_awaiting_review_failed": "Title of an error notice in the Agent Capabilities sidebar: the list of generated skills waiting for the user's approval could not be loaded, so the waiting count is unknown.",
     "pages.overviewPage.up": "Status value meaning the service is running and reachable. Not the direction.",
     "pages.performanceTab.graph_scale_network": "Caption under the network graph. Network is the one self-scaled trace, so the full-scale value must be printed or idle traffic looks identical to a flood. {{max}} is KB/s at full bar height, {{seconds}} the span plotted.",
     "pages.performanceTab.graph_scale_percent": "Caption under a CPU/memory/disk graph. Those traces are fixed to a 0-100 scale, so only the time window varies. {{seconds}} is the span currently plotted.",

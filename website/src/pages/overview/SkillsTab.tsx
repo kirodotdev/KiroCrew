@@ -5,7 +5,7 @@ import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError, type SkillScriptValidation } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
 import AskAgentButton from '../../components/AskAgentButton'
-import { Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
+import { Badge, Card, Btn, SearchInput, EmptyState, Toggle } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import Modal from '../../components/Modal'
 import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, skillPostPath, type SkillFormData } from '../../components/SkillForm'
@@ -795,6 +795,11 @@ function PendingCandidateRow({ p, autoOpen, approveRefusal, mixedQueue, onApprov
             {p.name}
             {isUpdate && (
               <span className="ml-2 text-[10px] px-1.5 py-[1px] rounded-full bg-accent-subtle text-accent font-bold">{i18nT('pages.overview.skillsTab.update')}</span>
+            )}
+            {!isUpdate && (
+              /* A generated skill that does not exist yet: approving it adds a
+                 skill, where an update changes one that is already live. */
+              <Badge variant="ok" className="ml-2 text-[10px] px-1.5 py-[1px] font-bold font-body">{i18nT('pages.overview.skillsTab.new_candidate')}</Badge>
             )}
             {p.has_scripts && (
               /* Plain badge: the always-requires-review explanation renders as

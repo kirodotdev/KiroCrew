@@ -1,8 +1,11 @@
 import { lazy, Suspense, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+import { useQuery } from '@tanstack/react-query'
 import { Link2, BookOpen, Users, MessageSquareText, Webhook, Compass, Workflow, Library, FileCode2 } from 'lucide-react'
+import { api } from '../api/client'
 import SidePanelLayout from '../components/SidePanelLayout'
 import ErrorBoundary from '../components/ErrorBoundary'
+import ErrorNotice from '../components/ErrorNotice'
 import { PinSurfaceButton } from '../components/PinSurfaceButton'
 import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
@@ -41,6 +44,35 @@ export default function CapabilitiesPage() {
 
   const connectionsUiEnabled = useConnectionsUiEnabled()
 
+  // Generated skill candidates wait for approval in the Skills tab's review
+  // queue, which only renders while that tab is open. The page remembers the
+  // last tab and opens on Crewmates otherwise, so without a count on the
+  // Skills row a waiting candidate is invisible from every other tab. Same key
+  // and fetcher as the queue itself, so the two read one cache entry and the
+  // `skills.pending_changed` frame refreshes both.
+  const { data: pendingSkills, error: pendingSkillsError } = useQuery<{ pending?: unknown[] }>({
+    queryKey: ['skills-pending'],
+    queryFn: () => api.skillsPending(),
+  })
+  const pendingList = pendingSkills?.pending
+  const pendingSkillCount = Array.isArray(pendingList) ? pendingList.length : 0
+  // A failed read leaves the count at 0, which would read as "nothing is
+  // waiting". The rail footer says the check failed instead, from every tab.
+  const pendingSkillsNotice = pendingSkillsError ? (
+    <>
+      {/* No hand-off: the footer stays beside whichever tab is open, and the
+          hand-off navigates to chat, unmounting that tab. A skill edit in
+          progress lives only in the Skills tab's local state, with no leave
+          guard to ask first, so the click would discard the draft. */}
+      <ErrorNotice
+        title={t('pages.capabilitiesPage.skills_awaiting_review_failed')}
+        message={pendingSkillsError.message}
+        messagePlacement="below"
+        testId="capabilities-pending-skills-failure"
+      />
+    </>
+  ) : undefined
+
   const tabs = useMemo(() => {
     // Three-group rail. Groups are display labels (SidePanelLayout keys group
     // membership on string identity), so each is computed once per render and
@@ -54,7 +86,7 @@ export default function CapabilitiesPage() {
       // crewmate is built from a custom agent; the tab manages the shared files
       // themselves.
       { key: 'templates', label: t('pages.capabilitiesPage.templates_label'), icon: <FileCode2 size={16} />, description: t('pages.capabilitiesPage.templates_description'), group: groupAgent },
-      { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent },
+      { key: 'skills', label: t('pages.capabilitiesPage.skills_label'), icon: <BookOpen size={16} />, description: t('pages.capabilitiesPage.skills_description'), group: groupAgent, badge: { count: pendingSkillCount, label: t('pages.capabilitiesPage.skills_awaiting_review', { count: pendingSkillCount }) } },
       // The label and description are deliberately unchanged. Substituting the
       // pre-gallery "MCP Servers" strings was tried and reverted: those keys were
       // renamed when the gallery landed and no catalog still resolves them, so
@@ -78,10 +110,10 @@ export default function CapabilitiesPage() {
     // `t` is a real dependency, not decoration: it subscribes to the language, so
     // a memo keyed only on `provider` would keep whichever language's labels it
     // first computed and the rail would stay in the old language after a switch.
-  }, [provider, t])
+  }, [provider, t, pendingSkillCount])
 
   return (
-    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" headerRight={<PinSurfaceButton defaultTab={tabs[0]?.key} />}>
+    <SidePanelLayout title={t('pages.capabilitiesPage.agent_capabilities')} tabs={tabs} rememberKey="capabilities" footer={pendingSkillsNotice} headerRight={<PinSurfaceButton defaultTab={tabs[0]?.key} />}>
       {tab => <>
         {tab === 'crews' && <KiroCrewAgentsPage embedded />}
         {/* ErrorBoundary around the lazy chunk: a stale chunk request after a
