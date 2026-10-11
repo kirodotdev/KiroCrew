@@ -352,6 +352,14 @@ class TestARefusedWriteChangesNothing:
 
 
 class TestRevertRestoresLayoutOnly:
+    def test_a_revert_is_refused_when_the_live_package_does_not_parse(self, store) -> None:
+        # The one case where no live binding exists to preserve. Taking the
+        # target version's instead is exactly the silent rebind this function
+        # exists to prevent, reached by an ordinary revert, so it is refused and
+        # the remedy is named: write the package you want, stating its binding.
+        with pytest.raises(ArtifactValidationError, match="does not parse"):
+            dp.revert_package("{not a package", content())
+
     def test_revert_restores_the_layout_and_keeps_the_live_binding(self, store, saved) -> None:
         v1_tokens = {"--panel-bg": "oklch(21% 0 0)"}
         v2 = store.update(

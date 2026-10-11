@@ -42,6 +42,11 @@ recursive-include src/kiro_crew/agent_panel_templates *.html
 # on purpose -- that is the TemplateSpec registry package, and a card page that does not
 # use that framework must not sit under the gate that requires a registry row.
 recursive-include src/kiro_crew/dashboard_card_pages *.html
+# The vendored browser libraries the package renderer inlines, and their licences.
+# `python -m build` builds the wheel FROM the sdist, so a file absent here is
+# absent from every published wheel whatever setup.cfg says -- and the MIT notices
+# must ship with the code they cover.
+recursive-include src/kiro_crew/dashboard_package_vendor *
 # Dashboard-template pages, for the same reason: a page missing from the sdist is
 # missing from the wheel built out of it, and a page that never shipped renders an
 # empty card with every gate green.

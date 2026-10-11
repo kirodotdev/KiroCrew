@@ -100,6 +100,11 @@ ignore_files:
   # Vendored third-party code (llama-cpp-python) — carries upstream GitHub
   # source URLs and identifiers we must not rewrite.
   - src/kiro_crew/_vendor/**
+  # Vendored third-party code (anime.js, three.js) for the dashboard package
+  # renderers, same reason: three.js ships `getMasterVolume` / `setMasterVolume`
+  # as public API on its AudioListener, so rewriting the term would both break
+  # callers and make the pinned copy differ from upstream 0.159.0.
+  - src/kiro_crew/dashboard_package_vendor/**
   # Byte-exact deny-rule parity fixture: the git-publish patterns must match the
   # literal protected git branch name (main|mainline|master) they detect, so the
   # term cannot be rewritten. The security.py source carries wokeignore comments;

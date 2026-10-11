@@ -190,12 +190,29 @@ class FieldType:
 
 @dataclass(frozen=True)
 class BlockType:
-    """One admissible ``view.blocks[*].type``, and how many model fields it reads."""
+    """One admissible ``view.blocks[*].type``: what it reads, and what it can draw.
+
+    ``accepts`` is the set of :func:`data_type_catalog` type names this block has
+    a rendering for, and it is a GATE, not documentation: ``_validate_view``
+    refuses a block that names a field whose type is not in it. That is the one
+    thing that keeps the catalog and
+    :mod:`kiro_crew.dashboard_package_render` in step -- a block type with no
+    renderer for a type it admits would render a blank cell with every gate
+    green, and a renderer for a type the block refuses is dead code. Both
+    directions are pinned by enumerating this table rather than a hand-written
+    list, in ``test_dashboard_package_render.py``.
+
+    ``requires`` names types the block cannot do without: a ``timeline`` with no
+    ``timestamp`` among its fields has nothing to order by, so it is refused at
+    write time rather than drawn as an unordered list.
+    """
 
     name: str
     summary: str
     min_fields: int = 1
     max_fields: int = 16
+    accepts: frozenset[str] = frozenset()
+    requires: frozenset[str] = frozenset()
     optional: Mapping[str, Callable[[Any], Any]] = _dc_field(default_factory=dict)
 
 
@@ -220,30 +237,121 @@ _STUB_DATA_TYPES: tuple[FieldType, ...] = (
     FieldType(name="bool", summary="a yes/no flag"),
 )
 
-#: STUB -- the display line owns this table.
-_STUB_BLOCK_TYPES: tuple[BlockType, ...] = (
+#: Every data type in the catalog above, DERIVED rather than listed again.
+#:
+#: A block whose ``accepts`` is this set draws whatever the model can declare, so
+#: a type the data line adds is admitted into those blocks with no edit here --
+#: and the renderer's enumerating test immediately names it as a type with no
+#: rendering, which is the failure a hand-written copy of these five names would
+#: have hidden.
+_EVERY_DATA_TYPE: frozenset[str] = frozenset(t.name for t in _STUB_DATA_TYPES)
+
+#: Keys every block may carry on top of :data:`_UNIVERSAL_BLOCK_KEYS`.
+#:
+#: ``span`` is the block's width in a 12-column grid; ``caption`` is one line
+#: under it, for the sentence a number needs and a label has no room for.
+_COMMON_BLOCK_KEYS: Mapping[str, Callable[[Any], Any]] = {
+    "span": _a_span,
+    "caption": _a_label,
+}
+
+#: The block types a view may place. Every entry has a renderer in
+#: :mod:`kiro_crew.dashboard_package_render`, and every type in its ``accepts``
+#: has a rendering inside that block.
+#:
+#: The shapes come from what the data model can actually hold. A model field is
+#: ONE scalar -- a number, a line of text, an instant, one of a fixed set of
+#: labels, or a flag -- so there is no series in a package and no block here
+#: pretends there is. ``table`` therefore reads one row per field (its label and
+#: its value) rather than one column per field, which over scalars would be a
+#: table with exactly one row.
+#:
+#: Four blocks are narrower than "everything": ``bars``, ``gauge`` and ``orbit``
+#: compare magnitudes and so take numbers only, and ``pills`` draws a state and
+#: so takes the two types that ARE a state. Saying that in ``accepts`` is what
+#: lets the write gate refuse a bar chart over a text field at compose time,
+#: when the agent is still there to fix it, instead of drawing an empty bar.
+_BLOCK_TYPES: tuple[BlockType, ...] = (
     BlockType(
         name="stat",
-        summary="one field as a large number",
+        summary="one field as the page's largest figure, with its label and caption",
         min_fields=1,
         max_fields=1,
-        optional={"span": _a_span},
+        accepts=_EVERY_DATA_TYPE,
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="stat_band",
+        summary="two to six fields as a divided band of figures, for the answers read at a glance",
+        min_fields=2,
+        max_fields=6,
+        accepts=_EVERY_DATA_TYPE,
+        optional=_COMMON_BLOCK_KEYS,
     ),
     BlockType(
         name="table",
-        summary="fields as columns of a table",
-        optional={"span": _a_span},
+        summary="one aligned row per field: its label, then its value in tabular figures",
+        min_fields=1,
+        max_fields=24,
+        accepts=_EVERY_DATA_TYPE,
+        optional=_COMMON_BLOCK_KEYS,
     ),
     BlockType(
         name="list",
-        summary="fields as rows of a plain list",
-        optional={"span": _a_span},
+        summary="fields stacked label-above-value, for text that needs room to read",
+        min_fields=1,
+        max_fields=16,
+        accepts=_EVERY_DATA_TYPE,
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="note",
+        summary="a callout: the title as the sentence, up to four values set inside it",
+        min_fields=1,
+        max_fields=4,
+        accepts=_EVERY_DATA_TYPE,
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="bars",
+        summary="numbers as horizontal bars, each a share of the largest",
+        min_fields=1,
+        max_fields=12,
+        accepts=frozenset({"number"}),
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="gauge",
+        summary="one number as a ring; a second number, when given, is the total it fills",
+        min_fields=1,
+        max_fields=2,
+        accepts=frozenset({"number"}),
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="pills",
+        summary="states as chips, each carrying a shape and a word so colour is never the only signal",
+        min_fields=1,
+        max_fields=16,
+        accepts=frozenset({"enum", "bool"}),
+        optional=_COMMON_BLOCK_KEYS,
     ),
     BlockType(
         name="timeline",
-        summary="fields ordered by a timestamp",
+        summary="events in time order; needs at least one timestamp to order by",
+        min_fields=1,
         max_fields=8,
-        optional={"span": _a_span},
+        accepts=frozenset({"timestamp", "text", "enum"}),
+        requires=frozenset({"timestamp"}),
+        optional=_COMMON_BLOCK_KEYS,
+    ),
+    BlockType(
+        name="orbit",
+        summary="numbers as a turnable 3D ring, each field a body sized by its value, with the same numbers as text",
+        min_fields=2,
+        max_fields=12,
+        accepts=frozenset({"number"}),
+        optional=_COMMON_BLOCK_KEYS,
     ),
 )
 
@@ -263,9 +371,13 @@ def view_block_catalog() -> Mapping[str, BlockType]:
     """The block types a ``view`` may place, by type name.
 
     Same contract as :func:`data_type_catalog`, for the other half of the
-    package: a stub starter set the display line replaces.
+    package, and the same single point of truth: validation, the JSON Schema and
+    the renderer's dispatch table all read THIS function.
+    :mod:`kiro_crew.dashboard_package_render` is the other half -- a type here
+    with no renderer, or a renderer with no type here, is a test failure rather
+    than a surprise on somebody's dashboard.
     """
-    return {b.name: b for b in _STUB_BLOCK_TYPES}
+    return {b.name: b for b in _BLOCK_TYPES}
 
 
 # --------------------------------------------------------------------------- #
@@ -566,6 +678,25 @@ def _validate_view(raw: Any, declared_fields: Mapping[str, Any]) -> dict[str, An
                 f"a {type_name!r} block reads between {entry.min_fields} and "
                 f"{entry.max_fields} fields (this one names {len(names)})",
             )
+        # The block type says which data types it can DRAW, and a block that
+        # names a field it cannot draw is refused here rather than rendered as a
+        # blank cell. The renderer's dispatch table is enumerated against the
+        # same ``accepts`` sets, so the two halves cannot disagree.
+        placed = {name: declared_fields[name]["type"] for name in names}
+        for name in names:
+            if placed[name] not in entry.accepts:
+                raise _refuse(
+                    f"{path}.fields",
+                    f"names {name!r}, a {placed[name]!r} field, and a {type_name!r} "
+                    f"block draws {sorted(entry.accepts)}",
+                )
+        absent = sorted(entry.requires - set(placed.values()))
+        if absent:
+            raise _refuse(
+                f"{path}.fields",
+                f"a {type_name!r} block needs at least one field of type "
+                f"{absent} among the fields it names",
+            )
         out: dict[str, Any] = {"id": block_id, "type": type_name, "fields": names}
         if "title" in block:
             try:
@@ -807,14 +938,23 @@ def revert_package(stored_content: str, target_content: str) -> str:
     stale binding names. The live binding therefore wins, and only
     ``model`` / ``view`` / ``theme`` come back from the target.
 
-    Unparseable live content (nothing valid stored yet) falls back to the
-    target's own binding: there is no live binding to preserve.
+    Unparseable live content is REFUSED rather than fallen back on. The only
+    binding available then is the target version's, and adopting it is the very
+    move this function exists to prevent -- a silent rebind to whoever a stale
+    copy named, arrived at through an ordinary revert. A corrupt live package is
+    recoverable by writing one explicitly, which states the binding rather than
+    inheriting it.
     """
     target = parse_package(target_content)
     try:
         live = parse_package(stored_content)
     except ArtifactValidationError:
-        return dump_package(target)
+        raise _refuse(
+            "package",
+            "cannot be reverted while the live package does not parse: the binding "
+            "would have to come from the target version, which is a silent rebind -- "
+            "write the package you want instead, so it states its own bound_to",
+        ) from None
     target["bound_to"] = live["bound_to"]
     return dump_package(target)
 
