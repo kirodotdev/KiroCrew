@@ -1471,6 +1471,22 @@ def md_link_destination(char_class: str) -> str:
 SUBAGENT_COMPLETION_PREFIX = "[Subagent completion event]"
 SUBAGENT_BATCH_COMPLETION_PREFIX = "[Subagent batch completion event]"
 
+#: What a parent is told beside the result of a sub-agent run that completed
+#: without making a single tool call. Such a run wrote no file, ran no command
+#: and made no commit, yet it can still answer a task that asked for one by
+#: narrating the steps as though it had taken them -- the usual shape for a
+#: reasoning-only agent (``"tools": []``) handed write work, and possible for any
+#: agent that answered from memory. The signal is the run's own observed tool
+#: activity (``SubagentInfo.made_no_tool_calls``), so the note needs no reading
+#: of specs or backends. The dispatch is not refused, because whether a task needs writes is
+#: not decidable from its prose; the parent is told instead to treat any reported
+#: change as a claim and check it. Prefixed with the agent's label by each caller.
+NO_TOOL_CALLS_NOTE = (
+    "made no tool calls in this run, so it did not itself write a file, run a "
+    "command or make a commit. Treat any such change it reports as a claim: check "
+    "it on disk before relying on it."
+)
+
 # Key under a completion message's ``meta`` where the gateway stamps the
 # structured header facts (outcome, tallies, chunk index, agent id) the
 # dashboard card reads. Mirrors ``META_KEY`` in

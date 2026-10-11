@@ -116,7 +116,11 @@ from kiro_crew.config.loader import (
     workspace_root,
 )
 from kiro_crew.config.paths import kiro_agents_dir
-from kiro_crew.constants import SUBAGENT_COMPLETION_META_KEY, strip_control_comments
+from kiro_crew.constants import (
+    NO_TOOL_CALLS_NOTE,
+    SUBAGENT_COMPLETION_META_KEY,
+    strip_control_comments,
+)
 from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
 from kiro_crew.cron import (  # noqa: F401
@@ -9782,6 +9786,15 @@ class GatewayOrchestrator:
             title, _ = redact_exfiltration_urls(title)
             title, _ = redact_credentials(title)
 
+            # A completed run that made no tool call cannot have touched the disk,
+            # so it carries the claim note in the event the parent reads its
+            # narration from. A lone run or a single wave gets no synthesis turn,
+            # so this event is the only place the parent can be told before it
+            # reports the work to the user. Stops and failures say nothing: their
+            # prose already tells the parent not to treat the output as finished.
+            no_tools_note = ""
+            if single_outcome == OUTCOME_OK and not _flush_only and info.made_no_tool_calls:
+                no_tools_note = f"⚠ Agent `{info.id}` {NO_TOOL_CALLS_NOTE}"
             announce = (
                 f"{SUBAGENT_COMPLETION_PREFIX}\n"
                 f"Agent `{info.id}`"
@@ -9789,7 +9802,7 @@ class GatewayOrchestrator:
                 f" {status} {emoji}\n"
                 f"Task: {task_text}\n\n"
                 f"Usage: {usage}\n\n"
-                f"{detail}"
+                f"{detail}" + (f"\n\n{no_tools_note}" if no_tools_note else "")
             )
             # Structured header facts for the dashboard card, stamped on the row
             # so a reword of the prose above cannot silently break rendering.
@@ -9909,7 +9922,9 @@ class GatewayOrchestrator:
                     _kept = " (partial: backend failed to generate the final response)"
                     bp["ok_lines"].append(
                         f"— `{info.id}` ✅{_kept if info.partial else ''} {task_text[:80]}"
-                        f"{_model_tag} · {usage}" + (f"\n  → {result_path}" if result_path else "")
+                        f"{_model_tag} · {usage}"
+                        + (f"\n  → {result_path}" if result_path else "")
+                        + (f"\n  {no_tools_note}" if no_tools_note else "")
                     )
                 else:
                     bp["fail_lines"].append(

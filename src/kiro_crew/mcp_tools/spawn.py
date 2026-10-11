@@ -27,7 +27,7 @@ from urllib.parse import urlencode
 from kiro_crew import mcp_core
 from kiro_crew import resource_status as host_status
 from kiro_crew.config.loader import KiroCrewConfig
-from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS
+from kiro_crew.constants import DEFAULT_SUBAGENT_MAX_TURNS, NO_TOOL_CALLS_NOTE
 from kiro_crew.context_management import COMPLETION_KEEP_DEFAULT_CHARS
 from kiro_crew.execution_context import read_session_execution
 from kiro_crew.mcp_shared import ToolCancelled, is_tool_cancelled
@@ -1619,15 +1619,16 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             completed += 1
             _settled_ids.add(aid)
             result_text = _inline_result(aid, sa_st.get("result", ""))
-            sa_results.append(
-                json.dumps(
-                    {
-                        "agent": label,
-                        "status": "completed",
-                        "text": result_text,
-                    }
-                )
-            )
+            record: dict[str, Any] = {
+                "agent": label,
+                "status": "completed",
+                "text": result_text,
+            }
+            # Exactly True: a status read that does not say (a run recovered
+            # from disk, a stopped or failed run) attaches nothing.
+            if sa_st.get("made_no_tool_calls") is True:
+                record["unverified"] = f"This agent {NO_TOOL_CALLS_NOTE}"
+            sa_results.append(json.dumps(record))
     if _unsettled:
         sa_results.append(
             json.dumps(

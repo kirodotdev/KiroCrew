@@ -135,7 +135,11 @@ goal, synthesize across the agents rather than repeating each in turn, and give
 concrete next actions. A batch whose results all arrived in one turn (a lone
 sub-agent, or one wave digest) normally gets no synthesis turn: that turn's reply
 is the deliverable. The one exception is a task store the turn-end fire gate
-could not read; its later re-check fires the synthesis as before.
+could not read; its later re-check fires the synthesis as before. Because the
+synthesis turn is not always there, a completed run that made no tool call
+carries its own ``⚠ Agent `<id>` made no tool calls in this run…`` line, in the
+completion event or under its digest entry, asking the parent to check any
+reported change on disk.
 
 The prompt itself is appended to the slot as an `inject` row carrying
 `meta.injectKind = "synthesis"`, and the turn is dispatched with
