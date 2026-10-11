@@ -103,6 +103,13 @@ with no app identity to check.
   an existing worktree is reported as `reused` only when `worktree list
   --porcelain` shows it checked out on the requested branch. Otherwise it is a
   409, never a session opened against the wrong branch.
+- **Reuse is only for an untouched tree.** A reused worktree must be exactly as
+  `worktree add` left it: `git status --porcelain` is empty and the branch has
+  no commit beyond the base it is cut from, and no session is scoped to the
+  worktree or a directory inside it. Otherwise the answer is a 409 with code
+  `worktree_in_use`, so the same card offered again never opens a second
+  session in a tree another session is using. A probe git cannot answer counts
+  as in use.
 - Sensitive paths are refused, and the destination directory is derived
   server-side (never supplied by the caller) and must not already exist.
 
