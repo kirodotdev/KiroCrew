@@ -21,6 +21,12 @@ superseded-by: []
   this document is on main it reads as absent to that lane; clearing the lane is
   a maintainer's call (an override on the final head, or merging this document
   first), not this pull request's.
+- **Read [Amendment 2026-10-10](#amendment-2026-10-10----no-templates-the-agent-composes-the-page)
+  before the Design sections.** The body below is the template model, where a
+  crewmate adopts one of the built-in pages. That is superseded: the agent
+  composes the page from a data-type catalog and it is stored as an artifact of
+  `kind="dashboard"`, with no built-in template and no default page. The
+  amendment records the sections it replaces.
 - Author: written up by the crew that implements it.
 - Created: 2026-10-03
 - Related:
@@ -636,3 +642,66 @@ meet first: no workstream, nothing waiting, nothing spent, and a line saying
 what will appear here once it has a goal. The accounting line is hidden rather
 than printed as a row of zeroes.
 
+
+## Amendment 2026-10-10 -- no templates: the agent composes the page
+
+The design above is the template model: a crewmate adopts one of the built-in
+pages, and the page it gets is the nearest shipped shape. This amendment
+replaces that with composition. The body above is left as written; where the two
+disagree, this section is what holds.
+
+Approved as a T3 design on issue
+[#18642](https://github.com/kirodotdev/KiroCrew/issues/18642), whose one-pager a
+maintainer signed off. This section carries the decision into the document the
+First Principles lane reads; the status field above stays `in-progress`, which
+is already non-draft, because the implementation is in flight rather than
+accepted-and-shipped.
+
+**A page is three declarations the agent makes, not a template it picks.** The
+agent reads a catalog of the data types the crew log and the work ledger already
+expose, and composes:
+
+| Declaration | What it holds |
+|---|---|
+| `model` | the fields the page holds. Each names one data type -- `number`, `text`, `bool`, `timestamp` or `enum` -- and says where its value comes from, as a fold and a dotted path or as a value the agent writes |
+| `view` | the blocks that draw those fields. A block may name only a field `model` declares |
+| `theme` | the color, type and motion tokens that travel with the page |
+
+**The page is stored as an artifact of `kind="dashboard"`**, holding those three
+plus `bound_to`, the crewmate or session slot whose work it reads. An artifact
+already carries versions, read, share and revert, so the page needs no second
+store with its own history. A version follows a `model`, `view` or `theme`
+change; **data never cuts a version**, and revert restores the layout only.
+
+**No built-in template ships, and there is no default page.** This supersedes
+the Registry row of "Templates are copied, versioned and shared", which reads
+"Built-in templates ship in the repo, and in P1 they are the only ones a
+crewmate can be given", together with that section's adopt, share and snapshot
+rows and the parts of "Relationship to the dev-time template package already on
+main", "How the page is drawn", "Migration plan", "What P1 ships ahead of its
+UI" and "The agent surface for the page itself" that rest on a crewmate picking
+a shipped page. With no saved layout the tab shows an empty state; nothing falls
+back to a shipped page.
+
+**`dashboard_write` validates against the `model` inside the page's own
+artifact, not against a built-in manifest.** A write that misses a declared
+shape is refused, and the refusal reaches the agent so it does not repeat the
+error. Written values stay in the crew log, bounded in size, redacted before the
+line is written, each with a `source` tag.
+
+**What the design above settled is unchanged.** Every number is computed from
+the record and never typed by the agent. A refresh costs no model turn: the
+first load renders the whole page, and after that a bus event for a fold pushes
+only the blocks that subscribe to it, each carrying a version number, with a gap
+in the sequence triggering a full refetch. The page keeps CSP `default-src
+'none'` with no network and no agent-authored code -- the agent chooses types and
+layout, the renderers ship with the product -- and redaction and the owner check
+stay in the controller, so a composed layout cannot move a value past them.
+
+**A `dashboard-manager` skill carries what the template set used to**: the five
+questions a manager opens the page with, the one-screen limits, the aesthetics
+guidance, and a render-and-measure self-check before the page is handed over.
+Beside it sit reference guides, one per retired page plus a pipeline-card board,
+each a worked example of answering one reader's question from the catalog. A
+guide is text the agent may follow, adapt or ignore; no product code reads one,
+so a new guide is a document rather than a release.
