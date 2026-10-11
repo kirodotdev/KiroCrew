@@ -245,10 +245,13 @@ check AND the exit condition in the message, and pass explicit positive
 
 **`watch="work-ledger"` is mandatory.** It gates the loop on the ledger you
 dispatched into: a cycle where no worker reported anything costs no turn, and a
-worker's report, a worker session closing, or a worker turn ending pulls the
-next cycle forward to within seconds. The interval then only sets how often a
-silent fleet is re-checked, not how fast a report reaches you. A loop armed
-without it is a plain timer that pays a turn every interval. If you find yours
+worker's report of `blocked`, `question` or `done` pulls the next cycle forward
+to within seconds. Nothing else pulls it forward — a `progress` report, a
+worker ending its turn, a worker's session closing — so a worker that stops to
+wait costs you nothing, and one that crashed or went silent is found by the
+item's `stale` or `orphaned` flag on an ordinary cycle. The interval therefore
+sets how often a silent fleet is re-checked, not how fast a report reaches you.
+A loop armed without it is a plain timer that pays a turn every interval. If you find yours
 without it, fix that FIRST, before anything else that cycle, with
 `monitor_update(watch="work-ledger")` rather than re-arming.
 

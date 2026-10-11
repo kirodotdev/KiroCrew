@@ -1,14 +1,15 @@
-"""The crew-log wake: a worker's write, close or turn end pulls its conductor forward.
+"""The crew-log wake: a worker's REPORT pulls its conductor forward, and nothing else.
 
-``rfc-crew-log-wake``. One lookup (``conductor_wake``) and three triggers that share it.
-What is pinned here is the WIRING -- that each trigger resolves the binding, finds the
-conductor's armed work-ledger loop and calls ``fire_now`` on it, and that none of them
-fires for a slot with no binding. What the conductor then DOES with the tick is Phase 3's
-gate and is pinned in ``test_probe_work_ledger.py``; the one piece of that this file does
-own is the ``worker_closed`` probe input, because it is this change's addition to the
-staleness conjunction.
+``rfc-crew-log-wake``. One lookup (``conductor_wake``) and one trigger -- the ``work``
+fold advancing on the crew-log bus. What is pinned here is the WIRING: that the trigger
+finds the conductor's armed work-ledger loop and calls ``fire_now`` on it, that it does
+so only for a report whose status the conductor must act on, and that a worker's session
+closing or a turn of its ending reaches no wake at all. What the conductor then DOES with
+the tick is Phase 3's gate and is pinned in ``test_probe_work_ledger.py``; the one piece
+of that this file does own is the ``worker_closed`` probe input, because that is what
+covers a worker whose session is gone now that its close pushes nothing.
 
-No gateway runs in any of these. The service is a stub with the three attributes the
+No gateway runs in most of these. The service is a stub with the three attributes the
 lookup reads, which is what makes a wiring defect here impossible to mistake for a
 service defect.
 """
@@ -16,6 +17,7 @@ service defect.
 from __future__ import annotations
 
 import asyncio
+import inspect
 
 import pytest
 
@@ -214,18 +216,38 @@ def test_a_refused_fire_does_not_raise_and_records_the_deferred_pull_forward():
 
 
 async def _fire(svc, worker_slot: str) -> str:
-    """Drive ``fire_for_worker_slot`` with *svc* standing in for the live service."""
+    """What *worker_slot*'s report pushes, with *svc* standing in for the live service.
+
+    The trigger resolves a conductor and an item from the rendered board the bus hands
+    it. A case reaching the same pair from the binding the store already holds drives
+    ``_fire`` over a real ledger without rebuilding a fold render, which is what these
+    cases are about: the lookup from a conductor slot to its armed loop, and what each
+    of ``fire_now``'s answers costs.
+    """
     import kiro_crew.autonudge as autonudge
 
     original = autonudge.get_instance
     autonudge.get_instance = lambda: svc  # type: ignore[assignment]
     try:
-        return await conductor_wake.fire_for_worker_slot(worker_slot)
+        binding = work_ledger.read_binding(worker_slot)
+        if binding is None:
+            return ""
+        return await conductor_wake._fire(svc, binding[0], binding[1])
     finally:
         autonudge.get_instance = original  # type: ignore[assignment]
 
 
 # ── trigger one: the ``work`` fold advancing on the crew-log bus ──────────────
+
+#: The status an item carries when its status is not what the case is about: a waking
+#: one, so a moved stamp pushes and the case reads the DIFF rather than the gate. The
+#: gate itself has its own cases further down.
+_WAKING = "done"
+
+
+def _rows(*items) -> "list[tuple[str, str, str]]":
+    """``(item_id, stamp)`` or ``(item_id, stamp, status)`` as the registry reads them."""
+    return [(row[0], row[1], row[2] if len(row) > 2 else _WAKING) for row in items]
 
 
 def _event(board: str, items: list, *, scope: str = "slot", fold: str = "work"):
@@ -238,9 +260,10 @@ def _event(board: str, items: list, *, scope: str = "slot", fold: str = "work"):
             {
                 "item_id": item_id,
                 "last_report_at": stamp,
+                "status": status,
                 "state": "open",
             }
-            for item_id, stamp in items
+            for item_id, stamp, status in _rows(*items)
         ],
         "omitted": 0,
     }
@@ -264,10 +287,10 @@ def test_a_workers_report_moves_its_stamp_and_fires_for_that_item(monkeypatch):
     the worker that reported, and the fire names it so the pull-forward cap counts it."""
     fired = _record_fires(monkeypatch)
     svc = _Svc(_Loop())
-    first = [("it_a", "t1"), ("it_b", "t1")]
+    first = _rows(("it_a", "t1"), ("it_b", "t1"))
     asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, first))
     fired.clear()
-    moved = [("it_a", "t2"), ("it_b", "t1")]
+    moved = _rows(("it_a", "t2"), ("it_b", "t1"))
     asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, moved))
     assert fired == [(CONDUCTOR, "it_a")]
 
@@ -279,11 +302,72 @@ def test_a_conductors_own_write_moves_no_stamp_and_pushes_nothing(monkeypatch):
     pulling its parent forward: the parent's board did not move."""
     fired = _record_fires(monkeypatch)
     svc = _Svc(_Loop())
-    items = [("it_a", "t1")]
+    items = _rows(("it_a", "t1"))
     asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, items))
     fired.clear()
-    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, items + [("it_new", "")]))
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, items + _rows(("it_new", ""))))
     assert fired == []
+
+
+# ── the gate: only a report the conductor must act on pushes ─────────────────
+
+
+def test_a_progress_report_moves_the_stamp_and_pushes_nothing(monkeypatch):
+    """A moved stamp is necessary and not sufficient.
+
+    ``progress`` says the worker is moving and needs nobody, and the conductor's own
+    gate refuses it, so pulling the tick forward would buy a cycle that reads the board
+    and answers quiet. The write still landed and the loop's scheduled tick still reads
+    it; what is withheld is only the early tick.
+    """
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t1", "progress"))))
+    fired.clear()
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t2", "progress"))))
+    assert fired == []
+    assert conductor_wake._registry.boards[CONDUCTOR] == {"it_a": "t2"}, "still recorded"
+
+
+def test_each_waking_status_pushes(monkeypatch):
+    """``done``, ``blocked`` and ``question`` are the whole waking set.
+
+    Driven one status at a time from a fresh registry, so each answer is its own and not
+    a diff against a sibling's stamp.
+    """
+    for status in ("done", "blocked", "question"):
+        conductor_wake.reset_for_tests()
+        fired = _record_fires(monkeypatch)
+        svc = _Svc(_Loop())
+        asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t1", status))))
+        asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t2", status))))
+        assert fired == [(CONDUCTOR, "it_a")], status
+
+
+def test_an_item_that_has_not_reported_yet_pushes_nothing(monkeypatch):
+    """A board whose item carries no status is a ``create`` or a ``bind``, not news."""
+    fired = _record_fires(monkeypatch)
+    svc = _Svc(_Loop())
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t1", ""))))
+    fired.clear()
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t2", ""))))
+    assert fired == []
+
+
+def test_the_statuses_this_trigger_pushes_for_are_the_ones_the_gate_spends_on():
+    """One set, two readers.
+
+    The trigger pulls a tick forward and the probe decides whether that tick spends a
+    turn. A status in one set and not the other is either a wake nobody can see is
+    wasted or news that waits out the whole patrol cadence, so both read
+    ``work_vocab.WORK_WAKE_STATUSES`` and this pins them equal.
+    """
+    from kiro_crew import ledger_wake
+    from kiro_crew.work_vocab import WORK_WAKE_STATUSES, WORK_WORKER_STATUSES
+
+    assert ledger_wake.WAKE_STATUSES == frozenset(WORK_WAKE_STATUSES)
+    assert set(WORK_WAKE_STATUSES) < set(WORK_WORKER_STATUSES)
+    assert "progress" not in WORK_WAKE_STATUSES
 
 
 def test_the_first_board_seen_records_and_pushes_nothing(monkeypatch):
@@ -293,10 +377,12 @@ def test_the_first_board_seen_records_and_pushes_nothing(monkeypatch):
     is diffed against what was recorded."""
     fired = _record_fires(monkeypatch)
     svc = _Svc(_Loop())
-    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, [("it_a", "t1"), ("it_b", "")]))
+    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t1"), ("it_b", ""))))
     assert fired == []
     assert conductor_wake._registry.boards[CONDUCTOR] == {"it_a": "t1", "it_b": ""}
-    asyncio.run(conductor_wake._observe_board(svc, CONDUCTOR, [("it_a", "t1"), ("it_b", "t2")]))
+    asyncio.run(
+        conductor_wake._observe_board(svc, CONDUCTOR, _rows(("it_a", "t1"), ("it_b", "t2")))
+    )
     assert fired == [(CONDUCTOR, "it_b")]
 
 
@@ -312,6 +398,7 @@ def test_two_reports_in_one_second_each_push(monkeypatch):
                 {
                     "item_id": "it_a",
                     "last_report_at": "2026-10-02T00:00:01Z",
+                    "status": _WAKING,
                     "worker_session_key": WORKER,
                     "state": "open",
                     "events": [{"id": e, "kind": "report"} for e in event_ids],
@@ -368,7 +455,7 @@ def test_a_board_with_no_active_work_ledger_loop_is_not_retained(monkeypatch):
     """The registry's bound: a board nobody is watching is read and dropped, so the table
     holds at most one entry per active work-ledger loop."""
     fired = _record_fires(monkeypatch)
-    items = [("it_a", "t1")]
+    items = _rows(("it_a", "t1"))
     asyncio.run(conductor_wake._observe_board(_Svc(_Loop()), CONDUCTOR, items))
     assert CONDUCTOR in conductor_wake._registry.boards
     asyncio.run(conductor_wake._observe_board(_Svc(_Loop(active=False)), CONDUCTOR, items))
@@ -387,11 +474,11 @@ def test_a_board_whose_loop_ended_is_swept_on_the_next_observation(monkeypatch):
     monkeypatch.setattr(
         svc, "get_by_slot", lambda slot_key: _Loop(active=live.get(slot_key, False))
     )
-    asyncio.run(conductor_wake._observe_board(svc, "chat-c1", [("it_a", "t1")]))
-    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", [("it_b", "t1")]))
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c1", _rows(("it_a", "t1"))))
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", _rows(("it_b", "t1"))))
     assert set(conductor_wake._registry.boards) == {"chat-c1", "chat-c2"}
     live["chat-c1"] = False
-    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", [("it_b", "t2")]))
+    asyncio.run(conductor_wake._observe_board(svc, "chat-c2", _rows(("it_b", "t2"))))
     assert set(conductor_wake._registry.boards) == {"chat-c2"}
     # A loop-table change sweeps too, through the subscription sync.
     live["chat-c2"] = False
@@ -405,7 +492,7 @@ def test_a_board_whose_loop_ended_is_swept_on_the_next_observation(monkeypatch):
 
 
 def test_the_service_stop_clears_the_registry():
-    conductor_wake._registry.observe(CONDUCTOR, [("it_a", "t1")])
+    conductor_wake._registry.observe(CONDUCTOR, _rows(("it_a", "t1")))
     conductor_wake.dispose_all()
     assert conductor_wake._registry.boards == {}
 
@@ -535,7 +622,7 @@ def _board(unit: str, board: str, worker: str) -> None:
     _write(unit, **base, action="bind", item_id="it_p", worker_session_key=worker)
 
 
-def _report(unit: str, board: str, worker: str, stamp: str) -> None:
+def _report(unit: str, board: str, worker: str, stamp: str, *, status: str = "done") -> None:
     _write(
         unit,
         slot=board,
@@ -543,7 +630,7 @@ def _report(unit: str, board: str, worker: str, stamp: str) -> None:
         by=worker,
         action="report",
         item_id="it_p",
-        status="done",
+        status=status,
         summary="s",
         last_report_at=stamp,
     )
@@ -610,6 +697,39 @@ def test_a_workers_report_wakes_its_conductor_through_the_bus(real_crew_log, mon
         assert set(conductor_wake._registry.boards[CONDUCTOR]) == {"it_p"}
         await asyncio.to_thread(_report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z")
         assert await _until(lambda: svc.fired), "the report reached the conductor's loop"
+        assert svc.fired == [LOOP_ID]
+
+    asyncio.run(body())
+
+
+def test_a_progress_report_wakes_nobody_through_the_bus(real_crew_log, monkeypatch):
+    """END TO END, and the case the whole change exists for.
+
+    A worker that stops to wait reports ``progress``. That entry folds, the board's
+    revision advances and ``it_p``'s stamp moves, so every step before the gate happens
+    exactly as for a waking report -- and the conductor's loop is still not fired. The
+    ``question`` that follows proves the path is live rather than broken: the same
+    worker, the same board, one eager batch later, and the loop fires.
+    """
+    _board("acp-c", CONDUCTOR, WORKER)
+    _unit("acp-w", WORKER)
+
+    async def body() -> None:
+        svc = _Listing(_Loop())
+        _on_this_loop(monkeypatch, svc)
+        await _sync_and_join(svc)
+        before = dict(conductor_wake._registry.boards[CONDUCTOR])
+        await asyncio.to_thread(
+            _report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:01Z", status="progress"
+        )
+        assert await _until(
+            lambda: conductor_wake._registry.boards[CONDUCTOR] != before
+        ), "the progress report folded and the registry saw its stamp move"
+        assert svc.fired == [], "and it bought its conductor no tick"
+        await asyncio.to_thread(
+            _report, "acp-w", CONDUCTOR, WORKER, "2026-10-02T00:00:02Z", status="question"
+        )
+        assert await _until(lambda: svc.fired), "the question did reach the loop"
         assert svc.fired == [LOOP_ID]
 
     asyncio.run(body())
@@ -751,84 +871,69 @@ def test_the_service_start_installs_one_observer(monkeypatch):
     assert len(attached) == 1
 
 
-# ── trigger two: a worker session closes ─────────────────────────────────────
+# ── what wakes nobody: a close, and a turn end ───────────────────────────────
 
 
-def test_the_close_path_pushes_through_the_shared_lookup():
-    """``close_slot``'s hook, driven directly: the close is already covered elsewhere.
+def test_a_worker_session_closing_reaches_no_wake():
+    """A close carries no statement from the worker, so it wakes nobody.
 
-    What is pinned is that the hook reaches the shared lookup with the closing slot's own
-    name, and that it swallows a failure -- a close has rollback paths for its own four
-    failure modes, and "the conductor heard late" is not one of them.
+    Structural, and that is the point: there is no hook to call. A close is the
+    dashboard's event, not the worker's word, so a push from one tells a conductor
+    something it cannot tell apart from the worker having spoken. What covers a worker
+    whose session is gone is the item's own ``stale`` flag on the next patrol tick --
+    no window needed, as ``is_stale`` answers at once for a closed worker that has
+    reported -- and that same flag is the only cover for a worker whose process dies
+    with its slot still open.
     """
     from kiro_crew.dashboard import chat_handlers
+    from kiro_crew.dashboard.chat_api import slot_lifecycle
 
-    seen: list[str] = []
-
-    async def _drive(resolver) -> None:
-        original = conductor_wake.fire_for_worker_slot
-        conductor_wake.fire_for_worker_slot = resolver  # type: ignore[assignment]
-        try:
-            await chat_handlers._wake_conductor_for_closed_worker(WORKER)
-        finally:
-            conductor_wake.fire_for_worker_slot = original  # type: ignore[assignment]
-
-    async def _record(slot_key: str) -> str:
-        seen.append(slot_key)
-        return LOOP_ID
-
-    asyncio.run(_drive(_record))
-    assert seen == [WORKER]
-
-    async def _boom(_slot_key: str) -> str:
-        raise RuntimeError("ledger store on fire")
-
-    # Does not propagate: the close must finish.
-    asyncio.run(_drive(_boom))
+    for module in (slot_lifecycle, chat_handlers):
+        source = inspect.getsource(module)
+        assert "conductor_wake" not in source, f"{module.__name__} reaches the wake again"
 
 
-# ── trigger three: a worker turn ends ────────────────────────────────────────
+def test_a_turn_ending_reaches_no_wake():
+    """A turn end says nothing about what the turn DID, so it wakes nobody.
 
-
-def test_a_turn_end_from_a_bound_worker_schedules_a_push():
-    """Outcome-blind, and that is what this trigger adds.
-
-    A turn that raised, or ended without reporting, writes no ``work/recorded`` entry at
-    all, so trigger one never sees it. This hook is called for every turn end.
+    The hook runs after HOOK_EVENT_STOP for every turn of every session, so a turn that
+    raised, produced nothing, parked itself in a wait, or reported ``progress`` all
+    reach it identically. A push from there buys a cycle the gate answers quiet, and the
+    quiet streak's floor then delivers a turn anyway.
     """
     from kiro_crew.autonudge_service import timers
 
-    scheduled: list[str] = []
+    assert "conductor_wake" not in inspect.getsource(timers)
 
-    class _Service:
-        _inflight_adds: set = set()
+
+def test_a_turn_end_on_a_bound_workers_slot_fires_nothing(tmp_path, monkeypatch):
+    """The same contract read through the live service rather than its source.
+
+    A real work-ledger loop on the conductor, a real binding to the worker, and the
+    worker's turn ends: the loop's arm count must not move. ``notify_turn_complete``
+    looks for a loop on the slot it is given, and a worker has none, so every branch
+    below the lookup is the no-op it always was for a worker.
+    """
+    import kiro_crew.autonudge as autonudge
+
+    monkeypatch.setenv("KIROCREW_AUTONUDGE", "1")
+    _bind(status="progress")
+    arms: list[float | None] = []
 
     async def _drive() -> None:
-        original = conductor_wake.fire_for_worker_slot
-
-        async def _record(slot_key: str) -> str:
-            scheduled.append(slot_key)
-            return LOOP_ID
-
-        conductor_wake.fire_for_worker_slot = _record  # type: ignore[assignment]
+        svc = _service(tmp_path / "an")
+        monkeypatch.setattr(autonudge, "get_instance", lambda: svc)
+        loop = await svc.add(CONDUCTOR, "patrol the fleet", idle_secs=3600, watch="work-ledger")
+        svc._arm_timer = lambda _l, delay=None: arms.append(delay)  # type: ignore[method-assign]
         try:
-            timers._wake_bound_conductor(_Service(), WORKER)
+            svc.notify_turn_complete(WORKER)
             await asyncio.sleep(0)
+            assert loop.id not in svc._pushed_ticks, "no window was armed for the conductor"
         finally:
-            conductor_wake.fire_for_worker_slot = original  # type: ignore[assignment]
+            svc.stop()
 
     asyncio.run(_drive())
-    assert scheduled == [WORKER]
-
-
-def test_a_turn_end_with_no_running_event_loop_is_a_no_op():
-    """A synchronous driver or a shutdown path has nothing to schedule onto."""
-    from kiro_crew.autonudge_service import timers
-
-    class _Service:
-        _inflight_adds: set = set()
-
-    timers._wake_bound_conductor(_Service(), WORKER)
+    assert arms == [], "a worker's turn end arms nothing on its conductor's loop"
 
 
 # ── the probe's new input: worker_closed ─────────────────────────────────────
@@ -1049,19 +1154,22 @@ def _record_close(monkeypatch, *, save_fails: bool) -> list[str]:
             if save_fails:
                 raise OSError("disk full")
 
-    async def _wake(name: str) -> None:
-        events.append(f"wake:{name}")
+    async def _wake(_svc, board: str, item_id: str = "") -> str:
+        events.append(f"wake:{board}:{item_id}")
+        return ""
 
     monkeypatch.setattr(chat_handlers, "save_slot_off_loop", _save)
-    monkeypatch.setattr(chat_handlers, "_wake_conductor_for_closed_worker", _wake)
+    monkeypatch.setattr(conductor_wake, "_fire", _wake)
     return events
 
 
 def test_a_close_whose_archival_fails_fires_no_wake(tmp_path, monkeypatch):
-    """The failure arm restores the slot, so the conductor must never have been told.
+    """The failure arm restores the slot, and nothing is pushed either way.
 
-    A tick fired before the save would read the popped slot as closed and persist a
-    ``worker_closed`` stall that the restore cannot retract.
+    It reads the ordering a close owes its own rollback: the save is attempted, the
+    restore puts the slot back, and no push names it. A tick fired before the save
+    would read the popped slot as closed and persist a ``worker_closed`` stall the
+    restore cannot retract.
     """
     from kiro_crew.dashboard import chat_handlers
     from kiro_crew.dashboard.chat_handlers import SlotCloseError
@@ -1079,7 +1187,8 @@ def test_a_close_whose_archival_fails_fires_no_wake(tmp_path, monkeypatch):
     assert state._slots.get(WORKER) is slot, "precondition: the failure arm restored it"
 
 
-def test_a_committed_close_fires_exactly_one_wake_after_the_save(tmp_path, monkeypatch):
+def test_a_committed_close_saves_and_still_fires_no_wake(tmp_path, monkeypatch):
+    """The ordinary close: the slot is archived and gone, and no conductor was pushed."""
     from kiro_crew.dashboard import chat_handlers
 
     events = _record_close(monkeypatch, save_fails=False)
@@ -1090,7 +1199,7 @@ def test_a_committed_close_fires_exactly_one_wake_after_the_save(tmp_path, monke
         await chat_handlers.close_slot(state, slot, WORKER)
 
     asyncio.run(_drive())
-    assert events == ["save", f"wake:{WORKER}"]
+    assert events == ["save"]
     assert WORKER not in state._slots
 
 
@@ -1129,7 +1238,7 @@ def test_a_push_during_the_fire_window_re_arms_at_delay_zero_after_the_cycle(tmp
 
         async def _on_fire(_loop) -> bool:
             assert loop.id in svc._firing, "precondition: the push lands mid-fire"
-            pushed.append(await conductor_wake.fire_for_worker_slot(WORKER))
+            pushed.append(await _fire(svc, WORKER))
             return True
 
         async def _not_quiet(_loop) -> bool:
@@ -1313,7 +1422,7 @@ def _ledger_service(tmp_path, monkeypatch, *, closed: "set[str]"):
 
 async def _push_and_settle(svc, loop_id: str, worker: str) -> None:
     """One worker push, then every tick it (and any tail it arms) runs, to completion."""
-    await conductor_wake.fire_for_worker_slot(worker)
+    await _fire(svc, worker)
     for _ in range(5):
         task = svc._timers.get(loop_id)
         if task is None or task.done():
@@ -1378,7 +1487,7 @@ def _storm_during_a_turn(tmp_path, monkeypatch, *, news: bool) -> "list[int]":
                 for worker, item in ((WORKER, first), (WORKER_B, second)):
                     status = "question" if news and n == 4 and worker == WORKER_B else "progress"
                     work_ledger.apply_worker_report(CONDUCTOR, item, status=status, summary=f"{n}")
-                    await conductor_wake.fire_for_worker_slot(worker)
+                    await _fire(svc, worker)
 
         during.append(_storm)
         try:
@@ -1445,7 +1554,7 @@ def test_an_item_pulls_its_conductor_forward_at_most_twelve_times_an_hour(
                 work_ledger.apply_worker_report(
                     CONDUCTOR, item_id, status="question", summary=f"{n}"
                 )
-                fired.append(await conductor_wake.fire_for_worker_slot(WORKER))
+                fired.append(await _fire(svc, WORKER))
                 svc._pushed_ticks.discard(loop.id)
             assert loop.next_due_ts == deadline, "the slow tick's deadline is untouched"
             return fired, loop.active
@@ -1608,7 +1717,7 @@ def test_a_burst_inside_one_window_costs_one_turn_naming_every_item(tmp_path, mo
                 (WORKER_C, third, "question"),
             ):
                 work_ledger.apply_worker_report(CONDUCTOR, item, status=status, summary="s")
-                await conductor_wake.fire_for_worker_slot(worker)
+                await _fire(svc, worker)
             assert arms == [_BATCH_WINDOW], "only the first report armed a tick"
             assert loop.id in svc._pushed_ticks, "and the window it armed is still open"
             # The tick the window armed, run here rather than slept through.
@@ -1640,7 +1749,7 @@ def test_an_isolated_report_still_wakes_within_the_window(tmp_path, monkeypatch)
         _instrument_arms(svc, arms)
         try:
             work_ledger.apply_worker_report(CONDUCTOR, only, status="done", summary="s")
-            await conductor_wake.fire_for_worker_slot(WORKER)
+            await _fire(svc, WORKER)
             await svc._timer(loop, delay=0.0)
             return arms, list(delivered), list(wakes), float(loop.idle_secs)
         finally:
@@ -1669,11 +1778,11 @@ def test_a_report_that_misses_the_batch_tick_is_not_lost(tmp_path, monkeypatch):
         _instrument_arms(svc, arms)
         try:
             work_ledger.apply_worker_report(CONDUCTOR, early, status="done", summary="s")
-            await conductor_wake.fire_for_worker_slot(WORKER)
+            await _fire(svc, WORKER)
             await svc._timer(loop, delay=0.0)
             assert loop.id not in svc._pushed_ticks, "the tick that ran closed its window"
             work_ledger.apply_worker_report(CONDUCTOR, late, status="question", summary="s")
-            await conductor_wake.fire_for_worker_slot(WORKER_B)
+            await _fire(svc, WORKER_B)
             await svc._timer(loop, delay=0.0)
             return arms, list(delivered), list(wakes)
         finally:
@@ -1701,7 +1810,7 @@ def test_a_steady_stream_of_reports_cannot_hold_the_batch_open_forever(tmp_path,
         try:
             for n in range(10):
                 work_ledger.apply_worker_report(CONDUCTOR, item, status="question", summary=f"{n}")
-                await conductor_wake.fire_for_worker_slot(WORKER)
+                await _fire(svc, WORKER)
             assert loop.id in svc._pushed_ticks, "the first window is the one still open"
             return arms
         finally:
@@ -1781,7 +1890,7 @@ def test_the_window_at_zero_restores_the_fire_on_first_report_behaviour(tmp_path
         try:
             for worker, item in ((WORKER, first), (WORKER_B, second)):
                 work_ledger.apply_worker_report(CONDUCTOR, item, status="done", summary="s")
-                await conductor_wake.fire_for_worker_slot(worker)
+                await _fire(svc, worker)
             return arms, list(delivered)
         finally:
             svc.stop()
@@ -1838,7 +1947,7 @@ def test_a_report_after_the_armed_tick_was_cancelled_opens_its_own_window(tmp_pa
         _instrument_arms(svc, arms)
         try:
             work_ledger.apply_worker_report(CONDUCTOR, first, status="done", summary="s")
-            await conductor_wake.fire_for_worker_slot(WORKER)
+            await _fire(svc, WORKER)
             assert conductor_wake._window_open(svc, loop.id), "precondition: the window opened"
 
             # What a user message does: the task is cancelled and popped, the mark stays.
@@ -1849,7 +1958,7 @@ def test_a_report_after_the_armed_tick_was_cancelled_opens_its_own_window(tmp_pa
             work_ledger.apply_worker_report(
                 CONDUCTOR, second, status="question", summary="RULING: a -- b -- a"
             )
-            await conductor_wake.fire_for_worker_slot(WORKER_B)
+            await _fire(svc, WORKER_B)
             return arms, marked, still_open
         finally:
             svc.stop()

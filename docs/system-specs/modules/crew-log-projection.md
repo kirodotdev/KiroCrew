@@ -1079,8 +1079,13 @@ pull-forward (`conductor_wake`) is the second subscriber: it holds one keyed
 `(slot, <board>, work)` `FOLD_ADVANCED` subscription per board with an active work-ledger
 loop, joined with `baseline=True`, kept in step with the loop table (`install`,
 `sync_subscriptions`) and disposed when the loop ends or the service stops. On a board's event it diffs each item's `last_report_at` against the
-board it last saw and pulls the conductor's armed work-ledger loop forward for the items
-that moved -- the event's `key` is the conductor's board, so it reads no binding.
+board it last saw and pulls the conductor's armed work-ledger loop forward for an item
+that moved AND whose status is in `work_vocab.WORK_WAKE_STATUSES` (`done`, `blocked`,
+`question`) -- the event's `key` is the conductor's board, so it reads no binding, and a
+`progress` report advances the board without buying a tick the conductor's own gate
+would answer quiet. It is the only wake: a worker's slot closing and a worker's turn
+ending reach none, and a crashed worker is surfaced by the item's `stale` / `orphaned`
+flags on the loop's scheduled tick.
 Further consumers -- a summary fold over a session's events, the automatic-card sentence
 trigger, channel notifications -- are expected to subscribe the same way and are not
 built here.

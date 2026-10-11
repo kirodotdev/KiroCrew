@@ -111,7 +111,7 @@ _BASE_NAMES = frozenset("""
         _sync_dashboard_slots _sync_served_model _test_interleave
         _tighten_replacement_to_restricted_original _try_live_model_switch
         _unblock_pending_waits _unhide_folder _validate_autocompact_pct _validate_content
-        _validate_max_age _validate_source _wake_conductor_for_closed_worker _wire_model_id
+        _validate_max_age _validate_source _wire_model_id
         _workspace_name_for_dir annotations api_chat api_chat_mode
         api_chat_slot_agent api_chat_slot_approve api_chat_slot_autocompact api_chat_slot_color
         api_chat_slot_context api_chat_slot_continue api_chat_slot_create api_chat_slot_delete
@@ -416,19 +416,22 @@ def _closing_state(tmp_path):
 
 @pytest.mark.parametrize("committed", [True, False], ids=["committed", "rows-lost"])
 @pytest.mark.asyncio
-async def test_the_handover_exit_wakes_the_conductor_only_after_a_committed_drain(
+async def test_the_handover_exit_reports_the_close_on_a_committed_drain_only(
     tmp_path, monkeypatch, committed: bool
 ) -> None:
-    """A close that yields its archive to a recreated slot drains the tail OPEN; the
-    conductor is told once the drain committed, and never when the rows were lost."""
+    """A close that yields its archive to a recreated slot drains the tail OPEN.
+
+    A committed drain returns success and no archival save runs; a drain whose rows
+    were lost raises, because that frame was their last chance at durability and
+    nothing retries it. The exit reaches no further step either way -- it pushed a
+    conductor wake while a close was a wake trigger, and the whole close path now
+    carries none.
+    """
     events: list[str] = []
 
     async def _drain(_state, name, _slot):
         events.append(f"drain:{name}")
         return ch._HandoverDrainResult(rows_committed=committed, prompts_lost=0)
-
-    async def _wake(name: str) -> None:
-        events.append(f"wake:{name}")
 
     async def _save(*_a, **_kw) -> None:
         events.append("archival-save")
@@ -436,17 +439,15 @@ async def test_the_handover_exit_wakes_the_conductor_only_after_a_committed_drai
     monkeypatch.setattr(ch, "_replacement_shares_transcript", lambda *_a: True)
     monkeypatch.setattr(ch, "_persist_handover_tail", _drain)
     monkeypatch.setattr(ch, "_resettle_restricted_key", lambda *_a: None)
-    monkeypatch.setattr(ch, "_wake_conductor_for_closed_worker", _wake)
     monkeypatch.setattr(ch, "save_slot_off_loop", _save)
     state, slot = _closing_state(tmp_path)
     if committed:
         await ch.close_slot(state, slot, "w1")
-        assert events == ["drain:w1", "wake:w1"]
     else:
         with pytest.raises(ch.SlotCloseError) as raised:
             await ch.close_slot(state, slot, "w1")
         assert (raised.value.code, raised.value.status) == ("history_save_failed", 500)
-        assert events == ["drain:w1"]
+    assert events == ["drain:w1"]
 
 
 def _module_level_imports(tree: ast.Module) -> set[str]:
@@ -467,33 +468,31 @@ def _handler_files() -> list[Path]:
     return [_FACADE_PATH, *sorted(owners.glob("*.py"))]
 
 
-def test_conductor_wake_is_imported_where_it_wakes() -> None:
-    """``conductor_wake`` imports the dashboard back, so a module-scope import of it
-    would close a cycle; the close path's wake helper imports it in its own body."""
-    holders = []
+def test_no_handler_module_reaches_the_conductor_wake() -> None:
+    """A worker's session closing is not a statement by the worker, so a close wakes
+    nobody and no handler module needs the wake at all.
+
+    Read at module scope AND inside every function body, because the close path's
+    helper held its import in its own body to keep an import cycle open-ended:
+    ``conductor_wake`` imports the dashboard back. A module-scope test alone would
+    pass while a function-local import kept the push alive.
+    """
     for path in _handler_files():
-        tree = ast.parse(path.read_text(encoding="utf-8"))
-        module_level = {
-            name
-            for node in tree.body
-            if isinstance(node, (ast.Import, ast.ImportFrom, ast.If, ast.Try))
-            for name in _module_level_imports(ast.Module(body=[node], type_ignores=[]))
+        source = path.read_text(encoding="utf-8")
+        assert "conductor_wake" not in source, path.name
+        tree = ast.parse(source)
+        reached = {
+            f"{node.module}.{alias.name}"
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom) and node.module
+            for alias in node.names
+        } | {
+            alias.name
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Import)
+            for alias in node.names
         }
-        assert "kiro_crew.conductor_wake" not in module_level, path.name
-        for node in tree.body:
-            if (
-                isinstance(node, ast.AsyncFunctionDef)
-                and node.name == "_wake_conductor_for_closed_worker"
-            ):
-                local = {
-                    f"{inner.module}.{alias.name}"
-                    for inner in ast.walk(node)
-                    if isinstance(inner, ast.ImportFrom)
-                    for alias in inner.names
-                }
-                assert "kiro_crew.conductor_wake" in local
-                holders.append(path.name)
-    assert len(holders) == 1
+        assert "kiro_crew.conductor_wake" not in reached, path.name
 
 
 # ── the composition ───────────────────────────────────────────────────────────
@@ -652,7 +651,6 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
             "async function",
             "(slot: \"'_ChatSlot'\", name: 'str') -> 'bool'",
         ),
-        ("_wake_conductor_for_closed_worker", "async function", "(name: 'str') -> 'None'"),
         (
             "close_slot",
             "async function",
@@ -803,7 +801,7 @@ def test_the_owners_log_as_the_facade() -> None:
     readers = [
         label for label, fn in _owner_functions() if "logger" in set(_global_names(fn.__code__))
     ]
-    assert len(readers) >= 14
+    assert len(readers) >= 13
 
 
 def test_every_owner_function_runs_on_the_facade_globals() -> None:
@@ -1363,7 +1361,6 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
         "sel",
         "save_slot_off_loop",
         "_retire_slot_nudge_loop",
-        "_wake_conductor_for_closed_worker",
         "_reauthorize_after_await",
         "resume_slot_from_history",
         "_GUARDED_WRITE_WAIT_SECS",

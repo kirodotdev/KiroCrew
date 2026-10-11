@@ -35,6 +35,18 @@ WORK_ACTIONS: tuple[str, ...] = (
 WORK_ITEM_STATES: tuple[str, ...] = ("open", "accepted", "rejected", "abandoned")
 WORK_VERDICTS: tuple[str, ...] = ("pass", "fail", "pending", "refused", "error")
 WORK_WORKER_STATUSES: tuple[str, ...] = ("progress", "done", "blocked", "question")
+#: Worker statuses whose ARRIVAL needs the conductor, and the whole set that wakes
+#: it: ``done`` is a claim it must verify, ``blocked`` an external dependency it must
+#: clear, ``question`` a decision only it can make. ``progress`` is deliberately
+#: absent -- it advances the board and reaches the conductor on the next real wake,
+#: and charging a turn for it rebuilds the polling the watch exists to remove.
+#:
+#: Here rather than in one of its two readers because BOTH need it and each sits
+#: where the other may not be imported: ``ledger_wake`` is the watch's pure gate and
+#: must not grow imports, and ``conductor_wake`` is reachable from the gateway's boot
+#: path. Two spellings of this set would let a trigger push for news the gate then
+#: refuses, which is precisely the wake nobody can see is wasted.
+WORK_WAKE_STATUSES: tuple[str, ...] = ("done", "blocked", "question")
 #: When a ``blocked`` or ``question`` report waits on a person, as data rather than
 #: prose: ``approval`` (a tool approval timed out or waits) or ``needs_human`` (only a
 #: person can unblock it). A work-ledger watch whose open items all carry one,

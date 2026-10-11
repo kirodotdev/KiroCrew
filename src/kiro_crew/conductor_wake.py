@@ -1,13 +1,25 @@
 """A subscriber on the crew-log bus: the ``work`` fold moved -> fire its conductor's loop.
 
-WHY A MODULE OF ITS OWN. Three places learn that a worker said or did something: the
-``work`` fold advancing on the crew-log bus (a ``work/recorded`` entry landed and was
-folded), the dashboard's slot close (the worker's session is gone), and the turn-complete
-hook (a worker's turn ended, with any outcome). None of them knows anything about
-conductors, and each would otherwise carry its own copy of the same steps -- find the
-conductor's loop, check it is the right kind and still active, fire it. A fourth trigger
-is likely (an item's acceptance promoted by a human, say), so the copy count is the thing
-to bound.
+ONE TRIGGER, AND IT IS A WORKER'S OWN WORDS. A conductor is pulled forward when the
+``work`` fold advances on the crew-log bus -- a worker's ``work/recorded`` report landed
+and was folded -- and only when that report's status is one the conductor must act on
+(:data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES`: ``done``, ``blocked``, ``question``).
+Nothing else here wakes anybody.
+
+WHY NOT A TURN END OR A CLOSE. Both were triggers once, on the reading that a worker's
+turn ending means it has a result. It does not: a worker that stopped to wait, that
+produced nothing, or that simply reported ``progress`` ends its turn identically, and
+each such push buys a cycle the gate answers quiet. So the contract is the other way
+round -- a worker states why it stopped, through ``work_report``, and a turn that ends
+with no report wakes nobody. A worker that crashed or went silent is still found, by the
+item's own ``stale`` and ``orphaned`` flags on the conductor's patrol tick, which is also
+the only thing that ever covered a worker whose process died with its slot still open.
+A close carried no statement either, so it went with the turn end rather than keeping a
+second gate that would have to stay in step with this one.
+
+A FURTHER TRIGGER IS STILL LIKELY (an item's acceptance promoted by a human, say), and
+this module is where it goes: finding the conductor's loop, checking it is the right kind
+and still active, and firing it is the part no trigger should own a copy of.
 
 WHAT THE PUSH IS. :meth:`AutoNudgeService.fire_now`, and nothing else. It re-arms the
 loop's own timer, so the cycle runs inside the ordinary ``_timer`` body -- the stop
@@ -28,20 +40,15 @@ regardless.
 
 WHAT IT KNOWS, AND WHERE FROM. Only what the ``work`` fold's rendered board says. A
 :class:`~kiro_crew.crew_log.bus.FoldAdvanced` for ``(slot, <board>, "work")`` carries the
-whole board: each item's ``last_report_at``. The event's ``key`` IS the conductor's
-slot, because a worker's ``work/recorded`` entry names the conductor's board
+whole board: each item's ``last_report_at`` and its status. The event's ``key`` IS the
+conductor's slot, because a worker's ``work/recorded`` entry names the conductor's board
 (:func:`~kiro_crew.crew_log.projection._work_bind_slot`), so the bus side reads no
-binding file. What one event does not say is WHICH item moved, so the :class:`_Registry` keeps the
-previous board's ``last_report_at`` per item and diffs: an item whose stamp changed is a
-worker that reported; a board whose stamps are all unchanged moved on a conductor's own
-write (``create``, ``bind``, ``decide``, ``close``) and pushes nothing, which is also
-what keeps a nested conductor's own bookkeeping from spending its PARENT's budget.
-
-THE LOOP-SIDE TRIGGERS READ THE BINDING. A close or a turn end names a worker slot, not
-a board, so those two resolve worker slot -> ``(conductor, item)`` through
-``work_ledger.read_binding`` (:func:`_read_binding`), the one authoritative record of
-that pair. A second map rebuilt from fold renders would diverge from it whenever a
-render is stale, so this module keeps none.
+binding file and this module reads no store at all. What one event does not say is WHICH
+item moved, so the :class:`_Registry` keeps the previous board's ``last_report_at`` per
+item and diffs: an item whose stamp changed is a worker that reported; a board whose
+stamps are all unchanged moved on a conductor's own write (``create``, ``bind``,
+``decide``, ``close``) and pushes nothing, which is also what keeps a nested conductor's
+own bookkeeping from spending its PARENT's budget.
 
 WHAT A FAILURE COSTS. Nothing that needs recovering. ``fire_now`` refuses with 404 (the
 loop is not registered), 409 (not active) or 409 (mid-fire); each is logged at DEBUG and
@@ -62,8 +69,7 @@ them when the service stops.
 TWO SIDES OF THE EVENT LOOP. The bus fans out on the eager fold worker's thread, so
 :func:`_observe_event` does nothing there but copy the board's stamps out of the event
 and hand them to the service's loop; the registry and the loop table are read and written
-ON that loop only. :func:`fire_for_worker_slot` is for a caller already on it (the close
-path, the turn-complete hook).
+ON that loop only.
 """
 
 from __future__ import annotations
@@ -77,48 +83,9 @@ import os
 import time
 from typing import Any, Callable
 
-from kiro_crew.work_vocab import WORK_FOLD_NAME
+from kiro_crew.work_vocab import WORK_FOLD_NAME, WORK_WAKE_STATUSES
 
 logger = logging.getLogger(__name__)
-
-
-#: Prefix a dashboard slot can be registered under in addition to its bare name. The
-#: work ledger stores the BARE key (it comes from ``X-Session-Key``), so a trigger holding
-#: the prefixed spelling has to try both -- the same two spellings
-#: ``ledger_wake.worker_running`` tries, walked in the other direction.
-_SLOT_PREFIX = "dashboard_"
-
-
-def _slot_candidates(worker_slot_key: str) -> "tuple[str, ...]":
-    """*worker_slot_key* and, when it is prefixed, its bare form."""
-    if worker_slot_key.startswith(_SLOT_PREFIX):
-        return (worker_slot_key, worker_slot_key[len(_SLOT_PREFIX) :])
-    return (worker_slot_key,)
-
-
-def _read_binding(worker_slot_key: str) -> "tuple[str, str] | None":
-    """*worker_slot_key*'s ``(conductor_slot_key, item_id)``, or ``None``.
-
-    BLOCKING: one small JSON read per spelling. Every caller arranges to run it off the
-    event loop.
-
-    Read with ``strict=False`` (the default), so a momentarily unreadable binding
-    answers "unbound" rather than raising: no push, and the conductor's scheduled tick
-    covers it. The import is function-local: this module is reachable from the gateway's
-    boot path and the ledger store is not, so an install where no conductor ever opened a
-    ledger never pays for it.
-    """
-    from kiro_crew import work_ledger
-
-    for candidate in _slot_candidates(worker_slot_key):
-        try:
-            binding = work_ledger.read_binding(candidate)
-        except Exception:  # pragma: no cover - an unreadable binding is not ours to repair
-            logger.debug("conductor wake: binding read failed for %s", candidate)
-            return None
-        if binding is not None:
-            return binding
-    return None
 
 
 # --------------------------------------------------------------------------- #
@@ -150,24 +117,30 @@ class _Registry:
     def forget(self, board: str) -> None:
         self.boards.pop(board, None)
 
-    def observe(self, board: str, items: "list[_Item]") -> "tuple[bool, list[str]]":
+    def observe(self, board: str, items: "list[_Item]") -> "tuple[bool, list[tuple[str, str]]]":
         """Record *items* for *board*.
 
         Returns ``(first_sight, reported)``: whether this is the first board this process
-        has seen for *board*, and the ids of the items whose stamp moved since the
-        previous observation. On first sight ``reported`` is empty by construction --
-        there is nothing to diff against -- and the caller decides what that costs.
+        has seen for *board*, and the ``(item_id, status)`` of each item whose stamp moved
+        since the previous observation. On first sight ``reported`` is empty by
+        construction -- there is nothing to diff against -- and the caller decides what
+        that costs.
+
+        The STATUS travels with the id because it is what the caller gates on, and the
+        event already carries it. Reading it back from the store instead would mean a
+        file read per moved item on the service's loop, and would read whatever landed
+        AFTER this revision rather than the report this observation is about.
         """
         previous = self.boards.get(board)
         first = previous is None
         stamps: dict[str, str] = {}
-        reported: list[str] = []
-        for item_id, stamp in items:
+        reported: list[tuple[str, str]] = []
+        for item_id, stamp, status in items:
             if not item_id:
                 continue
             stamps[item_id] = stamp
             if previous is not None and stamp and previous.get(item_id) != stamp:
-                reported.append(item_id)
+                reported.append((item_id, status))
         self.boards[board] = stamps
         return first, reported
 
@@ -180,8 +153,8 @@ class _Registry:
 _registry = _Registry()
 
 
-#: One rendered item as the registry reads it: ``(item_id, report stamp)``.
-_Item = tuple[str, str]
+#: One rendered item as the registry reads it: ``(item_id, report stamp, status)``.
+_Item = tuple[str, str, str]
 
 
 def _board_items(value: Any) -> "list[_Item]":
@@ -203,10 +176,12 @@ def _board_items(value: Any) -> "list[_Item]":
         if not isinstance(item, dict):
             continue
         item_id = item.get("item_id")
+        status = item.get("status")
         out.append(
             (
                 item_id if isinstance(item_id, str) else "",
                 _report_stamp(item),
+                status if isinstance(status, str) else "",
             )
         )
     return out
@@ -263,13 +238,24 @@ async def _observe_board(svc: Any, board: str, items: "list[_Item]") -> None:
     fold revision yet delivers no baseline, so its first push is first sight too; that
     is a board whose first entry is the conductor's own ``goal`` or ``create``, since a
     worker report needs a ``bind`` on the board before it.
+
+    A MOVED STAMP IS NOT ENOUGH. Only a report whose status is in
+    :data:`~kiro_crew.work_vocab.WORK_WAKE_STATUSES` is pushed for, because that set is
+    exactly what the conductor's own gate will act on: a ``progress`` report -- which is
+    also what a worker writes when it parks itself in a wait -- advances the board and is
+    read on the loop's next scheduled tick, and pulling that tick forward
+    would buy a cycle the gate then answers quiet. Those quiet cycles are not free: each
+    runs the probe, counts against ``max_cycles``, and advances the quiet streak whose
+    floor delivers a turn anyway.
     """
     _registry.sweep(_watched(svc))
     if not work_ledger_loop_id(svc, board):
         _drop(board)
         return
     _first, reported = _registry.observe(board, items)
-    for item_id in reported:
+    for item_id, status in reported:
+        if status.strip() not in WORK_WAKE_STATUSES:
+            continue
         await _fire(svc, board, item_id)
 
 
@@ -510,8 +496,8 @@ def reset_for_tests() -> None:
 #: a floor turn every ``_MAX_QUIET_STREAK`` writes, with nothing capping the rate.
 #:
 #: A FIRST GUESS, not a derived number: it is the bar the pod QA harness measures
-#: against. Every trigger counts -- a report, a close and a turn end each arm a tick --
-#: unless the push coalesces into one already armed (:func:`_admit`). Only the push is
+#: against. Every waking report arms a tick unless the push coalesces into one already
+#: armed (:func:`_admit`). Only the push is
 #: capped. The write still lands, and the loop's own scheduled tick still reads it, so
 #: an item over its cap is heard at the patrol cadence instead of at once.
 ITEM_PULLS_PER_HOUR = 12
@@ -623,12 +609,12 @@ def _admit(svc: Any, loop_id: str, item_id: str, now: float) -> bool:
     pull-forwards rather than writes. Two such states exist: a pushed tick already armed
     and not yet started (it has not read the ledger, so it will see this write), and a
     cycle in flight that already holds a deferred pull-forward (its tail runs one tick
-    for every write that landed during it). Counting those would let a worker's report
-    plus its own turn end spend two of the budget on one tick.
+    for every write that landed during it). Counting those would let two reports that
+    land in one window spend two of the budget on one tick.
 
     A service without the tables -- a test stub -- is not capped. An item id of ``""``
-    is not capped either: every caller resolves one from the binding, so an empty one
-    means a binding this module cannot attribute, and dropping its push would turn a
+    is not capped either: every caller resolves one from the rendered board, so an empty
+    one means an item this module cannot attribute, and dropping its push would turn a
     lookup gap into a lost wake.
     """
     counts = getattr(svc, "_pull_forward_counts", None)
@@ -816,31 +802,6 @@ async def _fire(svc: Any, conductor_slot_key: str, item_id: str = "") -> str:
         )
         return ""
     return loop_id
-
-
-async def fire_for_worker_slot(worker_slot_key: str) -> str:
-    """Pull the conductor bound to *worker_slot_key* forward. The loop id, or ``""``.
-
-    For a caller already on the gateway event loop: the close path and the turn-complete
-    hook. The worker's conductor and item come from the binding file
-    (:func:`_read_binding`), read off the loop so a slow disk cannot stall it; the
-    loop-table read then happens back here where it is safe.
-
-    ``""`` for every ordinary absence -- an unbound slot, a conductor with no loop, a
-    loop of another kind, a refusal -- so a caller has nothing to branch on and no
-    reason to handle one.
-    """
-    if not worker_slot_key:
-        return ""
-    from kiro_crew import autonudge
-
-    svc = autonudge.get_instance()
-    if svc is None:
-        return ""
-    binding = await asyncio.to_thread(_read_binding, worker_slot_key)
-    if binding is None:
-        return ""
-    return await _fire(svc, binding[0], binding[1])
 
 
 def _service_loop(svc: Any) -> "asyncio.AbstractEventLoop | None":

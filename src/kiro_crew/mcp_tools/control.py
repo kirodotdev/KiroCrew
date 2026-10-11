@@ -731,9 +731,13 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             f'"{_WATCH_WORK_LEDGER}" to gate this loop on YOUR OWN work '
                             "ledger: a cycle where no worker you dispatched said "
                             "anything you must act on costs no turn, and a worker's "
-                            "report, a worker session closing, or a worker turn ending "
-                            "pulls the next cycle forward to within seconds instead of "
-                            "waiting out interval_secs. For a conductor patrolling "
+                            "report of 'blocked', 'question' or 'done' pulls the next "
+                            "cycle forward to within seconds instead of "
+                            "waiting out interval_secs. Nothing else does: a report of "
+                            "'progress', a worker ending its turn and a worker's session "
+                            "closing all leave the interval as it is, so a worker that "
+                            "crashed or went silent is found by the item's stale flag on "
+                            "an ordinary cycle. For a conductor patrolling "
                             "dispatched workers this is the field to use, and it lets "
                             "you set interval_secs in hours -- the timer becomes the "
                             "liveness fallback, not the delivery path. Omit it and the "
@@ -887,7 +891,8 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "was armed as a plain timer -- without tearing it down and "
                             "losing its cycle count. After it, a cycle where no worker "
                             "said anything actionable costs no turn, and a worker's "
-                            "report pulls the next cycle forward. Omit it to leave the "
+                            "report of 'blocked', 'question' or 'done' pulls the next "
+                            "cycle forward. Omit it to leave the "
                             "loop's current subject alone"
                         ),
                     },

@@ -3207,7 +3207,7 @@ owns them:
 | `_store_dirty` | the loader's repair flag, flushed by `start()` |
 | `_on_fire`, `_on_monitor_tick`, `_collect_judge_evidence`, `_emit_judge_notice` | constructor-injected collaborators, read by `firing`, `monitor_records` and `judge_tick` |
 | `_worker_running_resolver`, `_worker_closed_resolver` | constructor-injected `worker_running` / `worker_closed` callbacks, read through the service's `_worker_running` / `_worker_closed` by the work-ledger probe that `gate` builds |
-| `_pulled_forward`, `_pushed_ticks`, `_pushed_running`, `_pull_forward_counts`, `_pull_forward_capped` | the conductor pull-forward (`src/kiro_crew/conductor_wake.py`, `timers._wake_bound_conductor`): `firing` sets the first three (fire-now with `defer_if_firing`) and `conductor_wake` the per-item counts and caps; `timers` drops a spent `_pushed_ticks` entry; consumed by `firing` and `gate`; released by `mutations.remove_sync` |
+| `_pulled_forward`, `_pushed_ticks`, `_pushed_running`, `_pull_forward_counts`, `_pull_forward_capped` | the conductor pull-forward (`src/kiro_crew/conductor_wake.py`, fired from its crew-log bus subscription for a report whose status wakes): `firing` sets the first three (fire-now with `defer_if_firing`) and `conductor_wake` the per-item counts and caps; `timers` drops a spent `_pushed_ticks` entry; consumed by `firing` and `gate`; released by `mutations.remove_sync` |
 | `_base_dir`, `_observers` | the lock key, the observer hook; `_path`, the store file callers read, is a read-only view of `_store.path` |
 
 **Structured monitor substrate** (`monitoring/models.py`,
