@@ -5442,6 +5442,7 @@ def build_config(
                     watchdog_tool_stall_hard_cap_secs=crew.read(
                         "watchdog_tool_stall_hard_cap_secs", _safe_float, lo=0.0
                     ),
+                    autocompact_pct=_crew_autocompact_pct(crew),
                     telegram_account=crew.get("telegram_account"),
                     session_color=_safe_color(crew.get("session_color")),
                     # Module-qualified on purpose: the facade's `from
@@ -7057,6 +7058,36 @@ def _project_declares_agent(agent_name: str, project_dir: str) -> bool:
     except Exception:  # noqa: BLE001 — a probe failure only costs a fallback
         logger.debug("Project agent probe failed for %r", agent_name, exc_info=True)
         return False
+
+
+def _crew_autocompact_pct(crew: "_sections.SectionReader") -> float:
+    """Read one crew record's ``autocompact_pct``: 0 (inherit) or a value in range.
+
+    config.json is hand-editable, so junk and a negative value collapse to 0
+    (inherit the global) rather than crash the load. Any positive value is
+    held to the global knob's documented range, so a per-agent default can
+    neither thrash compaction (below the minimum) nor never fire (above the
+    maximum).
+    """
+    value = crew.read("autocompact_pct", _safe_float, lo=0.0, hi=AUTOCOMPACT_PCT_MAX)
+    if 0.0 < value < AUTOCOMPACT_PCT_MIN:
+        return AUTOCOMPACT_PCT_MIN
+    return value
+
+
+def crew_autocompact_pct(config: "KiroCrewConfig", crew_name: str) -> float | None:
+    """The compaction threshold crew *crew_name* declares, or ``None`` to inherit.
+
+    *crew_name* is a canonical ``config.agents`` key, the identity a session's
+    allocation resolved (:func:`resolve_crew_identity`). A name that is not a
+    crew, or a crew that leaves the field at 0, inherits the global
+    ``session.autocompact_pct``. The value is the one :func:`_crew_autocompact_pct`
+    validated at load, so this is a lookup and nothing more.
+    """
+    crew = config.agents.get(crew_name) if crew_name else None
+    if crew is None or not crew.autocompact_pct:
+        return None
+    return crew.autocompact_pct
 
 
 def resolve_crew_identity(

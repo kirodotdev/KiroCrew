@@ -60,8 +60,9 @@ ROSTER_ROW_KEYS = frozenset(
 )
 
 # Record fields deliberately withheld, each verified to have no consumer in
-# ``website/src``: the two watchdog windows are backend scheduling knobs the
-# roster does not render, ``telegram_account`` is deprecated and inert, and
+# ``website/src``: the two watchdog windows and the compaction default are
+# backend session knobs the roster does not render, ``telegram_account`` is
+# deprecated and inert, and
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
 # renders (the crew manager has no star affordance).
 # ``member_id`` is execution attribution, not a template-picker field.
@@ -70,6 +71,9 @@ WITHHELD_RECORD_FIELDS = frozenset(
         "member_id",
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
+        # Per-agent compaction default: read by the session manager and shown
+        # through the per-slot autocompact endpoint, not the roster.
+        "autocompact_pct",
         "telegram_account",
         "starred",
         # Shipped on GET /api/members (the profile card's own read), not here:

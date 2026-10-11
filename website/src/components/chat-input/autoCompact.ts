@@ -59,8 +59,8 @@ export function useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClien
       setAutoCompactError('')
       queryClient.setQueryData(
         ['slot-autocompact', vars.slot],
-        (prev: { pct: number | null; global_pct: number; min: number; max: number } | undefined) =>
-          prev ? { ...prev, pct: r.pct, global_pct: r.global_pct } : prev,
+        (prev: { pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number } | undefined) =>
+          prev ? { ...prev, pct: r.pct, global_pct: r.global_pct, agent_pct: r.agent_pct ?? null, agent: r.agent ?? null } : prev,
       )
     },
     onError: (err, vars) => {
@@ -82,7 +82,7 @@ export function useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClien
     const slot = activeSlot
     queryClient.setQueryData(
       ['slot-autocompact', slot],
-      (prev: { pct: number | null; global_pct: number; min: number; max: number } | undefined) =>
+      (prev: { pct: number | null; global_pct: number; agent_pct?: number | null; agent?: string | null; min: number; max: number } | undefined) =>
         prev ? { ...prev, pct } : prev,
     )
     if (autoCompactTimer.current) clearTimeout(autoCompactTimer.current)

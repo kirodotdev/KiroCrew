@@ -8955,6 +8955,20 @@
       "defaultValue": 0.0
     },
     {
+      "path": "agents.*.autocompact_pct",
+      "kind": "core",
+      "type": "number",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Auto-compact threshold override (%)",
+      "help": "Default context-usage percentage at which sessions running this agent compact. 0 inherits session.autocompact_pct, and so does a negative value. A positive value is held to the same 5-90 range as the global. Set low (e.g. 45) for an orchestrator that should stay sharp, high (e.g. 85) for a worker that should keep its long context. A session's own threshold override (the context popover slider) still takes precedence.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 0.0
+    },
+    {
       "path": "agents.*.session_color",
       "kind": "core",
       "type": "string",
