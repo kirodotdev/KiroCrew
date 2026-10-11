@@ -7,6 +7,7 @@ import functools
 import json
 import logging
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any, Callable, TypeVar
@@ -957,7 +958,9 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
             {"error": "sessionKey must be a string", "code": "session_key_not_a_string"}, status=400
         )
     if not session_key:
-        session_key = f"hook:default:{int(time.time())}"
+        # Per call, not per second: one turn runs per key, so two deliveries in
+        # the same second that shared a key would have the second refused.
+        session_key = f"hook:default:{int(time.time())}-{secrets.token_hex(6)}"
     if not session_key.startswith(_HOOK_SESSION_PREFIX):
         return web.json_response(
             {
@@ -1620,7 +1623,7 @@ async def _run_hook_agent(
             # PERSISTENT only -- `_run_hook_inner` raises for any other mode -- so
             # the bind leaves a vouched entry rather than a live carrier.
             #
-            # Hook session keys are per-request by default (`hook:default:{ts}`),
+            # Hook session keys are per-request by default (`hook:default:{ts}-{hex}`),
             # and per-event keys are the ordinary webhook pattern, so without this
             # the map would gain one permanent entry per authenticated request and
             # grow until the process restarted.

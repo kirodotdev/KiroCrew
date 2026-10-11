@@ -123,7 +123,7 @@ This unsigned request works only with a bearer-only source (`require_signature: 
 | Field | Type | Default | Notes |
 |---|---|---|---|
 | `message` | string | — | Required, non-empty after trimming. Max 49,999 characters. |
-| `sessionKey` | string | `hook:default:<unix-ts>` | Must start with `hook:`. The part after the prefix is the **hook id** used to look up registered context. |
+| `sessionKey` | string | `hook:default:<unix-ts>-<random hex>` | Must start with `hook:`. The part after the prefix is the **hook id** used to look up registered context. |
 | `name` | string | `Webhook` | Human label shown in the notification title. |
 | `agent` | string | source destination | Optional compatibility field. For a mapped source it must be omitted or exactly match the operator-owned destination; a conflict is `409 agent_conflict`. Unmapped historical and legacy credentials retain caller/default routing. |
 | `deliver` | boolean or truthy/falsy value | `true` | When false, the turn runs and is logged but nothing is pushed to you. Other values use normal Python truthiness. |

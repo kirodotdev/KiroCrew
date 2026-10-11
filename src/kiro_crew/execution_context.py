@@ -34,7 +34,7 @@ _LIVE_EXECUTIONS: dict[tuple[str, str], ExecutionContext] = {}
 # Insertion-ordered and BOUNDED, because the population is not the set of live
 # sessions: every persistent `bind_session_execution` vouches, and several of its
 # callers mint a fresh key per request rather than per session -- a webhook with
-# no `sessionKey` gets `hook:default:<unix seconds>`, and a task runner refine run
+# no `sessionKey` gets `hook:default:<unix seconds>-<random hex>`, and a task runner refine run
 # gets one per run. Those keys are released by their own turn's teardown where one
 # exists, so the cap is the backstop for uptime, not the primary release: an entry
 # whose producer has no teardown would otherwise live until the process restarts.
