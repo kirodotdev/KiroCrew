@@ -1070,6 +1070,30 @@ Contract:
   `{"prefs": {...}}` and nothing else: an earlier revision carried a `version`
   and an `updated_at` that no code read, and the loader is tolerant of any shape
   it does not recognize, so a future reshape needs no version field to be safe.
+- A second shape of exception is a key that exists only on the wire. The
+  board-view folder collapse overrides live in `localStorage` one key per
+  (column, folder) pair under `kc-board-folder-collapsed:`, which keeps two tabs
+  from overwriting each other's entries. They are backed up as the single
+  durable key `kc-board-folder-collapsed`, a JSON object the client projects
+  from the per-key entries at every snapshot, with the pairs in sorted order so
+  the same overrides always produce the same value. The projection is
+  read-only. The key itself never reaches `localStorage`. The host copy is one
+  value a flush replaces whole: a toggle on one origin uploads that origin's
+  entire family, including pairs the toggle never touched. Where this contract
+  lets the host win for it the restore writes the host value as the per-key
+  family: every pair it lists becomes its own entry and every entry it does
+  not list is removed. The host wins on a cold restore into a profile with no
+  overrides, on the reconcile pass that first adds the key to a profile with
+  no overrides, on a Settings import, and on the retry after a failed restore.
+  A host value with no usable pair, or one whose writes the quota-safe writer
+  refuses, leaves the family as it was and counts as a dropped write like any
+  other key: the restore does not count it, the host value is not baselined,
+  and a family the profile does not hold stays out of the baseline so the
+  first flush never reports it as a deletion. A family the profile does hold
+  is baselined as a kept local value, so it goes up on the next toggle and
+  replaces the host copy then. One key for the whole family because of the
+  key bound below: a board with a few columns and a dozen folders would
+  otherwise spend a large share of the 200 keys on its own.
 - `PUT` is a merge patch; a `null` value deletes its key. BOTH methods are
   owner-gated: the write so a viewer cannot overwrite the owner's settings, and
   the read because some values name real paths on the host (the file explorer's
@@ -1130,7 +1154,10 @@ Contract:
   deletes (`mc-zoom`, `mc-font-scale`), so no setting has two homes and nothing
   resurrects a key a migration removed. The per-surface prefs that used to
   silently reset across origins -- notification sound (`mc-notification-sound`),
-  interface mode (`mc-ui`), reading width (`mc-reading-width`) -- are durable.
+  interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
+  sidebar width and the width to give back when leaving board view
+  (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
+  collapse overrides described above -- are durable.
 - A SETTINGS IMPORT rewrites this file under a profile that has already synced,
   which the cold-profile rule above would never re-read. The client therefore
   pauses the sync before sending the import (`pauseUiPrefsSync`: no flush,
@@ -1156,9 +1183,13 @@ Contract:
   profile has never synced: a key absent locally adopts the host value (with
   the same reload-if-restored rule as the cold path), a key present locally is
   baselined so the first flush does not upload it (it goes up when the user
-  next changes it), and a key the host does not hold is seeded from local. The
-  reconciled roster is recorded as a reserved entry inside `mc-ui-prefs-synced`
-  -- deliberately not its own key, so a downgraded (pre-roster) build's next
+  next changes it), and a key the host does not hold is seeded from local. A
+  host-wins restore the quota-safe writer refuses leaves the local value, when
+  there is one, in use and baselined, as the cold path does; with no local
+  value the key stays unbaselined, so the first flush neither uploads it nor
+  reports it as a deletion. The reconciled roster is recorded as a reserved
+  entry inside `mc-ui-prefs-synced` -- deliberately not its own key, so a
+  downgraded (pre-roster) build's next
   fingerprint rewrite sheds it and a re-upgrade reconciles again instead of
   trusting a stale roster -- making the pass one GET per allowlist growth, not
   per boot. A profile with no roster predates the mechanism and is baselined
