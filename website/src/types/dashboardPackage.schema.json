@@ -1,0 +1,195 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kirocrew.dev/schemas/artifact-dashboard-package.json",
+  "title": "Dashboard artifact package",
+  "description": "The content of a kind=\"dashboard\" artifact: layout only. Values are never stored here -- they stay in the crew log and reach the page through the fold / bus / controller path.",
+  "type": "object",
+  "required": [
+    "kind",
+    "bound_to",
+    "model",
+    "view",
+    "theme"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "kind": {
+      "const": "dashboard"
+    },
+    "bound_to": {
+      "type": "string",
+      "pattern": "^(?:crewmate|session):[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "description": "crewmate:<slug> for a crewmate's page, session:<slot key> for a root session slot's. Outside the layout fingerprint: a rebind is not a layout change and does not create a version."
+    },
+    "model": {
+      "type": "object",
+      "required": [
+        "types"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "types": {
+          "type": "object",
+          "description": "Field name -> field shape. The page may render these and nothing else.",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^[a-z][a-z0-9_]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "type",
+              "source"
+            ],
+            "properties": {
+              "type": {
+                "enum": [
+                  "bool",
+                  "enum",
+                  "number",
+                  "text",
+                  "timestamp"
+                ],
+                "description": "A type name from data_type_catalog()."
+              },
+              "source": {
+                "description": "Where the value comes from. A fold source is read from the crew log and no agent can write it; an agentic source is one the crewmate writes itself.",
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "required": [
+                      "fold",
+                      "path"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "fold": {
+                        "enum": [
+                          "agentic",
+                          "approvals",
+                          "class",
+                          "ledger",
+                          "mistakes",
+                          "panel",
+                          "radar",
+                          "status",
+                          "subagents",
+                          "timeline",
+                          "tools",
+                          "usage",
+                          "work",
+                          "workstreams"
+                        ]
+                      },
+                      "path": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9_]+(\\.[A-Za-z0-9_]+)*$"
+                      }
+                    }
+                  },
+                  {
+                    "type": "object",
+                    "required": [
+                      "agentic"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "agentic": {
+                        "const": true
+                      }
+                    }
+                  }
+                ]
+              },
+              "label": {
+                "type": "string",
+                "maxLength": 120
+              },
+              "description": {
+                "type": "string",
+                "maxLength": 120
+              }
+            }
+          }
+        }
+      }
+    },
+    "view": {
+      "type": "object",
+      "required": [
+        "blocks"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "blocks": {
+          "type": "array",
+          "maxItems": 48,
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "fields"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_-]{0,63}$"
+              },
+              "type": {
+                "enum": [
+                  "bars",
+                  "gauge",
+                  "list",
+                  "note",
+                  "orbit",
+                  "pills",
+                  "stat",
+                  "stat_band",
+                  "table",
+                  "timeline"
+                ],
+                "description": "A block type from view_block_catalog()."
+              },
+              "fields": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "description": "Model field names this block renders. Every name must be declared in model.types; this is also the block's subscription set for the bus."
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 120
+              }
+            }
+          }
+        }
+      }
+    },
+    "theme": {
+      "type": "object",
+      "required": [
+        "tokens"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "tokens": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": {
+            "pattern": "^--[a-z][a-z0-9-]{0,63}$"
+          },
+          "additionalProperties": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "css": {
+          "type": "string",
+          "maxLength": 32768
+        }
+      }
+    }
+  }
+}

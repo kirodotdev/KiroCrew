@@ -169,6 +169,8 @@ export type {
   CrewPanelMeta,
   DashboardFieldSpec,
   DashboardManifest,
+  DashboardPackageRef,
+  MemberDashboardRead,
 } from './client/agents'
 export { SLASH_COMMANDS_TIMEOUT_MS } from './client/chatSlotSettings'
 export type {

@@ -59,6 +59,11 @@ import { useTurnCompletion } from './websocket/turnCompletion'
 import { attachFocusRelay } from './websocket/attention'
 import { emitAppReload, emitChannelEvent, emitComputerUseFrame, emitCronHistory } from './websocket/browserEvents'
 import { runFirstConnect, runReconnectCatchUp } from './websocket/reconnectCatchUp'
+import {
+  DASHBOARD_BLOCK_PATCH_FRAME,
+  publishBlockPatch,
+  readBlockPatchFrame,
+} from '../pages/members/dashboardBlockPush'
 
 /* The dashboard's single multiplexed WebSocket. `useWebSocket` composes the
    owners under ./websocket — connection, stream buffers, voice, approvals,
@@ -358,6 +363,24 @@ export function useWebSocket() {
             // re-composes the page and re-checks ownership.
             handleDashboardMoved(queryClient, data)
             break
+          case DASHBOARD_BLOCK_PATCH_FRAME: {
+            // THE BLOCK PATCH. A fold advanced and the controller composed only the
+            // blocks that subscribe to it, with the artifact `layout` they belong
+            // to. Handed to whichever Dashboard tab is open on that crewmate rather
+            // than invalidating its read: the layout did not change, so a refetch
+            // would re-fetch a whole document to learn values this frame carries.
+            //
+            // The tab decides what to do with it -- apply, ignore a replay, or
+            // re-read on a gap. Nothing is decided here, because the decision needs
+            // the `layout` ON SCREEN and the router has no idea what that is.
+            //
+            // A patch for a crewmate nobody is looking at reaches no listener and is
+            // dropped, which is correct: the next read composes the page from the
+            // crew log, so a patch is never the only path a value has.
+            const patch = readBlockPatchFrame(data)
+            if (patch) publishBlockPatch(patch)
+            break
+          }
           case 'notification_ack':
             dispatch(ackNotificationByTs(data.ts))
             break

@@ -34,6 +34,7 @@ import instancesReducer from '../store/instancesSlice'
 import { store as globalStore } from '../store'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { memberProjectionStore } from '../state/memberProjectionStore'
+import { subscribeBlockPatch } from '../pages/members/dashboardBlockPush'
 import { threadLiveStore } from '../state/threadLiveStore'
 import { _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
@@ -337,6 +338,19 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
     { type: 'dashboard_value_written', data: { slug: 'ada' } },
     { type: 'dashboard_value_written', data: {} },
   ]],
+  // A BLOCK PATCH, whose whole point is that it does NOT invalidate the read: the
+  // layout did not change, so re-fetching a recomposed document to learn values the
+  // frame already carries is the cost the push path exists to avoid. The trace is
+  // empty because the frame's only effect is handing the values to an open tab,
+  // which is module state rather than a cache or a store.
+  //
+  // The control is `dashboard_value_written` directly above, which DOES invalidate
+  // the same key: side by side, the empty trace here is a difference and not a
+  // frame that merely fell through. That the frame is routed at all -- rather than
+  // unhandled, which also traces nothing -- is pinned by the bespoke case below.
+  ['dashboard_block_patch', [], [
+    { type: 'dashboard_block_patch', data: { slug: 'ada', dashboard: 'ada-dash', version: 1, layout: 2, fold: 'work', blocks: { prs: ['open_prs'] }, missing: [], patch: { type: 'kirocrew-dashboard:block-patch', blocks: { prs: { fields: { open_prs: 3 }, display: { open_prs: '3' } } }, seq: 7, stale: false, missing: [] }, refetch: false, reason: '' } },
+  ]],
   ['chat_message user row in the active slot', [], [{ type: 'chat_message', data: { slot: ACTIVE, role: 'user', content: 'hi', ts: TS } }]],
   ['chat_message assistant row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'assistant', content: 'done', ts: TS } }]],
   ['chat_message permission row in a background slot', [], [{ type: 'chat_message', data: { slot: BACKGROUND, role: 'permission', content: '[agent] shell', ts: TS } }]],
@@ -516,6 +530,54 @@ describe('useWebSocket frame routing trace', () => {
   it.each(FRAME_CASES)('%s', async (name, setup, frames) => {
     const got = await run(setup, frames)
     expect(got).toEqual(EXPECTED_FRAMES[name])
+  })
+
+  it('routes a dashboard_block_patch to the open tab rather than letting it fall through', async () => {
+    // THE TRACE CANNOT SEE THIS, which is why the case exists. A block patch's
+    // only effect is handing the read to whichever Dashboard tab is open -- module
+    // state, not a store or a cache -- so its trace is empty. An UNHANDLED frame
+    // traces empty too, so the table case above cannot tell "routed and
+    // published" from "no such case in the switch".
+    //
+    // Subscribing is what tells them apart. The `case` and the publish are both
+    // exercised here, and the malformed frame beside it is the control: it reaches
+    // the same arm and must be dropped by the reader rather than delivered.
+    const received: unknown[] = []
+    const off = subscribeBlockPatch('ada', patch => received.push(patch))
+    try {
+      const { ws } = await mountOpen()
+      act(() => {
+        ws.frame({
+          type: 'dashboard_block_patch',
+          data: {
+            slug: 'ada', dashboard: 'ada-dash', version: 1, layout: 2, fold: 'work',
+            blocks: { prs: ['open_prs'] }, missing: [],
+            patch: {
+              type: 'kirocrew-dashboard:block-patch',
+              blocks: { prs: { fields: { open_prs: 3 }, display: { open_prs: '3' } } },
+              seq: 7, stale: false, missing: [],
+            },
+            refetch: false, reason: '',
+          },
+        })
+        // No `layout`, so it cannot be placed against the view on screen. Dropped
+        // by `readBlockPatchFrame`, never delivered.
+        ws.frame({ type: 'dashboard_block_patch', data: { slug: 'ada', version: 2 } })
+      })
+      expect(received).toHaveLength(1)
+      expect((received[0] as { blocks: Record<string, string[]> }).blocks).toEqual({
+        prs: ['open_prs'],
+      })
+      // NAMES in `blocks`, values only in the renderer's own `patch` -- and the
+      // patch carries its own type, which is NOT the full-paint one. Asserted
+      // where the frame enters the app.
+      const payload = (received[0] as { patch: { type: string; blocks: Record<string, { display: Record<string, string> }> } }).patch
+      expect(payload.type).toBe('kirocrew-dashboard:block-patch')
+      expect(payload.type).not.toBe('kirocrew-dashboard:data')
+      expect(payload.blocks.prs.display).toEqual({ open_prs: '3' })
+    } finally {
+      off()
+    }
   })
 
   it('swallows a malformed frame and keeps routing the next one', async () => {
@@ -1079,6 +1141,12 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "dashboard_value_written": [
     "query invalidateQueries [\"member-dashboard\",\"ada\"]",
   ],
+  // EMPTY, and that is the assertion: a block patch must NOT invalidate the read.
+  // Its values go straight to the open tab, so a refetch here would re-fetch a
+  // recomposed document to learn what the frame already carries -- the cost the
+  // push path exists to avoid. Read against `dashboard_value_written` directly
+  // above, which DOES invalidate the same key.
+  "dashboard_block_patch": [],
   "chat_message user row in the active slot": [
     'action chat/sseChatMessage {"slot":"slot-a","role":"user","content":"hi","ts":"2026-09-01T00:00:00.000Z"}',
     'send {"type":"slot_read","slot":"slot-a","read_ts":"2026-09-01T00:00:00.000Z"}',

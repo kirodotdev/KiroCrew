@@ -7722,7 +7722,7 @@
       "schedule_open_all": "All schedules",
       "panel_toggle": "Dashboard & files",
       "dashboard_kept_last_good": "A newer version of this dashboard did not load, so this is the last one that did.",
-      "dashboard_none_yet": "No dashboard set up for this crewmate yet.",
+      "dashboard_none_yet": "No dashboard set up for this crewmate yet. Ask this crewmate to build its dashboard.",
       "dashboard_unavailable": "This dashboard could not be loaded.",
       "dashboard_render_error": "This dashboard could not be drawn.",
       "dashboard_frame_title": "Dashboard for {{crew}}",
