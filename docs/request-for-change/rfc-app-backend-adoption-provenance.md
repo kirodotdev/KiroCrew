@@ -1,10 +1,10 @@
 ---
 title: App-backend adoption is attribution-gated
-status: draft
+status: accepted
 kind: decision
 author: kirocrew-worker (drafted for maintainer decision)
 created: 2026-09-25
-last-audited: 2026-09-25
+last-audited: 2026-10-07
 audited-at: 27dbd6db5f
 doc-pr:
 implementation-prs: [13650]
@@ -15,10 +15,10 @@ superseded-by: []
 
 # RFC: App-backend adoption is attribution-gated
 
-Status: draft. This document exists to put a decision on the base branch, because
-the change it covers REMOVES two capabilities the current specs describe. It asks
-maintainers to accept the removals, or to reject them and say what should ship
-instead. Nothing here is implemented by this document; the implementation is
+Status: accepted (see [Decision](#decision)). This document exists to put a decision
+on the base branch, because the change it covers REMOVES two capabilities the
+current specs describe. It asked maintainers to accept the removals, or to reject
+them and say what should ship instead. Nothing here is implemented by this document; the implementation is
 [#13650](https://github.com/kirodotdev/KiroCrew/pull/13650).
 
 - Author: drafted by the agent working #13403; the acceptance decision is a
@@ -120,6 +120,23 @@ So maintainers are choosing between:
   uninstall port probe). Rejected: the uninstall probe is a single instant and a
   survivor that rebinds after it is reported stopped, so this leaves the headline
   defect open.
+
+## Decision
+
+Accepted 2026-10-07 by buluoray in review of
+[#13650](https://github.com/kirodotdev/KiroCrew/pull/13650): removing adoption of an
+externally-managed backend (removal 1) is the intended change, on the condition that
+the refusal is visible to the users it affects rather than only a gateway log line.
+#13650 meets that condition: a refused adoption records a notice naming the port and
+telling the user to stop that process, carried as `backend_notice` on the app's
+status, enable, install and update responses and shown on the app's detail page.
+
+#13650 attributes on the spawn record alone (the `leader` route on pid plus start
+instant, the `tree` route on the spawn instance token) and does not ship the
+owner-view mount fence, so the fence-specific refusal in removal 2 does not apply.
+What remains of it is the `tree` route's Linux-only reach: on macOS and Windows a
+port held by a worker rather than the recorded leader is refused, with the same
+notice.
 
 ## Questions for maintainers
 

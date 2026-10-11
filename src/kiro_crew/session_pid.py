@@ -4097,6 +4097,14 @@ def _env_spawn_instance(pid: int, proc_root: Path | None = None) -> str | None:
     fail-closed posture. The value is the per-spawn token the runtime put on its
     root's environment; every descendant inherits it, and a runtime spawned
     later carries a different one -- which is the whole point of reading it.
+
+    The token is read from the process's EXEC-TIME environment, which the process
+    itself cannot rewrite, so a match is positive attribution rather than a claim
+    the process makes about itself. ``None`` covers every negative in one value --
+    no such process, no token on its environment, an unreadable environment, and a
+    host with no environment oracle -- so a caller that needs a positive answer
+    fails closed on all of them. :func:`group_vouching_available` says whether this
+    host can answer at all, which lets a caller tell "not ours" from "cannot see".
     """
     if sys.platform != "linux" and proc_root is None:
         return None
