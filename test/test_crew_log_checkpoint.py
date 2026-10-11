@@ -214,6 +214,7 @@ _FOLD_STATE_PINS: dict[str, tuple[str, int]] = {
     "approvals": ("c9db629215cc2620", 4),
     "subagents": ("698287ed09ff8981", 7),
     "class": ("1eb292eff34fd7d9", 4),
+    "outline": ("fae51a8d8dc9bfa7", 4),
 }
 
 

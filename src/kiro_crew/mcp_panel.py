@@ -147,6 +147,27 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "inputSchema": {"type": "object", "properties": {}},
         },
         {
+            "name": "dashboard_types",
+            "description": (
+                "READ THIS BEFORE YOU COMPOSE A DASHBOARD. Lists every DATA TYPE "
+                "you can bind a dashboard block to -- one per fold of your crew "
+                "log -- and for each one: its name, the field shape inside it (so "
+                "you can name a path instead of guessing one), which fold the "
+                "value is folded from, and how far that fold has been folded for "
+                "you right now. A block bound to a path this does not list draws "
+                "nothing, so read the shape and copy the path out of it. Three "
+                "things to read carefully: an `array` is where the shape STOPS, "
+                "because a path cannot reach inside a list; an `opaque` object is "
+                "keyed by an id nobody can list ahead of time (a model name, a "
+                "subagent id), so a path below it may well work and this tool "
+                "cannot promise it; and `folded_through: null` means that fold's "
+                "position was NOT read, which is different from 0, meaning nothing "
+                "has been folded yet. It is a pure read: nothing is written, "
+                "staged or changed. Takes no arguments."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
             "name": "dashboard_write",
             "description": (
                 "Write ONE agentic field of your dashboard -- a number, phrase or "
@@ -378,6 +399,15 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return redact(f"Error: {d['error']}")
         return redact(_render_fields(d))
 
+    if name == "dashboard_types":
+        sk, err = _strict_session_key()
+        if err:
+            return err
+        d = _get("/api/agent-panel/dashboard/types", session_key=sk)
+        if d.get("error"):
+            return redact(f"Error: {d['error']}")
+        return redact(_render_types(d))
+
     if name == "dashboard_write":
         field = args.get("field")
         if not isinstance(field, str) or not field.strip():
@@ -534,6 +564,113 @@ def _render_templates(payload: dict[str, Any]) -> str:
     lines.append(
         "Next: dashboard_preview the one that fits, show the person the link, and only "
         "call dashboard_apply once they say yes."
+    )
+    return "\n".join(lines)
+
+
+#: How many paths one type's shape is listed with. A composing agent needs the paths it
+#: can bind, and a fold wide enough to pass this is one whose remaining paths are
+#: siblings of ones already shown -- so the omission is REPORTED with the count rather
+#: than silently trimmed, and the whole shape is still in the JSON this prose came from.
+_MAX_PATHS_PER_TYPE = 40
+
+
+def _flatten(node: Any, prefix: str = "") -> list[str]:
+    """One ``"<path>: <type>"`` line per bindable path inside a shape node.
+
+    PATHS, not nested JSON, because a path is what the agent copies into a Model field
+    and a nested object costs it three lines to read one. The walk stops at an array
+    (nothing below is addressable) and at an opaque object (nothing below is this
+    catalog's to name), and says which of the two it was.
+    """
+    if not isinstance(node, dict):
+        return []
+    ntype = str(node.get("type", "?"))
+    label = prefix or "(the whole value)"
+    if node.get("opaque") is True:
+        keyed = node.get("keyed_by")
+        return [f"{label}: object, keyed by {keyed}" if keyed else f"{label}: object, keyed by ids"]
+    properties = node.get("properties")
+    if ntype == "object" and isinstance(properties, dict) and properties:
+        out: list[str] = []
+        for key, sub in properties.items():
+            out.extend(_flatten(sub, f"{prefix}.{key}" if prefix else str(key)))
+        return out
+    tail = " (may be null)" if node.get("nullable") else ""
+    if ntype == "array":
+        tail += " -- a path cannot reach inside it"
+    return [f"{label}: {ntype}{tail}"]
+
+
+def _render_types(payload: dict[str, Any]) -> str:
+    """The data-type catalog as the agent reads it: one type, then its paths.
+
+    The four facts the composing agent needs lead each type -- what it is called, which
+    fold it is folded from, what keys it, and how far it has been folded -- and the
+    shape follows as paths it can paste. ``folded_through`` is spelled out in words
+    where it is absent, because "not read" and "nothing folded yet" are the two answers
+    a reader must not merge, and a bare ``null`` beside a ``0`` invites exactly that.
+    """
+    rows = payload.get("types")
+    if not isinstance(rows, list) or not rows:
+        return (
+            "No data type came back, so there is nothing to bind a dashboard block to "
+            "yet. Tell the human: this gateway's fold registry answered empty."
+        )
+    lines = [
+        f"{len(rows)} data types you can bind a dashboard block to. Each one is a fold "
+        "of your crew log; bind a block by naming the type and a path from its list.",
+    ]
+    unread = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("name")
+        source = row.get("source_fold")
+        lines.append("")
+        head = f"  `{name}` -- {row.get('keyed_by')}-keyed"
+        if source and source != name:
+            head += f", derived from the `{source}` fold"
+        lines.append(head)
+        seq = row.get("folded_through")
+        if isinstance(seq, int):
+            lines.append(f"    folded through seq {seq}")
+        elif row.get("owner_served"):
+            unread = True
+            lines.append("    folded through: not read -- owner-served, see the note below")
+        else:
+            unread = True
+            lines.append("    folded through: not read -- see the note below")
+        paths = _flatten(row.get("shape"))
+        shown = paths[:_MAX_PATHS_PER_TYPE]
+        if shown:
+            lines.append("    paths:")
+            lines.extend(f"      {line}" for line in shown)
+        if len(paths) > len(shown):
+            lines.append(f"      ... and {len(paths) - len(shown)} more paths under this type")
+    unknown = str(payload.get("unknown_type") or "unknown")
+    lines.append("")
+    if unread:
+        # SAID ONCE, and said at all. "not read" and "folded through 0" are the two
+        # answers a composing agent must not merge -- one is a fold it cannot see, the
+        # other a fold that has consumed nothing -- and repeating the distinction on
+        # every unread row would spend a screenful of the agent's context on one fact.
+        owner = str(payload.get("owner_served") or "")
+        lines.append(
+            "A type marked 'not read' has a position this call did not fetch, which is "
+            "NOT the same as 0: 0 means that fold has consumed nothing, 'not read' "
+            "means nobody looked. You may still bind to it."
+            + (
+                f" The `{owner}` fold is always this way here: only its own owner "
+                "serves it, so a generic read is refused by design."
+                if owner
+                else ""
+            )
+        )
+    lines.append(
+        f"A path typed `{unknown}` is one this catalog could not type: the fold renders "
+        "null until something fills it. Binding one is allowed and it may draw nothing, "
+        "so prefer a path with a real type."
     )
     return "\n".join(lines)
 

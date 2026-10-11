@@ -198,6 +198,9 @@ def _register_mcp_routes(app: web.Application) -> None:
         "/api/agent-panel/dashboard/write", _deferred("agent_panel", "api_dashboard_write")
     )
     app.router.add_get(
+        "/api/agent-panel/dashboard/types", _deferred("agent_panel", "api_dashboard_types")
+    )
+    app.router.add_get(
         "/api/agent-panel/dashboard/templates", _deferred("agent_panel", "api_dashboard_templates")
     )
     app.router.add_post(

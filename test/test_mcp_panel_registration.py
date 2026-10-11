@@ -309,6 +309,7 @@ class TestWhatThisSetGrants:
         "panel_publish",
         "panel_templates",
         "dashboard_fields",
+        "dashboard_types",
         "dashboard_write",
         "dashboard_templates",
         "dashboard_preview",

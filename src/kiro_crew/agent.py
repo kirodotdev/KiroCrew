@@ -5426,6 +5426,13 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_templates",
     "@kirocrew-panel/panel_publish",
     "@kirocrew-panel/dashboard_fields",
+    # The data-type catalog, granted on the same test as ``dashboard_fields`` and with
+    # less to weigh: it is a pure READ of the fold registry plus how far the calling
+    # crewmate's own folds have been folded, it writes nothing and stages nothing, and
+    # it takes no argument that could point it at another crewmate's logs. A prompt here
+    # would stall the unattended cycle before the read that tells the agent which paths
+    # exist -- which is the read that stops it guessing one.
+    "@kirocrew-panel/dashboard_types",
     "@kirocrew-panel/dashboard_write",
     "@kirocrew-panel/dashboard_templates",
     "@kirocrew-panel/dashboard_preview",
