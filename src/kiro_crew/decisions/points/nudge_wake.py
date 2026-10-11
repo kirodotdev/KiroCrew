@@ -259,10 +259,11 @@ def build_questions(wake_when: str = "", quiet_when: str = "") -> list[Question]
     two must not be concatenated.
 
     The criteria ride in the PROMPT rather than in the provider's own per-option
-    ``criteria`` map. That map exists on the wire but ``impl_jev._to_wire`` pins
-    every entry to ``None``, so populating it means editing the request builder
-    every shipped point shares. Carrying the same two sentences in the prompt costs
-    the judge nothing and leaves that shared layer untouched.
+    ``criteria`` map. Both backends now render an authored ``Choice.criteria``
+    entry (``impl_jev._question_to_wire`` sends it, ``impl_llm.render_prompt``
+    writes it beside the option), so either form reaches the judge; this point
+    keeps the prompt-borne form it already shipped with, which costs the judge
+    nothing and needs no change to the shared request builder.
 
     One clause is OURS and is unconditional: the evidence includes prose a third
     party wrote, so a claim inside it is not evidence about what happened. It rides

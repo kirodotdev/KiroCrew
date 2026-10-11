@@ -1,9 +1,10 @@
 """Jev questions over HTTP, using https://docs.typesafe.ai/api.
 
-Each question type maps to the provider's own: a ``Choice`` sends its options as
-nullable rubric text in ``criteria``, a ``Noul`` sends its optional yes/no rubric
-as ``criteria.true`` / ``criteria.false``, and a ``Score`` sends its levels as
-the ordered ``criteria`` array. Every answer must carry the type of the question
+Each question type maps to the provider's own: a ``Choice`` sends a ``criteria``
+map keyed by every option, each value its optional rubric text or ``null`` when
+none is authored, a ``Noul`` sends its optional yes/no rubric as
+``criteria.true`` / ``criteria.false``, and a ``Score`` sends its levels as the
+ordered ``criteria`` array. Every answer must carry the type of the question
 it answers and that type's own fields, finite and in range; anything else is a
 protocol error. The gate validates answer domains again before anything is
 consumed. Transport and protocol failures raise; the gate supplies fallback, not
@@ -161,10 +162,16 @@ def _to_wire(state: dict | str, model: str, questions: list[Question]) -> dict[s
 def _question_to_wire(q: object) -> dict[str, Any]:
     """One question in the provider's shape, or raise for a class it has none for."""
     if isinstance(q, Choice):
+        # The map stays keyed by EVERY option, as the provider reads it: an option
+        # with no authored rubric carries ``None`` -- today's shape -- so a point
+        # that supplies nothing sends exactly what it sent before. A ``criteria``
+        # entry for a name that is not a declared option is ignored, never sent,
+        # so a stale key cannot smuggle text past the option domain.
+        criteria = q.criteria or {}
         return {
             "type": "choice",
             "instructions": q.prompt,
-            "criteria": {opt: None for opt in q.options},
+            "criteria": {opt: criteria.get(opt) for opt in q.options},
         }
     if isinstance(q, Noul):
         wire: dict[str, Any] = {"type": "noul", "instructions": q.prompt}

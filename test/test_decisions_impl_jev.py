@@ -213,8 +213,11 @@ class TestRequestShape:
         assert sent["model"] == "jev-latest"
         assert sent["state"] == {"messages": ["hello"]}
 
-    def test_choice_criteria_is_a_map_of_option_to_null(self):
-        """Per the API a Choice's ``criteria`` is a MAP; a list would be rejected."""
+    def test_choice_without_criteria_sends_a_map_of_option_to_null(self):
+        """A ``Choice`` that authored no criteria sends the SAME wire as before:
+        a map keyed by every option, each value ``None``. Per the API a Choice's
+        ``criteria`` is a MAP, not a list, and the option-keyed shape is preserved
+        so a point that supplies nothing changes nothing."""
         rec = _Recorder(
             body=_ok_body(
                 {
@@ -232,6 +235,56 @@ class TestRequestShape:
         assert q["type"] == "choice"
         assert q["instructions"] == CHOICE.prompt
         assert q["criteria"] == {"billing": None, "technical": None, "sales": None}
+
+    def test_choice_criteria_are_threaded_per_option_keeping_the_map_shape(self):
+        """Authored criteria reach the provider keyed by option; an option with no
+        text still appears, carrying ``None``, so the option domain is intact."""
+        q = Choice(
+            id="department",
+            prompt="Which team?",
+            options=["billing", "technical", "sales"],
+            criteria={
+                "billing": "payment, invoice or refund questions",
+                "technical": "bug reports and how-to questions",
+            },
+        )
+        rec = _Recorder(
+            body=_ok_body(
+                {
+                    "department": {
+                        "type": "choice",
+                        "choice": "billing",
+                        "probabilities": {"billing": 1.0},
+                    }
+                }
+            )
+        )
+        asyncio.run(_run(rec, [q]))
+        sent = rec.requests[0]["questions"]["department"]["criteria"]
+        assert sent == {
+            "billing": "payment, invoice or refund questions",
+            "technical": "bug reports and how-to questions",
+            "sales": None,
+        }
+
+    def test_choice_criteria_for_an_undeclared_option_is_not_sent(self):
+        """A ``criteria`` key naming an option not in ``options`` is ignored, never
+        sent: the map is built from the option domain, so a stale key carries no text."""
+        q = Choice(
+            id="verdict",
+            prompt="?",
+            options=["A", "B"],
+            criteria={"A": "the first", "Z": "not an option"},
+        )
+        rec = _Recorder(
+            body=_ok_body(
+                {"verdict": {"type": "choice", "choice": "A", "probabilities": {"A": 1.0}}}
+            )
+        )
+        asyncio.run(_run(rec, [q]))
+        sent = rec.requests[0]["questions"]["verdict"]["criteria"]
+        assert sent == {"A": "the first", "B": None}
+        assert "Z" not in sent
 
     def test_an_object_of_no_question_type_is_refused(self):
         """The wire speaks the three question types; any other object is a caller bug."""

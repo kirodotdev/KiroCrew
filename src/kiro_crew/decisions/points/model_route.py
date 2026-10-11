@@ -191,18 +191,27 @@ def tier_models(config: Any | None = None) -> dict[str, str]:
 
 
 def questions() -> list[Question]:
-    """The one question, with a tier's description carried in the prompt.
+    """The one question, with each tier's description carried in ``criteria``.
 
     ONE ``Choice``, because the answer is consumed: a second question would be a
     second thing to reconcile with a turn that runs on exactly one model.
+
+    The per-tier rubric rides in the provider's own per-option ``criteria`` map,
+    keyed by the option it describes, rather than being flattened into the prompt:
+    ``impl_jev`` sends it as the ``criteria`` map and ``impl_llm`` renders it
+    beside each option, so both backends tell the oracle what separates ``simple``
+    from ``medium`` from ``complex`` in the shape the field was added for. The
+    prompt keeps only what is NOT per-option -- the question stem and
+    :data:`TIER_ASYMMETRY`, which is a property of the work's outcome, not of one
+    tier.
     """
-    described = "; ".join(f"{tier} = {TIER_DESCRIPTIONS[tier]}" for tier in TIERS)
     return [
         Choice(
             QUESTION_ID,
             "How hard is this request for an AI coding assistant? "
-            f"Answer one of: {described}. {TIER_ASYMMETRY}",
+            f"Answer one of: {', '.join(TIERS)}. {TIER_ASYMMETRY}",
             options=list(TIERS),
+            criteria=dict(TIER_DESCRIPTIONS),
         )
     ]
 
