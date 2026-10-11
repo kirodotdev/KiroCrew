@@ -3113,7 +3113,11 @@
       "reload_blocked_subagents": "sub-agents working",
       "reload_session": "Reload session",
       "reload_session_tooltip": "Restarts the agent process to pick up MCP/config changes. The conversation is kept.",
-      "unpin": "Unpin"
+      "unpin": "Unpin",
+      "mute": "Mute this session",
+      "unmute": "Unmute this session",
+      "mute_failed": "Couldn't mute this session",
+      "unmute_failed": "Couldn't unmute this session"
     },
     "sessionGridView": {
       "fork_child_session": "Fork {{name}} (child session)",
@@ -5492,7 +5496,8 @@
       "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
       "unlink_source_link_confirm": "Select again to permanently hide “{{label}}”",
       "unlink_source_link_failed": "Could not hide. Try again.",
-      "waiting_for_memory": "Waiting for free RAM"
+      "waiting_for_memory": "Waiting for free RAM",
+      "muted": "Muted: no chime, toast or badge"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

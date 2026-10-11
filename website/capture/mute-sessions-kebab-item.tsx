@@ -32,7 +32,7 @@ import {
 import { ThemeProvider } from '../src/hooks/useTheme'
 import { initI18n } from '../src/i18n'
 import { store } from '../src/store'
-import { sseSlots, setSlotMutesOpenedError } from '../src/store/dashboardSlice'
+import { sseSlots, setSlotMuteFlagError } from '../src/store/dashboardSlice'
 import type { ChatSlot } from '../src/types'
 import '../src/index.css'
 
@@ -74,7 +74,8 @@ const slot = {
 } as ChatSlot
 store.dispatch(sseSlots([slot]))
 if (scene === 'error') {
-  store.dispatch(setSlotMutesOpenedError({
+  store.dispatch(setSlotMuteFlagError({
+    flag: 'mutes_opened',
     key: 'capture-conductor',
     message: 'PATCH /api/chat/slots/capture-conductor/mutes-opened failed: 503',
   }))

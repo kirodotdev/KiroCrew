@@ -2,8 +2,9 @@ import { useCallback } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { api, ApiError } from '../api/client'
 import { store, useAppDispatch } from '../store'
+import type { MuteFlag } from '../store/dashboardSlice'
 import { deleteSlot, switchSlot } from '../store/chatSlice'
-import { updateSlotPin, updateSlotMutesOpened, setSlotMutesOpenedError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
+import { updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, markSlotRead, markSlotUnread, slotWriteStampOf } from '../store/dashboardSlice'
 import { emitSlotRead } from '../lib/slotReadRelay'
 import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
@@ -44,8 +45,8 @@ export function pinMutationKeysInFlight(): string[] {
 let pinReconcileRequestId = 0
 const pinMutationTails = new Map<string, Promise<unknown>>()
 
-// Mute-toggle serialization, per slot. `muteMutationTails` chains each slot's
-// PATCHes so the backend transaction sees them in INVOCATION order (a delayed
+// Mute-toggle serialization, per flag and slot (`<flag>:<slot>`). `muteMutationTails`
+// chains each one's PATCHes so the backend transaction sees them in INVOCATION order (a delayed
 // older PATCH can otherwise commit after a newer one and persist the opposite
 // of the user's final choice). `muteMutationSeq` stamps each invocation; an
 // `onError` rollback only applies when its stamp is still the latest for the
@@ -88,6 +89,8 @@ export interface SessionActions {
   togglePin: (slotKey: string) => void
   /** Toggle the "mute sessions it opens" rule on a creating session. */
   toggleMutesOpened: (slotKey: string) => void
+  /** Toggle the per-row mute of this session. */
+  toggleMuted: (slotKey: string) => void
   /** Copy the session's share link. */
   copyLink: (slotKey: string) => void
   /** Move to a folder (or root for null) — shared optimistic move + rollback. */
@@ -249,46 +252,48 @@ export function useSessionActions(mode?: string): SessionActions {
     },
   })
 
-  // An optimistic toggle, serialized per slot. The authoritative value arrives
-  // as a `slot_patch` frame (or a full list on an older gateway), so a success
-  // schedules no re-read. PATCHes for one slot are chained in invocation order
-  // so a delayed older request cannot commit after a newer one; a failed older
-  // mutation's rollback is suppressed once a newer toggle has superseded it.
-  const mutesOpenedMutation = useMutation({
-    mutationFn: ({ key, mutesOpened }: { key: string; mutesOpened: boolean }) => {
-      // Chain this PATCH after the slot's previous one so the backend sees them
-      // in the order the user clicked, not in network-race order.
-      const prior = muteMutationTails.get(key) ?? Promise.resolve()
+  // One optimistic toggle for both user-owned mute flags, serialized per flag
+  // and slot. The authoritative value arrives as a `slot_patch` frame (or a
+  // full list on an older gateway), so a success schedules no re-read. PATCHes
+  // for one flag on one slot are chained in invocation order so a delayed older
+  // request cannot commit after a newer one; a failed older mutation's
+  // rollback is suppressed once a newer toggle has superseded it.
+  const muteFlagMutation = useMutation({
+    mutationFn: ({ key, flag, value }: { key: string; flag: MuteFlag; value: boolean }) => {
+      const chain = flag + ':' + key
+      const prior = muteMutationTails.get(chain) ?? Promise.resolve()
       const next = prior
         .catch(() => undefined)
-        .then(() => api.setSlotMutesOpened(key, mutesOpened))
-      muteMutationTails.set(key, next)
+        .then(() => (flag === 'muted' ? api.setSlotMuted(key, value) : api.setSlotMutesOpened(key, value)))
+      muteMutationTails.set(chain, next)
       // Drop the tail once it settles if it is still the latest (bounded map).
       void next.catch(() => undefined).finally(() => {
-        if (muteMutationTails.get(key) === next) muteMutationTails.delete(key)
+        if (muteMutationTails.get(chain) === next) muteMutationTails.delete(chain)
       })
       return next
     },
-    onMutate: ({ key, mutesOpened }) => {
-      const seq = (muteMutationSeq.get(key) ?? 0) + 1
-      muteMutationSeq.set(key, seq)
-      const prev = store.getState().dashboard.slots.find(s => s.key === key)?.mutes_opened ?? false
-      dispatch(updateSlotMutesOpened({ key, mutesOpened }))
-      return { key, prev, seq }
+    onMutate: ({ key, flag, value }) => {
+      const chain = flag + ':' + key
+      const seq = (muteMutationSeq.get(chain) ?? 0) + 1
+      muteMutationSeq.set(chain, seq)
+      const prev = store.getState().dashboard.slots.find(s => s.key === key)?.[flag] ?? false
+      dispatch(updateSlotMuteFlag({ key, flag, value }))
+      return { key, flag, prev, seq }
     },
     onError: (err, _vars, ctx) => {
       if (!ctx) return
-      // Only act if this is still the slot's latest invocation. A newer toggle
-      // has already set the value the user actually wants; rolling an older
+      // Only act if this is still the latest invocation. A newer toggle has
+      // already set the value the user actually wants; rolling an older
       // failure back on top of it would overwrite that final selection.
-      if (muteMutationSeq.get(ctx.key) !== ctx.seq) return
+      if (muteMutationSeq.get(ctx.flag + ':' + ctx.key) !== ctx.seq) return
       // Roll the optimistic flip back to its pre-mutation value...
-      dispatch(updateSlotMutesOpened({ key: ctx.key, mutesOpened: ctx.prev }))
+      dispatch(updateSlotMuteFlag({ key: ctx.key, flag: ctx.flag, value: ctx.prev }))
       // ...then surface the failure so it is not swallowed: the row's state now
       // disagrees with what the user clicked, and the menu renders this through
       // ErrorNotice (store-backed, so it survives the kebab closing).
-      dispatch(setSlotMutesOpenedError({
+      dispatch(setSlotMuteFlagError({
         key: ctx.key,
+        flag: ctx.flag,
         message: err instanceof Error ? err.message : String(err),
       }))
     },
@@ -362,7 +367,7 @@ export function useSessionActions(mode?: string): SessionActions {
   // recreated on every render (the mutation result objects are new each render).
   const { mutate: forkMutate } = forkMutation
   const { mutate: pinMutate } = pinMutation
-  const { mutate: mutesOpenedMutate } = mutesOpenedMutation
+  const { mutate: muteFlagMutate } = muteFlagMutation
   const { mutate: reloadMutate } = reloadMutation
 
   const duplicate = useCallback((slotKey: string) => { forkMutate(slotKey) }, [forkMutate])
@@ -385,10 +390,12 @@ export function useSessionActions(mode?: string): SessionActions {
     pinMutate({ key: slotKey, pinned: !isPinned })
   }, [pinMutate])
 
-  const toggleMutesOpened = useCallback((slotKey: string) => {
-    const current = store.getState().dashboard.slots.find(s => s.key === slotKey)?.mutes_opened ?? false
-    mutesOpenedMutate({ key: slotKey, mutesOpened: !current })
-  }, [mutesOpenedMutate])
+  const toggleMuteFlag = useCallback((slotKey: string, flag: MuteFlag) => {
+    const current = store.getState().dashboard.slots.find(s => s.key === slotKey)?.[flag] ?? false
+    muteFlagMutate({ key: slotKey, flag, value: !current })
+  }, [muteFlagMutate])
+  const toggleMutesOpened = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'mutes_opened'), [toggleMuteFlag])
+  const toggleMuted = useCallback((slotKey: string) => toggleMuteFlag(slotKey, 'muted'), [toggleMuteFlag])
 
   const copyLink = useCallback((slotKey: string) => {
     const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
@@ -409,5 +416,5 @@ export function useSessionActions(mode?: string): SessionActions {
     if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
   }, [dispatch])
 
-  return { duplicate, toggleRead, togglePin, toggleMutesOpened, copyLink, move, reload, close }
+  return { duplicate, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }
 }

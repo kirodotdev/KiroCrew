@@ -31,11 +31,10 @@ import type { ChatSlot } from '../types'
  * introduce, and a hard depth cap bounds a pathological chain. A slot not found
  * in `slots` ends the walk (its ancestry is unknown, so nothing to mute on).
  *
- * The per-row override (acceptance criterion 6) belongs to the per-row mute
- * feature, which has
- * not landed; when it does, its per-row unmute is checked here BEFORE the chain
- * walk so a single worker can be exempted. Left as a documented seam, not a
- * live read, so this change does not depend on an unlanded one.
+ * The per-row override (#13395 acceptance criterion 6) is still open: when it
+ * lands, a per-row exemption is checked here BEFORE the chain walk so a single
+ * worker can be exempted. The per-row mute (`slot.muted`, read by
+ * `isSlotMuted` below) only adds a mute; it is not that exemption.
  */
 export function isSlotMutedByCreator(
   slots: readonly ChatSlot[],
@@ -61,4 +60,19 @@ export function isSlotMutedByCreator(
     cursor = ancestor.created_by || ''
   }
   return false
+}
+
+/**
+ * Whether `slotKey`'s attention is muted at all: by its own per-row mute
+ * (`slot.muted`, set from that row's kebab menu) or by a creator's
+ * "mute sessions it opens" rule. The one predicate every attention gate reads,
+ * so the two mutes silence exactly the same signals.
+ */
+export function isSlotMuted(
+  slots: readonly ChatSlot[],
+  slotKey: string | undefined | null,
+): boolean {
+  if (!slotKey) return false
+  if (slots.some(s => s.key === slotKey && s.muted)) return true
+  return isSlotMutedByCreator(slots, slotKey)
 }

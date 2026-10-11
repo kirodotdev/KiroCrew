@@ -8139,7 +8139,11 @@
       "unpin": "ピン留め解除",
       "mute_sessions_it_opens": "このセッションが開くセッションをミュート",
       "unmute_sessions_it_opens": "このセッションが開くセッションのミュートを解除",
-      "mute_sessions_it_opens_failed": "ミュート設定を変更できませんでした"
+      "mute_sessions_it_opens_failed": "ミュート設定を変更できませんでした",
+      "mute": "このセッションをミュート",
+      "unmute": "このセッションのミュートを解除",
+      "mute_failed": "このセッションをミュートできませんでした",
+      "unmute_failed": "このセッションのミュートを解除できませんでした"
     },
     "sessionColorSwatches": {
       "custom_color": "カスタムカラー",
@@ -11882,7 +11886,8 @@
       "crew_enable": "有効にする",
       "crew_enable_named": "{{name}} を有効にする",
       "crew_spaces_unavailable": "{{name}} のフォルダーを読み込めませんでした。チャットはフォルダーなしで表示されています。",
-      "crew_enable_failed": "{{name}} を有効にできませんでした"
+      "crew_enable_failed": "{{name}} を有効にできませんでした",
+      "muted": "ミュート中: 音・通知・バッジなし"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

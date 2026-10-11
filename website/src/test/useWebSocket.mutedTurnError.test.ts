@@ -105,7 +105,7 @@ describe('muted worker turn end over the dashboard socket', () => {
     globalStore.dispatch(setActiveSlot(null))
   })
 
-  function mount(muted: boolean) {
+  function mount(muted: boolean, rowMuted = false) {
     const wrapper = ({ children }: { children: ReactNode }) => {
       const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
       return createElement(Provider, { store: globalStore },
@@ -116,7 +116,7 @@ describe('muted worker turn end over the dashboard socket', () => {
     act(() => { ws.simulateOpen() })
     globalStore.dispatch(sseSlots([
       { key: CONDUCTOR, messages: 1, running: false, mutes_opened: muted },
-      { key: WORKER, messages: 1, running: true, created_by: CONDUCTOR },
+      { key: WORKER, messages: 1, running: true, created_by: CONDUCTOR, muted: rowMuted },
     ]))
     return ws
   }
@@ -209,6 +209,34 @@ describe('muted worker turn end over the dashboard socket', () => {
     send(ws, { type: 'chat_done', data: { slot: WORKER, ts: '2026-10-09T00:00:09Z', continuing: false } })
     expect(turnChimes()).toBe(2)
     expect(postNativeNotification).toHaveBeenCalledTimes(2)
+    expect(unread()).toContain(WORKER)
+  })
+
+  // Per-row mute (`slot.muted`, set from the worker's own kebab menu) gates
+  // exactly the same signals as the creator rule, with the same exemptions.
+  it('row-muted + successful turn: no chime, toast or unread', () => {
+    const ws = mount(false, true)
+    send(ws, row('assistant'))
+    send(ws, done)
+    expect(turnChimes()).toBe(0)
+    expect(postNativeNotification).not.toHaveBeenCalled()
+    expect(unread()).not.toContain(WORKER)
+  })
+
+  it('row-muted + turn that pauses for the user: chime and toast still fire', () => {
+    const ws = mount(false, true)
+    send(ws, row('assistant'))
+    send(ws, { type: 'chat_done', data: { slot: WORKER, ts: '2026-10-09T00:00:05Z', continuing: false, needs_input: true } })
+    expect(turnChimes()).toBe(1)
+    expect(postNativeNotification).toHaveBeenCalledTimes(1)
+  })
+
+  it('row-muted + terminal error: chime, toast and unread all fire', () => {
+    const ws = mount(false, true)
+    send(ws, row('error'))
+    send(ws, done)
+    expect(turnChimes()).toBe(1)
+    expect(postNativeNotification).toHaveBeenCalledTimes(1)
     expect(unread()).toContain(WORKER)
   })
 })

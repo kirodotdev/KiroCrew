@@ -8139,7 +8139,11 @@
       "unpin": "取消置顶",
       "mute_sessions_it_opens": "静音此会话打开的会话",
       "unmute_sessions_it_opens": "取消静音此会话打开的会话",
-      "mute_sessions_it_opens_failed": "无法更改静音设置"
+      "mute_sessions_it_opens_failed": "无法更改静音设置",
+      "mute": "静音此会话",
+      "unmute": "取消静音此会话",
+      "mute_failed": "无法静音此会话",
+      "unmute_failed": "无法取消静音此会话"
     },
     "sessionColorSwatches": {
       "custom_color": "自定义颜色",
@@ -11882,7 +11886,8 @@
       "crew_enable": "启用",
       "crew_enable_named": "启用 {{name}}",
       "crew_spaces_unavailable": "无法加载 {{name}} 的文件夹。其聊天将不分文件夹列出。",
-      "crew_enable_failed": "无法启用 {{name}}"
+      "crew_enable_failed": "无法启用 {{name}}",
+      "muted": "已静音：无提示音、通知或徽标"
     },
     "connectionsPage": {
       "action_failed": "操作失败：{{error}}",

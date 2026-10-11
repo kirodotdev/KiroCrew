@@ -330,7 +330,7 @@ MAX_LIVE_SLOTS = 500
 
 #: Fields whose dashboard-user projection is identical for every slot-patch
 #: audience. Per-audience fields such as ``source_links`` require a full frame.
-_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "title", "folder_id"})
+_SLOT_PATCH_FIELDS = frozenset({"pinned", "mutes_opened", "muted", "title", "folder_id"})
 
 #: The most live slots ONE creator may hold, as a sub-ceiling under
 #: :data:`MAX_LIVE_SLOTS`. The global ceiling alone bounds the total but not the
@@ -2933,6 +2933,7 @@ class _ChatSlot:
         "_folder_suggested",
         "pinned",
         "mutes_opened",
+        "muted",
         "tags",
         "tags_revision",
         "_pending_subagent_failures",
@@ -3639,6 +3640,10 @@ class _ChatSlot:
         # user through the slot's kebab menu, never set by an agent, and
         # derived from the durable ``created_by`` chain on the client.
         self.mutes_opened: bool = False
+        # Per-row mute of THIS session, set by the user from its own kebab
+        # menu: no turn-done chime, background-finished toast or unread badge
+        # on the client. Tool-approval prompts stay exempt. Durable like ``pinned``; never set by an agent.
+        self.muted: bool = False
         self.tags: list[str] = []  # assigned tag ids (see DashboardState._tags)
         # Change identity for tag snapshots. Orderable (see mint_tags_revision):
         # equality identifies a specific frame, and the sequence prefix lets a

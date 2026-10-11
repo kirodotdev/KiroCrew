@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, useContext, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
+import { Plus, X, Pin, VolumeX, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -2104,7 +2104,7 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                *  both read as a stutter. Folder membership is carried by the tree
                *  itself in folder view; in flat view the row's own context menu
                *  still names it. */}
-              {slotActivityTs(s) || isPinned || conductorMeta ? (
+              {slotActivityTs(s) || isPinned || s.muted || conductorMeta ? (
                 <span className="ml-auto inline-flex items-center gap-1 shrink-0">
                   {/* FIRST in the group, so it sits immediately left of the timestamp
                    *  and the timestamp keeps the position it has in every other lane.
@@ -2115,6 +2115,9 @@ const SessionRow = memo(function SessionRow({ view, actions }: SessionRowProps) 
                   {/* Last in the row: the pin is a state marker, not a label, so
                    *  it sits after the text that reads left-to-right rather than
                    *  pushing the agent name off its own start edge. */}
+                  {/* At rest, not hover-only: a muted session must read differently
+                   *  from a quiet one. Beside the pin, the other state marker. */}
+                  {s.muted && <span className="shrink-0" data-testid="session-row-muted" role="img" aria-label={i18nT('pages.chatSidebar.muted')} title={i18nT('pages.chatSidebar.muted')}><VolumeX size={10} className="text-muted" /></span>}
                   {isPinned && <span className="shrink-0" title={i18nT('pages.chatSidebar.pinned')}><Pin size={10} className="text-accent" /></span>}
                 </span>
               ) : null}

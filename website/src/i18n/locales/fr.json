@@ -8385,7 +8385,11 @@
       "unpin": "Désépingler",
       "mute_sessions_it_opens": "Masquer les sessions ouvertes par celle-ci",
       "unmute_sessions_it_opens": "Réactiver les sessions ouvertes par celle-ci",
-      "mute_sessions_it_opens_failed": "Impossible de modifier le réglage de sourdine"
+      "mute_sessions_it_opens_failed": "Impossible de modifier le réglage de sourdine",
+      "mute": "Mettre cette session en sourdine",
+      "unmute": "Réactiver le son de cette session",
+      "mute_failed": "Impossible de mettre cette session en sourdine",
+      "unmute_failed": "Impossible de réactiver le son de cette session"
     },
     "sessionColorSwatches": {
       "custom_color": "Couleur personnalisée",
@@ -12258,7 +12262,8 @@
       "crew_enable": "Activer",
       "crew_enable_named": "Activer {{name}}",
       "crew_spaces_unavailable": "Impossible de charger les dossiers de {{name}}. Ses discussions sont listées sans eux.",
-      "crew_enable_failed": "Impossible d'activer {{name}}"
+      "crew_enable_failed": "Impossible d'activer {{name}}",
+      "muted": "En sourdine : ni son, ni notification, ni badge"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",

@@ -7,7 +7,7 @@ import { markSlotUnread } from '../../store/dashboardSlice'
 import { sseChatMessage, appendSlotMessage, setSlotStatusDetail, sseToolActivity, queueEntryQuote } from '../../store/chatSlice'
 import { dispatchMcNotification, APPROVAL_KIND, shouldChimeOnPermissionRow } from '../notificationEvent'
 import { chatMessageMarksUnread, isMemberThreadSlot, memberThreadRowMarksUnread, noteMemberThreadRow, unreadWatermarkTs } from '../unreadOnAttention'
-import { isSlotMutedByCreator } from '../sessionMute'
+import { isSlotMuted } from '../sessionMute'
 import { isTerminalErrorRow, noteTurnErrorRow, takeTurnErrored } from '../turnError'
 import { noteUnsavedRowTs } from '../../lib/slotReadRelay'
 import { emitThemeSound } from '../themeSound'
@@ -86,12 +86,12 @@ export function useChatStream({ dispatch, buffers, voice, reconnectingRef }: Cha
         const marks = isMemberThreadSlot(slot, slots)
           ? memberThreadRowMarksUnread(data.role)
           : chatMessageMarksUnread(data.role)
-        // Criterion 7: a session muted by its creator never becomes
+        // Criterion 7: a muted session (per row or by its creator) never becomes
         // unread from its own activity. This is the chat_message half of the
         // two automatic markSlotUnread sites; turnCompletion.ts has the other.
         // A terminal error row is exempt: the worker has stopped, and a
         // silenced failure stalls it unseen just as a silenced approval would.
-        if (marks && (!isSlotMutedByCreator(slots, slot) || isTerminalErrorRow(data))) {
+        if (marks && (!isSlotMuted(slots, slot) || isTerminalErrorRow(data))) {
           dispatch(markSlotUnread({ slot, ts: unreadWatermarkTs(data.role, data.ts), localTs: data.ts || undefined }))
         }
       })

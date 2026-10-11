@@ -2951,29 +2951,46 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
     MCP tool reaches it. The same three ownership fences still apply.
     """
 
+    return await _toggle_slot_user_flag(request, "mutes_opened")
+
+
+async def api_chat_slot_muted(request: web.Request) -> web.Response:
+    """PATCH /api/chat/slots/{slot}/muted — toggle the per-row mute of THIS session.
+
+    A muted session raises no turn-done chime, background-finished toast or
+    unread badge on the client. A tool-approval prompt from a muted session
+    still surfaces. The user picks the row from its own kebab
+    menu, so it can name a session other than the active one.
+
+    Same contract as :func:`api_chat_slot_mutes_opened`: user-only, the same
+    ownership fences, and persist-before-publish.
+    """
+
+    return await _toggle_slot_user_flag(request, "muted")
+
+
+async def _toggle_slot_user_flag(request: web.Request, field: str) -> web.Response:
+    """The shared body of the two user-owned mute toggles (``mutes_opened`` and
+    ``muted``). Each comment below that names ``mutes_opened`` applies to both."""
+
+    operation = f"chat.slot_{field}"
     state: DashboardState = request.app["state"]
     name = request.match_info["slot"]
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
-    if (
-        refusal := refuse_unattributable_caller(state, request, "chat.slot_mutes_opened")
-    ) is not None:
+    if (refusal := refuse_unattributable_caller(state, request, operation)) is not None:
         return refusal
-    if (
-        refusal := member_slot_write_refused(state, request, slot, "chat.slot_mutes_opened")
-    ) is not None:
+    if (refusal := member_slot_write_refused(state, request, slot, operation)) is not None:
         return refusal
     request_app = _effective_request_app(state, request)
-    if (
-        denied := deny_app_slot_access(request_app, slot, slot.key, "chat.slot_mutes_opened")
-    ) is not None:
+    if (denied := deny_app_slot_access(request_app, slot, slot.key, operation)) is not None:
         return denied
     authorized_history_key = slot_history_key(slot)
     if not app_owns_transcript(state._slots, request_app, authorized_history_key):
         audit_app_slot_denial(
             request_app,
-            "chat.slot_mutes_opened",
+            operation,
             slot.key,
             "app does not own this slot's transcript",
         )
@@ -2993,7 +3010,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
         source, caller = _audit_origin(request)
         sel().log_api_access(
             caller=caller,
-            operation="chat.slot_mutes_opened",
+            operation=operation,
             outcome="denied",
             source=source,
             resources=name,
@@ -3002,7 +3019,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
         return web.json_response(
             {
                 "error": "this setting can only be changed by a dashboard user",
-                "code": "mutes_opened_user_only",
+                "code": f"{field}_user_only",
             },
             status=403,
         )
@@ -3025,7 +3042,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
             source, caller = _audit_origin(request)
             sel().log_api_access(
                 caller=caller,
-                operation="chat.slot_mutes_opened",
+                operation=operation,
                 outcome="denied",
                 source=source,
                 resources=name,
@@ -3034,12 +3051,12 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
             return web.json_response(
                 {"error": "session was deleted or rebound", "code": "session_gone"}, status=409
             )
-        prior = slot.mutes_opened
-        new_value = body.get("mutes_opened", False)
+        prior = getattr(slot, field)
+        new_value = body.get(field, False)
         # JSON strings such as "false" are truthy; validate the type like pin.
         if not isinstance(new_value, bool):
             return web.json_response(
-                {"error": "mutes_opened must be a boolean", "code": "mutes_opened_not_bool"},
+                {"error": f"{field} must be a boolean", "code": f"{field}_not_bool"},
                 status=400,
             )
         changed = prior != new_value
@@ -3084,7 +3101,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
             def _commit_live_flag() -> None:
                 nonlocal committed
                 committed = True
-                slot.mutes_opened = new_value
+                setattr(slot, field, new_value)
 
             try:
                 saved = await save_slot_off_loop(
@@ -3093,7 +3110,8 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                     force=True,
                     best_effort=False,
                     expected_history_key=authorized_history_key,
-                    mutes_opened_override=new_value,
+                    mutes_opened_override=new_value if field == "mutes_opened" else None,
+                    muted_override=new_value if field == "muted" else None,
                     after_commit_under_lock=_commit_live_flag,
                 )
             except Exception:
@@ -3106,22 +3124,22 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 source, caller = _audit_origin(request)
                 sel().log_api_access(
                     caller=caller,
-                    operation="chat.slot_mutes_opened",
+                    operation=operation,
                     outcome="denied",
                     source=source,
                     resources=name,
                     error="could not persist mute setting",
                 )
                 logger.warning(
-                    "chat.slot_mutes_opened: durable save of slot=%s failed; "
-                    "live flag untouched, nothing published",
+                    "%s: durable save of slot=%s failed; " "live flag untouched, nothing published",
+                    operation,
                     slot.key,
                     exc_info=True,
                 )
                 return web.json_response(
                     {
                         "error": "could not persist the mute setting; please retry",
-                        "code": "mutes_opened_save_failed",
+                        "code": f"{field}_save_failed",
                     },
                     status=503,
                 )
@@ -3133,7 +3151,7 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 source, caller = _audit_origin(request)
                 sel().log_api_access(
                     caller=caller,
-                    operation="chat.slot_mutes_opened",
+                    operation=operation,
                     outcome="denied",
                     source=source,
                     resources=name,
@@ -3155,15 +3173,16 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                 source, caller = _audit_origin(request)
                 sel().log_api_access(
                     caller=caller,
-                    operation="chat.slot_mutes_opened",
+                    operation=operation,
                     outcome="denied",
                     source=source,
                     resources=name,
                     error="session has no durable record yet",
                 )
                 logger.info(
-                    "chat.slot_mutes_opened: slot=%s has no metadata line yet; "
+                    "%s: slot=%s has no metadata line yet; "
                     "mute not persisted, live flag untouched, nothing published",
+                    operation,
                     slot.key,
                 )
                 return web.json_response(
@@ -3173,16 +3192,16 @@ async def api_chat_slot_mutes_opened(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
-    state.push_slot_patch(slot.key, ("mutes_opened",))
+    state.push_slot_patch(slot.key, (field,))
     source, caller = _audit_origin(request)
     sel().log_api_access(
         caller=caller,
-        operation="chat.slot_mutes_opened",
+        operation=operation,
         outcome="allowed",
         source=source,
         resources=name,
     )
-    return web.json_response({"ok": True, "mutes_opened": slot.mutes_opened, "changed": changed})
+    return web.json_response({"ok": True, field: getattr(slot, field), "changed": changed})
 
 
 _VALID_MODES = ("",)

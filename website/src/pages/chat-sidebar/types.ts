@@ -124,6 +124,8 @@ export interface Slot {
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
   folder_id?: string
   pinned?: boolean
+  /** The per-row mute (see ChatSlot.muted); drawn as a marker at rest. */
+  muted?: boolean
   tags?: string[]
   forked_from?: string | null
   source_links?: Array<{

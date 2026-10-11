@@ -99,6 +99,8 @@ export function createChatOrganizationEndpoints({ post, del, patch, j, jfetch: f
     setSlotPin: (slot: string, pinned: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/pin', { pinned }).then(j),
     // Toggle the "mute sessions it opens" rule on a creating session.
     setSlotMutesOpened: (slot: string, mutesOpened: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/mutes-opened', { mutes_opened: mutesOpened }).then(j),
+    // Toggle the per-row mute of this session.
+    setSlotMuted: (slot: string, muted: boolean) => patch('/api/chat/slots/' + encodeURIComponent(slot) + '/muted', { muted }).then(j),
     // Tags
     chatTags: () => fetch('/api/chat/tags', { headers: { ..._sk } }).then(j),
     createChatTag: (name: string, color?: string, status?: boolean) => post('/api/chat/tags', { name, color: color || '', status: !!status }).then(j),

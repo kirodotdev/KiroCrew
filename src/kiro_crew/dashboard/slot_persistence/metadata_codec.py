@@ -442,6 +442,8 @@ class SaveFolds:
     # ``merge_empty_window`` path (a message-less newborn), so a staged value
     # reaches disk whichever branch the save takes.
     mutes_opened: bool | None = None
+    # Staged per-row ``muted`` value; same contract as ``mutes_opened`` above.
+    muted: bool | None = None
 
 
 @dataclass
@@ -769,6 +771,11 @@ def _read_pinned(r: _Read) -> None:
 def _read_mutes_opened(r: _Read) -> None:
     if r.meta.get("mutes_opened"):
         r.slot.mutes_opened = True
+
+
+def _read_muted(r: _Read) -> None:
+    if r.meta.get("muted"):
+        r.slot.muted = True
 
 
 def _read_color_index(r: _Read) -> None:
@@ -1214,6 +1221,15 @@ FIELDS: tuple[Field, ...] = (
         read=_read_mutes_opened,
     ),
     Field(
+        "muted",
+        _ALL,
+        attr="muted",
+        # Same staged-override contract as ``mutes_opened`` above.
+        line=lambda s, f: True if (s.muted if f.muted is None else f.muted) else OMIT,
+        merge=lambda s, f: bool(s.muted if f.muted is None else f.muted),
+        read=_read_muted,
+    ),
+    Field(
         "color_index",
         _ALL,
         attr="color_index",
@@ -1424,6 +1440,7 @@ LINE_ORDER: tuple[str, ...] = (
     "artifact",
     "pinned",
     "mutes_opened",
+    "muted",
     "color_index",
     "color_hex",
     "color_theme",
@@ -1447,6 +1464,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "tags",
     "pinned",
     "mutes_opened",
+    "muted",
     "mode",
     "artifact",
     "reasoning_effort",
