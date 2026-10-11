@@ -274,7 +274,11 @@ Both rules size the id that was ASKED for, and a backend answering a tier-policy
 The tier pickers accept the provider-qualified `provider/model` ids OpenCode
 advertises. Their config PATCH keeps the bounded model-id grammar and the empty
 inherit value while refusing whitespace, shell metacharacters and malformed
-path segments. The entitlement check still applies to a valid model id.
+path segments. The entitlement check still applies to a valid model id. The
+`agent.role_models.*` / fallback pins share that grammar (`_MODEL_PIN_PATTERN`),
+because their pickers list the same advertised names. The wake judge's
+`nudge_wake.llm_model` keeps the bare-id grammar: the gate scrubs any model
+`is_model_id` refuses, so a `provider/model` pin would never reach the judge.
 
 The switch itself goes through `llm_helpers.resolve_substitute_set_model(client)`, under the SAME two locks the fallback swap and the restore probe hold (the session-scoped switch lock, then the slot's pick lock, in that order), because it is the same kind of model transaction: without them a pick arriving through another alias of this session could land inside the `set_model` await and then be silently overwritten. The `decide` call is deliberately OUTSIDE those locks -- it is a network round trip, and holding a session-scoped lock across it would stall every sibling alias for the provider budget. `served_model` is re-read after the switch so the composer chip names the model the turn runs on.
 

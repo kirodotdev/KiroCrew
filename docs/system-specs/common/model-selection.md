@@ -352,6 +352,15 @@ its own once the cache refreshes with a list that carries it.
 - **Pickers** MUST list options from `GET /api/models`, the advertised set, never a
   static in-code list. A hand-maintained list offers models the account cannot run and
   hides the ones it can.
+- **A pin's save gate accepts every id its picker offers.** The config PATCH gives
+  every validated model pin (`agent.role_models.*`, `agent.fallback_model`,
+  `agent.refusal_fallback_model` and the `decisions.model_route` tiers) one
+  grammar, `_MODEL_PIN_PATTERN` in `dashboard/handlers/core.py`: a bare id, or the
+  slash-joined `provider/model` form OpenCode advertises. It refuses empty
+  segments and shell metacharacters; `_validate_role_model` then judges
+  entitlement as above. The chat default `agent.model` uses the same grammar
+  (its picker lists the same names) without the entitlement check. `decisions.nudge_wake.llm_model` keeps the bare-id
+  grammar, because the decision gate scrubs any model `is_model_id` refuses.
 - Backends with `resolves_model_from_advertised_list` use their own advertised
   model namespace. Claude retains its registry display-name reconciliation.
   Other advertised-selection backends use their live session's model ids, then
