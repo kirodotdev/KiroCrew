@@ -1024,6 +1024,34 @@ def test_a_resumed_session_runs_under_its_persisted_agent(tmp_path) -> None:
 
 
 class TestDeliveryAwareAccounting:
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    def test_an_unfinished_turn_is_a_failure_and_resets_the_session(self, stop_reason) -> None:
+        """The handle ended a turn the backend never finished. The runtime still
+        reads alive, so the turn is booked a failure, not an answer, and the
+        session is reset so the next message starts the agent again."""
+        sessions = FakeSessions(ScriptedProvider([text("half an answer"), complete(stop_reason)]))
+
+        outcome = _answer(_turns(sessions))
+
+        assert outcome.verdict is Verdict.FAILED
+        assert sessions.count("record_failure") == 1 and sessions.count("record_success") == 0
+        assert sessions.count("reset") == 1
+
+    @pytest.mark.parametrize(
+        "script",
+        [
+            pytest.param(answer("the reply"), id="end-turn"),
+            pytest.param([text("partial"), complete(STOP_REASON_CANCELLED)], id="cancelled"),
+        ],
+    )
+    def test_a_finished_or_cancelled_turn_keeps_the_session(self, script) -> None:
+        sessions = FakeSessions(ScriptedProvider(script))
+
+        outcome = _answer(_turns(sessions))
+
+        assert outcome.verdict is not Verdict.FAILED
+        assert sessions.count("reset") == 0 and sessions.count("record_failure") == 0
+
     @pytest.mark.parametrize("drift", DRIFTS)
     def test_a_reply_that_reached_nobody_is_a_failure(self, drift) -> None:
         sessions = FakeSessions(ScriptedProvider(answer("the reply")))
@@ -1057,6 +1085,20 @@ class TestDeliveryAwareAccounting:
         sessions = FakeSessions(ScriptedProvider(answer("the reply")))
         outcome = _answer(_turns(sessions), renderer=RecordingRenderer(delivery_failed="yes"))
         assert outcome.verdict is Verdict.ANSWERED and sessions.count("record_success") == 1
+
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    def test_the_real_discord_renderer_shows_the_timeout_after_the_partial_text(
+        self, stop_reason
+    ) -> None:
+        client = FakeDiscordClient()
+        sessions = FakeSessions(ScriptedProvider([text("half an answer"), complete(stop_reason)]))
+
+        outcome = _answer(_turns(sessions, drift=DISCORD_DRIFT), renderer=_discord_renderer(client))
+
+        shown = client.shown()
+        assert "half an answer" in shown and "did not finish its answer" in shown, shown
+        assert shown.index("half an answer") < shown.index("did not finish its answer")
+        assert outcome.verdict is Verdict.FAILED and sessions.count("reset") == 1
 
     @pytest.mark.parametrize("fail_sends", [False, True])
     def test_the_real_discord_renderer_reports_its_own_delivery(self, fail_sends) -> None:

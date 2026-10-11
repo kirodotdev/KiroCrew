@@ -1230,17 +1230,43 @@ class TelegramDispatcher:
 
             # ── Post-turn bookkeeping (each guarded so a failure here can't
             # fall through to the except and re-record the successful turn). ──
-            self.sessions.record_success(session_key)
-            # Beside the counter it stands in for: a landed turn clears the
-            # shared-death streak exactly as it clears the consecutive-failure
-            # count, so the streak stays a consecutive run rather than a lifetime
-            # total whose bound is permanently tripped.
-            runtime_death.clear_shared_deaths(session_key)
+            _unfinished = getattr(driver, "unfinished_turn", False) is True
+            if _unfinished:
+                # The handle ended a turn the backend never finished; the driver
+                # already followed the partial text with the timeout notice. The
+                # runtime still reads alive, so book a failure and reset the
+                # session (keeping the conversation), as the shared channel
+                # dispatcher does, or the next message waits on it again.
+                logger.warning(
+                    "Telegram transport_dispatch: the turn for %s ended unfinished; "
+                    "resetting the session",
+                    session_key,
+                )
+                await self.sessions.record_failure(session_key)
+                try:
+                    await self.sessions.reset(session_key)
+                except Exception:
+                    logger.warning(
+                        "Telegram transport_dispatch: session reset after an unfinished "
+                        "turn failed session=%s",
+                        session_key,
+                        exc_info=True,
+                    )
+            else:
+                self.sessions.record_success(session_key)
+                # Beside the counter it stands in for: a landed turn clears the
+                # shared-death streak exactly as it clears the consecutive-failure
+                # count, so the streak stays a consecutive run rather than a lifetime
+                # total whose bound is permanently tripped.
+                runtime_death.clear_shared_deaths(session_key)
             # The prompt (with any re-injected context) reached the model and
             # the turn completed, so the finally must NOT restore the flag --
             # unless the user cancelled it, which discards that prompt.
             _turn_landed = driver_turn_landed(driver)
-            Stats().inc_message_success()
+            if _unfinished:
+                Stats().inc_message_failed()
+            else:
+                Stats().inc_message_success()
             if accumulated and not muted and self._voice_enabled(route):
                 # Its own bookkeeping step, and last-effort by design: the text
                 # answer has already landed, so a TTS failure must not reach the

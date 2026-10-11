@@ -459,6 +459,57 @@ class TestTurnDriverTranslation:
         assert "operating instructions" not in emitted
 
 
+def _unfinished_turn(stop_reason: str, *, with_text: bool = True) -> list[AcpEvent]:
+    events = [AcpEvent(kind=EVENT_TEXT_CHUNK, text="Here is the first half of the pl")]
+    return [*(events if with_text else []), AcpEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason)]
+
+
+class TestUnfinishedTurn:
+    """The session handle ends a turn the backend never finished with
+    stop_reason "timeout" (its turn ceiling) or "stale_recover". The partial
+    text is kept, the timeout notice follows it as the turn's last text, and
+    the driver marks the turn unfinished so the dispatcher books a failure and
+    resets the session."""
+
+    @pytest.mark.parametrize("stop_reason", ["timeout", "stale_recover"])
+    def test_the_notice_follows_the_partial_text(self, stop_reason):
+        renderer = _RecordingRenderer()
+        driver = TurnDriver(_ScriptedProvider(_unfinished_turn(stop_reason)), renderer)
+
+        text = asyncio.run(driver.run("hello"))
+
+        shown = "".join(t for k, t in renderer.events if k == "text_chunk")
+        assert shown.startswith(
+            "Here is the first half of the pl\n\n⏱️ The agent did not finish"
+        ), shown
+        assert renderer.events[-1] == ("done", stop_reason)
+        assert text == "Here is the first half of the pl"
+        assert driver.empty_turn_notice == ""
+        assert getattr(driver, "unfinished_turn", False) is True
+
+    def test_a_textless_unfinished_turn_shows_the_notice_alone(self):
+        renderer = _RecordingRenderer()
+        driver = TurnDriver(
+            _ScriptedProvider(_unfinished_turn("timeout", with_text=False)), renderer
+        )
+
+        asyncio.run(driver.run("hello"))
+
+        shown = "".join(t for k, t in renderer.events if k == "text_chunk")
+        assert shown.startswith("⏱️ The agent did not finish"), shown
+        assert driver.empty_turn_notice == "", "the textless verdict is not owed on top"
+
+    @pytest.mark.parametrize("stop_reason", ["end_turn", "cancelled"])
+    def test_a_finished_or_cancelled_turn_gets_no_timeout_notice(self, stop_reason):
+        renderer = _RecordingRenderer()
+        driver = TurnDriver(_ScriptedProvider(_unfinished_turn(stop_reason)), renderer)
+
+        assert asyncio.run(driver.run("hello")) == "Here is the first half of the pl"
+        assert getattr(driver, "unfinished_turn", False) is False
+        shown = "".join(t for k, t in renderer.events if k == "text_chunk")
+        assert "did not finish" not in shown
+
+
 class TestApprovalLadder:
     def _perm_script(self):
         return [

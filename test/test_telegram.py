@@ -24,7 +24,12 @@ import pytest
 
 from conftest import CREDENTIAL_STRADDLE_SHAPES, assert_rejected_without_backtracking
 from kiro_crew.acp.client import AcpError
-from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
+from kiro_crew.acp.types import (
+    EVENT_COMPACTION_STATUS,
+    EVENT_COMPLETE,
+    EVENT_TEXT_CHUNK,
+    STOP_REASON_STALE_RECOVER,
+)
 from kiro_crew.dashboard.token_auth import parse_duration
 from kiro_crew.messaging import driver as messaging_driver
 from kiro_crew.messaging.commands import parse_dashboard_ttl
@@ -8744,6 +8749,38 @@ class TestTurnLifecycleCharacterization:
             assert runtime_death.shared_deaths(self._KEY) == 0
         finally:
             runtime_death._reset_for_tests()
+
+    def _run_turn_ending(self, monkeypatch: Any, stop_reason: str) -> tuple[list, Any, list]:
+        d, _cli, sess = _dispatcher({7})
+
+        async def _stream(message: str) -> Any:
+            yield _Ev(EVENT_TEXT_CHUNK, text="half an answer")
+            yield _Ev(EVENT_COMPLETE, stop_reason=stop_reason)
+
+        events = self._instrument(monkeypatch, d, sess, stream=_stream)
+        resets: list[str] = []
+
+        async def _reset(key: str) -> None:
+            resets.append(key)
+
+        sess.reset = _reset
+        asyncio.run(d.handle_message(_dm("hi")))
+        return events, sess, resets
+
+    @pytest.mark.parametrize("stop_reason", ["timeout", STOP_REASON_STALE_RECOVER])
+    def test_an_unfinished_turn_is_a_failure_and_resets_the_session(
+        self, monkeypatch: Any, stop_reason: str
+    ) -> None:
+        events, sess, resets = self._run_turn_ending(monkeypatch, stop_reason)
+        assert sess.successes == []
+        assert ("charge", self._KEY) in events
+        assert resets == [self._KEY]
+
+    def test_a_finished_turn_is_a_success_and_keeps_the_session(self, monkeypatch: Any) -> None:
+        events, sess, resets = self._run_turn_ending(monkeypatch, "end_turn")
+        assert sess.successes == [self._KEY]
+        assert ("charge", self._KEY) not in events
+        assert resets == []
 
 
 class TestCommandDispatchTable:
