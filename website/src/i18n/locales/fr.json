@@ -18029,7 +18029,6 @@
       "fresh_start_confirm_title": "Faire repartir ce coéquipier à zéro ?",
       "fresh_start_confirm_body": "Ce qu'il fait s'arrête et il oublie cette conversation. Les messages restent ici, repliés.",
       "fresh_start_confirm_action": "Repartir à zéro",
-      "fresh_start_hint": "Démarre une nouvelle conversation avec ce coéquipier. Les messages précédents restent visibles.",
       "fresh_start_failed_queued": "Des messages sont encore en file. Attends qu'ils finissent, puis réessaie Repartir à zéro.",
       "fresh_start_failed_busy": "Le coéquipier travaille encore et ne s'est pas arrêté. Arrête-le d'abord, puis réessaie."
     },

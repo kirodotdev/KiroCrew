@@ -115,14 +115,16 @@ describe('MembersPage — Fresh start', () => {
     expect(screen.getByTestId('chat-pane-stub').getAttribute('data-fold-before')).toBe('')
   })
 
-  it('the header has no Fresh start; the Profile card carries it on every width', async () => {
-    const row = await openAlpha()
+  it('the header has no Fresh start; the Profile card carries it under the crewmate\'s name', async () => {
+    const link = await openAlpha()
     expect(screen.queryByTestId('member-fresh-start')).toBeNull()
     expect(within(screen.getByTestId('member-thread-header')).queryByText(/Fresh start/)).toBeNull()
-    expect(row.textContent).toContain('Fresh start…')
-    expect(row.textContent).toMatch(/earlier messages stay visible/i)
+    expect(link.textContent).toContain('Fresh start…')
+    // Under the name, inside the card's head block — not a row in the tab body.
+    const head = screen.getByTestId('crew-profile-name').parentElement
+    expect(head?.contains(link)).toBe(true)
     // No breakpoint hides it.
-    expect(screen.getByTestId('crew-profile-fresh-start-group').className).not.toMatch(/(^| )(sm:|md:|lg:)?hidden( |$)|sm:|md:/)
+    expect(link.className).not.toMatch(/(^| )(sm:|md:|lg:)?hidden( |$)|sm:|md:/)
   })
 
   it('a refusal for queued work says to wait', async () => {
@@ -144,5 +146,20 @@ describe('MembersPage — Fresh start', () => {
     const notice = await screen.findByTestId('member-fresh-start-error')
     expect(within(notice).getByText(/conversation was kept/i)).toBeTruthy()
     expect(screen.getByTestId('chat-pane-stub').getAttribute('data-fold-before')).toBe('')
+  })
+
+  it('a reset from a prior session folds on load, from the roster alone', async () => {
+    // reset_at on the roster row (what GET /api/members now serves, folded from
+    // the member event log) must fold the pane on a fresh load -- with no mutation
+    // called at all, since nothing was pressed this session.
+    ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
+      members: [{ ...row('alpha'), reset_at: RESET_AT }, row('beta')],
+    })
+    renderWithProviders(<MembersPage />, { route: '/members?member=alpha' })
+    await waitFor(
+      () => expect(screen.getByTestId('chat-pane-stub').getAttribute('data-fold-before')).toBe(RESET_AT),
+      { timeout: THREAD_OPEN_TIMEOUT_MS },
+    )
+    expect(api.memberFreshStart).not.toHaveBeenCalled()
   })
 })

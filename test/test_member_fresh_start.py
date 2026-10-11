@@ -26,12 +26,27 @@ from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state
 
 import kiro_crew.dashboard.chat_handlers as ch
+from kiro_crew import members
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers import members as m
+from kiro_crew.eventlog import types as eventlog_types
+from kiro_crew.eventlog.service import get_service, set_service
 from kiro_crew.members import DM_SLOT_MODE, member_slot_key, write_dm_binding
 
 SLUG = "code-reviewer"
 MEMBER = "code-reviewer"
+
+
+@pytest.fixture(autouse=True)
+def _fresh_eventlog(tmp_path, monkeypatch):
+    """Re-root the member event log at tmp_path, same fixture as
+    test_members_eventlog_wiring.py: ``get_service()`` is a singleton, so a
+    test observing it must drop any instance a prior test built elsewhere.
+    """
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    set_service(None)
+    yield
+    set_service(None)
 
 
 def _app(state) -> web.Application:
@@ -223,6 +238,88 @@ class TestOrder:
         assert status == 200
         assert state._slots == before
         assert state._slots[member_slot_key(SLUG)] is slot
+
+
+class TestResetPersists:
+    """A cleared Fresh start folds ``reset_at`` into the member's event log, so
+    the Earlier-conversation boundary survives a reload instead of living only
+    in the page's React state."""
+
+    @pytest.mark.asyncio
+    async def test_a_cleared_reset_is_folded_into_the_roster_projection(self, tmp_path, fast_waits):
+        state = _make_state(tmp_path)
+        _bound_slot(state)
+        order: list[str] = []
+        _record_discard(state, order)
+        with patch.object(ch, "stop_slot_turn", _Stops(order, settle_after=1)):
+            status, body = await _press(state)
+        assert status == 200
+        assert body["outcome"] == "cleared"
+
+        svc = get_service()
+        slug = members.slug_for_name(MEMBER)
+        roster = svc.snapshot(slug)["values"].get(eventlog_types.PROJ_ROSTER, {})
+        assert roster.get("reset_at") == body["reset_at"]
+
+    @pytest.mark.asyncio
+    async def test_a_queued_reset_folds_nothing(self, tmp_path, fast_waits):
+        """Only a reset that actually cleared the conversation is folded: a
+        queued one has not happened yet, and folding it would fold the
+        thread before the clear it describes actually lands."""
+        state = _make_state(tmp_path)
+        _bound_slot(state)
+        state_sessions_discard = state.sessions.discard_conversation
+        state_sessions_discard.return_value = False
+        status, body = await _press(state)
+        assert status == 200
+        assert body["outcome"] == "queued"
+
+        svc = get_service()
+        slug = members.slug_for_name(MEMBER)
+        roster = svc.snapshot(slug)["values"].get(eventlog_types.PROJ_ROSTER, {})
+        assert "reset_at" not in roster
+
+    @pytest.mark.asyncio
+    async def test_get_api_members_serves_the_folded_reset_at(
+        self, tmp_path, monkeypatch, fast_waits
+    ):
+        """The read side of the round trip: GET /api/members exposes the same
+        reset_at the fresh-start route folded, which is what MembersPage reads
+        back into ChatPane's foldBefore on a reload."""
+        from types import SimpleNamespace
+
+        from kiro_crew.config.loader import KiroCrewAgentConfig
+
+        state = _make_state(tmp_path)
+        _bound_slot(state)
+        order: list[str] = []
+        _record_discard(state, order)
+        with patch.object(ch, "stop_slot_turn", _Stops(order, settle_after=1)):
+            status, body = await _press(state)
+        assert status == 200
+        assert body["outcome"] == "cleared"
+
+        @web.middleware
+        async def _auth(request: web.Request, handler):
+            request["app"] = ""
+            request["user"] = "local-app"
+            return await handler(request)
+
+        app = web.Application(middlewares=[_auth])
+        app["state"] = state
+        app.router.add_get("/api/members", m.api_members)
+        cfg = SimpleNamespace(
+            agents={MEMBER: KiroCrewAgentConfig(kiro_agent=MEMBER)},
+            default_agent=MEMBER,
+            memory_stores={},
+            degraded_sections=frozenset(),
+        )
+        cfg._content_digest = "fresh-start-test-digest"
+        monkeypatch.setattr(m.KiroCrewConfig, "load", staticmethod(lambda: cfg))
+        async with TestClient(TestServer(app)) as client:
+            data = await (await client.get("/api/members")).json()
+        row = next(r for r in data["members"] if r["slug"] == SLUG)
+        assert row["reset_at"] == body["reset_at"]
 
 
 class TestWho:

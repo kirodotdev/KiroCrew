@@ -62,6 +62,11 @@ export interface MemberRosterRow {
    *  dispatched workers, apps) never moves it. The Crewmates list shows and
    *  orders by it. Absent on an older gateway. */
   last_chat_ts?: number
+  /** The server's time of this crewmate's last Fresh start (ISO-8601), folded
+   *  into its event log so the "earlier conversation" boundary survives a
+   *  reload. Fed straight into `ChatPane`'s `foldBefore`. Absent when this
+   *  crewmate has never been reset. */
+  reset_at?: string
   /** Baseline projections (roster/activity/wake/driving) at a known seq, fed
    *  to the per-member projection store so the page renders from pushed
    *  frames. Absent on an older gateway that predates the event log. */
