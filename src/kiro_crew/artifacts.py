@@ -296,7 +296,26 @@ def _new_content_token() -> str:
 def _validate_content(content: str) -> str:
     if not isinstance(content, str):
         raise ArtifactValidationError(f"content must be str, got {type(content).__name__}")
-    encoded = content.encode("utf-8")
+    try:
+        encoded = content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        # The MEASUREMENT is an encode, and content holding an unpaired surrogate
+        # cannot be encoded at all. So the one line that asks how big the content
+        # is also decides whether it can exist, and this function's whole job is
+        # to answer "can this be stored" with an ``ArtifactValidationError`` when
+        # the answer is no. Letting ``UnicodeEncodeError`` escape instead turns an
+        # artifact a caller can fix into a 500 at every caller that answers a bad
+        # artifact with a 400, and a file write meets the same wall: nothing
+        # storable comes out of such content.
+        #
+        # Answered HERE rather than per kind or per route, because the promise is
+        # this function's and every path through the store makes it -- ``create``,
+        # ``update`` and ``settle_blank`` all open with this call.
+        raise ArtifactValidationError(
+            "content holds an unpaired surrogate code point "
+            f"({content[exc.start:exc.start + 1]!r} at index {exc.start}) that UTF-8 "
+            "cannot encode, so it cannot be stored; write a paired character or drop it"
+        ) from None
     if len(encoded) > MAX_CONTENT_BYTES:
         raise ArtifactValidationError(f"content exceeds {MAX_CONTENT_BYTES} bytes ({len(encoded)})")
     return content

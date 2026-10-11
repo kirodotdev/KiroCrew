@@ -23,9 +23,11 @@ Two halves with deliberately different auth, because they are different acts:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any, Final, cast
 
@@ -34,6 +36,8 @@ from aiohttp import web
 from kiro_crew import agent_panel, dashboard_agentic, dashboard_package
 from kiro_crew import members as members_mod
 from kiro_crew import pipeline_board_contract
+from kiro_crew.artifact_store import dashboard_package as _dashboard
+from kiro_crew.artifact_store.model import ArtifactError, ArtifactValidationError
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.crew_log import emit as crew_log_emit
 from kiro_crew.crew_log import projection
@@ -52,12 +56,15 @@ from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.members import MemberSlugError, is_readable_member_name
 from kiro_crew.memory_stores import UnknownMemoryStore
+from kiro_crew.platform.context import redact_via_context as redact
 from kiro_crew.sel import sel
 from kiro_crew.session_ledger import _APPEND_FLUSH_SECONDS
 from kiro_crew.validation import (
+    DASHBOARD_SAVE_SCHEMA,
     DASHBOARD_WRITE_SCHEMA,
     PANEL_PUBLISH_SCHEMA,
     ValidationError,
+    infer_use_case,
     validate_tool_args,
 )
 from kiro_crew.work_vocab import WORK_FOLD_NAME, WorkBoardView
@@ -1811,6 +1818,317 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
     )
 
 
+# --------------------------------------------------------------------------- #
+# Saving a composed page
+# --------------------------------------------------------------------------- #
+
+
+def _dashboard_artifact_store() -> Any:
+    """The artifact store a dashboard page is saved into.
+
+    Its own function, and imported lazily, for the reason every other store
+    reach-through in this module is: the artifact package pulls in the fence, the
+    hooks chokepoint and the records layer, and the panel surface should not carry
+    that graph to serve a field listing. It is also the one seam a test replaces,
+    which keeps the route's own code the thing under test.
+    """
+    from kiro_crew.artifacts import get_default_store
+
+    return get_default_store()
+
+
+#: One lock per page binding, so a crewmate's own saves serialize while two
+#: crewmates saving at once do not wait on each other. Keyed by the binding
+#: rather than by the session, because the thing being protected is the ONE
+#: artifact that binding resolves to and two sessions of the same crewmate race
+#: for it exactly as one session's retry does.
+#:
+#: Bounded by the number of crewmates that have ever saved in this process, which
+#: is the number of crewmates configured. Entries are never dropped: a lock a save
+#: may still be holding cannot be evicted without reintroducing the race it exists
+#: to close, and a per-crewmate lock object is a few dozen bytes.
+_PAGE_SAVE_LOCKS: dict[str, threading.Lock] = {}
+_PAGE_SAVE_LOCKS_GUARD = threading.Lock()
+
+
+def _page_save_lock(binding: str) -> threading.Lock:
+    """The lock serializing saves to one binding, created on first use.
+
+    The guard around the dict is its own lock and is held only long enough to
+    hand one out: two threads arriving together must not create two different
+    locks for one binding, which would serialize neither.
+    """
+    with _PAGE_SAVE_LOCKS_GUARD:
+        return _PAGE_SAVE_LOCKS.setdefault(binding, threading.Lock())
+
+
+def _credential_shaped_names(package: Mapping[str, Any]) -> str:
+    """Where this package declares a name a redactor would mask, or ``""``.
+
+    THE DECISION IS THE PAGE'S OWN. ``member_dashboard._package_names_unsafe`` is
+    the function the read consults, over the same two name sets -- field names and
+    block ids -- so importing it is what stops the two ends disagreeing about
+    whether a package is servable. A second pattern here would be a second rule,
+    and the first thing it would do is drift.
+
+    The POSITION comes back, never the name. The page's own counter returns a count
+    and withholds the name on purpose: a name that needs redacting is not a name to
+    write to a log, and this refusal travels through the gateway's logs on its way
+    to the agent. Naming it would also not help -- the MCP boundary redacts this
+    sentence, so the agent would read a mask where its name had been. A position it
+    can resolve against the package in its own hand is strictly more use than a
+    name it cannot see.
+
+    The field order is the model's sorted key order, which is the order the package
+    validator canonicalises to, so the index it reports is the index the stored
+    package has.
+    """
+    from kiro_crew.dashboard.handlers.member_dashboard import _package_names_unsafe
+
+    if not _package_names_unsafe(package):
+        return ""
+    # Only now, and only to say WHERE: the same predicate the counter applies, so
+    # the two cannot disagree about which name is the offending one.
+    raw_model = package.get("model")
+    raw_view = package.get("view")
+    model: Mapping[str, Any] = raw_model if isinstance(raw_model, Mapping) else {}
+    view: Mapping[str, Any] = raw_view if isinstance(raw_view, Mapping) else {}
+    raw_types = model.get("types")
+    raw_blocks = view.get("blocks")
+    types: Mapping[str, Any] = raw_types if isinstance(raw_types, Mapping) else {}
+    blocks: Sequence[Any] = raw_blocks if isinstance(raw_blocks, list) else []
+    spots: list[str] = []
+    for index, name in enumerate(sorted(types), start=1):
+        if isinstance(name, str) and redact(name) != name:
+            spots.append(f"declared field #{index} of {len(types)}")
+    for index, block in enumerate(blocks, start=1):
+        block_id = block.get("id") if isinstance(block, Mapping) else None
+        if isinstance(block_id, str) and redact(block_id) != block_id:
+            spots.append(f"the id of view block #{index} of {len(blocks)}")
+    # Empty only if the counter and the predicate disagree, which would be a bug in
+    # one of them rather than a servable package -- so the refusal still stands and
+    # says plainly that it cannot point at the name.
+    return ", ".join(spots) if spots else "one of the declared names"
+
+
+def _page_binding(slug: str) -> str:
+    """The ``bound_to`` for a crewmate's page, as the package spells it.
+
+    Derived from the slug ``_resolve_dashboard_caller`` resolved and NEVER from
+    the body. That resolution has already refused a caller with no dashboard
+    slot, an app identity, a cookie-only request and a slug more than one crew
+    answers to, so this string is the authorization decision in serialized form:
+    it is what the page hangs off, and it is the key the save looks the existing
+    page up by.
+    """
+    return f"crewmate:{slug}"
+
+
+def _find_page(store: Any, binding: str) -> Any | None:
+    """The crewmate's own dashboard artifact, or ``None`` when it has none.
+
+    BY BINDING, not by slug or by recency, and through ``resolve_bound_slug`` --
+    the SAME lookup the read path uses to decide which package a crewmate's tab
+    renders. A page's slug is the store's to mint and a crewmate slug can run to
+    the full length a member slug allows, so a slug derived here would have to be
+    truncated, and a truncation that collided would hand one crewmate's save to
+    another crewmate's page. Asking by binding is the question the read path asks.
+
+    ``None`` from that resolver means CONFIRMED absent: every stored dashboard
+    artifact was opened and none names this binding. A scan that proves less
+    raises ``BindingLookupIncomplete`` instead, which this route does not catch --
+    the save is refused. That refusal is the point. "Could not tell" answered as
+    "no package" would CREATE a second artifact bound to this crewmate, and the
+    read path resolves a binding to one slug, so the tab would then render
+    whichever of the two it met first and half this crewmate's saves would vanish.
+    """
+    bound = _dashboard.resolve_bound_slug(binding, store=store)
+    if bound is None:
+        return None
+    return store.get(bound)
+
+
+async def api_dashboard_save(request: web.Request) -> web.Response:
+    """POST /api/agent-panel/dashboard/save -- store the page the agent composed.
+
+    The call that makes a composed page real. The body carries the three
+    declarations -- ``model``, ``view`` and ``theme`` -- and the gateway supplies
+    the other two keys of the package: ``kind``, which is fixed, and ``bound_to``,
+    which is the authorization decision. A caller that sends either is refused by
+    the argument schema rather than having its value quietly dropped, because an
+    agent told its save succeeded while the page went elsewhere would send the
+    same thing again every cycle.
+
+    NOTHING HERE VALIDATES THE PACKAGE. The store does, on the way in, through
+    ``canonical_package_content``: the closed data-type and block-type catalogs,
+    the size cap measured on the bytes that actually get written, the lone
+    surrogate scan, the depth refusal, and the rule that a dashboard owns its own
+    content and can never be pointed at a file. A second validator here would be a
+    second answer to the same question and would go stale the day the catalog
+    grows, so a refusal from the store comes back whole and this route only
+    decides its status code.
+
+    A save that cannot prove whether this crewmate already HAS a package is
+    refused rather than guessed at -- see :func:`_find_page`. The read path
+    resolves a binding to one slug, so minting a second artifact under the same
+    binding would make the tab render whichever it met first.
+
+    The VERSION is the store's too. ``update`` compares the stored layout
+    fingerprint with the new one and snapshots only when they differ, overriding
+    whatever ``snapshot`` this caller passes -- so a recompose that reaches the
+    same layout leaves the version where it was, and the response says so rather
+    than reporting a version nobody moved.
+    """
+    resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_save")
+    if refusal is not None:
+        return refusal
+    assert resolved is not None
+    slug, crew_name, slot = resolved
+    body = await _instance_body(request)
+    if isinstance(body, web.Response):
+        return body
+    try:
+        args = validate_tool_args(body, DASHBOARD_SAVE_SCHEMA)
+    except ValidationError as exc:
+        # Where a caller-sent ``bound_to`` or ``kind`` lands: a ToolSchema refuses
+        # an unknown key by name, so the sentence tells the agent which key it may
+        # not set. Reported as the validation failure it is rather than as a
+        # package refusal, because the package was never built.
+        return web.json_response({"error": str(exc), "code": "validation_error"}, status=400)
+
+    binding = _page_binding(slug)
+    package = {
+        "kind": _dashboard.DASHBOARD_KIND,
+        "bound_to": binding,
+        "model": args.get("model"),
+        "view": args.get("view"),
+        "theme": args.get("theme"),
+    }
+    where = _credential_shaped_names(package)
+    if where:
+        # REFUSED HERE, before anything is written, and by the page's own rule. The
+        # read refuses a package whose declared names a redactor would rewrite, and
+        # it refuses the WHOLE read, because a field name is a join key. So a save
+        # that stored one would succeed and hand the crewmate a page that can never
+        # render -- while this route's reply says the tab draws it. That reply would
+        # be false, which makes storing it a defect rather than a trade.
+        return web.json_response(
+            {
+                "error": (
+                    "a dashboard package cannot declare a name a redactor would mask: "
+                    f"{where} looks like a credential, and the page refuses a whole "
+                    "read rather than rewriting such a name, because a field name is "
+                    "the key joining the read's fields, the frame's blocks and the "
+                    "page's cells. Rename it to something a reader recognises -- a "
+                    "name is shown to the person, so 'open_prs' and not a token"
+                ),
+                "code": "unsafe_declared_name",
+            },
+            status=400,
+        )
+
+    # Read off the REQUEST here because the closure below must not capture it, and
+    # pure string matching is all this is -- no file is opened. Its neighbour
+    # ``_history_session`` is the opposite and is called inside the thread.
+    source = infer_use_case(request.headers.get("X-Session-Key", ""))
+
+    def _save() -> tuple[Any, bool]:
+        # THE WHOLE READ-THEN-WRITE UNDER ONE PER-BINDING LOCK. The store locks
+        # each write on its own, which is not the same guarantee: a crewmate's
+        # FIRST save asks whether a package exists and then creates one, and two
+        # overlapping first saves -- a retry while a scan is slow is enough --
+        # both read absent and both create, because ``create`` disambiguates the
+        # two slugs rather than colliding them. The read path resolves a binding
+        # to one slug, so the second page and its whole version history would
+        # then be invisible. Serializing per binding makes the loser of the race
+        # see the winner's package and update it.
+        #
+        # The store is built HERE and not on the event loop: ``get_default_store``
+        # constructs the singleton on first use, which resolves paths, runs the
+        # sensitive-path checks and creates directories, and slow storage doing
+        # that on the loop stalls every chat and heartbeat on the gateway.
+        with _page_save_lock(binding):
+            store = _dashboard_artifact_store()
+            # NOTHING HERE VALIDATES THE PACKAGE. The store does, on the way in,
+            # for every caller rather than for this one -- see
+            # ``api_dashboard_save``'s own docstring for what that covers.
+            content = json.dumps(package, ensure_ascii=False)
+            existing = _find_page(store, binding)
+            if existing is None:
+                return (
+                    store.create(
+                        name=f"{crew_name} dashboard",
+                        content=content,
+                        kind=_dashboard.DASHBOARD_KIND,
+                        description=f"Dynamic dashboard page for {crew_name}",
+                        # The ORIGIN of the session that saved it, classified the
+                        # same way every other artifact write on this gateway
+                        # classifies it -- a crewmate DM reads as ``dashboard``, a
+                        # subagent as ``subagent``. Not a literal: the store's
+                        # source list is closed, so a hand-picked label is one
+                        # rename away from refusing every save, and this
+                        # attributes the write besides.
+                        source=source,
+                    ),
+                    True,
+                )
+            before = int(getattr(existing, "version", 1) or 1)
+            saved = store.update(
+                existing.slug,
+                content=content,
+                kind=_dashboard.DASHBOARD_KIND,
+                actor="agent",
+                # RESOLVED IN HERE, like the three sibling routes resolve it, and
+                # for their reason: it walks the slot's durable succession chain,
+                # which scans the crew-log root and reads each unit's header. On
+                # the loop that is filesystem work holding up every chat and
+                # heartbeat the gateway is serving. It is also only needed on this
+                # branch -- a create records no history session -- so asking for
+                # it before the branch would do the work even when it is unused.
+                session_id=_history_session(slot) or None,
+            )
+            return saved, int(getattr(saved, "version", before) or before) != before
+
+    try:
+        record, versioned = await asyncio.to_thread(_save)
+    except ArtifactValidationError as exc:
+        # WHOLE, like a refused agentic write. The package refusal names the key
+        # path, what was wrong with it and -- for a closed catalog -- the values
+        # that would have been accepted, which is the list an agent recomposes
+        # from. A generic failure costs it a cycle and teaches it nothing.
+        return web.json_response({"error": str(exc), "code": "invalid_package"}, status=400)
+    except ArtifactError as exc:
+        logger.warning("a dashboard page for %s could not be saved", slug, exc_info=True)
+        return web.json_response(
+            {"error": f"the page could not be stored: {exc}", "code": "save_failed"}, status=503
+        )
+
+    # NO BROADCAST. The sibling instance routes send ``dashboard_instance_changed``,
+    # and sending it here too would look like consistency -- but no component
+    # subscribes to that frame: the Dashboard tab reads its page through a query
+    # with a fallback poll interval, and the only other mention of the name in the
+    # frontend is the app-sdk's permission-scope table. So the tab picks a save up
+    # on its next poll either way, and a frame nobody acts on is a frame to leave
+    # out until something reads it.
+    stored = _dashboard.parse_package(record.content)
+    return web.json_response(
+        {
+            "ok": True,
+            # EXACTLY what the caller's renderer reads. The artifact slug and the
+            # binding are deliberately absent: an agent has no use for either --
+            # it does not address its page by slug and it cannot choose its
+            # binding -- so reporting them would be surface nothing consumes, and
+            # the binding is the authorization decision rather than a datum.
+            "saved": {
+                "version": int(getattr(record, "version", 1) or 1),
+                "versioned": versioned,
+                "fields": len(stored["model"]["types"]),
+                "blocks": len(stored["view"]["blocks"]),
+            },
+        }
+    )
+
+
 def _record_refusal(state: DashboardState, sk: str, entry: dict[str, Any]) -> bool:
     """Append one refusal to the caller's own log. Best-effort, never raises.
 
@@ -2152,6 +2470,11 @@ def register_agent_panel_routes(app: web.Application) -> None:
     # caller holding only a dashboard cookie must not reach it.
     app.router.add_get("/api/agent-panel/dashboard/fields", api_dashboard_fields)
     app.router.add_post("/api/agent-panel/dashboard/write", api_dashboard_write)
+    # The save. Under the same prefix for the same reason, and with one more of its
+    # own: it MINTS AN ARTIFACT bound to a crewmate, and the binding is taken from
+    # the caller this prefix's gate vetted. A cookie-only caller reaching it could
+    # name any live session and hang a page off whatever crew that resolved to.
+    app.router.add_post("/api/agent-panel/dashboard/save", api_dashboard_save)
     # The page's own four, under the same prefix and so with the same auth. A preview
     # and an apply reach a crewmate's instance store and its crew log, so a caller
     # holding only a dashboard cookie must not reach them either.

@@ -5427,6 +5427,7 @@ _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_publish",
     "@kirocrew-panel/dashboard_fields",
     "@kirocrew-panel/dashboard_write",
+    "@kirocrew-panel/dashboard_save",
     "@kirocrew-panel/dashboard_templates",
     "@kirocrew-panel/dashboard_preview",
     "@kirocrew-panel/dashboard_apply",

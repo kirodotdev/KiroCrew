@@ -4748,6 +4748,27 @@ DASHBOARD_WRITE_SCHEMA = ToolSchema(
     ],
 )
 
+DASHBOARD_SAVE_SCHEMA = ToolSchema(
+    tool_name="dashboard_save",
+    fields=[
+        # The THREE declarations and nothing else. Every other key a package has --
+        # ``kind`` and ``bound_to`` -- is the gateway's to fill from the vetted
+        # caller, so a caller that sends one is refused HERE by the unknown-key
+        # rule every ToolSchema enforces. That refusal is the point: silently
+        # dropping a caller-sent ``bound_to`` would tell an agent its page was
+        # saved where it asked while the page went somewhere else.
+        #
+        # Typed only as objects, with no inner shape. The shape is
+        # ``artifact_store.dashboard_package``'s, which holds the closed catalog
+        # of data types and block types and is the one place that can name what
+        # was wrong; a second shape here would either contradict it or restate it,
+        # and a restatement goes stale the day the catalog grows.
+        FieldSpec("model", dict, required=True),
+        FieldSpec("view", dict, required=True),
+        FieldSpec("theme", dict, required=True),
+    ],
+)
+
 DASHBOARD_TEMPLATES_SCHEMA = ToolSchema(
     tool_name="dashboard_templates",
     fields=[
@@ -4799,6 +4820,7 @@ MCP_PANEL_SCHEMAS: dict[str, ToolSchema] = {
     "panel_templates": PANEL_TEMPLATES_SCHEMA,
     "dashboard_fields": DASHBOARD_FIELDS_SCHEMA,
     "dashboard_write": DASHBOARD_WRITE_SCHEMA,
+    "dashboard_save": DASHBOARD_SAVE_SCHEMA,
     "dashboard_templates": DASHBOARD_TEMPLATES_SCHEMA,
     "dashboard_preview": DASHBOARD_PREVIEW_SCHEMA,
     "dashboard_apply": DASHBOARD_APPLY_SCHEMA,
