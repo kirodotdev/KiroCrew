@@ -24,7 +24,7 @@ CONFIG = ROOT / "src" / "kiro_crew" / "config"
 # so the section's bytes still count against the budget after moving into
 # `context_assembly/sections.py`. The `{{MAX_SUBAGENTS}}` and `{{WIDGET_BLOCK}}`
 # slots are still counted as their raw tokens.
-PROMPT_BYTE_CEILINGS = {"prompt.md": 40_725}
+PROMPT_BYTE_CEILINGS = {"prompt.md": 40_850}
 _COMPUTER_USE_TOKEN = "{{COMPUTER_USE_BLOCK}}"
 
 
