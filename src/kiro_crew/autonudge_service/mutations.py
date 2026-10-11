@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import autonudge_stop_log
+from kiro_crew.autonudge_service.gate import _clear_short_reading_hold
 from kiro_crew.autonudge_service.maintenance import (
     _assert_mutation_lock_owned,
     _claim_mutation_lock,
@@ -674,6 +675,13 @@ async def _update_unserialized(
         # Keep typed nested values intact. ``asdict`` recursively converts
         # MonitorState to a plain dict, which is not a valid rollback value.
         previous = {item.name: getattr(loop, item.name) for item in fields(loop)}
+        # The short-reading hold lives ON the monitor, which ``previous`` holds by
+        # reference, so a re-aim's clear of it is kept by value for the rollback.
+        previous_hold = (
+            (loop.monitor, loop.monitor.short_reading_digest, loop.monitor.short_reading_held)
+            if loop.monitor is not None
+            else None
+        )
         # Set only if a retarget takes this loop's pending wake claim, so the
         # rollback below restores exactly what it removed and nothing else.
         claim_discarded_for_retarget = False
@@ -718,6 +726,7 @@ async def _update_unserialized(
                 loop.judge_pr_seen = {}
                 loop.judge_last_verdict = {}
                 loop.judge_recent_verdicts = []
+                _clear_short_reading_hold(loop)
                 # The instruction IS the target, so a changed instruction can
                 # change the subject. Re-infer, or the loop keeps polling the
                 # pull request it was armed on: the new subject is never
@@ -774,6 +783,7 @@ async def _update_unserialized(
             # the criteria being replaced, so carrying it forward would show the
             # judge a hit rate for a question nobody is asking any more.
             loop.judge_recent_verdicts = []
+            _clear_short_reading_hold(loop)
             # A REPLACED brief can name a different pull request, and the collector
             # will ask about the new list from the next tick on. A monitor left on
             # the old subject would publish a reading the collector drops, so the
@@ -1156,6 +1166,10 @@ async def _update_unserialized(
         except BaseException:
             for field_name, value in previous.items():
                 setattr(loop, field_name, value)
+            if previous_hold is not None:
+                held_on, held_digest, held_count = previous_hold
+                held_on.short_reading_digest = held_digest
+                held_on.short_reading_held = held_count
             if claim_was_held:
                 # The retarget above dropped this loop's pending wake claim,
                 # because a claim earned by the OLD subject must not be spent on

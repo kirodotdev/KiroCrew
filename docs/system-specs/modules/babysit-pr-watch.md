@@ -130,6 +130,25 @@ memory only, capped at `MAX_BODY_STASHES` (64) in `autonudge_judge.py`; a droppe
 makes the next reading partial, and a partial reading fires. Merged and closed map to a
 terminal outcome in the auto-nudge core, not in the fetcher.
 
+A partial reading is never screened quiet on the half that arrived, but a REPEAT of one
+does not buy a turn every interval either. `MonitorState.short_reading_digest` holds the
+digest of the partial reading the last DELIVERED turn was decided on, written only where
+delivery is confirmed (`_record_delivered_reading`, against the reading, instruction and
+brief read before the dispatch), so a refused fire, a process that stops before its turn
+lands, or a re-aim while the turn is in flight holds nothing. A later tick whose partial
+reading has that
+same digest is held (`gate.py` `_holds_short_reading`): no judge call, no baseline commit,
+no quiet counter, and one notice row on the owning session naming why the reading is
+short and when the next turn is due. `short_reading_held` counts the repeats and is
+written durably before the held tick returns (a refused write delivers instead), and the
+`_SHORT_READING_HOLD_CEILING`th (the quiet floor, `_MAX_QUIET_STREAK`) delivers anyway, so
+a sustained degradation costs one turn per ceiling's worth of ticks. Anything else
+delivers or ends the run: a change in what was read (a lane turning red, a new remark), a
+different `incomplete` reason, a whole reading (which clears both fields in the same write
+that keeps it), an owed judge wake, a brief naming any target other than the watched pull
+request (a session, a second pull request, or none at all), or an
+update that re-aims the loop (a reworded instruction or a replaced brief clears both).
+
 Every uncertain path -- no probe, no inferable target, a probe defect, a kernel that
 reached no verdict -- fires, because a wrongly-quiet tick is silence with
 half-finished work behind it while a wrongly-spent tick costs what every tick costs
@@ -348,7 +367,8 @@ The reading itself:
 * One `status` per reading: `ok` when every page was read, `partial` when something
   was read and something was not, `unavailable` when the subject was not reached.
   A refusal becomes a status, never an exception. A consumer treats `partial` as a
-  target nobody read whole, which fires.
+  target nobody read whole, which fires; the gate holds only a repeat of a partial
+  reading a turn was already delivered on, up to the quiet floor.
 * `as_facts` is the durable half -- typed facts plus who said something and when.
   `bodies` is a separate call, so keeping the first cannot accidentally keep the
   second: remark prose stays in the process that fetched it. Each remark does carry a

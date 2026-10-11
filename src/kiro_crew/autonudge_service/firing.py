@@ -23,7 +23,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
 from kiro_crew import shutdown_event
-from kiro_crew.autonudge_service.gate import _WAKE_FOLLOWUP_TICKS, _record_delivered_revision
+from kiro_crew.autonudge_service.gate import (
+    _WAKE_FOLLOWUP_TICKS,
+    _delivery_basis,
+    _record_delivered_reading,
+    _record_delivered_revision,
+)
 from kiro_crew.autonudge_service.maintenance import _release_mutation_lock
 from kiro_crew.autonudge_service.model import (
     _CONSECUTIVE_FAILURE_STANDDOWN_AFTER,
@@ -413,6 +418,9 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
     # on _persist_locked(), so the delivered cycle was never written and the
     # loop could run extra cycles after a restart. _run_fire_cycle owns the
     # window; this method is the body.
+    # Read before the dispatch, which is a long await an owner can re-aim the loop
+    # inside; see ``_record_delivered_reading``.
+    delivery_basis = _delivery_basis(loop)
     try:
         delivered = await self._on_fire(loop)
     except Exception:
@@ -659,6 +667,9 @@ async def _run_fire_cycle(self: AutoNudgeService, loop: NudgeLoop) -> None:
         # a later quiet floor can tell whether the ledger moved since. Rides the
         # delivered path's own write, like the counters above.
         _record_delivered_revision(loop.monitor)
+        # And a pull-request watch remembers the short reading this turn carried, if
+        # any, so a repeat of it can be held instead of delivering again.
+        _record_delivered_reading(loop, delivery_basis)
     if not delivered:
         # If the fire path already removed the loop (e.g. slot missing →
         # remove()), do NOT resurrect it with a fresh timer — that would
