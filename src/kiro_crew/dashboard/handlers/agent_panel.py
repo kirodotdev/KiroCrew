@@ -31,7 +31,7 @@ from typing import Any, Final, cast
 
 from aiohttp import web
 
-from kiro_crew import agent_panel, dashboard_agentic
+from kiro_crew import agent_panel, conductor_board_contract, dashboard_agentic
 from kiro_crew import members as members_mod
 from kiro_crew import pipeline_board_contract
 from kiro_crew.config.loader import KiroCrewConfig
@@ -708,13 +708,24 @@ def _card_slot(cfg: KiroCrewConfig, member: str, slug: str) -> str:
 BOARD_STALE_AFTER_SECONDS: Final[int] = 900
 
 
-def _panel_record(slot: str, slug: str, owner_key: str) -> dict[str, Any] | None:
-    """The crew's panel record, with a contract template's NUMBERS taken from the log.
+def _panel_record(
+    slot: str, slug: str, owner_key: str, *, member: str = ""
+) -> dict[str, Any] | None:
+    """The crew's panel record, with a board template's TASKS taken from the log.
 
     Two steps: pick the record (:func:`_published_record`, whose selection rules are
-    their own story), then, for the one template that has a declared contract, replace
-    its data with :func:`~kiro_crew.pipeline_board_contract.build_pipeline_board`'s
-    output. Everything else is served exactly as published.
+    their own story), then, for the two templates whose board the work fold can
+    produce, rebuild their data from it -- the pipeline board through
+    :func:`~kiro_crew.pipeline_board_contract.build_pipeline_board`, the goal
+    conductor's through :func:`_with_conductor_board`. Everything else is served
+    exactly as published.
+
+    *member* is the exact crew name, given only when the slot names this crew alone
+    (the read route passes it when its card slot is non-empty). With it, a crew that
+    owns a work ledger but never published gets the conductor board built from the
+    fold, so the drawer shows the ledger with zero agent writes. Without it nothing
+    is synthesized: on a slot two crews share, one crew's ledger must not become the
+    other's drawer.
 
     Done HERE rather than in the drawer because both surfaces read this one record: the
     composed document carries it in its data island, and the docked native summary is
@@ -724,10 +735,65 @@ def _panel_record(slot: str, slug: str, owner_key: str) -> dict[str, Any] | None
     """
     record = _published_record(slot, slug, owner_key)
     if record is None:
+        if member and (
+            agent_panel.template_for_crew(member) != pipeline_board_contract.BOARD_TEMPLATE_ID
+        ):
+            return _with_conductor_board(slot, None, member=member)
         return record
-    if str(record.get("template") or "") != pipeline_board_contract.BOARD_TEMPLATE_ID:
+    template = str(record.get("template") or "")
+    if template == conductor_board_contract.BOARD_TEMPLATE_ID:
+        return _with_conductor_board(slot, record)
+    if template != pipeline_board_contract.BOARD_TEMPLATE_ID:
         return record
     return _with_board_numbers(slot, record)
+
+
+def _with_conductor_board(
+    slot: str, record: dict[str, Any] | None, *, member: str = ""
+) -> dict[str, Any] | None:
+    """*record* with its board rebuilt from the ``work`` fold, or *record* unchanged.
+
+    The task list, the needs-you band and the done count are the fold's, so the drawer
+    is current whether or not the conductor remembered to republish. The published data
+    contributes only ``next`` and ``repo``; ``next`` older than the ledger's newest
+    entry is labelled with its own time (``next_from``) rather than shown as current.
+
+    With *record* ``None`` the board is built for *member* from the fold alone. No board
+    in the fold (absent, empty or unreadable) leaves *record* as it is -- ``None`` stays
+    the empty state -- because a board of zeros would claim a ledger that is not there.
+
+    The derived board REPLACES ``data`` rather than riding a sibling key as the pipeline
+    board does: the docked summary walks ``data``, and here its leading keys
+    (``needs_you``, ``done``, ``updated``) are exactly what must not go stale.
+    """
+    try:
+        view = projection.read_slot_projection(slot, WORK_FOLD_NAME).value
+    except Exception:
+        logger.warning("work fold unreadable for slot %s", slot, exc_info=True)
+        return record
+    if not _is_work_board(view):
+        return record
+    work = cast("WorkBoardView", view)
+    published_at = str((record or {}).get("published_at") or "")
+    published = (record or {}).get("data")
+    board = conductor_board_contract.build_conductor_board(
+        work, published if isinstance(published, dict) else None, published_at
+    )
+    last_entry_at = str(work["conductor"].get("last_entry_at") or "")
+    if record is None:
+        return agent_panel.derived_record(
+            member,
+            template=conductor_board_contract.BOARD_TEMPLATE_ID,
+            data=dict(board),
+            at=last_entry_at,
+        )
+    out = dict(record)
+    out["data"] = agent_panel.scrub_data(dict(board))
+    # The drawer's "updated" chip reads this stamp, and the board is now as new as the
+    # ledger's last entry, so the newer of the two is the honest one.
+    if conductor_board_contract.is_newer(last_entry_at, published_at):
+        out["published_at"] = last_entry_at
+    return out
 
 
 def _with_board_numbers(slot: str, record: dict[str, Any]) -> dict[str, Any]:
@@ -1132,6 +1198,8 @@ def _read_and_compose(
     slot: str,
     slug: str,
     owner_key: str,
+    *,
+    member: str = "",
 ) -> tuple[dict[str, Any] | None, str | None, bool]:
     """One record read, and the document composed from that same record.
 
@@ -1142,7 +1210,7 @@ def _read_and_compose(
     from an absent record without exposing an unowned record before ownership is
     checked.
     """
-    record = _panel_record(slot, slug, owner_key)
+    record = _panel_record(slot, slug, owner_key, member=member)
     try:
         return record, agent_panel.render_record(record), False
     except (agent_panel.PanelError, TypeError, ValueError):
@@ -1333,7 +1401,14 @@ async def api_member_panel(request: web.Request) -> web.Response:
         # names one crew, so the key returned for the store is empty when this one is
         # shared. Both come from the same load, so they cannot disagree about the config.
         slot = _panel_slot(cfg, member, slug)
-        return (_card_slot(cfg, member, slug), *_read_and_compose(slot, slug, mine))
+        card_slot = _card_slot(cfg, member, slug)
+        # ``member`` only when the slot names this crew alone: that is what lets a crew
+        # that never published still see its own ledger, without a shared slot's ledger
+        # reaching the other crew's drawer.
+        return (
+            card_slot,
+            *_read_and_compose(slot, slug, mine, member=member if card_slot else ""),
+        )
 
     try:
         slot_key, record, html, render_failed = await asyncio.to_thread(_resolve_and_read)

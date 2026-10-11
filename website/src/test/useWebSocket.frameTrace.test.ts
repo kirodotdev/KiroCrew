@@ -1065,11 +1065,14 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   "slot_agent_switch": [
     'action dashboard/fetchSlots/pending',
   ],
-  // Two frames, two invalidations: a fold advancing is what makes a crewmate's open
-  // Dashboard tab stale, and the store apply is silent (it is not a query).
+  // Two frames, two invalidations each: a fold advancing is what makes a crewmate's
+  // open Dashboard tab stale, and its published panel too (a conductor's board is
+  // rebuilt from its work ledger on every read). The store apply is silent.
   "member_projection": [
     "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+    "query invalidateQueries [\"member-panel\",\"ada\"]",
     "query invalidateQueries [\"member-dashboard\",\"ada\"]",
+    "query invalidateQueries [\"member-panel\",\"ada\"]",
   ],
   "members_subscribed truncating a torn tail": [
     'query resetQueries ["kirocrew-agents","members-roster"]',

@@ -912,6 +912,36 @@ def publish(
     return record
 
 
+def scrub_data(data: dict[str, Any]) -> dict[str, Any]:
+    """*data* through the same redaction a published payload gets.
+
+    For a board the READER derives from the work fold: that text was written by workers,
+    not published, so it never passed :func:`publish`'s scrub, and the drawer is the same
+    egress either way.
+    """
+    scrubbed = _scrub_published(data)
+    return scrubbed if isinstance(scrubbed, dict) else {}
+
+
+def derived_record(crew: str, *, template: str, data: dict[str, Any], at: str) -> dict[str, Any]:
+    """A panel record the READER builds for *crew*, shaped like a stored one.
+
+    Never written anywhere: it exists so a crew that never published still has a drawer
+    when its board can be derived from the log. Owned by *crew* the way :func:`publish`
+    owns a record -- the digest of the exact name, the redacted name as display text --
+    so the read route's ownership check treats it exactly like a real one.
+    """
+    return {
+        "schema": SCHEMA_VERSION,
+        "template": template,
+        "title": "",
+        "crew": _clamp(_scrub(crew), _MAX_TITLE),
+        "crew_key": crew_key(crew),
+        "data": scrub_data(data),
+        "published_at": at,
+    }
+
+
 def read(slug: str) -> dict[str, Any] | None:
     """Return the crew's stored record, or ``None`` if it has no panel.
 

@@ -862,9 +862,9 @@ async def test_the_response_comes_from_a_single_record_read(vetted, monkeypatch)
         reads: list[str] = []
         real = routes._panel_record
 
-        def counting(slot: str, slug: str, owner_key: str):
+        def counting(slot: str, slug: str, owner_key: str, **kw: Any):
             reads.append(slug)
-            return real(slot, slug, owner_key)
+            return real(slot, slug, owner_key, **kw)
 
         monkeypatch.setattr(routes, "_panel_record", counting)
         body = await (await c.get(f"/api/members/{SLUG}/panel?member={CREW}")).json()
