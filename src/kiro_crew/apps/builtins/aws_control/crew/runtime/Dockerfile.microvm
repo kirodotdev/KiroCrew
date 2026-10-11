@@ -1,0 +1,169 @@
+# The Lambda MicroVM layer: the same crew image, started by the platform's hooks.
+#
+# Appended to the base recipe and the crew layer by
+# `scripts/build_microvm_image_zip.py`, which is this lane's build TARGET -- the
+# one thing that differs from Fargate. Fargate pushes the crew image to ECR and
+# registers a task definition; this lane zips the same recipes and calls
+# `CreateMicrovmImage`, and Lambda runs the build on ARM64 infrastructure. No
+# image is pushed from an operator's machine on this lane and no registry
+# credential exists on it.
+#
+# It COMPILES NOTHING OF OURS. Everything below is either a platform prerequisite
+# the guest cannot work without, or the entrypoint. The serving code and the crew
+# content are already in the image when this layer starts.
+
+# Root for the layer, and root for PID 1. The hook listener has to write
+# /etc/machine-id and register the SSM agent, neither of which a non-root process
+# can do. The CREW does not run as root: the supervisor is spawned by the
+# listener and the image's own `USER crew` posture is what the supervisor and its
+# children inherit through the drop below.
+USER root
+
+# amazon-ssm-agent: the owner's ONLY route to this crew. A MicroVM's HTTPS
+# endpoint reaches the hook port and nothing else, so the front process -- bound
+# to loopback on this lane -- is reachable only through an SSM port-forward, and
+# that needs the guest registered as a hybrid managed node.
+#
+# INSTALLED HERE, NEVER REGISTERED HERE. Every MicroVM from this image resumes
+# from one snapshot, so a build-time registration would give every VM the same
+# node identity and one private key: they would collide on a single `mi-` id and
+# trip MachineFingerprintDoesNotMatch. Registration happens in the run hook, from
+# the one-use activation the launch payload delivers.
+#
+# Staged with `dpkg -x` into a scratch directory and copied selectively, not
+# `dpkg -i` and not `dpkg -x` into `/`. `dpkg -i` runs a postinst that enables a
+# systemd unit, and there is no init system in this container -- the hook listener
+# is the supervisor's parent. Unpacking into `/` replaces Debian's merged-usr
+# `/lib` symlink with a real directory, which removes the dynamic loader from its
+# expected path and breaks every dynamically linked binary in the image.
+#
+# sudo comes with it because `cloud/ssm.py` wraps every Run Command as
+# `sudo -u <run_as> -i <cmd>` -- the same helper the EC2 and Fargate lanes use --
+# so a guest without sudo answers every in-guest command with
+# `sudo: command not found` and exit 127. One live MicroVM was spent learning
+# that on 2026-10-06.
+ARG SSM_REGION=us-east-1
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends sudo; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSL -o /tmp/ssm.deb \
+      "https://s3.${SSM_REGION}.amazonaws.com/amazon-ssm-${SSM_REGION}/latest/debian_arm64/amazon-ssm-agent.deb"; \
+    dpkg -x /tmp/ssm.deb /tmp/ssmx; \
+    cp -a /tmp/ssmx/usr/bin/. /usr/bin/; \
+    mkdir -p /etc/amazon/ssm /var/lib/amazon/ssm /var/log/amazon/ssm; \
+    cp -a /tmp/ssmx/etc/amazon/ssm/. /etc/amazon/ssm/; \
+    cp /etc/amazon/ssm/seelog.xml.template /etc/amazon/ssm/seelog.xml; \
+    rm -rf /tmp/ssm.deb /tmp/ssmx; \
+    /usr/bin/amazon-ssm-agent -version; \
+    test ! -e /var/lib/amazon/ssm/registration
+
+# Two settings in this file are load-bearing, which is why it is a file:
+#   Identity.ConsumptionOrder = ["OnPrem"] forces the hybrid-activation identity.
+#     A MicroVM has no instance profile to remove, so this pin is the only guard
+#     available against the agent looking for one.
+#   Profile.ShareCreds = true makes the agent publish the node's role credentials
+#     to root's shared credentials file. That file is the guest's ONLY AWS
+#     identity -- there is no instance profile and nothing is baked in -- so
+#     without it the guest can never read the secrets its payload references.
+COPY microvm-ssm-agent.json /etc/amazon/ssm/amazon-ssm-agent.json
+
+# Guest-only state, outside the data home so it cannot be swept into an archive.
+# Created here, in the image, for the same reason the data directories are: a
+# directory that does not exist is a boot that dies on a PermissionError reading
+# like a code fault.
+RUN mkdir -p /var/lib/microvm-guest /var/tmp/microvm-restore
+
+# The crew user gets a real login shell on THIS lane, because SSM is how the
+# owner reaches a MicroVM crew and `ssm:SendCommand` is wrapped in
+# `sudo -u <user> -i bash`. The `-i` runs the account's login shell, and the base
+# image creates `crew` with `--shell /usr/sbin/nologin` -- correct for a lane
+# nobody shells into, and fatal here: every command exits non-zero before
+# reaching what it was asked to run, with no output that names the shell as the
+# cause.
+#
+# Scoped to this layer rather than changed in the base, because the Fargate lane
+# reaches its crew through ECS exec and has no reason to widen the account.
+RUN usermod -s /bin/bash crew
+
+# A GATE on the crew layer's own file modes, not a fix for them: the fix is
+# `COPY --chmod=0755` in Dockerfile.crew. This fails the build if the user the
+# supervisor runs as cannot read the bundle it is about to install -- which is
+# the failure one live MicroVM was spent diagnosing, and which presents as a
+# corrupt-bundle error rather than a permission one.
+#
+# Here rather than in the crew layer because that file deliberately contains no
+# RUN, and because a gate belongs with the layer that has root.
+# It checks TRAVERSAL as well as readability, because the two fail separately: a
+# file can be -rw-r--r-- inside a directory the reader cannot enter, which is
+# what a mode without the execute bit produces -- `--chmod` applies one octal to
+# every path the COPY creates, directories included, so `0644` there yields
+# `drw-r--r--` and nothing under it can be reached.
+#
+# It asks whether every skill PRESENT is readable, not whether at least one
+# exists. Demanding one made a crew with no skills unbuildable:
+#
+#     readable SKILL.md files: 0
+#     no readable skill in the bundle
+#
+# and `packaging.build` advertises exactly that bundle ("Nothing private was
+# selected: a valid bundle with the crew's persona only"), so the supported case
+# failed at image build. Measured live. Counting present against readable keeps
+# the whole point of the gate -- a skill the crew user cannot read is still a
+# hard failure here rather than a corrupt-bundle error at run time -- while zero
+# skills is zero of zero and passes.
+RUN set -eux; \
+    ls -ld /app /app/crew-bundle /app/crew-bundle/skills; \
+    sudo -u crew test -x /app/crew-bundle \
+      || { echo "crew cannot traverse /app/crew-bundle" >&2; exit 1; }; \
+    for f in manifest.json agent.json mcp.json; do \
+      sudo -u crew test -r "/app/crew-bundle/$f" \
+        || { echo "crew cannot read /app/crew-bundle/$f" >&2; ls -l /app/crew-bundle >&2; exit 1; }; \
+    done; \
+    sudo -u crew test -x /app/crew-bundle/skills \
+      || { echo "crew cannot traverse /app/crew-bundle/skills" >&2; exit 1; }; \
+    present=$(sudo -u crew find /app/crew-bundle/skills -name 'SKILL.md' | wc -l); \
+    readable=$(sudo -u crew find /app/crew-bundle/skills -name 'SKILL.md' -readable | wc -l); \
+    echo "SKILL.md files: $present present, $readable readable"; \
+    [ "$present" -eq "$readable" ] \
+      || { echo "crew cannot read $((present - readable)) of $present skills" >&2; exit 1; }
+
+# The front moves off the hook port. The platform's hook listener must own the
+# port the image declares to `CreateMicrovmImage`, and the two cannot share one.
+# Together with SMC_FRONT_BIND=127.0.0.1 in the run-hook environment this is what
+# keeps the crew off the VM's public endpoint: a caller who mints an endpoint
+# credential names a PORT, so the front must neither hold 8080 nor be bound to a
+# routable address.
+# Every crew route on this lane authenticates its caller, and that is set in the
+# IMAGE rather than passed at launch.
+#
+# A MicroVM carries its own HTTPS endpoint, reachable from the internet, and the
+# ingress connector does not govern it: the only control the platform enforces
+# there is a port list, so a holder of a correctly-scoped token is an arbitrary
+# internet caller. There is no security group to lean on, so the container
+# authenticates for itself.
+#
+# Baked, not launched. A value in the run payload or in an image-level
+# environment is one a caller can omit or replace, and the posture of a lane with
+# no network bound must not depend on every launch remembering to ask for it.
+# `ENV` here is part of the image: a VM started from it has the flag whatever the
+# launch said.
+#
+# Fargate's default is unchanged -- that lane's flag is absent and so stays off,
+# which is what its private subnet and zero-ingress security group already
+# assert.
+ENV SMC_HOOK_PORT=8080 \
+    SMC_FRONT_PORT=8081 \
+    SMC_FRONT_BIND=127.0.0.1 \
+    SMC_REQUIRE_AUTH_ALL_ROUTES=1
+
+EXPOSE 8080
+
+# PID 1 is the hook listener, not the supervisor. Nothing else can be: the
+# platform calls `/ready` during this very build, before any crew, credential or
+# control secret exists, and the front refuses to start without all three.
+#
+# No HEALTHCHECK, for the reason the base gives: a check that proves the port is
+# bound would report healthy on a crew whose every turn fails.
+ENTRYPOINT ["python", "-m", "container.microvm.hooks"]
+CMD []

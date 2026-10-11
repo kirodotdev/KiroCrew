@@ -632,6 +632,126 @@ class TestInstanceMutations:
         assert seen["destroy"]["tag"] == "kc-7b21"
         assert seen["destroy"]["kw"].get("wait") is False
 
+    async def test_these_verbs_dispatch_on_the_lane_that_created_the_crew(
+        self, tmp_path, monkeypatch
+    ):
+        """A crew from another lane must not be driven down the EC2 lane's path.
+
+        The built-in path looks for a CloudFormation stack named after the tag, and
+        only that lane creates one. Sent there, a MicroVM crew produced a credentials
+        error about describing a stack that was never meant to exist -- measured on a
+        live crew, and it reads as a broken profile rather than a verb that does not
+        apply here.
+        """
+        reached: list[str] = []
+        monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
+        monkeypatch.setattr(hc.ec2, "destroy", lambda *a, **k: reached.append("ec2.destroy") or {})
+        monkeypatch.setattr(hc.ec2, "describe", lambda *a, **k: {"instance_id": "i-0abc"})
+
+        torn: list[dict] = []
+
+        class _LaneEngine:
+            def teardown(self, *, tag, profile, region):
+                torn.append({"tag": tag, "profile": profile, "region": region})
+                return True
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = _LaneEngine()
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-2a276d"
+        job.instance_id = "mi-0abc"
+        state.cloud_launch_store.save(job)
+
+        unregistered: list[str] = []
+        monkeypatch.setattr(
+            hc.connect_mod, "unregister_instance", lambda iid: unregistered.append(iid) or True
+        )
+
+        # Deleting the crew is what this lane can do, and it goes to the lane's engine.
+        gone = await hc.api_cloud_destroy(
+            _req(
+                "DELETE",
+                "/api/cloud/kc-2a276d",
+                state=state,
+                match_info={"tag": "kc-2a276d"},
+            )
+        )
+        assert gone.status == 200
+        assert torn == [{"tag": "kc-2a276d", "profile": "", "region": ""}]
+        assert "ec2.destroy" not in reached
+        assert unregistered == ["mi-0abc"], "the registry row outlived the crew"
+
+    async def test_a_lane_with_no_paused_state_refuses_stop_rather_than_ending_the_crew(
+        self, tmp_path, monkeypatch
+    ):
+        """``stop``/``start`` are the EC2 lane's reversible pair. A lane whose engine
+        offers only ``teardown`` has no such pair, and mapping stop onto teardown
+        would make a panel button that asks for no confirmation destroy a crew's
+        conversations. So it is refused, and the refusal names what to do instead."""
+        monkeypatch.setattr(
+            hc.ec2, "stop", lambda *a, **k: pytest.fail("the EC2 lane answered for another lane")
+        )
+
+        torn: list[str] = []
+
+        class _LaneEngine:
+            def teardown(self, *, tag, profile, region):
+                torn.append(tag)
+                return True
+
+        state = _state(tmp_path)
+        state.cloud_launch_engine = _LaneEngine()
+        job = state.cloud_launch_store.create(
+            profile="dev", region="us-east-1", size_key="", provider_id="microvm"
+        )
+        job.tag = "kc-2a276d"
+        state.cloud_launch_store.save(job)
+
+        refused = await hc.api_cloud_stop(
+            _req(
+                "POST",
+                "/api/cloud/kc-2a276d/stop",
+                state=state,
+                match_info={"tag": "kc-2a276d"},
+            )
+        )
+        assert refused.status == 409
+        body = json.loads(refused.text or "{}")
+        assert body["code"] == "lane_cannot_pause"
+        assert body["provisioner_id"] == "microvm"
+        assert torn == [], "a refusal must not tear the crew down"
+
+    async def test_a_crew_from_the_builtin_lane_still_takes_the_builtin_path(
+        self, tmp_path, monkeypatch
+    ):
+        """Non-vacuity for the two above: the dispatch must still send the lane it
+        was written for to the path it has always used, including a tag with no job
+        file left to read."""
+        reached: list[str] = []
+        monkeypatch.setattr(hc.ec2, "stop", lambda *a, **k: reached.append("ec2.stop") or {})
+
+        state = _state(tmp_path)
+        job = state.cloud_launch_store.create(profile="dev", region="us-east-1", size_key="light")
+        job.tag = "kc-ec2"
+        state.cloud_launch_store.save(job)
+
+        answered = await hc.api_cloud_stop(
+            _req("POST", "/api/cloud/kc-ec2/stop", state=state, match_info={"tag": "kc-ec2"})
+        )
+        assert answered.status == 200
+        assert reached == ["ec2.stop"]
+
+        # And a tag the job store knows nothing about keeps the same behaviour rather
+        # than being refused, which is what a reaped job file leaves behind.
+        reached.clear()
+        forgotten = await hc.api_cloud_stop(
+            _req("POST", "/api/cloud/kc-gone/stop", state=state, match_info={"tag": "kc-gone"})
+        )
+        assert forgotten.status == 200
+        assert reached == ["ec2.stop"]
+
     async def test_destroy_cleans_up_local_state_after_deletion_confirms(
         self, tmp_path, monkeypatch
     ):
@@ -1527,3 +1647,117 @@ class TestProvisionerSeam:
         )
         assert resp.status == 202
         assert provider.asked == []
+
+
+class TestTheConfirmedRecipientIsRevalidated:
+    """A confirmation the configuration can outrun is not a confirmation.
+
+    The operator reads the recipient from the provisioner row and confirms it; the
+    seam then reads the configuration AGAIN to build the engine. An edit in between
+    -- or one racing a launch whose store checks are still running -- means the
+    owner approved one image, key or bundle and a different one is used. That is the
+    substitution the confirmation exists to prevent.
+
+    Checked at the seam rather than inside a lane: a lane that forgets the check is
+    the lane that needs it, and a lane added later inherits this one. ``engine_for``
+    only constructs an engine, so the refusal still lands before anything is
+    provisioned.
+    """
+
+    class _Provider:
+        """A seam whose published recipient can move between the two reads."""
+
+        def __init__(self, published: str):
+            self.published = published
+            self.built = 0
+
+        def provisioners(self):
+            return [SimpleNamespace(id="microvm", confirm_before_launch=self.published)]
+
+        def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+            self.built += 1
+            return SimpleNamespace(name=provisioner_id)
+
+    def test_a_recipient_that_moved_after_confirmation_is_refused(self):
+        provider = self._Provider("image=v1 key=alpha")
+        provider.published = "image=v2 key=beta"  # the operator confirmed v1
+
+        with pytest.raises(hc.LaunchUnavailable) as refusal:
+            hc._call_engine_for(provider, "microvm", "image=v1 key=alpha")
+
+        assert refusal.value.code == "recipient_changed"
+        assert "Nothing was launched" in str(refusal.value)
+
+    def test_the_same_recipient_is_accepted(self):
+        """Non-vacuity: the check must pass the case it exists to let through, or it
+        would refuse every confirmed launch on every lane."""
+        provider = self._Provider("image=v1 key=alpha")
+        engine = hc._call_engine_for(provider, "microvm", "image=v1 key=alpha")
+        assert engine.name == "microvm"
+        assert provider.built == 1
+
+    def test_a_lane_publishing_no_recipient_is_left_alone(self):
+        """Nothing to move, so nothing to compare: a lane that asks for no
+        confirmation must not be refused for not having one."""
+        provider = self._Provider("")
+        engine = hc._call_engine_for(provider, "microvm", "")
+        assert engine.name == "microvm"
+
+    def test_an_unreadable_row_list_does_not_convict_a_launch(self):
+        """Fail OPEN here, deliberately. The engine was already built from a
+        configuration read that succeeded; refusing because a second, cosmetic read
+        failed would turn a transient disk error into a refused launch."""
+
+        class _Broken(TestTheConfirmedRecipientIsRevalidated._Provider):
+            def provisioners(self):
+                raise OSError("cannot read cloud.json")
+
+        engine = hc._call_engine_for(_Broken("image=v1"), "microvm", "image=v1")
+        assert engine.name == "microvm"
+
+
+class TestTheConfirmationIsBoundToWhatTheEngineUses:
+    """S3's second half: the seam must fail CLOSED, not quietly.
+
+    Its first half lives with the lane -- ``_microvm_engine`` compares the
+    confirmation against the same config object the spec is built from. This half
+    is the seam's own backstop, and the hole in it was giving up: a lane whose
+    block went incomplete publishes NO row and an empty recipient, and reading
+    either as agreement lets a launch through on a confirmation nothing backs.
+    """
+
+    class _Provider:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def provisioners(self):
+            return self.rows
+
+        def engine_for(self, provisioner_id, *, confirmed_recipient=""):
+            return SimpleNamespace(name=provisioner_id)
+
+    def test_a_row_that_vanished_refuses(self):
+        """The lane's block went incomplete between publish and launch, so it
+        publishes no row at all."""
+        with pytest.raises(hc.LaunchUnavailable) as refusal:
+            hc._call_engine_for(self._Provider([]), "microvm", "image=v1 key=alpha")
+        assert refusal.value.code == "recipient_changed"
+
+    def test_a_row_that_now_publishes_nothing_refuses(self):
+        """Still listed, but its recipient is empty -- which is what an incomplete
+        block answers. An empty string is not the string that was confirmed."""
+        rows = [SimpleNamespace(id="microvm", confirm_before_launch="")]
+        with pytest.raises(hc.LaunchUnavailable):
+            hc._call_engine_for(self._Provider(rows), "microvm", "image=v1 key=alpha")
+
+    def test_a_matching_row_is_accepted(self):
+        """Non-vacuity: the check must pass the case it exists to let through."""
+        rows = [SimpleNamespace(id="microvm", confirm_before_launch="image=v1 key=alpha")]
+        engine = hc._call_engine_for(self._Provider(rows), "microvm", "image=v1 key=alpha")
+        assert engine.name == "microvm"
+
+    def test_a_launch_that_confirmed_nothing_is_left_alone(self):
+        """A lane asking for no confirmation must not be refused for not having
+        one, or every built-in launch would stop."""
+        engine = hc._call_engine_for(self._Provider([]), "aws_ec2", "")
+        assert engine.name == "aws_ec2"

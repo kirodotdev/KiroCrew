@@ -46,8 +46,45 @@ ARG BUILT_AT=unknown
 #   agent.json     the Kiro agent spec; "name" == crew_name
 #   mcp.json       MCP server config; may be {} but MUST exist
 #   skills/        skill directories; may be empty but MUST exist
-COPY manifest.json agent.json mcp.json /app/crew-bundle/
-COPY skills /app/crew-bundle/skills
+#
+# An explicit `--chmod` is LOAD-BEARING, not hygiene. `COPY` preserves the source
+# file's mode, and `packaging.build` writes every bundle file 0600 -- correctly,
+# since a curated bundle sits on the operator's own disk. Carried into the image
+# unchanged, that produces a bundle owned by root and readable only by root,
+# while the supervisor that reads it runs as `crew` (the base image's `USER`).
+# The container then fails at startup with
+#   ConfigError: bundle check failed [manifest.json is readable JSON]:
+#   /app/crew-bundle/manifest.json could not be read as JSON (Permission denied)
+# which reads like a corrupt bundle and is a file mode. Measured in a live
+# MicroVM; the same build runs on the Fargate lane, so it is not a
+# MicroVM-specific fault.
+#
+# `0755` AND NOT `0644`, which is a real trade-off and not a slip. `--chmod`
+# takes ONE octal and applies it to every path the COPY creates -- files and
+# directories alike -- and a directory without the execute bit cannot be
+# traversed, so `0644` makes `/app/crew-bundle` and `skills/` unreadable even
+# though each file inside them is `-rw-r--r--`. Measured: the first attempt at
+# this fix produced `drw-r--r-- skills` and failed the gate in Dockerfile.microvm
+# with the same Permission denied it was written to prevent.
+#
+# BOTH lines, including the one that names only files. A COPY into
+# `/app/crew-bundle/` CREATES that directory, so its `--chmod` lands on the
+# directory too -- `0644` there produces `drw-r--r--`, which the crew user cannot
+# enter, and then every file inside it is unreachable whatever its own mode says.
+# Measured live: `drw-r--r-- 1 root root /app/crew-bundle`, and the supervisor
+# failing with the same Permission denied this block exists to prevent. The
+# destination directory is the reason the file-only line is not a special case.
+#
+# The execute bit on a JSON file buys an attacker nothing here: the bundle is a
+# READ-ONLY payload owned by root, the supervisor copies it into the data home
+# before the backend starts, and nothing is ever run from /app/crew-bundle. A
+# mode that is traversable is worth more than one that is minimal, because the
+# minimal one does not work.
+#
+# Pinned by `test_the_bundle_stays_traversable_by_the_crew_user`, so a later pass
+# at tightening these modes fails a test instead of a crew's boot.
+COPY --chmod=0755 manifest.json agent.json mcp.json /app/crew-bundle/
+COPY --chmod=0755 skills /app/crew-bundle/skills
 
 # OCI + Share My Crew labels. base.name carries the digest-pinned base ref, so
 # `docker inspect` on the crew image traces back to the exact base it was built

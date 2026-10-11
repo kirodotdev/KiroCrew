@@ -103,6 +103,34 @@ _SSM_RUN_AS_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}\Z")
 _TTL_RE = re.compile(TTL_PATTERN)
 _DEFAULT_SSM_RUN_AS = "ec2-user"
 
+#: Provisioner ids whose crews are HEADLESS: they serve a turn route and have no
+#: dashboard behind the forward.
+#:
+#: Here, in the registry, because two unrelated callers need the same answer and
+#: a second copy would drift: the tunnel manager decides whether to mint a
+#: dashboard token, and the crew-turn route decides whether a chat pane may be
+#: offered. The decision is a property of the crew, not of its TRANSPORT -- a
+#: headless crew reached over SSM is as headless as one reached over an ECS
+#: exec, and keying on the transport is what makes a working forward look like a
+#: crew that will not answer.
+#: The ids as LITERALS, because importing a lane's module from here would close a
+#: cycle. ``handlers_crew_turn`` asserts them against the lanes' own constants at
+#: import, so a rename is an immediate failure rather than a headless crew this
+#: set fails to recognise.
+HEADLESS_CREW_PROVISIONERS: frozenset[str] = frozenset({"aws_fargate", "microvm"})
+
+
+def is_headless_provisioner(provisioner_id: str) -> bool:
+    """Whether a crew from this lane serves a turn route and no dashboard.
+
+    A named function rather than a bare set lookup at each call site, so what the
+    condition MEANS is in one place: there is no dashboard here, therefore no
+    dashboard token to mint and none to refresh, and the forward alone is the
+    connection.
+    """
+    return provisioner_id in HEADLESS_CREW_PROVISIONERS
+
+
 # The port a stock gateway binds, so "add a remote that has not been
 # reconfigured" needs no edit. NOT a second definition of the number:
 # ``config/loader.py`` owns it per docs/system-specs/common/code-style.md, which

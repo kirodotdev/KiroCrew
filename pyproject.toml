@@ -71,6 +71,37 @@ dev = [
     # repository, so there was no existing one to reuse; pip-audit is PyPA's own
     # and is the tool the removed step used, which keeps the choice boring.
     "pip-audit==2.10.1",
+    # Test-only, and ONLY for the MicroVM lane. Two tests need them and neither can
+    # be written without them:
+    #
+    # test_cloud_microvm_moto_guard.py asserts that S3 itself answers 412 to a
+    # stale conditional write. Every other test of that lane's pack asserts how
+    # the code HANDLES a 412, which is a test of our branch -- if the double
+    # stopped producing the refusal, all of them would stay green while proving
+    # nothing. moto in 5.2.x enforces If-Match/If-None-Match, so the guard is the
+    # thing that notices the day a bump drops it.
+    #
+    # test_cloud_microvm_contract.py reads botocore's INSTALLED lambda-microvms
+    # service model and asserts the routes, required members and state enum the
+    # lane is written against still match it. That is the one failure a hand-written
+    # fake cannot notice about itself, and it costs no AWS call and no credential.
+    #
+    # Neither is a runtime dependency: the lane's own AWS calls go through the
+    # `aws` CLI seam in cloud/aws.py like every other lane's, so the product does
+    # not gain a second AWS-call style.
+    #
+    # boto3 is pinned alongside moto, and the version matters rather than merely
+    # being bounded: the crew image's own
+    # apps/builtins/aws_control/crew/runtime/container/requirements.txt pins
+    # boto3==1.35.99, which predates the lambda-microvms service model entirely.
+    # A venv carrying both resolutions lands on the older one and the contract
+    # test has no model to read. CI keeps them apart -- only the
+    # backend-test-crew-container lane installs the image's runtime pins, and it
+    # runs only container_tests/ -- and the contract test FAILS rather than skips
+    # when it finds botocore present but ignorant of the service, so a local venv
+    # that mixed them says so instead of reporting a pass.
+    "moto==5.2.3",
+    "boto3==1.43.108",
     # Transitive via black and pip-audit, pinned here because it is a pytest11
     # plugin publisher. platformdirs 4.12.0 declares an entry point at
     # platformdirs.pytest_plugin; pytest imports every pytest11 entry point at

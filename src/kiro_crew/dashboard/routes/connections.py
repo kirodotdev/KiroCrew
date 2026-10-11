@@ -15,6 +15,7 @@ from kiro_crew.dashboard import (
     handlers,
     handlers_channel,
     handlers_cloud,
+    handlers_crew_turn,
     handlers_instances,
     handlers_project,
 )
@@ -128,6 +129,13 @@ def register(app: web.Application) -> None:
     app.router.add_post(
         "/api/instances/{id}/send-session", handlers_instances.api_instances_send_session
     )
+    # One turn against a HEADLESS remote crew (Fargate or MicroVM), which has no
+    # dashboard to embed and serves only a turn route. The gateway is the client
+    # because the crew's control secret must not reach the browser. Registered
+    # BEFORE the catch-all proxy route so `{path:.*}` cannot swallow it, and NOT
+    # through that proxy: it is fenced to the `api/chat` prefixes and a widening
+    # that reached the turn route would reach the crew's control surface too.
+    app.router.add_post("/api/instances/{id}/crew-turn", handlers_crew_turn.api_crew_turn)
     # Peer capability read — the per-instance counterpart to the local
     # /api/agents, /api/models, /api/effort-levels and /api/workspaces, for a
     # session whose turns run on that peer. Registered BEFORE the catch-all

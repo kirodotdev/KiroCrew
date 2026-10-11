@@ -1,0 +1,36 @@
+{
+  "Profile": {
+    "ShareCreds": true,
+    "ShareProfile": "",
+    "ForceUpdateCreds": false,
+    "KeyAutoRotateDays": 0
+  },
+  "Ssm": {
+    "Endpoint": "",
+    "HealthFrequencyMinutes": 5,
+    "SessionLogsDestination": "none"
+  },
+  "Mgs": {
+    "Region": "",
+    "Endpoint": "",
+    "StopTimeoutMillis": 20000,
+    "SessionWorkersLimit": 1000
+  },
+  "Agent": {
+    "Region": "",
+    "OrchestrationRootDir": "",
+    "SelfUpdate": false,
+    "TelemetryMetricsToCloudWatch": false,
+    "TelemetryMetricsToSSM": true
+  },
+  "Os": {
+    "Lang": "en-US",
+    "Name": "",
+    "Version": "1"
+  },
+  "Identity": {
+    "ConsumptionOrder": [
+      "OnPrem"
+    ]
+  }
+}

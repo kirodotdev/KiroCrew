@@ -200,6 +200,19 @@ def _producer_of(rel: str, text: str, root: Path) -> str:
     return producer
 
 
+#: Recipe FRAGMENTS: files under the runtime directory that are appended to a
+#: recipe rather than built as one. A fragment has no ``FROM`` of its own, so
+#: building it alone is not a thing that can succeed.
+#:
+#: ``Dockerfile.microvm`` is the MicroVM lane's layer. That lane has no registry
+#: to hold a separately built ARM64 base, so ``cloud/microvm/recipe.py``
+#: concatenates the base recipe, the crew layer and this one into a single
+#: Dockerfile inside the zip it hands to ``CreateMicrovmImage``. The concatenation
+#: refuses if the crew layer stops starting from a base reference, which is what
+#: keeps the three from being mis-assembled.
+FRAGMENTS = frozenset({"Dockerfile.microvm"})
+
+
 def role_of(recipe: Path, root: Path = ROOT) -> tuple[str, str]:
     """One recipe's ``(role, base_arg)``, from its first ``FROM`` alone.
 
@@ -217,11 +230,20 @@ def role_of(recipe: Path, root: Path = ROOT) -> tuple[str, str]:
 
 
 def discover_recipes(root: Path = ROOT) -> list[Path]:
-    """Every ``Dockerfile*`` under the crew runtime directory, sorted."""
+    """Every standalone ``Dockerfile*`` under the crew runtime directory, sorted.
+
+    :data:`FRAGMENTS` are left out. They are not recipes: they carry no ``FROM``
+    because they are APPENDED to one, and this gate builds each discovered file on
+    its own. Named explicitly rather than inferred from a missing ``FROM``, so a
+    real recipe that lost its ``FROM`` still fails loudly instead of quietly
+    becoming a fragment.
+    """
     runtime_dir = root / RUNTIME_SUBPATH
     if not runtime_dir.is_dir():
         raise PlanError(f"no crew runtime directory at {RUNTIME_SUBPATH}")
-    return sorted(p for p in runtime_dir.glob("Dockerfile*") if p.is_file())
+    return sorted(
+        p for p in runtime_dir.glob("Dockerfile*") if p.is_file() and p.name not in FRAGMENTS
+    )
 
 
 def cited_producers(root: Path = ROOT) -> dict[str, list[str]]:

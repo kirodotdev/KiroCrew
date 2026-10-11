@@ -368,7 +368,7 @@ class LaunchJobStore:
         job = LaunchJob(
             id=_new_job_id(),
             profile=profile,
-            region=region,
+            region=region or _default_region(),
             size_key=size_key,
             provider_id=provider_id,
             steps=default_steps(step_labels),
@@ -909,6 +909,30 @@ def _rollback_failed_provision(
         "(it may be DELETE_FAILED). Check your crews — it may still be running and billing."
     )
     logger.warning("Rollback of %s after provision failure did not confirm", job.tag)
+
+
+def _default_region() -> str:
+    """The region a launch uses when the caller named none.
+
+    The operator's configured region first, then the AWS default the config
+    itself falls back to. Resolved HERE rather than at each call site because
+    every provisioner's preflight refuses an empty region -- the Fargate
+    identity check reports it as ``region='' is not a region``, which reads as a
+    malformed value rather than an absent one -- and a caller that simply has no
+    region to send (the Settings form posting a body without the field) would
+    otherwise fail at preflight instead of using the region the operator already
+    configured.
+
+    Guarded, because a launch must not fail on an unreadable config file: an
+    unreadable one leaves the region empty and the preflight refusal stands,
+    which is the same outcome as before and names the real problem.
+    """
+    try:
+        from kiro_crew.cloud.config import CloudConfig
+
+        return str(CloudConfig.load().region or "")
+    except Exception:  # noqa: BLE001 - a bad config is the preflight's to report
+        return ""
 
 
 def _new_tag() -> str:

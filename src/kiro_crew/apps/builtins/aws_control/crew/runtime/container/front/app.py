@@ -447,12 +447,32 @@ def build_app(
         )
 
     def health() -> JSONResponse:
-        # No internals: a customer reaches this. Just liveness.
+        # No internals: a customer may reach this. Just liveness.
         return JSONResponse({"status": "ok"})
 
-    @app.get(HEALTH_PATH)
-    async def health_bare() -> JSONResponse:
-        return health()
+    def _denied() -> JSONResponse:
+        """The one refusal every unauthorised request gets, whatever it asked for.
+
+        Identical for a control path, the turn path, ``/health`` and a path that
+        does not exist, so a caller who cannot authenticate cannot learn which
+        routes this crew serves by comparing refusals. 403 rather than 401:
+        there is no challenge to issue and no sign-in to offer, so the caller
+        either holds the deployment's secret or has no business here.
+        """
+        return JSONResponse(
+            {"detail": "control access denied", "code": "control_forbidden"},
+            status_code=403,
+        )
+
+    if not settings.require_auth_on_every_route:
+        # The BARE liveness path, registered only where the network bounds who can
+        # reach this port. Registered conditionally rather than answering a refusal
+        # from inside the handler: a specific route wins over the catch-all, so a
+        # handler that refused here would make the gated path below unreachable and
+        # the strict posture would deny its own authorised callers.
+        @app.get(HEALTH_PATH)
+        async def health_bare() -> JSONResponse:
+            return health()
 
     @app.api_route(
         "/{full_path:path}",
@@ -462,11 +482,32 @@ def build_app(
         stripped = strip_prefix("/" + full_path, settings.route_prefix)
         method = request.method
 
-        if method == "GET" and stripped == HEALTH_PATH:
+        # WHICH routes skip the gate is a property of the DEPLOYMENT, not of this
+        # process, because one image serves lanes bounded by different things.
+        #
+        # Under `require_auth_on_every_route` EVERY route requires the per-crew
+        # secret: the turn route, `/health`, and a path that does not exist. A
+        # deployment whose compute carries its own internet-reachable endpoint sets
+        # it, because there is no security group to lean on there -- the endpoint is
+        # served whatever network connector the VM was launched with, and the only
+        # control the platform enforces on it is a port list, so a holder of a
+        # correctly-scoped token is still an arbitrary internet caller.
+        #
+        # Where a private subnet and a security group with zero ingress decide who
+        # can reach this port, that network bound is what the deployment relies on
+        # and the flag stays off.
+        #
+        # ORDERING CONSTRAINT: the flag may only be turned on for a deployment whose
+        # callers send the secret. The gateway-side change that sends it must land
+        # with the flag, not after it -- a gate in front of callers that present no
+        # secret is that lane's chat refused.
+        strict = settings.require_auth_on_every_route
+
+        if not strict and method == "GET" and stripped == HEALTH_PATH:
             return health()
 
-        # Customer surface is a tiny allowlist; everything else is control.
-        is_customer_turn = method == "POST" and stripped == CUSTOMER_TURN_PATH
+        # The customer surface is a tiny allowlist, and under `strict` it is empty.
+        is_customer_turn = not strict and method == "POST" and stripped == CUSTOMER_TURN_PATH
         if not is_customer_turn:
             granted = _control_authorized(request, settings)
             try:
@@ -487,23 +528,27 @@ def build_app(
                     status_code=503,
                 )
             if not granted:
+                return _denied()
+
+            # Authorised. The liveness answer now lives BEHIND the gate, and it is
+            # answered here rather than before it so there is exactly one place a
+            # request can get past without a secret, which is nowhere.
+            if method == "GET" and stripped == HEALTH_PATH:
+                return health()
+
+            if not (method == "POST" and stripped == CUSTOMER_TURN_PATH):
+                # Authorised, and there is nothing here to run: the front process serves
+                # one customer route and no control operation. The gate stays in front of
+                # the 404 on purpose, so adding a control route later is adding a handler
+                # rather than also remembering to authorise it -- and so an unauthorised
+                # caller cannot learn which control paths exist by reading which ones 404.
                 return JSONResponse(
-                    {"detail": "control access denied", "code": "control_forbidden"},
-                    status_code=403,
+                    {
+                        "detail": "control route not served by the front process",
+                        "code": "control_not_implemented",
+                    },
+                    status_code=404,
                 )
-            # Authorised, and there is nothing here to run yet: the front process
-            # serves two customer routes and no control operation. The gate stays in
-            # front of the 404 on purpose, so adding a control route later is adding a
-            # handler rather than also remembering to authorise it -- and so an
-            # unauthorised caller cannot learn which control paths exist by reading
-            # which ones 404.
-            return JSONResponse(
-                {
-                    "detail": "control route not served by the front process",
-                    "code": "control_not_implemented",
-                },
-                status_code=404,
-            )
 
         # Bounded while READING, not after. ``request.json()`` buffers the whole body
         # first, so a large upload is already resident by the time anything could reject

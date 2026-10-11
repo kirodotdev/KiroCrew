@@ -122,5 +122,16 @@ recursive-include src/kiro_crew/_vendor/llama_cpp_libs *
 # build from a checkout does.
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime Dockerfile*
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime .dockerignore
+# The guest's SSM agent configuration. Two settings in it are load-bearing
+# (the hybrid-activation identity pin and credential sharing), it is read FROM
+# DISK when the MicroVM recipe is assembled, and its suffix is matched by no
+# other rule here.
+recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime microvm-ssm-agent.json
 recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime/container *
-recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime/vendor *
+# The placeholder ONLY, so the directory exists in an installed copy. Named rather
+# than globbed because a wheel is STAGED into this directory to build a MicroVM
+# image: a rule reaching it packages that wheel inside the next one, which adds
+# ~36 MB and puts the following build past the 64 MiB recipe ceiling. `*` here is
+# not harmless even for a wheel-only build -- `include_package_data` reads this
+# file through the egg-info manifest, so a pattern here lands in the wheel too.
+recursive-include src/kiro_crew/apps/builtins/aws_control/crew/runtime/vendor .gitkeep

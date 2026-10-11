@@ -2805,7 +2805,16 @@ export function RemoteCrewPanel() {
                 launch={input => launchMutation.mutate({
                   provider_id: selectedProvisioner.id,
                   profile: input.profile ?? '',
-                  region: input.region ?? '',
+                  // `||`, not `??`: a provisioner form with no region field sends
+                  // an EMPTY STRING, not undefined, and every provisioner's
+                  // preflight refuses an empty region -- reported as
+                  // `region='' is not a region`, which reads as a malformed value
+                  // rather than an absent one. Falling back to the panel's own
+                  // region means a form that does not ask for one inherits the
+                  // account the reader already chose here. The gateway defaults
+                  // it too, from the operator's config; this is what keeps the
+                  // two from disagreeing about which region the reader picked.
+                  region: input.region || region,
                   size_key: input.size_key,
                 })}
                 launching={launchMutation.isPending}

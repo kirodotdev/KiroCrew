@@ -238,15 +238,61 @@ def _call_engine_for(provider, provisioner_id: str, confirmed_recipient: str):
         accepts = True
 
     if accepts:
-        return provider.engine_for(provisioner_id, confirmed_recipient=confirmed_recipient)
-    if confirmed_recipient:
+        engine = provider.engine_for(provisioner_id, confirmed_recipient=confirmed_recipient)
+    elif confirmed_recipient:
         raise LaunchUnavailable(
             "lane_cannot_confirm",
             f"provisioner {provisioner_id!r} publishes a credential recipient to confirm, but "
             "its provider cannot accept the confirmation (its engine_for takes no "
             "confirmed_recipient). Nothing was launched",
         )
-    return provider.engine_for(provisioner_id)
+    else:
+        engine = provider.engine_for(provisioner_id)
+    _refuse_a_moved_recipient(provider, provisioner_id, confirmed_recipient)
+    return engine
+
+
+def _refuse_a_moved_recipient(provider, provisioner_id: str, confirmed_recipient: str) -> None:
+    """Refuse when the lane's recipient changed after the operator confirmed it.
+
+    Accepting a confirmation and then reading the configuration AGAIN to build the
+    engine is a gap: the operator confirms what the row published, and the second
+    read decides what actually runs. An edit between them -- or an edit racing a
+    launch whose store checks are still going -- means the owner approved one image,
+    key or bundle and a different one is used, which is the substitution the
+    confirmation exists to prevent.
+
+    Checked HERE rather than inside a lane, because the contract belongs to the seam:
+    a lane that forgets the check is the lane that needs it, and a lane added later
+    inherits this one. ``engine_for`` only CONSTRUCTS an engine, so this still runs
+    before anything is provisioned.
+
+    A lane publishing no recipient has nothing to move and is left alone.
+    """
+    if not confirmed_recipient:
+        return
+    try:
+        rows = provider.provisioners() or ()
+    except Exception:  # noqa: BLE001 - an unreadable row list cannot convict a launch
+        return
+    published = {
+        str(getattr(row, "id", "")): str(getattr(row, "confirm_before_launch", "") or "")
+        for row in rows
+    }
+    if provisioner_id not in published or published[provisioner_id] != confirmed_recipient:
+        # Fails CLOSED on all three: a different recipient, an EMPTY one, and a row
+        # that is gone entirely. The last two are the ones worth saying out loud --
+        # a lane whose block went incomplete publishes no row and an empty string,
+        # and treating either as agreement would let a launch through on a
+        # confirmation nothing currently backs. A caller that confirmed something
+        # is owed the check it asked for, so not finding it is a refusal.
+        raise LaunchUnavailable(
+            "recipient_changed",
+            f"provisioner {provisioner_id!r} no longer publishes the credential recipient "
+            "that was confirmed for this launch, so its configuration changed after the "
+            "approval. Nothing was launched; re-read the lane's recipient and confirm it "
+            "again",
+        )
 
 
 def _engine(
@@ -1253,6 +1299,23 @@ def _start_teardown_watch(
     ).start()
 
 
+def _lane_of(store: "lj.LaunchJobStore", tag: str) -> str:
+    """Which provisioner created the crew carrying *tag*.
+
+    From the launch job, which is server-owned state: the tag in the URL is the
+    caller's, and a lane taken from the caller would let them pick which engine runs
+    against another lane's crew.
+
+    An unknown tag answers the built-in id, so a crew launched before the job store
+    recorded a lane -- or one whose job file has been reaped -- keeps the behaviour it
+    has always had rather than being refused.
+    """
+    return next(
+        (j.provider_id for j in store.list() if j.tag == tag and j.provider_id),
+        BUILTIN_PROVISIONER_ID,
+    )
+
+
 async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     """Shared stop/start/destroy: resolve the tag + profile/region, run off-loop."""
     denied = _guard(request, op)
@@ -1267,11 +1330,60 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
     store = _store(state)  # constructing it touches no disk
     sync_teardown = bool(getattr(state, "cloud_launch_sync", False))
 
+    # Which lane created this crew decides what these verbs can even mean. Read off
+    # the loop because `list()` reads the job files.
+    #
+    # Without this the three verbs all ran the built-in EC2 lane's CloudFormation
+    # path, which looks for a stack named after the tag that only THAT lane creates.
+    # A crew from any other lane has no such stack, so the operator was told their
+    # credentials could not describe a stack that was never meant to exist -- a
+    # report that reads as a broken profile rather than a verb that does not apply.
+    lane = await _in_executor(lambda: _lane_of(store, tag))
+    if lane != BUILTIN_PROVISIONER_ID and op in ("stop", "start"):
+        # These two are the EC2 lane's reversible pair: stop parks an instance and
+        # keeps its disk, start brings the same disk back. A lane whose engine offers
+        # only `teardown` has no such pair, and `teardown` is not what either word
+        # promises -- it ends the crew and the home it was holding.
+        #
+        # So this is refused rather than mapped onto teardown. `Stop` in the panel
+        # asks for no confirmation, and a one-click button that silently destroyed a
+        # crew's conversations would be worse than the error it replaces. Deleting
+        # the crew is the operation this lane has, and it already confirms.
+        _audit(op, "denied", request_id=tag, error=f"lane {lane} has no {op}")
+        return web.json_response(
+            {
+                "error": (
+                    f"the crew {tag} runs on the {lane} lane, which cannot {op} a crew: it has "
+                    "no paused state to put one into or bring one back from. Deleting the crew "
+                    "ends it and releases what it is billing for, and that is the only one of "
+                    "these this lane can do"
+                ),
+                "code": "lane_cannot_pause",
+                "provisioner_id": lane,
+            },
+            status=409,
+        )
+
     def _work() -> dict:
         if op == "stop":
             return ec2.stop(tag, profile, region)
         if op == "start":
             return ec2.start(tag, profile, region)
+        if lane != BUILTIN_PROVISIONER_ID:
+            # Destroy, on a lane that owns its own teardown. The engine is the only
+            # thing that knows what this crew is made of, and it is what removes the
+            # compute, the enrolment and the crew's secret in one call.
+            engine = _engine(state, lane)
+            ok = bool(engine.teardown(tag=tag, profile=profile, region=region))
+            # The registry row still has to go, exactly as the built-in path's watcher
+            # does it, and the id comes from the job rather than the caller for the
+            # reason the comment below gives.
+            registered = next(
+                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
+            )
+            if ok and registered:
+                connect_mod.unregister_instance(registered)
+            return {"ok": ok, "cleanup": "done" if ok else "skipped", "provisioner_id": lane}
         # The instance id drives the registry cleanup below, and `unregister_instance`
         # matches it against EVERY registered box (by ssm_target, ssh_host or id) with
         # no cross-check against this tag. Accepting it from the caller therefore lets a

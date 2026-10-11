@@ -39,6 +39,11 @@ from .test_front_proxy import _free_port, backend, env  # noqa: F401 - fixtures
 
 TURN = "/c/crew/v1/chat/completions"
 
+#: The turn route authenticates its caller now, so these tests carry the secret.
+#: What each one asserts is unchanged: that the transcript fetch happens, and in
+#: which order relative to the backend seeing the turn.
+AUTH = {"X-SMC-Control-Secret": "CTRL"}
+
 # A body long enough that a truncating bug is visible, and carrying a distinctive
 # string so a test can prove it never reaches a log line.
 SECRET_LINE = "customer-said-something-private"
@@ -153,7 +158,7 @@ def make_settings(backend_env, *, bucket: str | None = "smc-bucket", prefix: str
         backend_run_dir=run_dir,
         front_port=8080,
         route_prefix="/c/crew",
-        control_secret=None,
+        control_secret="CTRL",
         data_home=data_home,
         config_dir=data_home,
         crew_name="crew",
@@ -188,7 +193,7 @@ async def drive(settings, reader, payload: dict) -> httpx.Response:
     app = build_app(settings, transcript_reader=reader)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
-        return await client.post(TURN, json=payload)
+        return await client.post(TURN, json=payload, headers=AUTH)
     finally:
         await client.aclose()
         backend_client = getattr(app.state, "backend_client", None)
@@ -200,7 +205,7 @@ async def drive_stream(settings, reader, payload: dict) -> tuple[int, str]:
     app = build_app(settings, transcript_reader=reader)
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
-        async with client.stream("POST", TURN, json=payload) as resp:
+        async with client.stream("POST", TURN, json=payload, headers=AUTH) as resp:
             body = b"".join([chunk async for chunk in resp.aiter_bytes()])
             return resp.status_code, body.decode("utf-8")
     finally:
@@ -501,8 +506,8 @@ async def test_two_concurrent_turns_on_one_slot_fetch_once(env) -> None:
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://front")
     try:
         r1, r2 = await asyncio.gather(
-            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}),
-            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}),
+            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}, headers=AUTH),
+            client.post(TURN, json={"model": "crew", "id": "cust-9", "messages": []}, headers=AUTH),
         )
     finally:
         await client.aclose()

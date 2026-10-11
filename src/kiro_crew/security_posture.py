@@ -105,6 +105,23 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "A remote crew's answer to one chat turn",
+        "dashboard/handlers_crew_turn.py",
+        "Everything a headless remote crew sends back for a turn, on its way to the "
+        "caller and into a transcript: the streamed SSE events, a non-streamed JSON "
+        "body, and the detail of a refusal the crew itself returned. The crew is a "
+        "model with tools, holding its own Kiro identity and control secret in its "
+        "environment, so a reply can quote a credential either because the model "
+        "repeated its own environment or because content it fetched told it to -- the "
+        "same reason the peer proxy redacts, and this route is a second way out of "
+        "the same machine. The stream is reassembled into whole SSE EVENTS before "
+        "each is scrubbed, because the socket splits wherever it likes and a "
+        "credential straddling two chunks is invisible to a per-chunk pass. An event "
+        "too large to scrub, or one the scrubber refuses, ends the stream instead of "
+        "being forwarded; a non-streamed body that cannot be scrubbed is refused "
+        "rather than returned.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "

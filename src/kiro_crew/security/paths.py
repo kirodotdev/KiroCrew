@@ -1040,6 +1040,16 @@ _WRITE_PROTECTED_HOME_PATHS += [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The microvm lane's CREW RECORDS (``cloud/microvm/record.py``): the launch record's
+    # reason above without the confirmation step it still has. Each row carries a
+    # ``microvm_id`` that ``teardown`` passes straight to ``launcher.terminate``, so an
+    # agent able to write this file could point one crew's row at another crew's VM and
+    # have the owner's next delete destroy that one instead. Readable like the paths
+    # above, and the gateway writes it outside the agent's file-edit gate.
+    f"{prefix}/microvm_crews.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The Ops Mission Control incident INDEX, for the same reason as the schedule above and
     # with the same read/write asymmetry: every teammate's instance reads it constantly (it is
     # the claim ledger and the board), so classifying it sensitive would break the app, but it
