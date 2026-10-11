@@ -9,11 +9,13 @@ class binds it by name, so it reads and writes the session's own state on the in
 and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_acp_config_options``, ``_activated_model``,
-``_advertised_models_changed``, ``_available_mode_ids``, ``_available_models``,
+``_advertised_models_changed``, ``_agent_version``, ``_agent_version_read``,
+``_available_mode_ids``, ``_available_models``,
 ``_available_models_captured_at``, ``_available_models_probe_confirmed``,
 ``_entitlement_probe_inflight``, ``_last_substitution_model``, ``_mode_frame_awaited``,
-``_mode_frame_superseded``, ``_model``, ``_modes_advertised``, ``_resolved_model_id``,
-``model_pin_partial``, ``model_pin_refused``.
+``_mode_frame_superseded``, ``_model``, ``_modes_advertised``,
+``_qoder_default_model_id``, ``_resolved_model_id``, ``model_pin_partial``,
+``model_pin_refused``.
 
 Instance fields read: ``_acp_backend``, ``_agent``, ``_channel_id``,
 ``_derived_spec_snapshot``, ``_extra_env``, ``_mcp_gateway_overlay``,
@@ -30,13 +32,18 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry, model_scope
 from kiro_crew.acp import runtime_models
-from kiro_crew.acp._dispatch import build_session_new_params, parse_session_modes
+from kiro_crew.acp._dispatch import (
+    agent_version_from_init,
+    build_session_new_params,
+    parse_session_modes,
+)
 from kiro_crew.acp.client_timeouts import _INIT_TIMEOUT
 from kiro_crew.acp.runtime_models import DEFAULT_MODEL, model_is_unusable, pick_served_default
 from kiro_crew.acp.transport_errors import AcpError, AcpModelUnavailable, AcpProcessDied
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     METHOD_INITIALIZE,
@@ -49,11 +56,13 @@ from kiro_crew.acp.types import (
 )
 from kiro_crew.agent import require_unchanged_derived_spec
 from kiro_crew.agent_sdk.backends import effort_config_option_levels, model_refusal_phrase
+from kiro_crew.effort import order_effort_levels
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
     from kiro_crew.acp.client import AcpClient
+    from kiro_crew.acp.harness.base import CatalogProbePolicy, TeardownPolicy
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
@@ -203,6 +212,13 @@ async def set_model(self: AcpClient, model_id: str) -> None:
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
             raise AcpModelUnavailable(_rejected_log, fresh or advertised, backend=self.backend)
+    if self._advertised_models_exclusive:
+        # Resolved against what this session's service advertised, because it
+        # refuses ids it did not offer. The capability, not a backend id: the
+        # vocabulary test is the harness's own advertised answer.
+        model_id = await self._resolve_qoder_model_id(model_id)
+        if not model_id:
+            return
     if self._uses_advertised_model_selection:
         # Mirror the spawn path (_spawn): fold the requested id onto the exact
         # spelling the backend advertised, so a warm-pool claim that switches
@@ -273,8 +289,9 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     This path keeps its dict-only ``models`` gate and its
     non-empty assignment guard — both are call-site policy, not parsing.
 
-    Also records ``currentModelId`` for ``_track_metadata``'s context
-    window lookup.
+    Also records the response's ``currentModelId`` twice: as the served id
+    for context-window lookup, and (for Qoder) as the session default that
+    ``auto`` later restores explicitly.
     """
     # Imported lazily: acp.session_handle imports this module at module
     # level, so a top-level import here would be a cycle.
@@ -290,6 +307,10 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
     current_model_id = models.get("currentModelId")
     if isinstance(current_model_id, str) and current_model_id:
         self._resolved_model_id = current_model_id
+        if self._advertised_models_exclusive:
+            # The response default is the only measured meaning of ``auto`` on
+            # such a service, so it is remembered per session for the no-write.
+            self._qoder_default_model_id = current_model_id
     # Imported lazily: acp.session_handle imports this module at module
     # level, so a top-level import here would be a cycle.
     from kiro_crew.acp.session_handle import parse_advertised_models
@@ -318,8 +339,15 @@ def _capture_available_models(self: AcpClient, session_resp: dict) -> None:
         # stored spelling gap opts into the set and is fed here automatically,
         # keyed by its own registry namespace.
         if self._uses_advertised_model_selection:
-            self._advertised_models_changed = model_registry.refresh_advertised_models(
-                self._model_registry_namespace, self._advertised_model_ids()
+            # Rows, not just ids: a service-owned catalog carries display names
+            # Crew did not author, and the first answer's stamp is what the
+            # picker's TTL reads. The stamp is this process's own reading, held
+            # in memory -- nothing about it is written to disk on a catalog that
+            # did not change, so no other backend's sidecar entry changes shape.
+            self._advertised_models_changed = model_registry.refresh_advertised_model_rows(
+                self._model_registry_namespace,
+                self._available_models,
+                observed_at=time.time_ns(),
             )
 
 
@@ -421,6 +449,17 @@ async def refresh_available_models(self: AcpClient) -> list[dict[str, str]]:
         self._available_models = list(fresh)
         self._available_models_captured_at = answered_at
         self._available_models_probe_confirmed = True
+        if self._advertised_models_exclusive:
+            # A service-owned catalog also supplies the labels, so the rows are
+            # what is stored. No stamp-only rewrite: an unchanged catalog writes
+            # nothing, exactly as it did before this path learned about labels.
+            changed = model_registry.refresh_advertised_model_rows(
+                self._model_registry_namespace,
+                fresh,
+                observed_at=time.time_ns(),
+            )
+            if changed:
+                await asyncio.to_thread(model_registry.persist_advertised_models)
     return list(fresh)
 
 
@@ -452,6 +491,39 @@ def _entitlement_probe_client(self: AcpClient) -> AcpClient:
     )
 
 
+def _catalog_probe_policy(backend: str) -> CatalogProbePolicy | None:
+    """*backend*'s catalog-probe policy, or ``None`` on this client's own Kiro arm.
+
+    Lazy: ``acp.harness`` loads every per-host module, and this module is
+    imported by the runtime and by ``acp.session_handle``.
+    """
+    from kiro_crew.acp.harness import process_adapter_for
+
+    adapter = process_adapter_for(backend)
+    return adapter.catalog_probe() if adapter is not None else None
+
+
+def _probe_teardown_policy(backend: str) -> TeardownPolicy | None:
+    """How a throwaway probe session ends on *backend*, or ``None`` if nothing is left.
+
+    A per-process host answers on its own adapter, a host the shared runtime drives
+    answers on its harness. Borrowing another host's verb for a session that was
+    never opened costs the whole teardown budget waiting for an answer that host is
+    correct never to send, and logs a routine eviction as a control-plane timeout.
+    """
+    from kiro_crew.acp.harness import harness_for, process_adapter_for
+
+    adapter = process_adapter_for(backend)
+    if adapter is not None:
+        return adapter.catalog_probe().teardown
+    try:
+        return harness_for(backend).teardown
+    except ValueError:
+        # ``harness_for`` refuses a backend the shared runtime cannot drive. That
+        # refusal is not an error in this caller: it means no session was opened.
+        return None
+
+
 async def _probe_advertised_models(self: AcpClient) -> tuple[list[dict[str, str]], float]:
     """One throwaway session on a dedicated process, read for its model list.
 
@@ -463,14 +535,24 @@ async def _probe_advertised_models(self: AcpClient) -> tuple[list[dict[str, str]
     teardown verb, then the process is shut down. Everything else that
     process emitted dies with its client. Returns ``(list, arrival_time)``;
     ``[]`` means the probe failed or advertised nothing, never "entitled to
-    nothing". kiro-only: the entitlement race it answers is kiro-cli's.
+    nothing". kiro uses this to settle the startup entitlement race. A
+    service-owned catalog uses it as the picker's refresh: no live session is
+    required, and whether the session it opened has to be ended is the host's
+    own ``catalog_probe()`` answer rather than an assumption made here.
     """
     # Lazy: acp.runtime imports this module at module level.
     from kiro_crew.acp.runtime import _ENTITLEMENT_PROBE_TIMEOUT
 
-    # kiro-only, positively: the entitlement race this answers is kiro-cli's,
-    # and a session must already exist to have something to re-probe for.
-    if self.backend == ACP_BACKEND_KIRO and self._session_id:
+    # kiro requires a live session because its entitlement list belongs to
+    # that session. A service-owned catalog is the account's own handshake
+    # answer, so a throwaway session-less client asks the same launch -- and
+    # which hosts those are, and whether the session that answers has to be
+    # ended, is the host's own policy.
+    policy = _catalog_probe_policy(self.backend)
+    eligible = (self.backend == ACP_BACKEND_KIRO and bool(self._session_id)) or (
+        policy is not None and policy.eligible
+    )
+    if eligible:
         probe: AcpClient | None = None
         try:
             probe = self._entitlement_probe_client()
@@ -492,14 +574,23 @@ async def _probe_advertised_models(self: AcpClient) -> tuple[list[dict[str, str]
 
 async def _entitlement_probe_answer(self: AcpClient) -> tuple[list[dict[str, str]], float]:
     """Run the probe handshake on THIS (throwaway) client's own process."""
-    # Lazy: acp.runtime and acp.session_handle import this module.
-    from kiro_crew.acp.harness import harness_for
+    # Lazy: acp.runtime, acp.harness and acp.session_handle import this module.
+    from kiro_crew.acp.harness import process_adapter_for
     from kiro_crew.acp.runtime import _ENTITLEMENT_PROBE_TIMEOUT, _TERMINATE_TIMEOUT
     from kiro_crew.acp.session_handle import advertised_models_from_session
 
     await self._spawn()
     init_id = await self._send_request(METHOD_INITIALIZE, self._initialize_params())
-    await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+    init_resp = await self._wait_for_response(init_id, timeout=_INIT_TIMEOUT)
+    self._agent_version = agent_version_from_init(init_resp)
+    self._agent_version_read = True
+    adapter = process_adapter_for(self.backend)
+    if adapter is not None:
+        # The same handshake witnesses a normal session runs, for the same
+        # reason: this process is launched exactly as that one is. No prompt is
+        # ever sent, so only the session/new catalog is read and a host whose
+        # tripwire arms on the first live prompt stays disarmed either way.
+        adapter.on_initialized(self, init_resp)
     # Close the verify->create bracket every other spawn path closes between
     # initialize and session/new: a spec revoked during probe init must not
     # create a session (which starts that spec's MCP server commands). A stale
@@ -519,17 +610,19 @@ async def _entitlement_probe_answer(self: AcpClient) -> tuple[list[dict[str, str
     resp = await self._wait_for_response(
         req_id, timeout=_ENTITLEMENT_PROBE_TIMEOUT, method=METHOD_SESSION_NEW
     )
+    if adapter is not None:
+        adapter.on_session_opened(self, resp, resumed=False)
     answered_at = time.monotonic()
     fresh = advertised_models_from_session(resp, self.backend)
     probe_sid = str(resp.get("sessionId") or "")
-    if probe_sid:
-        policy = harness_for(self.backend).teardown
+    teardown = _probe_teardown_policy(self.backend)
+    if probe_sid and teardown is not None:
         try:
-            # Every harness this probe runs on tears a session down with an
-            # awaited request (``TeardownPolicy.notification`` is False for
-            # kiro, KAS and codex; test_deny_bounded_write pins it), so the
-            # request is the only path here.
-            teardown_id = await self._send_request(policy.method, {"sessionId": probe_sid})
+            # Every host this probe runs on ends its session with an awaited
+            # request (``TeardownPolicy.notification`` is False for kiro, KAS,
+            # codex and the service-owned catalog hosts; test_deny_bounded_write
+            # pins the first three), so the request is the only path here.
+            teardown_id = await self._send_request(teardown.method, {"sessionId": probe_sid})
             await self._wait_for_response(teardown_id, timeout=_TERMINATE_TIMEOUT)
         except Exception:
             logger.debug("direct-client probe session teardown failed", exc_info=True)
@@ -926,6 +1019,8 @@ async def _apply_startup_model(self: AcpClient) -> None:
     # served model and misattribute the session.
     self._last_substitution_model = None
     if self.backend in ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION:
+        if await self._withhold_qoder_startup_model():
+            return
         sent = await self._push_model_config_option(self._model, strict=False)
         if not sent:
             # Every spelling refused: record the session as running the
@@ -959,7 +1054,8 @@ async def set_config_option(self: AcpClient, config_id: str, value: str) -> None
     ``model`` write selects -- and the matching ``config_option_update`` that
     arrives first is only buffered by ``_wait_for_response``, which nothing
     drains after init. Without this, ``supports_effort`` after a live model
-    switch reads the previous model's option.
+    switch reads the previous model's option. Qoder's ``reasoning_effort``
+    appears and disappears the same way with the model.
     """
     if not self._session_id:
         raise AcpError("Cannot set config option before session is initialized")
@@ -1060,11 +1156,11 @@ def supports_config_option(self: AcpClient, config_id: str) -> bool:
 
 
 def get_valid_effort_levels(self: AcpClient) -> list[str]:
-    """Return valid effort levels from ACP config, preserving ACP order.
+    """Return valid effort levels from ACP config, least to most effort.
 
     Parses configOptions for the entry whose id is this backend's effort
     option -- ``effort`` for most, ``reasoning_effort`` for codex-acp -- and
-    extracts its ``options[].value`` list in the order ACP reported them.
+        extracts its ``options[].value`` list, ordered by ``order_effort_levels``.
     Resolving the id here is what fills the dropdown on a backend that spells
     it differently; a hard-coded spelling returns an empty list there, which
     every caller reads as "this model has no effort levels". A value the
@@ -1078,8 +1174,11 @@ def get_valid_effort_levels(self: AcpClient) -> list[str]:
         if opt.get("id") == effort_option:
             options = opt.get("options", [])
             if isinstance(options, list):
-                return effort_config_option_levels(
+                levels = effort_config_option_levels(
                     self.backend,
                     [o["value"] for o in options if isinstance(o, dict) and "value" in o],
                 )
+                if self.backend in ACP_BACKENDS_EFFORT_LADDER_ORDERED:
+                    return order_effort_levels(levels)
+                return levels
     return []

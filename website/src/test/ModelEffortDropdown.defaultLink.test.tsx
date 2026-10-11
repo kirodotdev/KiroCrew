@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -12,6 +12,7 @@ import notificationsReducer from '../store/notificationsSlice'
 import { api } from '../api/client'
 import { SETTINGS_DEFAULT_MODEL_ID } from '../hooks/useSettingHighlight'
 import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry.gen'
+import { setModelLabel, clearModelLabels } from '../lib/modelLabels'
 
 // The nested ReasoningEffortDropdown persists slider picks over the wire
 // (#5120); none of these tests touch the slider, but the stub keeps an
@@ -554,5 +555,42 @@ describe('pin row monospaces only its two identifiers', () => {
     const label = pinRow().querySelector('span')
     expect(label?.className).toContain('min-w-0')
     expect(label?.className).not.toContain('truncate')
+  })
+})
+
+/**
+ * A backend-labelled model (Qoder's exclusive catalog: id `qfmodel`, display
+ * name "Qwen3.8-Flash") is shown by its label in the pin row, the way the list
+ * and the chip show it. The write still targets the id, so only the text changes.
+ */
+describe('pin row shows the backend label for a labelled model', () => {
+  afterEach(() => {
+    clearModelLabels()
+  })
+
+  it('names the label, not the id, in the set-default sentence', () => {
+    setModelLabel('qfmodel', 'Qwen3.8-Flash')
+    wrap(<ModelEffortDropdown
+      {...baseProps} agentName="oncall" pinModelName="qfmodel" onPinToAgent={vi.fn()}
+    />)
+    const row = screen.getByRole('button', { name: 'Pin Qwen3.8-Flash to the oncall agent (overrides the global default)' })
+    expect(row.textContent).not.toContain('qfmodel')
+    expect(Array.from(row.querySelectorAll('.font-mono')).map(e => e.textContent)).toEqual(['Qwen3.8-Flash', 'oncall'])
+  })
+
+  it('names the label in the unavailable sentence too', () => {
+    setModelLabel('qfmodel', 'Qwen3.8-Flash')
+    wrap(<ModelEffortDropdown
+      {...baseProps} agentName="oncall" pinModelName="qfmodel" onPinToAgent={vi.fn()} pinModelUnavailable
+    />)
+    const row = screen.getByRole('button', { name: "Qwen3.8-Flash isn't offered right now" })
+    expect(row.textContent).not.toContain('qfmodel')
+  })
+
+  it('still names the id for a model with no registered label', () => {
+    wrap(<ModelEffortDropdown
+      {...baseProps} agentName="oncall" pinModelName="claude-opus-5" onPinToAgent={vi.fn()}
+    />)
+    expect(screen.getByRole('button', { name: 'Pin claude-opus-5 to the oncall agent (overrides the global default)' })).toBeInTheDocument()
   })
 })

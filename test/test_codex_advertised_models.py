@@ -143,6 +143,20 @@ def test_codex_capture_feeds_the_codex_cache_bucket_only(tmp_path) -> None:
     assert client._advertised_models_changed is True
 
 
+def test_codex_capture_of_an_unchanged_catalog_requests_no_persist(tmp_path, monkeypatch) -> None:
+    client = _codex_client(tmp_path)
+    client._capture_available_models(CODEX_SESSION_NEW)
+    client._advertised_models_changed = False
+    # A stored stamp the next capture cannot reproduce, so only the persist
+    # signal decides the outcome, not whether the clock happened to tick.
+    monkeypatch.setitem(model_registry._ADVERTISED_MODELS_OBSERVED_AT, "codex", 1)
+
+    client._capture_available_models(CODEX_SESSION_NEW)
+
+    assert client._advertised_models_changed is False
+    assert model_registry.advertised_models_observed_at("codex") > 1
+
+
 def test_kiro_capture_still_ignores_a_config_options_select(tmp_path) -> None:
     """The kiro path did not move (harness-parity H13)."""
     client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_KIRO)

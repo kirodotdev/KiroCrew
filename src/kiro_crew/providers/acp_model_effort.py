@@ -35,6 +35,7 @@ from kiro_crew.acp.session_handle import (
     EntitlementRevalidating,
 )
 from kiro_crew.acp.types import (
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_KIRO_FAMILY,
@@ -290,7 +291,7 @@ def _resolve_effort(self: AcpProvider) -> str | None:
     )
 
 
-async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
+async def _set_effort_config_option(self: AcpProvider, level: str) -> bool:
     """Push an effort level over ``session/set_config_option``, stepping down
     on reject.
 
@@ -330,11 +331,17 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     the session advertises no effort selector, skip the push entirely — there
     is nothing to set, and attempting it would spam errors and trigger a
     session reset on every turn.
+
+    Returns True when the level was written and accepted, and also when a
+    non-Qoder adapter answers "unknown config option" — that compatibility case
+    preserves the older "treat it as committed" behaviour. Returns False when the
+    option is absent, the level is not advertised, or Qoder's adapter answers
+    "unknown config option".
     """
     effort_option = effort_config_option_id(self._client.backend)
     if not self._client.supports_config_option(effort_option):
         logger.debug("adapter exposes no %r config option; skipping effort push", effort_option)
-        return
+        return False
     # The harness's own spelling of the level, resolved BEFORE the write for
     # the reason ``effort_config_option_value`` gives: a vocabulary that omits
     # one of Crew's levels is a declared fact, and the descent below can only
@@ -362,12 +369,12 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
             level,
             self._client.backend,
         )
-        return
+        return False
     try:
         start = EFFORT_LEVELS.index(target)
     except ValueError:
         await self._client.set_config_option(effort_option, target)
-        return
+        return True
     ladder = [lvl for lvl in reversed(EFFORT_LEVELS[: start + 1])]
     if advertised:
         ladder = [lvl for lvl in ladder if lvl in advertised]
@@ -382,13 +389,18 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
                     self._client._model,
                     candidate,
                 )
-            return
+            return True
         except AcpError as exc:
             if "unknown config option" in str(exc).lower():
-                # Adapter has no effort option at all (older build) —
-                # nothing to set; skip silently rather than reset.
+                # Most adapters have no effort option at all (older build):
+                # nothing to set; report the override as committed rather
+                # than tear the session down. Qoder's option can disappear
+                # after a model switch, so its failed write must report
+                # failure and roll the effort push back.
                 logger.debug("adapter rejected %r as unknown; skipping", effort_option)
-                return
+                if self._client.backend == ACP_BACKEND_QODER:
+                    return False
+                return True
             if not _is_config_value_rejection(exc, effort_option):
                 raise  # not a value-rejection — a real failure
             last_exc = exc
@@ -396,6 +408,7 @@ async def _set_effort_config_option(self: AcpProvider, level: str) -> None:
     # Every candidate rejected (unexpected) — surface the last error.
     if last_exc is not None:
         raise last_exc
+    return False
 
 
 async def change_effort(self: AcpProvider, level: str) -> bool:
@@ -407,7 +420,8 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
     command for ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``, ``session/set_config_option``
     for ``ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION``. Returns False when the current
     model does not support effort, or when this harness is in neither set and
-    so has no effort channel at all.
+    so has no effort channel at all. It also returns False, after rolling the
+    override back, when the adapter did not take the level.
     """
     model = self._effort_model
     if not self.supports_effort():
@@ -478,45 +492,28 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
         )
     try:
         if via_config_option:
-            await self._set_effort_config_option(level)
+            applied = await self._set_effort_config_option(level)
         else:
             await self._client.send_command("/effort", args={"level": level})
+            applied = True
     except Exception:
-        # Roll back to the prior state before propagating to the caller.
-        if _prev is None:
-            self._effort_per_model.pop(model, None)
-            if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY:
-                if not await asyncio.to_thread(
-                    _clear_cli_overlay_effort, self._client._work_dir, model
-                ):
-                    # The overlay keeps a level the live push never applied,
-                    # and construction re-seeds from it, so the next spawn
-                    # adopts a level this rollback reports as undone.
-                    self._effort_per_model[model] = level
-                    logger.warning(
-                        "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                        "the workspace overlay lock was busy, so a respawn adopts it",
-                        model,
-                        level,
-                    )
-        else:
-            self._effort_per_model[model] = _prev
-            if not await asyncio.to_thread(self._apply_effort_overlay):
-                # Same divergence the branch above guards: the file keeps the
-                # level the live push never applied and construction re-seeds
-                # from it, so the map follows the file rather than reporting
-                # an undo the next spawn contradicts.
-                self._effort_per_model[model] = level
-                logger.warning(
-                    "ACP effort rollback left the overlay set (model=%s effort=%s): "
-                    "the workspace overlay lock was busy, so a respawn adopts it",
-                    model,
-                    level,
-                )
-        logger.warning(
-            "ACP effort live push failed (model=%s effort=%s) — rolled back", model, level
+        await self._roll_back_effort_push(
+            model,
+            level,
+            _prev,
+            clears_cli_overlay=self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY,
         )
         raise
+    if not applied:
+        # The adapter has no such option or refused the write: nothing changed
+        # live, so the stored override must not claim a level that never took.
+        await self._roll_back_effort_push(
+            model,
+            level,
+            _prev,
+            clears_cli_overlay=self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY,
+        )
+        return False
     if self._unbound_effort:
         # Unpinned: the next restart binds the level picked last.
         self._unbound_effort = level
@@ -531,6 +528,48 @@ async def change_effort(self: AcpProvider, level: str) -> bool:
         POLICY_ID_BY_BACKEND.get(self._client.backend, self._client.backend),
     )
     return True
+
+
+async def _roll_back_effort_push(
+    self: AcpProvider,
+    model: str,
+    level: str,
+    prev: str | None,
+    *,
+    clears_cli_overlay: bool,
+) -> None:
+    """Restore the override and the overlay to their state before a failed live push."""
+    if prev is None:
+        self._effort_per_model.pop(model, None)
+        if clears_cli_overlay:
+            if not await asyncio.to_thread(
+                _clear_cli_overlay_effort, self._client._work_dir, model
+            ):
+                # The overlay keeps a level the live push never applied,
+                # and construction re-seeds from it, so the next spawn
+                # adopts a level this rollback reports as undone.
+                self._effort_per_model[model] = level
+                logger.warning(
+                    "ACP effort rollback left the overlay set (model=%s effort=%s): "
+                    "the workspace overlay lock was busy, so a respawn adopts it",
+                    model,
+                    level,
+                )
+    else:
+        self._effort_per_model[model] = prev
+        if not await asyncio.to_thread(self._apply_effort_overlay):
+            # Same divergence the branch above guards: the file keeps the
+            # level the live push never applied and construction re-seeds
+            # from it, so the map follows the file rather than reporting
+            # an undo the next spawn contradicts.
+            self._effort_per_model[model] = level
+            logger.warning(
+                "ACP effort rollback left the overlay set (model=%s effort=%s): "
+                "the workspace overlay lock was busy, so a respawn adopts it",
+                model,
+                level,
+            )
+    logger.warning("ACP effort live push failed (model=%s effort=%s) — rolled back", model, level)
 
 
 async def reapply_live_effort(self: AcpProvider, level: str) -> bool:
@@ -701,13 +740,19 @@ async def _apply_initial_effort(self: AcpProvider) -> None:
     if not level:
         return
     try:
-        await self._set_effort_config_option(level)
-        logger.info(
-            "ACP initial effort applied: backend=%s model=%s effort=%s",
-            self._client.backend,
-            self._client._model,
-            level,
-        )
+        if await self._set_effort_config_option(level):
+            logger.info(
+                "ACP initial effort applied: backend=%s model=%s effort=%s",
+                self._client.backend,
+                self._client._model,
+                level,
+            )
+        else:
+            logger.info(
+                "effort %r not applied to this session (option or level not offered); "
+                "kept for a model that does",
+                level,
+            )
     except Exception:
         logger.warning(
             "ACP initial effort apply failed (backend=%s model=%s effort=%s)",

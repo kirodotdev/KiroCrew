@@ -557,6 +557,16 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "vetoed read or an unrouted delete, which is a defect, not a feature the "
         "reader would choose a harness by"
     ),
+    "ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE": (
+        "whether a non-empty advertised list is also a refusal list. Invisible when "
+        "the picker supplied the id, a refused pin when wrong"
+    ),
+    "ACP_BACKENDS_EFFORT_LADDER_ORDERED": (
+        "whether a harness's advertised effort levels are published least to most "
+        "effort. The dropdown reads the same levels either way, so a reader choosing "
+        "a harness loses nothing; a wrong membership shows the levels in the wrong "
+        "order, which is a defect"
+    ),
     "ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS": (
         "whether an advertised <model>[<effort>] id is applied as two writes. The "
         "model switch either lands or is refused, which its own line already says"
@@ -792,7 +802,10 @@ def _holds(backend: str, spec: _LineSpec) -> bool:
             # declaration at Stage 5, and every card in between is served.
             if declaration_for(backend) is UNKNOWN_AGENT_AUTH:
                 continue
-            if signs_in_separately(backend):
+            declaration = declaration_for(backend)
+            if declaration is not UNKNOWN_AGENT_AUTH and signs_in_separately(backend):
+                if not declaration.shows_own_credential_store_note:
+                    continue
                 return True
             continue
         if backend in _membership(name):

@@ -810,7 +810,7 @@ class TestFindOrphanMcpCandidates:
 
 
 class TestReclaimOwnsEveryHarnessItTracked:
-    """The reclaim recognises every harness Crew spawns, not two of them.
+    """The reclaim recognises every registered harness; no dormant exception remains.
 
     A hand-written ``("kiro-cli", "claude")`` pair answered for two of eight, so a
     dead gateway's codex-acp, opencode, pi-acp, goose or dsh orphan answered "not
@@ -819,7 +819,10 @@ class TestReclaimOwnsEveryHarnessItTracked:
     forgotten.
 
     The marker set is projected from the backend registry, so the fix is a table a
-    new harness joins rather than an edit here.
+    new harness joins rather than an edit here.  The partition is written as an
+    equality over the named set itself, not as a registry minus an exemption: with
+    Qoder selectable the dormant side is empty, and a future dormant harness must
+    reintroduce a named dormant pin here rather than hide inside a subtraction.
     """
 
     @staticmethod
@@ -835,6 +838,11 @@ class TestReclaimOwnsEveryHarnessItTracked:
         The reclaim cannot recognise a process it has no name for, and its failure
         mode is silent — the entry is dropped and the process spared. So the omission
         has to be a red test rather than something an operator finds later.
+
+        The registry is an exact PARTITION, not a registry minus an exemption. With
+        Qoder selectable the dormant side is empty; a future dormant harness must
+        reintroduce a named dormant pin here, with its refusal proven, rather than
+        hide inside a subtraction.
         """
         from kiro_crew.agent_sdk.backends import (
             ACP_BACKEND_PROCESS_NAMES,
@@ -842,11 +850,8 @@ class TestReclaimOwnsEveryHarnessItTracked:
             agent_process_markers,
         )
 
-        missing = sorted(ACP_BACKENDS_KNOWN - set(ACP_BACKEND_PROCESS_NAMES))
-        assert not missing, (
-            "these registered backends have no argv0 basename, so the PID-file "
-            f"reclaim cannot recognise their orphans: {missing}"
-        )
+        assert set(ACP_BACKEND_PROCESS_NAMES) == ACP_BACKENDS_KNOWN
+        assert ACP_BACKENDS_KNOWN == set(ACP_BACKEND_PROCESS_NAMES)
         markers = agent_process_markers()
         uncovered = sorted(
             name for name in ACP_BACKEND_PROCESS_NAMES.values() if name not in markers
@@ -854,7 +859,7 @@ class TestReclaimOwnsEveryHarnessItTracked:
         assert not uncovered, f"named but absent from the marker set: {uncovered}"
 
     def test_the_self_served_names_come_from_the_launch_table(self) -> None:
-        """The three harnesses with a launch row are not spelled twice."""
+        """The launch-row harnesses that Crew spawns are not spelled twice."""
         from kiro_crew.agent_sdk.backends import (
             ACP_BACKEND_LAUNCH,
             ACP_BACKEND_PROCESS_NAMES,
@@ -1535,3 +1540,59 @@ class TestReclaimOwnsEveryHarnessItTracked:
         assert kills == []
         assert killed == 0
         assert entry not in session_pid_file.read_text(encoding="utf-8")
+
+
+class TestQoderReclaimRequiresAcpArgv:
+    """qodercli's interactive binary shares the managed row's argv0."""
+
+    def test_interactive_qoder_is_not_a_managed_command_line(self) -> None:
+        from kiro_crew.session_pid import _cmdline_names_a_harness
+
+        interactive = b"/opt/bin/qodercli\0--model\0fancy\0"
+        acp = b"/opt/bin/qodercli\0--acp\0--settings\0{}\0"
+        assert _cmdline_names_a_harness(interactive) is False
+        assert _cmdline_names_a_harness(acp) is True
+
+    def test_tokenless_qoder_sweep_spares_interactive_and_kills_acp(
+        self, session_pid_file: Path
+    ) -> None:
+        """The tokenless argv gate is the last guard for a recycled PID.
+
+        Both rows have no start token, so the basename alone would otherwise
+        authorize signalling whatever now owns the PID.  The argv token narrows
+        only qoder; other managed names keep their old basename-only behavior.
+        """
+        from kiro_crew.session_pid import _sweep_pid_entries
+
+        gw = os.getpid()
+        lines = [f"{gw}:99998", f"{gw}:99997"]
+        session_pid_file.write_text("\n".join(lines) + "\n")
+        commands = {
+            99998: b"/opt/bin/qodercli\0--model\0fancy\0",
+            99997: b"/opt/bin/qodercli\0--acp\0",
+        }
+        kills: list[int] = []
+
+        with (
+            patch("kiro_crew.session_pid.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.session_pid._pid_cmdline", side_effect=lambda pid: commands[pid]),
+            patch(
+                "kiro_crew.session_pid.platform_compat.pid_liveness",
+                return_value=platform_compat.PID_ALIVE,
+            ),
+            patch("kiro_crew.session_pid._pid_in_spawn_grace", return_value=False),
+            patch(
+                "kiro_crew.session_pid._kill_pid_tree",
+                side_effect=lambda pid, **_kwargs: (kills.append(pid), 1, True)[1:],
+            ),
+        ):
+            killed, killed_or_dead, _candidates = _sweep_pid_entries(
+                lines,
+                should_skip_tagged=lambda _gw, _pid: False,
+                should_skip_bare=lambda _pid: False,
+            )
+
+        assert kills == [99997]
+        assert killed == 1
+        assert lines[1] in killed_or_dead
+        assert lines[0] in killed_or_dead  # recognized as stale/unmanaged and pruned, not signalled

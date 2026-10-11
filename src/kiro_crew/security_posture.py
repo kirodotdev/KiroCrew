@@ -481,6 +481,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "acp/client_mcp_array.py",
         "acp/client_model_selection.py",
         "acp/client_permissions.py",
+        # Qoder's unadvertised-model refusal and withheld-pin warning, scrubbed the
+        # same way as client_model_selection.py before they are logged or raised.
+        "acp/client_qoder.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",
         "acp/client_transport.py",

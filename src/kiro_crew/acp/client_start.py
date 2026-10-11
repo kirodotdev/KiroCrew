@@ -799,6 +799,14 @@ async def _initialize_session(self: AcpClient) -> None:
     self._steering_advertised = steering_advertised(init_resp)
     self._note_pi_adapter_version()
     self._note_goose_version()
+    adapter = process_adapter_for(self.backend)
+    if adapter is not None:
+        # The host's own handshake witnesses, in its own file: the release an
+        # argv-pinned harness was measured on, and whatever it has to arm before
+        # a session can exist. Before session/load or session/new on purpose --
+        # a harness that fails its own witness never opens a session. Nothing
+        # here for kiro-cli, whose answers live in the tables above.
+        adapter.on_initialized(self, init_resp)
 
     # The subprocess has now read its agent spec, which closes the window the
     # pre-spawn snapshot opened: a write landing before this point is caught here,
@@ -962,6 +970,11 @@ async def _initialize_session(self: AcpClient) -> None:
                 # own read-back on the response that replaces this one.
                 if self._is_goose and self._resumed:
                     self._verify_goose_routing(load_resp)
+                if adapter is not None and self._resumed:
+                    # The host's own witnesses, read off the response that
+                    # restored the session. Unconditional on which host it is:
+                    # a harness that has nothing to witness inherits the no-op.
+                    adapter.on_session_opened(self, load_resp, resumed=True)
                 if self._is_claude and self._resumed:
                     await self._pin_claude_starting_mode(load_resp)
         else:
@@ -993,6 +1006,8 @@ async def _initialize_session(self: AcpClient) -> None:
         # an adapter (harness-parity H13).
         if self._is_goose:
             self._verify_goose_routing(session_resp)
+        if adapter is not None:
+            adapter.on_session_opened(self, session_resp, resumed=False)
         if not self._session_id:
             # Both the initial attempt and the substitution retry failed to
             # yield a session. Raise a clear, actionable error instead of

@@ -618,7 +618,6 @@ test/test_mochi_activity.py
 test/test_mochi_agent_policy.py
 test/test_mochi_mcp_server.py
 test/test_mochi_routes.py
-test/test_model_registry.py
 test/test_model_registry_parity.py
 test/test_module_loader.py
 test/test_native_subagent_spawn.py

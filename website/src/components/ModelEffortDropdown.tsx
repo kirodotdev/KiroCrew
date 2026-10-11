@@ -10,6 +10,7 @@ import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
+import { getModelLabel } from '../lib/modelLabels'
 
 /** Bottom fade for a model list whose last visible row would otherwise be cut
  *  mid-line by whatever sits under it -- the list ends at the effort block's
@@ -114,6 +115,9 @@ export default function ModelEffortDropdown({
   const width = Math.min(WIDTH, window.innerWidth - 16)
   const left = Math.max(8, Math.min(anchorRect.right - width, window.innerWidth - width - 8))
   const maxHeight = Math.max(0, anchorRect.top - 12)
+  // The id is what the pin row writes; the sentence names the backend's label
+  // for it when one is registered (Qoder's exclusive catalog), else the id.
+  const pinLabel = getModelLabel(pinModelName) || pinModelName
 
   return (
     // The dialog delegates list navigation from its filter and option rows, but
@@ -218,7 +222,7 @@ export default function ModelEffortDropdown({
                   {pinModelUnavailable
                     ? <Trans
                         i18nKey="components.modelEffortDropdown.pin_model_unavailable"
-                        components={{ model: <span className="font-mono">{pinModelName}</span> }}
+                        components={{ model: <span className="font-mono">{pinLabel}</span> }}
                       />
                     : pinnedToAgent
                     ? <Trans
@@ -228,7 +232,7 @@ export default function ModelEffortDropdown({
                     : <Trans
                         i18nKey="components.modelEffortDropdown.set_default_for_agent"
                         components={{
-                          model: <span className="font-mono">{pinModelName}</span>,
+                          model: <span className="font-mono">{pinLabel}</span>,
                           agent: <span className="font-mono">{agentName}</span>,
                         }}
                       />}

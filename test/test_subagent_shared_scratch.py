@@ -1194,6 +1194,9 @@ class TestEveryProcessSpawnSeamIsAccountedFor:
             "app-owned review workers; no chat session is their parent"
         ),
         "knowledge/llm_pool.py": "knowledge-indexing helper process; no session parent",
+        "acp/client_qoder.py": (
+            "one-shot Qoder service-catalog probe in throwaway scratch; no session parent"
+        ),
     }
 
     @classmethod

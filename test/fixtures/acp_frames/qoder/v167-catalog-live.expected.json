@@ -1,0 +1,178 @@
+[
+  {
+    "agent_capabilities": {
+      "_meta": {
+        "qoder": {
+          "promptQueueing": true
+        }
+      },
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "additionalDirectories": {},
+        "close": {},
+        "delete": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.1.67",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves via the safety classifier",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Refuses instead of prompting",
+            "name": "Don't Ask",
+            "value": "dontAsk"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "auto",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Vision · 0.50x Credit",
+            "name": "Auto (default)",
+            "value": "auto"
+          },
+          {
+            "description": "Reasoning · Vision · 2.00x Credit",
+            "name": "Ultimate",
+            "value": "ultimate"
+          },
+          {
+            "description": "Vision · 1.10x Credit",
+            "name": "Performance",
+            "value": "performance"
+          },
+          {
+            "description": "Vision · 0.30x Credit",
+            "name": "Efficient",
+            "value": "efficient"
+          },
+          {
+            "description": "Reasoning · Vision · New · 8.00x Credit",
+            "name": "Sonus",
+            "value": "smodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 4.00x Credit",
+            "name": "Cantus",
+            "value": "cmodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.20x Credit",
+            "name": "Qwen3.8-Max",
+            "value": "qmodel_38max"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash",
+            "value": "qfmodel"
+          },
+          {
+            "description": "Vision · New · 0.50x Credit",
+            "name": "Qwen3.7-Max",
+            "value": "qmodel_latest"
+          },
+          {
+            "description": "Vision · New · 0.04x Credit",
+            "name": "Qwen3.7-Plus",
+            "value": "qmodel"
+          },
+          {
+            "description": "Vision · New · 1.40x Credit",
+            "name": "Kimi-K3",
+            "value": "kmodel_latest"
+          },
+          {
+            "description": "Vision · New · 0.80x Credit",
+            "name": "Kimi-K2.8-Preview",
+            "value": "kmodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.80x Credit",
+            "name": "GLM-5.3",
+            "value": "gmodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.10x Credit",
+            "name": "GLM-5.3-Flash",
+            "value": "gfmodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.50x Credit",
+            "name": "DeepSeek-V4-Pro",
+            "value": "dmodel"
+          },
+          {
+            "description": "Reasoning · Vision · New · 0.10x Credit",
+            "name": "DeepSeek-Flash",
+            "value": "dfmodel"
+          },
+          {
+            "description": "Vision · New · 0.20x Credit",
+            "name": "MiniMax-M3",
+            "value": "mmodel"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "yolo"
+      ]
+    },
+    "session_id": "sess-live-catalog"
+  }
+]

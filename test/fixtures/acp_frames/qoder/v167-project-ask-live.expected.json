@@ -1,0 +1,180 @@
+[
+  {
+    "action": "server_request_unknown",
+    "frame": "session/new",
+    "params": {
+      "cwd": "/qoder-probe-1167/P3a/proj",
+      "mcpServers": []
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves via the safety classifier",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Refuses instead of prompting",
+            "name": "Don't Ask",
+            "value": "dontAsk"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qfmodel",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash (default)",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "yolo"
+      ]
+    },
+    "session_id": "sess-live-v167"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker",
+          "description": "Create marker file and its parent directory"
+        },
+        "title": "Create marker file and its parent directory",
+        "tool_call_id": "call_a97594f6e057461b9fb9417e",
+        "tool_input": "{\n  \"command\": \"mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker\",\n  \"description\": \"Create marker file and its parent directory\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "proceed_always_and_save",
+            "label": "Always allow \"mkdir, touch\""
+          },
+          {
+            "id": "proceed_once",
+            "label": "Allow"
+          },
+          {
+            "id": "cancel",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker",
+          "description": "Create marker file and its parent directory"
+        },
+        "shell_classified": true,
+        "title": "mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker",
+        "tool_call_id": "call_a97594f6e057461b9fb9417e",
+        "tool_input": "{\n  \"command\": \"mkdir -p /qoder-probe-1167/P3a && touch /qoder-probe-1167/P3a/bash-ran.marker\",\n  \"description\": \"Create marker file and its parent directory\"\n}",
+        "tool_kind": "execute"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "proceed_always_and_save",
+      "once": "proceed_once",
+      "reject": "cancel"
+    }
+  },
+  {
+    "frame": "response",
+    "id": 0
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "call_a97594f6e057461b9fb9417e",
+        "tool_output": "```\nThe user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). Do not repeat this call; take a different approach, or if you cannot proceed without it, tell the user what you were trying to do and why you need it.\n```",
+        "tool_output_bytes": 310,
+        "tool_output_digest": "676ee4ef27cdd41cfc783c7e354dea0d27908718fb0e81ef55192949d131eaa3",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

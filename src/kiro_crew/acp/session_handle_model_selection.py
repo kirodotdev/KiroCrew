@@ -25,6 +25,7 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import model_registry
+from kiro_crew.effort import order_effort_levels
 from kiro_crew.acp._dispatch import set_mode_params, set_model_params
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
@@ -46,6 +47,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
     METHOD_SET_CONFIG_OPTION,
@@ -560,7 +562,7 @@ def supports_config_option(self: AcpSessionHandle, config_id: str) -> bool:
 
 
 def get_valid_effort_levels(self: AcpSessionHandle) -> list[str]:
-    """Return valid effort levels from config options, preserving order.
+    """Return valid effort levels from config options, least to most effort.
 
     The option id is resolved per backend (``effort`` for most,
     ``reasoning_effort`` for codex-acp): a hard-coded spelling returns an
@@ -574,9 +576,14 @@ def get_valid_effort_levels(self: AcpSessionHandle) -> list[str]:
         if opt.get("id") == effort_option:
             options = opt.get("options", [])
             if isinstance(options, list):
-                return effort_config_option_levels(
+                levels = effort_config_option_levels(
                     self._runtime.acp_backend,
                     [o.get("value", "") for o in options if isinstance(o, dict) and o.get("value")],
+                )
+                return (
+                    order_effort_levels(levels)
+                    if self._runtime.acp_backend in ACP_BACKENDS_EFFORT_LADDER_ORDERED
+                    else levels
                 )
     return []
 

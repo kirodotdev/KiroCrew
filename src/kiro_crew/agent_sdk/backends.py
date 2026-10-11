@@ -163,6 +163,11 @@ with no row here.
        registry, answers that this session takes an effort level and which ones)
    * - ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``
      - semantic question (``SessionCapabilities.resolves_model_from_advertised_list``)
+   * - ``ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE``
+     - semantic question (``SessionCapabilities.advertised_models_are_exclusive``)
+   * - ``ACP_BACKENDS_EFFORT_LADDER_ORDERED``
+     - driver-internal (whether the advertised effort levels are published least to
+       most effort)
    * - ``ACP_BACKENDS_SEED_LOCAL_SETTINGS``
      - driver-internal (whether ``settings.local.json`` is re-seeded on switch)
    * - ``ACP_BACKENDS_KIRO_SLASH_COMMANDS``
@@ -312,6 +317,38 @@ ACP_BACKEND_GOOSE = "goose"
 # closure -- so one global install is the whole precondition, with no workspace
 # checkout and no per-profile dependency step.
 ACP_BACKEND_DEEPSEEK = "deepseek"
+# Qoder CLI: a single binary that serves ACP itself, behind a flag that ``--help`` does
+# not list (``qodercli --acp``). No npm adapter and no Node floor, so its install probe
+# names ONE component and its launch is a row of :data:`ACP_BACKEND_LAUNCH`.
+#
+# SELECTABLE THROUGH A PINNED ASK RULE. What live probes (qodercli 1.1.67) established:
+#
+# * inline ``--settings '{"permissions":{"ask":["*"],"defaultMode":"default"}}'``
+#   outranks a project file seeded with ``allow`` rules, ``bypassPermissions`` and a
+#   returning PreToolUse hook: Bash and session-mounted MCP tools raised requests.
+#   Thus the route is PINNED ON ARGV rather than ``VERIFIED_SEEDED_SETTINGS``:
+#   qodercli exposes no resolved-permission read-back, so Crew cannot observe its
+#   resolved rule set. Session/default-mode read-back is a tripwire, not the proof.
+# * Qoder evaluates ``deny`` first, then SAFETY CHECKS and ``ask`` rules, then
+#   ``allow`` and mode auto-allow. ``ask: ["*"]`` therefore removes the harness's
+#   own read-only exemption (a plain ``ls`` asked), and an ``allow`` rule cannot
+#   outrank it.
+# * the tool identity travels in ``_meta.qoder.toolName``; permission options
+#   include ``proceed_always_and_save``, which Crew must never choose.
+# * on 1.1.67, a queued second prompt was accepted without interrupting the first;
+#   this is queueing, not mid-turn steering.
+ACP_BACKEND_QODER = "qoder"
+# The qodercli release on which the precedence, argv pin, mode read-back, unasked-call
+# and MCP-array observations were made. Exact, not a range: precedence can change in a
+# patch without a wire error, and no resolved-config read-back would announce it.
+QODER_MEASURED_VERSIONS: FrozenSet[str] = frozenset({"1.1.67"})
+# The single measured release named in refusal remedies and the install card.
+# Derived so the two cannot drift apart when the measured set is bumped.
+QODER_SUPPORTED_VERSION = sorted(QODER_MEASURED_VERSIONS)[0]
+# The only mode Crew verified as asking, and the one the spawn pins. A returned
+# mode that is not this value is INDETERMINATE even if the inline settings were
+# semantically ignored by a future release.
+QODER_REQUIRED_MODE = "default"
 # The kiro-cli backend is spelled as the empty string throughout, so name it
 # rather than leaving every call site to infer it from "not claude".
 ACP_BACKEND_KIRO = ""
@@ -341,6 +378,7 @@ ACP_BACKENDS_KNOWN: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -356,6 +394,9 @@ ACP_BACKENDS_INDEPENDENT_SETUP: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        # Measured live: qodercli is its own binary and signs in through its own
+        # qodercli login; no kiro-cli process is on its launch or auth path.
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -461,6 +502,7 @@ BASELINE_SELECTABLE_BACKENDS: FrozenSet[str] = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -486,6 +528,7 @@ POLICY_ID_BY_BACKEND: dict = {
     ACP_BACKEND_PI: ACP_BACKEND_PI,
     ACP_BACKEND_GOOSE: ACP_BACKEND_GOOSE,
     ACP_BACKEND_DEEPSEEK: ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_QODER: ACP_BACKEND_QODER,
 }
 
 #: The backend a deployment policy may never deny.
@@ -832,7 +875,9 @@ from kiro_crew.agent_sdk.backends_models import (  # noqa: E402,F401 - re-export
     _MODEL_REFUSAL_PHRASE_BY_BACKEND,
     _MODEL_REGISTRY_NAMESPACE_BY_BACKEND,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
@@ -862,8 +907,13 @@ from kiro_crew.agent_sdk.backends_routing import (  # noqa: E402,F401 - re-expor
     ACP_BACKENDS_OPEN_EXTERNAL_URL,
     ACP_BACKENDS_PERMISSION_KIND_FROM_TOOL_CALL,
     ACP_BACKENDS_SIDE_READONLY,
+    QODER_ALLOW_ALWAYS_OPTION_ID,
+    QODER_FORBIDDEN_ARGV_FLAGS,
+    QODER_GATE_ARGV,
+    QODER_PINNED_SETTINGS_JSON,
     Readback,
     Routing,
+    qoder_pinned_argv,
     gate_probe_command_for,
     gate_readback_for,
     permission_config_for,
