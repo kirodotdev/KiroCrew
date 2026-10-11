@@ -71,6 +71,51 @@ def _no_host_env_file(monkeypatch, tmp_path):
     monkeypatch.setattr(svc_linux, "ENV_FILE_PATH", env_dir / "kirocrew.env")
 
 
+@pytest.fixture(autouse=True)
+def _no_host_unit_files(_floor_monkeypatch, tmp_path, tmp_path_factory):
+    """Keep both scopes' unit files off the host running the suite.
+
+    ``install()`` and ``uninstall()`` act on ``UNIT_PATH`` for the system scope and on
+    ``user_unit_file_path()`` for the user scope, which resolves against ``Path.home()``.
+    A test that re-points only ``UNIT_PATH`` would otherwise reach the user unit of the
+    account running the suite, and an uninstall test deletes it. Point both scopes, and
+    every ``Path.home()`` lookup, under ``tmp_path``. Anything that still removes or
+    replaces a file in the real unit directories fails the test instead of acting. A
+    test that needs a unit file writes its own and re-points the path.
+
+    Patched through ``_floor_monkeypatch``, never the shared ``monkeypatch``: a test's
+    ``monkeypatch.undo()`` reverts every record on that instance, and would lift the
+    home redirection and the guard with it.
+    """
+    from kiro_crew.service import linux as svc_linux
+
+    monkeypatch = _floor_monkeypatch
+    real_dirs = tuple(
+        os.path.realpath(d) for d in (Path.home() / ".config" / "systemd", svc_linux.UNIT_PATH.parent)
+    )
+    home = tmp_path_factory.mktemp("service-home")
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: cls(home)))
+    for var in ("HOME", "USERPROFILE"):
+        monkeypatch.setenv(var, str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    monkeypatch.setattr(svc_linux, "UNIT_PATH", tmp_path / "absent-etc-systemd" / f"{SERVICE_NAME}.service")
+
+    def _refuse_real_unit_dirs(name):
+        act = getattr(os, name)
+
+        def guarded(path, *args, **kwargs):
+            for target in (path, *args[:1]):
+                resolved = os.path.realpath(os.fspath(target))
+                if any(resolved == d or resolved.startswith(d + os.sep) for d in real_dirs):
+                    pytest.fail(f"os.{name} would touch a real unit file: {resolved}")
+            return act(path, *args, **kwargs)
+
+        monkeypatch.setattr(os, name, guarded)
+
+    for name in ("unlink", "remove", "replace", "rename"):
+        _refuse_real_unit_dirs(name)
+
+
 class _FakeClock:
     """``time`` stand-in for ``linux.restart()``'s settle window.
 
@@ -573,6 +618,9 @@ class TestLinuxUnitRendering:
         from kiro_crew.service import linux as svc_linux
 
         monkeypatch.setenv("USER", "tester")
+        # Every subprocess call below is captured, so nothing is written: this test
+        # opts back in to the production unit path to check the argv names it.
+        monkeypatch.setattr(svc_linux, "UNIT_PATH", Path(f"/etc/systemd/system/{SERVICE_NAME}.service"))
         # Pin a non-root euid so the privilege prefix is deterministically
         # `sudo` regardless of the CI runner's uid (root CI would drop it).
         monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
