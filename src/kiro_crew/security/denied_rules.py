@@ -248,6 +248,31 @@ _NETCAT_EXEC_PATTERN = r"(?<![\w.-])(?<!\w=)nc\s+-e"
 # enumerable, which is why a name-based rule is defensible there and not here.
 
 
+# ── The recursive-force ``rm`` deletion rules (root + home) ─────────────────
+#
+# Both rules block ``rm`` invoked with BOTH the recursive and the force flag
+# against a catastrophic target (the filesystem root, or the user home): the
+# flag spelling ``-fr``/``-rfv``, split ``-r -f``, the long options
+# ``--recursive --force``/unambiguous prefixes, and ``--no-preserve-root``, and
+# the home target spelled ``~`` / ``$HOME`` / ``${HOME}``.
+#
+# Their pattern string is the BASE LITERAL — ``rm -rf /.*`` / ``rm -rf ~.*`` —
+# which STAYS LIVE in the Python ``re`` deny tier as a fail-closed net, UNIONed
+# with the argv-structural floor ``rm_floor._recursive_force_rm_targets`` wired
+# in ``security.is_denied``. The floor reads only the ``rm`` command's OWN argv
+# (flags in any position, the home/root spellings, glob-over-children
+# ``/*``/``~/*``, exec/command-string wrappers, ``sh -c`` payloads) and adds the
+# STRUCTURAL flag-spelling coverage the two issues ask for. A root/home wipe
+# reached THROUGH an ``xargs`` pipeline is left to the base regex deny-net on the
+# whole text, exactly as main does — the floor does not reconstruct xargs stdin.
+# The regex net catches a quoted payload the own-argv model cannot reach
+# (``su -c "rm -rf /"``, ``eval``, ``trap``). The net's one false positive — a
+# ``grep``-family search that merely NAMES the literal — is narrowed by the
+# ``_DENY_EXCEPTIONS`` grep inert-search carve-out. The literal remains the
+# pattern so the catalog row keeps a stable identity for the golden fixture, the
+# opt-out surface, SEL audit, and a governance ceiling pin.
+
+
 BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
     DeniedCommandRule(
         id="credential-exfil-s3-cp",
@@ -1319,8 +1344,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         pattern="rm -rf /.*",
         category="local-destructive",
         description=(
-            "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which "
-            "can wipe the entire operating system and all data."
+            "Blocks recursive force-deletion of the filesystem root (rm -rf /...), which can "
+            "wipe the entire operating system and all data. The root directory ITSELF is denied "
+            "in any flag spelling — recursive and force in any order, packed (-rf/-fr/-rfv), "
+            "split (-r -f), or long (--recursive --force), and --no-preserve-root as a trigger "
+            "on its own. A path UNDER the root is denied only in the contiguous base spelling "
+            "`rm -rf /<path>` (a widened spelling of a descendant, e.g. `rm -fr /tmp/x`, stays "
+            "allowed for scratch cleanup); rm -f, rm -r and flagless rm stay allowed."
         ),
     ),
     DeniedCommandRule(
@@ -1328,8 +1358,13 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         pattern="rm -rf ~.*",
         category="local-destructive",
         description=(
-            "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which "
-            "would destroy all personal files and config."
+            "Blocks recursive force-deletion of the user home directory (rm -rf ~... or rm -rf "
+            "$HOME...), which would destroy all personal files and config. The home directory "
+            "ITSELF is denied in any flag spelling (recursive and force in any order) with the "
+            "home target spelled ~ or $HOME / ${HOME} (quotes are normalized away first). A path "
+            "UNDER home is denied only in the contiguous base spelling `rm -rf ~<path>` (a "
+            "widened spelling, e.g. `rm -rf $HOME/.cache`, stays allowed for cache cleanup); "
+            "rm -f, rm -r and flagless rm stay allowed."
         ),
     ),
     DeniedCommandRule(
@@ -1642,6 +1677,28 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
 
+# The two recursive-force ``rm`` rules keep their catalog regex LIVE in the
+# ``re`` tier as a fail-closed net, UNIONed with the argv-structural floor
+# (``rm_floor._recursive_force_rm_targets``). The regex matches TEXT left to
+# right (flags, then a rooted target), which GNU ``getopt`` defeats by permuting
+# the argv -- ``rm / -rf --no-preserve-root`` puts the flags AFTER the operand
+# -- so the floor tokenizes and collects the flags from
+# every position, and denies the root/home dir ITSELF in any flag spelling, plus
+# a path UNDER it only in base's contiguous ``rm -rf <path>`` spelling (base
+# ``main``'s ``rm -rf /.*`` / ``rm -rf ~.*`` contract; a WIDENED-spelling
+# descendant such as ``rm -fr /tmp/x`` stays allowed). It FAILS CLOSED: when the
+# tokenizer raises, ``is_denied`` falls back to a base-literal text check, exactly
+# what ``main`` denied with no tokenizer, so the catastrophic literal is never
+# allowed by a tokenizer hiccup. Each floor member runs only while its row is in the effective set, so an
+# operator-disabled rule stays disabled.
+_RM_RF_FLOOR_RULE_IDS: frozenset[str] = frozenset(
+    {"local-destructive-rm-rf-root", "local-destructive-rm-rf-home"}
+)
+_RM_RF_FLOOR_BY_ID: dict[str, str] = {
+    r.id: r.pattern for r in BUILTIN_DENIED_RULES if r.id in _RM_RF_FLOOR_RULE_IDS
+}
+_RM_RF_FLOOR_PATTERNS: frozenset[str] = frozenset(_RM_RF_FLOOR_BY_ID.values())
+
 # The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
 # approve, gateway restart, cloud <destructive> -- have NO catalog row and NO opt-out.  A regex
 # row (``.*kiro.?crew ... restart.*`` and siblings) opening with an unbounded any-run would
@@ -1757,6 +1814,16 @@ _SELF_PROTECTION_FLOOR_NOTES: dict[str, str] = {
         "or VM behind `ssh -p 2222 localhost`) is denied like the host, since sshd here "
         "could listen on that port too. Operator recourse for container/VM workflows is "
         "the per-rule toggle in Settings until a port-scoped exemption ships."
+    ),
+    "local-destructive-rm-rf-root": (
+        "Matched structurally on the rm argv: rm recursively force-deletes a rooted "
+        "target (/ or an absolute path under it) with the recursive and force flags "
+        "(or --no-preserve-root) present in any position."
+    ),
+    "local-destructive-rm-rf-home": (
+        "Matched structurally on the rm argv: rm recursively force-deletes the home "
+        "directory (~ or $HOME) with the recursive and force flags present in any "
+        "position."
     ),
 }
 
@@ -2096,76 +2163,16 @@ def edition_denied_rules() -> list[DeniedCommandRule]:
     return out
 
 
-# Exceptions keyed by the deny pattern they apply to. If an input matches
-# a deny pattern AND one of that pattern's exceptions, the deny is skipped.
-# This avoids a blanket allowlist that could bypass unrelated deny rules.
-# Exceptions are NOT applied when the input contains command separators
-# (;, &&, ||, |, newlines) to prevent chaining bypasses.
-#
-# Scoped carve-out for INERT MENTIONS of a destructive literal.
-#
-# A read-only search verb cannot execute its own operands, so a destructive
-# string handed to it as a pattern is text, not an action:
-#
-#     grep -rn "rm -rf /" tests/     <- searching FOR the rule, not running it
-#
-# Denying those identically to the real command prevents nothing (the same work
-# completes by moving the payload into a file, which is not scanned) while
-# blocking anyone working ON these rules, and surfaces to the agent as
-# ``User denied tool execution`` -- indistinguishable from a human cancelling.
-#
-# Two conditions make this safe, and BOTH are load-bearing -- getting either one
-# wrong re-allows a real wipe:
-#
-#   1. The glob must be ANCHORED AT THE VERB. ``fnmatch`` is a full match but
-#      ``*`` crosses spaces, so a LEADING ``*`` is an unanchored substring
-#      test: ``*/grep *`` matches ``rm -rf / /bin/grep x`` -- a genuine
-#      root-wipe with a ``/grep `` fragment anywhere in its operand list --
-#      and would exonerate it. Only the bare ``<verb> *`` form is safe, because
-#      it forces the segment to BEGIN with the verb. Path-qualified
-#      invocations (``/usr/bin/grep ...``) are therefore NOT exonerated: a
-#      glob cannot express "the first token's basename is the verb", and
-#      losing a denial is a worse outcome than a search that still needs
-#      rewording.
-#
-#   2. The view must contain NO shell-active character at all, enforced by
-#      :func:`_exception_eligible`. Blocklisting only the openers already
-#      known is defeated by the next one -- a
-#      bash 5.3 funsub, ``grep x ${ rm -rf /;}``, which the splitter cuts only
-#      at the ``;`` so the destructive command stays glued to the search verb.
-#      Enumerating opener SPELLINGS is the losing side of that game (the same
-#      point applies to any spelling-based recognizer), so the guard is
-#      inverted: an eligible view may contain none of ``$`` ``(`` ``)`` ``{``
-#      ``}`` `` ` `` ``<`` ``>``. That covers command substitution, process
-#      substitution, funsubs, subshells and redirection as a CLASS rather than
-#      one opener at a time. Gating the EXCEPTION rather than widening
-#      ``_CMD_SPLIT_RE`` keeps the blast radius to this carve-out; the splitter
-#      feeds every other rule, which were measured against its behaviour.
-#
-# The verb list is confined to the ``grep`` family for the same reason. The
-# premise of this whole carve-out is that the verb CANNOT execute its operands,
-# and that is a property of the specific tool: ``rg --pre <cmd>`` runs a
-# preprocessor and ``ack --pager <cmd>`` runs a pager, so
-# ``rg --pre sh "rm -rf /tmp/victim" payload.sh`` really does execute. ``grep``
-# / ``egrep`` / ``fgrep`` have no flag that spawns a helper, so for them the
-# premise holds rather than merely being asserted.
-#
-# With all of this in force the chaining cases stay denied on the destructive
-# SEGMENT in Pass 2 (``grep "x" && <destructive>``); the Pass 1 whole-string
-# exception only ever defers to that pass.
-#
-# Because nothing in an eligible segment executes, whether the literal was
-# quoted is irrelevant -- so this needs no quote awareness, which is what keeps
-# it compatible with quote-NORMALIZED matching (quoting must never exculpate a
-# command that does run).
-#
-# Deliberately NOT included, pending a maintainer decision:
-# ``echo``/``printf`` (inert to execute, but ``>`` is not a segment
-# separator, so an exoneration there also covers writing the string to a file)
-# and ``git commit -m`` (the arguable non-search verb).
+#: The ``grep`` family only. The premise of this carve-out is that the verb
+#: CANNOT execute its operands, which is a property of the specific tool:
+#: ``rg --pre <cmd>`` runs a preprocessor and ``ack --pager <cmd>`` runs a pager,
+#: so those really do execute. ``grep`` / ``egrep`` / ``fgrep`` have no flag that
+#: spawns a helper, so for them the premise holds rather than being asserted.
+#: ``echo``/``printf`` and ``git commit -m`` are deliberately NOT included: an
+#: emitter's output can be redirected to a file (``>`` is not a segment
+#: separator), and ``git commit -m`` is the arguable non-search verb.
 _INERT_SEARCH_VERBS = ("grep", "egrep", "fgrep")
-#: Verb-anchored ONLY -- see condition 1 above. A leading ``*`` here would be a
-#: bypass, not a convenience.
+#: Verb-anchored ONLY. A leading ``*`` here would be a bypass, not a convenience.
 _INERT_SEARCH_GLOBS: list[str] = [f"{verb} *" for verb in _INERT_SEARCH_VERBS]
 
 
@@ -2174,40 +2181,27 @@ def _exception_eligible(view: str) -> bool:
 
     An eligible view must be a SINGLE PLAIN COMMAND: no character from
     :data:`_SHELL_ACTIVE_CHARS`, which covers command substitution, process
-    substitution, funsubs, subshells, redirection AND chaining.
-
-    Two independent reasons, each of which was a reachable bypass during review:
-
-    * ``_CMD_SPLIT_RE`` is not a complete execution-boundary oracle -- it does
-      not treat ``<(``, ``>(``, ``${`` or a bare ``(`` as a boundary -- so such a
-      construct stays glued INSIDE a segment instead of being isolated into its
-      own command position, and an exception keyed to the segment's leading verb
-      would exonerate the command hiding in it (``grep x <(rm -rf /tmp/v)``,
-      ``grep x ${ rm -rf /;}``).
-    * A pipeline's later stage can EXECUTE what the search emitted
-      (``grep '<destructive>' payload.py | python``).  The pipe is a splitter
-      boundary, so the Pass 2 grep segment looks innocent on its own; refusing
-      the separators here keeps the Pass 1 whole-string match denying outright
-      instead of deferring to that segment.
-
-    Deliberately a character-class test rather than a list of opener spellings:
-    the spelling list lost twice during review, once to ``<(`` and once to a
-    bash 5.3 funsub.
+    substitution, funsubs, subshells, redirection AND chaining. A pipeline's
+    later stage can EXECUTE what the search emitted (``grep '<destructive>'
+    payload.py | python``), and a glued opener (``<(``, ``${``, a bare ``(``)
+    hides a command inside the segment; refusing the whole active-character class
+    keeps the Pass 1 whole-string match denying outright instead of deferring to
+    an innocent-looking segment.
 
     Fails CLOSED: an unrecognised construct means no exception, i.e. the deny
-    stands.  This gates only the exception path, so no other rule's matching
+    stands. This gates only the exception path, so no other rule's matching
     behaviour changes.
     """
     return not _SHELL_ACTIVE_CHARS.intersection(view)
 
 
-# Maps a deny pattern to the globs that exonerate it.  When an input matches
-# a deny pattern AND one of that pattern's exceptions, the deny is skipped.
-# This avoids a blanket allowlist that could bypass unrelated deny rules.
-#
-# Scoped to the two ``local-destructive`` rm rules: they are plain literal
-# strings, so they are the ones an ordinary search for their own subject
-# matter trips over.
+#: Maps a deny pattern to the globs that exonerate it: when an input matches a
+#: deny pattern AND one of that pattern's exceptions, the deny is skipped. Scoped
+#: to the two ``local-destructive`` rm rules -- they are plain literal strings, so
+#: they are the ones an ordinary ``grep`` for their own subject matter trips over.
+#: This is the grep inert-search carve-out that keeps ``grep -rn 'rm -rf /' src/``
+#: (a maintainer auditing the rule) allowed while the regex deny-net still refuses
+#: a real ``rm -rf /``.
 _DENY_EXCEPTIONS: dict[str, list[str]] = {
     "rm -rf /.*": list(_INERT_SEARCH_GLOBS),
     "rm -rf ~.*": list(_INERT_SEARCH_GLOBS),
@@ -2231,12 +2225,10 @@ _DENY_EXCEPTIONS: dict[str, list[str]] = {
 # completes by spelling the verb some other way) and surfaces to the agent as
 # ``User denied tool execution``, indistinguishable from a human cancelling.
 #
-# ``_DENY_EXCEPTIONS`` cannot reach these.  It is a TEXT glob gated by
-# :func:`_exception_eligible`, which requires the view to hold no shell-active
-# character at all -- and both commands above carry ``|`` or ``>``.  Widening
-# that glob table is the wrong instrument twice over: a glob cannot express
-# "this word sits at an argument position", and relaxing
-# ``_exception_eligible`` would relax it for the ``rm`` carve-out too.
+# A TEXT glob carve-out is the wrong instrument twice over: a glob cannot express
+# "this word sits at an argument position", and gating it on "the view holds no
+# shell-active character" would still miss both commands above (each carries
+# ``|`` or ``>``).
 #
 # The narrowing therefore lives at the ARGV layer
 # (:func:`~.perm_verb_mention._perm_verb_mention_only`) and is consulted ONLY

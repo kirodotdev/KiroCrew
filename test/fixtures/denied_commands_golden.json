@@ -609,13 +609,13 @@
     "id": "local-destructive-rm-rf-root",
     "pattern": "rm -rf /.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion rooted at the filesystem root (rm -rf /...), which can wipe the entire operating system and all data."
+    "description": "Blocks recursive force-deletion of the filesystem root (rm -rf /...), which can wipe the entire operating system and all data. The root directory ITSELF is denied in any flag spelling — recursive and force in any order, packed (-rf/-fr/-rfv), split (-r -f), or long (--recursive --force), and --no-preserve-root as a trigger on its own. A path UNDER the root is denied only in the contiguous base spelling `rm -rf /<path>` (a widened spelling of a descendant, e.g. `rm -fr /tmp/x`, stays allowed for scratch cleanup); rm -f, rm -r and flagless rm stay allowed."
   },
   {
     "id": "local-destructive-rm-rf-home",
     "pattern": "rm -rf ~.*",
     "category": "local-destructive",
-    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~...), which would destroy all personal files and config."
+    "description": "Blocks recursive force-deletion of the user home directory (rm -rf ~... or rm -rf $HOME...), which would destroy all personal files and config. The home directory ITSELF is denied in any flag spelling (recursive and force in any order) with the home target spelled ~ or $HOME / ${HOME} (quotes are normalized away first). A path UNDER home is denied only in the contiguous base spelling `rm -rf ~<path>` (a widened spelling, e.g. `rm -rf $HOME/.cache`, stays allowed for cache cleanup); rm -f, rm -r and flagless rm stay allowed."
   },
   {
     "id": "iac-teardown-terraform-destroy",
