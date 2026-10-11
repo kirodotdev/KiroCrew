@@ -667,7 +667,7 @@ jobs:
         # errored advisory review must never fail the gate; only a real BLOCK
         # does). Gated on the UI-scope pass.
         if: steps.human_override.outputs.active != 'true' && (steps.pr.outputs.obsolete != 'true' && (steps.scope.outputs.ui == 'true'))
-        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
+        uses: anthropics/claude-code-action@2dca132ff0e0c4094ce6048b422c6915a071210b # v1.0.247
         with:
           # Inference via Amazon Bedrock. Model id form (bare, regional `us.`
           # inference profile, no `[1m]` tag) is load-bearing — see the
