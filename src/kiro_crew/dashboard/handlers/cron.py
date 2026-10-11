@@ -1015,8 +1015,37 @@ async def api_cron_delete(request: web.Request) -> web.Response:
     app_denied = await _refuse_foreign_app_job(request, state, [job_id], "crons.delete")
     if app_denied is not None:
         return app_denied
+    from kiro_crew.dashboard.handlers.change_cards import REQ_CARD_UNDO_CRON_EXPECT
+
+    expected_revision = request.get(REQ_CARD_UNDO_CRON_EXPECT)
     try:
-        ok = await state.crons.remove_job_async(job_id, actor="dashboard", source="api_cron_delete")
+        if isinstance(expected_revision, str):
+            # Card Undo of a schedule it created: delete only while the job
+            # still fingerprints to what the card left, compared under the
+            # cron store lock so an edit another tab landed after the Undo's
+            # snapshot check cannot be clobbered.
+            from kiro_crew.dashboard.change_cards import cron_job_revision
+
+            outcome = await state.crons.remove_job_if_async(
+                job_id,
+                expected_revision=expected_revision,
+                revision_of=cron_job_revision,
+                actor="dashboard",
+                source="api_cron_delete",
+            )
+            if outcome == "changed":
+                return web.json_response(
+                    {
+                        "error": "this changed after the card was applied; undo refused",
+                        "code": "changed_since_apply",
+                    },
+                    status=409,
+                )
+            ok = outcome == "removed"
+        else:
+            ok = await state.crons.remove_job_async(
+                job_id, actor="dashboard", source="api_cron_delete"
+            )
     except CronStoreBusy:
         return web.json_response(_CRON_BUSY_BODY, status=_CRON_BUSY_STATUS)
     except CronStoreUnreadable as exc:

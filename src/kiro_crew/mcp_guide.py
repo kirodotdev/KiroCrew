@@ -7,6 +7,13 @@ selector, markup or code, and it never performs a mutation: the human's own clic
 on the existing owner-only save does, and only the gateway's record of that save
 completes a mutation step.
 
+The same server carries change cards (``list_change_kinds`` / ``propose_change`` /
+``get_change_status``): the agent proposes one registered kind of change with its
+parameters, the gateway derives what changes, the risk and the exact requests,
+and only the owner's browser applies it through the existing settings routes
+(:mod:`kiro_crew.dashboard.handlers.change_cards`). None of these tools can
+change anything by itself.
+
 It also carries ``find_ui``: a read-only search of the packaged dashboard
 location index (``docs/ui-index.generated.json``, plus the build-time auto tier
 ``static/dist/ui-index.auto.json`` when the dashboard bundle is built;
@@ -33,13 +40,13 @@ The server is the unit of assignment, authorization and governance: an
 operator or a policy can withhold the whole guide set from an agent at once,
 and the set's grants (``agent._GUIDE_AUTO_GRANTS``) are reviewed together. It is
 mounted on every crewmate and dashboard session (not ``opt_in`` in
-``agent._MANAGED_MCP_SERVERS``). Its guide tools only work for a
+``agent._MANAGED_MCP_SERVERS``). Its guide and card tools only work for a
 conversation open in a dashboard tab, so off the dashboard (Slack, Discord, the
 CLI, a schedule, a subagent) each of them refuses with a one-line reason
 (:func:`_off_dashboard`), while ``find_ui`` and ``search_docs`` still answer in
 text.
 
-The behaviour rules a guide answer depends on live in the tool
+The behaviour rules a guide or card answer depends on live in the tool
 descriptions and in each result's ``next`` hint, not in any one agent's prompt,
 so they reach every agent and survive context compaction.
 
@@ -150,7 +157,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "returned one. With no guide_ref to offer, a ui.find "
                 "action (a page and the control's on-screen name, from find_ui's "
                 "find_ref or a docs page) still points at it. After offering "
-                "it, write ONE reply and end "
+                "it and any proposals the request needs, write ONE reply and end "
                 "your turn; check progress later with guide_status."
             ),
             "inputSchema": {
@@ -212,6 +219,117 @@ def _tool_definitions() -> list[dict[str, Any]]:
             },
         },
         {
+            "name": "list_change_kinds",
+            "description": (
+                "List the change-card kinds you can propose (settings, schedules, "
+                "crewmates, capabilities, templates, MCP servers, connections, "
+                "secrets, app trust, denied commands), each with its params schema "
+                "and which fields the user may edit on the card."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "find_setting",
+            "description": (
+                "Search the Settings page for a setting to change, e.g. 'shorter "
+                "replies' or 'restore sessions'. Returns up to 10 matches: "
+                "setting_id, label, path (the Settings click path), description, tab, "
+                "writable (whether a "
+                "setting.change card can change it), current_value and "
+                "allowed_values; a list setting adds value_type 'string_list' "
+                "and ops; restart_required marks the few settings that apply "
+                "only after a restart. label and path are spelled as the user's "
+                "dashboard shows them (label_locale): quote them unchanged. To turn "
+                "something on or off, offer only the change current_value does not "
+                "already have. Pass the setting_id to propose_change."
+                " Keep findings for your final reply; if the request needs a proposal or guide, offer it before writing anything."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "maxLength": 200}},
+                "required": ["query"],
+            },
+        },
+        {
+            "name": "get_member_capabilities",
+            "description": (
+                "Read one crewmate's current tools, tool approvals, MCP servers and "
+                "skills in exactly the shape a crewmate.capabilities draft takes: "
+                "rows {section, id, label, state, editable}, its template, and "
+                "whether the draft needs enroll=true. Call it before proposing "
+                "crewmate.capabilities. Your own approvals live on your own "
+                "member key, from [MEMBER IDENTITY]."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"member": {"type": "string", "maxLength": 128}},
+                "required": ["member"],
+            },
+        },
+        {
+            "name": "diagnose_settings",
+            "description": (
+                "Explain why Kiro Crew behaves differently from its defaults. Returns "
+                "JSON: findings (read-only symptom checks of this install, problems "
+                "first: id, status ok|warn|problem|unknown, summary, evidence, and "
+                "fix, either {card: {kind, params}} to propose or {steps: [...]} for "
+                "the user), non_default (every setting whose current value differs from "
+                "the shipped default: key, store, setting_id and label when it is on "
+                "the Settings page, current, default; a credential-like setting shows "
+                "only whether it is set) and recent_changes (the newest 'Dashboard: "
+                "...' change records, made by hand or by a card, with their dates). "
+                "Pass topic (e.g. 'model', 'verbosity') to keep only matching rows. "
+                "Read-only; call it first for any 'why' question."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"topic": {"type": "string", "maxLength": 200}},
+            },
+        },
+        {
+            "name": "propose_change",
+            "description": (
+                "Propose ONE change as a confirmation card in the user's dashboard "
+                "chat for this conversation. You pick the kind and fill its params; "
+                "the gateway writes what changes and how risky it is, and nothing "
+                "changes until the user presses the card's button. `reason` (plain "
+                "text, at most 500 characters) is shown separately as your "
+                "reasoning. For a secret, propose secret.save with only the name: "
+                "the user types the value into the card and you never see it. "
+                "In a dashboard turn, prefer a card for a setting change the user "
+                "asked for over a terminal command or a config edit. Never use a "
+                "card to get past a denial, a block or a refusal: propose a "
+                "denied-command, approval or secret change only when the user "
+                "explicitly asked for that exact change. "
+                "Returns the card, prepared but not applied. Make any other "
+                "proposals or guide offers the request needs, then write ONE reply "
+                "that refers to the button above and end your turn; never write "
+                "the answer before proposing, and read the outcome next turn "
+                "(or with get_change_status)."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "kind": {"type": "string", "description": "A kind id from list_change_kinds."},
+                    "params": {"type": "object", "description": "Per the kind's params_schema."},
+                    "reason": {"type": "string", "maxLength": 500},
+                },
+                "required": ["kind", "params"],
+            },
+        },
+        {
+            "name": "get_change_status",
+            "description": (
+                "Read one of this conversation's change cards: status (pending, "
+                "applying, applied, partial, failed, cancelled, expired, undone), "
+                "what changed and the result. Omit change_id for the latest."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {"change_id": {"type": "string", "maxLength": 48}},
+            },
+        },
+        {
             "name": "rename_self",
             "description": (
                 "Change the name the user sees for you, in this chat, the roster "
@@ -239,7 +357,7 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "lines. Pass `page` (a name from the results) to read that page; "
                 "long pages continue from `offset`. Read-only; use it instead of a "
                 "shell command or a file read."
-                " Keep findings for your final reply; if the request needs a guide, offer it before writing anything."
+                " Keep findings for your final reply; if the request needs a proposal or guide, offer it before writing anything."
             ),
             "inputSchema": {
                 "type": "object",
@@ -318,8 +436,8 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "user: when a result has a guide_ref, offer that guide (it shows the "
                 "same blocker itself) and never mention the blocker; without one, "
                 "say in plain words what to open first. "
-                "Keep findings for your final reply; if the request needs a guide, "
-                "offer it before writing anything. "
+                "Keep findings for your final reply; if the request needs a proposal "
+                "or guide, offer it before writing anything. "
                 "A control that decides what an agent may do without asking (Settings "
                 "→ Security, approvals, the Approval mode picker, Computer Use, Secrets) "
                 "is answered in words with its path: no guide, and never an offer to "
@@ -393,7 +511,7 @@ _OFF_DASHBOARD_CODES = frozenset(
 
 
 def _off_dashboard(name: str, reason: str) -> str:
-    """The one-line refusal of a guide tool called without a dashboard tab."""
+    """The one-line refusal of a guide or card tool called without a dashboard tab."""
     reason = reason.removeprefix("Error: ").strip().rstrip(".")
     return redact(
         f"Error: {name} needs the dashboard: {reason}. Nothing was shown "
@@ -710,7 +828,7 @@ def _find_ui_next(d: dict[str, Any]) -> str | None:
     return text
 
 
-def _offer_next(d: dict[str, Any]) -> str:
+def _offer_next(d: dict[str, Any], surface: str) -> str:
     if not d.get("delivered_clients"):
         # No dashboard tab took the frame, so nothing is on the user's screen
         # now. Saying "I put a card here" would describe something they cannot see.
@@ -718,20 +836,35 @@ def _offer_next(d: dict[str, Any]) -> str:
             "Queued, not shown yet: no open dashboard tab received it, so nothing is on "
             "the user's screen now. Never say you placed or showed it, or that they can "
             "press anything; answer in words and say it will appear when they open this "
-            "chat. It is offered, not started."
+            "chat. It is prepared, not applied or started."
         )
-    # The one-reply rule: the reply after the offer card is the only text the
-    # user reads, so nothing said before it is repeated, and no quick-reply
-    # option presses the card's own button. The reply never names the card's
-    # buttons either: the card does, and a guide's Start is gone once it ends
-    # while the reply's text stays.
+    # Both hints carry the one-reply rule: the reply after the card is the only
+    # text the user reads, so nothing said before it is repeated, and no
+    # quick-reply option presses the card's own button. The reply never names
+    # the card's buttons either: the card does, and a guide's Start is gone once
+    # it ends while the reply's text stays.
+    if surface == "guide":
+        return (
+            "Shown above your reply; it starts only when the user presses its button. "
+            "Finish any other offers, then write your one reply: the answer in one short "
+            "sentence, in the language of the user's latest message. Never name or point "
+            "at the card's buttons, ask whether to show it, mention this tool or the "
+            "guide's state, repeat anything said before the card, describe the steps, "
+            "recap, or offer a reply option that starts it."
+        )
+    ack = (
+        " Applying needs the “I understand” box ticked first: say the change needs that "
+        "confirmation."
+        if d.get("widen") or d.get("risk") == "widen"
+        else ""
+    )
     return (
-        "Shown above your reply; it starts only when the user presses its button. "
-        "Finish any other offers, then write your one reply: the answer in one short "
-        "sentence, in the language of the user's latest message. Never name or point "
-        "at the card's buttons, ask whether to show it, mention this tool or the "
-        "guide's state, repeat anything said before the card, describe the steps, "
-        "recap, or offer a reply option that starts it."
+        "Shown above your reply, prepared but not applied. Finish any other offers, then "
+        "write your one reply, in the language of the user's latest message: frame it "
+        "briefly; for setup, also give the next step after it." + ack + " Never name or "
+        "point at the card's buttons, and do not repeat anything said before the card, "
+        "describe it, ask again, recap, or offer a reply option that presses its button. "
+        "The user's press arrives next turn."
     )
 
 
@@ -1108,6 +1241,12 @@ _TOOL_NAMES = frozenset(
         "guide_start",
         "guide_status",
         "guide_cancel",
+        "list_change_kinds",
+        "find_setting",
+        "get_member_capabilities",
+        "diagnose_settings",
+        "propose_change",
+        "get_change_status",
         "rename_self",
     }
 )
@@ -1150,6 +1289,43 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
     if err:
         return _off_dashboard(name, err)
 
+    if name == "list_change_kinds":
+        d = _get("/api/cards/agent/kinds", session_key=sk)
+        return _error_for(name, d) or _render({"kinds": d.get("kinds") or []})
+
+    if name == "find_setting":
+        query = urllib.parse.urlencode({"q": args.get("query") or ""})
+        d = _get(f"/api/cards/agent/settings?{query}", session_key=sk)
+        return _error_for(name, d) or _render({"settings": d.get("settings") or []})
+
+    if name == "get_member_capabilities":
+        query = urllib.parse.urlencode({"member": args.get("member") or ""})
+        d = _get(f"/api/cards/agent/capabilities?{query}", session_key=sk)
+        return _error_for(name, d) or _render(d)
+
+    if name == "diagnose_settings":
+        path = "/api/cards/agent/diagnose"
+        topic = (args.get("topic") or "").strip()
+        if topic:
+            path += "?" + urllib.parse.urlencode({"topic": topic})
+        d = _get(path, session_key=sk)
+        return _error_for(name, d) or _render(d)
+
+    if name == "propose_change":
+        body = {"kind": args.get("kind"), "params": args.get("params")}
+        if args.get("reason"):
+            body["reason"] = args["reason"]
+        d = _post("/api/cards/agent/propose", body, session_key=sk)
+        return _error_for(name, d) or _render({**d, "next": _offer_next(d, "change")})
+
+    if name == "get_change_status":
+        path = "/api/cards/agent/status"
+        change_id = args.get("change_id")
+        if change_id:
+            path += "?" + urllib.parse.urlencode({"card_id": change_id})
+        d = _get(path, session_key=sk)
+        return _error_for(name, d) or _render(d)
+
     if name == "rename_self":
         d = _post("/api/guide/agent/rename", {"name": args.get("name")}, session_key=sk)
         refused = _error_for(name, d)
@@ -1179,7 +1355,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # itself, so the reply cannot describe a card that does not exist.
             return f"{refused}\n{GUIDE_NOT_SHOWN_NOTE}"
         named = _find_labels(d)
-        hint = _offer_next(d)
+        hint = _offer_next(d, "guide")
         if named and d.get("delivered_clients"):
             hint += (
                 " Name the control exactly as the guide does, character for character: "

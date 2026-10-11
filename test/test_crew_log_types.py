@@ -29,8 +29,8 @@ from kiro_crew.crew_log import (
     emit,
 )
 from kiro_crew.crew_log import entry_types as reg
-from kiro_crew.crew_log import lease
 from kiro_crew.crew_log import (
+    lease,
     render_markdown,
 )
 from kiro_crew.crew_log import store as store_mod
@@ -274,6 +274,17 @@ CANONICAL: dict[str, dict] = {
         "corrects": [],
         "crew_key": "9f2c" + "0" * 60,
     },
+    "card/proposed": {
+        "slot": "member-helper",
+        "card_id": "cc_0a1b2c3d4e5f",
+        "kind": "setting.change",
+        "title": "Change chat.verbosity to brief",
+        "revision": 1,
+        "risk": "normal",
+        "turn": 3,
+        "mid": "m-7f3a",
+    },
+    "card/finished": {"card_id": "cc_0a1b2c3d4e5f", "status": "applied", "revision": 1},
     "guide/offered": {
         "slot": "member-helper",
         "guide_id": "g_0a1b2c3d4e5f",
@@ -349,10 +360,10 @@ def test_every_type_written_today_is_declared_and_nothing_else_is():
     # a mistake book is a fold over refusals, and one overwritable document could hold
     # none of it.
     #
-    # The three past that are the guide offers: each offer is a row of the
-    # conversation, and ``guide/*`` records the offer and every outcome in the same
-    # session's history.
-    assert len(SESSION_ENTRY_TYPES) == 41
+    # The five past that are the change cards and guide offers: each proposal is
+    # a row of the conversation, and ``card/*`` / ``guide/*`` record the proposal and
+    # every outcome in the same session's history.
+    assert len(SESSION_ENTRY_TYPES) == 43
     # Nine types the vocabulary owns that nothing writes. Declaring one would state
     # a shape no writer produces, and the first emitter to land would have to
     # satisfy a contract written without it. They pass through undeclared instead.
@@ -437,8 +448,9 @@ def test_only_a_vocabulary_the_writer_clamps_is_enforced():
         # vocabulary from the declaration beside the type, so the closed enum and the
         # writer's set are one tuple.
         ("dashboard/instance_changed", "action"),
-        # The guide store's own finished statuses: the emitter refuses any other
-        # value before it builds the entry.
+        # The card and guide stores' own finished statuses: the emitter refuses any
+        # other value before it builds the entry.
+        ("card/finished", "status"),
         ("guide/finished", "status"),
         # Dropped by the emitter, not refused, when it is not a known reason.
         ("guide/finished", "reason"),

@@ -227,12 +227,14 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 | `panel/published` | `on_panel_published`, from `panel_publish`, into the member's own DM session log | the published panel |
 | `crew/dispatch` / `crew/report` | `on_crew_dispatch` / `on_crew_report`, into the crew kind's log | the dispatch and the child's report |
 | `object/observed` | `monitoring.controller.MonitorController.tick`, after the service has published a probe's observation whose fingerprint differs from the one it held; into the log of the monitor's OWNER session, named by the host's resolver | `producer` (closed: `probe`), the monitored `kind`, the subject's full `target` URL, the probe's `fingerprint`, the canonical `facts` snapshot verbatim (short by named members in `facts_omitted` only when the line would not fit), `observed_at` -- no turn |
+| `card/proposed` | `dashboard.chat_cards.record_change_proposed`, called by `POST /api/cards/agent/propose` after the store accepted the card and beside the append of its `card` transcript row | slot, `card_id`, kind, redacted title, revision, risk, the live turn when one is, the row's `mid` -- never a parameter |
+| `card/finished` | `dashboard.chat_cards.record_change_status`, from the card routes' one `_broadcast`, when the store publishes a card ENTERING a finished status this process has not logged for it | `card_id`, `status` (closed: the store's finished statuses), revision -- no turn |
 | `guide/offered` | `dashboard.chat_cards.record_guide_offered`, called by `POST /api/guide/agent/start` beside the append of the offer's `card` row | slot, `guide_id`, the action ids, the live turn, the row's `mid` |
 | `guide/started` | `dashboard.chat_cards.record_guide_status`, from the guide routes' `_broadcast`, the first time the guide is published `active` | `guide_id` |
 | `guide/finished` | the same, when the guide is published terminal | `guide_id`, `status` (closed) |
 
-The `guide/*` closers are written into the log of the session that OFFERED,
-remembered in process at offer time; the slot's live session is the
+The four `card/*` / `guide/*` closers are written into the log of the session that
+PROPOSED, remembered in process at proposal time; the slot's live session is the
 fallback after a restart. The id is never read back from the transcript row, whose
 meta lives in an agent-writable file -- a session id taken from there would aim a
 gateway-authored entry at another conversation's log.

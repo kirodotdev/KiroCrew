@@ -1952,7 +1952,7 @@ export default function ChatPane({
             --mc-content-width clamp, so it lines up with the messages above it
             and the composer below at every content-width setting. QuestionCard
             carries no horizontal margin of its own, so this px-4 is its only
-            gutter. Guide offers are NOT here: each is
+            gutter. Change cards and guide offers are NOT here: each is
             a row of the conversation, drawn where it was proposed
             (cards/ConversationCard). */}
         <div className="px-4 mx-auto w-full" style={{ maxWidth: 'var(--mc-content-width, 900px)' }} data-testid="chat-card-column">

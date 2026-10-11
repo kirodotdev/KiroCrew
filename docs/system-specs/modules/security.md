@@ -646,6 +646,12 @@ Security properties:
   all behind `_owner_only`. There is deliberately **no** read-back path, on the
   CLI or the API — a stored value cannot be retrieved, only replaced or
   deleted, so a prompt-injected agent has no oracle to exfiltrate it through.
+  A store answers with the stored entry's `revision`, a short digest of its
+  ciphertext under a fresh nonce that says nothing about the value, and
+  `DELETE /api/secrets/{name}?if_revision=` deletes only while the entry still
+  has that revision (check and delete under one store lock, `409 changed`
+  otherwise). A change card's Undo of a secret it saved uses it, so a value saved
+  over it since is never deleted in its place.
 - **Sandbox-hidden.** The `.vault` directory sits under the crew data home,
   which the OS-level sandbox bind-mounts away from the agent subprocess tree,
   so the agent cannot read the ciphertext off disk either. On Linux a mount

@@ -558,7 +558,7 @@ describe('the single-chat surface renders from THIS row set', () => {
   })
 })
 
-describe("a guide offer in a crewmate's chat", () => {
+describe("a change card in a crewmate's chat", () => {
   const mate = { name: 'mate', label: 'Mate' }
   const card = msg(CARD_ROLE, { meta: { card_id: 'c1' } })
 

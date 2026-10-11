@@ -4346,11 +4346,77 @@ def on_dashboard_instance_changed(session_id: str, data: dict[str, Any]) -> None
     _write(session_id, "dashboard/instance_changed", data, src=_SRC_GATEWAY)
 
 
-_GUIDE_ID_MAX = 64
+#: A card title or reason is display text a person reads, never an identity, so a
+#: bounded slice of it is enough for a reader to name the card.
+_CARD_TEXT_MAX = 300
+_CARD_ID_MAX = 64
 
 
-def _guide_id(value: Any) -> str:
-    return value if isinstance(value, str) and 0 < len(value) <= _GUIDE_ID_MAX else ""
+def _card_id(value: Any) -> str:
+    return value if isinstance(value, str) and 0 < len(value) <= _CARD_ID_MAX else ""
+
+
+def on_card_proposed(
+    session_id: str,
+    *,
+    slot: str,
+    card_id: str,
+    kind: str,
+    title: str,
+    risk: str = "",
+    revision: int = 1,
+    mid: str = "",
+) -> None:
+    """The agent proposed a change card in this session's conversation.
+
+    Written at the point the proposal landed in the transcript, so the log orders it
+    against the tool call that made it. ``mid`` is the transcript row the card is
+    drawn at: the row and this entry are the same fact in the two records, and the
+    id is what lets a reader join them. Names only -- a card's parameters are never
+    recorded, and a secret card has no value field to record in the first place.
+    """
+    cid = _card_id(card_id)
+    if not cid:
+        return
+    data: dict[str, Any] = {
+        "slot": slot,
+        "card_id": cid,
+        "kind": str(kind)[:64],
+        "title": _clip(_safe_text(title), _CARD_TEXT_MAX),
+        "revision": int(revision) if isinstance(revision, int) and revision > 0 else 1,
+    }
+    if risk:
+        data["risk"] = str(risk)[:32]
+    turn = live_turn(session_id) if session_id else 0
+    if turn:
+        data["turn"] = turn
+    if mid:
+        data["mid"] = str(mid)[:64]
+    _write(session_id, "card/proposed", data, src=_SRC_GATEWAY)
+
+
+def on_card_finished(session_id: str, *, card_id: str, status: str, revision: int = 1) -> None:
+    """A change card reached a finished status: applied, undone, cancelled, expired...
+
+    One entry per status the card ENTERS, so a failed apply followed by a successful
+    retry is two entries and the newest is the card's outcome. No turn: a card is
+    confirmed by a person, usually between turns, and the turn that proposed it is
+    already on ``card/proposed``.
+    """
+    # Lazy, like OBJECT_PRODUCERS above: this module is the boot-path import gate.
+    from kiro_crew.crew_log.entry_types import CARD_FINISHED_STATUSES
+
+    cid = _card_id(card_id)
+    # Refused rather than coerced: the card store's finished statuses are the one
+    # vocabulary, and a value outside it is a bug at the call site.
+    if not cid or status not in CARD_FINISHED_STATUSES:
+        return
+    data = {
+        "card_id": cid,
+        "status": status,
+        "revision": int(revision) if isinstance(revision, int) and revision > 0 else 1,
+    }
+    _write(session_id, "card/finished", data, src=_SRC_GATEWAY)
 
 
 def on_guide_offered(
@@ -4364,9 +4430,9 @@ def on_guide_offered(
     """The agent offered a guide in this session's conversation.
 
     ``actions`` are the registered action ids only, never their parameters. ``mid``
-    joins the entry to its transcript row.
+    joins the entry to its transcript row, as on ``card/proposed``.
     """
-    gid = _guide_id(guide_id)
+    gid = _card_id(guide_id)
     if not gid:
         return
     data: dict[str, Any] = {
@@ -4384,7 +4450,7 @@ def on_guide_offered(
 
 def on_guide_started(session_id: str, *, guide_id: str) -> None:
     """The person pressed Start on an offered guide and a tab took it over."""
-    gid = _guide_id(guide_id)
+    gid = _card_id(guide_id)
     if gid:
         _write(session_id, "guide/started", {"guide_id": gid}, src=_SRC_GATEWAY)
 
@@ -4396,7 +4462,7 @@ def on_guide_finished(
     conversation) or expired. *reason* is kept only when it is a known one."""
     from kiro_crew.crew_log.entry_types import GUIDE_FINISHED_REASONS, GUIDE_FINISHED_STATUSES
 
-    gid = _guide_id(guide_id)
+    gid = _card_id(guide_id)
     if not gid or status not in GUIDE_FINISHED_STATUSES:
         return
     data: dict[str, Any] = {"guide_id": gid, "status": status}

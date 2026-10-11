@@ -151,8 +151,8 @@ describe('crewmateRunPosition', () => {
     expect(crewmateRunPosition(rows, 1)).toBe('single')
   })
 
-  it("a guide offer joins the reply that explains it, so it sits under the crewmate's avatar", () => {
-    const card: ChatMessage = { role: 'card', content: 'Theme', cls: 'msg msg-card', ts: iso(5_000) }
+  it("a change card joins the reply that explains it, so it sits under the crewmate's avatar", () => {
+    const card: ChatMessage = { role: 'card', content: 'Shorter replies', cls: 'msg msg-card', ts: iso(5_000) }
     // Drawn: user, card, reply. The tool step that proposed the card is filtered.
     const transcript = [user(iso(-60_000)), tool(iso(1_000)), card, said(iso(9_000))]
     const rows = filterCrewmateChat(transcript)

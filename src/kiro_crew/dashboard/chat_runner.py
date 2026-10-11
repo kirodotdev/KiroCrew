@@ -11079,6 +11079,24 @@ async def _run_chat(
                     metadata={"count": str(_n_skills), "slot": slot.key},
                 )
 
+        # Change-card outcomes since this slot's last turn (a card proposed here
+        # was applied, cancelled, undone...). Read and marked heard in one step,
+        # so the next turn does not repeat them. Reference data only: it never
+        # starts a turn of its own, and a card never carries a secret value.
+        if not is_slash and _prompt_depth < 1:
+            try:
+                from kiro_crew.context_blocks import render_change_card_results
+                from kiro_crew.dashboard.change_cards import card_store_for
+
+                _card_store = card_store_for(state)
+                await _card_store.warm()
+                _card_outcomes = _card_store.take_unreported(slot.key)
+                if _card_outcomes:
+                    _request_prefix_context += render_change_card_results(_card_outcomes)
+                    await _card_store.flush()
+            except Exception:
+                logger.debug("change-card results block skipped", exc_info=True)
+
         # Ensure the mirror-source message is always bound before both the Slack
         # and channel-neutral user-message mirror legs run. The assignment that
         # refines it below only executes for non-slash turns that have a
@@ -12217,7 +12235,7 @@ async def _run_chat(
                                     "tool_result",
                                     {"slot": slot.key, "tool_call_id": tcid, "output": ""},
                                 )
-                        # A `card` row is a guide offer the
+                        # A `card` row is a change card / guide offer the
                         # tool group's own call put into the conversation, so
                         # the scan reads past it like the tool rows around it.
                         elif m.get("role") not in ("tool", "permission", "chunk", "card"):

@@ -105,6 +105,38 @@ class PostureControl:
 # Where a sink runs only ONE of the two scanners, its detail text says so.
 _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
+        "The settings diagnosis",
+        "dashboard/change_cards.py",
+        "Current and default values of every setting `diagnose_settings` reports, "
+        "on their way to an agent's model context. A credential-like key is "
+        "reduced to whether it is set, and every remaining string passes the "
+        "credential redactor, because a setting value can be a token the operator "
+        "pasted into a free-text field.",
+    ),
+    (
+        "Change-card and guide rows in a conversation",
+        "dashboard/chat_cards.py",
+        "The title and result text of each change card and guide row written "
+        "into a chat transcript and rendered in the browser. The text comes from "
+        "an agent's proposal or a gateway outcome, so each string passes the "
+        "exfiltration-URL then the credential redactor before it is stored.",
+    ),
+    (
+        "Change-card details shown before Apply",
+        "change_card_catalog.py",
+        "Values a change card shows in full so the user sees what Apply runs: an "
+        "MCP server's launch line, environment values and request headers. Each "
+        "value passes the credential redactor before it reaches the card.",
+    ),
+    (
+        "The symptom probes",
+        "diagnose_probes.py",
+        "Evidence strings the read-only `diagnose_settings` probes return to "
+        "an agent's model context: log lines, job errors and file excerpts read "
+        "from this host. Each string passes the credential redactor before it "
+        "leaves the probe.",
+    ),
+    (
         "Thread, GIL and loop-stall diagnostics",
         "diag/threads.py",
         "Python frames, folded stacks and loop-stall dump text, on their way to an "

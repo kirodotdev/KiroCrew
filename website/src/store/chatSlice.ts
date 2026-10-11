@@ -285,7 +285,7 @@ function applyNonActiveFrame(
     bumpRunEpoch(state, slot)
     if (run.state === 'idle') run.lastChunkSeq = undefined
   }
-  // A guide offer: placed like the tool row that proposed it.
+  // A change card / guide offer: placed like the tool row that proposed it.
   if (role === 'card') {
     let insertIdx = msgs.length
     if (insertIdx > 0 && msgs[insertIdx - 1]?.role === 'streaming') insertIdx--
@@ -497,7 +497,7 @@ function applyActiveFrame(state: ChatState, p: ChatFrame): void {
     bumpRunEpoch(state, slot)
     if (state.slotState === 'idle') state.lastChunkSeq = undefined
   }
-  // A guide offer lands mid-turn, right after the tool call that
+  // A change card / guide offer lands mid-turn, right after the tool call that
   // proposed it, so it is placed exactly like that tool row: ahead of the open
   // streaming message (the gateway's own order, which the turn-end refresh
   // restores anyway).

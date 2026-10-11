@@ -2,7 +2,9 @@
  * A guide's offer, drawn in the conversation at the point the agent offered it,
  * and its one-line result once it ends.
  *
- * The row that places it is the gateway's (a `card` transcript row, see
+ * Built on the change card's shell (same border, header, button row and
+ * one-line result) so the two read as one kind of object in the chat. The
+ * row that places it is the gateway's (a `card` transcript row, see
  * `cards/ConversationCard`); the guide's LIVE state is the guide store's, read
  * through GuideContext, so the offer turns into its result line in place.
  * Nothing moves until Start; the floating GuideLayer then walks the user

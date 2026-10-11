@@ -1446,7 +1446,7 @@ _MANAGED_MCP_SERVERS: dict[str, dict] = {
         "opt_in": True,
     },
     # The platform guide set: where-is answers (``find_ui``), the packaged docs
-    # (``search_docs``), dashboard guides and a crewmate's own rename. A platform capability
+    # (``search_docs``), dashboard guides and change cards. A platform capability
     # of every crewmate and every dashboard session, so it is always emitted,
     # like the two servers at the top of this map; its own server so an operator
     # or a policy can withhold the whole set at once. Its tools need a dashboard
@@ -4876,12 +4876,12 @@ _GUIDE_SERVER = "kirocrew-guide"
 #: The guide tools that run without a prompt on every agent, through the same
 #: ``allowedTools`` ceiling every grant passes (``_apply_allowed_tools_ceiling``),
 #: so a governance ceiling that denies one still keeps it out. All of them either
-#: read (packaged docs and location index, a guide's status), OFFER (a guide is
-#: inert until the user presses its button in the dashboard, and nothing
-#: automated can press it), or rename the calling crewmate on the user's word.
-#: ``guide_cancel`` removes this conversation's pointer and undoes nothing the
-#: user saved. A tool added to the server is not in this tuple, so it asks first
-#: until it is reviewed here.
+#: read (packaged docs and location index, a setting's value, a crewmate's
+#: capability rows, a diagnosis, a guide's or card's status) or OFFER: a guide
+#: and a change card are inert until the user presses their button in the
+#: dashboard, and nothing automated can press it. ``guide_cancel`` removes this
+#: conversation's pointer and undoes nothing the user saved. A tool added to the
+#: server is not in this tuple, so it asks first until it is reviewed here.
 _GUIDE_AUTO_GRANTS = (
     f"@{_GUIDE_SERVER}/find_ui",
     f"@{_GUIDE_SERVER}/search_docs",
@@ -4889,6 +4889,12 @@ _GUIDE_AUTO_GRANTS = (
     f"@{_GUIDE_SERVER}/guide_start",
     f"@{_GUIDE_SERVER}/guide_status",
     f"@{_GUIDE_SERVER}/guide_cancel",
+    f"@{_GUIDE_SERVER}/list_change_kinds",
+    f"@{_GUIDE_SERVER}/find_setting",
+    f"@{_GUIDE_SERVER}/get_member_capabilities",
+    f"@{_GUIDE_SERVER}/diagnose_settings",
+    f"@{_GUIDE_SERVER}/propose_change",
+    f"@{_GUIDE_SERVER}/get_change_status",
     f"@{_GUIDE_SERVER}/rename_self",
 )
 

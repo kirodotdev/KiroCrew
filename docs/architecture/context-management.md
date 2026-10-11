@@ -110,6 +110,16 @@ time-to-first-token: `build_session_context` stamps `_mark(...)` per group
   admission loop admits it whole or drops it whole, so a long history can never
   displace preferences or lessons. `memory.inject_activity: false` withholds
   it and the `[Memory tools]` line then says so.
+- **Dashboard change lines** -- the owner's own change on a route a change card
+  can also write (`change_card_catalog.MEMORY_ROUTES`), made through a card or
+  by hand on the Settings page, appends one `Dashboard: <what changed> (via ...)`
+  line to Global memory history (`dashboard/handlers/change_cards.py`
+  `_record_memory`). It is how a crewmate asked "why did this change?" can answer
+  from `diagnose_settings`' `recent_changes`, and why a hand edit is recorded too:
+  a card-only log would miss the change the user is asking about. A line names
+  what changed, never a secret, environment or token value
+  (`describe_manual_change`), and with `memory.persistence_enabled` off nothing is
+  written.
 
 Lessons (`learn_add`) are separate and injected for **every** agent, custom
 included. A lesson with no `repo_scope` applies everywhere; a scoped one reaches

@@ -231,37 +231,44 @@ older-page request with it; it reads the page before `slotOldestIndex` and lands
 it only while the slot it was read for is still active. None of these owners filters rows by memory
 mode, so a restricted transcript is cached and paged like any other.
 
-### Card rows: guide offers
+### Card rows: change cards and guide offers
 
-A guide offer (`guide_start`) is part of the conversation, so it is a transcript
-row: `dashboard/chat_cards.py` appends ONE `card` row to the offering slot when the
-agent-half start route accepts it. The offer is an MCP tool call of the running turn, so the row lands after
+A change card (`propose_change`) or a guide offer (`guide_start`) is part of the
+conversation, so it is a transcript row: `dashboard/chat_cards.py` appends ONE
+`card` row to the proposing slot when the agent-half propose/start route accepts
+it. The proposal is an MCP tool call of the running turn, so the row lands after
 that call's `tool` row and before the turn's later text, and the turn-end refresh
 keeps it there. The live frame is placed the same way client-side (ahead of the
 open streaming row, like a tool row), and the "tools finished" scan that runs when
 text resumes reads past it like a tool row.
 
-The row's `meta.card` is a reference and nothing more: `surface` (`guide`), the
-store `id`, the `slot`, `kind`, and the LAST status the gateway recorded (with the
-`actions` ids). It never carries a parameter. When the guide store publishes a new
-status for it, the row is patched in place by `mid` and a `chat_message_update`
-frame carries the patch, so a finished offer is still drawn in its final state
-after the store prunes it. The same step writes the `guide/*` crew-log entries
-([crew-log-core](crew-log-core.md) section 5, "Guides").
+The row's `meta.card` is a reference and nothing more: `surface` (`change` /
+`guide`), the store `id`, the `slot`, `kind`, a redacted `title`, and the LAST
+status the gateway recorded (`summary` on a finished change card; `actions` ids on
+a guide). It never carries a parameter, an edited field or a typed value. When the
+card or guide store publishes a new status for it, the row is patched in place by
+`mid` and a `chat_message_update` frame carries the patch, so a finished card is
+still drawn in its final state after the store prunes it. The same step writes the
+`card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
+"Cards and guides").
 
 `card` is in `history_projection.DISPLAY_ONLY_ROLES`: no model-bound reader
 (provenance citations, consolidation, skill detection) carries it, and the other
 model-bound readers already filter to conversation roles. The agent hears an outcome
-only through `guide_status`.
+only through the change-card results it already receives.
 
 The dashboard draws the row through `cards/ConversationCard` (registered in
 `pages/chat/transcriptRenderers`, so the single-chat page and every `ChatPane` share
-it; the store-free SDK registry leaves the role undrawn). The LIVE offer comes from
-the guide store's own read (`GuideContext`), and a row is only ever matched to a
-guide of the slot drawing it: the transcript is agent-writable, so a row is a
-placement, never an authority. A guide the store no longer holds draws its recorded
-status as a one-line result with no actions. A row whose `surface` this build does
-not draw renders nothing. A collapsed
+it; the store-free SDK registry leaves the role undrawn). The LIVE card comes from
+the card store's own read (`GET /api/cards/pending`, `card_update`) and the live
+offer from the guide store's (`GuideContext`), and a row is only ever matched to a
+card or guide of the slot drawing it: the transcript is agent-writable, so a row is
+a placement, never an authority. A card the store no longer holds draws its recorded
+status as a one-line result with no actions; an unfinished record the store has
+forgotten reads as expired, once the store's first read has answered. A read that
+FAILED is not an answer: the row shows the failure through `ErrorNotice` (no agent
+hand-off, since the row sits beside the composer's unsent draft) and draws a
+finished record's line beside it, but never calls an unfinished one expired. A collapsed
 turn never folds a `card` row into its steps.
 
 ### The Sessions sidebar (frontend)
