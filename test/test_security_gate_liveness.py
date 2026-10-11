@@ -230,7 +230,15 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Raised again, from 28,741, for ``redaction._credential_search``: the credential
+#: scan finds the JWT-branch start with its own linear finder, which skips a failed
+#: segment run whole, so a long ``eyJ`` run costs linear time, not quadratic. It
+#: returns the same match as ``_CREDENTIAL_PATTERNS.search`` at every step. The
+#: other branches' start search guards the Telegram branch so a long digit run is
+#: walked once, not once per digit, and the JWT start keeps its run's end so an
+#: overlapping match does not re-walk that run. No pattern moved and no pass changed.
+_PACKAGE_LINE_BUDGET = 28_827
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
