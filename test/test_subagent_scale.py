@@ -36,6 +36,12 @@ from kiro_crew.subagent import (
 )
 from kiro_crew.subagent_scale import SubagentEventCoalescer
 
+# Ceiling for a wait on an announce task that only the test ends (a release, a
+# cancel or ``cancel_all``). It is far above what the in-memory work needs, so a
+# regression that keeps an announce running fails at that wait by name instead
+# of hanging the worker.
+_ANNOUNCE_WAIT_SECS = 60.0
+
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
@@ -307,9 +313,11 @@ class TestBatchIdentity:
         """
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         announced: list[SubagentInfo] = []
+        registered: list[bool] = []
 
         async def _on_done(info):  # type: ignore[no-untyped-def]
             announced.append(info)
+            registered.append(f"reject-{info.id}" in mgr._tasks)
 
         mgr._on_done = _on_done
         mgr._queue = [
@@ -334,9 +342,11 @@ class TestBatchIdentity:
 
         # The pump is a coroutine on a running loop; await one pass.
         await mgr._drain_queue_async()
-        assert "reject-q-reject" in mgr._tasks, "a rejection at drain time was dropped on the floor"
-        await mgr._tasks["reject-q-reject"]
-        assert [i.id for i in announced] == ["q-reject"]
+        await asyncio.sleep(0)  # the announce runs
+        await asyncio.sleep(0)  # its done callback runs
+        assert [i.id for i in announced] == ["q-reject"], "a rejection at drain time was dropped"
+        assert registered == [True]  # held in _tasks while in flight, so shutdown can cancel it
+        assert "reject-q-reject" not in mgr._tasks, "a finished announce stayed registered"
 
     def test_a_drained_batch_rejection_is_not_double_announced(self):
         """`_announce_rejection` announces batch members ITSELF, from inside spawn.
@@ -703,6 +713,48 @@ class TestBatchIdentity:
         assert got.batch_id == "wvL" and got.done and got.error
         assert "submission lost" in got.error
         assert got.outcome == "failed"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("exit_kind", ["returns", "raises", "cancelled"])
+    async def test_record_lost_submission_announce_leaves_task_registry(self, exit_kind):
+        """The synthetic member's announce stays in ``_tasks`` while it is in
+        flight, so shutdown can cancel it, and leaves on every exit: the
+        announce returns, ``on_done`` raises, or the task is cancelled."""
+        release = asyncio.Event()
+
+        async def _on_done(info):
+            await asyncio.wait_for(release.wait(), _ANNOUNCE_WAIT_SECS)
+            if exit_kind == "raises":
+                raise RuntimeError("delivery failed")
+
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx(), on_done=_on_done)
+        with patch("kiro_crew.subagent.sel"):
+            mgr.record_lost_submission("wvL", 2, "connection refused")
+        (task,) = mgr._tasks.values()
+        await asyncio.sleep(0)
+        assert not task.done()  # in flight and registered
+        if exit_kind == "cancelled":
+            task.cancel()
+        else:
+            release.set()
+        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_finished_announce_keeps_a_newer_task_under_its_key(self):
+        """The done callback drops the key only while it still maps to the
+        finished task, so it never drops a task registered later under it."""
+        mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
+        first = asyncio.ensure_future(asyncio.sleep(0))
+        mgr._waves._hold_announce_task("lost-x", first)
+        newer = asyncio.ensure_future(asyncio.Event().wait())
+        mgr._tasks["lost-x"] = newer
+        await asyncio.wait_for(first, _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._tasks == {"lost-x": newer}
+        newer.cancel()
+        await asyncio.wait_for(asyncio.gather(newer, return_exceptions=True), _ANNOUNCE_WAIT_SECS)
 
     @pytest.mark.asyncio
     async def test_reaper_stuck_wave_sweep_reconciles(self):
@@ -2180,6 +2232,42 @@ class TestDigestHoldDeadline:
         assert rec.batch_id == "wv" and rec.batch_total == 3
         assert rec.done is True and rec.error == ""
         assert "200s" in rec.task
+
+    @pytest.mark.asyncio
+    async def test_force_digest_flush_announce_leaves_task_registry(self):
+        """A finished flush announce leaves ``_tasks``, so a long-lived gateway
+        does not keep one finished task per forced flush."""
+        mgr = self._mgr()
+        with patch("kiro_crew.subagent.sel"):
+            for i in range(3):
+                mgr.force_digest_flush(f"wv{i}", "dashboard:main", 3, 200.0)
+        tasks = list(mgr._tasks.values())
+        assert len(tasks) == 3  # registered while pending, so shutdown can cancel them
+        await asyncio.wait_for(asyncio.gather(*tasks), _ANNOUNCE_WAIT_SECS)
+        await asyncio.sleep(0)  # done callbacks run on the next loop pass
+        assert mgr._on_done.await_count == 3
+        assert mgr._tasks == {}
+
+    @pytest.mark.asyncio
+    async def test_cancel_all_still_cancels_a_pending_flush_announce(self):
+        """The registration is what lets shutdown cancel and await a flush
+        announce that is still in flight; dropping finished entries must not
+        take that away from a pending one."""
+        mgr = self._mgr()
+        release = asyncio.Event()
+
+        async def _blocked(info):
+            await asyncio.wait_for(release.wait(), _ANNOUNCE_WAIT_SECS)
+
+        mgr._on_done = _blocked
+        with patch("kiro_crew.subagent.sel"):
+            mgr.force_digest_flush("wv", "dashboard:main", 3, 200.0)
+        (task,) = mgr._tasks.values()
+        await asyncio.sleep(0)
+        assert not task.done()  # the announce is in flight
+        await asyncio.wait_for(mgr.cancel_all(), _ANNOUNCE_WAIT_SECS)
+        assert task.cancelled()
+        assert mgr._tasks == {}
 
     @pytest.mark.asyncio
     async def test_flush_only_settles_holds_only_after_on_done(self):

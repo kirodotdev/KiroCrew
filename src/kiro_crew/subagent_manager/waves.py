@@ -165,8 +165,9 @@ class WaveDigestCoordinator(ManagerComponent):
         )
         if self._manager._on_done:
             try:
-                self._manager._tasks[f"lost-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
+                self._hold_announce_task(
+                    f"lost-{info.id}",
+                    asyncio.ensure_future(self._manager._safe_announce(info)),
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)
@@ -380,8 +381,9 @@ class WaveDigestCoordinator(ManagerComponent):
         except Exception:
             logger.debug("SEL audit failed for digest hold expiry", exc_info=True)
         try:
-            self._manager._tasks[f"flush-{info.id}"] = asyncio.ensure_future(
-                self._manager._announce_digest_flush(info)
+            self._hold_announce_task(
+                f"flush-{info.id}",
+                asyncio.ensure_future(self._manager._announce_digest_flush(info)),
             )
         except RuntimeError:
             pass  # no running loop (sync/test context)

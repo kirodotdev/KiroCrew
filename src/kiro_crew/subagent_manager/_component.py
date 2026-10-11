@@ -6,6 +6,8 @@ from types import FunctionType
 from typing import TYPE_CHECKING, Any, Iterable
 
 if TYPE_CHECKING:
+    import asyncio
+
     from ..subagent import SubagentManager
 
 
@@ -17,6 +19,21 @@ class ManagerComponent:
 
     def __init__(self, manager: SubagentManager) -> None:
         object.__setattr__(self, "_manager", manager)
+
+    def _hold_announce_task(self, key: str, task: asyncio.Task[None]) -> None:
+        """Register a one-shot announce *task* in ``_tasks`` until it finishes.
+
+        The entry is what lets shutdown (``cancel_all``) cancel and await an
+        announce still in flight. Once the task is done the entry has no use, so
+        the done callback drops it, but only while *key* still maps to this task.
+        """
+        self._manager._tasks[key] = task
+
+        def _forget(done: asyncio.Task[None]) -> None:
+            if self._manager._tasks.get(key) is done:
+                del self._manager._tasks[key]
+
+        task.add_done_callback(_forget)
 
     def _record_crew_log_approval_decided(
         self,

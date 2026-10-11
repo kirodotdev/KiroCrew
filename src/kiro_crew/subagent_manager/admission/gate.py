@@ -2082,8 +2082,9 @@ class _GateMixin(ManagerComponent):
         self._manager._forget_pending_start(info.id)
         if info.batch_id and self._manager._on_done:
             try:
-                self._manager._tasks[f"reject-{info.id}"] = asyncio.ensure_future(
-                    self._manager._safe_announce(info)
+                self._hold_announce_task(
+                    f"reject-{info.id}",
+                    asyncio.ensure_future(self._manager._safe_announce(info)),
                 )
             except RuntimeError:
                 pass  # no running loop (sync/test context)
