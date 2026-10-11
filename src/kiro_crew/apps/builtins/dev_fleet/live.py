@@ -32,7 +32,7 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Awaitable, Callable
+from typing import AsyncIterator, Awaitable, Callable, Iterator
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import gateway_service, repository, runtime
@@ -142,7 +142,8 @@ async def pointer_state(*, fresh: bool = False) -> PointerState:
 #: (``removal_lease`` heartbeats at a third of the TTL, through ``_GIT_MUTATION_LOCK``
 #: queueing and the ``git worktree remove`` itself); a forgotten lease therefore expires
 #: on its own, while a live one never lapses mid-removal. The gateway refuses a NEW lease
-#: while a cutover is in flight, and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
+#: while a cutover is in flight or a pod start on its worktree is running in the gateway
+#: (:func:`pod_start_reservation`), and ``_make_live`` / ``_restart_gateway`` refuse ``busy``
 #: while any lease is live.
 _REMOVAL_LEASE_TTL_SECS = 30.0
 _REMOVAL_LEASE_RENEW_SECS = _REMOVAL_LEASE_TTL_SECS / 3
@@ -206,8 +207,14 @@ def acquire_removal_lease(path: str, *, check_cutover: bool = True) -> str | Non
     ``check_cutover=False`` is for a caller that HOLDS ``_MAKE_LIVE_LOCK`` itself (an
     in-process removal): the lock is what excludes cutovers there, so re-checking it
     would refuse the very holder.
+
+    Also refused while a pod start on *path* is running in this process
+    (:func:`pod_start_reservation`): the pod would run from the checkout the removal
+    deletes. The removal refuses itself and is retried later, as for a cutover.
     """
     if check_cutover and (_MAKE_LIVE_LOCK.locked() or _MAKE_LIVE_COMMITTED):
+        return None
+    if _POD_STARTS.get(_worktree_key(path)):
         return None
     now = _sweep_removal_leases()
     if len(_REMOVAL_LEASES) >= _REMOVAL_LEASE_MAX_OUTSTANDING:
@@ -277,6 +284,59 @@ async def _local_renew(token: str) -> bool:
 
 async def _local_release(token: str) -> None:
     release_removal_lease(token)
+
+
+#: Normalized worktree path -> pod starts running on it in THIS process. Gateway state,
+#: beside the leases and for the same reason: an agent's pod start (``agent_pod_api``)
+#: runs in the gateway while every removal runs in the backend, so the two see each
+#: other only through state the gateway holds. An entry lives only while its start runs,
+#: and a start reserves only a worktree its caller has already resolved, so this holds
+#: at most one entry per existing worktree.
+_POD_STARTS: dict[str, int] = {}
+
+
+def _worktree_key(path: str) -> str:
+    """One spelling of a checkout path for the lease and pod-start registries."""
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _lease_names(path: str) -> bool:
+    """Gateway-local: whether a removal lease on *path* is live or inside its grace barrier."""
+    _sweep_removal_leases()
+    key = _worktree_key(path)
+    return any(_worktree_key(lease.path) == key for lease in _REMOVAL_LEASES.values())
+
+
+@contextlib.contextmanager
+def pod_start_reservation(path: str) -> Iterator[bool]:
+    """Hold the checkout at *path* against removal leases while a pod start runs.
+
+    Yields whether the start may go ahead. In the gateway (no lease client installed)
+    it yields ``False`` while a removal lease names *path*, live or lapsed inside its
+    grace barrier; otherwise it records the start in ``_POD_STARTS`` until the block
+    exits, and :func:`acquire_removal_lease` refuses a removal of that worktree in the
+    meantime. The check and the record are adjacent with no await between them, on the
+    loop that also serves the lease routes.
+
+    In the backend (a lease client is installed) the pod start and every removal already
+    take ``worktree_ops._wt_lock``, so this yields ``True`` and records nothing.
+    """
+    if _REMOVAL_LEASE_CLIENT is not None:
+        yield True
+        return
+    if _lease_names(path):
+        yield False
+        return
+    key = _worktree_key(path)
+    _POD_STARTS[key] = _POD_STARTS.get(key, 0) + 1
+    try:
+        yield True
+    finally:
+        remaining = _POD_STARTS.get(key, 0) - 1
+        if remaining > 0:
+            _POD_STARTS[key] = remaining
+        else:
+            _POD_STARTS.pop(key, None)
 
 
 @dataclass(frozen=True)
@@ -2077,6 +2137,7 @@ __all__ = (
     "acquire_removal_lease",
     "confirm_removal_lease",
     "install_removal_lease_client",
+    "pod_start_reservation",
     "release_removal_lease",
     "removal_lease_lost",
     "renew_removal_lease",

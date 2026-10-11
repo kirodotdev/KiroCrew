@@ -242,7 +242,8 @@ async def handle_removal_lease_acquire(request: web.Request) -> web.Response:
 
     The backend takes this before ``git worktree remove`` so a cutover or a gateway
     restart cannot land mid-deletion; the gateway refuses it while a cutover is in
-    flight. ``{"ok": true, "granted": bool, "token": str|null}`` — the token is the
+    flight or a pod start on that worktree runs here (``live.pod_start_reservation``).
+    ``{"ok": true, "granted": bool, "token": str|null}`` — the token is the
     CAPABILITY the holder must present to renew or release, so a process that merely
     shares the app credential (a build child in the backend's namespace) cannot cancel
     a removal's lease from under it. A refusal is a normal answer, not an error.

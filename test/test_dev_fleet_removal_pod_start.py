@@ -4,18 +4,35 @@ Real: ``worktree_ops._worktree_remove`` and ``worktree_ops._pod_up``, a scratch 
 repository under ``tmp_path`` with real worktrees, and a real ``git worktree remove``.
 Stand-ins: the pod backend (``runtime.rt``, an in-memory set of active pod names) and
 the ``kirocrew pod up`` CLI, which marks the pod active the way its unit does.
+
+The two-process tests split the work the way production does: an agent's pod start
+runs in the gateway (this process, serving the real removal-lease routes on
+127.0.0.1), and the removal's lease is taken by a second process through the real
+``GatewayPointerBroker`` the backend installs.
 """
 
 import asyncio
+import os
 import subprocess
+import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from aiohttp import web
+from aiohttp.test_utils import TestServer
 
-from kiro_crew.apps.builtins.dev_fleet import fleet_state, live, repository, runtime, worktree_ops
+import kiro_crew
+from kiro_crew.apps.builtins.dev_fleet import (
+    fleet_state,
+    gateway_routes,
+    live,
+    repository,
+    runtime,
+    worktree_ops,
+)
 
 NAME = "feature-wt"
 OTHER = "other-wt"
@@ -103,6 +120,10 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(live, "_LIVE_CHECK_AT", 0.0)
     monkeypatch.setattr(live, "_MAKE_LIVE_COMMITTED", False)
     monkeypatch.setattr(live, "_MAKE_LIVE_LOCK", asyncio.Lock())
+    # This process plays the gateway: no lease client, and empty lease and start tables.
+    monkeypatch.setattr(live, "_REMOVAL_LEASE_CLIENT", None)
+    monkeypatch.setattr(live, "_REMOVAL_LEASES", {})
+    monkeypatch.setattr(live, "_POD_STARTS", {}, raising=False)
     monkeypatch.setattr(worktree_ops, "_WT_LOCKS", {})
     monkeypatch.setattr(worktree_ops, "_GIT_MUTATION_LOCK", asyncio.Lock())
     monkeypatch.setattr(runtime, "_POD_AVAILABLE", True)
@@ -262,3 +283,212 @@ async def test_a_pod_start_for_an_unknown_worktree_keeps_no_lock_row(world):
     assert (
         "no-such-worktree" not in worktree_ops._WT_LOCKS
     ), "a pod start for a name with no worktree left a permanent lock row"
+
+
+# --- two processes: the gateway runs an agent's pod start, the backend removes ---
+
+_APP_SECRET = "test-app-secret"
+_APP_TOKEN = "test-app-token"
+#: Bound on a child's answers; the child imports the Dev Fleet stack first.
+CHILD_BOUND = 60.0
+
+#: The backend's side of a removal, run as its own process. It takes the removal lease
+#: through the real ``GatewayPointerBroker`` that ``server.main`` installs, as
+#: ``worktree_ops._worktree_remove`` does before its pod checks and its
+#: ``git worktree remove``. It prints the outcome and holds a granted lease until a line
+#: or EOF arrives on stdin.
+_BACKEND_LEASE = """\
+import asyncio
+import sys
+
+from kiro_crew.apps.builtins.dev_fleet import live, pointer_broker
+
+
+async def main(port, path, secret):
+    broker = pointer_broker.GatewayPointerBroker(port=port, app_secret=secret)
+    live.install_removal_lease_client(
+        (broker.acquire_removal_lease, broker.renew_removal_lease, broker.release_removal_lease)
+    )
+    try:
+        async with live.removal_lease(path) as leased:
+            print("granted" if leased else "refused " + str(leased.refusal), flush=True)
+            if leased:
+                loop = asyncio.get_running_loop()
+                await asyncio.wait_for(loop.run_in_executor(None, sys.stdin.readline), 60)
+    finally:
+        await broker.aclose()
+
+
+asyncio.run(main(int(sys.argv[1]), sys.argv[2], sys.argv[3]))
+"""
+
+
+@asynccontextmanager
+async def _gateway(monkeypatch):
+    """The gateway's real removal-lease routes on 127.0.0.1, served by this process.
+
+    Two pieces of gateway plumbing that are not under test are stand-ins, as in
+    ``test_dev_fleet_gateway_routes.py``: the app-secret token exchange, and the token
+    middleware that marks a request carrying Dev Fleet's app token as that app.
+    """
+    monkeypatch.setattr(gateway_routes, "is_app_enabled", lambda name: name == "dev-fleet")
+    monkeypatch.setattr(gateway_routes, "sel", lambda: MagicMock())
+
+    @web.middleware
+    async def stamp(request, handler):
+        if request.query.get("token") == _APP_TOKEN:
+            request["app"] = gateway_routes.APP_NAME
+        return await handler(request)
+
+    async def token(request):
+        if request.headers.get("X-App-Secret") != _APP_SECRET:
+            return web.json_response({"ok": False}, status=403)
+        return web.json_response({"token": _APP_TOKEN})
+
+    app = web.Application(middlewares=[stamp])
+    app.router.add_post(f"{gateway_routes.API_PREFIX}/token", token)
+    gateway_routes.register_routes(app)
+    server = TestServer(app, host="127.0.0.1")
+    await asyncio.wait_for(server.start_server(), BOUND)
+    try:
+        yield server.port
+    finally:
+        await asyncio.wait_for(server.close(), BOUND)
+
+
+async def _backend(port, path, tmp_path):
+    """Start the backend's side in its own process, working in ``tmp_path``."""
+    script = tmp_path / "backend_lease.py"
+    script.write_text(_BACKEND_LEASE, encoding="utf-8")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(Path(kiro_crew.__file__).resolve().parents[1]),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "KIROCREW_HOME": str(tmp_path / "home"),
+    }
+    return await asyncio.create_subprocess_exec(
+        sys.executable,
+        str(script),
+        str(port),
+        path,
+        _APP_SECRET,
+        cwd=str(tmp_path),
+        env=env,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+
+async def _first_answer(proc) -> str:
+    line = await asyncio.wait_for(proc.stdout.readline(), CHILD_BOUND)
+    return line.decode().strip()
+
+
+async def _release(proc) -> str:
+    """Let the backend release what it holds and exit; returns the end of its stderr."""
+    _out, err = await asyncio.wait_for(proc.communicate(b"release\n"), CHILD_BOUND)
+    return err.decode()[-400:]
+
+
+def _hold_the_pod_cli(world):
+    """Make the stand-in ``pod up`` CLI wait, so the start is held mid-flight."""
+    cli_running, unit_may_start = asyncio.Event(), asyncio.Event()
+
+    async def pod_cli(name):
+        cli_running.set()
+        await asyncio.wait_for(unit_may_start.wait(), CHILD_BOUND)
+
+    world.pod_cli = pod_cli
+    return cli_running, unit_may_start
+
+
+async def _lease_during_a_held_start(world, tmp_path, lease_name):
+    """Hold an agent's start of NAME in the gateway; lease *lease_name* from another process."""
+    cli_running, unit_may_start = _hold_the_pod_cli(world)
+    async with _gateway(world.monkeypatch) as port:
+        pod_up = asyncio.ensure_future(worktree_ops._pod_up(NAME))
+        try:
+            await asyncio.wait_for(cli_running.wait(), BOUND)
+            backend = await _backend(port, str(world.trees[lease_name]), tmp_path)
+            answer = await _first_answer(backend)
+            err = await _release(backend)
+        finally:
+            unit_may_start.set()
+            started = await asyncio.wait_for(pod_up, BOUND)
+    return answer, err, started
+
+
+async def _start_while_another_process_holds_the_lease(world, tmp_path, start_name):
+    """Lease NAME from another process; run an agent's start of *start_name* in the gateway."""
+    async with _gateway(world.monkeypatch) as port:
+        backend = await _backend(port, str(world.trees[NAME]), tmp_path)
+        try:
+            answer = await _first_answer(backend)
+            started = await asyncio.wait_for(worktree_ops._pod_up(start_name), BOUND)
+        finally:
+            err = await _release(backend)
+    return answer, err, started
+
+
+@pytest.mark.asyncio
+async def test_a_backend_removal_lease_is_refused_while_the_gateway_starts_the_pod(world, tmp_path):
+    answer, err, started = await _lease_during_a_held_start(world, tmp_path, NAME)
+
+    assert started["ok"] is True, started
+    assert answer == "refused busy", (
+        f"another process's removal lease answered {answer!r} while the gateway was starting "
+        f"the worktree's pod, so the removal would go on to delete its checkout: {err}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_gateway_pod_start_is_refused_while_the_backend_holds_the_removal_lease(
+    world, tmp_path
+):
+    answer, err, started = await _start_while_another_process_holds_the_lease(world, tmp_path, NAME)
+
+    assert answer == "granted", (answer, err)
+    assert started["ok"] is False and NAME not in world.active, (
+        f"the gateway started the pod while another process held its worktree's removal "
+        f"lease: {started}"
+    )
+    assert "being removed" in started["error"], started
+
+
+@pytest.mark.asyncio
+async def test_control_a_lease_on_another_worktree_is_granted_during_a_gateway_pod_start(
+    world, tmp_path
+):
+    answer, err, started = await _lease_during_a_held_start(world, tmp_path, OTHER)
+
+    assert started["ok"] is True, started
+    assert answer == "granted", (answer, err)
+
+
+@pytest.mark.asyncio
+async def test_control_a_gateway_pod_start_on_another_worktree_runs_during_a_backend_lease(
+    world, tmp_path
+):
+    answer, err, started = await _start_while_another_process_holds_the_lease(
+        world, tmp_path, OTHER
+    )
+
+    assert answer == "granted", (answer, err)
+    assert started["ok"] is True, started
+    assert world.active == {OTHER}
+
+
+@pytest.mark.asyncio
+async def test_control_a_lease_is_granted_once_the_gateway_pod_start_has_finished(world, tmp_path):
+    async with _gateway(world.monkeypatch) as port:
+        started = await asyncio.wait_for(worktree_ops._pod_up(NAME), BOUND)
+        backend = await _backend(port, str(world.trees[NAME]), tmp_path)
+        try:
+            answer = await _first_answer(backend)
+        finally:
+            err = await _release(backend)
+
+    assert started["ok"] is True, started
+    assert answer == "granted", (answer, err)
+    assert not getattr(live, "_POD_STARTS", {}), "a finished pod start left its reservation"
