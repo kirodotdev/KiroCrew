@@ -7182,6 +7182,7 @@
         "default_memory_mode": "persistent",
         "widget_density": "more",
         "use_builtin_browser": true,
+        "browser_local_origins": [],
         "browser_view_port": 0,
         "verbosity": "answer_only",
         "link_previews": false,
@@ -7689,6 +7690,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "dashboard.browser_local_origins",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Built-in Browser Local Origins",
+      "help": "Loopback origins the browser tool may open in the built-in panel, each written host:port with host localhost, 127.0.0.1 or [::1] (e.g. localhost:5173 for a Vite dev server). Empty (the default) keeps every loopback, private and link-local address refused. The port is required and matched exactly, so one entry opens one dev server and never the rest of the machine; the gateway's own port is refused even when listed. Entries in any other shape are dropped. The agent cannot set this while its sandbox is on: config.json is read-only inside the sandbox.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "dashboard.browser_local_origins.*",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "dashboard.browser_view_port",
