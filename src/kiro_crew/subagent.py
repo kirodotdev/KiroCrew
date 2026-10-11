@@ -2937,6 +2937,18 @@ class SubagentInfo:
     # startup watchdog measures from THIS timestamp so it never reaps an agent
     # that is merely waiting for approval. None until execution starts.
     _exec_started: float | None = None
+    # ``_exec_started`` on the monotonic clock, stamped and cleared beside it.
+    # When it is set the startup watchdogs measure from it, so a wall-clock step
+    # cannot reap a start in progress.
+    _exec_started_mono: float | None = None
+    # The run's registration on the monotonic clock. The reaper measures the run
+    # timeout from it, so a wall-clock step cannot reap a healthy run or spare a
+    # stuck one; ``started`` stays wall-clock for display and state.json.
+    _started_mono: float = field(default_factory=time.monotonic)
+    # ``last_activity`` on the monotonic clock, written beside it. The
+    # first-prompt-silent watchdog measures from it; ``last_activity`` stays
+    # wall-clock for the dashboard's idle display and the stall flag.
+    _last_activity_mono: float = field(default_factory=time.monotonic)
     # Wall-clock moment this execution's own session first answered its prompt
     # (``SubagentManager._leave_startup``): the first frame addressed to this
     # session, or a dependency verdict on the prompt. None until then, and reset
@@ -2963,6 +2975,8 @@ class SubagentInfo:
     # permit is not start time. Cleared by ``_gate_exit_reset`` at acquisition,
     # which adds the wait to ``_start_queue_wait_ms``.
     _gate_wait_started: float | None = None
+    # ``_gate_wait_started`` on the monotonic clock, marked and cleared beside it.
+    _gate_wait_started_mono: float | None = None
     # Learned-cost high-water marks (dynamic-subagent-sizing.md §4.1), sampled
     # periodically by the reaper loop and folded into the cost store at exit.
     peak_rss_gb: float = 0.0
@@ -3088,6 +3102,9 @@ class SubagentInfo:
     # Time this start spent queued at its start queues in total, ms (the paused
     # part of the startup clock); 0 when every queue was free.
     _start_queue_wait_ms: float = 0.0
+    # ``_start_queue_wait_ms`` measured on the monotonic clock, accumulated beside
+    # it; the startup watchdogs subtract it from a span measured on that clock.
+    _start_queue_wait_mono_ms: float = 0.0
     # True once the durable row was written ``running`` -- at the FIRST stream
     # event addressed to the run's own session, not at execution start, so a row is never
     # ``running`` while the session is still being created (RFC §4.4).
@@ -3327,6 +3344,7 @@ DELIVERY_ROUTING_FIELDS: "dict[str, str]" = {
     # Recovery clears the first attempt's startup clocks before waiting to
     # launch its replacement. They govern startup reaping, not delivery.
     "_exec_started": NOT_DELIVERY_STATE,
+    "_exec_started_mono": NOT_DELIVERY_STATE,
     "_startup_deadline_stamp": NOT_DELIVERY_STATE,
     # Context-overflow recovery clears the retired shared runtime's identity
     # before it waits to start the dedicated replacement. These fields govern
@@ -3655,9 +3673,10 @@ class SubagentManager:
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
         # Continuable conversations: session_key ("subagent:<conv-id>") →
-        # last-used unix ts. Drives the reaper's idle-TTL sweep. Rebuilt from
-        # state.json (keep=True runs) on the reaper's first pass after a
-        # gateway restart, so promoted conversations stay owned by
+        # last-used ``time.monotonic()`` reading. Drives the reaper's idle-TTL
+        # sweep. Rebuilt from state.json (keep=True runs) on the reaper's first
+        # pass after a gateway restart, which turns each stored wall-clock stamp
+        # into an age, so promoted conversations stay owned by
         # the TTL sweep across restarts; a spawn_continue on an unknown key
         # also re-registers it on demand.
         self._conversations: dict[str, float] = {}
@@ -4329,8 +4348,10 @@ class SubagentManager:
         derived = int(handshakes + collect + _STARTUP_LAUNCH_MARGIN_SECS)
         return max(_STARTUP_TIMEOUT_SECS, derived)
 
-    def _is_startup_stalled(self, info: SubagentInfo, now: float) -> bool:
-        return self._monitor._is_startup_stalled_impl(info, now)
+    def _is_startup_stalled(
+        self, info: SubagentInfo, now: float, mono_now: float | None = None
+    ) -> bool:
+        return self._monitor._is_startup_stalled_impl(info, now, mono_now)
 
     @staticmethod
     def _note_tool_dispatch(info: SubagentInfo, event: Any) -> None:
@@ -4878,6 +4899,7 @@ class SubagentManager:
         that preceded the PID is never charged to it.
         """
         info.last_activity = time.time()
+        info._last_activity_mono = time.monotonic()
         try:
             self._drain_queue()
         except Exception:

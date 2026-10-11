@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -298,8 +299,14 @@ class TestConversationRegistryRebuild:
 
         _write_keep_state("origrun", "", 1000.0)
         _write_keep_state("contrun", "subagent:origrun", 2000.0)
-        await mgr._rebuild_conversation_registry()
-        assert mgr._conversations["subagent:origrun"] == 2000.0
+        # The registry holds monotonic readings, and the rebuild carries each
+        # stored wall-clock stamp across as an age. With both clocks pinned, the
+        # newest record (2000.0, 600 s old) seeds 50_000.0 - 600.0; the older one
+        # would seed 50_000.0 - 1_600.0.
+        clock = SimpleNamespace(time=lambda: 2_600.0, monotonic=lambda: 50_000.0)
+        with patch.object(subagent_mod, "time", clock):
+            await mgr._rebuild_conversation_registry()
+        assert mgr._conversations["subagent:origrun"] == 50_000.0 - 600.0
 
     @pytest.mark.asyncio
     async def test_rebuild_flag_not_set_on_failure(self) -> None:

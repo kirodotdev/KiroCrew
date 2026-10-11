@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import math
 import os
+import time
 from pathlib import Path, PurePosixPath
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -2538,3 +2539,234 @@ class TestPlatformConstants:
         back to 100 there."""
         assert isinstance(sa._CLK_TCK, int)
         assert sa._CLK_TCK > 0
+
+
+# ── run and conversation ages on the monotonic clock ──────────────────────
+# The reaper resolves ``time`` through the ``kiro_crew.subagent`` facade, so the
+# clock is stepped there. Every kill, release, sweep, prune and store call the
+# reaper makes per tick is a recorder: nothing is killed and nothing is deleted.
+
+_RUN_TIMEOUT = 600
+
+
+class _SteppedClock:
+    """The ``time`` module with its wall clock and its monotonic clock offset."""
+
+    def __init__(self) -> None:
+        self.wall = 0.0
+        self.mono = 0.0
+
+    def time(self) -> float:
+        return time.time() + self.wall
+
+    def monotonic(self) -> float:
+        return time.monotonic() + self.mono
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+
+async def _reaper_ticks(mgr: SubagentManager, clock: _SteppedClock) -> tuple[AsyncMock, AsyncMock]:
+    """Run the real reaper loop briefly on *clock*; return the reap and release recorders."""
+    reap = AsyncMock()
+    release = AsyncMock(return_value=(True, "released"))
+    pump = MagicMock()
+    with (
+        patch.object(sa, "_REAPER_INTERVAL", 0),
+        patch.object(sa, "compact_cost_log"),
+        patch.object(sa, "prune_stale_tombstones", MagicMock(return_value=0)),
+        patch.object(sa, "time", clock),
+        patch.object(mgr, "_sample_live_costs"),
+        patch.object(mgr, "_sweep_stuck_waves_async", new=AsyncMock()),
+        patch.object(mgr, "_sweep_digest_holds_async", new=AsyncMock()),
+        patch.object(mgr, "retry_owed_teardown_sweeps", new=AsyncMock()),
+        patch.object(mgr, "_maybe_flag_stall", new=AsyncMock()),
+        patch.object(mgr, "_taskq_pump", pump),
+        patch.object(type(mgr._admission), "taskq_schedule_owed_replay", MagicMock()),
+        patch.object(mgr, "_force_reap", reap),
+        patch.object(mgr, "release_conversation_async", release),
+    ):
+        task = asyncio.ensure_future(mgr._reaper_loop())
+        # The pump runs once per tick, before that tick's reap checks, so its
+        # second call means a whole tick has run. Bounded at 30 s.
+        for _ in range(3000):
+            if pump.call_count >= 2 or task.done():
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+    assert pump.call_count >= 2, "the reaper loop did not complete a tick"
+    return reap, release
+
+
+def _called_for(recorder: AsyncMock, item_id: str) -> bool:
+    return any(c.args and c.args[0] == item_id for c in recorder.await_args_list)
+
+
+def _registered_run(mgr: SubagentManager, age_secs: float) -> SubagentInfo:
+    """A run *age_secs* old on both clocks and past startup, so only the run
+    timeout applies to it."""
+    born = time.time() - age_secs
+    info = _info("run01", started=born)
+    info._started_mono = time.monotonic() - age_secs
+    info.turns = 3
+    info._exec_started = born
+    info._first_stream_started = born
+    mgr._agents[info.id] = info
+    return info
+
+
+class TestReaperClock:
+    @pytest.mark.asyncio
+    async def test_a_run_past_its_timeout_is_reaped(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        _registered_run(mgr, age_secs=_RUN_TIMEOUT + 60)
+        reap, _release = await _reaper_ticks(mgr, _SteppedClock())
+        assert _called_for(reap, "run01")
+
+    @pytest.mark.asyncio
+    async def test_a_young_run_is_not_reaped(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        _registered_run(mgr, age_secs=5)
+        reap, _release = await _reaper_ticks(mgr, _SteppedClock())
+        assert not _called_for(reap, "run01")
+
+    @pytest.mark.asyncio
+    async def test_a_forward_wall_clock_step_does_not_reap_a_healthy_run(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        _registered_run(mgr, age_secs=5)
+        clock = _SteppedClock()
+        clock.wall = 2 * 3600.0
+        reap, _release = await _reaper_ticks(mgr, clock)
+        assert not _called_for(
+            reap, "run01"
+        ), "a 5-second-old run was reaped as timed out after a 2 h forward wall-clock step"
+
+    @pytest.mark.asyncio
+    async def test_a_backward_wall_clock_step_still_reaps_a_run_past_its_timeout(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        _registered_run(mgr, age_secs=_RUN_TIMEOUT + 60)
+        clock = _SteppedClock()
+        clock.wall = -3600.0
+        reap, _release = await _reaper_ticks(mgr, clock)
+        assert _called_for(
+            reap, "run01"
+        ), "a run 60 s past its timeout was not reaped after a 1 h backward wall-clock step"
+
+
+class TestConversationTtlClock:
+    @pytest.mark.asyncio
+    async def test_a_forward_wall_clock_step_keeps_a_recently_used_conversation(self) -> None:
+        from kiro_crew.subagent_persistence import RetentionPromotionResult
+
+        mgr = _manager()
+        mgr._conv_registry_rebuilt = True
+        with patch(
+            "kiro_crew.subagent_persistence.promote_retention",
+            return_value=RetentionPromotionResult.PROMOTED,
+        ):
+            mgr._promote_conversation("c1", "subagent:c1")
+        clock = _SteppedClock()
+        clock.wall = 7 * 3600.0
+        _reap, release = await _reaper_ticks(mgr, clock)
+        assert not _called_for(
+            release, "c1"
+        ), "a conversation used a moment ago was released after a 7 h forward wall-clock step"
+
+    @pytest.mark.asyncio
+    async def test_a_restart_carries_a_stored_conversations_age(self) -> None:
+        # Stored ``updated_at`` past the TTL: the first pass after the restart
+        # releases it.
+        mgr = _manager()
+        stored = time.time() - sa._CONVERSATION_TTL_SECS - 60.0
+        scan = MagicMock(return_value=[("c1", "subagent:c1", "sid-1", "acp", "", stored)])
+        with patch.object(mgr, "_scan_keep_states", scan):
+            _reap, release = await _reaper_ticks(mgr, _SteppedClock())
+        assert _called_for(release, "c1")
+
+    @pytest.mark.asyncio
+    async def test_a_restart_reads_a_stored_stamp_in_the_future_as_age_zero(self) -> None:
+        # Stored ``updated_at`` 30 days ahead: the clock stepped back after it was
+        # written. Age 0 keeps the conversation through the restart's first pass
+        # and releases it one TTL later, not 30 days later.
+        mgr = _manager()
+        stored = time.time() + 30 * 86400.0
+        scan = MagicMock(return_value=[("c1", "subagent:c1", "sid-1", "acp", "", stored)])
+        clock = _SteppedClock()
+        with patch.object(mgr, "_scan_keep_states", scan):
+            _reap, release = await _reaper_ticks(mgr, clock)
+        assert mgr._conv_registry_rebuilt
+        assert not _called_for(release, "c1"), "a future stamp released the conversation"
+        clock.wall = clock.mono = sa._CONVERSATION_TTL_SECS + 60.0  # one TTL later
+        _reap, release = await _reaper_ticks(mgr, clock)
+        assert _called_for(release, "c1"), (
+            "a conversation whose stored stamp is 30 days in the future was not released "
+            "one TTL after the restart"
+        )
+
+
+class _OneBaseClock(_SteppedClock):
+    """Wall and monotonic clocks that read the same value until one is stepped,
+    so a stamp taken before the step is valid on either clock."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.base = time.time()
+        self._t0 = time.monotonic()
+
+    def time(self) -> float:
+        return self.base + self.wall + (time.monotonic() - self._t0)
+
+    def monotonic(self) -> float:
+        return self.base + self.mono + (time.monotonic() - self._t0)
+
+
+def _starting_run(mgr: SubagentManager, clock: _OneBaseClock, into: float) -> SubagentInfo:
+    """A run *into* seconds into its start: executing, no runtime PID, no answer
+    on its session and no turn, so the startup watchdog applies to it."""
+    born = clock.base - into
+    info = _info("run02", started=born)
+    info._started_mono = born
+    info._exec_started = born
+    info._exec_started_mono = born
+    info.last_activity = born
+    info._last_activity_mono = born
+    mgr._agents[info.id] = info
+    return info
+
+
+class TestStartupWatchdogClock:
+    @pytest.mark.asyncio
+    async def test_a_start_past_its_deadline_is_reaped(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        clock = _OneBaseClock()
+        _starting_run(mgr, clock, into=mgr._startup_deadline + 60.0)
+        reap, _release = await _reaper_ticks(mgr, clock)
+        assert _called_for(reap, "run02")
+
+    @pytest.mark.asyncio
+    async def test_a_starting_run_is_not_reaped_without_a_clock_step(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        clock = _OneBaseClock()
+        _starting_run(mgr, clock, into=5.0)
+        reap, _release = await _reaper_ticks(mgr, clock)
+        assert not _called_for(reap, "run02")
+
+    @pytest.mark.asyncio
+    async def test_a_forward_wall_clock_step_does_not_reap_a_starting_run(self) -> None:
+        mgr = _manager(default_timeout=_RUN_TIMEOUT)
+        mgr._conv_registry_rebuilt = True
+        clock = _OneBaseClock()
+        _starting_run(mgr, clock, into=5.0)
+        clock.wall = 2 * 3600.0
+        reap, _release = await _reaper_ticks(mgr, clock)
+        assert not _called_for(
+            reap, "run02"
+        ), "a run 5 s into its start was reaped after a 2 h forward wall-clock step"

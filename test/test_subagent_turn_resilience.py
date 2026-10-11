@@ -32,6 +32,7 @@ from kiro_crew.subagent import (
     SubagentInfo,
     SubagentManager,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 # ``SubagentManager.spawn`` refuses -- registering no task -- while the host
 # looks short of memory, which is the runner's state, not this test's input.
@@ -1702,6 +1703,115 @@ async def test_cancel_recovery_failure_emits_done_and_delivers():
     assert done_events, "recovery failure must emit subagent_done"
     assert done_events[-1][1].get("error")
     on_done.assert_awaited_once_with(info)
+
+
+class _WallSteppedClock:
+    """The ``time`` module with its wall clock offset and its monotonic clock real.
+
+    ``reads`` counts the clock reads made through it: the slot wait reads the clock
+    on every poll, so a test waits for its next polls instead of sleeping.
+    """
+
+    def __init__(self) -> None:
+        self.wall = 0.0
+        self.reads = 0
+
+    def time(self) -> float:
+        self.reads += 1
+        return time.time() + self.wall
+
+    def monotonic(self) -> float:
+        self.reads += 1
+        return time.monotonic()
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(time, name)
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_slot_wait_survives_a_forward_wall_clock_step():
+    """The slot wait is measured on the monotonic clock: a wall-clock step forward
+    (an NTP step, a manual change, a resume from suspend) does not end it early and
+    fail the run as "cancelled (recovery failed)"."""
+    started = asyncio.Event()
+    mgr = _manager(_mock_sessions(_hanging_stream_factory(started)))
+    clock = _WallSteppedClock()
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.time", clock),
+    ):
+        info = mgr.spawn("recovery under a wall-clock step")
+        assert info is not None
+        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        task1 = mgr._tasks[info.id]
+        task1.cancel()
+        await asyncio.gather(task1, return_exceptions=True)
+
+        # Keep the pool full so the recovery waits for a slot.
+        mgr._max_concurrent = 1
+        mgr._running_count = 1
+        rec = mgr._tasks.get(f"{info.id}:recovery")
+        assert rec is not None, "pending recovery must be registered in _tasks"
+        polled = clock.reads
+        await async_wait_until(lambda: clock.reads >= polled + 2 or info.done)
+        assert not info.done
+
+        # Two minutes forward on the wall clock, none on the monotonic one: a
+        # recovery measured on the wall clock gives up on its next 0.25 s poll.
+        clock.wall = 120.0
+        polled = clock.reads
+        await async_wait_until(lambda: clock.reads >= polled + 2 or info.done)
+        assert not info.done, f"the slot wait ended on a wall-clock step: {info.error!r}"
+
+        # Free the slot: the recovery respawns the run.
+        mgr._running_count = 0
+        await asyncio.wait_for(
+            asyncio.gather(rec, return_exceptions=True), timeout=_RESPAWN_TIMEOUT
+        )
+        task2 = mgr._tasks.get(info.id)
+        assert task2 is not None and task2 is not task1
+        task2.cancel()
+        await asyncio.gather(task2, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_recovery_slot_wait_without_a_clock_step_gives_up_at_its_deadline():
+    """Control for the test above: with no clock step, a slot wait on a pool that
+    stays full still ends at its deadline, now read on the monotonic clock, and the
+    run fails as "cancelled (recovery failed)", as before."""
+    started = asyncio.Event()
+    mgr = _manager(_mock_sessions(_hanging_stream_factory(started)))
+    clock = _WallSteppedClock()
+    give_up = 0.4
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.time", clock),
+        patch("kiro_crew.subagent._RECOVERY_SLOT_WAIT_SECS", give_up),
+    ):
+        info = mgr.spawn("recovery that never finds a slot")
+        assert info is not None
+        await asyncio.wait_for(started.wait(), timeout=_START_TIMEOUT)
+        task1 = mgr._tasks[info.id]
+        # Taken before the cancel, so it precedes the deadline the recovery sets.
+        t0 = time.monotonic()
+        task1.cancel()
+        await asyncio.gather(task1, return_exceptions=True)
+
+        # Keep the pool permanently full so the slot wait reaches its deadline.
+        mgr._max_concurrent = 1
+        mgr._running_count = 1
+        rec = mgr._tasks.get(f"{info.id}:recovery")
+        assert rec is not None, "pending recovery must be registered in _tasks"
+        await asyncio.wait_for(asyncio.gather(rec, return_exceptions=True), timeout=_GIVE_UP_BOUND)
+        waited = time.monotonic() - t0
+
+    assert info.done is True
+    assert info.error == "cancelled (recovery failed)"
+    assert waited >= give_up, f"gave up after {waited:.2f} s, before its {give_up} s deadline"
 
 
 @pytest.mark.asyncio

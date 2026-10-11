@@ -153,6 +153,7 @@ class CancellationCoordinator(ManagerComponent):
                     # replacement as its first statement.
                     info._startup_deadline_stamp = None
                     info._exec_started = None
+                    info._exec_started_mono = None
                     # Then process identity, because samplers read the PID
                     # before sharing state; then ownership. The PID is the
                     # retired first attempt's (a shared runtime this run no
@@ -168,10 +169,13 @@ class CancellationCoordinator(ManagerComponent):
                 # Re-acquire a slot through capacity, not blind increment:
                 # the old finally freed our slot and may have drained a queued
                 # spawn into it. Wait (bounded) for a free slot so recovery
-                # never pushes the pool past max_concurrent.
-                deadline = time.time() + _RECOVERY_SLOT_WAIT_SECS
+                # never pushes the pool past max_concurrent. The wait is measured
+                # on the monotonic clock: a wall-clock step forward (an NTP step,
+                # a manual change, a resume from suspend) would otherwise end it
+                # at once and fail the run as "cancelled (recovery failed)".
+                deadline = time.monotonic() + _RECOVERY_SLOT_WAIT_SECS
                 while self._manager._running_count >= self._manager._max_concurrent:
-                    if time.time() >= deadline or self._manager._shutting_down:
+                    if time.monotonic() >= deadline or self._manager._shutting_down:
                         raise RuntimeError("no free slot for recovery respawn")
                     await asyncio.sleep(0.25)
                 if info.done or info._reap_started or info.reaped or self._manager._shutting_down:

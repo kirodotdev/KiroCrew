@@ -225,6 +225,7 @@ class _ApprovalPrompt:
         approval_id, origin = cast("tuple[str, tuple[str, int]]", token)
         self._info._awaiting_approval = False
         self._info.last_activity = _time.time()
+        self._info._last_activity_mono = _time.monotonic()
         self._run._record_crew_log_approval_decided(
             origin, approval_id=approval_id, decision=decision, by=by
         )
@@ -1303,6 +1304,7 @@ class RunEventCoordinator(ManagerComponent):
         running-card drops the "stalled" warning the moment work resumes.
         """
         info.last_activity = time.time()
+        info._last_activity_mono = time.monotonic()
         info._stall_suspect_at = 0.0  # activity resets the 2-sweep confirmation
         # Retire the oracle so the next suspicion samples a fresh baseline rather
         # than differencing against counters from before this activity, and bump
@@ -1993,6 +1995,7 @@ class RunEventCoordinator(ManagerComponent):
         # watchdog measures from here, not from registration (which may include
         # an arbitrary spawn-approval wait). Must be the first statement.
         info._exec_started = time.time()
+        info._exec_started_mono = time.monotonic()
         info._first_stream_started = None
         info._first_stream_mono = None
         info._startup_cotenant_frames = 0
@@ -2001,7 +2004,9 @@ class RunEventCoordinator(ManagerComponent):
         # (or a mark it was cancelled inside) would be subtracted from a clock that
         # never paid it -- blinding the watchdog, or spending the saturation cap.
         info._start_queue_wait_ms = 0.0
+        info._start_queue_wait_mono_ms = 0.0
         info._gate_wait_started = None
+        info._gate_wait_started_mono = None
         # The durable row stays ``starting`` until this run's OWN turn produces
         # its first stream event addressed to its session
         # (``ensure_running_marked`` in the stream loop below):
@@ -2016,6 +2021,7 @@ class RunEventCoordinator(ManagerComponent):
         # that pre-execution delay as idle time and prematurely surface a
         # healthy, just-started subagent as "stalled".
         info.last_activity = info._exec_started
+        info._last_activity_mono = info._exec_started_mono
         if info.error.startswith("memory_unavailable:"):
             raise RuntimeError(info.error)
         if not isinstance(info.memory_store, str):
@@ -2268,7 +2274,7 @@ class RunEventCoordinator(ManagerComponent):
         # follow-up rather than the only one.
         if info.keep:
             self._manager._sessions.mark_continuable(session_key)
-            self._manager._conversations[session_key] = time.time()
+            self._manager._conversations[session_key] = time.monotonic()
         use_session_sharing = plan.shared
         if use_session_sharing:
             # Local import: run.py's ``*_impl`` bodies resolve globals through
@@ -4247,17 +4253,27 @@ class RunEventCoordinator(ManagerComponent):
 
         def _on_gate_acquired(queue_wait_ms: float, queue: str = START_QUEUE_SESSION_NEW) -> None:
             now = time.time()
+            mono = time.monotonic()
             # The pause is measured on the watchdog's own clock (``time.time()``,
             # from the mark), not on the queue's monotonic wait: the two disagree
             # by however long the host was suspended during the wait, and a laptop
             # that slept in a gate queue would have that sleep charged as start
             # time. The queue's own measurement is the log's, and the fallback for
-            # a grant whose entry was never marked.
+            # a grant whose entry was never marked. The monotonic twin pairs with
+            # ``_exec_started_mono`` the same way.
             marked = info._gate_wait_started
+            marked_mono = info._gate_wait_started_mono
             info._gate_wait_started = None
+            info._gate_wait_started_mono = None
             info.last_activity = now
+            info._last_activity_mono = mono
             info._start_queue_wait_ms += (
                 max(0.0, now - marked) * 1000.0 if marked is not None else float(queue_wait_ms)
+            )
+            info._start_queue_wait_mono_ms += (
+                max(0.0, mono - marked_mono) * 1000.0
+                if marked_mono is not None
+                else float(queue_wait_ms)
             )
             if queue_wait_ms >= START_QUEUE_LOG_MIN_MS:
                 logger.info(
@@ -4285,6 +4301,7 @@ class RunEventCoordinator(ManagerComponent):
 
         def _on_gate_queued(queue: str = START_QUEUE_SESSION_NEW) -> None:
             info._gate_wait_started = time.time()
+            info._gate_wait_started_mono = time.monotonic()
 
         return _on_gate_queued
 
@@ -4413,9 +4430,13 @@ class RunEventCoordinator(ManagerComponent):
             # The adopted session is this run's real start: its clock starts here,
             # so the queue waits the abandoned attempt accumulated are not its.
             info._exec_started = now
+            info._exec_started_mono = time.monotonic()
             info._start_queue_wait_ms = 0.0
+            info._start_queue_wait_mono_ms = 0.0
             info._gate_wait_started = None
+            info._gate_wait_started_mono = None
             info.last_activity = now
+            info._last_activity_mono = info._exec_started_mono
             # ``recovering`` is the lost-owner (claimable) state; the adopted
             # session is live under our lease, so the row leaves it now rather
             # than at the first stream event.

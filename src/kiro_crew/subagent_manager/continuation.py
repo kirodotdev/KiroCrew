@@ -197,13 +197,15 @@ class ContinuationCoordinator(ManagerComponent):
             # report retryable failure so continue_conversation rolls it back.
             self._manager._sessions.mark_continuable(conv_key)
             self._manager._conversations[conv_key] = (
-                last_used if last_used is not None else time.time()
+                last_used if last_used is not None else time.monotonic()
             )
             return self._persistence.RetentionPromotionResult.RETRYABLE
         if result is not self._persistence.RetentionPromotionResult.PROMOTED:
             return result
         self._manager._sessions.mark_continuable(conv_key)
-        self._manager._conversations[conv_key] = last_used if last_used is not None else time.time()
+        self._manager._conversations[conv_key] = (
+            last_used if last_used is not None else time.monotonic()
+        )
         return result
 
     def _scan_keep_states_impl(self) -> list[tuple[str, str, str, str, str, float]]:
@@ -317,7 +319,12 @@ class ContinuationCoordinator(ManagerComponent):
             if not self._manager._sessions.resumable_sid(conv_key):
                 continue
             self._manager._sessions.mark_continuable(conv_key)
-            self._manager._conversations[conv_key] = last_used or time.time()
+            # The stored stamp is wall-clock and the registry is monotonic, so
+            # the conversation's AGE is carried across. A stamp in the future
+            # (the clock stepped back after it was written) reads as age 0: it
+            # can neither release the conversation early nor keep it past its TTL.
+            age = max(0.0, time.time() - last_used) if last_used else 0.0
+            self._manager._conversations[conv_key] = time.monotonic() - age
             seeded += 1
             # Cooperative yield: keep restart cold-start turns responsive
             # while a large keep batch seeds (one small file write each).
@@ -1259,6 +1266,8 @@ class ContinuationCoordinator(ManagerComponent):
         Every release awaits, and a conversation can be continued or released
         while it does, so each entry's timestamp is re-read from the live
         registry right before its expiry check rather than taken from a snapshot.
+        The reaper passes a ``time.monotonic()`` reading, the clock the registry
+        holds, so a wall-clock step cannot expire every conversation at once.
         """
         for conv_key in list(self._manager._conversations):
             last_used = self._manager._conversations.get(conv_key)
