@@ -1018,3 +1018,156 @@ class TestContextBuildSurvivesLinkedRoot:
             assert store.rebuild_index() == before
         assert store.index_row_count() == before
         assert store.search("sentinel")
+
+
+class _FullDiskIndex:
+    """Stands in for the FTS connection: every INSERT and DELETE fails as a full disk does."""
+
+    def __init__(self, conn) -> None:
+        self._conn = conn
+
+    def execute(self, sql, *args):
+        import sqlite3
+
+        if sql.lstrip().upper().startswith(("INSERT", "DELETE")):
+            raise sqlite3.OperationalError("database or disk is full")
+        return self._conn.execute(sql, *args)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+
+def _index_warnings(caplog) -> list:
+    return [
+        r
+        for r in caplog.records
+        if r.levelname == "WARNING" and "FTS index update failed" in r.getMessage()
+    ]
+
+
+class TestIndexCatchesUpAfterAFailedUpdate:
+    """A memory write whose index update fails is searchable once the cause clears."""
+
+    def test_a_preference_saved_during_a_failure_is_found_once_space_returns(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Before the fix the failure was logged at DEBUG and nothing re-indexed the file."""
+        import logging
+
+        store = MemoryStore(workspace=tmp_path)
+        store.write_preferences("- likes tea\n")
+        real = store._get_db
+        monkeypatch.setattr(store, "_get_db", lambda: _FullDiskIndex(real()))
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.memory")
+
+        assert store.write_preferences("- likes tea\n- codename zebracrossing\n")
+        assert store.write_preferences("- likes tea\n- codename zebracrossingwidget\n")
+        monkeypatch.setattr(store, "_get_db", real)
+
+        hits = store.search("zebracrossingwidget")
+        assert [h["path"] for h in hits] == [str(store._preferences_file)]
+        assert store.search("tea"), "the earlier text is still found"
+        assert len(_index_warnings(caplog)) == 1, "one WARNING for the whole failure streak"
+
+    def test_a_streak_that_ends_warns_again_on_the_next_failure(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import logging
+
+        store = MemoryStore(workspace=tmp_path)
+        real = store._get_db
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.memory")
+        monkeypatch.setattr(store, "_get_db", lambda: _FullDiskIndex(real()))
+        store.write_preferences("- one\n")
+        monkeypatch.setattr(store, "_get_db", real)
+        store.write_preferences("- two\n")
+        monkeypatch.setattr(store, "_get_db", lambda: _FullDiskIndex(real()))
+        store.write_preferences("- three\n")
+
+        assert len(_index_warnings(caplog)) == 2
+
+    def test_a_normal_write_and_search_log_nothing_new(self, tmp_path, caplog):
+        import logging
+
+        store = MemoryStore(workspace=tmp_path)
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.memory")
+        assert store.write_preferences("- likes zebracrossingwidget\n")
+        assert store.search("zebracrossingwidget")
+        assert not [r for r in caplog.records if "FTS index" in r.getMessage()]
+
+    def test_a_search_catch_up_cannot_overwrite_another_processs_newer_update(
+        self, tmp_path, monkeypatch
+    ):
+        """The catch-up reads a file and commits its row under the writers' own lock.
+
+        Two stores on one workspace stand in for the gateway and a second process
+        (``kirocrew consolidate``). Inside the gateway's catch-up, between its read
+        and its commit, the test checks whether the writers' directory lock is free.
+        If it is, another process's newer save can land there, and the catch-up then
+        commits the older text over it, so the newer text is never found.
+        """
+        import os
+        from pathlib import Path
+
+        from kiro_crew.platform_compat import file_lock
+
+        gateway = MemoryStore(workspace=tmp_path)
+        other = MemoryStore(workspace=tmp_path)
+        gateway.write_preferences("- likes tea\n")
+        real = gateway._get_db
+        monkeypatch.setattr(gateway, "_get_db", lambda: _FullDiskIndex(real()))
+        assert gateway.write_preferences("- likes tea\n- codename oldzebra\n")
+        monkeypatch.setattr(gateway, "_get_db", real)
+
+        lock_file = gateway._memory_dir / ".write.lock"
+        read_text = gateway._files.read_text
+        window: list[str] = []
+
+        def _read_then_probe(path, *args, **kwargs):
+            content = read_text(path, *args, **kwargs)
+            if Path(path) == gateway._preferences_file and not window:
+                fd = os.open(lock_file, os.O_RDWR)
+                try:
+                    with file_lock(fd, exclusive=True, wait=False):
+                        window.append("open")
+                except BlockingIOError:
+                    window.append("held")
+                finally:
+                    os.close(fd)
+                if window == ["open"]:
+                    # Nothing keeps another process out of this read-to-commit window.
+                    assert other.write_preferences("- likes tea\n- codename newzebra\n")
+            return content
+
+        monkeypatch.setattr(gateway._files, "read_text", _read_then_probe)
+        gateway.search("tea")
+        assert window, "the search ran no catch-up"
+        if window == ["held"]:
+            assert other.write_preferences("- likes tea\n- codename newzebra\n")
+
+        reader = MemoryStore(workspace=tmp_path)
+        assert reader.search("newzebra"), (
+            "the catch-up committed older text over another process's newer update "
+            f"(writers' lock during the window: {window[0]})"
+        )
+
+    def test_a_write_that_fails_before_the_index_step_raises_as_before(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        import errno
+        import logging
+
+        store = MemoryStore(workspace=tmp_path)
+        store.write_preferences("- likes tea\n")
+        files = store._files
+
+        def _full(*_a, **_kw):
+            raise OSError(errno.ENOSPC, "No space left on device")
+
+        monkeypatch.setattr(files, "replace_if", _full)
+        caplog.set_level(logging.DEBUG, logger="kiro_crew.memory")
+        with pytest.raises(OSError):
+            store.write_preferences("- likes coffee\n")
+        assert not _index_warnings(caplog)
+        assert store.search("tea")
+        assert not store.search("coffee")
