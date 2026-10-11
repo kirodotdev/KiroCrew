@@ -157,6 +157,40 @@ class TestTheGatewayProfileWatch:
         agent_mod.reproject_for_profile_change()
         assert attempts == [1, 1], "once projected, nothing is retried"
 
+    def test_a_hold_set_after_the_seed_is_retried_by_the_watch_on_its_backoff(
+        self, profiles_dir, rebuilds, monkeypatch
+    ):
+        """The boot path's deferred template pass can set the hold after the baseline
+        was seeded. A host with no distribution poll has only this watch and the hourly
+        wake to retry it, so an unchanged answer must not end the tick while the hold
+        stands, and a retry that still holds waits out the backoff rather than
+        rebuilding on every tick."""
+        attempts: list[int] = []
+        held = {"value": True}
+        clock = {"now": 1000.0}
+
+        def holding(**kw):
+            attempts.append(1)
+            agent_mod._conductor_spec_held = held["value"]
+            kw["_held_out"].append(held["value"])
+            return Path("/agents/kirocrew.json"), True
+
+        _boot()
+        monkeypatch.setattr(agent_mod, "rebuild_agent_config_reporting", holding)
+        monkeypatch.setattr(agent_mod, "_watch_clock", lambda: clock["now"])
+        agent_mod._conductor_spec_held = True
+        for _ in range(4):
+            agent_mod.reproject_for_profile_change()
+        assert attempts == [1], "the hold is retried at once, then on the backoff"
+
+        held["value"] = False
+        clock["now"] += agent_mod._PROFILE_WATCH_RETRY_S
+        agent_mod.reproject_for_profile_change()
+        assert attempts == [1, 1], "the read recovered, and the backoff retried it"
+        clock["now"] += agent_mod._PROFILE_WATCH_RETRY_S
+        agent_mod.reproject_for_profile_change()
+        assert attempts == [1, 1], "once nothing is held, nothing is retried"
+
     def test_a_raising_rebuild_is_retried_on_a_short_backoff(
         self, profiles_dir, rebuilds, monkeypatch
     ):
