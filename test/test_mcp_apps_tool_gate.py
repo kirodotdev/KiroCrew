@@ -39,6 +39,8 @@ APP_TOOLS = {
     "design-tweak": DESIGN_TWEAK_TOOLS,
 }
 ALL_APP_TOOLS = ISSUE_RADAR_TOOLS | DEV_FLEET_TOOLS | OPS_MISSION_CONTROL_TOOLS | DESIGN_TWEAK_TOOLS
+#: Tools that reach whichever app the call names: listed while any non-disabled app declares agentRoutes.
+UNGATED_APP_TOOLS = frozenset({"app_request"})
 
 
 def _write_installed(name: str, *, enabled: bool) -> Path:
@@ -56,6 +58,52 @@ def _listed() -> set[str]:
 def test_no_app_installed_lists_none_of_the_app_tools() -> None:
     """A fresh home has no app enabled, so the listing carries none of the app tools."""
     assert _listed() & ALL_APP_TOOLS == set()
+
+
+def _write_manifest(name: str, agent_routes: object) -> None:
+    """A real ``app.json`` for *name* declaring *agent_routes* in the isolated test home."""
+    path = apps_manager.app_dir(name) / apps_manager.APP_MANIFEST_FILENAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    manifest = {"name": name, "version": "1.0.0", "displayName": name, "description": "x"}
+    manifest["agentRoutes"] = agent_routes
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_app_request_is_hidden_while_no_app_declares_agent_routes() -> None:
+    """With no app declaring ``agentRoutes`` every ``app_request`` call can only refuse."""
+    assert _listed() & UNGATED_APP_TOOLS == set()
+    _write_installed("slack-poller", enabled=True)
+    _write_manifest("slack-poller", [])
+    assert _listed() & UNGATED_APP_TOOLS == set()
+
+
+def test_app_request_is_listed_while_an_enabled_app_declares_agent_routes() -> None:
+    _write_installed("slack-poller", enabled=True)
+    _write_manifest("slack-poller", ["GET /status"])
+    assert UNGATED_APP_TOOLS <= _listed()
+
+
+def test_app_request_is_hidden_when_the_only_declaring_app_is_disabled() -> None:
+    _write_installed("slack-poller", enabled=False)
+    _write_manifest("slack-poller", ["GET /status"])
+    assert _listed() & UNGATED_APP_TOOLS == set()
+
+
+def test_app_request_is_listed_when_the_declaring_app_enablement_is_unreadable() -> None:
+    """Fail-open, as for the per-app tools: only a readable ``False`` hides."""
+    _write_installed("slack-poller", enabled=True).write_text("{not json", encoding="utf-8")
+    _write_manifest("slack-poller", ["GET /status"])
+    assert UNGATED_APP_TOOLS <= _listed()
+
+
+def test_app_request_is_listed_when_scanning_the_apps_raises(monkeypatch) -> None:
+    """An exception in the scan lists the tool rather than escaping ``tools/list``."""
+
+    def _boom() -> Path:
+        raise OSError("EIO")
+
+    monkeypatch.setattr(apps_manager, "apps_dir", _boom)
+    assert UNGATED_APP_TOOLS <= _listed()
 
 
 def test_a_disabled_app_lists_none_of_its_tools() -> None:
@@ -77,9 +125,11 @@ def test_every_app_enabled_lists_every_app_tool_with_its_declared_shape() -> Non
     """The gate decides WHETHER a descriptor is emitted, never its shape."""
     for name in APP_TOOLS:
         _write_installed(name, enabled=True)
+    _write_installed("slack-poller", enabled=True)
+    _write_manifest("slack-poller", ["GET /status"])
     listed = {t["name"]: t for t in build_tool_list()}
     declared = {t["name"]: t for t in apps_tools.schemas()}
-    assert set(declared) == ALL_APP_TOOLS
+    assert set(declared) == ALL_APP_TOOLS | UNGATED_APP_TOOLS
     for name, spec in declared.items():
         assert listed[name] == spec, name
 
@@ -176,8 +226,8 @@ def test_declaration_and_handlers_cover_every_app_tool_regardless_of_enablement(
     ``schemas()`` is what ``test_mcp_tool_registry`` holds against ``HANDLERS``; both
     must keep naming every tool, or a disabled app would read as a registry drift.
     """
-    assert {t["name"] for t in apps_tools.schemas()} == ALL_APP_TOOLS
-    assert set(apps_tools.HANDLERS) == ALL_APP_TOOLS
+    assert {t["name"] for t in apps_tools.schemas()} == ALL_APP_TOOLS | UNGATED_APP_TOOLS
+    assert set(apps_tools.HANDLERS) == ALL_APP_TOOLS | UNGATED_APP_TOOLS
     assert set(apps_tools.TOOL_APPS) == ALL_APP_TOOLS
 
 

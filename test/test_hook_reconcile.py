@@ -791,6 +791,23 @@ async def test_changed_signature_evicts_then_reimports(_harness):
 
 
 @pytest.mark.asyncio
+async def test_agent_route_revocation_changes_signature_and_reloads(_harness):
+    calls, (set_current, _, _) = _harness
+    granted = _app_info("watchtower")
+    granted["manifest"]["agentRoutes"] = ["POST /action", "GET /status"]
+    revoked = _app_info("watchtower")
+    revoked["manifest"]["agentRoutes"] = ["GET /status"]
+
+    assert hi.hook_signature(granted) != hi.hook_signature(revoked)
+    await hi.record_loaded_hook_signature("watchtower", granted)
+    set_current(revoked)
+    await hr.reconcile_once([revoked])
+
+    assert calls == [("disable", "watchtower"), ("enable", "watchtower")]
+    assert hi.loaded_hook_manifest("watchtower")["agentRoutes"] == ["GET /status"]
+
+
+@pytest.mark.asyncio
 async def test_changed_signature_reimport_deferred_if_teardown_unsettled(_harness):
     calls, (set_current, set_disable_result, _) = _harness
     v2 = _app_info("watchtower", version="2.0.0")
