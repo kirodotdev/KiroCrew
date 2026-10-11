@@ -396,6 +396,64 @@ async def test_token_auth_without_the_agent_socket_still_requires_the_secret(tok
     assert cap_on_tcp[0] == 403 and cap_on_tcp[1]["code"] == "internal_secret_missing"
 
 
+@pytest.fixture
+def agent_route_app(gate_app):
+    """The agent socket with token_auth arming an app catch-all, as the gateway wires it."""
+    from kiro_crew.dashboard import token_auth as ta
+
+    _app, sock = gate_app
+
+    async def app_route(request):
+        return web.json_response(
+            {
+                "internal_auth": bool(request.get("internal_auth")),
+                "app_agent_route": bool(request.get("app_agent_route")),
+            }
+        )
+
+    holder: dict[str, object] = {}
+    app = web.Application(
+        middlewares=[
+            ta.token_auth_middleware(
+                internal_secret=_SECRET,
+                agent_route_arm=lambda resolved: resolved is holder["catch_all"],
+            )
+        ]
+    )
+    holder["catch_all"] = app.router.add_route("*", "/api/apps/{tail:.*}", app_route)
+    app.router.add_get("/api/other", app_route)
+    return app, sock
+
+
+@pytest.mark.asyncio
+async def test_a_capability_reaches_an_app_agent_route_on_the_agent_socket(agent_route_app):
+    """An enforced-harness server sends app_request here by capability, never with the
+    secret, so the catch-all counts as internal for the gate and the capability arms it."""
+    from kiro_crew.constants import APP_REQUEST_HEADER, APP_REQUEST_HEADER_VALUE
+
+    app, sock = agent_route_app
+    pickup = _issue(os.getppid())
+    app_request = {APP_REQUEST_HEADER: APP_REQUEST_HEADER_VALUE}
+
+    def call():
+        _status, body = _post(REDEEM_PATH, sock, body={"pickup": pickup})
+        cap = body["capability"]
+        session = {"X-Session-Key": "chat-1"}
+        route = "/api/apps/slack-poller/subscriptions"
+        return (
+            _post(route, sock, headers={CAPABILITY_HEADER: cap, **session, **app_request}),
+            _post(route, sock, headers={**session, **app_request}),
+            _post(route, sock, headers={CAPABILITY_HEADER: cap, "X-Session-Key": "x"}),
+            _post("/api/other", sock, headers={CAPABILITY_HEADER: cap, **session}),
+        )
+
+    armed, no_cap, mismatch, other = await _serve(app, call)
+    assert armed == (200, {"internal_auth": True, "app_agent_route": True})
+    assert no_cap[0] == 403 and no_cap[1]["code"] == agent_ipc.REFUSE_CAPABILITY
+    assert mismatch[0] == 403 and mismatch[1]["code"] == agent_ipc.REFUSE_SESSION_MISMATCH
+    assert other[0] == 403 and other[1]["code"] == agent_ipc.REFUSE_ROUTE
+
+
 # --- the socket's place in the data home -------------------------------------------------
 
 
