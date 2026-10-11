@@ -33,6 +33,8 @@ from kiro_crew.config.loader import (
     _VALID_STT_PROVIDERS,
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
+    CHAT_TURN_TIMEOUT_MAX,
+    CHAT_TURN_TIMEOUT_MIN,
     COMPLETION_KEEP_CHARS_MIN,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
@@ -74,6 +76,7 @@ from kiro_crew.config.sections import (
     TITLE_REFRESH_EVERY_TURNS_MAX,
     transcribe_vocabulary_name,
 )
+from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
 from kiro_crew.dashboard.handlers._shared import (
@@ -2747,6 +2750,13 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "min": SOFT_STOP_BUDGET_MIN,
         "max": SOFT_STOP_BUDGET_MAX,
     },
+    # Same bounds as the load-time clamp, so Settings cannot save a ceiling the
+    # loader would then rewrite. Read on every turn, so the next turn follows it.
+    "agent.chat_turn_timeout_secs": {
+        "type": "int",
+        "min": CHAT_TURN_TIMEOUT_MIN,
+        "max": CHAT_TURN_TIMEOUT_MAX,
+    },
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
     # Range shared with the load-time clamp in config/loader.py — one constant
     # pair, so the write gate and the load path cannot drift.
@@ -3415,6 +3425,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
             section[parts[-1]] = value
+            # Saving the old default of an auto-adopting superseded-default row
+            # (a 7200 turn limit) is an explicit choice. Ack it here, under the
+            # config lock and before the write, so the reload this write triggers
+            # does not adopt it away. A failed ack raises OSError and aborts the
+            # write, rather than saving a value the next load would delete.
+            ack_explicit_write(path_key, value)
             return data
 
         try:

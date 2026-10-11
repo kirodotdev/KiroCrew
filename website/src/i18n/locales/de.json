@@ -10757,6 +10757,8 @@
         "retry_backend_hiccup": "Der Agent hatte ein kurzes Problem – wieder aufnehmen, um an der Unterbrechung weiterzumachen.",
         "default_model": "Standardmodell ändern",
         "default_model_hint": "Einstellungen → Chat → Standardmodell öffnen. Neue Sitzungen starten mit diesem Wert.",
+        "turn_limit": "Zeitlimit pro Zug ändern",
+        "turn_limit_hint": "Öffnet Einstellungen → Chat → Erweitert → Zeitlimit pro Zug. Spätere Züge dürfen bis zu dieser Dauer laufen.",
         "pick_model": "Modell für diese Sitzung wählen",
         "pick_model_hint": "Die Modellauswahl öffnen, eines der Modelle wählen, die dein Konto nutzen kann, und dann die Nachricht erneut senden.",
         "both_hint": "Beides tun: „{{pick}}“ behebt diese Sitzung, „{{default}}“ verhindert, dass neue Sitzungen mit demselben Modell starten, falls es als Standard gesetzt ist. Danach die Nachricht erneut senden.",
@@ -15388,6 +15390,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Ein Ordner ohne Chats belegt eine Zeile statt zwei, und seine Schaltfläche für einen neuen Chat wandert in die Ordnerzeile",
         "content_width": "Inhaltsbreite",
         "context": "Kontext",
+        "turns": "Züge",
         "context_usage_at_which_auto_compaction_triggers": "Kontextnutzung in %, bei der die automatische Verdichtung ausgelöst wird. Niedriger = häufigere Verdichtung, längere Sitzungen",
         "data_ml": "Daten / ML",
         "default_auto": "Standard (auto)",
@@ -15601,7 +15604,11 @@
         "compaction_wait_budget_description": "Wie lange eine Verdichtung höchstens laufen darf. 0 = Standard (300 s). Sonst 60 bis 3.600 s.",
         "compaction_wait_budget_hint": "Nach diesem Limit startet die Sitzung neu, oder eine manuelle Verdichtung meldet eine Zeitüberschreitung. Erhöhe den Wert, wenn die Verdichtung eines großen Kontexts regelmäßig länger als 300 Sekunden dauert.",
         "compaction_wait_budget_clamped": "{{stored}} gespeichert. {{requested}} liegt außerhalb des zulässigen Bereichs ({{min}} bis {{max}}).",
-        "failed_to_save_compaction_wait_budget": "Wartezeit für Verdichtung konnte nicht gespeichert werden"
+        "turn_time_limit": "Zeitlimit pro Zug (Sekunden)",
+        "turn_time_limit_description": "Wie lange ein Chat-Zug höchstens laufen darf, bevor er gestoppt wird. 300 bis 86.400 s (24 h). Standard 14.400 s (4 h).",
+        "turn_time_limit_hint": "Ein Zug, der dieses Limit erreicht, stoppt; bereits auf die Festplatte geschriebene Arbeit bleibt erhalten. Nimm ihn wieder auf, um weiterzumachen. Erhöhe das Limit für lange unbeaufsichtigte Züge wie vollständige Testläufe. Gilt ab dem nächsten Zug.",
+        "failed_to_save_compaction_wait_budget": "Wartezeit für Verdichtung konnte nicht gespeichert werden",
+        "failed_to_save_turn_time_limit": "Zeitlimit pro Zug konnte nicht gespeichert werden"
       },
       "computerUsePanel": {
         "accessibility": "Bedienungshilfen",

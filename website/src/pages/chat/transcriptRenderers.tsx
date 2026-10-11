@@ -39,7 +39,7 @@ import ConversationCard, { CARD_ROLE } from '../../cards/ConversationCard'
 import RecoveryCard, { opensTurn, resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
 import SkillLoadCard, { isSkillLoadRow } from './SkillLoadCard'
-import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
+import { ErrorCard, SESSION_START_REPEAT_REFUSAL_AT, isAuthRequired, isCapabilitiesChanged, isModelUnentitled, isSessionStartFailed, isTurnTimeout, isUsageLimit, sessionStartFailureStreak } from './ErrorCard'
 import { FEATURE_REQUEST_FORM_URL, isFeatureRequestRow } from '../../prompts/featureRequest'
 import NoticeCard from './NoticeCard'
 import { resolveTransientNotice } from './transientNotice'
@@ -157,6 +157,9 @@ export interface TranscriptRendererOptions {
   /** Fix affordance for a `materialization_changed` row: open the named crew
    *  member's Capabilities pane. Omitted on a surface with no crew editor. */
   onOpenCapabilities?: (member: string) => void
+  /** Fix affordance for a `turn_timeout` row: deep-link to the Turn Time Limit
+   *  setting. Omitted on a surface with no settings route. */
+  onOpenTurnLimit?: () => void
   /** Draw the assistant rows as a CREWMATE speaking: avatar + name + time on
    *  the first message of a run, one bordered bubble per message, grouped
    *  corners (components/chat/crewmateBubbles). Set by the Members page for a
@@ -580,6 +583,7 @@ export function createTranscriptRenderers(
             unentitledElsewhere={unentitled}
             featureRequestFormUrl={featureRequestFormUrl}
             onOpenCapabilities={openCapabilities}
+            onOpenTurnLimit={isTurnTimeout(m) ? o.onOpenTurnLimit : undefined}
           />,
         )
       },

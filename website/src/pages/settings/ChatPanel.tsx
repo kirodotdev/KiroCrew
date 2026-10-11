@@ -89,6 +89,12 @@ const SOFT_STOP_MIN = 0.5
 const SOFT_STOP_MAX = 60
 const SOFT_STOP_DEFAULT = 10.0
 
+/** `agent.chat_turn_timeout_secs` bounds and default, mirroring
+ *  config/sections.py CHAT_TURN_TIMEOUT_MIN / _MAX and the field default. */
+const TURN_LIMIT_MIN = 300
+const TURN_LIMIT_MAX = 86400
+const TURN_LIMIT_DEFAULT = 14400
+
 /** `dashboard.title_refresh_every_turns`: 0 is the built-in schedule, any other
  *  value is MIN..MAX (config/sections.py TITLE_REFRESH_EVERY_TURNS_MIN / _MAX). */
 const TITLE_REFRESH_PATH = 'dashboard.title_refresh_every_turns'
@@ -172,6 +178,7 @@ type KirocrewConfigShape = {
     role_efforts?: { background?: string; subagent?: string }
     reasoning_effort?: string
     soft_stop_budget_secs?: number
+    chat_turn_timeout_secs?: number
     completion_keep?: CompletionKeepMode
     completion_keep_chars?: number
     fallback_model?: string
@@ -894,6 +901,27 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
     },
   })
 
+  // ── Turn time limit (agent.chat_turn_timeout_secs) ──
+  // Same follow-the-server rule as the compaction budget below: an untouched
+  // field tracks every refetch, and a blur without an edit saves nothing.
+  const [localTurnLimit, setLocalTurnLimit] = useState('')
+  const turnLimitEditedRef = useRef(false)
+  const serverTurnLimit = mcQ.data?.agent?.chat_turn_timeout_secs
+  useEffect(() => {
+    if (mcQ.isSuccess && !turnLimitEditedRef.current) {
+      setLocalTurnLimit(String(serverTurnLimit ?? TURN_LIMIT_DEFAULT))
+    }
+  }, [mcQ.isSuccess, serverTurnLimit])
+
+  const turnLimitMut = useMutation({
+    mutationFn: (n: number) => api.patchConfig('agent.chat_turn_timeout_secs', n),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onError: () => {
+      setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_turn_time_limit'))
+      setLocalTurnLimit(String(mcCfg?.agent?.chat_turn_timeout_secs ?? TURN_LIMIT_DEFAULT))
+    },
+  })
+
   // ── Compaction wait budget ──
   // The server clamps an out-of-range value instead of refusing it (0 keeps
   // the built-in budget; anything else lands in 60-3600 s), so the field shows
@@ -1585,8 +1613,42 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
       </div>
 
       <div className="mb-8">
-        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.turns')}</h4>
         <SettingsCard index={1}>
+          <SettingsInput
+            label={i18nT('pages.settings.chatPanel.turn_time_limit')}
+            description={i18nT('pages.settings.chatPanel.turn_time_limit_description')}
+            hint={i18nT('pages.settings.chatPanel.turn_time_limit_hint')}
+            type="number"
+            value={localTurnLimit}
+            min={TURN_LIMIT_MIN}
+            max={TURN_LIMIT_MAX}
+            step={300}
+            onChange={v => {
+              turnLimitEditedRef.current = true
+              setLocalTurnLimit(v)
+            }}
+            onBlur={() => {
+              if (!turnLimitEditedRef.current) return
+              turnLimitEditedRef.current = false
+              const saved = mcCfg?.agent?.chat_turn_timeout_secs ?? TURN_LIMIT_DEFAULT
+              const n = Number(localTurnLimit)
+              if (localTurnLimit.trim() === '' || !Number.isInteger(n) || n < TURN_LIMIT_MIN || n > TURN_LIMIT_MAX) {
+                setLocalTurnLimit(String(saved))
+                return
+              }
+              if (n === saved) return
+              turnLimitMut.mutate(n)
+            }}
+            disabled={!mcQ.isSuccess || turnLimitMut.isPending}
+            configKey="agent.chat_turn_timeout_secs"
+          />
+        </SettingsCard>
+      </div>
+
+      <div className="mb-8">
+        <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.context')}</h4>
+        <SettingsCard index={2}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.auto_compact_threshold')}
             hint={i18nT('pages.settings.chatPanel.context_usage_at_which_auto_compaction_triggers')}
@@ -1638,7 +1700,7 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
 
       <div>
         <h4 className="text-base font-semibold text-text-strong mb-1">{i18nT('pages.settings.chatPanel.subagents')}</h4>
-        <SettingsCard index={2}>
+        <SettingsCard index={3}>
           <SettingsSelect
             label={i18nT('pages.settings.chatPanel.completion_event_truncation')}
             hint={i18nT('pages.settings.chatPanel.which_part_of_a_subagent_s_stream_to_keep_when_i')}

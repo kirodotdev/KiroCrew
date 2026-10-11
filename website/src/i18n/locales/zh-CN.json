@@ -10608,6 +10608,8 @@
         "retry_backend_hiccup": "智能体遇到了短暂故障 — 恢复即可从中断处继续。",
         "default_model": "更改默认模型",
         "default_model_hint": "打开“设置 → 对话 → 默认模型”。新会话都从这个值开始。",
+        "turn_limit": "更改单轮时间上限",
+        "turn_limit_hint": "打开 设置 → 聊天 → 高级 → 单轮时间上限。之后的轮次最多可运行这么长时间。",
         "pick_model": "为本会话选择模型",
         "pick_model_hint": "打开模型选择器，从账号可用的模型中选一个，然后重新发送消息。",
         "both_hint": "两步都要做：“{{pick}}”修好本会话，“{{default}}”在默认模型指向同一个模型时，让新会话不再从它开始。然后重新发送你的消息。",
@@ -15148,6 +15150,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "没有会话的文件夹只占一行而不是两行，新建会话按钮移到文件夹所在的那一行",
         "content_width": "内容宽度",
         "context": "上下文",
+        "turns": "轮次",
         "context_usage_at_which_auto_compaction_triggers": "触发自动压缩的上下文使用率 %。越低 = 压缩越频繁，会话越长",
         "data_ml": "数据 / 机器学习",
         "default_auto": "默认（自动）",
@@ -15361,7 +15364,11 @@
         "compaction_wait_budget_description": "一次压缩最多可运行的时长。0 = 默认值（300 秒）。其他值为 60 到 3,600 秒。",
         "compaction_wait_budget_hint": "超过此上限后，会话会重启，或手动压缩会报告超时。如果大上下文的压缩经常需要超过 300 秒，请调高它。",
         "compaction_wait_budget_clamped": "已保存 {{stored}}。{{requested}} 超出允许范围（{{min}} 到 {{max}}）。",
-        "failed_to_save_compaction_wait_budget": "无法保存压缩等待时长"
+        "turn_time_limit": "单轮时间上限（秒）",
+        "turn_time_limit_description": "一轮聊天在被停止前最多可运行的时长。300 到 86,400 秒（24 小时）。默认 14,400 秒（4 小时）。",
+        "turn_time_limit_hint": "达到此上限的一轮会被停止，已写入磁盘的工作会保留；恢复即可继续。对于完整测试套件等长时间无人值守的轮次，请调高此值。从下一轮开始生效。",
+        "failed_to_save_compaction_wait_budget": "无法保存压缩等待时长",
+        "failed_to_save_turn_time_limit": "无法保存单轮时间上限"
       },
       "computerUsePanel": {
         "accessibility": "辅助功能",

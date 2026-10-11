@@ -135,6 +135,14 @@ export function resolveSettingElementStrict(entry: SettingEntry): HTMLElement | 
 export const SETTINGS_DEFAULT_MODEL_ID = 'chat.default-model'
 
 /**
+ * Deep-link target for the Turn Time Limit row in Settings → Chat → Advanced,
+ * the field a `turn_timeout` error row links to. Keyed on the config path the
+ * row writes, not its label, so rewording the label cannot break the link.
+ */
+export const SETTINGS_TURN_TIME_LIMIT_KEY = 'agent.chat_turn_timeout_secs'
+export const SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT = `key:${SETTINGS_TURN_TIME_LIMIT_KEY}`
+
+/**
  * `data-setting-key` anchor of the Kiro sign-in card on Settings → Agent
  * Harness, the target of the chat error row's "Sign in to Kiro" link
  * (`KIRO_SIGN_IN_PATH` in `pages/developer/kiroSignInLink.ts`). A pseudo key,

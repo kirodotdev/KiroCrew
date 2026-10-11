@@ -1593,3 +1593,84 @@ class TestUpdateNudgeKeys:
         async with TestClient(TestServer(_make_app())) as c:
             rec = {**self._REC, "skipped": "yes"}
             assert (await _patch(c, "dashboard.update_nudge", rec)).status == 400
+
+
+class TestChatTurnTimeout:
+    """Settings → Chat → Advanced → "Turn Time Limit (seconds)".
+
+    The write gate uses the loader's own bounds, so Settings can never save a
+    ceiling the loader would then rewrite, and a saved value loads as written.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_value_inside_the_range_round_trips(self, tmp_config) -> None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.chat_turn_timeout_secs", 28800)
+            assert resp.status == 200, await resp.text()
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["chat_turn_timeout_secs"] == 28800
+        assert KiroCrewConfig.load().agent.chat_turn_timeout_secs == 28800
+
+    @pytest.mark.asyncio
+    async def test_both_loader_bounds_are_writable(self, tmp_config) -> None:
+        from kiro_crew.config.sections import CHAT_TURN_TIMEOUT_MAX, CHAT_TURN_TIMEOUT_MIN
+
+        async with TestClient(TestServer(_make_app())) as c:
+            for value in (CHAT_TURN_TIMEOUT_MIN, CHAT_TURN_TIMEOUT_MAX):
+                resp = await _patch(c, "agent.chat_turn_timeout_secs", value)
+                assert resp.status == 200, await resp.text()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [299, 86401, 0, -1, "four hours"])
+    async def test_a_value_the_loader_would_clamp_is_refused(self, tmp_config, value) -> None:
+        before = tmp_config.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", value)).status == 400
+        assert tmp_config.read_text(encoding="utf-8") == before
+
+    @pytest.mark.asyncio
+    async def test_a_saved_two_hour_limit_survives_superseded_default_adoption(
+        self, tmp_config, monkeypatch
+    ) -> None:
+        """7200 is the row's superseded default, and the row auto-adopts.
+
+        Saving it in Settings is an explicit choice, so the next load must not
+        read it as a materialized default and delete it.
+        """
+        from kiro_crew.config import loader as L
+        from kiro_crew.config import superseded_defaults as SD
+
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "agent.chat_turn_timeout_secs", 7200)
+            assert resp.status == 200, await resp.text()
+        assert SD.acked_superseded() == {"agent.chat_turn_timeout_secs": 7200}
+        assert L.KiroCrewConfig.load().agent.chat_turn_timeout_secs == 7200
+        stored = json.loads(tmp_config.read_text(encoding="utf-8"))
+        assert stored["agent"]["chat_turn_timeout_secs"] == 7200
+
+    @pytest.mark.asyncio
+    async def test_another_value_records_no_ack(self, tmp_config, monkeypatch) -> None:
+        from kiro_crew.config import loader as L
+        from kiro_crew.config import superseded_defaults as SD
+
+        monkeypatch.setattr(L, "config_dir", lambda: tmp_config.parent)
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", 10800)).status == 200
+        assert SD.acked_superseded() == {}
+
+    @pytest.mark.asyncio
+    async def test_a_refused_ack_aborts_the_write(self, tmp_config, monkeypatch) -> None:
+        """Without its ack the saved 7200 would be deleted on the next load."""
+        from kiro_crew.config import superseded_defaults as SD
+
+        def _refuse(_mutate):
+            raise SD.AckPathRefused("refused")
+
+        monkeypatch.setattr(SD, "_update_acked", _refuse)
+        before = tmp_config.read_text(encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "agent.chat_turn_timeout_secs", 7200)).status == 500
+        assert tmp_config.read_text(encoding="utf-8") == before

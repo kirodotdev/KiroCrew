@@ -10906,6 +10906,8 @@
         "retry_backend_hiccup": "L’agente ha avuto un problema momentaneo — riprendi da dove si è fermato.",
         "default_model": "Cambia il modello predefinito",
         "default_model_hint": "Apri Impostazioni → Chat → Modello predefinito. Le nuove sessioni partono da questo valore.",
+        "turn_limit": "Cambia il limite di tempo per turno",
+        "turn_limit_hint": "Apre Impostazioni → Chat → Avanzate → Limite di tempo per turno. I turni successivi potranno durare fino a questo limite.",
         "pick_model": "Scegli un modello per questa sessione",
         "pick_model_hint": "Apri il selettore dei modelli, scegli uno dei modelli che il tuo account può usare e invia di nuovo il messaggio.",
         "both_hint": "Fai entrambe le cose: “{{pick}}” sistema questa sessione, “{{default}}” evita che le nuove sessioni partano con lo stesso modello se è impostato come predefinito. Poi invia di nuovo il messaggio.",
@@ -15628,6 +15630,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una cartella senza chat occupa una riga invece di due, e il pulsante per una nuova chat passa sulla riga della cartella",
         "content_width": "Larghezza del contenuto",
         "context": "Contesto",
+        "turns": "Turni",
         "context_usage_at_which_auto_compaction_triggers": "Percentuale di utilizzo del contesto che attiva la compattazione automatica. Più bassa = compattazione più frequente, sessioni più lunghe",
         "data_ml": "Dati / ML",
         "default_auto": "Predefinito (auto)",
@@ -15841,7 +15844,11 @@
         "compaction_wait_budget_description": "Durata massima di una compattazione. 0 = predefinito (300 s). Altrimenti da 60 a 3.600 s.",
         "compaction_wait_budget_hint": "Oltre questo limite la sessione si riavvia, oppure una compattazione manuale segnala il timeout. Aumentalo se la compattazione di un contesto ampio richiede spesso più di 300 secondi.",
         "compaction_wait_budget_clamped": "Salvato {{stored}}. {{requested}} è fuori dall'intervallo consentito ({{min}}–{{max}}).",
-        "failed_to_save_compaction_wait_budget": "Impossibile salvare il tempo di attesa della compattazione"
+        "turn_time_limit": "Limite di tempo per turno (secondi)",
+        "turn_time_limit_description": "Durata massima di un turno di chat prima che venga fermato. Da 300 a 86.400 s (24 h). Predefinito 14.400 s (4 h).",
+        "turn_time_limit_hint": "Un turno che raggiunge questo limite si ferma e conserva il lavoro già scritto su disco; riprendilo per continuare. Aumentalo per turni lunghi non presidiati, come intere suite di test. Vale dal turno successivo.",
+        "failed_to_save_compaction_wait_budget": "Impossibile salvare il tempo di attesa della compattazione",
+        "failed_to_save_turn_time_limit": "Impossibile salvare il limite di tempo per turno"
       },
       "computerUsePanel": {
         "accessibility": "Accessibilità",

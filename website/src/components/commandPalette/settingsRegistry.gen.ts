@@ -1523,6 +1523,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.turn-time-limit-seconds",
+    "label": "Turn Time Limit (seconds)",
+    "labelKey": "pages.settings.chatPanel.turn_time_limit",
+    "description": "A turn that reaches this limit stops and keeps the work already written to disk; resume it to continue. Raise it for long unattended turns such as full test suites. Applies from the next turn. Longest one chat turn may run before it is stopped. 300 to 86,400 s (24 h). Default 14,400 s (4 h).",
+    "tab": "chat",
+    "type": "input",
+    "occurrence": 1,
+    "params": {
+      "sub": "advanced"
+    },
+    "configKey": "agent.chat_turn_timeout_secs"
+  },
+  {
     "id": "chat.what-enter-does-while-the-agent-is-working",
     "label": "What Enter does while the agent is working",
     "labelKey": "pages.settings.chatPanel.what_enter_does_while_the_agent_is_working",

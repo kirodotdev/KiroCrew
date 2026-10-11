@@ -10906,6 +10906,8 @@
         "retry_backend_hiccup": "El agente tuvo un problema momentáneo — reanuda para seguir desde donde se detuvo.",
         "default_model": "Cambiar el modelo predeterminado",
         "default_model_hint": "Abre Configuración → Chat → Modelo predeterminado. Las sesiones nuevas empiezan con este valor.",
+        "turn_limit": "Cambiar el límite de tiempo por turno",
+        "turn_limit_hint": "Abre Ajustes → Chat → Avanzado → Límite de tiempo por turno. Los turnos siguientes podrán durar hasta ese tiempo.",
         "pick_model": "Elegir un modelo para esta sesión",
         "pick_model_hint": "Abre el selector de modelos, elige uno de los que tu cuenta puede usar y vuelve a enviar tu mensaje.",
         "both_hint": "Haz ambas cosas: “{{pick}}” arregla esta sesión, “{{default}}” evita que las sesiones nuevas empiecen con el mismo modelo si está configurado como predeterminado. Después vuelve a enviar tu mensaje.",
@@ -15628,6 +15630,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "Una carpeta sin chats ocupa una fila en lugar de dos, y su botón de chat nuevo pasa a la fila de la carpeta",
         "content_width": "Ancho del contenido",
         "context": "Contexto",
+        "turns": "Turnos",
         "context_usage_at_which_auto_compaction_triggers": "% de uso del contexto con el que se activa la compactación automática. Más bajo = compactación más frecuente y sesiones más largas",
         "data_ml": "Datos / ML",
         "default_auto": "Predeterminado (automático)",
@@ -15841,7 +15844,11 @@
         "compaction_wait_budget_description": "Lo máximo que puede durar una compactación. 0 = valor predeterminado (300 s). Si no, de 60 a 3600 s.",
         "compaction_wait_budget_hint": "Al superar este límite, la sesión se reinicia o una compactación manual indica que se agotó el tiempo. Auméntalo si la compactación de un contexto grande suele tardar más de 300 segundos.",
         "compaction_wait_budget_clamped": "Se guardó {{stored}}. {{requested}} está fuera del rango permitido ({{min}} a {{max}}).",
-        "failed_to_save_compaction_wait_budget": "No se pudo guardar el tiempo de espera de compactación"
+        "turn_time_limit": "Límite de tiempo por turno (segundos)",
+        "turn_time_limit_description": "Tiempo máximo que puede durar un turno de chat antes de detenerse. De 300 a 86 400 s (24 h). Predeterminado: 14 400 s (4 h).",
+        "turn_time_limit_hint": "Un turno que llega a este límite se detiene y conserva el trabajo ya escrito en disco; reanúdalo para continuar. Súbelo para turnos largos sin supervisión, como suites de pruebas completas. Se aplica desde el siguiente turno.",
+        "failed_to_save_compaction_wait_budget": "No se pudo guardar el tiempo de espera de compactación",
+        "failed_to_save_turn_time_limit": "No se pudo guardar el límite de tiempo por turno"
       },
       "computerUsePanel": {
         "accessibility": "Accesibilidad",

@@ -3,7 +3,7 @@ import type { NavigateFunction } from 'react-router-dom'
 
 import { api } from '../../../api/client'
 import { settingsPath } from '../../../components/settingsPath'
-import { SETTINGS_DEFAULT_MODEL_ID } from '../../../hooks/useSettingHighlight'
+import { SETTINGS_DEFAULT_MODEL_ID, SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT } from '../../../hooks/useSettingHighlight'
 import { useAppSelector } from '../../../store'
 import { selectContinuable, selectTrailingSendUnconfirmed, selectTurnInterrupted } from '../../../store/chatSlice'
 import type { ChatMessage } from '../../../types'
@@ -105,6 +105,11 @@ export function useTurnRecovery({
   const openKiroSignIn = useCallback(() => {
     navigate(KIRO_SIGN_IN_PATH)
   }, [navigate])
+  // A `turn_timeout` row's fix: the Turn Time Limit field on Settings → Chat →
+  // Advanced. Same surface rule as the Default Model link above.
+  const openTurnLimitSetting = useCallback(() => {
+    navigate(settingsPath({ tab: 'chat', sub: 'advanced', highlight: SETTINGS_TURN_TIME_LIMIT_HIGHLIGHT }))
+  }, [navigate])
   // A `materialization_changed` row's fix: the member's Capabilities pane in
   // the crew editor, where the changed agent file is reviewed and saved.
   const openMemberCapabilities = useCallback((member: string) => {
@@ -143,7 +148,7 @@ export function useTurnRecovery({
   // transcriptRenderers.tsx `lastErrorIndex`.)
   return {
     continuable, interrupted, sendUnconfirmed, continuing, handleContinue,
-    openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities,
+    openModelPickerFromError, openDefaultModelSetting, openKiroSignIn, openMemberCapabilities, openTurnLimitSetting,
     featureRequestRefused, sessionStartRepeated,
   }
 }

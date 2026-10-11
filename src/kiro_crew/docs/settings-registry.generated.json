@@ -853,6 +853,14 @@
       "description": "Tags each new session in the sidebar with up to two topics, like \"debugging\". Uses one background-model call per new session."
     },
     {
+      "id": "chat.turn-time-limit-seconds",
+      "label": "Turn Time Limit (seconds)",
+      "tab": "chat",
+      "route": "/settings/chat/advanced?highlight=key%3Aagent.chat_turn_timeout_secs",
+      "description": "A turn that reaches this limit stops and keeps the work already written to disk; resume it to continue. Raise it for long unattended turns such as full test suites. Applies from the next turn. Longest one chat turn may run before it is stopped. 300 to 86,400 s (24 h). Default 14,400 s (4 h).",
+      "configKey": "agent.chat_turn_timeout_secs"
+    },
+    {
       "id": "chat.what-enter-does-while-the-agent-is-working",
       "label": "What Enter does while the agent is working",
       "tab": "chat",

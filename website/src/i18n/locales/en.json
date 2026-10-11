@@ -6412,6 +6412,8 @@
         "retry_backend_hiccup": "The agent hit a brief problem — resume to pick up where it stopped.",
         "default_model": "Change default model",
         "default_model_hint": "Open Settings → Chat → Default Model. New sessions start on this value.",
+        "turn_limit": "Change turn time limit",
+        "turn_limit_hint": "Open Settings → Chat → Advanced → Turn Time Limit. Later turns may run up to this long.",
         "pick_model": "Choose a model for this session",
         "pick_model_hint": "Open the model picker and choose one of the models your account can use, then send your message again.",
         "both_hint": "Do both: “{{pick}}” fixes this session, “{{default}}” stops new sessions from starting on the same model if the default is set to it. Then send your message again.",
@@ -8816,6 +8818,7 @@
         "a_folder_with_no_chats_takes_one_row_instead_of": "A folder with no chats takes one row instead of two, and its New chat button moves onto the folder's own row",
         "content_width": "Content Width",
         "context": "Context",
+        "turns": "Turns",
         "context_usage_at_which_auto_compaction_triggers": "Context usage % at which auto-compaction triggers. Lower = more frequent compaction, longer sessions",
         "default_defers_to_your_agent_config_and_then_to": "Agents with their own configured model ignore this setting. 'Default' uses the model from the agent configuration, or the system default when none is configured. Changing this does not affect sessions that are already open.",
         "default_model": "Default Model",
@@ -8917,7 +8920,11 @@
         "compaction_wait_budget_description": "Longest a compaction may run. 0 = default (300 s). Otherwise 60 to 3,600 s.",
         "compaction_wait_budget_hint": "Past this limit the session restarts, or a manual compaction reports that it timed out. Raise it if compaction on a large context regularly needs more than 300 seconds.",
         "compaction_wait_budget_clamped": "Saved {{stored}}. {{requested}} is outside the allowed range ({{min}} to {{max}}).",
-        "failed_to_save_compaction_wait_budget": "Failed to save compaction wait budget"
+        "turn_time_limit": "Turn Time Limit (seconds)",
+        "turn_time_limit_description": "Longest one chat turn may run before it is stopped. 300 to 86,400 s (24 h). Default 14,400 s (4 h).",
+        "turn_time_limit_hint": "A turn that reaches this limit stops and keeps the work already written to disk; resume it to continue. Raise it for long unattended turns such as full test suites. Applies from the next turn.",
+        "failed_to_save_compaction_wait_budget": "Failed to save compaction wait budget",
+        "failed_to_save_turn_time_limit": "Failed to save turn time limit"
       },
       "computerUsePanel": {
         "accessibility": "Accessibility",
