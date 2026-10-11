@@ -1033,26 +1033,57 @@ class ContinuationCoordinator(ManagerComponent):
             # announce-and-drop for pending messages.
             return
         task = "\n\n---\n\n".join(messages)
-        # Finalization may hold the conversation for a beat after the task is
-        # popped (shielded report); retry a bounded number of times.
-        for _attempt in range(self._manager._FOLLOWUP_BUSY_RETRIES):
-            child = await self._manager.continue_conversation_async(
-                info.id,
-                task,
-                parent_session_key=info.parent_session_key,
-                agent=info.agent,
-                # The turn that asked for this follow-up, pinned when it was
-                # queued. This dispatch runs after the continued run finished, so
-                # the asking ordinal is not readable here. Several queued messages
-                # merge into one continuation, and the pin holds one turn, so for a
-                # merged dispatch this is the turn that asked LAST; each individual
-                # ask is recorded at its own turn as `subagent/steered`.
-                _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+        # A continuation run executes on its root conversation, so the follow-up is a
+        # continuation of the root: dispatched by the root id, it shares the root's busy
+        # check and claim instead of keying its own.
+        key = info.conversation_key or ""
+        root = key.removeprefix("subagent:") if key.startswith("subagent:") else ""
+        conversation_id = root or info.id
+        # By the root id the dispatch would not claim the run it follows up, and a
+        # dashboard retry of that run checks only that run's own claim (claim_retry).
+        # So the follow-up claims it as well, as a continuation by its id does, and
+        # settles it with the dispatch's outcome: a retry and a follow-up of one run
+        # stay mutually exclusive whichever comes first.
+        followed: SubagentInfo | None = None
+        child: SubagentInfo | None = None
+        err = ""
+        if conversation_id != info.id and self._manager._agents.get(info.id) is info:
+            followed, child = self._manager._claim_continuation(
+                info.id, task, info.parent_session_key
             )
-            err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
-            if not err.startswith("conversation_busy"):
-                break
-            await asyncio.sleep(self._manager._FOLLOWUP_BUSY_RETRY_SECS)
+            if child is not None:
+                followed = None  # refused: the claim belongs to whoever holds it
+                err = str(child.error or "")
+        attempts = self._manager._FOLLOWUP_BUSY_RETRIES if child is None else 0
+        # Only a dispatch in flight counts as a start of unknown outcome. A cancel in the
+        # sleep between busy attempts settles with the last refusal, which releases the
+        # claim, so a later retry of the followed-up run is not refused for nothing.
+        raised = False
+        try:
+            # Finalization may hold the conversation for a beat after the task is
+            # popped (shielded report); retry a bounded number of times.
+            for _attempt in range(attempts):
+                raised = True
+                child = await self._manager.continue_conversation_async(
+                    conversation_id,
+                    task,
+                    parent_session_key=info.parent_session_key,
+                    agent=info.agent,
+                    # The turn that asked for this follow-up, pinned when it was
+                    # queued. This dispatch runs after the continued run finished, so
+                    # the asking ordinal is not readable here. Several queued messages
+                    # merge into one continuation, and the pin holds one turn, so for
+                    # a merged dispatch this is the turn that asked LAST; each
+                    # individual ask is recorded at its own turn as `subagent/steered`.
+                    _crew_log_asked=getattr(info, "_crew_log_followup_asked", None),
+                )
+                raised = False
+                err = "spawn_failed" if child is None else str(getattr(child, "error", "") or "")
+                if not err.startswith("conversation_busy"):
+                    break
+                await asyncio.sleep(self._manager._FOLLOWUP_BUSY_RETRY_SECS)
+        finally:
+            self._manager._settle_continuation(followed, child, raised=raised)
         if err:
             logger.warning("follow_up delivery for %s failed: %s", info.id, err.split(":", 1)[0])
             self._manager._audit_followup(info, "followup_failed")

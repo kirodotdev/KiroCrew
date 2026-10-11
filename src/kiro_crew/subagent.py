@@ -3673,6 +3673,11 @@ class SubagentManager:
         # prunes completed runs out of `_agents` and an eviction must not silently
         # release the hold.
         self._abandoned_state_writers: dict[str, set[asyncio.Future[Any]]] = {}
+        # Conversation ids whose continuation start is in flight while the run
+        # that opened the conversation has no registry record to carry
+        # ``_continuation_starting`` (evicted, or from before a restart). Taken and
+        # released only by ``continue_conversation`` / ``continue_conversation_async``.
+        self._continuations_starting: set[str] = set()
         # state.json is the source of truth for retention: give the
         # SessionManager's in-memory continuable cache a disk fallback so a
         # cache miss (restart window) cannot demote a promoted conversation.
@@ -5566,12 +5571,21 @@ class SubagentManager:
         retry now), or while another continuation's start is still in flight
         (it is not yet visible to the conversation-busy lookup). Otherwise the
         continuation claims the run before any await, so a retry or a second
-        continuation arriving while this start is in flight is refused.
+        continuation arriving while this start is in flight is refused. A run with
+        no registry record is claimed by its conversation id in
+        ``_continuations_starting`` instead, so two continuations of an evicted or
+        restored conversation cannot both pass the conversation-busy lookup.
         """
         original = self._agents.get(conv_id)
         if original is None:
-            return None, None
-        if original._retried_as:
+            if conv_id not in self._continuations_starting:
+                self._continuations_starting.add(conv_id)
+                return None, None
+            reason = (
+                f"another continuation of run {conv_id} is starting — wait for its "
+                "completion event, or use spawn_steer once it is running"
+            )
+        elif original._retried_as:
             reason = (
                 f"run {conv_id} was retried as run {original._retried_as}, which "
                 "owns its task now; continue that run's conversation instead"
@@ -5643,6 +5657,10 @@ class SubagentManager:
         except BaseException:
             self._settle_continuation(original, None, raised=True)
             raise
+        finally:
+            if original is None:
+                # This call took the conversation-id claim: release it on every exit.
+                self._continuations_starting.discard(conv_id)
         self._settle_continuation(original, result)
         return result
 
@@ -5678,6 +5696,10 @@ class SubagentManager:
         except BaseException:
             self._settle_continuation(original, None, raised=True)
             raise
+        finally:
+            if original is None:
+                # This call took the conversation-id claim: release it on every exit.
+                self._continuations_starting.discard(conv_id)
         self._settle_continuation(original, result)
         return result
 

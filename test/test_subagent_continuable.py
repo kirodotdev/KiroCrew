@@ -3866,3 +3866,291 @@ class TestSuccessorClaim:
         assert second is not None and second.done
         assert second.error.startswith("conversation_busy")
         assert starts == ["x"]
+
+
+class TestContinuationClaimWithoutRegistryRecord:
+    """A conversation whose opening run is not in the registry (evicted after it
+    finished, or from before a restart) is claimed by its id, so two concurrent
+    continuations cannot both pass the conversation-busy lookup before either run
+    is registered."""
+
+    @staticmethod
+    async def _conversation(conv_id: str) -> None:
+        await asyncio.to_thread(create_agent_folder, conv_id, task="original")
+        await asyncio.to_thread(write_run_agent, conv_id, "")
+
+    @staticmethod
+    def _held_manager() -> tuple[SubagentManager, asyncio.Event]:
+        sessions = _mock_sessions(resumed=True)
+        release = asyncio.Event()
+        provider, _, _ = sessions.get_or_create.return_value
+
+        async def _held_get_or_create(*_a, **_k):
+            await asyncio.wait_for(release.wait(), timeout=10)
+            return provider, True, True
+
+        sessions.get_or_create.side_effect = _held_get_or_create
+        return _manager(sessions), release
+
+    @staticmethod
+    async def _drain(manager: SubagentManager, infos) -> None:
+        for info in infos:
+            task = manager._tasks.get(info.id) if info is not None else None
+            if task is not None:
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_two_concurrent_continuations_start_one_run(self) -> None:
+        await self._conversation("evicted1")
+        manager, release = self._held_manager()
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(
+                    manager.continue_conversation_async("evicted1", "first follow-up"),
+                    manager.continue_conversation_async("evicted1", "second follow-up"),
+                ),
+                timeout=10,
+            )
+            started = [r for r in results if r is not None and not r.error]
+            refused = [r for r in results if r is not None and r.error]
+            assert len(started) == 1, f"started {len(started)} runs on one conversation"
+            assert len(refused) == 1 and refused[0].error.startswith("conversation_busy: ")
+            assert "is starting" in refused[0].error
+        finally:
+            release.set()
+            await self._drain(manager, results)
+
+    @pytest.mark.asyncio
+    async def test_one_continuation_starts_and_releases_the_claim(self) -> None:
+        await self._conversation("evicted2")
+        manager = _manager(_mock_sessions(resumed=True))
+        info = await manager.continue_conversation_async("evicted2", "follow up")
+        assert info is not None and not info.error, info and info.error
+        await self._drain(manager, [info])
+
+    @pytest.mark.asyncio
+    async def test_a_continuation_after_the_first_finishes_starts(self) -> None:
+        await self._conversation("evicted3")
+        manager = _manager(_mock_sessions(resumed=True))
+        first = await manager.continue_conversation_async("evicted3", "first")
+        assert first is not None and not first.error
+        await self._drain(manager, [first])
+        second = await manager.continue_conversation_async("evicted3", "second")
+        assert second is not None and not second.error, second and second.error
+        await self._drain(manager, [second])
+
+    @pytest.mark.parametrize("failure", [RuntimeError("store down"), asyncio.CancelledError()])
+    @pytest.mark.asyncio
+    async def test_a_start_that_raises_releases_the_claim(self, failure) -> None:
+        await self._conversation("evicted4")
+        manager = _manager(_mock_sessions(resumed=True))
+
+        async def raises(*_a, **_k):
+            raise failure
+
+        with (
+            patch.object(ContinuationCoordinator, "continue_conversation_async_impl", new=raises),
+            pytest.raises(type(failure)),
+        ):
+            await manager.continue_conversation_async("evicted4", "x")
+        # Not refused as "is starting": the failed start released its claim.
+        retry = await manager.continue_conversation_async("evicted4", "retry")
+        assert retry is not None and not retry.error, retry and retry.error
+        await self._drain(manager, [retry])
+
+    @pytest.mark.asyncio
+    async def test_the_claim_leaves_the_busy_lookup_unchanged(self) -> None:
+        # Release and the retention sweep read ``_conversation_busy``; the claim
+        # does not change what they see while a start is in flight.
+        manager = _manager()
+        gate = asyncio.Event()
+        entered = asyncio.Event()
+
+        async def slow_continue(*_a, **_k):
+            entered.set()
+            await asyncio.wait_for(gate.wait(), timeout=10)
+            return SubagentInfo(id="cont0002", task="t")
+
+        with patch.object(
+            ContinuationCoordinator, "continue_conversation_async_impl", new=slow_continue
+        ):
+            task = asyncio.ensure_future(manager.continue_conversation_async("evicted5", "x"))
+            # The start is in flight, past its claim: the lookup below is read during it.
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            assert manager._conversation_busy("subagent:evicted5") is None
+            gate.set()
+            await asyncio.wait_for(task, timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_a_registered_run_keeps_its_flag_claim(self) -> None:
+        # Control: a conversation whose opening run is registered is claimed by the
+        # run's own flag, as before; the id claim is not used for it.
+        manager = _manager()
+        original = SubagentInfo(id="registered1", task="t", done=True)
+        manager._agents["registered1"] = original
+        assert manager._claim_continuation("registered1", "x", "")[1] is None
+        second = manager._claim_continuation("registered1", "y", "")[1]
+        assert second is not None and "is starting" in str(second.error)
+        manager._settle_continuation(original, None)
+        assert manager._claim_continuation("registered1", "z", "")[1] is None
+
+
+class TestFollowUpOnAContinuationRun:
+    """A follow-up queued on a continuation run continues the ROOT conversation the run
+    executed on, so it shares that conversation's busy check and claim."""
+
+    ROOT = "rootconv"
+
+    @staticmethod
+    async def _until(predicate, timeout: float = 5.0) -> bool:  # type: ignore[no-untyped-def]
+        for _ in range(int(timeout / 0.01)):
+            if predicate():
+                return True
+            await asyncio.sleep(0.01)
+        return predicate()
+
+    async def _setup(self, monkeypatch):  # type: ignore[no-untyped-def]
+        for run_id in (self.ROOT, "cont1"):
+            await asyncio.to_thread(create_agent_folder, run_id, task="t", memory_mode="persistent")
+            await asyncio.to_thread(write_run_agent, run_id, "")
+        sessions = _mock_sessions(resumed=True)
+        release = asyncio.Event()
+        provider, _, _ = sessions.get_or_create.return_value
+
+        async def _held(*_a, **_kw):  # type: ignore[no-untyped-def]
+            await asyncio.wait_for(release.wait(), timeout=10)
+            return provider, True, True
+
+        sessions.get_or_create.side_effect = _held
+        manager = _manager(sessions)
+        monkeypatch.setattr(type(manager), "_FOLLOWUP_POLL_SECS", 0.01)
+        monkeypatch.setattr(type(manager), "_FOLLOWUP_BUSY_RETRIES", 2)
+        monkeypatch.setattr(type(manager), "_FOLLOWUP_BUSY_RETRY_SECS", 0.01)
+        cont1 = SubagentInfo(
+            id="cont1",
+            task="first follow-up",
+            parent_session_key="dashboard:chat-1",
+            conversation_key=f"subagent:{self.ROOT}",
+        )
+        manager._agents[cont1.id] = cont1
+        assert await manager.follow_up_run(cont1.id, "fix what you just did") == (True, "queued")
+        dispatches: list[tuple[str, str]] = []
+        original = manager.continue_conversation_async
+
+        async def _recording(conv_id, task, **kw):  # type: ignore[no-untyped-def]
+            child = await original(conv_id, task, **kw)
+            dispatches.append((conv_id, str(getattr(child, "error", "") or "")))
+            return child
+
+        monkeypatch.setattr(manager, "continue_conversation_async", _recording)
+        teardown = asyncio.get_running_loop().create_future()
+        manager._tasks[cont1.id] = teardown
+        cont1.done = True
+        return manager, release, cont1, dispatches, original, teardown
+
+    @staticmethod
+    async def _drain(manager: SubagentManager, release: asyncio.Event) -> None:
+        release.set()
+        for a in list(manager._agents.values()):
+            task = manager._tasks.get(a.id)
+            if task is not None:
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=10)
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_is_refused_busy_while_the_root_conversation_runs(
+        self, monkeypatch
+    ) -> None:
+        manager, release, cont1, dispatches, original, teardown = await self._setup(monkeypatch)
+        try:
+            # Told cont1 completed, the parent continues the root conversation.
+            second = await asyncio.wait_for(original(self.ROOT, "second follow-up"), timeout=10)
+            assert second is not None and not second.error, f"second continuation refused: {second}"
+            manager._tasks.pop(cont1.id, None)
+            teardown.set_result(None)
+            assert await self._until(lambda: bool(dispatches) and not cont1._followup_watcher)
+            assert dispatches[-1][0] == self.ROOT, dispatches
+            assert dispatches[-1][1].startswith("conversation_busy"), (
+                f"the follow-up was accepted while run {second.id} is in flight on the root "
+                f"conversation: {dispatches}"
+            )
+        finally:
+            await self._drain(manager, release)
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_on_an_idle_conversation_still_runs(self, monkeypatch) -> None:
+        manager, release, cont1, dispatches, _original, teardown = await self._setup(monkeypatch)
+        try:
+            manager._tasks.pop(cont1.id, None)
+            teardown.set_result(None)
+            assert await self._until(lambda: bool(dispatches) and not cont1._followup_watcher)
+            # Control: with nothing else in flight the follow-up is dispatched and starts.
+            assert dispatches[-1][1] == "", dispatches
+        finally:
+            await self._drain(manager, release)
+
+    @pytest.mark.asyncio
+    async def test_a_retry_of_a_failed_run_whose_follow_up_started_is_refused(
+        self, monkeypatch
+    ) -> None:
+        manager, release, cont1, dispatches, _original, teardown = await self._setup(monkeypatch)
+        try:
+            cont1.error = "timeout"
+            manager._tasks.pop(cont1.id, None)
+            teardown.set_result(None)
+            assert await self._until(lambda: bool(dispatches) and not cont1._followup_watcher)
+            assert dispatches[-1] == (self.ROOT, ""), dispatches
+            owner = manager.claim_retry(cont1)
+            assert owner, f"a dashboard retry of {cont1.id} was granted while its follow-up runs"
+        finally:
+            await self._drain(manager, release)
+
+    @pytest.mark.asyncio
+    async def test_a_follow_up_of_a_failed_run_already_retried_is_refused(
+        self, monkeypatch
+    ) -> None:
+        manager, release, cont1, dispatches, _original, teardown = await self._setup(monkeypatch)
+        try:
+            cont1.error = "timeout"
+            assert manager.claim_retry(cont1) == ""  # the dashboard retry comes first
+            manager.settle_retry(cont1, "retry1")
+            manager._tasks.pop(cont1.id, None)
+            teardown.set_result(None)
+            assert await self._until(lambda: not cont1._followup_watcher)
+            started = [conv for conv, err in dispatches if not err]
+            assert not started, f"the follow-up started although {cont1.id} was retried: {started}"
+        finally:
+            await self._drain(manager, release)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_during_the_busy_retry_sleep_leaves_the_run_retryable(
+        self, monkeypatch
+    ) -> None:
+        manager, release, cont1, dispatches, original, teardown = await self._setup(monkeypatch)
+        # One busy refusal, then a long sleep before the next attempt.
+        monkeypatch.setattr(type(manager), "_FOLLOWUP_BUSY_RETRY_SECS", 30.0)
+        try:
+            # A second continuation of the root stays in flight (its session start is
+            # held), so the follow-up's dispatch on the root is refused busy.
+            second = await asyncio.wait_for(original(self.ROOT, "second follow-up"), timeout=10)
+            assert second is not None and not second.error, second
+            cont1.error = "timeout"
+            manager._tasks.pop(cont1.id, None)
+            teardown.set_result(None)
+            assert await self._until(lambda: bool(dispatches)), "the follow-up never dispatched"
+            assert dispatches[-1][1].startswith("conversation_busy"), dispatches
+            # A parent teardown cancels the watcher in its retry sleep: no start is in flight.
+            watcher = manager._followup_watchers.get(cont1.id)
+            assert watcher is not None and not watcher.done(), "the watcher is not in its sleep"
+            watcher.cancel()
+            await asyncio.wait_for(asyncio.gather(watcher, return_exceptions=True), timeout=10)
+            assert not [conv for conv, err in dispatches if not err], dispatches
+            owner = manager.claim_retry(cont1)
+            try:
+                assert owner == "", (
+                    f"no follow-up started, yet a dashboard retry of {cont1.id} is refused as "
+                    f"already picked up by {owner!r}"
+                )
+            finally:
+                manager.settle_retry(cont1, None)
+        finally:
+            await self._drain(manager, release)
