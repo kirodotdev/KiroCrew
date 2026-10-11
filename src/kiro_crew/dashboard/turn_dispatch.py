@@ -303,8 +303,7 @@ def format_turn_timeout_card(
             f"⏱️ This turn hit the {limit} limit. The native agent did not "
             "acknowledge the stop request, so its previous tool may still be "
             "finishing. Do not resume this session until it becomes idle. Work "
-            "already written to disk is still there — nothing was rolled back."
-            + _RAISE_LIMIT_HINT
+            "already written to disk is still there — nothing was rolled back." + _RAISE_LIMIT_HINT
         )
     return (
         f"⏱️ This turn hit the {limit} limit and was stopped. Work already "

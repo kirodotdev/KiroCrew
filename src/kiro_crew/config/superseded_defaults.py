@@ -935,6 +935,38 @@ def drop_acks(dotted_keys: list[str]) -> None:
     _update_acked(lambda existing: {k: v for k, v in existing.items() if k not in drop})
 
 
+def ack_explicit_write(dotted_key: str, value: object) -> bool:
+    """Acknowledge *value* when an operator explicitly writes an auto-adopting old default.
+
+    A Settings save is the operator's answer, exactly as ``--keep`` is. Without the
+    ack, saving the round value an ``auto_adopt`` row names as its ``old_default``
+    (a two-hour turn limit, say) reads on the next load as a materialized default,
+    and the one-shot adoption deletes it -- silently replacing a choice made seconds
+    earlier. Recording the value as acknowledged takes it out of drift, which is
+    the filter :func:`auto_adoptable` applies first.
+
+    Only ``auto_adopt`` rows are acked. A report-only row loses nothing on load, so
+    its report keeps working the way it always has.
+
+    The caller must hold the config write lock and call this BEFORE the config
+    write, the same config-then-ack order :func:`record_acks` uses. A failure
+    propagates (``OSError``, including :class:`AckPathRefused`) so the caller
+    abandons the write: a value saved without its ack is the one the next load
+    would delete. If the ack lands and the config write then fails, the ack only
+    holds back adoption of that exact value, which is what the operator asked for.
+
+    Returns True when an ack was recorded.
+    """
+    for entry in SUPERSEDED_DEFAULTS:
+        if entry.dotted_key != dotted_key or not entry.auto_adopt:
+            continue
+        if type(value) is not type(entry.old_default) or value != entry.old_default:
+            return False
+        _update_acked(lambda existing: {**existing, dotted_key: value})
+        return True
+    return False
+
+
 def _stored_value(base_data: dict, dotted_key: str) -> object:
     """Return what *base_data* stores at *dotted_key*, or ``_ABSENT``."""
     section, field = _split_dotted(dotted_key)

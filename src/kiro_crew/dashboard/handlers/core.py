@@ -76,6 +76,7 @@ from kiro_crew.config.sections import (
     TITLE_REFRESH_EVERY_TURNS_MAX,
     transcribe_vocabulary_name,
 )
+from kiro_crew.config.superseded_defaults import ack_explicit_write
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.chat_utils import drained_to_thread, run_config_write
 from kiro_crew.dashboard.handlers._shared import (
@@ -3424,6 +3425,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                     raise ValueError(f"config section '{part}' is not an object")
                 section = nxt
             section[parts[-1]] = value
+            # Saving the old default of an auto-adopting superseded-default row
+            # (a 7200 turn limit) is an explicit choice. Ack it here, under the
+            # config lock and before the write, so the reload this write triggers
+            # does not adopt it away. A failed ack raises OSError and aborts the
+            # write, rather than saving a value the next load would delete.
+            ack_explicit_write(path_key, value)
             return data
 
         try:
