@@ -1774,6 +1774,58 @@ class TestOrphanReconciliation:
         assert "ghp_" not in secret, "a PAT cut by the cap must not ship as an unredacted prefix"
 
     @pytest.mark.asyncio
+    async def test_a_cut_off_orphan_with_a_surviving_conversation_says_how_to_resume(
+        self, agent_root, tmp_path, monkeypatch
+    ):
+        """A run cut off mid-turn is resumable exactly like one that streamed nothing.
+
+        ``result.txt`` is appended per streamed chunk, so a long run the restart
+        catches has usually written an opening fragment and gets the ``⚠️ cut off
+        mid-turn`` notice, not the ``❌ lost`` one. Its conversation survives the
+        restart all the same, so the notice must carry the same resume handle;
+        without it the parent re-spawns the longest runs -- the ones with the most
+        work to lose -- from scratch. A run that recorded a whole
+        answer is finished, so it is never offered a resume.
+        """
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        from kiro_crew.subagent import SubagentManager
+
+        sessions_dir = tmp_path / "kiro-sessions"
+        sessions_dir.mkdir()
+        monkeypatch.setattr("kiro_crew.session_map._KIRO_SESSIONS_DIR", sessions_dir)
+        (sessions_dir / "sid-orphan1c.json").write_text("{}", encoding="utf-8")
+        (sessions_dir / "sid-orphan1c.jsonl").write_text(
+            '{"turn": 1, "text": "hello"}\n', encoding="utf-8"
+        )
+        manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+        create_agent_folder("orphan1c", task="long task", parent_session="dashboard:default")
+        state = {
+            "id": "orphan1c",
+            "task": "long task",
+            "parent_session": "",
+            "session_id": "sid-orphan1c",
+            "turns": 9,
+            "last_tool": "shell",
+        }
+
+        with patch.object(
+            manager, "_try_inject_orphan_notification", AsyncMock(return_value=False)
+        ):
+            cut_off = await manager._notify_orphan("orphan1c", state, True)
+            whole = await manager._notify_orphan(
+                "orphan1c", {**state, "result_complete": True}, True
+            )
+
+        assert cut_off is not None and whole is not None
+        assert "cut off mid-turn by gateway restart" in cut_off
+        assert "unfinished fragment" in cut_off
+        assert "9 turn" in cut_off
+        assert 'spawn_continue(conversation="orphan1c"' in cut_off
+        assert "finished before gateway restart" in whole
+        assert "spawn_continue" not in whole, "a finished run must not be offered a resume"
+
+    @pytest.mark.asyncio
     async def test_dead_pid_no_result_tombstoned_as_notified(self, agent_root):
         from unittest.mock import MagicMock, patch
 

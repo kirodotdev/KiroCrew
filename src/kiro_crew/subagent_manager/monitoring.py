@@ -638,10 +638,14 @@ class OrphanStallMonitor(ManagerComponent):
         else:
             glyph, note, outcome = "❌", "lost to gateway restart", OUTCOME_FAILED
             lines = ["No result was captured before the restart."]
-            # No result is not no work: when the run's conversation is still on
-            # disk the parent is told how far it got and how to resume it. The
-            # probe stats session files under KIRO_HOME, which can be network-
-            # backed, so it runs off the loop like this module's other file reads.
+        if not result_is_whole(state):
+            # An unfinished run is not no work, whether or not it streamed any
+            # text first: a long run cut off mid-turn has usually streamed some,
+            # and its conversation is exactly as resumable as one that streamed
+            # none. When it is still on disk the parent is told how far the run
+            # got and how to resume it. The probe stats session files under
+            # KIRO_HOME, which can be network-backed, so it runs off the loop
+            # like this module's other file reads.
             resume = await asyncio.get_running_loop().run_in_executor(
                 maintenance_executor(), orphan_resume_hint, agent_id, state
             )
