@@ -91,6 +91,13 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .publish_program_word import (
+    _GIT_ARG_FLAGS,
+    _commands_without_runtime_publish,
+    _runs_runtime_program_publish,
+    _runtime_publishes,
+    _without_judged_program_words,
+)
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
@@ -3452,7 +3459,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
 def _is_git_publish(text_lower: str) -> bool:
     """Return True if *text_lower* invokes ``git push`` (verb-anchored).
 
-    Uses a two-pass approach:
+    Uses three passes:
 
     1. **Fast first-pass (regex):** ``_GIT_PUBLISH_RE`` and
        ``_GIT_PUBLISH_GLUE_RE`` catch normal ``git push`` invocations and
@@ -3462,6 +3469,10 @@ def _is_git_publish(text_lower: str) -> bool:
     2. **Normalizer second-pass:** ``normalize_shell_command`` strips quotes
        and empty-string concatenation so evasions like ``"git" push``,
        ``g""it push``, or ``'g'it push`` are resolved to their true tokens.
+    3. **Program-position pass:** ``_runs_runtime_program_publish`` finds a
+       ``push`` run under a program word the shell resolves at run time
+       (``"$G"``, ``g?t``, a substitution) in any program position of the
+       line, compound constructs and precommands included.
 
     Does NOT match ``git stash push``, ``git commit -m '...push...'``,
     ``git log --grep push``, etc.
@@ -3478,12 +3489,12 @@ def _is_git_publish(text_lower: str) -> bool:
 
     # Pass 2: normalizer-based detection (catches quote evasions like
     # "git" push, g""it push, 'g'it push)
-    return _is_git_push_via_normalizer(text_lower)
+    if _is_git_push_via_normalizer(text_lower):
+        return True
 
-
-# Git global flags that consume a separate argument token (appear between
-# `git` and the subcommand).
-_GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
+    # Pass 3: a program word the shell resolves at run time, in program position
+    # anywhere on the line (``"$G" push``, ``if x; then g?t push; fi``).
+    return _runs_runtime_program_publish(text_lower)
 
 
 def _is_git_push_via_normalizer(text_lower: str) -> bool:
@@ -4362,10 +4373,41 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         # unverifiable (the shell fuses it into the verb or the target word).
         # This is also what covers brace expansion, which is why
         # ``git-publish-push-brace-expansion-refspec`` stays floor-enforced.
-        if _AMBIGUOUS_EXPANSION_RE.search(command):
+        # A runtime program word whose argv is known is judged below instead.
+        # Every push this segment runs under a program word the shell resolves
+        # at run time is judged on its own, so a literal publish elsewhere in
+        # the segment cannot answer for it. One whose argv after ``push`` is
+        # known is read with the same argument grammar as a literal git push;
+        # any other is unverifiable. A walk that cannot answer fails closed.
+        try:
+            runtime = _runtime_publishes(command)
+        except Exception:
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
+        if _AMBIGUOUS_EXPANSION_RE.search(_without_judged_program_words(command, runtime)):
+            tags.add(_GIT_PUBLISH_UNGATED)
+            continue
+        for publish in runtime:
+            known = None
+            if publish.args is not None:
+                known = _git_push_args("git push " + " ".join(publish.args))
+            if known is None:
+                tags.add(_GIT_PUBLISH_UNGATED)
+            else:
+                tags |= _push_segment_targets_protected(known)
         args = _git_push_args(command)
+        # The segment needs no parse of its own only when every publish in it
+        # was judged above; a literal publish beside a runtime one still falls
+        # to the fail-closed reading below.
+        if args is None and runtime:
+            try:
+                unclaimed = any(
+                    _is_git_publish(piece) for piece in _commands_without_runtime_publish(command)
+                )
+            except Exception:
+                unclaimed = True
+            if not unclaimed:
+                continue
         if args is None:
             # Detected as a push but not cleanly parseable. That normally means
             # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
