@@ -34,7 +34,7 @@ describe('configuredAcpBackend', () => {
   })
 
   it('is false for every other harness, not just claude', () => {
-    for (const backend of ['claude', 'kas', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'some-future-harness']) {
+    for (const backend of ['claude', 'kas', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'qoder', 'some-future-harness']) {
       expect(isKiroBackend({ agent: { acp_backend: backend } }), backend).toBe(false)
     }
   })

@@ -12,9 +12,9 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``,
 ``_between_turn_credits``, ``_cancelled``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
 ``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``,
-``_permission_options``, ``_prompt_or_tool_seen``, ``_sent_images_req``,
-``_sent_images_staged``, ``_skill_reads``, ``_stale_eligible``, ``_steers_awaiting_echo``,
-``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
+``_permission_options``, ``_prompt_or_tool_seen``, ``_qoder_live_prompt_seen``,
+``_sent_images_req``, ``_sent_images_staged``, ``_skill_reads``, ``_stale_eligible``,
+``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
 ``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_params``,
 ``_tool_call_tool_name``, ``_tool_call_unclassified``, ``_tool_dispatched``, ``_turn_done``,
@@ -900,6 +900,8 @@ async def send_message_stream(
                 if (_pi_failure := pi_steer_turn.model_error(self, msg)) is not None:
                     _pi_model_error = _pi_failure
                     continue
+                await self._tripwire_qoder_mode(msg)
+                await self._tripwire_qoder_unasked(msg)
                 chunk, is_thinking, _ = harness_notices.text_chunk(self, msg)
                 if chunk and not is_thinking:
                     # A claude compaction notice is a control frame wearing
@@ -1391,6 +1393,8 @@ async def _dispatch_events(
             # (content blocks vs rawOutput) details.
             await self._tripwire_pi_gate(msg)
             await self._tripwire_permission_state(msg)
+            await self._tripwire_qoder_mode(msg)
+            await self._tripwire_qoder_unasked(msg)
             tool_result_event = self._extract_tool_call_update(msg)
             if tool_result_event:
                 if tool_result_event.tool_status in TERMINAL_TOOL_STATUSES:
@@ -1721,6 +1725,10 @@ async def _send_prompt(
 
         # Asked under the write lock, right before the frame goes out.
         req_id = await self._send_request(METHOD_PROMPT, params, before_write=_gate_under_lock)
+    if self._is_qoder:
+        # The request is now on the wire. Everything Qoder emits after this
+        # belongs to a Crew-driven turn; everything before it may be replay.
+        self._qoder_live_prompt_seen = True
     self._sent_images_req = req_id
     self._sent_images_staged = staged
     return req_id
@@ -1830,6 +1838,8 @@ async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) ->
                 await self._maybe_fire_pre_tool_hooks(tool_event)
             await self._tripwire_pi_gate(msg)
             await self._tripwire_permission_state(msg)
+            await self._tripwire_qoder_mode(msg)
+            await self._tripwire_qoder_unasked(msg)
             tool_result_event = self._extract_tool_call_update(msg)
             if tool_result_event:
                 self._skill_reads.credit(tool_result_event)

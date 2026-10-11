@@ -30,6 +30,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKEND_STRANDS,
 )
 
@@ -262,6 +263,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_STRANDS,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -394,6 +396,11 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         # ``test/fixtures/acp_frames/strands/session-load-live.jsonl``.
         ACP_BACKEND_STRANDS,
         ACP_BACKEND_ANTIGRAVITY,
+        # qoder is a member on a live 1.1.67 round trip: after two real turns,
+        # session/close followed by session/load replayed two user/agent exchanges and the
+        # next prompt continued the conversation. This is ownership/restore, not eviction:
+        # no measurement shows the loaded session was freed from a process map.
+        ACP_BACKEND_QODER,
     }
 )
 

@@ -60,6 +60,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_KNOWN,
@@ -275,7 +276,10 @@ class TestEveryKnownBackendIsClassified:
     #:
     #: ``antigravity``: Antigravity 1.4.4 has no verified manual-compaction command
     #: or status frame; declining is safer than claiming Crew can compact it.
-    UNCLASSIFIED: frozenset = frozenset({"strands", ACP_BACKEND_ANTIGRAVITY})
+    #:
+    #: * ``qoder`` -- selectable, but no session has been driven far enough to say who
+    #:   bounds its context, so it declines and logs, which is the safe answer.
+    UNCLASSIFIED: frozenset = frozenset({"strands", ACP_BACKEND_ANTIGRAVITY, ACP_BACKEND_QODER})
 
     def test_every_known_backend_is_classified_or_listed(self) -> None:
         classified = (

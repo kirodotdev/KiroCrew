@@ -930,9 +930,11 @@ class TestKasMcpServedIdentity:
             False,
             False,
             True,
+            False,
         ]
         assert [c.requires_server for c in _MCP_IDENTITY_META_CHANNELS] == [
             True,
+            False,
             False,
             False,
             False,

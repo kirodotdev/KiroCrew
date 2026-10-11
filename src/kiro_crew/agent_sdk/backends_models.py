@@ -31,6 +31,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKEND_STRANDS,
 )
 
@@ -73,6 +74,12 @@ logger = logging.getLogger("kiro_crew.agent_sdk.backends")
 # unknown option id answers "Unknown config option", so a session on a plan with
 # only ``auto`` -- whose ``session/new`` advertises no ``model`` select, as every
 # 1.0.100 capture beside it shows -- keeps its default when a pin is inherited.
+#
+# ``ACP_BACKEND_QODER`` is a member on a live round trip: qodercli 1.1.67 accepted
+# ``session/set_config_option("model", "qfmodel")``, ``qfmodel`` was listed by
+# ``session/new``, and the effective model followed. Its advertised `models` object
+# already supplies the same vocabulary directly, so the separate capture/fold set
+# stays out until its cross-session cache contract is measured.
 ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -84,6 +91,7 @@ ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -208,7 +216,11 @@ def effort_refused_by_model(backend: str, exc: BaseException) -> bool:
 # starting model a write answers ``-32603`` "This model does not support
 # reasoning_effort configuration" (``effort_refused_by_model``), and after a model
 # switch a write of ``high`` reads back as ``high``. A session on a plan with only
-# ``auto`` advertises no such select (the 1.0.100 captures), so it writes nothing.
+# ``auto`` advertises no such select (the 1.0.00 captures), so it writes nothing.
+#
+# qoder IS a member on a live 1.1.67 write: ``reasoning_effort=low`` was accepted
+# and the response reflected ``xhigh -> low``. The effect on model behaviour is NOT
+# measured; this membership asserts only the write/reflection channel.
 ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -220,6 +232,7 @@ ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION = frozenset(
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -273,6 +286,7 @@ EFFORT_CONFIG_OPTION_IDS: Mapping[str, str] = {
     ACP_BACKEND_KAS: "effortLevel",
     ACP_BACKEND_PI: "thought_level",
     ACP_BACKEND_ANTIGRAVITY: "thinking_level",
+    ACP_BACKEND_QODER: "reasoning_effort",
 }
 
 #: The spelling used by every backend without a row in
@@ -339,6 +353,11 @@ DEFAULT_EFFORT_CONFIG_OPTION_ID = "effort"
 #
 # mimocode is NOT a member: membership presumes the effort channel above, which it is
 # outside. Its levels are model ids, so no advertised effort option exists to read.
+#
+# qoder is a member on the same session-owned basis: its ``qfmodel`` id is foreign
+# to the static registry and the per-session ``reasoning_effort`` select advertises
+# xhigh/low/medium/none. The live low write was accepted and reflected; model
+# behaviour was not measured.
 ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
     {
         ACP_BACKEND_ANTIGRAVITY,
@@ -346,6 +365,7 @@ ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -552,6 +572,12 @@ def effort_config_option_clear_value(backend: str) -> str | None:
 # namespace -- ``auto`` alone until a session advertises more, which a session on a
 # plan with model choice does: on Copilot CLI 1.0.107 ``session/new`` carries a
 # ``models`` block and a ``model`` select (``copilot/model-effort.jsonl``).
+# qoder joins for BOTH halves on captured evidence: ``session/new`` carries its own
+# ``models.availableModels`` (the historical capture shows two service-owned picker
+# ids; the current 1.1.67 account shows one after selection), its model select is
+# Crew's write channel, and selecting an advertised id collapsed the option list to
+# that id. Thus the advertised list is the picker vocabulary, not a nice-to-have;
+# its exact ids are already wire-ready, so the fold is a no-op.
 ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
     {
         ACP_BACKEND_CLAUDE,
@@ -563,6 +589,7 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
         ACP_BACKEND_COPILOT,
         ACP_BACKEND_MIMOCODE,
         ACP_BACKEND_ANTIGRAVITY,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -578,6 +605,21 @@ ACP_BACKENDS_ADVERTISED_MODEL_SELECTION = frozenset(
 # pair list as the picker vocabulary makes a model switch silently do nothing.
 # The select is therefore the authority for this host.
 ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL = frozenset({ACP_BACKEND_ANTIGRAVITY})
+
+#: Backends whose non-empty advertised list is FAIL-CLOSED selection vocabulary:
+#: an id absent from that list is refused before it can reach the harness. Qoder's
+#: model select carries only service-owned ids, and Crew registry names such as
+#: ``opus-*``/``fable-*`` are not Qoder ids. Unlike the capture set above, this is
+#: a validation decision, so it is its own opt-in rather than inherited by every
+#: capture member.
+# ``test/fixtures/acp_frames/qoder/v167-catalog-live.jsonl``.
+ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE = frozenset({ACP_BACKEND_QODER})
+
+#: Backends whose advertised effort levels arrive out of ladder order and are
+#: published least to most effort by ``effort.order_effort_levels``. Qoder advertises
+#: xhigh, low, medium, none. Every other harness keeps the order it advertises.
+# ``test/fixtures/acp_frames/qoder/v167-catalog-live.jsonl``.
+ACP_BACKENDS_EFFORT_LADDER_ORDERED = frozenset({ACP_BACKEND_QODER})
 
 # Backends that seed a per-session settings file — claude-agent-acp's
 # ``settings.local.json`` — to lock the model + permission surface. The file is
@@ -741,6 +783,10 @@ _MODEL_REGISTRY_NAMESPACE_BY_BACKEND: dict = {
     # Bedrock ids) the Strands CLI resolves, a vocabulary no other harness serves.
     ACP_BACKEND_STRANDS: "strands",
     ACP_BACKEND_ANTIGRAVITY: "antigravity",
+    # qoder likewise: its ids are Qoder service ids (qmodel_38max, qfmodel), not
+    # kiro/Crew registry vocabulary. A separate bucket prevents one harness's
+    # advertised cache from replacing another's picker.
+    ACP_BACKEND_QODER: "qoder",
 }
 
 

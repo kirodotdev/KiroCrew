@@ -192,6 +192,7 @@ _FACADE_DEFS = (
     "_fetch_kiro_catalog",
     "_shared_catalog_fetch",
     "_consume_refresh_exception",
+    "_maybe_refresh_qoder_catalog",
     "api_models",
     "api_slash_commands",
     "api_kirocrew_agents",

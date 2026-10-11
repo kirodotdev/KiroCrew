@@ -17,7 +17,8 @@ import { i18nT } from '../i18n/t'
  * only the shapes are pinned.
  */
 export type ModelItem =
-  Pick<ModelInfo, 'name'> & Partial<Pick<ModelInfo, 'displayName' | 'description' | 'rateMultiplier'>>
+  Pick<ModelInfo, 'name'> &
+    Partial<Pick<ModelInfo, 'displayName' | 'label' | 'description' | 'rateMultiplier'>>
 
 /** The multiplier Auto is pinned at, and the baseline the badges are relative to. */
 const BASELINE = 1
@@ -152,7 +153,8 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
     <div className="overflow-y-auto flex flex-col gap-0.5">
       {models.map(m => {
         const active = activeModel === m.name
-        const named = !!m.displayName && m.displayName !== m.name
+        const displayName = m.displayName || m.label
+        const named = !!displayName && displayName !== m.name
         const mult = m.rateMultiplier
         return (
           <button key={m.name} ref={active ? activeRef : undefined} role="option" aria-selected={active} tabIndex={-1} className={`w-full text-left px-2.5 py-2 flex flex-col gap-0.5 rounded-md cursor-pointer transition-all border-none bg-transparent ${active ? 'bg-accent-subtle' : 'hover:bg-bg-hover'}`} onClick={() => onSelect(m.name)}>
@@ -172,7 +174,7 @@ export default function ModelDropdownList({ models, activeModel, onSelect, loadi
                   label bound (ADVERTISED_LABEL_MAX_CHARS) must not grow a row
                   past that. */}
               <span className="flex min-w-0 flex-1 flex-wrap items-baseline gap-x-2">
-                <span data-model-name data-model-id={m.name} className={`min-w-0 text-[13px] ${named ? 'break-words' : 'font-mono break-all'} line-clamp-2 font-semibold ${active ? 'text-accent' : 'text-text'}`}>{named ? m.displayName : rowLabel(m.name)}</span>
+                <span data-model-name data-model-id={m.name} className={`min-w-0 text-[13px] ${named ? 'break-words' : 'font-mono break-all'} line-clamp-2 font-semibold ${active ? 'text-accent' : 'text-text'}`}>{named ? displayName : rowLabel(m.name)}</span>
                 {named && <span data-model-id-hint className="min-w-0 text-[11px] font-mono text-muted break-all">{m.name}</span>}
                 {active && <span className="text-accent text-[12px]"><Check className="lucide-inline" /></span>}
               </span>

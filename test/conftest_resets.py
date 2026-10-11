@@ -1130,6 +1130,9 @@ def _isolate_advertised_model_cache(_floor_monkeypatch):
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS", {})
     _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_META", {})
     _floor_monkeypatch.setattr(model_registry, "_PENDING_ADVERTISED_SHRINK", {}, raising=False)
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODEL_ROWS", {})
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+    _floor_monkeypatch.setattr(model_registry, "_ADVERTISED_MODELS_OBSERVED_AT", {})
 
 
 @per_test_guard

@@ -14,4 +14,4 @@
 # each one is an exemption a reviewer has to agree with:
 #   python3 scripts/docs_lint.py --accept-new
 #
-# Format: <check-id>\t<path>\t<token>
+# Format: <check-id>	<path>	<token>

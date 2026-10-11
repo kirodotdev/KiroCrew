@@ -621,6 +621,9 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # The MiMo Code hosted fall-back refusal's model id, scrubbed the same way.
         "acp/client_mimocode_session.py",
         "acp/client_permissions.py",
+        # Qoder's unadvertised-model refusal and withheld-pin warning, scrubbed the
+        # same way as client_model_selection.py before they are logged or raised.
+        "acp/client_qoder.py",
         "acp/client_start.py",
         "acp/client_tool_events.py",
         "acp/client_transport.py",

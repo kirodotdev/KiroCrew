@@ -1629,6 +1629,7 @@ class TestEveryBackendIdLogSiteIsSanitized:
             "auto-approve identity gate rejected req=%s: %s",
             "approve_tool: mimocode mcp control refused req=%s",
             "approve_tool: req=%s offers no allow of the kind asked for; refusing",
+            "qoder gate: refusing allow_always for req=%s; the session must ask ",
         ],
         "src/kiro_crew/acp/client_claude.py": [],
         "src/kiro_crew/acp/client_claude_seed.py": [],

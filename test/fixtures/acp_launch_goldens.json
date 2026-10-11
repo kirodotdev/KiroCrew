@@ -230,6 +230,28 @@
     "spawn_label": "pi-acp via /opt/lib/pi-acp/index.js",
     "stderr_label": "pi-acp via /opt/lib/pi-acp/index.js"
   },
+  "qoder": {
+    "argv": [
+      "/opt/bin/qodercli",
+      "--acp",
+      "--settings",
+      "{\"permissions\":{\"ask\":[\"*\"],\"defaultMode\":\"default\"},\"disableAllHooks\":true}",
+      "--permission-mode",
+      "default",
+      "--strict-mcp-config"
+    ],
+    "env_added": {
+      "KIROCREW_RUNTIME_PYTHON": "<interpreter>",
+      "KIROCREW_SESSION_KEY": "golden-session",
+      "KIROCREW_SPAWNED": "1",
+      "KIROCREW_SPAWN_HOME": "<data-home>",
+      "KIROCREW_SPAWN_INSTANCE": "<spawn-instance>",
+      "KIROCREW_STUB_SESSION_TOKEN": "<session-token>",
+      "PATH": "<augmented-path>"
+    },
+    "spawn_label": "qodercli --acp",
+    "stderr_label": "qodercli"
+  },
   "strands": {
     "argv": [
       "/opt/bin/strands",

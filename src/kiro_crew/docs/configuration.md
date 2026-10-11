@@ -200,6 +200,7 @@ provider.
 | `deepseek` | DeepSeek Harness | Runs `dsh --profile acp` with Kiro Crew's gate plugin; provider keys come from `agent.deepseek_env`. |
 | `copilot` | GitHub Copilot CLI | Runs `copilot --acp --stdio`; signs in with its own login. A project carrying Copilot CLI's own hooks, settings or MCP config is refused. |
 | `antigravity` | Google Antigravity | Runs the standalone ACP Registry runtime (`agy_acp_server` plus `localharness_external`). Signs in with its own Google/API-key configuration and runs in `default` permission mode; `auto_edit` and `yolo` are refused. Kiro Crew verifies Antigravity ACP 1.4.4 only and refuses other versions, including the newer release the ACP Registry serves; install the 1.4.4 archive the backend card names. |
+| `qoder` | Qoder CLI | Runs `qodercli --acp`; set `QODERCLI_BIN` to override the binary (install: `npm i -g @qoder-ai/qodercli@1.1.83`). Sign in with `qodercli login`; Kiro Crew does not check the sign-in. Tool approval is pinned to an inline `ask` rule for every tool, so each call reaches Kiro Crew's gate. Only qodercli 1.1.67 and 1.1.83 are accepted. Models are the ones Qoder advertises. |
 
 Codex runs with the credential stores Kiro Crew's agent may never read hidden
 on purpose, apart from Codex's own sign-in file. They include `~/.aws`,

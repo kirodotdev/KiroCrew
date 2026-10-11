@@ -1950,7 +1950,7 @@ function ChatInput({
           </div>
           <div className="flex items-center gap-2 min-w-0">
           {presence}
-          {contextPct != null && (
+          {contextPct != null && contextWindowTokens !== 0 && (
             <ContextUsageControl contextPct={contextPct} contextUnknown={contextUnknown} contextUsedTokens={contextUsedTokens} contextWindowTokens={contextWindowTokens} derivePctFromUsed={derivePctFromUsed} showContextPct={showContextPct} showContextTokens={showContextTokens} shelfCompact={shelfCompact} modelName={modelName} cacheSlot={sessionOnPeer ? null : activeSlot} ctxPopoverOpen={ctxPopoverOpen} setCtxPopoverOpen={setCtxPopoverOpen} autoCompactThreshold={autoCompactThreshold} />
           )}
           {onModelClick && modelName && (

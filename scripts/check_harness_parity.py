@@ -455,6 +455,10 @@ X_FEATURE_SETS: dict[str, frozenset[str] | None] = {
     # The set above under the name of what it means; the same three captures.
     "ACP_BACKENDS_COMPACTION_REPORTED": frozenset({"codex", "kas", "kiro"}),
     "ACP_BACKENDS_APPROVE_FOR_ME": None,
+    # qodercli 1.1.67 / 1.1.83: ``test/fixtures/acp_frames/qoder/v167-catalog-live.jsonl``.
+    "ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE": frozenset({"qoder"}),
+    # qodercli 1.1.67 / 1.1.83: effort options on the catalog capture above.
+    "ACP_BACKENDS_EFFORT_LADDER_ORDERED": frozenset({"qoder"}),
 }
 
 # Coverage is opt-out: every ``ACP_BACKENDS_*`` set is in X_FEATURE_SETS, here, or

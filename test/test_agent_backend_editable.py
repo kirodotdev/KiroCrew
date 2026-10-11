@@ -21,6 +21,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKEND_STRANDS,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
@@ -35,6 +36,10 @@ FIELD = "agent.acp_backend"
 #: exclusion rather than a defect, and it earns its place by naming what the id fails.
 #: Empty: an id whose tool calls bypass the PreToolUse gate stays out until its
 #: routing is verified (e.g. ``Routing.VERIFIED_GATE_EXTENSION``).
+#: Known ids the public baseline deliberately does not offer.  Qoder left this set
+#: when its inline ask rule was pinned on argv and the release, mode and unasked-call
+#: witnesses were added; the set is empty, and a future exclusion must name what the
+#: id fails rather than relying on a baseline/known inequality.
 NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
 
 
@@ -167,6 +172,7 @@ def test_baseline_ships_every_known_backend():
             ACP_BACKEND_COPILOT,
             ACP_BACKEND_STRANDS,
             ACP_BACKEND_MIMOCODE,
+            ACP_BACKEND_QODER,
         ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

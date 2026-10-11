@@ -21,6 +21,7 @@ from kiro_crew.acp.provider_labels import (  # noqa: F401 - re-exported for exis
     PROVIDER_LABEL_MIMOCODE,
     PROVIDER_LABEL_OPENCODE,
     PROVIDER_LABEL_PI,
+    PROVIDER_LABEL_QODER,
     PROVIDER_LABEL_STRANDS,
 )
 
@@ -51,8 +52,10 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKEND_MIMOCODE,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKEND_STRANDS,
     ACP_BACKENDS_ACP_RUNTIME,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CLIENT_META_SETTINGS,
     ACP_BACKENDS_CLIENT_NEW_CONVERSATION,
@@ -61,6 +64,7 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_CONFIG_MODEL_SELECT_IS_CANONICAL,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_LADDER_ORDERED,
     ACP_BACKENDS_EFFORT_OVERLAY,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_FORK_AT_MESSAGE,
@@ -114,6 +118,10 @@ from kiro_crew.acp_backends import (  # noqa: F401 - re-exported for existing im
     ACP_BACKENDS_UNATTRIBUTED_TERMINAL_ERROR,
     ACP_BACKENDS_UNMARKED_COMPACTION_PAIR,
     ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY,
+    QODER_ALLOW_ALWAYS_OPTION_ID,
+    QODER_MEASURED_VERSIONS,
+    QODER_REQUIRED_MODE,
+    QODER_SUPPORTED_VERSION,
     effort_config_option_clear_value,
     effort_config_option_id,
     effort_config_option_value,
@@ -202,6 +210,7 @@ EVENT_HARNESS_NOTICE = "harness_notice"
 # ── ACP Protocol Methods ──
 
 METHOD_INITIALIZE = "initialize"
+METHOD_AUTHENTICATE = "authenticate"
 METHOD_SESSION_NEW = "session/new"
 METHOD_SET_MODEL = "session/set_model"
 METHOD_SET_MODE = "session/set_mode"
