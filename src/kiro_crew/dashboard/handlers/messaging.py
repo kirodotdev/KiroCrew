@@ -134,6 +134,7 @@ from kiro_crew.dashboard.messaging_api.notifications import (  # noqa: F401
     api_notifications_clear,
 )
 from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
+    _SLACK_ERRORS_WITH_UNKNOWN_OUTCOME,
     _audit_send_message,
     _deliver_send_message_fallback,
     _post_send_message_to_slack,
@@ -146,6 +147,8 @@ from kiro_crew.dashboard.messaging_api.proactive_send import (  # noqa: F401
     _SendMessageBody,
     _SendMessageOutcome,
     _session_link_blocks,
+    _slack_rate_limited,
+    _slack_rejected_outright,
     api_delete_message,
     api_update_message,
 )

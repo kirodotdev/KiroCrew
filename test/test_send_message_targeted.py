@@ -1504,6 +1504,29 @@ class TestChannelTypeFailsClosed:
                 assert data["code"] == "channel_delivery_failed"
 
     @pytest.mark.asyncio
+    async def test_an_unconfirmed_send_is_not_reported_as_not_posted(self, mock_sel):
+        """A send whose answer was lost may still be in the conversation, so the
+        caller is told it was not confirmed: a caller told "not posted" sends the
+        message again, and the conversation then holds it twice."""
+        transport = _channel_transport(send_result="")
+        state = _channel_state(transport=transport)
+        app = _make_app(state)
+
+        with _governance(True):
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/send-message",
+                    json={"text": "landed", "channel_type": "telegram"},
+                    headers={"X-Session-Key": _TG_KEY},
+                )
+                assert resp.status == 502
+                data = await resp.json()
+                assert data["code"] == "channel_delivery_failed"
+                assert "was not confirmed" in data["error"]
+                assert "not posted" not in data["error"]
+                transport.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_body_cannot_name_the_conversation(self, mock_sel):
         """A non-cron caller is identified by the kernel-attested X-Session-Key
         header, never by a body field. A body naming another session's key would

@@ -469,6 +469,10 @@ class _SendMessageOutcome:
     slack_ts: str | None = None
     slack_attempted: bool = False
     slack_error: str = ""
+    # How a failed Slack send ended: "" (nothing was posted), "rate_limited" (a
+    # 429; nothing was posted), or "unconfirmed" (an unknown outcome: the message
+    # may be in the conversation).
+    slack_failure: str = ""
     sent_channel: bool = False
     channel_code: str = ""
     channel_detail: str = ""
@@ -854,6 +858,42 @@ async def _deliver_send_message_fallback(
         )
 
 
+# Slack documents both of these as "It's possible some aspect of the operation
+# succeeded before the error was raised": an ``ok: false`` answer that is not a
+# refusal.
+_SLACK_ERRORS_WITH_UNKNOWN_OUTCOME = frozenset({"internal_error", "fatal_error"})
+
+
+def _slack_rejected_outright(exc: BaseException) -> bool:
+    """Whether Slack answered and refused the request, so nothing was posted.
+
+    Only an HTTP 200 answer whose JSON body says ``ok: false`` is a refusal.
+    slack_sdk raises the same ``SlackApiError`` for a 5xx, a gateway page, a
+    body that is not JSON, and an ``internal_error`` or ``fatal_error`` answer;
+    after any of those the post may have landed, so a second post can deliver
+    the message twice.
+    """
+    from slack_sdk.errors import SlackApiError
+
+    if not isinstance(exc, SlackApiError):
+        return False
+    response = exc.response
+    # A dict response carries no status; slack_sdk's own responses always do.
+    if getattr(response, "status_code", 200) != 200:
+        return False
+    data = getattr(response, "data", response)
+    if not isinstance(data, dict) or data.get("ok") is not False:
+        return False
+    return data.get("error") not in _SLACK_ERRORS_WITH_UNKNOWN_OUTCOME
+
+
+def _slack_rate_limited(exc: BaseException) -> bool:
+    """Whether Slack answered with a 429: the request was refused, so nothing was posted."""
+    from slack_sdk.errors import SlackApiError
+
+    return isinstance(exc, SlackApiError) and getattr(exc.response, "status_code", None) == 429
+
+
 async def _post_send_message_to_slack(
     state: "DashboardState",
     outcome: _SendMessageOutcome,
@@ -891,14 +931,14 @@ async def _post_send_message_to_slack(
             # best-effort follow-up (see below).
             link_blocks = _session_link_blocks(session_link_url) if session_link_url else []
             # Deferred import, matching the messaging handlers' other slack_sdk
-            # uses. SlackApiError is the ONE failure shape where Slack
-            # ANSWERED (ok=false): the combined post definitively did
-            # not land, so retrying without the button cannot deliver
-            # the caller's message twice. Every other exception
-            # (timeout, connection drop) is ambiguous -- the post may
-            # have landed -- so those propagate to the delivery-failed
-            # path below instead of triggering a duplicate-risking
-            # second post.
+            # uses. The combined post is retried without the button only when
+            # Slack refused the request outright (``_slack_rejected_outright``):
+            # then nothing landed, so the second post cannot deliver the
+            # caller's message twice. Every other failure -- a 5xx, a gateway
+            # page, a body that is not JSON, ``internal_error``, a timeout, a
+            # connection drop -- is an unknown outcome where the post may have
+            # landed, so it propagates to the delivery-failed path below
+            # instead of triggering a duplicate-risking second post.
             from slack_sdk.errors import SlackApiError
 
             button_rode_primary = False
@@ -913,8 +953,8 @@ async def _post_send_message_to_slack(
                         reply_broadcast=reply_broadcast,
                     )
                     button_rode_primary = bool(link_blocks)
-                except SlackApiError:
-                    if not link_blocks:
+                except SlackApiError as exc:
+                    if not link_blocks or not _slack_rejected_outright(exc):
                         raise
                     # Slack REJECTED the combined post; the caller's
                     # blocks must still post, so retry them alone and
@@ -929,9 +969,8 @@ async def _post_send_message_to_slack(
             elif link_blocks and not options and 0 < len(text) <= _SLACK_SECTION_TEXT_MAX:
                 # Plain-text send WITH a link: one message carrying a
                 # text section plus the button. Falls back to text-only
-                # (button trails) only when Slack REJECTS the combined
-                # post (SlackApiError = answered ok=false, nothing
-                # landed); an ambiguous transport failure propagates
+                # (button trails) only when Slack refused the combined post
+                # outright, so nothing landed; any other failure propagates
                 # rather than risking the text posting twice.
                 try:
                     outcome.slack_ts = await state.slack_client.post_blocks(
@@ -943,7 +982,9 @@ async def _post_send_message_to_slack(
                         reply_broadcast=reply_broadcast,
                     )
                     button_rode_primary = True
-                except SlackApiError:
+                except SlackApiError as exc:
+                    if not _slack_rejected_outright(exc):
+                        raise
                     outcome.slack_ts = await state.slack_client.post_message(
                         channel,
                         text,
@@ -1031,6 +1072,12 @@ async def _post_send_message_to_slack(
                         exc_info=True,
                     )
     except Exception as exc:
+        # A 429 and an outright refusal posted nothing. Once a post was sent, any
+        # other failure is an unknown outcome: the message may be in the conversation.
+        if _slack_rate_limited(exc):
+            outcome.slack_failure = "rate_limited"
+        elif outcome.slack_attempted and not _slack_rejected_outright(exc):
+            outcome.slack_failure = "unconfirmed"
         outcome.slack_attempted = True
         outcome.slack_error = str(exc)
         logger.exception("send_message: Slack delivery failed")
@@ -1123,28 +1170,50 @@ def _send_message_response(
             return web.json_response(
                 {"ok": False, "error": detail, "code": outcome.channel_code}, status=403
             )
+        # The DM leg reports a refused send and one whose answer was lost after
+        # the platform stored the message alike, so the text claims neither.
+        unconfirmed = (
+            f"{channel_target} delivery was not confirmed: {safe_detail}; the message "
+            "may or may not be in the conversation, so check it before sending it again"
+        )
         return web.json_response(
-            {"ok": False, "error": detail, "code": outcome.channel_code}, status=502
+            {"ok": False, "error": unconfirmed, "code": outcome.channel_code}, status=502
         )
     if outcome.slack_attempted and not outcome.sent_slack:
         safe_error, _ = redact_credentials(outcome.slack_error)
         safe_error, _ = redact_exfiltration_urls(safe_error)
+        # An unknown outcome says so, so the caller checks the conversation
+        # instead of sending a message that may already be there.
+        if outcome.slack_failure == "unconfirmed":
+            error_text = (
+                f"Slack delivery was not confirmed: {safe_error}; the message may have "
+                "been posted, so check the conversation before sending it again"
+            )
+        elif outcome.slack_failure == "rate_limited":
+            error_text = (
+                "Slack delivery failed: the message was not posted because Slack "
+                f"rate-limited the request: {safe_error}"
+            )
+        else:
+            error_text = f"Slack delivery failed: {safe_error}"
         return web.json_response(
-            {"ok": False, "error": f"Slack delivery failed: {safe_error}", "slack": False},
+            {"ok": False, "error": error_text, "slack": False},
             status=502,
         )
     # A named channel that was not reached is a failure, not a notification-only
     # success: the caller asked for a specific conversation, Slack was suppressed
     # as its fallback, and the bell is not a substitute for the surface the user
     # is actually reading. _deliver_to_channel has already audited which of the
-    # refusals it was.
+    # refusals it was. The leg cannot tell a refusal from a send whose answer was
+    # lost after the platform stored it, so the text claims neither.
     if channel_type and not outcome.sent_channel and not sent_session:
         return web.json_response(
             {
                 "ok": False,
                 "error": (
-                    f"channel delivery to {channel_type} failed — the message was "
-                    "not posted to the conversation"
+                    f"channel delivery to {channel_type} was not confirmed; the message "
+                    "may or may not be in the conversation, so check it before sending "
+                    "it again"
                 ),
                 "code": "channel_delivery_failed",
             },
