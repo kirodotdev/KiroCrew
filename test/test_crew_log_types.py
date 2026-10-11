@@ -29,8 +29,8 @@ from kiro_crew.crew_log import (
     emit,
 )
 from kiro_crew.crew_log import entry_types as reg
-from kiro_crew.crew_log import lease
 from kiro_crew.crew_log import (
+    lease,
     render_markdown,
 )
 from kiro_crew.crew_log import store as store_mod
