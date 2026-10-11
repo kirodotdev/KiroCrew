@@ -9247,3 +9247,34 @@ class TestRefreshDynamicFieldsWrongTypedAgentSection:
         with patch("kiro_crew.agent._mc_config_path", return_value=mc):
             _refresh_dynamic_fields(config)
         assert config["model"] == "claude-chosen"
+
+
+class TestSecretReferenceRoutedByRawName:
+    """A slashed server routed under its raw name stays one live entry across rebuilds."""
+
+    def test_repeated_rebuilds_keep_one_live_entry(self, tmp_path: Path, monkeypatch) -> None:
+        from kiro_crew.agent_materialization import mcp_sources
+
+        cfg_dir = _bundled_defaults(tmp_path)
+        (tmp_path / "fake_kiro_mcp.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "npm:@acme/mcp": {
+                            "command": "acme-mcp",
+                            "env": {"API_TOKEN": "secret://ACME"},
+                        }
+                    }
+                }
+            )
+        )
+        monkeypatch.setattr(
+            mcp_sources, "_gateway_routed_names", lambda: frozenset({"npm:@acme/mcp"})
+        )
+        for _ in range(3):
+            path = _run_install(tmp_path, cfg_dir)
+        servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
+        acme = {k: v for k, v in servers.items() if k.startswith("acme-mcp")}
+        assert list(acme) == ["acme-mcp"]
+        assert "disabled" not in acme["acme-mcp"]
+        assert mcp_sources.WITHHELD_KEY not in acme["acme-mcp"]

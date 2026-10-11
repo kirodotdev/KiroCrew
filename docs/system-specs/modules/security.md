@@ -638,6 +638,32 @@ reference in a server's `env` block is resolved to the real value by
 process environment alone — never the agent's. A reference to a missing name
 fails the server's spawn rather than launching it with an absent credential.
 
+That gateway spawn is the **only** resolver. Every other path that would start
+the server runs where the vault cannot be read, so each now reaches that spawn
+or refuses rather than hand the server the literal reference: the agent-spec
+rebuild withholds a stdio server that carries a reference and is not routed
+through the gateway, writing it `disabled` in place so its declaration and
+spec-only fields survive until it is routed. Routed means the saved routing
+lists it (`mcp_gateway.stub_servers`, on a host that runs the gateway) AND the
+overlay the running gateway built at its start holds a stub a session is
+handed; the saved list alone is intent that applies at the next start, and
+until then a session launches the spec's own entry. One helper
+(`secret_uri.routed_for_secret_reference`) answers "routed" for the rebuild
+and the rewriter alike. The dashboard's enable switches (one server, **Enable
+all**) take the same decision before they lift a mute, and once the process
+is ready the gateway runs one more rebuild when its fresh overlay now serves a
+withheld server. A mute from a source scope drops the withheld record, so the
+user's switch-off is never lifted by routing. The overlay rewriter gives a routed server
+(agent-declared or from the Kiro global `~/.kiro/settings/mcp.json`) whose env would be withheld from a
+shared backend a connection-private backend instead of leaving it unwrapped; and
+the stub's direct-exec fallback exits instead of exec'ing. Each names only the
+env-var key, never the secret's name or value. A routed server that carries a
+reference stays wrapped even when its command does not resolve on the gateway
+search path or its launch is not approved: the gateway then refuses it, so the
+session never launches the spec's own entry. Out of scope: an app-registered
+server (whether an app may name a vault secret is a separate decision) and a
+hand-written agent file that Kiro Crew does not rebuild.
+
 Security properties:
 
 - **Write-only surface.** The vault is stored (`POST /api/secrets`), listed by

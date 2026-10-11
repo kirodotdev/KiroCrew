@@ -2881,6 +2881,46 @@ def _fallback_user_site_holds_our_package() -> bool:
         return False
 
 
+#: Exit status of a fallback that refuses to start the backend because its env
+#: still holds a ``secret://`` reference. ``EX_CONFIG`` from sysexits: the
+#: operator's configuration asks for something this path cannot provide.
+_EXIT_UNRESOLVED_SECRET = 78
+
+
+def _refuse_unresolved_secret_references(
+    args: argparse.Namespace, declared_env: Mapping[str, str]
+) -> None:
+    """Exit instead of exec'ing a backend whose env carries a ``secret://`` value.
+
+    The sidecar keeps the raw reference on purpose -- the value is resolved from
+    the vault only on the gateway's backend spawn. This direct exec runs in the
+    session's own process tree, which cannot read the vault, so exec'ing would
+    start the server with the literal reference as its credential: the server
+    comes up and every authenticated call fails, which is exactly the outcome the
+    reference promises not to produce. Refusing the start is the documented
+    behaviour for a reference that cannot be resolved.
+
+    Names only the env KEYS, never a value or the secret's name, for the reason
+    given in :mod:`kiro_crew.mcp_gateway.secret_uri`.
+    """
+    # Deferred: the module imports the vault, which only this rare path needs.
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    keys = secret_reference_keys(declared_env)
+    if not keys:
+        return
+    message = (
+        f"MCP server {getattr(args, 'server', '') or '?'!r} was not started: env "
+        f"{', '.join(repr(k) for k in keys)} holds a secret:// reference, which is "
+        "resolved only when the gateway starts the server, and this session fell "
+        "back to starting it directly. Start a new session once the gateway is "
+        "serving it; `kirocrew doctor` reports the gateway's state."
+    )
+    logger.error("fallback: %s", message)
+    print(message, file=sys.stderr, flush=True)
+    raise SystemExit(_EXIT_UNRESOLVED_SECRET)
+
+
 def fallback_exec(args: argparse.Namespace) -> None:
     """Replace the current process with the real MCP backend. ``execvpe``
     never returns on success; a return raises so the caller surfaces a
@@ -2896,7 +2936,11 @@ def fallback_exec(args: argparse.Namespace) -> None:
     # the non-pooled baseline — the daemon's own environment lacks it.
     session_token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
     exec_env = dict(os.environ)
-    exec_env.update(_parse_env_file(getattr(args, "env_file", "") or ""))
+    declared_env = _parse_env_file(getattr(args, "env_file", "") or "")
+    # Only the DECLARED env is checked: an unrelated inherited value must not
+    # cost a working fallback.
+    _refuse_unresolved_secret_references(args, declared_env)
+    exec_env.update(declared_env)
     # The token is a bearer name for this session's identity. A third-party
     # server binary must never inherit it: on a later gateway start it could
     # register with it and be answered as this session. Kiro Crew's OWN control

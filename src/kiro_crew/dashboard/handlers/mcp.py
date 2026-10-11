@@ -21,6 +21,7 @@ from kiro_crew.agent import (
     SharedAgentHomeRefused,
     _atomic_json_write,
     _declined_foreign_spec_write,
+    entry_as_enabled,
     kiro_agents_dir_path,
     rebuild_agent_config,
 )
@@ -66,7 +67,7 @@ from kiro_crew.mcp_gateway.rewriter import records_dir
 from kiro_crew.mcp_gateway.shareability import ShareEvidence, ShareVerdict, assess
 from kiro_crew.mcp_gateway.verdict_cache import load_cache
 from kiro_crew.mcp_hot_reload import live_sessions_hot_reload
-from kiro_crew.mcp_provenance import ABSENT, resolve_write, stamp
+from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, resolve_write, stamp
 from kiro_crew.mcp_utils import (
     INTERNAL_CLIENT_ID_KEY,
     INTERNAL_SCOPES_KEY,
@@ -465,10 +466,16 @@ def _sync_mcp_to_agent_unlocked(name: str, enabled: bool, *, remove: bool = Fals
             _existing.pop("autoApprove", None)
             changed = True
         # A re-enable lifts the ``disabled`` the disable path below wrote onto
-        # this entry; the copy branch never carries one, so only an existing
-        # entry can hold it.
-        if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
-            changed = True
+        # this entry -- but not the mute the rebuild writes on a server whose
+        # ``secret://`` reference nothing here would resolve: lifting that one
+        # starts the server with the literal reference, and no rebuild runs after
+        # this write to put it back. ``entry_as_enabled`` takes the rebuild's own
+        # decision for the entry, so a freshly copied one is asked as well.
+        if isinstance(_existing, dict):
+            _enabled = entry_as_enabled(alias, _existing)
+            if _enabled != _existing:
+                mcp_servers[alias] = _enabled
+                changed = True
         # Ensure @server-name in tools, and in allowedTools only if the
         # governance ceiling has nothing to say about this server. `tools` MOUNTS
         # it; `allowedTools` additionally auto-approves it, and auto-approve is
@@ -559,6 +566,10 @@ def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
     A key may name the alias or the legacy slash form of one server; both are
     marked when both exist so neither spawns. Only a mapping entry can carry the
     flag — a string/null entry is left as-is. Returns True when anything changed.
+
+    The rebuild's withheld record goes too: once the user switches the server
+    off, the mute is theirs, and a record left beside it would let the rebuild
+    lift it as soon as the server is routed.
     """
     servers = cfg.get("mcpServers")
     if not isinstance(servers, dict):
@@ -566,7 +577,11 @@ def _mark_agent_entries_disabled(cfg: dict, keys: tuple[str, ...]) -> bool:
     changed = False
     for key in keys:
         entry = servers.get(key)
-        if isinstance(entry, dict) and entry.get("disabled") is not True:
+        if not isinstance(entry, dict):
+            continue
+        if entry.pop(WITHHELD_KEY, None) is not None:
+            changed = True
+        if entry.get("disabled") is not True:
             entry["disabled"] = True
             changed = True
     return changed
@@ -626,9 +641,13 @@ def _sync_mcp_to_agent_batch_unlocked(names: list[str], enabled: bool) -> None:
             ):
                 _existing.pop("autoApprove", None)
                 changed = True
-            # Lift the ``disabled`` a batch disable wrote — see the single-server path.
-            if isinstance(_existing, dict) and _existing.pop("disabled", None) is not None:
-                changed = True
+            # Lift the ``disabled`` a batch disable wrote, keeping the rebuild's
+            # withheld mute -- see the single-server path.
+            if isinstance(_existing, dict):
+                _enabled = entry_as_enabled(alias, _existing)
+                if _enabled != _existing:
+                    mcp_servers[alias] = _enabled
+                    changed = True
             # Same split as the single-server path above: mount always,
             # auto-approve only when the ceiling is silent about this server.
             tool_ref = f"@{alias}"

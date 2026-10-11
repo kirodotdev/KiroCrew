@@ -255,6 +255,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         dedup_path,
         describe_search_path,
         emit_env,
+        entry_as_enabled,
         invalid_disabled_flag,
         kiro_oauth_wire_entry,
         mcp_entries_muted,
@@ -263,6 +264,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         recorded_source,
         source_view,
         warn_invalid_disabled,
+        withheld_servers_now_routed,
         without_marker,
     )
     from kiro_crew.agent_materialization.service_agents import (  # noqa: F401
@@ -2161,6 +2163,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "dedup_path",
         "describe_search_path",
         "emit_env",
+        "entry_as_enabled",
         "invalid_disabled_flag",
         "kiro_oauth_wire_entry",
         "mcp_entries_muted",
@@ -2169,6 +2172,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "recorded_source",
         "source_view",
         "warn_invalid_disabled",
+        "withheld_servers_now_routed",
         "without_marker",
     ),
     "kiro_crew.agent_materialization.default_spec_commit": (

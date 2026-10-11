@@ -8,8 +8,10 @@ the secret is never persisted in plaintext outside the vault.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
+from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.secrets import SecretVault
 
 #: Scheme prefix for a vault secret reference. Single source of truth: the
@@ -32,6 +34,48 @@ _SECRET_URI_PREFIX = SECRET_URI_PREFIX  # internal alias for existing call sites
 #: every message names only the operator-declared env-var KEY. With nothing
 #: echoed, a hostile name (bidi override, newline, zero-width) has no text to
 #: forge.
+
+
+def secret_reference_keys(env: object) -> list[str]:
+    """The env-var KEYS of *env* whose value is a ``secret://`` reference, sorted.
+
+    The one predicate every launch path asks before it hands an env block to a
+    child it does not resolve itself. :func:`resolve_secret_uris` -- run on the
+    gateway's backend spawn -- is the only resolver, so any other path that would
+    start the server must refuse instead: passing the literal reference through
+    makes the server start with a wrong credential rather than fail.
+
+    Returns KEYS only, never a value or a secret name, so a caller may name them
+    in a log line or an error (see the note below on why names are never echoed).
+    Anything that is not a mapping of strings answers ``[]``.
+    """
+    if not isinstance(env, Mapping):
+        return []
+    return sorted(
+        str(key)
+        for key, value in env.items()
+        if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
+    )
+
+
+def routed_for_secret_reference(name: str, routed: Collection[str]) -> bool:
+    """True when server *name* counts as routed by *routed*, for a ``secret://`` server.
+
+    The ONE answer to "does the gateway start this server", shared by the
+    agent-spec rebuild (which withholds an unrouted server that carries a
+    reference) and the overlay rewriter (which wraps a routed one). The two
+    must agree exactly: a server the rebuild lets through and the rewriter
+    leaves unwrapped launches with the literal reference, and one the rebuild
+    withholds while the rewriter would wrap it stays off with nothing said.
+
+    Matches the exact name, or the slash-free alias on both sides: the routing
+    list (``mcp_gateway.stub_servers``) may hold a raw name (``npm:@acme/mcp``)
+    while the rebuilt spec keys the same server by its alias (``acme-mcp``).
+    """
+    if name in routed:
+        return True
+    alias = mcp_server_alias(name)
+    return any(mcp_server_alias(r) == alias for r in routed if isinstance(r, str))
 
 
 def _is_valid_secret_name(name: str) -> bool:

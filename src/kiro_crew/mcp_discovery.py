@@ -53,7 +53,7 @@ from kiro_crew.mcp_cleanup import (
 )
 from kiro_crew.mcp_gateway.hashing import hash_command, hash_effective_env
 from kiro_crew.mcp_grant import grant_observed
-from kiro_crew.mcp_provenance import ABSENT, resolve_write
+from kiro_crew.mcp_provenance import ABSENT, WITHHELD_KEY, is_withheld_mute, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
     CANONICAL_TEMP_KEYS,
@@ -1605,9 +1605,14 @@ def list_servers() -> list[McpServerInfo]:
     agent_cfg = _load_agent_config()
     for name, spec in agent_cfg.get("mcpServers", {}).items():
         if isinstance(spec, dict):
-            if mcp_entry_is_muted(spec):
+            # The rebuild's own withheld mute is not the user switching the
+            # server off: it lifts once the server is routed, and routing is
+            # turned on from this table, so the row is listed as declared.
+            if mcp_entry_is_muted(spec) and not is_withheld_mute(spec):
                 disabled_in_agent.add(name)
             else:
+                if is_withheld_mute(spec):
+                    spec = {k: v for k, v in spec.items() if k not in (WITHHELD_KEY, "disabled")}
                 # Re-resolve stale managed MCP server paths at runtime
                 _fix_stale_managed_command(name, spec)
                 servers[name] = _server_from_spec(name, spec, "agent")
@@ -2381,6 +2386,24 @@ async def probe_server(
         server.status = "error"
         server.error = "no command"
         logger.warning("MCP probe failed [%s]: no command configured", server.name)
+        return server
+
+    # A direct probe runs outside the MCP gateway, the one place a ``secret://``
+    # env value is resolved, so it would start the server with the literal
+    # reference as its credential. Refused before any spawn, and not cached, so
+    # a real probe's stored tool list survives; only the env KEYS are named. The
+    # status is ``outdated``, which carries no probe verdict: no handshake was
+    # attempted, so the refusal must not count toward the failure quarantine.
+    from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+
+    secret_keys = secret_reference_keys(server.env)
+    if secret_keys:
+        _drop_temp_refusals(server)
+        server.status = "outdated"
+        server.error = (
+            f"not probed: env {', '.join(secret_keys)} holds a secret:// reference, "
+            "which is resolved only when the MCP gateway starts the server"
+        )
         return server
 
     if not _on_private_loop:
