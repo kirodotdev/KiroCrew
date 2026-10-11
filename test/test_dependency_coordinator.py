@@ -1095,6 +1095,44 @@ def test_a_wait_that_did_not_persist_is_not_reported_as_a_wait(
     assert _coord(store, clock).rebuild() == 0
 
 
+def test_a_report_for_a_row_that_ended_or_changed_owner_is_fenced(
+    store: TaskStore, clock: Clock
+) -> None:
+    """Both wait writes carry the reporter's generation, so a refusal with the row
+    present means another owner holds it or it has ended. That is answered apart
+    from "no row": the reporter must stop, not retry work that is not its own."""
+    coord = _coord(store, clock)
+
+    ended = _running(store, "sa-4")
+    assert store.cancel("sa-4", reason="stopped by the user") == model.RUNNING
+    verdict = coord.report("sa-4", _signal(), generation=ended, from_state=model.RUNNING)
+    assert verdict.outcome == "fenced"
+    assert store.state_of("sa-4") == model.CANCELLED
+    assert _events(store, "sa-4", EVENT_WAIT) == []
+
+    stale = _running(store, "sa-5")
+    assert store.release_lease("sa-5")
+    assert store.transition("sa-5", model.RECOVERING)
+    newer = store.claim("sa-5", owner="another-gateway")
+    assert newer is not None and newer.generation > stale
+    verdict = coord.report("sa-5", _signal(), generation=stale, from_state=model.RUNNING)
+    assert verdict.outcome == "fenced"
+    assert store.state_of("sa-5") == model.ADMITTED, "the newer owner's row is untouched"
+    assert _events(store, "sa-5", EVENT_WAIT) == []
+    assert coord.schedule(GH) is None, "the schedule held a waiter that is not waiting"
+
+
+def test_a_report_with_no_row_at_all_says_so(store: TaskStore, clock: Clock) -> None:
+    """A task the store holds no row for (a run whose memory mode keeps none) is
+    answered ``no_row``: nothing records the wait, and nothing else owns the work."""
+    coord = _coord(store, clock)
+    verdict = coord.report("sa-none", _signal(), generation=None, from_state=model.RUNNING)
+    assert verdict.outcome == "no_row"
+    assert verdict.retry_at is not None
+    assert store.state_of("sa-none") is None
+    assert coord.schedule(GH) is None
+
+
 def test_the_wake_event_names_the_state_the_row_actually_reached(
     store: TaskStore, clock: Clock
 ) -> None:

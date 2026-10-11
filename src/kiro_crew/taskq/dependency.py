@@ -114,6 +114,14 @@ OUTCOME_WAIT = "wait"
 OUTCOME_TERMINAL = "terminal"
 OUTCOME_DEADLINE = "deadline"
 OUTCOME_UNPERSISTED = "unpersisted"
+#: The wait writes were refused and the row is held by another owner (a newer
+#: generation) or has already ended: this caller's work is not its own any more,
+#: so the caller stops instead of retrying the turn in place.
+OUTCOME_FENCED = "fenced"
+#: The wait writes were refused and NO row exists for the task (a run whose memory
+#: mode keeps none): nothing durable holds the wait and nothing else owns the
+#: work, so the caller handles the error as it would with no coordinator.
+OUTCOME_NO_ROW = "no_row"
 
 #: Where a retryable waiter is parked. A LIVE run (row ``running``) enters
 #: ``waiting_dependency`` with a ``WaitRecord`` and keeps its runtime resident;
@@ -121,6 +129,11 @@ OUTCOME_UNPERSISTED = "unpersisted"
 #: instead, where the dispatcher re-claims it once the coordinator wakes it.
 WAIT_STATE: str = WAITING_DEPENDENCY
 PARK_STATE: str = RETRY_WAIT
+#: :meth:`DependencyCoordinator._persist_wait`'s answers when the wait landed
+#: nowhere and the row was re-read to say why; markers, never row states.
+_FENCED = "fenced"
+_NO_ROW = "no_row"
+_UNREADABLE = "unreadable"
 #: Where an ``auth_failed`` waiter goes: the user must sign in, which is real
 #: input; a row that cannot enter that wait (not running) is ``failed``.
 AUTH_STATE: str = WAITING_INPUT
@@ -390,8 +403,10 @@ class Verdict:
 
     #: ``wait`` (parked on the scope schedule, ``state`` says WHERE),
     #: ``terminal`` (task failed or moved to ``waiting_input``), ``deadline``
-    #: (scope budget spent, failed), ``unpersisted`` (no row records the wait --
-    #: the caller must not park on it).
+    #: (scope budget spent, failed), ``unpersisted`` (the store could not record
+    #: the wait -- the caller must not park on it), ``no_row`` (no row exists for
+    #: the task -- nothing records the wait and nothing else owns the work),
+    #: ``fenced`` (the row is another owner's or has ended -- the caller must stop).
     outcome: str
     state: str
     scope: str
@@ -788,11 +803,28 @@ class DependencyCoordinator:
                 reason=reason,
             )
         persisted = self._persist_wait(task_id, signal, instant, generation, from_state)
-        if persisted is None:
+        if persisted is None or persisted in (_FENCED, _NO_ROW):
             # The caller owns the failure, so the schedule must stop holding a
             # waiter that is not waiting: the next tick would wake a row whose
             # state this coordinator never wrote.
             self._drop_waiter(task_id, scope)
+            if persisted == _FENCED:
+                return Verdict(
+                    outcome=OUTCOME_FENCED,
+                    state=str(from_state or ""),
+                    scope=scope,
+                    attempts=instant.attempts,
+                    reason=f"the row is held by another owner or has ended; {scope} wait refused",
+                )
+            if persisted == _NO_ROW:
+                return Verdict(
+                    outcome=OUTCOME_NO_ROW,
+                    state=str(from_state or ""),
+                    scope=scope,
+                    retry_at=instant.retry_at,
+                    attempts=instant.attempts,
+                    reason=f"no task row records a wait on {scope}",
+                )
             return Verdict(
                 outcome=OUTCOME_UNPERSISTED,
                 state=str(from_state or ""),
@@ -879,17 +911,24 @@ class DependencyCoordinator:
         generation: int | None,
         from_state: str | None,
     ) -> str | None:
-        """Write the wait; answers WHERE it landed, or ``None`` when nowhere.
+        """Write the wait; answers WHERE it landed, ``None`` when nowhere, or
+        :data:`_FENCED` when the row is not this caller's any more.
 
-        Three distinct outcomes, because two of them are a wait and one is not:
+        Four distinct outcomes, because two of them are a wait and two are not:
         ``WAIT_STATE`` (a live run entered ``waiting_dependency`` with the
         record), ``PARK_STATE`` (the row was not live -- ``starting``, or already
-        parked -- so it is re-dispatched later), and ``None`` -- NOTHING durable
-        holds the wait. An outage is never answered with a park: ``retry_wait``
-        has an edge to neither ``running`` nor ``done``, so parking a live run
-        there would have its own terminal write refused too. ``None`` also appends
-        no ``dependency_wait`` event: an event claiming a wait no row is in would
-        be the one thing :meth:`rebuild` trusts.
+        parked -- so it is re-dispatched later), ``None`` -- NOTHING durable
+        holds the wait (no row, or the store could not be read) -- and
+        :data:`_FENCED`: both writes were refused and the row IS there, in a
+        state other than ``retry_wait``, so another owner holds it at a newer
+        generation or it has ended. The last two call for opposite handling,
+        which is why the row is re-read (:meth:`_row_after_refusal`) instead of
+        folding them into one answer. An outage is never answered with a park:
+        ``retry_wait`` has an edge to neither ``running`` nor ``done``, so parking
+        a live run there would have its own terminal write refused too. ``None``
+        and :data:`_FENCED` also append no ``dependency_wait`` event: an event
+        claiming a wait no row is in would be the one thing :meth:`rebuild`
+        trusts.
         """
         if self._store is None:
             return WAIT_STATE  # store-less by construction: the schedule is the record
@@ -921,8 +960,14 @@ class DependencyCoordinator:
             )
             if parked == WRITE_UNAVAILABLE:
                 return None
-            if parked == WRITE_REFUSED and not self._already_parked(task_id):
-                return None
+            if parked == WRITE_REFUSED:
+                row_state = self._row_after_refusal(task_id)
+                if row_state == _UNREADABLE:
+                    return None
+                if row_state is None:
+                    return _NO_ROW
+                if row_state != PARK_STATE:
+                    return _FENCED
         self._append_event(
             task_id,
             EVENT_WAIT,
@@ -938,23 +983,26 @@ class DependencyCoordinator:
         )
         return state
 
-    def _already_parked(self, task_id: str) -> bool:
-        """Whether the row is ALREADY in ``retry_wait``: a refused park changed nothing.
+    def _row_after_refusal(self, task_id: str) -> str | None:
+        """The row's state after both wait writes were refused.
 
-        A woken probe that fails again reports from ``retry_wait``, which the
-        transition table gives an edge to neither ``waiting_dependency`` nor
-        itself -- both writes are refused although the row IS where a parked
-        waiter belongs, and its ``dependency_wait`` event is what :meth:`rebuild`
-        restores it from. Any other state (queued, admitted, terminal, gone) means
-        nothing durable holds this wait, and an unreadable store means we do not
-        know that it does.
+        ``retry_wait`` means a refused park changed nothing: a woken probe that
+        fails again reports from ``retry_wait``, which the transition table gives
+        an edge to neither ``waiting_dependency`` nor itself -- both writes are
+        refused although the row IS where a parked waiter belongs, and its
+        ``dependency_wait`` event is what :meth:`rebuild` restores it from. Any
+        other state means the row is not this caller's to park: the writes carry
+        the caller's generation, so a refusal with the row present is a newer
+        owner's claim or a terminal write that already landed. ``None`` is no row
+        at all (nothing durable holds this wait, and nothing else owns the work);
+        :data:`_UNREADABLE` is a store that could not answer, which says neither.
         """
         assert self._store is not None
         try:
-            return self._store.state_of(task_id) == PARK_STATE
+            return self._store.state_of(task_id)
         except TaskStoreUnavailable:
             logger.warning("dependency coordinator: state of %s is unreadable", task_id)
-            return False
+            return _UNREADABLE
 
     # -- waking --------------------------------------------------------------
 
@@ -1436,6 +1484,8 @@ __all__ = [
     "KIND_QUOTA_EXHAUSTED",
     "KIND_RATE_LIMITED",
     "OUTCOME_DEADLINE",
+    "OUTCOME_FENCED",
+    "OUTCOME_NO_ROW",
     "OUTCOME_TERMINAL",
     "OUTCOME_UNPERSISTED",
     "OUTCOME_WAIT",

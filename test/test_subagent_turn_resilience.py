@@ -24,7 +24,9 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from overload_fakes import wait_taskq_open
 
+from kiro_crew.acp.transport_errors import AcpError
 from kiro_crew.llm_helpers import TRANSIENT_RETRIES
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.subagent import (
@@ -552,6 +554,153 @@ async def test_non_transient_error_fails_immediately():
     assert info.done is True
     assert "auth denied" in info.error
     assert len(calls) == 1  # no retry
+
+
+# ── 1b. Provider throttle with a durable task queue open ─────────────
+
+_THROTTLE_TEXT = (
+    "Bedrock is throttling requests. Try: (1) wait a few seconds and retry, or (2) "
+    "switch to a different model in the picker (e.g. sonnet)."
+)
+
+
+def _throttle_first_prompt() -> tuple[list[str], object]:
+    """A backend that answers the first prompt with a throttle, before any text or
+    tool call, and the second prompt normally."""
+    calls: list[str] = []
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                raise AcpError(_THROTTLE_TEXT, transient=True)
+            yield _text_event("finished after the throttle")
+            yield _complete_event()
+
+        return _gen()
+
+    return calls, stream_factory
+
+
+async def _queued_manager(stream_factory) -> tuple[SubagentManager, list[object]]:
+    """A manager with its durable task queue open, recording each dependency park."""
+    mgr = _manager(_mock_sessions(stream_factory))
+    await wait_taskq_open(mgr)
+    assert await mgr.dependency_coordinator_async() is not None, "premise: a coordinator"
+    parks: list[object] = []
+    real_yield = mgr._yield_for_dependency
+
+    async def _spy(info, signal):
+        outcome = await real_yield(info, signal)
+        parks.append(outcome)
+        return outcome
+
+    mgr._yield_for_dependency = _spy
+    return mgr, parks
+
+
+async def _spawn_with_queue(mgr: SubagentManager, **spawn_kw) -> SubagentInfo:
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.transient_retry_delay", return_value=0.0),
+    ):
+        info = mgr.spawn("do work", **spawn_kw)
+        assert info is not None
+        await asyncio.wait_for(mgr._tasks[info.id], timeout=10)
+    return mgr._agents.get(info.id, info)
+
+
+@pytest.mark.asyncio
+async def test_throttle_on_a_run_with_no_task_row_retries_in_turn():
+    """A run whose memory mode keeps no durable row cannot wait on the dependency
+    coordinator (its wait has nowhere to be recorded), so the throttle takes the
+    in-turn ladder instead of failing the run. The throttle answered the prompt
+    before any text or tool call, so the same prompt is sent again."""
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    info = await _spawn_with_queue(mgr, _memory_mode="temporary")
+
+    assert len(parks) == 1, "the coordinator was not consulted"
+    assert info.error == "", info.error
+    assert "finished after the throttle" in info.result
+    assert calls == ["built_message", "built_message"]
+
+
+@pytest.mark.asyncio
+async def test_throttle_on_a_run_with_a_task_row_waits_on_the_coordinator():
+    """A persistent run still parks on the coordinator's schedule and resumes from it."""
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    info = await _spawn_with_queue(mgr)
+
+    assert parks == [True], parks
+    assert info.error == "", info.error
+    assert "finished after the throttle" in info.result
+    assert calls == ["built_message", "built_message"]
+
+
+@pytest.mark.asyncio
+async def test_a_coordinator_give_up_still_fails_the_run():
+    """When the coordinator ends the scope (its deadline or attempts cap), the row is
+    already failed, so the run fails with the throttle and is not retried in turn."""
+    from kiro_crew.taskq.dependency import OUTCOME_DEADLINE, Verdict
+
+    calls, factory = _throttle_first_prompt()
+    mgr, parks = await _queued_manager(factory)
+
+    async def _gave_up(self, coordinator, info, signal):
+        return Verdict(
+            outcome=OUTCOME_DEADLINE,
+            state="failed",
+            scope=signal.dependency_scope,
+            attempts=5,
+            reason=f"dependency {signal.dependency_scope} unavailable after 5 attempts",
+        )
+
+    with patch.object(type(mgr._run_events), "_dependency_verdict", _gave_up):
+        info = await _spawn_with_queue(mgr)
+
+    assert parks == [False], parks
+    assert "throttling" in info.error
+    assert calls == ["built_message"]  # no in-turn retry
+
+
+@pytest.mark.asyncio
+async def test_a_throttle_on_a_row_that_already_ended_stops_the_run():
+    """The run's row is cancelled under it (a Stop that landed while the prompt was
+    out) before the throttle arrives. The coordinator's wait writes carry the run's
+    generation, so they are refused and the row is found ended: the run stops with
+    the error and never retries work that is not its own any more."""
+    calls: list[str] = []
+    mgr_box: dict[str, SubagentManager] = {}
+
+    def stream_factory(msg: str, *a, **kw):
+        calls.append(msg)
+
+        async def _gen():
+            if len(calls) == 1:
+                mgr = mgr_box["mgr"]
+                (run_id,) = [i for i, a in mgr._agents.items() if not a.done]
+                assert mgr._taskq.cancel(run_id, reason="stopped by the user") is not None
+                raise AcpError(_THROTTLE_TEXT, transient=True)
+            yield _text_event("finished after the throttle")
+            yield _complete_event()
+
+        return _gen()
+
+    mgr, parks = await _queued_manager(stream_factory)
+    mgr_box["mgr"] = mgr
+
+    info = await _spawn_with_queue(mgr)
+
+    assert parks == [False], parks
+    assert "throttling" in info.error
+    assert calls == ["built_message"]  # no in-turn retry
+    assert mgr._taskq.state_of(info.id) == "cancelled"
 
 
 def test_context_overflow_marker_forces_a_dedicated_runtime():

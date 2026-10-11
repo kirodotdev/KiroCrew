@@ -2896,20 +2896,25 @@ class RunEventCoordinator(ManagerComponent):
                     # coordinator -- ONE schedule for every session on that
                     # scope -- and yields its lane slot until the scope wakes
                     # it by capacity. The in-turn ladder below stays for
-                    # transients no adapter classifies and for a manager
-                    # without a durable queue.
+                    # transients no adapter classifies, for a manager without a
+                    # durable queue, and for a run that has no task row at all
+                    # (``None``: nothing records its wait and nothing else owns
+                    # its work). A row another owner holds, a row that ended,
+                    # or a store that cannot say stops the run (``False``).
                     _signal = classify_exception(exc) if _dep_coordinator is not None else None
                     if _signal is not None and not _signal.terminal:
                         if _had_activity and post_activity_attempts >= 1:
                             raise
-                        if not await self._manager._yield_for_dependency(info, _signal):
+                        _parked = await self._manager._yield_for_dependency(info, _signal)
+                        if _parked is False:
                             raise
-                        if _had_activity:
-                            post_activity_attempts += 1
-                            msg = _TRANSIENT_CONTINUE_MSG
-                        else:
-                            msg = full_message
-                        continue
+                        if _parked:
+                            if _had_activity:
+                                post_activity_attempts += 1
+                                msg = _TRANSIENT_CONTINUE_MSG
+                            else:
+                                msg = full_message
+                            continue
                     if _had_activity:
                         if post_activity_attempts >= 1:
                             raise
@@ -3655,7 +3660,7 @@ class RunEventCoordinator(ManagerComponent):
                 break
         info._resume_pending = False
 
-    async def _yield_for_dependency_impl(self, info: SubagentInfo, signal: Any) -> bool:
+    async def _yield_for_dependency_impl(self, info: SubagentInfo, signal: Any) -> bool | None:
         """Park *info* on its dependency scope's ONE schedule and wait for the wake.
 
         ``coordinator.report`` writes the wait (``running -> waiting_dependency``
@@ -3666,11 +3671,19 @@ class RunEventCoordinator(ManagerComponent):
         is re-granted FIFO like every other start. A typed provider throttle is
         also reported to the adaptive controller. True once the slot is held
         again; False when the coordinator failed the scope (deadline or
-        attempts cap -- the row is already ``failed``) or the wait timed out.
+        attempts cap -- the row is already ``failed``), when the row is another
+        owner's or has ended (``fenced``: the work is not this run's any more),
+        when the store could not record the wait (``unpersisted``: whether
+        another owner holds the row cannot be read, so the run stops rather
+        than retry work it may not own), or when the wait timed out. None when
+        NO row exists for the run (``no_row``: a memory mode that keeps none).
+        Nothing was decided then and nothing else owns the work, so the caller
+        handles the error as it would with no coordinator at all.
         """
         from kiro_crew.taskq.dependency import (
             KIND_CONCURRENCY_EXCEEDED,
             KIND_RATE_LIMITED,
+            OUTCOME_NO_ROW,
             PHASE_WAITING,
         )
         from kiro_crew.taskq.waits import EVIDENCE_DEPENDENCY_ADAPTER, WaitRecord
@@ -3712,7 +3725,7 @@ class RunEventCoordinator(ManagerComponent):
                 verdict.outcome,
                 verdict.reason,
             )
-            return False
+            return None if verdict.outcome == OUTCOME_NO_ROW else False
         if not info._slot_released:
             self._manager._admission.yield_slot(
                 info,

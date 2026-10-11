@@ -1287,23 +1287,31 @@ staged wake (that eligibility is the safety net for a process that dies before
 `rebuild()` runs).
 
 **The verdict says where the wait landed, and whether it landed at all.** The
-wait write has three outcomes and the caller acts on a different one in each:
+wait write has five outcomes and the caller acts on a different one in each:
 `Verdict(wait, state=waiting_dependency)` (a live run entered the wait),
 `Verdict(wait, state=retry_wait)` (the row was not live and is re-dispatched
-later), and `Verdict(unpersisted)` — the store took NEITHER write, so NO row
-records the wait. A caller must not park on that last one: `rebuild()` cannot
-restore a wait no row is in, no boot sweep sees it, and the row is left in the
-state it was reported from (`running`), so nothing outside that caller's own
-process knows a wait is in progress at all. `unpersisted` still carries the
-scope's `retry_at`, so a caller can retry locally the way the coordinator-less arm
-of `RunnerAdmission.yield_dependency` already does with an `enter_wait` that did
-not land. A store OUTAGE is never answered
+later), and three that are not a wait, told apart by re-reading the row's state
+after both writes were refused (`_row_after_refusal`), never by the boolean alone:
+`Verdict(unpersisted)` — the store took NEITHER write or could not say what the
+row is, so NO row is known to record the wait; `Verdict(no_row)` — the store holds
+no row for the task at all (a run whose memory mode keeps none), so nothing
+records the wait and nothing else owns the work; and `Verdict(fenced)` — the row IS
+there, in a state other than `retry_wait`, so the generation-checked writes were
+refused because a newer owner holds it or a terminal write already landed, and the
+caller must stop rather than retry work that is not its own. A caller must not
+park on any of the three: `rebuild()` cannot restore a wait no row is in, no boot
+sweep sees it, and the row is left in the state it was reported from (`running`),
+so nothing outside that caller's own process knows a wait is in progress at all.
+`unpersisted` and `no_row` still carry the scope's `retry_at`, so a caller can
+retry locally the way the coordinator-less arm of
+`RunnerAdmission.yield_dependency` already does with an `enter_wait` that did not
+land; the sub-agent run does so only for `no_row`. A store OUTAGE is never answered
 with a park: `retry_wait` has an edge to neither `running` nor `done`, so a live
 run parked there would have its own terminal write refused too. The waiter is
 dropped from the schedule with the verdict, because a schedule holding a waiter
 its caller was told to abandon would wake a row this coordinator never wrote.
 One consequence to keep in mind when writing a test: a `report()` for a task id
-with NO row is `unpersisted`, not a wait — the coordinator refuses to schedule a
+with NO row is `no_row`, not a wait — the coordinator refuses to schedule a
 caller that holds no task row, as `shared_retry_at` already states.
 
 Persistence: the schedule is in memory; every entry appends

@@ -6095,7 +6095,7 @@ class SubagentManager:
             info, reason=reason, timeout=timeout, request=request
         )
 
-    async def _yield_for_dependency(self, info: SubagentInfo, signal: Any) -> bool:
+    async def _yield_for_dependency(self, info: SubagentInfo, signal: Any) -> bool | None:
         return await self._run_events._yield_for_dependency_impl(info, signal)
 
     async def _yield_for_infra_retry(self, info: SubagentInfo, infra: Any) -> str | None:
