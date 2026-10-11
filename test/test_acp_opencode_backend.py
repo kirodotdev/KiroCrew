@@ -944,6 +944,10 @@ def test_the_read_back_quotes_through_the_scrub_its_session_hands_it(tmp_path) -
         _opencode_config_mcp_servers: tuple[str, ...] = ()
 
         @staticmethod
+        def _agent_env_for_spawn() -> dict[str, str]:
+            return {}
+
+        @staticmethod
         def _scrub_observed(value):
             seen.append(value)
             return "<scrubbed>" if value == "build" else value

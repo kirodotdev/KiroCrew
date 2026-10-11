@@ -52,6 +52,7 @@ from kiro_crew.acp._dispatch import (
     set_mode_params,
 )
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.client import (
     _apply_pod_home_remap,
     _is_safe_oauth_url,
@@ -1058,6 +1059,7 @@ def _launch_tools() -> LaunchTools:
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,
         retrying_spawn_factory=_retrying_spawn_factory,
+        agent_env_overlay=agent_env_overlay,
     )
 
 

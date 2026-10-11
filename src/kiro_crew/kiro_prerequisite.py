@@ -1722,7 +1722,9 @@ IDENTITY_PARK_GRACE_SECS = 30.0
 def mark_identity_parked(runtime: Any, now: float) -> None:
     """Record when the spawn-identity gate parked *runtime* on a drain list.
 
-    Read back by the drain reaps, which refuse to kill a parked runtime
+    The background runtime's ``agent.env`` displacement uses the same mark,
+    for the same claim window. Read back by the drain reaps, which refuse to
+    kill a parked runtime
     before :data:`IDENTITY_PARK_GRACE_SECS` has elapsed (see the constant for
     why). Best-effort: a runtime that refuses the attribute is reaped on the
     pre-grace rules, exactly as every parked runtime was before the grace

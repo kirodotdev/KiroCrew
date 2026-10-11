@@ -3231,6 +3231,8 @@ def _build_agent_config(agent_data: dict) -> AgentConfig:
         # Env defaults for spawned kiro-cli children (acp/child_env_defaults.py).
         # Through the module alias: the loader's import list is a frozen snapshot.
         child_env_defaults=_sections.coerce_child_env_defaults(section.get("child_env_defaults")),
+        # Operator env for every agent child (acp/agent_env.py), same alias reason.
+        env=_sections.coerce_agent_env(section.get("env")),
         # Cold-start queues (session_allocation _start_sem, acp/runtime_start
         # spawn admission); resolved by cold_start_sizing.
         cold_start_concurrency=_session_start_concurrency(

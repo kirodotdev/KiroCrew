@@ -99,6 +99,7 @@ from kiro_crew.acp._dispatch import (
     tool_call_content_text,
 )
 from kiro_crew.acp._frame_record import record_frame
+from kiro_crew.acp.agent_env import agent_env_overlay
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
 from kiro_crew.acp.harness import claude as claude_mod
 from kiro_crew.acp.harness import pi as pi_mod
@@ -1839,6 +1840,7 @@ def _launch_tools() -> LaunchTools:
         inject_xdist_auto_cap=inject_xdist_auto_cap,
         bind_voice_safe_agent_workspace_async=bind_voice_safe_agent_workspace_async,
         create_subprocess_limited=create_subprocess_limited,
+        agent_env_overlay=agent_env_overlay,
     )
 
 
@@ -2031,6 +2033,8 @@ class AcpClient:
         self._audit_source = audit_source
         self._channel_id = channel_id
         self._extra_env = extra_env or {}
+        # ``agent.env`` for the spawn in progress; see _agent_env_for_spawn.
+        self._agent_env_snapshot: dict[str, str] | None = None
         # MCP gateway overlay: when set, the broker stubs in its rewritten specs
         # are injected into this session at ACP session/new, where they outrank
         # the same-named entries in the agent spec. Nothing is written to the
@@ -2951,6 +2955,18 @@ class AcpClient:
         except RetiredSkillView as exc:
             raise AcpError(str(exc)) from exc
         self._mcp_ref_spec = self._read_mcp_ref_spec()
+
+    def _agent_env_for_spawn(self) -> dict[str, str]:
+        """``agent.env`` for the spawn in progress, read at most once per spawn.
+
+        A harness's tool-gate read-back and the launch tail both take it from
+        here, so a config save between them cannot point the child at a config
+        the read-back never checked. Blocking on the first call (reads config);
+        callers run it off the loop.
+        """
+        if self._agent_env_snapshot is None:
+            self._agent_env_snapshot = agent_env_overlay()
+        return self._agent_env_snapshot
 
     def _read_mcp_ref_spec(self) -> dict[str, Any] | None:
         """Snapshot this session's agent spec for the unresolved-ref guard.
@@ -5910,6 +5926,8 @@ class AcpClient:
         # construction path in service of a diagnostic -- so the count of awaits
         # here is deliberately unchanged (harness-parity H13).
         await asyncio.to_thread(self._prepare_spawn_workspace)
+        # A fresh spawn reads ``agent.env`` afresh, once (_agent_env_for_spawn).
+        self._agent_env_snapshot = None
 
         # Kiro's internal macOS sandbox replaces (rather than nests inside)
         # Kiro Crew's Seatbelt profile. Refuse a delegated agent workspace that
@@ -6095,6 +6113,7 @@ class AcpClient:
                 scratch_label=self._session_key or "session",
                 env_before_scrub=_env_before_scrub,
                 env_after_scrub=_env_after_scrub,
+                agent_env=self._agent_env_snapshot,
                 extra_hidden_dirs=plan.extra_hidden_dirs,
                 extra_expose_files=plan.extra_expose_files,
                 internal_sandbox=self.backend in ACP_BACKENDS_INTERNAL_SANDBOX,
