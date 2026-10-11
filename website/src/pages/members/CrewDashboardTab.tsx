@@ -26,7 +26,7 @@ export default function CrewDashboardTab({ slug, member, displayName, onAct }: {
   return (
     <div className="h-full min-h-0 flex flex-col" data-testid="crew-dashboard-tab">
       <ErrorBoundary>
-        <Suspense fallback={<p role="status" className="text-sm text-muted">{t('pages.membersPage.webview_rendering')}</p>}>
+        <Suspense fallback={<p role="status" className="text-sm text-muted">{t('pages.membersPage.dashboard_loading')}</p>}>
           {/* Keyed on the slug: a different crewmate is a different instance, a
               different manifest and a different minted document, and the held
               "last good page" must not survive the switch -- one crewmate's

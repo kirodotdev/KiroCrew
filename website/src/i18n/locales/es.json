@@ -17794,6 +17794,7 @@
       "webview_refresh_error": "No se pudo actualizar la vista publicada. Se muestra la última versión cargada.",
       "webview_refresh_error_aged": "No se pudo actualizar la vista publicada. Se muestra la versión de {{ago}}.",
       "webview_frame_title": "Vista publicada por {{crew}}",
+      "dashboard_loading": "Cargando el panel…",
       "webview_rendering": "Mostrando la vista publicada…",
       "webview_docked_rendering": "Renderizando la tarjeta de estado…",
       "webview_docked_error": "No se pudo renderizar la tarjeta de estado. Es posible que el panel completo aún se abra abajo.",

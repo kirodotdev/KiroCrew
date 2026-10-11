@@ -17540,6 +17540,7 @@
       "webview_refresh_error": "Die veröffentlichte Ansicht konnte nicht aktualisiert werden. Die zuletzt geladene Version wird angezeigt.",
       "webview_refresh_error_aged": "Die veröffentlichte Ansicht konnte nicht aktualisiert werden. Die Version von {{ago}} wird angezeigt.",
       "webview_frame_title": "Von {{crew}} veröffentlichte Ansicht",
+      "dashboard_loading": "Dashboard wird geladen…",
       "webview_rendering": "Veröffentlichte Ansicht wird angezeigt…",
       "webview_docked_rendering": "Statuskarte wird gerendert…",
       "webview_docked_error": "Die Statuskarte konnte nicht gerendert werden. Das vollständige Dashboard lässt sich unten möglicherweise trotzdem öffnen.",

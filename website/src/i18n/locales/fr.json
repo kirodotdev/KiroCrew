@@ -17794,6 +17794,7 @@
       "webview_refresh_error": "Impossible d’actualiser la vue publiée. La dernière version chargée est affichée.",
       "webview_refresh_error_aged": "Impossible d’actualiser la vue publiée. La version datant de {{ago}} est affichée.",
       "webview_frame_title": "Vue publiée par {{crew}}",
+      "dashboard_loading": "Chargement du tableau de bord…",
       "webview_rendering": "Affichage de la vue publiée…",
       "webview_docked_rendering": "Affichage de la carte d'état…",
       "webview_docked_error": "La carte d'état n'a pas pu être affichée. Le tableau de bord complet peut encore s'ouvrir ci-dessous.",

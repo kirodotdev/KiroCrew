@@ -69,6 +69,9 @@ vi.mock('../../api/client', () => ({
     // the crewmate's dynamic dashboard, mocked out below), but other surfaces on
     // this page still open it, and an unstubbed read rejects into a red alert.
     memberPanel: vi.fn(() => Promise.resolve({ panel: null, html: null })),
+    // With the preview off the Dashboard tab asks whether the crewmate ADOPTED a
+    // page; version 0 is the default page, so the published view stays.
+    memberDashboard: vi.fn(() => Promise.resolve({ instance_version: 0, template: { id: 'default', version: 1 }, html: '', manifest: {}, state: 'empty', state_reason: '' })),
     // The panel's session-status frame reads the crewmate's automatic dashboard
     // card. "Waiting, nothing published" is the state every case here is about;
     // an unstubbed read rejects and the frame raises the same red alert, which
@@ -1319,6 +1322,8 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
     expect(stub).toHaveAttribute('data-slug', 'oncall')
     expect(api.memberPanel).not.toHaveBeenCalled()
+    // With the preview on the tab never asks whether a page was adopted.
+    expect(api.memberDashboard).not.toHaveBeenCalled()
     expect(screen.queryByTestId('crew-webview-empty')).toBeNull()
     expect(screen.queryByTestId('member-identity-row')).toBeNull()
   })
@@ -1338,8 +1343,84 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     // The published view's own read is issued, and its empty state is drawn.
     await waitFor(() => expect(api.memberPanel).toHaveBeenCalledWith('oncall', 'oncall'), PANE_READY)
     expect(await screen.findByTestId('crew-webview-empty', undefined, PANE_READY)).toBeInTheDocument()
+    // The adoption read ran and answered the default page, so the gate held.
+    await waitFor(() => expect(api.memberDashboard).toHaveBeenCalledWith('oncall', 'oncall', expect.any(String)), PANE_READY)
     // And the dynamic dashboard is NOT mounted, which is the half that makes this
     // a gate rather than two surfaces stacked.
+    expect(screen.queryByTestId('crew-dashboard-stub')).toBeNull()
+  })
+
+  it('with the preview OFF a crewmate with an ADOPTED page shows that page', async () => {
+    // `dashboard_apply` landed (instance version above 0): the person chose this
+    // page, so the tab draws it rather than the published view.
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    vi.mocked(api.memberDashboard).mockResolvedValue({ instance_version: 2, template: { id: 'flow', version: 1 }, html: '<p>flow</p>', manifest: {}, state: 'live', state_reason: '' } as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-dashboard')).toBeInTheDocument()
+    const stub = await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)
+    expect(stub).toHaveAttribute('data-slug', 'oncall')
+    expect(screen.queryByTestId('crew-webview-empty')).toBeNull()
+  })
+
+  it('with the preview OFF the tab draws neither page until the adoption read answers', async () => {
+    // Drawing the published view first and swapping it away would flash the
+    // wrong page on every open of a crewmate with an adopted one.
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    vi.mocked(api.memberDashboard).mockReturnValue(new Promise(() => {}) as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-dashboard-deciding', undefined, PANE_READY)).toBeInTheDocument()
+    expect(api.memberPanel).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('crew-dashboard-stub')).toBeNull()
+  })
+
+  it('with the preview OFF a FAILED adoption read is said, with a retry that recovers', async () => {
+    // A 502 is not an answer about the crewmate: drawing the published view would
+    // hide an adopted page behind a failure nobody was told about.
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    vi.mocked(api.memberDashboard)
+      .mockRejectedValueOnce(Object.assign(new Error('bad gateway'), { status: 502 }))
+      .mockResolvedValue({ instance_version: 2, template: { id: 'flow', version: 1 }, html: '', manifest: {}, state: 'live', state_reason: '' } as never)
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('member-dashboard-read-error', undefined, PANE_READY)).toBeInTheDocument()
+    expect(api.memberPanel).not.toHaveBeenCalled()
+    expect(screen.queryByTestId('crew-dashboard-stub')).toBeNull()
+    fireEvent.click(screen.getByTestId('member-dashboard-read-retry'))
+    expect(await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)).toHaveAttribute('data-slug', 'oncall')
+    expect(screen.queryByTestId('member-dashboard-read-error')).toBeNull()
+  })
+
+  it('with the preview OFF a FAILED refetch over a held default page is said, not hidden behind the panel', async () => {
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    const { queryClient } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('crew-webview-empty', undefined, PANE_READY)).toBeInTheDocument()
+    vi.mocked(api.memberDashboard).mockRejectedValue(Object.assign(new Error('bad gateway'), { status: 502 }))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['member-dashboard'] }) })
+    expect(await screen.findByTestId('member-dashboard-read-error', undefined, PANE_READY)).toBeInTheDocument()
+  })
+
+  it('with the preview OFF a FAILED refetch over a held ADOPTED page keeps the page', async () => {
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    vi.mocked(api.memberDashboard).mockResolvedValue({ instance_version: 2, template: { id: 'flow', version: 1 }, html: '', manifest: {}, state: 'live', state_reason: '' } as never)
+    const { queryClient } = await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('crew-dashboard-stub', undefined, PANE_READY)).toBeInTheDocument()
+    vi.mocked(api.memberDashboard).mockRejectedValue(Object.assign(new Error('bad gateway'), { status: 502 }))
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['member-dashboard'] }) })
+    expect(screen.getByTestId('crew-dashboard-stub')).toBeInTheDocument()
+    expect(screen.queryByTestId('member-dashboard-read-error')).toBeNull()
+  })
+
+  it('with the preview OFF a refused adoption read keeps the published view', async () => {
+    // The dashboard read is owner-gated; a refusal is not an adopted page.
+    localStorage.removeItem(PREVIEW_DASHBOARD)
+    vi.mocked(api.memberDashboard).mockRejectedValue(Object.assign(new Error('owner_only'), { status: 403 }))
+    await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
+    fireEvent.click(await rosterRow('oncall'))
+    expect(await screen.findByTestId('crew-webview-empty', undefined, PANE_READY)).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-stub')).toBeNull()
   })
 
