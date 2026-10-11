@@ -219,6 +219,77 @@ class TestSpawnSubAgentsNamesTheDeferral:
         assert not [r for r in records if r.get("status") == "queued"]
 
 
+class TestSpawnSubAgentsHintsEveryUnreadChild:
+    """A child that STARTED (not gate-deferred) and whose final read is the
+    gateway not answering keeps its error entry, and gets the same hint not to
+    re-spawn it blind; a child that finished with an error gets its text only."""
+
+    @staticmethod
+    def _call(monkeypatch, status: dict) -> list[dict]:
+        clock = {"now": 0.0}
+
+        class _Time:
+            @staticmethod
+            def monotonic() -> float:
+                clock["now"] += 30.0
+                return clock["now"]
+
+            @staticmethod
+            def sleep(_s: float) -> None:
+                pass
+
+        def _post(path: str, body: dict, **_kw: object) -> dict:
+            if path == "/api/spawn":
+                return {"id": "s1", "status": "spawned"}
+            return {}
+
+        def _get(path: str, **_kw: object) -> dict:
+            return dict(status)
+
+        monkeypatch.setenv("KIROCREW_SPAWN_SUB_AGENTS_MAX_WAIT", "60")
+        with (
+            patch.object(spawn_tools.mcp_core, "_post", side_effect=_post),
+            patch.object(spawn_tools.mcp_core, "_get", side_effect=_get),
+            patch.object(spawn_tools.mcp_core, "time", _Time),
+            patch.object(spawn_tools.mcp_core, "_resolve_session_key", return_value="chat-1"),
+            patch.object(spawn_tools, "_hold_for_parent_resume", return_value=None),
+            patch.object(spawn_tools, "is_tool_cancelled", return_value=False),
+        ):
+            out = spawn_tools.spawn_sub_agents(
+                "spawn_sub_agents",
+                {
+                    "agents": [{"prompt": "summarize the log"}],
+                    "solo_reason": "bulk_data",
+                    "solo_details": "a large log only the summary of which is needed",
+                },
+            )
+        return [json.loads(chunk) for chunk in out.split("\n\n")]
+
+    def test_a_started_child_the_gateway_did_not_answer_for_gets_the_hint(
+        self, monkeypatch
+    ) -> None:
+        records = self._call(
+            monkeypatch, {"error": "<urlopen error [Errno 111] Connection refused>"}
+        )
+        errors = [r for r in records if r.get("status") == "error"]
+        assert len(errors) == 1
+        assert errors[0]["hint"] == (
+            "accepted at spawn time; its state couldn't be read now; "
+            "check spawn_status before re-spawning"
+        )
+
+    def test_a_child_that_finished_with_an_error_gets_its_text_and_no_hint(
+        self, monkeypatch
+    ) -> None:
+        records = self._call(
+            monkeypatch,
+            {"agent": "worker", "done": True, "error": "run failed", "result": "partial"},
+        )
+        errors = [r for r in records if r.get("status") == "error"]
+        assert len(errors) == 1 and errors[0]["error"] == "run failed"
+        assert "text" in errors[0] and "hint" not in errors[0]
+
+
 class TestSpawnSubAgentsWaitsOnlyForStartedWork:
     """A member still queued and not started settles the WAIT: the call returns
     once every member is done, errored or queued, and only members not yet
