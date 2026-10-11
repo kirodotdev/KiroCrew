@@ -44,9 +44,6 @@ def cfg_file(tmp_path: Path):
     live.reset_for_tests()
 
 
-# ── flatten / diff ────────────────────────────────────────────────────────
-
-
 class TestFlattenDiff:
     def test_flatten_leaves_and_lists(self) -> None:
         flat = flatten_config({"a": {"b": 1, "c": [1, 2]}, "d": {}, "e": "x"})

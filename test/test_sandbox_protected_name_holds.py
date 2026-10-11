@@ -290,6 +290,14 @@ class TestLeafOnlyPopulationIsRecorded:
     #:
     #: * ``credential_redaction.json`` -- the owner's credential-redaction
     #:   switch, on the same read-only floor as ``file_delivery_consent.json``;
+    #: * ``standing-approval`` -- the operator's standing auto-approve keystone
+    #:   DIRECTORY, a top-level crew-home leaf (counted once per crew-home
+    #:   prefix). No enclosing crew-home directory can stand in for it without
+    #:   masking unrelated siblings, so leaf-only is the only hold; the
+    #:   host-side-republish risk this cap guards is instead answered by
+    #:   pre-creating it empty at 0700 (``_CREW_PRECREATE_HIDDEN_DIR_LEAVES``),
+    #:   so the bind always has a name to cover and an empty root reads as no
+    #:   grant;
     #: * ``auth-store-staging`` -- the masked directory the two gateway auth
     #:   stores publish through, so the temp holding a full signing key or
     #:   refresh-chain state is never listable from inside the namespace;
@@ -333,7 +341,15 @@ class TestLeafOnlyPopulationIsRecorded:
     #: tier lists hold ``.vault`` only at the two ``$HOME``-joined spellings,
     #: so the resolved ``config_dir()`` spelling is a third, leaf-only name,
     #: the same hold ``kas`` gets there.
-    EXPECTED: dict[str, int] = {"standard": 269, "cc": 276, "strict": 277}
+    #:
+    #: One more root-level leaf, three more entries per tier:
+    #:
+    #: * ``standing-approval`` -- the operator's standing auto-approve keystone
+    #:   directory, materialised empty at 0700 before every spawn so the data-home
+    #:   root cannot hold a second name a sandboxed write could plant. Its parent is
+    #:   the writable data-home root, so no enclosing mask can hold the bare leaf; it
+    #:   is leaf-only for the same reason as ``config.json`` and ``registry_trust.json``.
+    EXPECTED: dict[str, int] = {"standard": 272, "cc": 279, "strict": 280}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
