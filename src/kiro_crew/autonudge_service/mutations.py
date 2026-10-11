@@ -51,6 +51,7 @@ from kiro_crew.autonudge_service.model import (
     is_structured_monitor_loop,
     new_goal_token,
     reason_in,
+    unreadable_bound_field,
 )
 from kiro_crew.autonudge_service.subject import (
     infer_monitor,
@@ -922,7 +923,8 @@ async def _update_unserialized(
             loop.max_cycles = max(0, int(max_cycles))
         if max_runtime_secs is not None:
             loop.max_runtime_secs = max(0, int(max_runtime_secs))
-        #: Set when ``active=True`` reached a FINISHED row and was declined.
+        #: Set when ``active=True`` reached a FINISHED row, or a row with an
+        #: unreadable stored bound, and was declined.
         refused_revival = False
         if active is not None:
             if (
@@ -977,6 +979,18 @@ async def _update_unserialized(
                     "AutoNudge: loop %s is finished (%s) — not reviving it",
                     loop.id,
                     loop.stopped_reason,
+                )
+                refused_revival = True
+            elif active and not loop.active and unreadable_bound_field(loop) is not None:
+                # A stored bound with no lossless integer reading (see ``_load``)
+                # is a limit the user typed that nothing can read, so running the
+                # loop would run it without that limit. Declined whoever asks,
+                # like a finished row, until a fresh bound replaces the value; a
+                # bound passed with this same call already has, above.
+                logger.info(
+                    "AutoNudge: loop %s has an unreadable %s — not reviving it",
+                    loop.id,
+                    unreadable_bound_field(loop),
                 )
                 refused_revival = True
             # TERMINAL-TRANSITION ATOMICITY: a bound-tagged deactivation

@@ -12,8 +12,10 @@ or a file.
 
 from __future__ import annotations
 
+import decimal
 import math
 import secrets
+import sys
 import time
 from dataclasses import dataclass, field
 
@@ -720,6 +722,67 @@ def _positive_number(value: object) -> float:
     except OverflowError:
         return 0
     return number if math.isfinite(number) and number > 0 else 0
+
+
+#: The two persisted bounds a user types, in the order a log line names them.
+LOOP_BOUND_FIELDS = ("max_cycles", "max_runtime_secs")
+
+#: The largest limit a stored bound string that is not plain digits can name: the
+#: largest float, the range a float reading of such a string accepted. It also keeps
+#: ``int()`` from building an integer of any size from an exponent (``"1e999999999"``).
+_MAX_TEXT_BOUND = decimal.Decimal(sys.float_info.max)
+
+
+def _text_bound(text: str) -> int | None:
+    """The limit a stored bound string names, read exactly, or None.
+
+    Plain digits are read by ``int()``. Any other text is read as a decimal, never
+    through a float, which would read ``"1e-400"`` as 0 and ``"9007199254740993.0"``
+    without its last digit. It names a limit only when it is finite, non-negative,
+    whole and at most ``_MAX_TEXT_BOUND``.
+    """
+    text = text.strip()
+    if text.isascii() and text.isdigit():
+        try:
+            return int(text)
+        except ValueError:  # more digits than int() reads from text
+            return None
+    try:
+        number = decimal.Decimal(text)
+    except (decimal.DecimalException, ValueError):
+        return None
+    if not number.is_finite() or number < 0 or number > _MAX_TEXT_BOUND:
+        return None
+    whole = number.to_integral_value()
+    return int(whole) if whole == number else None
+
+
+def stored_bound(value: object) -> int | None:
+    """The limit a STORED loop bound names, as an int >= 0, or None when it names none.
+
+    A lossless integer form is the limit the user typed: a non-negative int, a
+    whole finite float, or a string holding one exactly (``"24"``, ``" 24 "``,
+    ``"24.0"``; see :func:`_text_bound`). Anything else -- ``null``, a negative or
+    fractional number, ``nan``, a bool, other text, a container -- cannot be read
+    as a limit, and reading it as 0 would quietly remove one, so it answers None.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, str):
+        return _text_bound(value)
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    if isinstance(value, float) and math.isfinite(value) and value >= 0 and value.is_integer():
+        return int(value)
+    return None
+
+
+def unreadable_bound_field(loop: "NudgeLoop") -> str | None:
+    """The first bound of *loop* with no lossless integer reading, else None."""
+    for name in LOOP_BOUND_FIELDS:
+        if stored_bound(getattr(loop, name, 0)) is None:
+            return name
+    return None
 
 
 def nudge_cycle_header(loop: "NudgeLoop", now: float | None = None) -> str:

@@ -4528,7 +4528,12 @@ lanes are in [decisions.md §14](decisions.md#14-the-wake-judges-second-lane-nud
 
 The shared policy is `monitoring.max_runtime_secs` (see [config](config.md)).
 Tools and REST creation/updates use `monitoring.limits`; a budget is checked
-only when it is written, and a persisted budget is left as stored on load.
+against them only when it is written, never on load. On load, a persisted
+`max_cycles` or `max_runtime_secs` in a lossless integer form (`"24"`, `24.0`)
+is kept as that int. One with no integer reading is left as stored: an active
+loop holding it is stopped under `structural_terminal`, and no loop holding it
+resumes until a fresh bound replaces it. Every other persisted budget is left
+as stored.
 Legacy general AutoNudge still allows zero as its pre-existing unbounded value;
 monitor tools and structured monitors require a positive finite budget for
 `max_runtime_secs`, `max_tokens` and `max_provider_errors`. `max_agent_turns` is
