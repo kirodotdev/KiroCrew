@@ -69,6 +69,15 @@ def _kiro_client(advertised, resolved, model=""):
     client._acp_backend = ACP_BACKEND_KIRO
     client._resolved_model_id = resolved
     client._available_models = [{"modelId": m, "name": m} for m in advertised]
+
+    # The withhold re-asks entitlement on a throwaway probe process before it
+    # drops a pin. Held to a FAILED probe here (no evidence), so these pin the
+    # snapshot's own verdict and never launch a real kiro-cli -- a host with one
+    # installed would otherwise answer with its own account's list.
+    async def _no_probe_evidence():
+        return [], 0.0
+
+    client._probe_advertised_models = _no_probe_evidence
     return client
 
 
@@ -116,9 +125,13 @@ class TestClientInheritExits:
         client = _kiro_client(["gpt-5.6-sol"], "auto", model="claude-opus-4.8")
         sent: list = []
         client._send_request = _sent(sent)
+        # The revalidation before the withhold must stay on the stubbed probe:
+        # a real spawn here would ask the developer's own kiro-cli account.
+        client._spawn = AsyncMock()
 
         await client._apply_startup_model()
 
+        client._spawn.assert_not_awaited()
         assert sent == [
             (METHOD_SET_MODEL, {"sessionId": "sess-1", "modelId": "gpt-5.6-sol"}),
         ]
