@@ -785,13 +785,15 @@ def test_find_and_replace_stays_available_when_a_proposal_is_hidden() -> None:
 def test_a_document_the_scrub_itself_breaks_is_withheld() -> None:
     """The parser must judge the STORED bytes, because the scrub can break the document.
 
-    A credential-assignment pattern spans a name, its colon and its value, so splicing one
-    out of a JSON document leaves text that does not parse. Judging JSON-ness on that text
-    calls a real document prose and hands it back unscanned, and the escaped control-split
-    credential beside it never reaches the descent.
+    A credential-assignment pattern redacts the VALUE that follows a key and keeps the key,
+    so a quoted JSON string value survives as a string -- but an UNQUOTED scalar in that
+    position (`"aws_secret_access_key": 0`, as a serializer writes a number, `null` or a
+    boolean) is replaced by a bare tag, and the result does not parse. Judging JSON-ness
+    on that text calls a real document prose and hands it back unscanned, and the escaped
+    control-split credential beside it never reaches the descent.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    stored = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    stored = '{"aws_secret_access_key": 0, "d": "never commit ' + escaped + '"}'
 
     assert json.loads(stored)["d"]
     spliced = _shared._scrub_text(stored)
@@ -864,16 +866,28 @@ def test_keeping_the_current_value_passes_the_proposal_bar_too() -> None:
 def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
     """The stored-bytes test belongs at every level, not only the outermost field.
 
-    A revision snapshot is a document carried inside a document. The outer text can survive
-    the scrub untouched while the inner one, once decoded and scanned, is spliced apart by a
-    credential-assignment match. Judging the inner level on its scrubbed form hands the leaf
-    back with its own payload unwalked.
+    A revision snapshot is a document carried inside a document. The inner one, once
+    decoded and scanned, is broken by a credential-assignment match whose value was an
+    unquoted scalar. Judging the inner level on its scrubbed form hands the leaf back with
+    its own payload unwalked.
+
+    The redactor reads a key-anchored pair through one level of string-literal escaping,
+    so the OUTER text scrub now reaches `\\"aws_secret_access_key\\": 0` inside the carried
+    document and breaks it before the walk descends. The level below must therefore be
+    judged on the inner bytes the STORE held (decoded beside the scrubbed text), not on the
+    text in hand: handed only the broken text, it called a real document prose that never
+    parsed and shipped the split credential inside it.
     """
     escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
-    inner = '{"aws_secret_access_key": "x", "d": "never commit ' + escaped + '"}'
+    inner = '{"aws_secret_access_key": 0, "d": "never commit ' + escaped + '"}'
     stored = json.dumps({"snapshot": inner})
 
-    assert _shared._scrub_text(stored) == stored
+    # The outer scrub rewrites the carried pair's scalar in place: the outer document
+    # still parses, the inner one does not.
+    outer_scrubbed = _shared._scrub_text(stored)
+    assert outer_scrubbed != stored
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(json.loads(outer_scrubbed)["snapshot"])
     with pytest.raises(json.JSONDecodeError):
         json.loads(_shared._scrub_text(inner))
 
@@ -883,3 +897,57 @@ def test_a_nested_document_the_leaf_scrub_breaks_is_withheld_too() -> None:
     assert json.loads(leaf) == _UNSCANNABLE_JSON
     assert escaped not in out
     assert CREDENTIAL not in normalize_for_scanning(out)
+
+
+def test_a_member_the_scrub_renames_is_still_walked_on_its_stored_bytes() -> None:
+    """The stored twin is found by POSITION, not by the name the scrub left behind.
+
+    An object's names are scrubbed like its values, so a member whose name is a
+    credential comes out of the text scrub under the tag. A twin looked up by that new
+    name finds nothing, the level falls back to the text in hand, and the carried
+    document the outer scrub broke (its `\\"aws_secret_access_key\\": 0` scalar) reads as
+    prose that never parsed: the split credential inside it ships. The two decodes
+    hold the same members in the same order -- a scrub rewrites inside string tokens
+    or breaks the document, it never adds or removes a member -- so the i-th scrubbed
+    member's twin is the i-th stored one, whatever the scrub called it (GPT 6.1,
+    `_shared.py:194`).
+    """
+    escaped = f"{CREDENTIAL[:8]}\\u0001{CREDENTIAL[8:]}"
+    inner = '{"aws_secret_access_key": 0, "d": "never commit ' + escaped + '"}'
+    stored = json.dumps({CREDENTIAL: inner, "note": "keep"})
+
+    # The outer scrub renames the member and breaks the document it carries.
+    renamed = json.loads(_shared._scrub_text(stored))
+    assert CREDENTIAL not in renamed and len(renamed) == 2
+    (name,) = [key for key in renamed if key != "note"]
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(renamed[name])
+
+    out = _redact_memory_field({"value_json": stored})["value_json"]
+
+    doc = json.loads(out)
+    assert doc["note"] == "keep"
+    leaf = [value for key, value in doc.items() if key != "note"][0]
+    assert json.loads(leaf) == _UNSCANNABLE_JSON
+    assert escaped not in out
+    assert CREDENTIAL not in normalize_for_scanning(out)
+
+
+def test_a_level_whose_stored_twin_does_not_line_up_is_withheld() -> None:
+    """When the two decodes disagree on shape, nothing certifies the payload: withhold.
+
+    The walk is handed the stored document to judge each level on its own bytes. A
+    level whose twin is of another shape or another size is one the scrub changed
+    structurally, and the text in hand is then exactly what cannot be trusted. Falling
+    back to it was the hole; the marker goes out instead.
+    """
+    decoded = {"a": ["x", "y"], "b": "z"}
+    with pytest.raises(_shared._UnscannableJSON):
+        _shared._scrub_decoded(decoded, 0, {"a": ["x"], "b": "z"})
+    with pytest.raises(_shared._UnscannableJSON):
+        _shared._scrub_decoded(decoded, 0, {"a": "x", "b": "z"})
+    with pytest.raises(_shared._UnscannableJSON):
+        _shared._scrub_decoded(decoded, 0, {"a": ["x", "y"]})
+    # No stored document at all is the legacy path: judged on the text in hand.
+    assert _shared._scrub_decoded(decoded, 0, None) == decoded
+    assert _shared._scrub_decoded(decoded, 0, {"a": ["x", "y"], "b": "z"}) == decoded

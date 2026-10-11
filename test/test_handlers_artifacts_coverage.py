@@ -1634,3 +1634,29 @@ class TestRedactRemoteResponseDepthCap:
     def test_external_id_with_hard_credential_is_replaced(self) -> None:
         out = _redact_remote_response({"external_id": "AKIAIOSFODNN7EXAMPLE"})
         assert out["external_id"] == art_handlers._REMOTE_ID_CRED_TAG
+
+    def test_nested_external_id_with_a_labelled_secret_is_replaced(self) -> None:
+        """A labelled AWS value (`aws_secret_access_key=<v>`) has no prefix of its
+        own: the hard floor finds it by its label through the scanner
+        (`hard_credential_hit`), not through the bare marker regex, which lost
+        the labelled alternatives when the scanner took them over. The id branch
+        (reached for an id BELOW the top level, where the walk carries the key)
+        read the bare regex and let the secret through to the dashboard."""
+        secret = "aws_secret_access_key=" + "wJalrXUtnFEMI" + "/K7MDENG/bPxRfiCY"
+        out = _redact_remote_response({"items": [{"external_id": secret}]})
+        assert out["items"][0]["external_id"] == art_handlers._REMOTE_ID_CRED_TAG
+
+    def test_nested_external_id_with_a_base64_encoded_labelled_secret_is_replaced(self) -> None:
+        secret = "SessionToken=" + "FQoGZXIvYXdzEBYaDF" + "example-not-a-credential-0123"
+        encoded = base64.b64encode(secret.encode()).decode()
+        assert len(encoded) >= 40, encoded
+        out = _redact_remote_response({"items": [{"external_id": encoded}]})
+        assert out["items"][0]["external_id"] == art_handlers._REMOTE_ID_CRED_TAG
+
+    def test_nested_external_id_filled_by_the_redactors_own_tag_survives(self) -> None:
+        """The label with the redactor's tag as its whole value holds no secret:
+        the floor reads it as pass 1 does (a tag run filling the value is not
+        live), so a benign id is not dropped for carrying cleaned text."""
+        cleaned = "aws_secret_access_key=[REDACTED: credential]"
+        out = _redact_remote_response({"items": [{"external_id": cleaned}]})
+        assert out["items"][0]["external_id"] == cleaned

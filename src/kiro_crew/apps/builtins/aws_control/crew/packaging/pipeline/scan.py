@@ -20,6 +20,7 @@ import math
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 # The AWS key-ID prefix group is taken from ``kiro_crew.credential_patterns`` when
 # that import works, because a second hand-written copy of it is exactly the drift a
@@ -56,24 +57,360 @@ _VENDOR_TOKEN_COMPILED: tuple[tuple[str, re.Pattern[str]], ...] = tuple(
     (label, re.compile(rf"\b{fragment}\b")) for label, fragment in _VENDOR_TOKEN_PATTERNS
 )
 
-_HARD_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+# The redactor keeps the key that names a value and replaces the value alone, so a
+# skill stored already redacted reads ``aws_secret_access_key=[REDACTED: credential]``
+# -- and a labelled pattern that ran on every line, whether or not the canonical
+# detector loads, matched its ``[REDACTED:`` head as the value and aborted the crew
+# build on text that holds no secret. The value is therefore read by a VENDORED copy
+# of the canonical value scanner (``kiro_crew.security.scan_keyed_value``): one
+# tokenizer, one token per step, with the opener, the escaped-whitespace head, the
+# tag run, the escape pair, the doubled quote and the line end as its rules, so the
+# standalone path cannot drift from the canonical one on a quote or escape shape
+# (``test/test_redaction_keyed_value_fixture.py`` pins the two to one generated
+# fixture). A tag run is exempt only where it FILLS the value; a tag heading a
+# quoted value that continues, glued bytes, a tag closed by a doubled quote, or a
+# tag in another case is a value and still a finding. The registry of the
+# redactor's own tags is read from the scrubber so a tag added there reaches here
+# with no edit; the fallback restates the two literals for the standalone case.
+try:  # pragma: no cover - exercised by whichever branch the environment allows
+    from kiro_crew.security import CREDENTIAL_REDACTION_TAGS as _REDACTION_TAGS
+except Exception:  # pragma: no cover
+    _REDACTION_TAGS = ("[REDACTED: credential]", "[REDACTED: encoded credential]")
+
+_LABEL_RE = re.compile(
+    r"(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token)"
+    r"(?:\\?[\"'])?\s*[:=]\s*",
+    re.IGNORECASE,
+)
+_WS_ESCAPES = frozenset("nrtfv")
+_QUOTES = frozenset("\"'")
+#: The canonical scanner's line-quote state: (open literal kind, backslash
+#: pending, kind a quote just closed, last byte, inner literal's escaped
+#: delimiter); a line starts outside.
+_LINE_START = ("", False, "", "", "")
+
+
+def _advance_line_state(state, text: str, start: int, end: int):
+    """Vendored ``_advance_line_state``: a raw line break resets; outside a
+    literal a quote opens one unless the byte before it is a word byte, and a
+    backslash escapes the next byte; inside, the same kind closes, a doubled
+    quote reopens as an escaped interior quote, and an escaped quote opens or
+    closes the inner literal of the escaped encoding."""
+    kind, escaped, closed, last, inner = state
+    for i in range(start, end):
+        c = text[i]
+        if c in "\r\n":
+            kind, escaped, closed, inner = "", False, "", ""
+        elif escaped:
+            escaped = False
+            if kind and c in _QUOTES:
+                delim = "\\" + c
+                if not inner:
+                    inner = delim
+                elif inner == delim:
+                    inner = ""
+        elif c == "\\":
+            escaped = True
+            closed = ""
+        elif kind:
+            if c == kind:
+                kind, closed, inner = "", c, ""
+        elif closed and c == closed:
+            kind, closed = c, ""
+        elif c in _QUOTES and not (last.isalnum() or last == "_"):
+            kind, closed = c, ""
+        else:
+            closed = ""
+        last = c
+    return kind, escaped, closed, last, inner
+
+
+def _enclosing_at(text: str, at: int) -> str:
+    """Vendored ``_enclosing_at``: the literals enclosing *at* (outer bare quote,
+    then the inner escaped delimiter), read back along the line."""
+    line_start = max(text.rfind("\n", 0, at), text.rfind("\r", 0, at)) + 1
+    state = _advance_line_state(_LINE_START, text, line_start, at)
+    return state[0] + state[4]
+
+
+def _innermost(enclosing: str) -> tuple[str, str]:
+    if len(enclosing) >= 3 and enclosing[-2] == "\\":
+        return enclosing[-2:], enclosing[:-2]
+    return enclosing[-1:], ""
+
+
+def _tag_run_end(text: str, i: int) -> int:
+    while True:
+        for tag in _REDACTION_TAGS:
+            if text.startswith(tag, i):
+                i += len(tag)
+                break
+        else:
+            return i
+
+
+def _inner_token(
+    text: str, i: int, escaped: bool, literal_quote: str, enclosing: str = ""
+) -> tuple[str, int]:
+    c = text[i]
+    if c == "\\":
+        if i + 1 >= len(text):
+            return "partial", 1
+        if escaped or enclosing.startswith('"') or len(enclosing) >= 3:
+            # The pair is ONE token, read before any delimiter test: inside a
+            # backslash-escaping literal (a `"` literal or an escaped inner one)
+            # every byte is in the literal's encoding whatever quote opens the
+            # value; a bare `'` literal has no escapes of its own.
+            nxt = text[i + 1]
+            if nxt in "\r\n":
+                return "backslash", 1  # no encoding pairs a backslash with a raw line break
+            if nxt == "\\":
+                return "backslash", 2
+            if nxt in "\"'":
+                if len(enclosing) >= 3 and nxt == enclosing[-1]:
+                    return "close", 2  # the inner literal's escaped delimiter
+                return "quote", 2
+            if nxt in "nr":
+                return "break", 2
+            if nxt in "tfv":
+                return "space", 2
+            return "char", 2
+        return "backslash", 1
+    if (escaped and c == literal_quote) or (enclosing and c == enclosing[0]):
+        return "close", 1
+    if c in "\r\n":
+        return "break", 1
+    if c.isspace():
+        return "space", 1
+    if c in "\"'":
+        return "quote", 1
+    return "char", 1
+
+
+def _prefix_run_end(text: str, i: int, enclosing: str) -> int:
+    """The index past the PREFIX run the structural byte (`,`, `}`, `]`) at *i*
+    heads: further structural bytes, a backslash paired with a structural byte or
+    another backslash (the escaped encoding's inner `\\\\` among them), and the
+    enclosing encoding's escaped whitespace between them. Read whole before the
+    value is judged: the base's value class admits `]` and a backslash, so
+    `key=]]<secret>` is a value to it, and a judgement of the first byte alone
+    left the secret after the pair standing. A backslash pair never heads a run:
+    there it is the value's first byte, so the caller asks only at a structural
+    byte."""
+    n = len(text)
+    while True:
+        j = i
+        while j < n:
+            kind, width = _inner_token(text, j, False, "", enclosing)
+            if kind == "char" and width == 1 and text[j] in ",}]":
+                j += 1
+            elif kind == "backslash" and (width == 2 or text[j + 1] in ",}]\\"):
+                j += 2
+            else:
+                break
+        while j < n:  # the enclosing encoding's escaped whitespace after the run
+            kind, width = _inner_token(text, j, False, "", enclosing)
+            if kind in ("space", "break") and width == 2:
+                j += width
+                continue
+            if kind != "backslash" or j + width >= n:
+                break
+            letter_kind, letter_width = _inner_token(text, j + width, False, "", enclosing)
+            if letter_kind != "char" or text[j + width] not in _WS_ESCAPES:
+                break
+            j += width + letter_width
+        if j == i:
+            return i
+        i = j
+
+
+def _no_value_opens_at(text: str, i: int, enclosing: str) -> bool:
+    """Whether NO value opens at the structural byte at *i*, where an unquoted
+    value would start: past the prefix run it heads nothing value-like follows --
+    whitespace, a line break, a quote (bare or escaped), a close, or a bare
+    backslash before one of those -- read as the inner token in the pair's
+    encoding; a value byte after the run makes the run the value's head. A run
+    reaching the text's end is no value, decided by the caller before this is
+    asked."""
+    j = _prefix_run_end(text, i, enclosing)
+    kind, _width = _inner_token(text, j, False, "", enclosing)
+    if kind == "backslash":
+        return text[j + 1] in "\"'" or text[j + 1].isspace()
+    return kind != "char"
+
+
+def _scan_value(text: str, at: int, enclosing: str | None = None) -> tuple[int, int, bool, str]:
+    """Vendored ``scan_keyed_value``: ``(start, end, closes, opener)`` of the value
+    whose separator ends at *at*, inside the literal *enclosing* (read back along
+    the line when not given). Byte-for-byte the canonical scanner's claim."""
+    if enclosing is None:
+        enclosing = _enclosing_at(text, at)
+    n = len(text)
+    opener = ""
+    if at < n and text[at] in "\"'":
+        opener = text[at]
+    elif at + 1 < n and text[at] == "\\" and text[at + 1] in "\"'":
+        opener = text[at : at + 2]
+    innermost, outer = _innermost(enclosing)
+    if enclosing and opener == enclosing[0] and text[at + 1 : at + 2] == opener:
+        # A doubled enclosing-kind quote where the value would open is the
+        # literal's escaped interior quote: the value's own quote, as written.
+        opener = opener * 2
+    elif enclosing and opener in (innermost, enclosing[0]):
+        # The enclosing literal's own close (the inner literal's escaped
+        # delimiter, or the outer literal's bare quote, which closes everything):
+        # the assignment inside it is empty and what follows the close is in the
+        # context outside it.
+        return _scan_value(text, at + len(opener), outer if opener == innermost else "")
+    escaped = opener.startswith("\\")
+    literal_quote = opener[-1] if opener else ""
+    start = i = at + len(opener)
+    while i < n:  # the head: escaped whitespace, unbounded
+        kind, width = _inner_token(text, i, escaped, literal_quote, enclosing)
+        if kind in ("space", "break") and width == 2:
+            i += width  # the enclosing encoding's escaped whitespace, a line break among it, is whitespace to the anchor
+            continue
+        if kind != "backslash" or i + width >= n:
+            break
+        letter_kind, letter_width = _inner_token(text, i + width, escaped, literal_quote, enclosing)
+        if letter_kind != "char" or text[i + width] not in _WS_ESCAPES:
+            break
+        i += width + letter_width
+    if not opener:
+        while i < n:
+            run = _tag_run_end(text, i)
+            if run > i:
+                i = run
+                continue
+            kind, width = _inner_token(text, i, False, "", enclosing)
+            if kind == "partial":
+                return start, i, True, ""
+            if kind == "char" and i == start and text[i] in ",}]":
+                # The token past the PREFIX run decides: the text's end,
+                # whitespace, a quote or a close, and no value opens; a value
+                # byte, and the run is the value's head, consumed with it.
+                run = _prefix_run_end(text, i, enclosing)
+                if run >= n or (text[run] == "\\" and run + 1 >= n):
+                    return start, i, True, ""
+                if _no_value_opens_at(text, i, enclosing):
+                    return start, i, True, ""
+                i = run
+                continue
+            if kind in ("space", "break", "close", "quote") or (
+                kind == "char" and i > start and text[i] in ",}"
+            ):
+                return start, i, True, ""
+            if kind == "backslash":
+                # A pair token is a byte of the value; a BARE backslash reads the
+                # byte after it (a lone one at the text's end is `partial` above):
+                # a quote or raw whitespace ends the value, any other pair is the
+                # value's, the two-byte spelling `\n` of a decoded URL path among them.
+                nxt = text[i + 1]
+                if width == 1 and (nxt in "\"'" or nxt.isspace()):
+                    return start, i, True, ""
+                i += 2
+                continue
+            i += width
+        return start, n, True, ""
+    while i < n:
+        run = _tag_run_end(text, i)
+        if run > i:
+            i = run
+            continue
+        kind, width = _inner_token(text, i, escaped, literal_quote, enclosing)
+        if kind == "close" and width == 1 and text[i + 1 : i + 2] == text[i]:
+            # A doubled enclosing-kind quote is an escaped interior quote; when
+            # the value opened with it, doubled again it is the value's escaped
+            # interior quote and alone it is the value's close.
+            if opener == text[i] * 2:
+                if text[i + 2 : i + 4] == opener:
+                    i += 4
+                    continue
+                return start, i, True, opener
+            i += 2
+            continue
+        if kind in ("partial", "break", "close"):
+            return start, i, False, opener
+        if kind == "backslash":
+            j = i + width
+            if j >= n:
+                return start, i, False, opener
+            nxt_kind, nxt_width = _inner_token(text, j, escaped, literal_quote, enclosing)
+            if nxt_kind == "break":
+                i = j  # a backslash does not escape a line break, raw or inner
+                continue
+            if nxt_kind == "partial":
+                return start, j, False, opener
+            if nxt_kind == "close" and nxt_width == 1:  # a bare enclosing close is never escaped
+                # Escapes pair up at the value's own depth: after the escaped
+                # encoding's inner backslash (`\\`) a BARE quote is the enclosing
+                # literal's close, never the escaped token; doubled, its escaped
+                # interior quote.
+                if text[j + 1 : j + 2] == text[j]:
+                    i = j + 2
+                    continue
+                return start, j, False, opener
+            i = j + nxt_width
+            continue
+        if kind == "quote" and text[i : i + width] == opener:
+            j = i + width
+            if j < n and text[j : j + width] == opener:
+                i = j + width
+                continue
+            return start, i, True, opener
+        i += width  # a quote of the other kind is a byte of the value
+    return start, n, False, opener
+
+
+def _is_tag_run(text: str, start: int, end: int) -> bool:
+    return end > start and _tag_run_end(text, start) == end
+
+
+class _LabelledSecretMatch:
+    """The ``re.Match`` surface the two consumers below read: the matched text."""
+
+    def __init__(self, text: str, start: int, end: int) -> None:
+        self._text, self._start, self._end = text, start, end
+
+    def group(self, _index: int = 0) -> str:
+        return self._text[self._start : self._end]
+
+    def start(self) -> int:
+        return self._start
+
+
+class _LabelledSecretMatcher:
+    """A LABELLED secret: the key naming an AWS secret or session token, its
+    separator, and a LIVE value as the vendored scanner reads it -- a non-empty
+    value that is not a registered tag run filling it. ``search`` returns the
+    first such pair on the line, as a ``re.Pattern`` would."""
+
+    def search(self, text: str) -> _LabelledSecretMatch | None:
+        state, pos = _LINE_START, 0
+        for label in _LABEL_RE.finditer(text):
+            state = _advance_line_state(state, text, pos, label.end())
+            pos = label.end()
+            start, end, closes, _opener = _scan_value(text, label.end(), state[0] + state[4])
+            if end <= start:
+                continue
+            if _is_tag_run(text, start, end) and closes:
+                continue
+            return _LabelledSecretMatch(text, label.start(), end)
+        return None
+
+
+_HARD_PATTERNS: tuple[tuple[str, Any], ...] = (
     ("aws-access-key", re.compile(rf"\b(?:{_AWS_KEY_PREFIXES})[0-9A-Z]{{16}}\b")),
     # A LABELLED secret. The pattern above matches an AWS key ID, which has a
     # recognisable prefix; the secret access key is 40 characters of base64 with no
     # prefix at all, so nothing above can see it and `SecretAccessKey=<secret>` in a
     # prompt reached the deployed image. What makes it findable is the label, which is
-    # how this repo's own detector finds it (`security.py:_HARD_CREDENTIAL_RE`,
+    # how this repo's own detector finds it (``security.exfil.hard_credential_hit``,
     # described in security_posture.py as covering "labelled secret-access-key and
-    # session-token forms"). Spelled here from that same shape, and the canonical
-    # module is preferred over it below when importable.
-    (
-        "aws-secret-labelled",
-        re.compile(
-            r"(?:SecretAccessKey|aws_secret_access_key|SessionToken|aws_session_token)"
-            r"[\"']?\s*[:=]\s*[\"']?[^\s\"',}]+",
-            re.IGNORECASE,
-        ),
-    ),
+    # session-token forms"). The value is the vendored scanner's, so the two agree
+    # on every quote and escape shape; the canonical module is preferred below when
+    # importable.
+    ("aws-secret-labelled", _LabelledSecretMatcher()),
     ("private-key", re.compile(r"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP )?PRIVATE KEY-----")),
     # The same header after URL or form encoding, where the spaces have become ``+`` or
     # ``%20``. The shared detector spells its separator ``[\s+%]`` for exactly this, and
@@ -124,11 +461,11 @@ class Leak:
 #: fallback that lets this module run without ``kiro_crew`` installed -- the same
 #: bargain ``_AWS_KEY_PREFIXES`` strikes, for the same reason.
 try:  # pragma: no cover - exercised by whichever branch the environment allows
-    from kiro_crew.security import _HARD_CREDENTIAL_RE
+    from kiro_crew.security import hard_credential_hit
 
-    _CANONICAL_CREDENTIAL_RE: re.Pattern[str] | None = _HARD_CREDENTIAL_RE
+    _CANONICAL_CREDENTIAL_HIT: Callable[[str], bool] | None = hard_credential_hit
 except Exception:  # pragma: no cover
-    _CANONICAL_CREDENTIAL_RE = None
+    _CANONICAL_CREDENTIAL_HIT = None
 
 #: The repo's redactor, imported for its ENCODED-credential detection. The patterns above
 #: all match a credential written literally, so a base64 of the same bytes matched none of
@@ -250,18 +587,15 @@ def scan_text(text: str, origin: str) -> list[Leak]:
                 token = m.group(0)
                 snippet = token[:4] + "…(%d chars)" % len(token)
                 leaks.append(Leak(origin=origin, kind=kind, line=lineno, snippet=snippet))
-        if _CANONICAL_CREDENTIAL_RE is not None:
-            m = _CANONICAL_CREDENTIAL_RE.search(line)
-            if m:
-                token = m.group(0)
-                leaks.append(
-                    Leak(
-                        origin=origin,
-                        kind="repo-credential-detector",
-                        line=lineno,
-                        snippet=token[:4] + "…(%d chars)" % len(token),
-                    )
+        if _CANONICAL_CREDENTIAL_HIT is not None and _CANONICAL_CREDENTIAL_HIT(line):
+            leaks.append(
+                Leak(
+                    origin=origin,
+                    kind="repo-credential-detector",
+                    line=lineno,
+                    snippet=line.lstrip()[:4] + "…(%d chars)" % len(line),
                 )
+            )
     # Encoded credentials, via the repo's OWN redactor rather than a fourth local pattern.
     #
     # ``_HARD_PATTERNS`` and the canonical detector both match a credential written

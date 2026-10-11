@@ -94,14 +94,14 @@ FROZEN_NAMES: tuple[str, ...] = (
     "_BARE_SECRET_VOWELS",
     "_BUILD_WRITES_EMPTY",
     "_BUILTIN_TOOL_GROUPS",
-    "_CANONICAL_CREDENTIAL_RE",
+    "_CANONICAL_CREDENTIAL_HIT",
     "_CANONICAL_REDACTOR",
     "_CONTAINER_OWNED_MCP",
     "_CREDENTIAL_DIR_PARTS",
     "_CREDENTIAL_NAME_RE",
     "_CapturedTree",
     "_DROPPED_SPEC_KEYS",
-    "_HARD_CREDENTIAL_RE",
+    "hard_credential_hit",
     "_HARD_LINK_UNSUPPORTED_ERRNOS",
     "_HARD_PATTERNS",
     "_KINDS",
@@ -365,10 +365,12 @@ class TestTheSurfaceSurvivesTheSplit:
         monkeypatch.setitem(sys.modules, "kiro_crew.security", None)
         standalone = load_build()
         assert standalone._CANONICAL_REDACTOR is None
-        assert "redact_credentials" not in standalone.__all__
-        assert "redact_credentials" not in dir(standalone)
-        with pytest.raises(AttributeError):
-            standalone.redact_credentials  # noqa: B018
+        assert standalone._CANONICAL_CREDENTIAL_HIT is None
+        for conditional in ("redact_credentials", "hard_credential_hit"):
+            assert conditional not in standalone.__all__
+            assert conditional not in dir(standalone)
+            with pytest.raises(AttributeError):
+                getattr(standalone, conditional)
         probe = tmp_path / "standalone_star_importer.py"
         star = f"from {standalone.__name__} import *  # noqa: F401,F403\n"
         probe.write_text(star, encoding="utf-8")
@@ -378,7 +380,7 @@ class TestTheSurfaceSurvivesTheSplit:
         spec.loader.exec_module(importer)
         public = {name for name in FROZEN_NAMES if not name.startswith("_")}
         carried = {k for k in vars(importer) if not k.startswith("__")}
-        assert carried == public - {"redact_credentials"}
+        assert carried == public - {"redact_credentials", "hard_credential_hit"}
 
     def test_the_type_checker_sees_every_exported_name(self, facade) -> None:
         # ``__getattr__`` is hidden from the checker, so the names it serves at run time are

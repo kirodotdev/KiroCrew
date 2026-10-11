@@ -808,7 +808,7 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
         # Through `_use`, like every other test here, so the instance's data home is set.
         _ledger, sync, _entry = self._use(self.home_a)
         source = inspect.getsource(sync._credential_bearing_lines)
-        self.assertIn("get_credential_patterns", source)
+        self.assertIn("contains_credential", source)
         self.assertIn("redact_tokens", source)
 
     async def test_an_ordinary_lesson_still_pushes(self):
@@ -826,6 +826,40 @@ class TestPushRefusesCredentialMaterial(_TwoInstances):
             )
         )
         self.assertEqual(await sync.sync_safely(direction="push"), "pushed")
+
+    async def test_an_entry_the_write_path_already_redacted_still_pushes(self):
+        """The redactor keeps the key that names a value and replaces the value alone, so
+        `POST /ledger` stores `aws_secret_access_key=[REDACTED: credential]`. The raw core
+        patterns match that line's key again, and a scan reading them presence-only would
+        refuse this push and every push after it, with nothing in the product to clear the
+        entry. The scan reads the core presence check instead, which applies the redactor's
+        own rule for a tag standing as the value; a tag with bytes glued to it is still a
+        value, and still refused.
+        """
+        from kiro_crew.security import REDACTED_CREDENTIAL_TAG
+
+        ledger, sync, entry = self._use(self.home_a)
+        for redacted in (
+            f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}",
+            f"SecretAccessKey: {REDACTED_CREDENTIAL_TAG}",
+            f"AccessKeyId: {REDACTED_CREDENTIAL_TAG} rotated the pair",
+            # QUOTED: `json.dumps` escapes the quotes on the stored line
+            # (`key=\"[REDACTED: credential]\"`), the shape a reader that took
+            # the one-byte `\` as the value refused on every later push.
+            f'aws_secret_access_key="{REDACTED_CREDENTIAL_TAG}"',
+            f'{{"SessionToken": "{REDACTED_CREDENTIAL_TAG}"}}',
+        ):
+            with self.subTest(redacted=redacted):
+                ledger.upsert(entry.create(pattern="rotated a leaked pair", fix=redacted))
+                self.assertEqual(sync._credential_bearing_lines(), [])
+                self.assertEqual(await sync.sync_safely(direction="push"), "pushed")
+
+        glued = f"aws_secret_access_key={REDACTED_CREDENTIAL_TAG}AKIAIOSFODNN7EXAMPLE"
+        ledger.upsert(entry.create(pattern="a tag with bytes glued to it", fix=glued))
+        self.assertNotEqual(sync._credential_bearing_lines(), [])
+        detail = await sync.sync_safely(direction="push")
+        self.assertIn("refused", detail)
+        self.assertNotIn("AKIAIOSFODNN7EXAMPLE", detail)
 
     async def test_a_missing_ledger_is_not_reported_as_leaky(self):
         """An unreadable ledger must not turn into an unexplained refusal."""

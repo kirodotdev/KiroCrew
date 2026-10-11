@@ -437,7 +437,15 @@ def no_entry_response(
 
 
 def contains_credential(runtime: Any, data: bytes) -> bool:
-    """Return whether textual file content carries a recognizable credential."""
+    """Return whether textual file content carries a recognizable credential.
+
+    Read through ``security.credential_matches`` rather than the raw
+    ``get_credential_patterns``: the redactor keeps the key that names a value
+    and replaces the value alone, so a file holding text it already cleaned
+    (``aws_secret_access_key=[REDACTED: credential]``) matches the raw patterns
+    again and would be refused as a secret. The live-match iterator skips a tag
+    standing as the value, the way the redactor's own first pass does.
+    """
 
     try:
         text = data.decode("utf-8")
@@ -445,16 +453,15 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
         # Images, fonts, and wasm have no text credentials to scan and must not
         # become false positives merely because they are arbitrary bytes.
         return False
-    for pattern in runtime.get_credential_patterns():
-        for match in pattern.finditer(text):
-            hit = match.group()
-            if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
-                runtime._PEM_MARKER_RE.sub("", hit)
-            ):
-                # Documentation often quotes a PEM marker without carrying key
-                # material; require an armoured body before refusing that case.
-                continue
-            return True
+    for match in runtime.credential_matches(text):
+        hit = match.group()
+        if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
+            runtime._PEM_MARKER_RE.sub("", hit)
+        ):
+            # Documentation often quotes a PEM marker without carrying key
+            # material; require an armoured body before refusing that case.
+            continue
+        return True
     return False
 
 

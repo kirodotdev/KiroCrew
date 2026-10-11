@@ -2177,6 +2177,42 @@ class TestTheLastResortKeepsExistingRedactionTagWhole:
         assert flat.count(self.TAG) == 2
         assert " " not in flat.replace(self.TAG, "")
 
+    def test_the_flatten_drops_the_separator_between_a_kept_key_and_its_tag(self) -> None:
+        """The redactor keeps the key that names a value and replaces the value
+        alone, so the assignment flattens to ``SecretAccessKey:[REDACTED:
+        credential]``; a cut inside that tag would leave the key, its separator
+        and a fragment the redactor reads as a short value, and a cut at the
+        tag's space a join the screen renders as a tag lookalike. The flatten
+        drops the separator, and with it no key-anchored branch matches any
+        piece of the flat text, whichever cut is taken."""
+        flat = _flattened_for_any_cut(self.SOURCE, _default_redactor)
+        assert flat == f"{self.TAG}Rotated.SecretAccessKey{self.TAG}"
+        for cut in range(len(flat) + 1):
+            pieces = [flat[:cut], flat[cut:]]
+            assert not _shows_a_key(pieces), cut
+            assert not _rejoins_a_key(pieces, _default_redactor), cut
+
+    def test_the_glue_pattern_knows_every_tag_the_redactor_registers(self) -> None:
+        """``_KEY_GLUE_BEFORE_TAG`` spells the tag shape by hand (its lookahead
+        cannot be built from the registry without importing the redactor into the
+        splitter), so a tag added to ``CREDENTIAL_REDACTION_TAGS`` would otherwise
+        escape the separator rule in silence. Pinned the way
+        ``test_markdown_link_parentheses.py`` pins ``_REDACTION_TAG``: every
+        registered tag is recognised behind each separator, and only a tag is --
+        a lookalike keeps its separator and stays an ordinary assignment."""
+        from kiro_crew.security.redaction import CREDENTIAL_REDACTION_TAGS
+
+        glue = split_module._KEY_GLUE_BEFORE_TAG
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            for separator in (":", "="):
+                assert glue.search(f"Key{separator}{tag}") is not None, (separator, tag)
+                for quote in ('"', "'"):
+                    match = glue.search(f'"Key"{separator}{quote}{tag}{quote}')
+                    assert match is not None and match.group() == separator, (separator, quote, tag)
+        for lookalike in ("[REDACTED]", "[REDACTED:credential]", "[redacted: credential]"):
+            assert glue.search(f"Key:{lookalike}") is None, lookalike
+            assert glue.search(f'Key:"{lookalike}"') is None, lookalike
+
     @pytest.mark.parametrize("budget", [24, 48])
     def test_delivery_keeps_the_existing_tag_and_exposes_no_key(self, budget: int) -> None:
         delivered = bounded_for_delivery([self.SOURCE], budget, _default_redactor, chunk_utf8_bytes)

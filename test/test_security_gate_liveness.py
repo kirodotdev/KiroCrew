@@ -164,6 +164,110 @@ def _url_payload_command(n: int) -> str:
 #: holds the canonical spelling and is off the event loop, so the anchors resolve
 #: inline. No new entry point, no target, no matching rule and no threshold moved.
 #:
+#: Raised again, from 28,551, for the Windows alias fold in ``paths.py``: one lexical
+#: helper strips a local-drive namespace prefix and a default-stream suffix, and
+#: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
+#: candidate. No target, no matching rule and no threshold moved.
+#:
+#: Re-pinned from 28,572 for the value-only span of the key-anchored branches in
+#: ``redaction.py``: each of the four branches that begins at the key naming a
+#: secret (the three AWS key-value forms and ``Authorization: Bearer``) exposes its
+#: value as one named group, ``_credential_value_span`` redacts that group alone,
+#: and the key survives. What the kept key costs in lines is the fixed point it
+#: needs: the registered tags embedded in every value group as one atom, the
+#: whole-value tag skip pass 1 shares with pass 4, the quoted-value boundary
+#: (``_quoted_value_end``), the straddle clamp, the coalescing sweep in pass 4 and
+#: the strict-prefix atom the streaming anchor carries, each with the comment
+#: naming the egress case it closes. No branch widened, no pass added and no
+#: threshold moved.
+#:
+#: Re-pinned from 28,925 for the tag skip's closed-quote condition in pass 1 of
+#: ``redaction.py``: a value that is a registered tag is skipped only when the tag
+#: is proven to fill its value -- unquoted, or quoted with the closing quote on
+#: its line. A quote that never closes certifies nothing, and a quoted string
+#: folds across a raw line break in YAML and the shell, so a tag ending such a
+#: line is left as it is (the bytes are the tag) but WARNED, on every run, so an
+#: author-written tag cannot silence ``decisions.gate.scrub_reason`` while a
+#: continuation line stands. The scan stays line-bounded. Twenty-five lines, all
+#: of them the condition and the comment naming the case; no branch widened.
+#:
+#: Re-pinned from 28,950 for three rules in ``redaction.py`` the server lanes asked
+#: for on that head: a pass-1 claim that runs to the end of an unterminated quoted
+#: line WRITES the closing quote, so the redactor's own output is a closed pair a
+#: re-screen leaves alone in silence while an author-written tag inside an open
+#: quote still warns; ``_value_is_credential_tag`` and ``_CREDENTIAL_TAG_ATOM`` read
+#: a RUN of whole tags as one value (two credentials adjacent inside one value were
+#: two tags that the next run mangled at the second tag's interior space); and
+#: pass 4 coalesces a ``token=`` value fully covered by two or more claims into one
+#: tag on the first run (``_covering_claims``), silently. Sixty-three lines, the
+#: rules and the comments naming the shapes; no branch widened, no pass added.
+#:
+#: Re-pinned from 29,013 for the streaming discard in ``__init__.py``: the
+#: token-parameter discard reads the batch grammar's value shape -- value-class
+#: bytes and WHOLE registered tags -- instead of the plain class, and keeps a
+#: strict tag prefix buffered at a chunk tail (``_trailing_tag_prefix``) both
+#: when the fail-closed drop arms it and while it runs. A ``token=`` value made
+#: of a run of whole tags past the 4096 ceiling armed the drop, and the next
+#: chunk's completed tag ended the discard at its interior space, so the bytes
+#: glued to the tag's ``]`` streamed anchor-less. Fifty-six lines, the helper,
+#: the two call sites and the comments naming the shape; the value class, the
+#: ceiling and the drop bound are unchanged.
+#:
+#: Re-pinned from 29,069 for the presence-only readers of the patterns. Once the
+#: key survives redaction, the redactor's own output ``key=[REDACTED: credential]``
+#: matches its key-anchored branch again, so every reader that only asked "does
+#: the pattern match?" -- the ledger push gate over ``ledger.jsonl``, the deploy
+#: and preview file scans, the exfil request gates, the hard URL regex -- called
+#: cleaned text live (the ledger refused every push from its first redacted entry
+#: on). ``redaction.py`` gains ``_match_is_live_credential`` (pass 1's own skip,
+#: judged on the same extended span), the public ``credential_matches`` and
+#: ``contains_credential`` the readers now go through, and routes
+#: ``_contains_credential_pattern`` through them; ``exfil.py``'s
+#: ``_HARD_CREDENTIAL_RE`` declines a value that is only a registered tag, built
+#: from the registry; ``__init__.py`` and ``_exports.py`` list the two names.
+#: Ninety-two lines, the rule, the two accessors, the lookahead and the comments
+#: naming the readers; no pattern widened, no pass added. Then fifteen more for
+#: `_quoted_value_end`: a DOUBLED quote inside a quoted value is an escaped
+#: interior quote (YAML and SQL ``''``, CSV ``""``), never the close -- reading
+#: the first of the pair as the close let the redactor's own first pass emit
+#: ``key='[REDACTED: credential]''<s2>'`` and the second run skip the tag in
+#: silence with ``<s2>`` standing unwarned. The pair is consumed as value
+#: bytes; the condition and the paragraph naming the bypass.
+#:
+#: Re-pinned from 29,176 for the pair embedded in an enclosing string literal
+#: and the stream hold that carries it. A ledger line ``json.dumps`` wrote,
+#: persisted history or a serialized log carries a redacted pair's quotes
+#: ESCAPED (``key=\"[REDACTED: credential]\"``), and a value class that admitted
+#: the backslash read the one-byte ``\`` of that escaped quote as the value: the
+#: presence check called the redactor's own stored output live (every later
+#: ledger push refused) and a second run un-escaped the quote and broke the
+#: enclosing document. ``redaction.py`` gains ``_LABEL_QUOTE`` (a label quote
+#: bare or escaped, one atom for the four key-anchored branches and the label
+#: rules), excludes the backslash from ``_AWS_VALUE_CLASS``, and reads
+#: ``_quoted_value_end`` in the opener's encoding, returning where the claim
+#: ends, whether it closed and the opener to write; ``exfil.py``'s hard floor
+#: follows. Then the stream: a key-anchored pair has terminator bytes INSIDE it
+#: (the whitespace after the separator, a space or a backslash inside a quoted
+#: value), so the natural cut committed the label and the value streamed raw --
+#: on the base commit too -- or committed a quoted head whose batch pass wrote
+#: the close mid-value; ``_key_anchored_hold_start`` and ``_LABEL_TAIL`` pull
+#: such a cut back to the pair's start (``__init__.py`` adds the WEAK hold beside
+#: the Bearer anchor, whose quote slots take the escaped forms). The hard URL
+#: floor's tag exemption is then judged against what CLOSES the value: behind an
+#: opening quote the closing quote, not the class boundary -- a tag merely heading
+#: a quoted value (``secretaccesskey="[REDACTED: credential] <secret>"``, percent-
+#: encoded into a URL path under a lower-case key the canonical branches do not
+#: read) was exempt at the tag's following space and the URL reached display
+#: (``_NOT_A_REDACTION_TAG_QUOTED_VALUE``). Then seventeen more: the quoted
+#: exemption captures its opener and requires the SAME quote after the tag run
+#: (``_not_a_redaction_tag_quoted_value``, one named group per branch), and the
+#: stream DROPS a key-anchored hold whose extent would exceed the hold-back cap
+#: instead of flooring it -- the floor cut inside a token's run and streamed its
+#: remainder anchor-less, where the natural cut never bisects a credential-class
+#: run. Two hundred and fifty-seven lines in all: the atoms, the encoding-aware
+#: scan, the hold predicate, the stream's guarded call, the quoted exemption, and
+#: the paragraphs naming the defects; no pass added, no cap or drop rule changed.
+#:
 #: The number IS the package's measured total, carrying no spare room: a ratchet with
 #: headroom admits exactly the unreviewed growth it exists to catch, so the next line
 #: added here fails this gate and has to be re-pinned deliberately, with its reason
@@ -189,11 +293,6 @@ def _url_payload_command(n: int) -> str:
 #: safe to withhold, and window classification with whole-run context that exempts
 #: only windows sharing ≥ 24 bytes with that id while every other positive window
 #: redacts each piece it touches. One mechanism, no new pass.
-#:
-#: Raised again, from 28,551, for the Windows alias fold in ``paths.py``: one lexical
-#: helper strips a local-drive namespace prefix and a default-stream suffix, and
-#: ``_candidate_forms`` resolves the folded spelling while keeping the raw one as a
-#: candidate. No target, no matching rule and no threshold moved.
 #:
 #: Raised again, from 28,572, for ``StreamRedactor``'s two read-only properties,
 #: ``held`` and ``discarding``, which the Slack stream reads at a ``wait`` instead
@@ -230,7 +329,165 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 28,740, for the one import ``redaction_allow`` needs to publish
 #: its hosts file through ``atomic_write.replace_with_retry``, which retries the
 #: Windows sharing violation a bare ``os.replace`` lost the write on. No pattern moved.
-_PACKAGE_LINE_BUDGET = 28_741
+#:
+#: Re-pinned from 29,433 for the hard URL floor's doubled-quote rule in ``exfil.py``:
+#: the quoted tag exemption's close must not be followed by the same quote again,
+#: because a doubled quote is an escaped interior quote to the redactor and so to
+#: this floor -- one lookahead and the paragraph naming the bypass it closes. No
+#: branch widened, no pass added and no threshold moved.
+#:
+#: Re-pinned from 29,440 for the escape pair as a value atom: ``_AWS_VALUE_CLASS``
+#: in ``redaction.py`` reads ``\/``, ``\\`` and ``\u`` inside a key-anchored value
+#: as the value's own bytes (PHP-style JSON writes every ``/`` of a base64 secret
+#: as ``\/``; a class that stopped at the backslash left the rest raw), the hard
+#: URL floor in ``exfil.py`` spells its value run and its unquoted tag exemption
+#: from that atom, the stream's credential class admits the backslash so its
+#: natural cut cannot bisect such a value, and the label tail holds a lone
+#: backslash after an opening quote. The paragraphs naming the shapes; no branch
+#: widened, no pass added and no threshold moved.
+#:
+#: Re-pinned from 29,468 for escaped whitespace heading a value (``_AWS_VALUE_HEAD``
+#: in ``redaction.py``): a bounded run of ``\n`` ``\r`` ``\t`` ``\f`` ``\v`` pairs
+#: before the first value atom is leading whitespace in the value's encoding and
+#: is consumed with it -- a head nothing admitted left a JSON document's value
+#: standing behind one ``\n``, and percent-encoded into a URL path it passed the
+#: exfil floor silently. The hard floor reads the same head; the label tail holds
+#: through it. The atom and the paragraph naming the bypass; no branch widened,
+#: no pass added and no threshold moved.
+#:
+#: Re-pinned from 29,498 for the value SCANNER (``scan_keyed_value``,
+#: ``redaction.py``): the regex value grammar of the three AWS key-anchored
+#: branches -- the value atom, the escaped-whitespace head, the quoted-value
+#: scan, the label tail -- is replaced by one explicit tokenizer (the opener,
+#: the head, the tag run, the escape pair, the doubled quote and the line end
+#: as its stopping rules), and the hard URL floor in ``exfil.py`` reads its
+#: labelled keys through the same scanner instead of a hand-mirrored regex. The
+#: regex that stood there drew a real finding on four consecutive review
+#: rounds; the scanner's docstring carries the rules, and the net package
+#: change is +39 lines: 414 added, 369 removed. No branch widened, no pass
+#: added and no threshold moved.
+#: Re-pinned from 29,537 for the per-traversal reader of key-anchored values in
+#: ``redaction`` (``_KeyedValueScans``): a key repeated as its own value made every
+#: anchor after the first rescan the first value's run before the coverage check,
+#: quadratic in the text (5,000 keys, 80 KB: 73 s in pass 1, past the 25 s watchdog
+#: budget of the loop that runs it). The reader answers an anchor inside the last
+#: unquoted run from that run's end -- the fresh scan's answer, byte for byte --
+#: and pass 1, the stream hold and ``credential_matches`` read through it; the
+#: hold also tests the remaining length before slicing the text for a strict tag
+#: prefix. The class, its docstring and the three call sites are the growth.
+#: Re-pinned from 29,590 for the enclosing-close rule of the quoted scan in
+#: ``redaction``: a value opened by a BARE quote inside a literal of the other
+#: quote kind (``{"text":"key='<v>","keep":1}``) ran past the enclosing close to
+#: the line's end and deleted the sibling field; a quote of the other kind
+#: followed by a structural byte or whitespace now ends the inner line, with the
+#: follower set and the docstring rule as the growth.
+#: Re-pinned from 29,613 for the stream hold's strict-tag-prefix test in
+#: ``redaction`` (``_value_ends_in_a_tag_prefix``): it judged the buffer's tail
+#: from the value's start only, so a tag cut off after whole tags
+#: (``key=<tag>[REDACTED: ``) released the key's hold and the next chunk's
+#: glued token streamed raw; the bounded scan over the last tag-length bytes is
+#: the growth.
+#: Re-pinned from 29,628 for the enclosing-close rule read by the opener's kind
+#: in ``redaction`` (``scan_keyed_value``, ``_own_close_ahead``): a symmetric rule
+#: reads an apostrophe before whitespace or punctuation inside a ``"``-opened
+#: value (``{"SessionToken": " note' suffix", "keep": 1}``) as an enclosing close
+#: and leaves the JSON view unparseable. Inside a ``'``-opened
+#: value a bare ``"`` there stays the enclosing ``"`` string's close; inside a
+#: ``"``-opened value a ``'`` is a byte of the value while the value's own close
+#: is still to come on its line, read once per scan; the escaped encoding reads
+#: another kind of quote as interior. The stream hold also judges a pulled-back
+#: cut against every pair it would split. The look-ahead, its docstring and the
+#: hold's second pass are the growth.
+#: Re-pinned from 29,720 for the LOOK-BACK in ``redaction`` (``_advance_line_state``,
+#: ``_enclosing_at``, ``_innermost``, the enclosing-aware ``_inner_token`` and the
+#: carried state in ``StreamRedactor``): the scanner knows which string literal
+#: encloses the key -- read back along the line, the outer literal's quote and
+#: the inner literal an escaped quote delimits -- so the literal's own close is
+#: never read as the value's opener (``{"template":"key=","keep":1}`` broke the
+#: JSON view), the value ends at the literal's close and no further, and outside
+#: a literal a quote of the other kind is a byte of the value. It REPLACES the
+#: enclosing-close follower rule and the own-close look-ahead of the two rounds
+#: before it (``_ENCLOSING_CLOSE_FOLLOWERS``, ``_own_close_ahead``, deleted). The
+#: stream carries the line's quote state across its commits so a piece beginning
+#: inside a literal reads as the whole text does. The state machine, its
+#: docstrings and the stream's three bookkeeping lines are the growth.
+#: Re-pinned from 29,824 to 29,858 (+34) for two rules of the same scanner.
+#: ``redaction.py`` +15: escapes pair up at the value's own depth, so after the
+#: escaped encoding's inner backslash a bare quote is the enclosing literal's
+#: close and never the escaped token (the claim took the close with it and
+#: ``{"text": "\"key\": \"x\\", "keep": 1}`` stopped parsing); the rule's branch
+#: and its comment add 17 lines, and the unquoted path's lone-backslash-at-end
+#: check, unreachable behind the ``partial`` token, gives 2 back. ``exfil.py``
+#: +19: the hard credential floor reads the labels of a line with the line's
+#: quote state carried from one to the next (``_KeyedValueScans``) instead of
+#: walking the line back from its start for every label, which cost N walks for
+#: N labels; the carrier import, the floor's loop and its docstring are the 19.
+#:
+#: Re-pinned from 29,858 to 29,898 (+40), all in ``redaction.py``. The tokenizer
+#: reads an escape pair as ONE token before any delimiter test whenever the pair
+#: is in an escaped encoding, the value's own or a backslash-escaping enclosing
+#: literal's (+9 with its docstring: a bare ``'`` value inside ``"..."`` read
+#: ``\\`` as two backslashes and the second with the quote after it as the inner
+#: literal's close). The scanner's three rules from the document sweep (+31): a
+#: doubled quote of the enclosing kind where the value would open is the value's
+#: own quote and the same pair its close (a YAML single-quoted scalar's ``''``),
+#: ``]`` where a value would start is no value, and a bare quote of the enclosing
+#: kind after a backslash is that literal's close in every encoding. The
+#: key-anchored patterns keep the base's separator whitespace, ``\s*`` on both
+#: sides, so detection across a line break is the base's. No target, no matching
+#: rule and no threshold moved.
+#:
+#: Re-pinned from 29,898 to 29,930 (+32), all in ``redaction.py``: a structural
+#: byte (``,``, ``}``, ``]``) where a value would start opens no value only when a
+#: terminator, whitespace, a quote or the text's end follows it at once, read as
+#: the inner token (``_no_value_opens_at``, +20 with its reason), and is pending at
+#: the text's end so the stream holds (+4); the value's head consumes the enclosing
+#: encoding's escaped whitespace (+4); the standalone presence scanner starts from
+#: a fresh line start, never the carried stream state (+6 with the reason). No
+#: target, no matching rule and no threshold moved. The pin is 29,989: that chain
+#: plus the two paragraphs above that this branch merges, the 10 lines of
+#: ``StreamRedactor``'s ``held`` and ``discarding`` properties (from 28,572) and the
+#: 49 lines of the routed-commit ceiling (from 28,582).
+#:
+#: Re-pinned from 29,989 to 29,991 (+2), in ``redaction.py``: the value's head
+#: consumes the enclosing encoding's escaped LINE BREAK (``\\n``, ``\\r`` inside a
+#: JSON string, one ``break`` token) as it consumes its escaped tab; read as the
+#: value's end instead, the whole value stood behind it in plaintext while the
+#: base redacted it. One token kind added to the head's test and the two
+#: docstring lines naming it. No target, no matching rule and no threshold moved.
+#:
+#: Re-pinned from 29,991 to 29,993 (+2), in ``redaction.py``: the bare-backslash
+#: branch of the unquoted scan ends the value at a quote or raw whitespace after
+#: the backslash and at nothing else, so the two-byte spelling ``\\n`` a
+#: percent-decoded URL path carries is the value's bytes, as the base's grammar
+#: reads it; read as a line break, the value stopped before it, a tag ahead stood
+#: exempt and the secret behind passed every floor. One test narrowed, the comment
+#: naming the rule grown by two lines net. No target, no matching rule and no
+#: threshold moved. The pin is 30,102: that chain plus the 34 lines of the
+#: ``-d @`` carve-out in ``exfil.py`` (from 28,631 to 28,665) and the 75 lines
+#: of the PlantUML route in ``redaction.py`` (from 28,665 to 28,740), the two
+#: paragraphs above, which this branch merges.
+#:
+#: Re-pinned from 30,102 to 30,148 (+46), in ``redaction.py``: a structural byte
+#: where an unquoted value would start heads a PREFIX run (``_prefix_run_end``:
+#: structural bytes, backslash pairs, the enclosing encoding's escaped whitespace)
+#: read whole, and the token after the run decides whether a value opens; judged
+#: one byte at a time, ``]`` after ``]`` read as nothing value-like and
+#: ``key=]]<secret>`` stood in plaintext while the base's class, which admits
+#: ``]`` and a backslash, redacted it. The helper, its docstring, the judge's
+#: widened docstring and the loop's comment are the growth. No target, no
+#: matching rule and no threshold moved. The pin is 30,149: that chain plus the
+#: one import line of ``atomic_write.replace_with_retry`` in ``redaction_allow.py``
+#: (from 28,740 to 28,741, the paragraph above), which this branch merges.
+#:
+#: Re-pinned from 30,149 to 30,155 (+6), in ``redaction.py``: the nested pass over
+#: a decoded PlantUML diagram (``_plantuml_verdict``) reads the source from a fresh
+#: line start, never from the line state the stream carries for the text around
+#: the link; under a carried ``'`` the quote opening the source's value read as
+#: that literal's close and a diagram the batch pass masked streamed out. The
+#: set and reset of the carrier and the comment naming the rule are the growth.
+#: No target, no matching rule and no threshold moved.
+_PACKAGE_LINE_BUDGET = 30_155
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

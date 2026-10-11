@@ -772,7 +772,7 @@ def test_the_local_patterns_catch_everything_the_shared_detector_does() -> None:
     Executable rather than a source rule, because the shared patterns can change under this
     module: a new form added upstream should fail here, which is the whole point.
     """
-    from kiro_crew.security import _HARD_CREDENTIAL_RE
+    from kiro_crew.security import hard_credential_hit
 
     mod = load_build()
     # Every credential-shaped sample is ASSEMBLED, never written as one literal. The repo's
@@ -799,7 +799,7 @@ def test_the_local_patterns_catch_everything_the_shared_detector_does() -> None:
     }
     gaps = []
     for name, text in inputs.items():
-        if not _HARD_CREDENTIAL_RE.search(text):
+        if not hard_credential_hit(text):
             continue  # not a shared-detector case; nothing is claimed about it
         if not any(pattern.search(text) for _, pattern in mod._HARD_PATTERNS):
             gaps.append(name)
