@@ -1584,6 +1584,7 @@ class WorkflowService:
         # so force a fresh run; an unedited rerun keeps the replay cache.
         replay_before = 0 if edited else max(0, from_index)
         replay_results = {} if edited else dict(prior.agent_results)
+        replay_fingerprints = {} if edited else dict(prior.agent_fingerprints)
         label = "rerun-edited" if edited else f"rerun@{from_index}"
         started = await self._runner(
             new_id,
@@ -1605,6 +1606,7 @@ class WorkflowService:
             session_key=origin,
             replay_results=replay_results,
             replay_before=replay_before,
+            replay_fingerprints=replay_fingerprints,
             source_is_original=edited or prior.source_is_original,
             workflow_id="" if edited else prior.workflow_id,
             workflow_slug="" if edited else prior.workflow_slug,

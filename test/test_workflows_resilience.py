@@ -134,9 +134,11 @@ async def test_budget_ceiling_returns_completed_agent_results() -> None:
 async def test_agent_results_checkpoint_as_each_call_lands() -> None:
     """Results must reach the host DURING the run, not only at its end."""
     seen: list[tuple[int, object, bool, str]] = []
+    fingerprints: list[str] = []
 
-    def _sink(call_index: int, *, result, ok: bool, error: str) -> None:
+    def _sink(call_index: int, *, result, ok: bool, error: str, fingerprint: str) -> None:
         seen.append((call_index, result, ok, error))
+        fingerprints.append(fingerprint)
 
     script = (
         'META = {"name": "checkpointed"}\n'
@@ -153,6 +155,10 @@ async def test_agent_results_checkpoint_as_each_call_lands() -> None:
         (0, "echo:one", True, ""),
         (1, "echo:two", True, ""),
     ]
+    # Each call's replay identity lands with its result, one distinct per prompt.
+    assert len(fingerprints) == 2 and all(fingerprints)
+    assert fingerprints[0] != fingerprints[1]
+    assert fingerprints == [res.agent_fingerprints[0], res.agent_fingerprints[1]]
 
 
 async def test_checkpoint_sink_failure_never_breaks_the_run() -> None:

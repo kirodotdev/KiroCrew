@@ -104,6 +104,9 @@ class RunHandle:
     # call_index → bounded reason that call failed. Kept next to agent_results so a
     # missing payload always comes with an explanation instead of a bare ok=False.
     agent_errors: dict = field(default_factory=dict)
+    # call_index → that call's fingerprint. A rerun replays a cached result only
+    # into a call with the same fingerprint; a record without them replays nothing.
+    agent_fingerprints: dict = field(default_factory=dict)
     source_format: str = "python"
     driver: str = "workflow"
     task_id: str = ""
@@ -280,6 +283,7 @@ class RunHandle:
             "args": self.args,
             "agent_results": {str(k): v for k, v in self.agent_results.items()},
             "agent_errors": {str(k): v for k, v in self.agent_errors.items()},
+            "agent_fingerprints": {str(k): v for k, v in self.agent_fingerprints.items()},
             "events": [e.to_json() for e in self.events],
         }
 
@@ -325,6 +329,11 @@ class RunHandle:
             args=obj.get("args") or {},
             agent_results={_int_key(k): v for k, v in (obj.get("agent_results") or {}).items()},
             agent_errors={_int_key(k): v for k, v in (obj.get("agent_errors") or {}).items()},
+            agent_fingerprints={
+                _int_key(k): v
+                for k, v in (obj.get("agent_fingerprints") or {}).items()
+                if isinstance(v, str)
+            },
         )
 
 
@@ -458,6 +467,7 @@ class RunRegistry:
         result: Any,
         ok: bool = True,
         error: str = "",
+        fingerprint: str = "",
     ) -> None:
         """Checkpoint ONE settled agent call onto the handle, as the call returns.
 
@@ -467,6 +477,11 @@ class RunRegistry:
         killed by the ceiling still holds every payload it has already paid for, the
         terminal paths read them back, and ``mark_terminal`` flushes the completed
         record to disk.
+
+        The call's ``fingerprint`` (its identity for replay, "" when it has none)
+        lands in the same step as its result, so any write that holds the result
+        also holds the fingerprint, and a rerun of a run that a gateway restart
+        interrupted can still replay that call.
 
         Deliberately does NOT force a store write of its own. ``store.save``
         re-serializes and re-redacts the ENTIRE run record, so writing once per
@@ -482,6 +497,8 @@ class RunRegistry:
         if h is None:
             return
         h.agent_results[call_index] = result
+        if fingerprint:
+            h.agent_fingerprints[call_index] = fingerprint
         if error or not ok:
             h.agent_errors[call_index] = error or "agent call failed (no reason recorded)"
 
