@@ -10,7 +10,7 @@ and a patch of the method on the class or on an instance reaches every caller.
 
 Instance fields written: ``_permission_gate_events``, ``_permission_options``,
 ``_pi_gate_asked_ids``, ``_pi_gate_denied_ids``, ``_pi_gate_request_tool``,
-``_turn_permission_denied``.
+``_qoder_approved_ids``, ``_qoder_denied_ids``, ``_turn_permission_denied``.
 
 Instance fields read: ``_acp_config_options``, ``_agent``, ``_deepseek_gate_nonce``,
 ``_deepseek_read_only_issue``, ``_pi_gate_nonce``, ``_session_id``, ``_session_key``,
@@ -18,7 +18,8 @@ Instance fields read: ``_acp_config_options``, ``_agent``, ``_deepseek_gate_nonc
 ``_spec_denied_tools``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
-``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``.
+``_tool_call_params``, ``_tool_call_tool_name``, ``_tool_call_unclassified``,
+``_qoder_bookkeeping_overflow``, ``_qoder_executed_ids``, ``_qoder_request_tool``.
 """
 
 from __future__ import annotations
@@ -51,6 +52,7 @@ from kiro_crew.acp.types import (
     OPTION_ALLOW_ONCE,
     OUTCOME_CANCELLED,
     OUTCOME_SELECTED,
+    QODER_ALLOW_ALWAYS_OPTION_ID,
     UPDATE_CURRENT_MODE,
     AcpEvent,
     JsonRpcMessage,
@@ -214,7 +216,7 @@ def _verify_goose_routing(self: AcpClient, resp: dict) -> None:
         acp_tool_gate.enforce_runtime_routing(
             self.backend,
             issue,
-            remedy=acp_tool_gate.remediation_for(self.backend),
+            remedy=acp_tool_gate.remediation_for(self.backend, reported_version=self.agent_version),
         )
     except acp_tool_gate.ToolGateUnroutable as exc:
         # Translated to the ACP-layer type like the sibling refusal sites, and
@@ -289,6 +291,11 @@ async def approve_tool(
     # An approved call may complete; forget the envelope mapping so the map
     # stays bounded by the calls still awaiting an answer.
     pi_gate_tool = getattr(self, "_pi_gate_request_tool", {}).pop(str(request_id), None)
+    # The allow-always refusal below must still be able to name the call this
+    # request was for, so keep the mapping until that branch has decided.
+    # Non-Qoder clients (including minimal `__new__` doubles) have no Qoder
+    # bookkeeping at all.
+    qoder_tool_call_id = self._qoder_request_tool.get(str(request_id)) if self._is_qoder else None
     resolved_id = option_id
     recorded: dict[str, str] | None = None
     if resolved_id is None:
@@ -299,6 +306,33 @@ async def approve_tool(
         resolved_id = (recorded or {}).get("always" if always else "once")
         if resolved_id is None:
             resolved_id = OPTION_ALLOW_ALWAYS if always else OPTION_ALLOW_ONCE
+    if self._is_qoder and (always or resolved_id == QODER_ALLOW_ALWAYS_OPTION_ID):
+        # A persisted Qoder permission is exactly the allow rule the pinned
+        # route exists to prevent. Answer the live request with a denial rather
+        # than refusing from a side channel and leaving the harness blocked.
+        logger.error(
+            "qoder gate: refusing allow_always for req=%s; the session must ask "
+            "every call for its lifetime",
+            _loggable_request_id(request_id),
+        )
+        # The wire answer is a denial even though Crew refused to choose
+        # the persisted option itself. Record it as such: if the harness
+        # runs the call anyway, the execution tripwire has the verdict.
+        self._note_qoder_denied(request_id)
+        # Without an explicit option_id the options were consumed above; with
+        # one they are still recorded here, so the reject id must come from them.
+        recorded_options = recorded
+        if recorded_options is None:
+            recorded_options = self._permission_options.pop(request_id, None)
+        reject_id = (recorded_options or {}).get("reject")
+        if reject_id:
+            await self._send_response(
+                request_id,
+                {"outcome": {"outcome": OUTCOME_SELECTED, "optionId": reject_id}},
+            )
+        else:
+            await self._send_response(request_id, {"outcome": {"outcome": OUTCOME_CANCELLED}})
+        return False
     # The wait for the write lock is the last await before the answer goes
     # out, so the withdrawal is read again under that lock.
     recheck: dict[str, Callable[[], None]] = {}
@@ -331,6 +365,11 @@ async def approve_tool(
     except permission_floor.ApprovalWithdrawn:
         _restore_withdrawn(self, request_id, gate_event, recorded, pi_gate_tool)
         raise
+    if qoder_tool_call_id:
+        # The request arriving is not permission; Crew's selected allow
+        # answer is. Executing before this reaches the wire is a bypass.
+        self._qoder_approved_ids.add(qoder_tool_call_id)
+        self._qoder_denied_ids.discard(qoder_tool_call_id)
     return True
 
 
@@ -372,13 +411,24 @@ async def reject_tool(self: AcpClient, request_id: str | int) -> None:
     "Tool use aborted" the adapter throws on a ``cancelled`` outcome).
     Falls back to ``cancelled`` when no reject option was advertised
     (kiro-cli), which kiro handles as an ordinary rejection.
+
+    For Qoder, an already-executing call cannot be un-run. If its id reached
+    the executed set before Crew answered, stop the harness rather than
+    merely recording a denial for a call that may already have completed.
     """
+    qoder_tool_call_id = self._qoder_request_tool.get(str(request_id)) if self._is_qoder else None
+    if self._is_qoder and qoder_tool_call_id in self._qoder_executed_ids:
+        await self._kill_process(force=True)
+        raise AcpToolGateUnroutable(
+            "Qoder ran a tool you had refused, so Kiro Crew stopped this chat. " "Start a new chat."
+        )
     recorded = self._permission_options.pop(request_id, None)
     getattr(self, "_permission_gate_events", {}).pop(request_id, None)
     self._note_pi_gate_denied(request_id)
     # Read by the concurrent-prompt steer settle: this denial may end the turn
     # before a steer sent into it is read.
     self._turn_permission_denied = True
+    self._note_qoder_denied(request_id)
     reject_id = recorded.get("reject") if recorded else None
     if reject_id:
         await self._send_response(
@@ -418,6 +468,8 @@ async def _handle_permission(self: AcpClient, msg: JsonRpcMessage) -> None:
     advertised reject option.
     """
     event = self._build_permission_event(msg)
+    if self._is_qoder and self._qoder_bookkeeping_overflow:
+        await self._stop_qoder_on_bookkeeping_overflow(msg.id)
     if event is None:
         if msg.id is not None:
             await self._send_error(msg.id, -32600, "invalid request id")
@@ -1140,6 +1192,7 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         _gate_events = self._permission_gate_events = {}
     _gate_events[event.request_id] = event
     self._note_pi_gate_asked(msg)
+    self._note_qoder_asked(msg)
     logger.info(
         "Permission requested for tool: %s (req=%s)",
         event.title,

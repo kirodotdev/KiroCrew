@@ -920,7 +920,7 @@ class TestKasMcpServedIdentity:
             _meta_identity,
         )
 
-        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [True, False, False]
+        assert [c.bounds_names for c in _MCP_IDENTITY_META_CHANNELS] == [True, False, False, False]
         # A kiro-cli built-in (toolName, no server of either spelling) falls
         # through the KAS row to its own, unbounded.
         builtin = {"_meta": {"kiro": {"toolName": "t" * 600}}}

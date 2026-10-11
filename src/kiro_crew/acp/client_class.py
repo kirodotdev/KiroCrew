@@ -27,6 +27,7 @@ from kiro_crew.acp import client_lifecycle as _client_lifecycle
 from kiro_crew.acp import client_mcp_array as _client_mcp_array
 from kiro_crew.acp import client_model_selection as _client_model_selection
 from kiro_crew.acp import client_permissions as _client_permissions
+from kiro_crew.acp import client_qoder as _client_qoder
 from kiro_crew.acp import client_seed_ownership as _client_seed_ownership
 from kiro_crew.acp import client_spawn_env as _client_spawn_env
 from kiro_crew.acp import client_start as _client_start
@@ -58,6 +59,7 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SEED_LOCAL_SETTINGS,
@@ -320,6 +322,18 @@ class AcpClient:
         # of denied calls, which must never reach ``completed``.
         self._pi_gate_request_tool: dict[str, str] = {}
         self._pi_gate_denied_ids: set[str] = set()
+        # Qoder's per-call route witnesses. A permission frame must name the call
+        # before it executes; no response may select allow_always; and a later
+        # call reusing an id gets a fresh verdict, like the DeepSeek ids that reuse
+        # call_0.
+        self._qoder_asked_ids: set[str] = set()
+        self._qoder_request_tool: dict[str, str] = {}
+        self._qoder_denied_ids: set[str] = set()
+        self._qoder_executed_ids: set[str] = set()
+        self._qoder_approved_ids: set[str] = set()
+        self._qoder_bookkeeping_overflow = False
+        self._qoder_default_model_id = ""
+        self._qoder_live_prompt_seen = False
         self._session_key = session_key
         # When set, this client emits a per-tool-call SEL audit from the ACP
         # dispatch loop. Used by app/worker-pool clients (e.g. code-review-sage,
@@ -813,6 +827,10 @@ class AcpClient:
         return self.backend == ACP_BACKEND_DEEPSEEK
 
     @property
+    def _is_qoder(self) -> bool:
+        return self.backend == ACP_BACKEND_QODER
+
+    @property
     def _model_registry_namespace(self) -> str:
         """The model_registry namespace key for this backend (``claude_code`` /
         ``acp``). A registry index selector, NOT a provider-identity check — see
@@ -826,6 +844,18 @@ class AcpClient:
         """True when this backend sources its wire model id / seed from the
         provider's advertised list (see ``ACP_BACKENDS_ADVERTISED_MODEL_SELECTION``)."""
         return self.backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION
+
+    @property
+    def _advertised_models_exclusive(self) -> bool:
+        """True when this backend's own catalog is the only vocabulary it accepts.
+
+        The semantic question behind ``ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE``
+        (``SessionCapabilities.advertised_models_are_exclusive``): an explicit pick
+        is resolved against what the service advertised on this session instead of
+        being forwarded as the registry spells it, because the service refuses ids
+        it did not offer.
+        """
+        return capabilities_for(self.backend).advertised_models_are_exclusive
 
     @property
     def _seeds_local_settings(self) -> bool:
@@ -1247,6 +1277,21 @@ class AcpClient:
     _reject_unknown_server_request = _client_permissions._reject_unknown_server_request
     _note_pi_gate_asked = _client_permissions._note_pi_gate_asked
     _build_permission_event = _client_permissions._build_permission_event
+    # Qoder's runtime route witnesses: ``kiro_crew.acp.client_qoder``.
+    _resolve_qoder_model_id = _client_qoder._resolve_qoder_model_id
+    _withhold_qoder_startup_model = _client_qoder._withhold_qoder_startup_model
+    _verify_qoder_version = _client_qoder._verify_qoder_version
+    _verify_qoder_routing = _client_qoder._verify_qoder_routing
+    _note_qoder_denied = _client_qoder._note_qoder_denied
+    _retire_qoder_request_tool = _client_qoder._retire_qoder_request_tool
+    _make_room_for_qoder_request = _client_qoder._make_room_for_qoder_request
+    _stop_qoder_on_bookkeeping_overflow = _client_qoder._stop_qoder_on_bookkeeping_overflow
+    _note_qoder_asked = _client_qoder._note_qoder_asked
+    _tripwire_qoder_mode = _client_qoder._tripwire_qoder_mode
+    _stop_qoder_on_mode_issue = _client_qoder._stop_qoder_on_mode_issue
+    _tripwire_qoder_unasked = _client_qoder._tripwire_qoder_unasked
+    _stop_qoder_unasked = _client_qoder._stop_qoder_unasked
+    _is_qoder_signed_out_error = staticmethod(_client_qoder._is_qoder_signed_out_error)
 
     @property
     def acp_config_options(self) -> list[dict]:

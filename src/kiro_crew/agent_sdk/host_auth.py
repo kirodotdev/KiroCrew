@@ -70,6 +70,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_KNOWN,
 )
 
@@ -268,6 +269,14 @@ class AgentAuthDeclaration:
     #: (or have not been captured yet).
     signed_out_signature: str = ""
 
+    #: Whether the card should ALSO state the separate-store fact.
+    #:
+    #: A harness whose standing remedy already states that fact (Qoder names its
+    #: own sign-in beside the action) would otherwise render the same disclosure
+    #: twice. This is presentation-only: the credential leaves, mask carve-out and
+    #: entitlement source above are unchanged.
+    shows_own_credential_store_note: bool = True
+
     # There is deliberately NO field for re-exposing a file the mask hides.
     #
     # A re-exposure is an EDIT to the mask, and the rule this class exists to
@@ -405,6 +414,13 @@ _KAS_SIGNED_OUT = (
     "or run `kiro-cli login` in your terminal if kiro-cli owns the sign-in, then start a "
     "new chat."
 )
+
+
+# qodercli's login store is INFERRED, not read. The lead observed ~/.qoder/.auth as
+# a 0700 directory whose mtime matches login, and measured that --config-dir
+# elsewhere loses the login. Contents were never read or listed; the declaration
+# fences the whole inferred directory, and future evidence can narrow it.
+QODER_CREDENTIAL_LEAF = ".qoder/.auth"
 
 
 #: Every harness this build knows, and how it signs in. Table order is projection
@@ -738,6 +754,39 @@ AGENT_AUTH_DECLARATIONS: Tuple[AgentAuthDeclaration, ...] = (
         # ``session/prompt`` with -32603 ``... no API key for provider route
         # "deepseek-official"; store DEEPSEEK_API_KEY ...``.
         signed_out_signature="no API key for provider route",
+    ),
+    AgentAuthDeclaration(
+        backend=ACP_BACKEND_QODER,
+        # The harness signs in through ``qodercli login`` and its ACP ``initialize``
+        # advertises one auth method, ``qodercli-login``, which reuses that login.
+        # The inferred whole-directory leaf is deliberately broader than a guessed
+        # filename: directory contents were never read or listed, so there is no
+        # measured filename to narrow to. A 0700 directory whose mtime tracks login,
+        # plus --config-dir relocation losing that login, is enough to fence and
+        # spare the directory as the adapter's own store without inspecting it.
+        credential_leaves=(QODER_CREDENTIAL_LEAF,),
+        home_override_env_vars=(),
+        adapter_own_leaves=(QODER_CREDENTIAL_LEAF,),
+        # Action only, no state: nothing here measured whether the operator is signed in.
+        sign_in_remedy=(
+            "Qoder signs in on its own — run qodercli login in a terminal and "
+            "complete its sign-in. Kiro Crew does not check this sign-in."
+        ),
+        signed_out_message=(
+            "Qoder is not signed in. Run qodercli login in your terminal and "
+            "complete its sign-in, then resume or start a new chat."
+        ),
+        # Excluded deliberately: it signs in through its own login, so a
+        # ``kiro-cli logout`` says nothing about whether a running qodercli session is
+        # still authenticated.
+        host_logout_retires_children=False,
+        entitlement_source=ENTITLEMENT_OWN_CREDENTIAL_FILE,
+        shows_own_credential_store_note=False,
+        # No ``signed_out_signature``, deliberately. qodercli 1.1.17 and 1.1.67 answer an
+        # unauthenticated ``session/new`` with -32000 ``Authentication required:
+        # Authentication is required.``, which is the SDK's generic prefix and the same
+        # words goose's auth answer carries, so a phrase drawn from it would match
+        # another harness's failure. Its own phrase for a missing login was not captured.
     ),
 )
 

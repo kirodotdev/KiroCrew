@@ -54,6 +54,7 @@ from dataclasses import dataclass
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
+    ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
     ACP_BACKENDS_CREW_FIRES_SPEC_HOOKS,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
@@ -189,6 +190,12 @@ class SessionCapabilities:
     #: resolved backend on.
     acp_client_spawnable: bool
 
+    #: Whether the advertised model list, once non-empty, is also the only
+    #: concrete vocabulary accepted. A picker consumer uses this to decide
+    #: whether the generic ``auto`` sentinel is offered; the ACP driver uses it
+    #: to refuse a foreign id before it can become a model write.
+    advertised_models_are_exclusive: bool
+
 
 def capabilities_for(backend: str) -> SessionCapabilities:
     """The capabilities of *backend*, fail-closed for an id this build cannot name.
@@ -203,6 +210,7 @@ def capabilities_for(backend: str) -> SessionCapabilities:
         provider_seam=(PROVIDER_CLAUDE_CODE if is_claude_backend_name(backend) else PROVIDER_ACP),
         model_id_namespace=model_registry_namespace(backend),
         resolves_model_from_advertised_list=backend in ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
+        advertised_models_are_exclusive=backend in ACP_BACKENDS_ADVERTISED_MODEL_EXCLUSIVE,
         effort_via_config_option=backend in ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
         # The two effort channels are disjoint sets, so a harness is told to use
         # at most one. KAS is in neither the command set nor this answer: it
@@ -235,6 +243,7 @@ UNKNOWN_BACKEND_CAPABILITIES = SessionCapabilities(
     provider_seam=PROVIDER_ACP,
     model_id_namespace=MODEL_NAMESPACE_ACP,
     resolves_model_from_advertised_list=False,
+    advertised_models_are_exclusive=False,
     effort_via_config_option=False,
     effort_via_slash_command=False,
     compacts_inline=False,

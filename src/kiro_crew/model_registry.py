@@ -35,6 +35,7 @@ import json
 import logging
 import math
 import re
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, TypeGuard
@@ -514,6 +515,19 @@ def persist_kiro_windows() -> None:
 # never brick import.
 _ADVERTISED_MODELS: dict[str, list[str]] = {}
 
+# The same rows WITH their backend-authored labels, plus the wall-clock moment
+# the backend answered. Ids alone are enough for permission; a picker needs the
+# display name, and the observed-at stamp is what lets the dashboard refresh a
+# stale catalog without confusing an old answer for a new one.
+_ADVERTISED_MODEL_ROWS: dict[str, list[dict[str, str]]] = {}
+_ADVERTISED_MODELS_OBSERVED_AT: dict[str, int] = {}
+
+# Providers whose stored rows are the HOST's own rows -- labels it authored, in
+# the order it serves them. Only these get the stamped object in the sidecar;
+# every other provider keeps the plain id list it always had, so adding labels
+# for one catalog never changes the persisted shape for the rest.
+_ADVERTISED_MODEL_ROWS_LABELED: set[str] = set()
+
 # Inference-profile prefixes stripped when folding an advertised provider id to
 # a comparison key. Longest-first so ``global.anthropic.`` wins over a bare
 # ``anthropic.`` that is a suffix of it.
@@ -524,6 +538,35 @@ _PROVIDER_ID_PREFIXES: tuple[str, ...] = (
     "apac.anthropic.",
     "anthropic.",
 )
+
+
+def _admit_model_rows(
+    provider: str, rows: Iterable[object], *, store_label: str = ""
+) -> list[dict[str, str]]:
+    """Admit bounded ``{modelId,name,description}`` rows, preserving order."""
+    row_list = [r for r in rows if isinstance(r, dict)]
+    candidate_ids = [r.get("modelId") for r in row_list]
+    label = store_label or f"advertised-model cache for {provider}"
+    admitted_ids = set(_admit_ids(candidate_ids, label))
+    admitted: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for row in row_list:
+        model_id = row.get("modelId")
+        if model_id not in admitted_ids or model_id in seen:
+            continue
+        if len(admitted) >= ADVERTISED_MODELS_MAX_IDS:
+            break
+        name = row.get("name")
+        description = row.get("description")
+        admitted.append(
+            {
+                "modelId": model_id,
+                "name": name if _retainable_model_id(name) else model_id,
+                "description": description if _retainable_model_id(description) else "",
+            }
+        )
+        seen.add(model_id)
+    return admitted
 
 
 def _advertised_models_cache_path() -> Path:
@@ -544,14 +587,37 @@ def _load_advertised_models() -> None:
         with open(path, encoding="utf-8") as f:
             data = json.load(f)
         if isinstance(data, dict):
-            for provider, ids in data.items():
-                if isinstance(provider, str) and isinstance(ids, list):
-                    # Same admission as the refresh: the sidecar is a persisted
-                    # copy of the same population, and an oversized file must
-                    # not re-admit what the refresh refused.
-                    clean = _admit_ids(ids, f"advertised-model sidecar for {provider}")
+            for provider, state in data.items():
+                if not isinstance(provider, str):
+                    continue
+                if isinstance(state, list):
+                    # The shape every provider had before a service-owned
+                    # catalog needed labels, and the shape every provider
+                    # outside that set still gets. Same admission as the
+                    # refresh: the sidecar is a persisted copy of the same
+                    # population, and an oversized file must not re-admit what
+                    # the refresh refused.
+                    clean = _admit_ids(state, f"advertised-model sidecar for {provider}")
                     if clean:
                         _ADVERTISED_MODELS[provider] = clean
+                    continue
+                if not isinstance(state, dict):
+                    continue
+                # A labeled entry: the host's own rows plus the moment it
+                # answered. Both are optional, so a file trimmed by hand still
+                # loads the half it kept.
+                rows_value = state.get("rows", [])
+                if isinstance(rows_value, list):
+                    rows = _admit_model_rows(
+                        provider, rows_value, store_label=f"advertised-model sidecar for {provider}"
+                    )
+                    if rows:
+                        _ADVERTISED_MODEL_ROWS[provider] = rows
+                        _ADVERTISED_MODEL_ROWS_LABELED.add(provider)
+                        _ADVERTISED_MODELS[provider] = [row["modelId"] for row in rows]
+                observed = state.get("observed_at")
+                if isinstance(observed, int) and observed > 0:
+                    _ADVERTISED_MODELS_OBSERVED_AT[provider] = observed
     except (OSError, ValueError, TypeError):  # pragma: no cover - corrupt/absent cache
         logger.debug("advertised-model cache unreadable; using registry allowlist", exc_info=True)
 
@@ -572,6 +638,12 @@ def refresh_advertised_models(provider: str, ids: Sequence[str]) -> bool:
     a good cached list from a prior session) and returns ``False``. The stored
     list is deduped preserving order.
 
+    A changed id list RECONCILES that provider's cached rows: removed ids lose
+    their rows, surviving ids keep their display data, and new ids get synthetic
+    rows. This keeps the id-only refresh path and the richer row store one
+    snapshot instead of letting persistence restore a model the latest catalog
+    removed.
+
     Bounded at retention by ``ADVERTISED_MODELS_MAX_IDS`` distinct ids and
     ``ADVERTISED_MODEL_ID_MAX_CHARS`` per id, the same pair
     :func:`refresh_kiro_windows` applies to the same rows. An id past either
@@ -585,7 +657,51 @@ def refresh_advertised_models(provider: str, ids: Sequence[str]) -> bool:
     if _ADVERTISED_MODELS.get(provider) == clean:
         return False
     _ADVERTISED_MODELS[provider] = clean
+    old_by_id = {row["modelId"]: row for row in _ADVERTISED_MODEL_ROWS.get(provider, ())}
+    _ADVERTISED_MODEL_ROWS[provider] = [
+        (
+            dict(old_by_id[model_id])
+            if model_id in old_by_id
+            else {"modelId": model_id, "name": model_id, "description": ""}
+        )
+        for model_id in clean
+    ]
     return True
+
+
+def refresh_advertised_model_rows(
+    provider: str,
+    rows: Sequence[object],
+    *,
+    observed_at: int | None = None,
+) -> bool:
+    """Ingest the host's own rows and their ids; return whether persistence is needed.
+
+    A row store is a catalog the HOST authored -- labels, order, descriptions --
+    so ingesting one is what makes *provider* a labeled entry in the sidecar.
+    An empty answer is a no-op like the id-only refresh: a backend that
+    advertised nothing must not wipe a good cached catalog.
+
+    The observed-at stamp is kept in memory and never on its own asks for a
+    write. A caller that re-read an unchanged catalog has nothing new to record:
+    the stamp it needs is the one its own process just took, and a restart
+    simply probes once more rather than every session rewriting the sidecar for
+    every provider.
+    """
+    clean_rows = _admit_model_rows(provider, rows)
+    if not clean_rows:
+        return False
+    stamp = observed_at if observed_at is not None else time.time_ns()
+    if not isinstance(stamp, int) or stamp <= 0:
+        raise ValueError("observed_at must be a positive integer clock reading")
+    clean_ids = [row["modelId"] for row in clean_rows]
+    ids_changed = _ADVERTISED_MODELS.get(provider) != clean_ids
+    _ADVERTISED_MODELS[provider] = clean_ids
+    rows_changed = _ADVERTISED_MODEL_ROWS.get(provider) != clean_rows
+    _ADVERTISED_MODEL_ROWS[provider] = clean_rows
+    _ADVERTISED_MODEL_ROWS_LABELED.add(provider)
+    _ADVERTISED_MODELS_OBSERVED_AT[provider] = stamp
+    return ids_changed or rows_changed
 
 
 def persist_advertised_models() -> None:
@@ -600,7 +716,23 @@ def persist_advertised_models() -> None:
     :func:`persist_kiro_windows`.
     """
     try:
-        snapshot = {p: list(v) for p, v in dict(_ADVERTISED_MODELS).items()}
+        # One entry per provider, in the shape that provider's readers need. An
+        # id list is what every provider has always been recorded as and is all
+        # a permission check needs, so a labeled catalog must not change the
+        # file for anyone else: only the providers in
+        # ``_ADVERTISED_MODEL_ROWS_LABELED`` get the object, and only they carry
+        # the stamp that lets a picker tell an old answer from a new one.
+        snapshot = {
+            provider: (
+                {
+                    "observed_at": _ADVERTISED_MODELS_OBSERVED_AT.get(provider, 0),
+                    "rows": advertised_model_rows(provider),
+                }
+                if provider in _ADVERTISED_MODEL_ROWS_LABELED
+                else list(ids)
+            )
+            for provider, ids in dict(_ADVERTISED_MODELS).items()
+        }
         path = _advertised_models_cache_path()
         atomic_write(path, json.dumps(snapshot))
     except OSError:  # pragma: no cover - disk full / perms
@@ -610,6 +742,22 @@ def persist_advertised_models() -> None:
 def advertised_models(provider: str) -> list[str]:
     """The provider ids ``provider`` last advertised, or ``[]`` on a cold cache."""
     return list(_ADVERTISED_MODELS.get(provider, ()))
+
+
+def advertised_model_rows(provider: str) -> list[dict[str, str]]:
+    """Advertised rows with labels, synthesizing id-only rows from the old cache."""
+    rows = _ADVERTISED_MODEL_ROWS.get(provider)
+    if rows:
+        return [dict(row) for row in rows]
+    return [
+        {"modelId": model_id, "name": model_id, "description": ""}
+        for model_id in _ADVERTISED_MODELS.get(provider, ())
+    ]
+
+
+def advertised_models_observed_at(provider: str) -> int:
+    """Wall-clock nanoseconds of the last non-empty answer, or ``0`` if unknown."""
+    return _ADVERTISED_MODELS_OBSERVED_AT.get(provider, 0)
 
 
 def _normalize_advertised_key(provider_id: str) -> str:

@@ -830,7 +830,7 @@ def test_the_refusal_is_scoped_to_harnesses_that_publish_a_channel() -> None:
     """
     from kiro_crew.acp.types import AcpEvent
 
-    assert acp_backends.ACP_BACKENDS_META_IDENTITY == {GOOSE}
+    assert acp_backends.ACP_BACKENDS_META_IDENTITY == {GOOSE, acp_backends.ACP_BACKEND_QODER}
 
     # The SAME unclassified event, cached identically, on each backend in turn.
     def _client(backend: str) -> AcpClient:

@@ -135,7 +135,7 @@ def _received_defaults(answers: dict) -> dict:
     ids=lambda b: b or "kiro",
 )
 def test_the_client_launch_hands_child_env_defaults_to_kiro_cli_alone(backend, tmp_path) -> None:
-    """``agent.child_env_defaults`` reaches a client-launched child only for kiro-cli.
+    """``agent.child_env_defaults`` reaches a launched child only for kiro-cli.
 
     Through ``AcpClient``'s real launch, with the env hop's own body run rather than
     passed through: a launch that stopped handing that hop the kiro-cli answer drops

@@ -45,12 +45,14 @@ import pytest
 
 from kiro_crew.agent_sdk import backend_cards as cards_mod
 from kiro_crew.agent_sdk import backends as sdk_backends
+from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     Routing,
 )
 
@@ -368,6 +370,7 @@ def test_core_counts_per_harness_are_pinned() -> None:
         "kiro": 6,
         "opencode": 6,
         "pi": 6,
+        "qoder": 3,
     }
     assert counts["kas"] == len(cards_mod.USER_FACING_LINES)
 
@@ -473,6 +476,14 @@ def test_security_notes_are_stated_only_when_they_hold() -> None:
     kas = cards_mod.card_for(ACP_BACKEND_KAS)
     assert cards_mod.NOTE_HOST_CREDENTIAL_TO_CHILD in kas.security_notes
     assert cards_mod.NOTE_OWN_CREDENTIAL_STORE not in kas.operator_notes
+
+
+def test_qoder_does_not_repeat_its_standing_sign_in_statement() -> None:
+    """The auth remedy already says Qoder signs in separately; the note is noise."""
+    card = cards_mod.card_for(ACP_BACKEND_QODER)
+    declaration = host_auth.declaration_for(ACP_BACKEND_QODER)
+    assert declaration.shows_own_credential_store_note is False
+    assert cards_mod.NOTE_OWN_CREDENTIAL_STORE not in card.operator_notes
 
 
 def test_the_security_notes_are_the_confinement_and_credential_facts() -> None:

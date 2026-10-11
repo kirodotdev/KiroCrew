@@ -23,6 +23,7 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
 )
 
 # Backends whose single process can host N concurrent ACP sessions (AcpRuntime
@@ -155,6 +156,7 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_PI,
         ACP_BACKEND_DEEPSEEK,
+        ACP_BACKEND_QODER,
     }
 )
 
@@ -240,6 +242,11 @@ ACP_BACKENDS_HARNESS_OWNED_SESSIONS = frozenset(
         ACP_BACKEND_PI,
         ACP_BACKEND_GOOSE,
         ACP_BACKEND_DEEPSEEK,
+        # qoder is a member on a live 1.1.67 round trip: after two real turns,
+        # session/close followed by session/load replayed two user/agent exchanges and the
+        # next prompt continued the conversation. This is ownership/restore, not eviction:
+        # no measurement shows the loaded session was freed from a process map.
+        ACP_BACKEND_QODER,
     }
 )
 

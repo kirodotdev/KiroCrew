@@ -18,6 +18,7 @@ in ``VOCABULARY_PATHS``, which is what lets its ``ACP_BACKEND*`` names be define
 
 from __future__ import annotations
 
+import json
 from enum import Enum
 from typing import FrozenSet
 
@@ -30,6 +31,8 @@ from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
+    QODER_REQUIRED_MODE,
 )
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
@@ -164,7 +167,7 @@ ACP_BACKENDS_SIDE_READONLY = frozenset(
 # The channel TABLE lives in ``kiro_crew.acp._dispatch`` (it holds wire field names, which
 # are driver detail); this set is the vocabulary half, and a test asserts the two agree so
 # a row and its membership cannot drift apart.
-ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE})
+ACP_BACKENDS_META_IDENTITY: FrozenSet[str] = frozenset({ACP_BACKEND_GOOSE, ACP_BACKEND_QODER})
 
 # Backends whose ``session/request_permission`` names no ``kind`` and whose
 # tool_call ``kind`` is SAFE to carry onto the permission event in its place,
@@ -343,6 +346,32 @@ class Routing(str, Enum):
     can be made to ask. This member exists so "we do not know" is a state a
     caller must handle rather than an absent case that falls through to a
     permissive branch. It always resolves INDETERMINATE, which refuses.
+
+    ``PINNED_ASK_RULE`` -- the harness accepts inline permission settings on its
+    spawn argv, and those settings rank above project and user configuration.
+    Kiro Crew pins ``permissions.ask: ["*"]`` and ``defaultMode: "default"`` so an
+    allow rule cannot outrank the ask. This does NOT prove the harness resolved
+    those rules: qodercli exposes no resolved-permission read-back. The driver
+    therefore refuses a version outside the measured exact set, requires the
+    reported default mode before a prompt, aborts a mode move through either mode
+    envelope, and aborts execution unless Crew's ALLOW answer preceded it for the same
+    execution; an unanswered failed terminal is also a bypass witness. Restore replay is structurally outside that execution witness: tool
+    frames are ignored until the first live ``session/prompt`` is sent. This does NOT
+    assert the complete resolved rule set, per-call emission beyond the corpus, operator
+    user-level settings, or other releases. The pinned argv also carries inline
+    ``disableAllHooks: true``, which stops a project's own ``.qoder/settings.json``
+    hooks from running. Measured on 1.1.67: a project PreToolUse hook that ran under
+    the argv without the key does not run with it, and the ask still raised for Bash
+    and Read. NOT measured: user-level hooks, non-command hook types, other events,
+    MCP calls under the key, mid-session settings rewrites, managed tiers, or other
+    releases. The cost is that the operator's own user-level and plugin hooks do not
+    run in Crew-run Qoder sessions; the Kiro-derived spec removes hooks and the Claude
+    Side Chat sets ``disableAllHooks``, the same cost both already accept. The version
+    gate and unasked-call tripwire are the backstop; every bump must re-run the
+    hook-suppression probe. A mode update buffered by
+    ``_wait_for_response`` before the session response is checked when the session
+    opens. One arriving afterwards and before the first prompt is not seen by the
+    init drain, and is caught by the unasked-call tripwire at the first execution.
     """
 
     AGENT_SPEC = "agent_spec"
@@ -350,6 +379,7 @@ class Routing(str, Enum):
     SEEDED_SETTINGS = "seeded_settings"
     VERIFIED_SEEDED_SETTINGS = "verified_seeded_settings"
     VERIFIED_GATE_EXTENSION = "verified_gate_extension"
+    PINNED_ASK_RULE = "pinned_ask_rule"
     UNVERIFIED = "unverified"
 
 
@@ -382,6 +412,7 @@ ACP_BACKEND_ROUTING: dict = {
     # extension Crew composes, which is this member, and the frame corpus carries the
     # live capture (``test/fixtures/acp_frames/deepseek/permission-request-live``).
     ACP_BACKEND_DEEPSEEK: Routing.VERIFIED_GATE_EXTENSION,
+    ACP_BACKEND_QODER: Routing.PINNED_ASK_RULE,
 }
 
 
@@ -428,6 +459,37 @@ ACP_BACKEND_PERMISSION_SETTING: dict = {
     ACP_BACKEND_GOOSE: ("GOOSE_MODE", "approve"),
 }
 
+# The exact inline settings argv qodercli receives. Building it with ``json.dumps``
+# keeps shell-quoting out of the driver: the value travels as one argv element.
+# The order is also the assertion's order: ask first, then default mode, then
+# ``disableAllHooks``. The inline true stops a project's own hook commands from
+# running; measured on 1.1.67 only.
+QODER_PINNED_SETTINGS_JSON: str = json.dumps(
+    {
+        "permissions": {"ask": ["*"], "defaultMode": QODER_REQUIRED_MODE},
+        "disableAllHooks": True,
+    },
+    separators=(",", ":"),
+)
+QODER_GATE_ARGV: tuple[str, ...] = (
+    "--settings",
+    QODER_PINNED_SETTINGS_JSON,
+    "--permission-mode",
+    QODER_REQUIRED_MODE,
+    "--strict-mcp-config",
+)
+# Crew never offers any mode that could turn the ask off, never hands an argv-level
+# allow list that could be read as bypassing the ask rule, and never moves the login
+# store. This tuple exists so tests name the refusal set with the driver's owner.
+QODER_FORBIDDEN_ARGV_FLAGS: tuple[str, ...] = (
+    "--allowed-tools",
+    "--dangerously-skip-permissions",
+    "--config-dir",
+)
+# The one live-measured option whose kind is allow_always. Crew records the id so
+# its approval path can refuse both that exact id and any translated allow_always
+# choice without parsing a display name.
+QODER_ALLOW_ALWAYS_OPTION_ID = "proceed_always_and_save"
 
 #: Harness id -> the probe command its ``VERIFIED_GATE_EXTENSION`` routing reads
 #: back out of the harness's command registry before the first prompt.
@@ -519,6 +581,11 @@ def gate_readback_for(backend: str) -> Readback | None:
     report ROUTED for a check its driver never runs.
     """
     return ACP_BACKEND_GATE_READBACK.get(backend)
+
+
+def qoder_pinned_argv(base_argv: tuple[str, ...] | list[str]) -> list[str]:
+    """Return *base_argv* with Qoder's fail-closed permission argv appended."""
+    return [*base_argv, *QODER_GATE_ARGV]
 
 
 # These classes keep the facade as their module: it is the path every caller

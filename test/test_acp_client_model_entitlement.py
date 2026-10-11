@@ -227,6 +227,27 @@ class TestModelEntitlementPreflight:
         assert client.model_pin_refused == "claude-opus-4.8"
 
     @pytest.mark.asyncio
+    async def test_kiro_startup_never_awaits_the_qoder_withhold(self, monkeypatch):
+        """H13: the Kiro startup path does not even await the Qoder withhold.
+
+        The pin is advertised, so it still goes over the wire as a set_model.
+        """
+        from kiro_crew.acp.types import METHOD_SET_MODEL
+
+        client = self._client(["claude-opus-4.8"], "claude-opus-4.8")
+        sent = []
+        client._send_request = _record(sent)
+
+        async def fail_if_called() -> bool:
+            raise AssertionError("the Kiro startup path awaited the Qoder withhold")
+
+        monkeypatch.setattr(client, "_withhold_qoder_startup_model", fail_if_called)
+
+        await client._apply_startup_model()
+
+        assert [method for method, _ in sent] == [METHOD_SET_MODEL]
+
+    @pytest.mark.asyncio
     async def test_startup_auto_keeps_the_backend_default(self):
         from kiro_crew.acp.client import DEFAULT_MODEL
 

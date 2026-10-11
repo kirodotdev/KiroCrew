@@ -28,6 +28,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_KIRO,
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_QODER,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
     ACP_BACKENDS_KNOWN,
@@ -236,10 +237,19 @@ class TestTheEffortControlIsReachableOnThisHarness:
     def test_the_advertised_option_answers_for_this_harness(self) -> None:
         """Written out per harness, so a silently granted authority names its own."""
         assert ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION == frozenset(
-            {ACP_BACKEND_DEEPSEEK, ACP_BACKEND_GOOSE, ACP_BACKEND_OPENCODE, ACP_BACKEND_PI}
+            {
+                ACP_BACKEND_DEEPSEEK,
+                ACP_BACKEND_GOOSE,
+                ACP_BACKEND_OPENCODE,
+                ACP_BACKEND_PI,
+                ACP_BACKEND_QODER,
+            }
         )
         assert ACP_BACKEND_KIRO not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION
+        # qoder joins on its own 1.1.67 accepted/reflected low write and
+        # session-owned foreign model ids; deepseek now joins through main's
+        # own measured membership rather than the older near-miss exclusion.
 
     def test_the_dropdown_is_offered_on_the_ordinary_pi_session(self, tmp_path) -> None:
         """The user-visible half: the control appears on a model the registry rejects."""
