@@ -61,6 +61,7 @@ from kiro_crew.dashboard.chat_title import (
 )
 from kiro_crew.dashboard.chat_utils import (
     _normalize_model,
+    bind_linked_session_key,
     effective_session_key,
     slot_transcript_key,
 )
@@ -687,6 +688,13 @@ def _read_project(r: _Read) -> None:
         r.slot.project = r.meta["project"]
 
 
+def _read_project_cleared(r: _Read) -> None:
+    # Restored on its own: the project guard above tests for TRUTH, and a cleared slot
+    # persists an EMPTY one, so a lost marker reads back as never-scoped.
+    if r.meta.get("project_cleared") is True:
+        r.slot.project_cleared = True
+
+
 def _read_executor(r: _Read) -> None:
     # The marker is restored INDEPENDENTLY of its target fields. The line is a
     # file, so a truncated write or a hand-edit can leave ``executor="remote"``
@@ -880,14 +888,14 @@ def _read_linked_session_key(r: _Read) -> None:
     # would stop seeing its replies.
     slot, meta, purpose = r.slot, r.meta, r.purpose
     if meta.get("linked_session_key"):
-        slot.linked_session_key = str(meta["linked_session_key"])
+        bind_linked_session_key(slot, str(meta["linked_session_key"]))
     elif isinstance(purpose, Recent):
         if is_channel_session_key(purpose.history_key) and r.state.sessions:
             # Resolved from the session map, never derived from the filename:
             # the ``:``-to-``_`` fold is not reversible.
             real_key = r.state.sessions.channel_key_for_stem(purpose.history_key)
             if real_key:
-                slot.linked_session_key = real_key
+                bind_linked_session_key(slot, real_key)
 
 
 def _read_tab_id(r: _Read) -> None:
@@ -1046,6 +1054,15 @@ FIELDS: tuple[Field, ...] = (
         line=_truthy(lambda s: s.project),
         merge=_always(lambda s: s.project),
         read=_read_project,
+    ),
+    Field(
+        "project_cleared",
+        _ALL,
+        attr="project_cleared",
+        line=_always(lambda s: bool(s.project_cleared)),
+        merge=_always(lambda s: bool(s.project_cleared)),
+        read=_read_project_cleared,
+        why="written even when False: the merge cannot delete a key",
     ),
     # Written while a local turn is between admission and teardown and omitted
     # otherwise -- slot ownership makes the omission the durable clear; the merge,
@@ -1411,6 +1428,7 @@ LINE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "project",
+    "project_cleared",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1466,6 +1484,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "memory_store",
     "agent_kind",
     "project",
+    "project_cleared",
     "app",
     "origin",
     "created_by",

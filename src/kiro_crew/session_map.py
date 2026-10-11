@@ -1330,6 +1330,20 @@ class SessionMap:
             return True
         return False
 
+    @_guarded
+    def clear_cwd(self, key: str) -> bool:
+        """Drop the stored directory for *key*, keeping the entry and its sid.
+
+        This record outlives the process; the retirement arm does not. Across a restart it
+        would be the only surviving answer, and the restore a cwd-less claim runs binds it
+        again -- which every channel turn is. Returns whether one was dropped.
+        """
+        entry = self._data.get(canonical_key(key))
+        if entry and entry.pop("cwd", None):
+            self._save()
+            return True
+        return False
+
     def get_discarded_sid(self, key: str) -> str:
         """Return the last sid dropped from *key* by any path, or ''.
 

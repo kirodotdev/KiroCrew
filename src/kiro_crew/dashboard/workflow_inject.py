@@ -17,14 +17,9 @@ import json
 import re
 from typing import Any, Callable, Optional
 
-from kiro_crew.dashboard.chat_utils import dashboard_slot_key
+from kiro_crew.dashboard.chat_utils import bind_linked_session_key, dashboard_slot_key
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
-from kiro_crew.dashboard.state import (
-    DashboardState,
-    append_and_surface,
-    note_crew_log_class,
-    row_mid,
-)
+from kiro_crew.dashboard.state import DashboardState, append_and_surface, row_mid
 from kiro_crew.history import append_if_absent_off_loop
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -173,7 +168,7 @@ def inject_workflow_result(
                 return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
-                slot.linked_session_key = session_key
+                bind_linked_session_key(slot, session_key, state)
                 # A reused ``workflow-<run_id>`` slot object can still hold the
                 # PRIOR run's in-memory dismissed set. Leaving it in place while
                 # the slot now links a DIFFERENT transcript would let the next
@@ -186,7 +181,6 @@ def inject_workflow_result(
                 slot._dismissed_source_links = set()
                 slot.invalidate_source_links()
                 slot._dismissed_hydrated = False
-                note_crew_log_class(state, slot)
             slot.title = f"Workflow: {snapshot.get('name') or run_id}"
 
         # Dedup: don't double-inject the same result on a re-fire.

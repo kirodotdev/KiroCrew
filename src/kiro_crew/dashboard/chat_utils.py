@@ -46,6 +46,7 @@ from kiro_crew.dashboard.state import (
     _ChatSlot,
     _normalize_slot_key,
     append_and_surface,
+    note_crew_log_class,
     parse_cls_meta,
 )
 from kiro_crew.execution_context import (
@@ -1144,6 +1145,17 @@ async def restore_replacement_if_handover_did_not_land(
         durable_mode,
     )
     return True
+
+
+def bind_linked_session_key(slot: _ChatSlot, key: str, state: Any = None) -> None:
+    """Bind *slot* to session *key*.
+
+    The single writer of ``linked_session_key``. Records the class beside the assignment:
+    the single writer is the one place every committed link passes. *state* feeds that
+    record's probe, which else invents a channel.
+    """
+    slot.linked_session_key = key
+    note_crew_log_class(state, slot)
 
 
 def subagents_attached(

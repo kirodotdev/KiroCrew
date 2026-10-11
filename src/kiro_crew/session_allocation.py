@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kiro_crew.agent_spec_format import iter_agent_spec_files
+from kiro_crew.config.paths import CWD_CLEARED, resolved_cwd
 from kiro_crew.kiro_prerequisite import pre_spawn_identity, spawn_pid, stamp_spawn_identity
 from kiro_crew.messaging.queue_drain import entry_channel, wake_other_drains
 from kiro_crew.metrics.sessions import (
@@ -217,6 +218,78 @@ def widen_cold_start_semaphore(sem: PrioritySemaphore, width: int) -> None:
     sem.widen_to(width + FOREGROUND_COLD_START_RESERVE)
 
 
+def cwd_moved_for_reuse(raw_bound: object, cwd: str | None) -> bool:
+    """Whether a claim's directory disagrees with the one a live session is bound to.
+
+    Extracted so the comparison can be driven directly: it runs on EVERY reuse, and its
+    failure mode is silent -- a false move evicts a warm session, so the slot cold-starts
+    each turn or exhausts its retry budget with nothing raised.
+
+    Only a claim naming a REAL directory can witness a move. ``CWD_CLEARED`` names one this
+    layer cannot compute: ``prepare_runtime`` substitutes a member's configured workspace
+    for an empty cwd, so a per-session default guessed here disagrees with every enrolled
+    member's binding and evicts it on every turn. A cleared project is retired by its arm,
+    which does not depend on guessing where the clear lands.
+
+    Both sides go through ``resolved_cwd``, and that symmetry is the point. Only one side
+    normalized makes the answer depend on which side happened through ``Path``: a provider
+    reporting a raw string disagrees with a caller's normalized one, and on Windows ``Path``
+    rewrites separators, so two spellings of one directory compare unequal and every reuse
+    evicts. Deliberately NOT realpath -- that is a filesystem call under the registry lock,
+    and the binding is the spelling the session was OPENED with, which is what a claim
+    restates, so a symlinked root compares equal to itself without resolving it.
+    """
+    # A provider tracking no real directory STRING reports nothing to disagree with, which
+    # is not the same as reporting no directory. The ABC default is "".
+    bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+    bound_cwd, requested_cwd = normalized_reuse_cwds(raw_bound, cwd)
+    # `None` states no requirement; `CWD_CLEARED` states one only the cold start can name.
+    return cwd is not None and cwd != CWD_CLEARED and bound_readable and requested_cwd != bound_cwd
+
+
+def normalized_reuse_cwds(raw_bound: object, cwd: str | None) -> tuple[str, str]:
+    """The two spellings the reuse comparison is made on, as ``(bound, requested)``.
+
+    One definition, because the claim gate needs the PAIR as well as the verdict: the arm
+    agreement compares against these values rather than against the boolean, and a second
+    copy of the normalization beside the call would drift from this one silently.
+    """
+    bound_cwd = resolved_cwd(raw_bound) if isinstance(raw_bound, str) and raw_bound else ""
+    requested_cwd = resolved_cwd(cwd) if cwd else ""
+    return bound_cwd, requested_cwd
+
+
+@dataclass(slots=True)
+class RetireArm:
+    """One key's retirement arm, and the generation that outlives it.
+
+    The three facts share a key and NOT a lifetime: spending an arm drops the directory and the
+    agent it names, while the generation must survive, because a start compares itself against
+    that counter to learn it is stale. Holding them in one record makes that asymmetry a method.
+
+    ``cwd`` carries THREE answers and they are not interchangeable. A concrete path is already
+    through ``resolved_cwd``. ``None`` states NO directory, which is not the same as stating
+    the default. ``CWD_CLEARED`` is the unresolved sentinel, kept as the empty string on
+    purpose: only the cold start can name where a cleared project lands, since
+    ``prepare_runtime`` substitutes an enrolled member's configured workspace. See
+    ``_arm_cwd_value``, the one place the three are told apart.
+
+    ``requires_sid_clear`` is provenance a directory cannot carry: a discard bumps the generation
+    without moving the project, so an arm can name a resolved cwd from an earlier change while
+    its conversation was thrown away. Dropped by ``spend`` with the other per-episode facts,
+    since the next conversation has its own SID.
+    """
+
+    generation: int = 0
+    cwd: str | None = None
+    requires_sid_clear: bool = False
+
+    def spend(self) -> None:
+        """Drop what the arm names. The generation is deliberately untouched."""
+        self.cwd = None
+        self.requires_sid_clear = False
+
+
 @dataclass(slots=True)
 class SessionRegistryState:
     """Mutable state exclusively owned by the allocation boundary."""
@@ -281,6 +354,9 @@ class SessionRegistryState:
     #: left a process alive behind a record that said ``reaped``. Cleared by
     #: ``end_ending``, once the caller has written its record.
     refused_spawns: dict[str, int] = field(default_factory=dict)
+    # Keys whose next claim must NOT be served a reused session, armed when a teardown was
+    # refused. Keyed by string so a cold start that has not registered yet is covered too.
+    retire_arms: dict[str, RetireArm] = field(default_factory=dict)
 
 
 class InboundCallbackReservation:
@@ -352,6 +428,7 @@ class _AllocationOwner(Protocol):
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        cwd: str | None = None,
     ) -> bool: ...
 
     async def _evict_stale_session(self, key: str, session: Any) -> None: ...
@@ -555,6 +632,29 @@ class SessionAllocationService:
     def _continuable_keys(self, value: set[str]) -> None:
         self.state.continuable_keys = value
 
+    def _arm(self, folded: str) -> RetireArm:
+        """This key's record, created empty if absent. For a WRITE."""
+        return self.state.retire_arms.setdefault(folded, RetireArm())
+
+    def _arm_if_any(self, folded: str) -> RetireArm | None:
+        """This key's record, or ``None``. For a READ, which must not create one."""
+        return self.state.retire_arms.get(folded)
+
+    def _generation(self, folded: str) -> int:
+        """This key's monotonic counter, bumped every time its project changes. Zero if absent.
+
+        Staleness is an ORDERING question -- did this provider start before the change
+        it must honour -- and the directory a caller states cannot answer it: a cold
+        start begun before the change and a slot recreated under the same name after it
+        both state something other than the armed target. Comparing the generation the
+        provider started at against the current one separates them, so a recreated slot
+        keeps its own project instead of inheriting the previous slot's.
+
+        A read never creates a record, so a key never armed reports zero rather than an entry.
+        """
+        arm = self._arm_if_any(folded)
+        return arm.generation if arm is not None else 0
+
     @property
     def _continuable_fallback(self) -> Callable[[str], bool] | None:
         return self.state.continuable_fallback
@@ -581,6 +681,168 @@ class SessionAllocationService:
 
     def has_session(self, key: str) -> bool:
         return self._owner._fold_key(key) in self._sessions
+
+    def spend_retire_arm(self, key: str) -> None:
+        """Drop *key*'s retirement arm, for a teardown that ENDS the slot generation.
+
+        Called only where the slot itself is gone -- ``destroy``, which deletes the session-map
+        entry. The arm names a directory a SUCCESSOR must bind, so once no successor can arrive
+        the only claim left is a different slot recreated under the same name, which would
+        silently inherit the previous project.
+
+        Cleanup that keeps the slot (``remove``, ``remove_if_unclaimed``) calls nothing: the arm
+        is still owed to a real claim, and doubles as the retry target for a start it evicts.
+
+        The GENERATION survives only while a start may still read it: the reap drops the whole
+        record once neither a live session nor a claim in flight can.
+        """
+        folded = self._owner._fold_key(key)
+        if (arm := self._arm_if_any(folded)) is not None:
+            arm.spend()
+            self._reap_arm_if_quiescent(folded)
+
+    def supersede_arm_for_new_slot(self, key: str) -> None:
+        """Release *key*'s arm because the slot that owned it is gone for good.
+
+        Neither teardown verb can: ``destroy`` spends the arm, while close and sweep run
+        ``remove``, which preserves it, so the arm outlives the SESSION while the SLOT is gone.
+        Slot MINT calls it because a freshly minted slot has never been armed, so any arm on its
+        key belongs to a previous occupant, whose relative writes would otherwise land in that
+        occupant's project; the close's FINAL teardown calls it because a slot never recreated
+        would else leak both PENDING entries.
+
+        Reclaims the two pending maps, then bumps the GENERATION and keeps it while a start may
+        still read it -- clearing it under one would let that start bind here.
+        """
+        folded = self._owner._fold_key(key)
+        arm = self._arm(folded)
+        arm.generation += 1
+        arm.spend()
+        self._reap_arm_if_quiescent(folded)
+
+    def _reap_arm_if_quiescent(self, folded: str) -> None:
+        """Drop a spent record once no start can still consult its generation.
+
+        The counter outlives the arm only to refuse a start that began before the change it must
+        honour; with no session and no claim in flight there is none, and a later start's own
+        zero compares equal.
+        """
+        arm = self._arm_if_any(folded)
+        if arm is None or arm.cwd is not None or arm.requires_sid_clear:
+            return
+        if folded not in self._sessions and not self._allocation_reservations.get(folded):
+            del self.state.retire_arms[folded]
+
+    def discard_all_retire_arms(self) -> None:
+        """Drop every arm and generation, for a shutdown that retires all keys at once."""
+        self.state.retire_arms.clear()
+
+    def note_conversation_discarded(self, key: str) -> None:
+        """Bump this key's generation because its conversation was thrown away.
+
+        The clear path treats "nothing registered" as already-cleared and answers True, but
+        a cold start in flight has CACHED its resume SID and not registered yet, so clearing
+        the persisted map does not reach it: it registers afterwards carrying the very
+        conversation the caller was told was gone. The generation is what a start compares
+        itself against at registration, so bumping it here is what makes that late arrival
+        read as stale and retire instead of being served.
+
+        Arms no cwd: a clear moves no directory, so the
+        binding a retry must honour is unchanged and recording one would misdirect it. It does
+        record that the SID must go, which the directory cannot express -- an arm may still
+        hold a resolved cwd from an earlier project change, and a retry that reads only the
+        directory states a real path rather than ``CWD_CLEARED``, so the resume guard does not
+        fire and the discarded conversation is served again.
+        """
+        folded = self._owner._fold_key(key)
+        arm = self._arm(folded)
+        arm.generation += 1
+        arm.requires_sid_clear = True
+
+    @staticmethod
+    def _arm_cwd_value(cwd: str | None, folded: str) -> str | None:
+        """The value an arm stores for *cwd*, keeping ``RetireArm.cwd``'s three answers apart.
+
+        Only a concrete path is normalized. Resolving ``CWD_CLEARED`` arms the per-session
+        default, which no enrolled member's start binds, so the registration check's cleared
+        branch could never fire and the retry handed that default to preparation as a real
+        path -- raising ``project_identity_changed``. It also keeps ``resolved_cwd``'s
+        ``workspace_root`` read and mkdir off the loop the publishing callers run on.
+        """
+        if cwd is None or cwd == CWD_CLEARED:
+            return cwd
+        return resolved_cwd(cwd, folded)
+
+    def _record_arm_cwd(self, folded: str, cwd: str | None) -> None:
+        """Record what an arm states, DROPPING the entry rather than leaving an earlier
+        change's directory to outlive the generation bump that supersedes it."""
+        self._arm(folded).cwd = self._arm_cwd_value(cwd, folded)
+        if cwd == CWD_CLEARED:
+            # Persisted too, because the arm is in MEMORY: across a restart the stored
+            # directory would otherwise be the only surviving answer.
+            self._owner._session_map.clear_cwd(folded)
+
+    def mark_retire_on_next_claim(self, key: str, cwd: str | None) -> int:
+        """Mark this key's session invalid for reuse without touching a running turn.
+
+        For a teardown that had to be REFUSED. The refusal keeps a streaming reply alive, but
+        the reason for the teardown does not, so the next claim must not be handed that
+        session either.
+
+        Records the KEY, not just the object, because "no session registered" is NOT the same
+        as "nothing to protect against": a cold start holds no registry entry until it
+        finishes, so a probe in that window sees nothing while a provider bound to the
+        pre-change directory is already on its way. `_reacquire_and_validate` consumes the key,
+        so a session registering AFTER this call is refused on its next claim just the same.
+
+        A turn already streaming keeps its provider, so the guarantee is that no LATER turn is
+        served the stale session. Returns the GENERATION recorded here, which is what lets a
+        producer retract its OWN arm via :meth:`supersede_arm_for_new_slot`.
+        """
+        folded = self._owner._fold_key(key)
+        # Generation bumped and the pending maps OVERWRITTEN, never appended: a LATER change
+        # to the same key supersedes this arm instead of leaving two live answers.
+        generation = self._generation(folded) + 1
+        self._arm(folded).generation = generation
+        self._record_arm_cwd(folded, cwd)
+        session = self._sessions.get(folded)
+        if session is not None:
+            session.retire_on_identity_change = True
+        return generation
+
+    def transfer_retire_arm(self, from_key: str, to_key: str, cwd: str | None) -> None:
+        """Re-point an arm from an ABANDONED key onto the one the slot now runs on.
+
+        For a slot that REBOUND between arming and consuming. Arming the live key alone would
+        leave the abandoned key's arm in the map, where nothing drops it: an arm is cleared by
+        the claim that satisfies it, and no claim arrives for a key the slot left. The map is
+        keyed by STRING, so a later session under that key reads an arm naming a directory
+        chosen for a binding that is gone.
+
+        Distinct from :meth:`spend_retire_arm`, which drops an arm no successor is owed; here
+        the arm is still owed and only its ADDRESS was wrong. One synchronous step, so the
+        requirement is never recorded twice or not at all.
+
+        An EQUIVALENT same-key re-arm keeps the generation rather than bumping it: the
+        deferred-reset retry re-enters every few seconds, and each bump rejects a cold start
+        still resolving its own model. A DIFFERENT target on the same key must still supersede.
+        """
+        source = self._owner._fold_key(from_key)
+        target = self._owner._fold_key(to_key)
+        source_arm = self._arm_if_any(source)
+        target_arm = self._arm_if_any(target)
+        target_cwd = target_arm.cwd if target_arm is not None else None
+        if source == target and target_cwd == self._arm_cwd_value(cwd, target):
+            # The retry loop re-arms the same key/target every few seconds, so bumping the
+            # generation here would reject an in-flight cold start on every pass.
+            session = self._sessions.get(target)
+            if session is not None:
+                session.retire_on_identity_change = True
+            return
+        self.mark_retire_on_next_claim(to_key, cwd)
+        if source != target:
+            if source_arm is not None:
+                source_arm.spend()
 
     def get_provider(self, key: str) -> LLMProvider | None:
         session = self._sessions.get(self._owner._fold_key(key))
@@ -1136,6 +1398,7 @@ class SessionAllocationService:
         *,
         wait_if_busy: bool = True,
         reservation: object | None = None,
+        cwd: str | None = None,
     ) -> bool:
         """Acquire with the global lock released, then validate exact identity -- and meet the key's ending fence again.
 
@@ -1150,27 +1413,89 @@ class SessionAllocationService:
         semaphore and ``get_or_create`` turns it into a wait for the lift and a
         fresh allocation. ``open_task_session`` passes no token and is refused
         while the fence is up, as at its entry.
+
+        ``cwd`` also validates the session's BOUND directory. It is applied when a provider is
+        CREATED and never re-applied, so a live session whose project has since changed would
+        otherwise be handed back bound to the OLD directory, and the turn's relative writes
+        would land there.
+
+        Checked HERE rather than at the reuse decision because this runs with the semaphore
+        HELD: any turn that was streaming has finished, so returning False -- which sends the
+        caller through ``_evict_stale_session`` -- cannot tear a live reply down mid-stream.
+
+        Guarded on BOTH sides being set, mirroring the pool gate: a caller passing no ``cwd``
+        states no requirement and must not evict a session serving others correctly, and a
+        provider tracking no real directory string reports no binding to disagree with.
         """
         if not wait_if_busy and session.semaphore.locked():
             raise SessionBusyError(key)
-        # An idle Semaphore(1) acquires without suspension, so this is the
-        # authoritative non-waiting claim boundary after the locked check.
         await session.semaphore.acquire()
+        cwd_moved = False
         try:
             async with self._lock:
                 self._refuse_if_ending(key, reservation)
+                raw_bound = getattr(session.provider, "cwd", None)
+                bound_readable = isinstance(raw_bound, str) and raw_bound != ""
+                # The same normalization the comparison makes, from ONE definition: the arm
+                # agreement below compares against these spellings, not against the verdict.
+                bound_cwd, requested_cwd = normalized_reuse_cwds(raw_bound, cwd)
+                # One definition, driven directly by its own tests: the symmetry this
+                # comparison depends on is invisible at the call site.
+                cwd_moved = cwd_moved_for_reuse(raw_bound, cwd)
+                cwd_stated = cwd is not None
+                reg_arm = self._arm_if_any(key)
+                armed_target = reg_arm.cwd if reg_arm is not None else None
+                retire_armed = armed_target is not None
+                # Only the REGISTERED session interacts with the arm: a claimant holding a
+                # session already replaced would otherwise spend it for the successor.
+                is_registered = self._sessions.get(key) is session
+                cwd_satisfied = (
+                    is_registered
+                    and bound_readable
+                    and (
+                        (
+                            cwd_stated
+                            and requested_cwd == bound_cwd
+                            and (armed_target is None or bound_cwd == armed_target)
+                        )
+                        # A cwd-LESS claim cannot state agreement, so its BINDING settles it.
+                        # An arm with no directory states no requirement to satisfy.
+                        or (not cwd_stated and (armed_target is None or bound_cwd == armed_target))
+                    )
+                )
+                retire_applies = retire_armed and not cwd_satisfied
+                if retire_applies:
+                    # This frame can refuse WITHOUT evicting, so a claim racing the
+                    # registration would find the arm gone and reuse the stale provider.
+                    session.retire_on_identity_change = True
+                claim_answers_arm = cwd_satisfied
                 still_valid = (
                     self._sessions.get(key) is session
                     and not session.retire_on_identity_change
+                    and not retire_applies
                     and self._deps.provider_effectively_alive(session.provider)
+                    and not cwd_moved
                 )
+                if claim_answers_arm and still_valid:
+                    # Spent on ACCEPTANCE, not on satisfaction: a rejected claim (dead
+                    # provider, moved key) must leave the arm for its replacement to pay.
+                    if reg_arm is not None:
+                        reg_arm.spend()
         except BaseException:
             # The held-semaphore contract was never returned to the caller
             # (a fence refusal above included).
             session.semaphore.release()
             raise
         if not still_valid:
-            session.semaphore.release()
+            try:
+                if cwd_moved:
+                    # Tear down BEFORE the permit is released, and ONLY for a moved directory:
+                    # releasing first lets another acquirer win a free permit mid-eviction.
+                    await self._evict_stale_session(key, session)
+            finally:
+                # In a `finally` so a cancellation mid-eviction cannot leave this permit held
+                # and wedge the key; safe to release early because the check is IDEMPOTENT.
+                session.semaphore.release()
         else:
             session.turn_owner = asyncio.current_task()
         return still_valid
@@ -1183,6 +1508,8 @@ class SessionAllocationService:
                 del self._sessions[key]
                 self.advance_ownership_generation(key)
                 dead = session.provider
+                # The arm is NOT spent here: eviction is not acceptance, and a successor
+                # can register under it and die before serving. Only a live claim spends it.
                 # Same tick as the removal. Left unrecorded, the start crumb
                 # survives and the next boot calls this a crash.
                 await record_session_ended(key, end_reason=END_REASON_EVICTED)
@@ -1264,7 +1591,7 @@ class SessionAllocationService:
                 if approval_policy:
                     existing.approval_policy = approval_policy
         if existing is not None:
-            if await owner._reacquire_and_validate(key, existing):
+            if await owner._reacquire_and_validate(key, existing, cwd=cwd):
                 return existing.provider, False, False
             await owner._evict_stale_session(key, existing)
 
@@ -1374,7 +1701,7 @@ class SessionAllocationService:
                     "open_task_session: duplicate session teardown failed",
                     exc_info=True,
                 )
-            if await owner._reacquire_and_validate(key, session):
+            if await owner._reacquire_and_validate(key, session, cwd=cwd):
                 return session.provider, False, False
             await owner._evict_stale_session(key, session)
             maximum = self._deps.constants.won_race_max_retries
@@ -2182,6 +2509,9 @@ class SessionAllocationService:
         key = owner._fold_key(key)
         from kiro_crew.execution_context import read_session_execution
 
+        # Snapshotted before the FIRST await: everything after is part of this start, so a
+        # generation bump landing in there must outrank it.
+        started_generation = self._generation(key)
         execution = await asyncio.to_thread(read_session_execution, key)
         member_context = execution is not None and execution.member_id is not None
         memory_mode = execution.memory_mode if execution is not None else "persistent"
@@ -2206,6 +2536,8 @@ class SessionAllocationService:
                         raise RuntimeError(
                             "This conversation's privacy mode changed; open a new conversation"
                         )
+                    # The cwd match is NOT checked here: this runs before the semaphore is
+                    # claimed, so evicting now could tear down a reply that is still streaming.
                     alive = session.provider.is_process_alive()
                     if not alive:
                         if (
@@ -2271,6 +2603,7 @@ class SessionAllocationService:
                 session,
                 wait_if_busy=wait_if_busy,
                 reservation=_reservation,
+                cwd=cwd,
             ):
                 first_turn = session.first_turn
                 if not speculative:
@@ -2325,7 +2658,9 @@ class SessionAllocationService:
         from kiro_crew.session_capabilities import prepare_runtime
 
         effective_cwd = cwd
-        if not effective_cwd and resume_sid:
+        # `is None` and not falsy: an explicit `""` is a CLEARED project, and
+        # restoring the persisted directory over it re-binds the old one forever.
+        if effective_cwd is None and resume_sid:
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
@@ -2363,7 +2698,9 @@ class SessionAllocationService:
             owner._pool_cwd,
         )
         provider_switched = False
-        cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
+        # ``None`` states no preference, so the pool's shared binding is fine, but
+        # CWD_CLEARED names the PER-SESSION default that no pooled child can be in.
+        cwd_blocks_pool = cwd == CWD_CLEARED or bool(cwd and cwd != owner._pool_cwd)
         if not owner._pool_size:
             pool_decision = "disabled"
         elif preparation.revision:
@@ -2689,6 +3026,7 @@ class SessionAllocationService:
                 self._starting_pids.add(starting_pid)
 
         won_race_session: Any | None = None
+        stale_generation = False
         duplicate_provider: LLMProvider | None = None
         try:
             stamp = None
@@ -2811,13 +3149,38 @@ class SessionAllocationService:
                             self.advance_ownership_generation(key)
                         await discard_session_start(key)
                         raise
+                    provider_cwd = provider.cwd
+                    claim_arm = self._arm_if_any(key)
+                    armed_cwd = claim_arm.cwd if claim_arm is not None else None
+                    if started_generation < self._generation(key) or (
+                        armed_cwd is not None
+                        and (
+                            # A cleared arm names no directory, so the CLAIM settles it: what
+                            # ``prepare_runtime`` binds for a cleared project is its own to
+                            # decide, and for an enrolled member it is not this default.
+                            cwd != CWD_CLEARED
+                            if armed_cwd == CWD_CLEARED
+                            else armed_cwd != resolved_cwd(provider_cwd, key)
+                        )
+                    ):
+                        # Started before the change, or bound where the arm contradicts.
+                        stale_generation = True
+                        session.retire_on_identity_change = True
+                    elif claim_arm is not None and armed_cwd is not None:
+                        # The binding AGREES, so the start that satisfied the arm spends it,
+                        # as an accepted reuse claim does. Left resident it outlives its own
+                        # change: a later direct reset never touches an arm, so every claim
+                        # after it states a directory this one refuses and each turn
+                        # cold-starts twice into the superseded project.
+                        claim_arm.spend()
                     # After the registration has committed: the rollback above
                     # is behind us, so a cancelled start cannot take the parked
                     # entries down with the session it removes. What a
                     # forced stop parked for this key lands at the queue head;
                     # the drains for those entries' channels are woken by the
-                    # release that ends this claim (``_wake_adopted_drains``).
-                    if adopt_parked_queue(session, key):
+                    # release that ends this claim (``_wake_adopted_drains``). Adoption
+                    # EMPTIES that store and a stale start is evicted, so it must not adopt.
+                    if not stale_generation and adopt_parked_queue(session, key):
                         session.adopted_parked = True
                     self._deps.logger.info(
                         "New session: %s agent=%s resumed=%s provider_switch=%s (total=%d)",
@@ -2828,8 +3191,10 @@ class SessionAllocationService:
                         len(self._sessions),
                     )
 
-                    provider_cwd = provider.cwd
-                    if not is_stateless and self._deps.is_acp_provider(provider):
+                    # A STALE start's SID names the conversation the change discarded, and
+                    # eviction happens later, so persisting it lets the retry resume it.
+                    keep_sid = not stale_generation
+                    if keep_sid and not is_stateless and self._deps.is_acp_provider(provider):
                         sid = cast(Any, provider).client._session_id
                         if sid and not defer_sid_promotion:
                             owner._session_map.set(
@@ -2844,7 +3209,7 @@ class SessionAllocationService:
                                 "session %s; prior resumable SID stays durable",
                                 key,
                             )
-                    elif not is_stateless and self._deps.is_claude_provider(provider):
+                    elif keep_sid and not is_stateless and self._deps.is_claude_provider(provider):
                         sid = provider.session_id
                         if sid:
                             owner._session_map.set(
@@ -2879,6 +3244,43 @@ class SessionAllocationService:
             if starting_pid is not None:
                 self._starting_pids.discard(starting_pid)
 
+        if stale_generation:
+            # This frame already holds the new session's semaphore, so the won-race
+            # branch below cannot serve it: that path re-acquires and would self-block.
+            try:
+                await owner._evict_stale_session(key, session)
+            finally:
+                # The eviction AWAITS the registry lock, so a cancellation there would
+                # leave this session registered holding a permit nothing ever releases.
+                session.semaphore.release()
+            maximum = constants.won_race_max_retries
+            if _won_race_retries >= maximum:
+                raise RuntimeError(
+                    f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
+                    "a cold start kept starting before the project change it must honour"
+                )
+            # Re-pointed at the arm like `cwd` below: the retry must be able to SATISFY what
+            # refused it, or the budget runs out and the slot wedges.
+            retry_arm_rec = self._arm_if_any(key)
+            retry_arm = retry_arm_rec.cwd if retry_arm_rec is not None else None
+            if retry_arm_rec is not None and retry_arm_rec.requires_sid_clear:
+                retry_arm_rec.requires_sid_clear = False
+            return await owner.get_or_create(
+                key,
+                agent=agent,
+                channel_id=channel_id,
+                approval_policy=approval_policy,
+                model=model,
+                cwd=(retry_arm if retry_arm is not None else cwd),
+                extra_env=extra_env,
+                speculative=speculative,
+                speculative_resume=speculative_resume,
+                wait_if_busy=wait_if_busy,
+                _won_race_retries=_won_race_retries + 1,
+                start_priority=start_priority,
+                **extra_factory_kwargs,
+            )
+
         if won_race_session is not None:
             if duplicate_provider is not None:
                 # ``existing`` won this key and runs in the very directory the
@@ -2898,6 +3300,7 @@ class SessionAllocationService:
                 won_race_session,
                 wait_if_busy=wait_if_busy,
                 reservation=_reservation,
+                cwd=cwd,
             ):
                 first_turn = won_race_session.first_turn
                 if not speculative:
@@ -2913,13 +3316,18 @@ class SessionAllocationService:
                     f"get_or_create({key!r}) exceeded {maximum} won-race retries — "
                     "session kept going stale between acquire and re-validate"
                 )
+            # The armed directory outranks the cwd this frame was called with: that one
+            # was read before the change, so reusing it would re-lose the same race.
+            live_rec = self._arm_if_any(key)
+            live_arm = live_rec.cwd if live_rec is not None else None
+            retry_cwd = live_arm if live_arm is not None else cwd
             return await owner.get_or_create(
                 key,
                 agent=session_agent,
                 channel_id=channel_id,
                 approval_policy=approval_policy,
                 model=model,
-                cwd=cwd,
+                cwd=retry_cwd,
                 extra_env=extra_env,
                 speculative=speculative,
                 speculative_resume=speculative_resume,

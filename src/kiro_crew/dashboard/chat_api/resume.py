@@ -41,6 +41,7 @@ if TYPE_CHECKING:
         _unhide_folder,
         app_owns_transcript_meta,
         audit_app_slot_denial,
+        bind_linked_session_key,
         carry_provenance,
         channel_slot_name,
         deny_app_slot_session_access,
@@ -49,7 +50,6 @@ if TYPE_CHECKING:
         is_channel_session_key,
         logger,
         members_mod,
-        note_crew_log_class,
         queue_entry_view,
         read_bounded_json,
         redact_credentials,
@@ -1416,12 +1416,7 @@ async def resume_slot_from_history(
         # way the surfacing path does.
         fresh_link = str(post_read_meta.get("linked_session_key") or "")
         if fresh_link and not getattr(slot, "linked_session_key", ""):
-            slot.linked_session_key = fresh_link
-            # Beside the assignment, as every link-setting site records it
-            # (``test_crew_log_class_recorder``). The built slot has no open
-            # log yet, so this is the in-memory restriction mark; a hook that
-            # refuses the linked build discards the slot and the mark with it.
-            note_crew_log_class(state, slot)
+            bind_linked_session_key(slot, fresh_link, state)
         if fresh_link or post_read_meta.get("channel_origin"):
             slot.channel_origin = True
     # Hydrated length, not the raw disk count: materialisation may append one

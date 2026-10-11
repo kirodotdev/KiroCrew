@@ -185,6 +185,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     _remove_queued_by_id,
     _resettle_restricted_key,
     _sync_dashboard_slots,
+    bind_linked_session_key,
     drained_to_thread,
     effective_session_key,
     history_corpus_unreadable,
@@ -263,6 +264,7 @@ from kiro_crew.dashboard.state import (  # noqa: F401
     is_turn_interrupted,
     note_crew_log_class,
     parse_cls_meta,
+    record_project,
     request_slot_origin,
     row_mid,
 )
@@ -2395,7 +2397,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
         # temporarily stale; existing named slots with an explicit project keep
         # it and continue to use the project endpoint for scope changes.
         if folder_project and folder_applied and not slot.project:
-            slot.project = folder_project
+            record_project(slot, folder_project)
         # Default project to workspace directory so file search works out of the box
         if not slot.project:
             cfg_proj = cfg.dashboard.default_project if cfg else ""
@@ -2415,7 +2417,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 cfg_proj = resolved if eligible else ""
             else:
                 cfg_proj = ""
-            slot.project = cfg_proj or default_project_dir(workspace)
+            record_project(slot, cfg_proj or default_project_dir(workspace))
         if is_new_slot and cfg is not None:
             if is_owner_dashboard_request(request):
                 assignment_key = effective_session_key(slot)
@@ -5482,6 +5484,7 @@ async def switch_slot_agent(
         # silently erase an action that happened after the agent pick).
         pre_await_workspace = slot.workspace
         pre_await_project = slot.project
+        pre_await_project_cleared = bool(getattr(slot, "project_cleared", False))
         pre_await_memory_store = slot.memory_store
 
         # Resolve workspace from agent bindings. The response value is seeded
@@ -5716,7 +5719,7 @@ async def switch_slot_agent(
             slot.workspace = _CommitToken(new_workspace)
             committed_workspace = slot.workspace
         if slot.project == pre_await_project:
-            slot.project = _CommitToken(new_project)
+            record_project(slot, _CommitToken(new_project))
             committed_project = slot.project
         # The store is the THIRD field of that binding, and leaving it behind
         # splits the slot in half: the turn resolves its store fresh from the new
@@ -5755,6 +5758,7 @@ async def switch_slot_agent(
                 slot.workspace = pre_await_workspace
             if committed_project is not None and slot.project is committed_project:
                 slot.project = pre_await_project
+                slot.project_cleared = pre_await_project_cleared
             if committed_memory_store is not None and slot.memory_store is committed_memory_store:
                 slot.memory_store = pre_await_memory_store
             # Re-mark unconditionally: the periodic flush writes a slot's
@@ -8242,6 +8246,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
             )
         prior_workspace = slot.workspace
         prior_project = slot.project
+        prior_project_cleared = bool(getattr(slot, "project_cleared", False))
         # Commit as identity tokens (the agent handler's _CommitToken
         # precedent): ``slot.project`` has lock-free writers -- the in-turn
         # set_project directive lands during the reset await -- so a rollback
@@ -8250,7 +8255,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
         committed_workspace = _CommitToken(ws_name)
         committed_project = _CommitToken(default_project_dir(ws_name))
         slot.workspace = committed_workspace
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s workspace switched to %r, resetting session", name, ws_name)
 
         def _rollback() -> None:
@@ -8268,6 +8273,7 @@ async def api_chat_slot_workspace(request: web.Request) -> web.Response:
                 slot.workspace = prior_workspace
             if slot.project is committed_project:
                 slot.project = prior_project
+                slot.project_cleared = prior_project_cleared
             slot._dirty = True
 
         # skip_if_busy: message dispatch does not take slot._lock, so a send
@@ -8469,6 +8475,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         if denied is not None:
             return denied
         old_project = slot.project
+        old_project_cleared = bool(getattr(slot, "project_cleared", False))
         # _CommitToken (identity-gated rollback), the agent handler's pattern:
         # slot.project has unlocked writers (the in-turn set_project directive
         # writes this field without the lock, and may legitimately write the
@@ -8476,7 +8483,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
         # cannot tell such a same-text write from this handler's own commit and
         # would erase it; a per-request identity token can.
         committed_project = _CommitToken(project)
-        slot.project = committed_project
+        record_project(slot, committed_project)
         logger.info("Slot %s project set to %r", name, project)
         sel().log_api_access(
             caller=request.get("user", "dashboard"),
@@ -8494,6 +8501,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
             if _slot_replaced_while_queued(state, slot, name, request, "chat.slot_project"):
                 if slot.project is committed_project:
                     slot.project = old_project
+                    slot.project_cleared = old_project_cleared
                 return _slot_not_found()
         # Reset the session so the next message cold-starts with the new CWD and
         # picks up project-level .kiro/steering/**/*.md (mirrors api_chat_slot_agent).
@@ -8518,6 +8526,7 @@ async def api_chat_slot_project(request: web.Request) -> web.Response:
                 # same 409 the sibling switch handlers use.
                 if slot.project is committed_project:
                     slot.project = old_project
+                    slot.project_cleared = old_project_cleared
                 return web.json_response(
                     {
                         "error": "slot session was rebound during the switch",

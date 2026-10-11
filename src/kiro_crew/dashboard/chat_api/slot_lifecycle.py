@@ -978,6 +978,10 @@ async def _close_slot(
     # it unless the key is still ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+        # FINAL teardown: `remove` preserves the arm, so a slot never recreated leaks it.
+        # Re-asked AFTER the await, else a same-key recreate loses its own armed project.
+        if _slot_still_ours(state, name, slot):
+            state.sessions.supersede_arm_for_new_slot(_history_key_for(name))
     _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slot_removed(name)

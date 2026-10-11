@@ -224,6 +224,7 @@ class TestHistoryPersistence:
             "model": "",
             "autocompact_pct": None,
             "tab_id": slot._tab_id,
+            "project_cleared": False,
         }
         assert "memory_store" not in meta
         assert slot.memory_mode == "incognito"
