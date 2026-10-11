@@ -394,6 +394,7 @@ class TerminalCoordinator(ManagerComponent):
             # not in its context yet and the retention clock must not start (the
             # drain settles it). Both flags are set by the gateway inside
             # _on_done, above.
+            delivered = False
             if (
                 mark_delivered_on_success
                 and not info.error
@@ -424,7 +425,38 @@ class TerminalCoordinator(ManagerComponent):
                     )
                 except Exception:
                     logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
-                # Clean up workspace result file (agent-{id}.md in parent dir).
+                delivered = True
+            elif (
+                mark_delivered_on_success
+                and info._leaked_process
+                and not info._digest_held
+                and not info._delivery_queued
+                and not info._report_undelivered
+            ):
+                # A completed run whose kill left its process standing, and the
+                # parent took the completion: the ``delivered`` tombstone ends the
+                # run for reconciliation and its ``leaked_process`` flag hands the
+                # process to the next start, which ends it without a notice. A
+                # queued or digest-held delivery writes nothing here, so a
+                # restart before the parent consumes it still finds the folder
+                # and re-delivers the completion; so does an injection the
+                # gateway gave up on, which returns normally from ``_on_done``.
+                try:
+                    await asyncio.to_thread(
+                        mark_delivered,
+                        info.id,
+                        elapsed=info.elapsed,
+                        credits=info.credits,
+                        leaked_process=True,
+                        outcome=info.outcome,
+                        detail=_redact(info.error)[:MAX_ERROR_DETAIL_LEN] if info.error else "",
+                    )
+                except Exception:
+                    logger.debug("Failed to mark subagent %s delivered", info.id, exc_info=True)
+                delivered = True
+            if delivered:
+                # Both branches above mean the parent took the completion, so
+                # the copy in its workspace (agent-{id}.md) has served its turn.
                 # The directory is named after the parent's SLOT, which a
                 # channel-born parent has while its session key stays the
                 # channel's own; without a tab there is no directory to clean.
@@ -980,7 +1012,12 @@ class TerminalCoordinator(ManagerComponent):
                 if not info.user_stopped:
                     # A user-initiated stop is a neutral outcome, not a failure.
                     Stats().inc_subagent_failed()
-                self._manager._write_tombstone(info, reason or "reaped")
+                if kill_failed is not None:
+                    # The process may still run: flagged for the next start's
+                    # reconciliation, which ends it without a second notice.
+                    self._manager._write_tombstone(info, reason or "reaped", leaked_process=True)
+                else:
+                    self._manager._write_tombstone(info, reason or "reaped")
                 self._manager._record_cost(info)
             elif kill_failed is not None and not info._finalized:
                 # The run's own arm wrote the record first (its stream died under
@@ -990,7 +1027,9 @@ class TerminalCoordinator(ManagerComponent):
                 # tombstone under the same cause, so the record on disk carries
                 # the failure BEFORE the report is released below.
                 info.error = with_kill_failure(info.error, kill_failed)
-                self._manager._write_tombstone(info, info._reap_reason or "reaped")
+                self._manager._write_tombstone(
+                    info, info._reap_reason or "reaped", leaked_process=True
+                )
             elif kill_failed is not None:
                 # ``done`` AND the finalize token are both taken: the run finished
                 # on its own inside the reap window -- a result, or an exception

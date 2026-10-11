@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import json
+import logging
 import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
@@ -41,7 +43,14 @@ from kiro_crew.process_identity import MAX_ERROR_DETAIL_LEN, ProcessHandle, proc
 from kiro_crew.session import SessionManager
 from kiro_crew.session_lifecycle import TornDown, _TeardownScope
 from kiro_crew.subagent import SubagentInfo, SubagentManager
-from kiro_crew.subagent_persistence import create_agent_folder, update_state
+from kiro_crew.subagent_persistence import (
+    create_agent_folder,
+    list_leaked_processes,
+    mark_delivered,
+    prune_stale_tombstones,
+    read_tombstone,
+    update_state,
+)
 
 # The start id the fake client records at spawn (``platform_compat.get_process_start_id``
 # reads ``/proc/<pid>/stat`` field 22 on Linux); the kill re-reads it before signalling.
@@ -244,6 +253,7 @@ class TestReaperRecordsAFailedKill:
                 MagicMock(side_effect=_REFUSAL),
             ),
             patch("kiro_crew.platform_compat.kill_pid_async", AsyncMock()) as pid_kill,
+            patch("kiro_crew.subagent.write_tombstone") as tombstones,
         ):
             await manager._force_reap("refused1", info, 7200.0)
 
@@ -260,6 +270,8 @@ class TestReaperRecordsAFailedKill:
         # the failure is added, not substituted.
         assert info.done and info.reaped
         assert manager._running_count == 0
+        # The process the kill left standing is flagged for the next start.
+        assert tombstones.call_args.kwargs["leaked_process"] is True
 
     @pytest.mark.asyncio
     async def test_a_group_kill_that_raises_with_no_pid_fallback_is_a_failed_kill(self) -> None:
@@ -1001,12 +1013,13 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
     is set by the run's ``finally`` however the teardown ends) and the teardown
     folds the kill's failure into the record with the shared suffix, so the
     completion names the survivor, ``outcome`` says ``failed``, and no
-    ``delivered`` tombstone is written -- the folder stays in reconciliation,
-    which is what ends the process at the next start.
+    clean ``delivered`` tombstone is written -- the acknowledged delivery's
+    tombstone carries ``leaked_process``, which the next start ends without a
+    second notice.
     """
 
     @pytest.mark.asyncio
-    async def test_a_completed_run_whose_kill_failed_names_the_survivor_and_is_not_delivered(
+    async def test_a_completed_run_whose_kill_failed_names_the_survivor_and_flags_it(
         self,
     ) -> None:
         seen: list[Any] = []
@@ -1046,7 +1059,11 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         events = _done_events(manager)
         assert len(events) == 1 and events[0]["outcome"] == "failed"
         assert "kill failed:" in events[0]["error"]
-        delivered.assert_not_called()  # the folder stays visible to orphan reconciliation
+        # The parent acknowledged it: delivered, with the survivor handed to the next start.
+        delivered.assert_called_once()
+        assert delivered.call_args.kwargs["leaked_process"] is True
+        assert delivered.call_args.kwargs["outcome"] == "failed"
+        assert "kill failed:" in delivered.call_args.kwargs["detail"]
         assert _audit(mock_sel, "run_finally_force_kill")["outcome"] == "failed"
 
     @pytest.mark.asyncio
@@ -1113,10 +1130,17 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
         assert tombstones.call_count == 1, "the record on disk does not name the survivor"
         assert tombstones.call_args.kwargs["cause"] == "error"
         assert "; kill failed:" in tombstones.call_args.kwargs["detail"]
+        assert tombstones.call_args.kwargs["leaked_process"] is True
 
     @pytest.mark.asyncio
-    async def test_a_completed_run_writes_no_tombstone_of_its_own_for_a_failed_kill(self) -> None:
-        """A completed run has no tombstone yet, and gets none here: reconciliation must still find it."""
+    async def test_a_completed_run_whose_kill_failed_is_flagged_for_its_report(
+        self,
+    ) -> None:
+        """A completed run's failed kill is flagged for its report, not written to disk yet.
+
+        The ``delivered`` tombstone its acknowledged report writes carries the
+        flag; until then the folder stays in orphan reconciliation.
+        """
         manager, info, key = _overdue_run("fin6", pid=7575)
         info.result = "the answer"
         _hanging_reset(manager)
@@ -1139,7 +1163,10 @@ class TestTheRunsOwnReportWaitsForItsTeardown:
             await manager._teardown_run_session(info, key)
 
         assert info.error.startswith("kill failed: ValueError: kill_process_group: refusing")
+        # Not tombstoned until the parent acknowledges the completion: a restart
+        # before that must still find the folder and re-deliver it.
         tombstones.assert_not_called()
+        assert info._leaked_process is True
 
     @pytest.mark.asyncio
     async def test_a_teardown_cancelled_before_its_kill_decided_names_it_and_is_not_delivered(
@@ -2237,6 +2264,9 @@ class TestTheRecordCarriesTheKillBeforeItIsPublished:
         assert "; kill failed: ValueError: kill_process_group: refusing" in (
             tombstones.call_args.kwargs["detail"]
         ), "the tombstone says the run was reaped while its process is still alive"
+        assert (
+            tombstones.call_args.kwargs["leaked_process"] is True
+        ), "the survivor is not flagged for the next start to end"
         assert info.done and info.reaped
         assert manager._process_handles == {}
 
@@ -3041,6 +3071,271 @@ class TestOrphanReconcileRecordsAFailedKill:
 
         assert kill.call_args[0][0] == 4244
         assert _audit(mock_sel, "orphan_reconcile_kill")["outcome"] == "killed"
+
+
+class TestALeakedProcessIsEndedWithoutASecondNotice:
+    """A completed run whose kill failed is announced once, and its process is still ended.
+
+    The run's own report already handed the parent its completion (naming the
+    survivor). Recorded as an orphan, the next start would end the process and
+    announce the same completion again; recorded as a leaked process, it ends the
+    process and says nothing.
+    """
+
+    @staticmethod
+    def _completed_run_on_disk(
+        agent_id: str, pid: int
+    ) -> tuple[SubagentManager, SubagentInfo, str]:
+        create_agent_folder(agent_id, task="finish, and leave the process standing")
+        update_state(agent_id, pid=pid, result_complete=True)
+        manager, info, key = _overdue_run(agent_id, pid=pid)
+        info.result = "the answer"
+        info._pid = pid
+        return manager, info, key
+
+    @staticmethod
+    async def _restart(
+        agent_id: str, *, kill: Any, verified: bool = True
+    ) -> tuple[MagicMock, AsyncMock]:
+        """Run the next start's reconciliation over the folder; return the audit and the notifier.
+
+        ``verified`` False is a live pid the identity check cannot vouch for:
+        no ``/proc`` (macOS, Windows), or a ``/proc`` entry newer than the spawn.
+        """
+        restarted = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx_builder())
+        notify = AsyncMock(return_value=None)
+        with (
+            patch.object(restarted, "_is_pid_alive", return_value=True),
+            patch.object(restarted, "_is_orphan_process", return_value=verified),
+            patch.object(restarted, "_notify_orphan", notify),
+            patch.object(platform_compat, "kill_pid", **kill),
+            patch("kiro_crew.subagent.sel") as mock_sel,
+        ):
+            await restarted._reconcile_orphans()
+        return mock_sel, notify
+
+    @staticmethod
+    async def _fail_the_kill(
+        manager: SubagentManager,
+        info: SubagentInfo,
+        key: str,
+        *,
+        queued: bool = False,
+        undelivered: bool = False,
+    ) -> None:
+        """The run's teardown with a refused kill, then its terminal report to the parent.
+
+        ``queued`` is a parent that only parked the completion (``_on_done``
+        returned with ``_delivery_queued`` set), so nothing acknowledged it yet.
+        """
+        _hanging_reset(manager)
+        children, alive, start_id, sweep = _kill_path_stubs()
+        with (
+            patch("kiro_crew.subagent.sel"),
+            patch("kiro_crew.subagent._RESET_TIMEOUT", 0.05),
+            children,
+            alive,
+            start_id,
+            sweep,
+            patch(
+                "kiro_crew.platform_compat.kill_process_group",
+                MagicMock(side_effect=_REFUSAL),
+            ),
+        ):
+            await manager._teardown_run_session(info, key)
+
+        async def _parent_takes_it(run: SubagentInfo) -> None:
+            run._delivery_queued = queued
+            run._report_undelivered = undelivered
+
+        manager._on_done = AsyncMock(side_effect=_parent_takes_it)
+        await manager._report_terminal(
+            info,
+            source="Subagent",
+            injection_timeout_reason="test",
+            mark_delivered_on_success=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_the_next_start_ends_the_survivor_and_does_not_announce_it_again(
+        self, agent_root: Any
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-once", pid=5151)
+        await self._fail_the_kill(manager, info, key)
+        assert "kill failed:" in (info.error or "")
+
+        mock_sel, notify = await self._restart("leak-once", kill={})
+
+        notify.assert_not_awaited()  # the parent already holds this completion
+        row = _audit(mock_sel, "orphan_reconcile_kill")
+        assert row["outcome"] == "killed" and row["metadata"]["pid"] == 5151
+        tombstone = read_tombstone("leak-once")
+        assert tombstone is not None
+        assert "leaked_process" not in tombstone, "a process already ended is retried forever"
+        assert "kill failed:" in tombstone["detail"], "clearing the flag lost the record"
+
+    @pytest.mark.asyncio
+    async def test_a_kill_that_fails_again_keeps_the_flag_for_the_start_after(
+        self, agent_root: Any
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-again", pid=5252)
+        await self._fail_the_kill(manager, info, key)
+
+        mock_sel, notify = await self._restart(
+            "leak-again", kill={"side_effect": PermissionError(1, "Operation not permitted")}
+        )
+
+        notify.assert_not_awaited()
+        assert _audit(mock_sel, "orphan_reconcile_kill")["outcome"] == "failed"
+        assert (read_tombstone("leak-again") or {}).get("leaked_process") is True
+
+    @pytest.mark.asyncio
+    async def test_a_live_pid_it_cannot_verify_is_reported_as_possibly_running(
+        self, agent_root: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-unverified", pid=5757)
+        await self._fail_the_kill(manager, info, key)
+        kill = MagicMock()
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew"):
+            mock_sel, notify = await self._restart(
+                "leak-unverified", kill={"new": kill}, verified=False
+            )
+
+        notify.assert_not_awaited()
+        kill.assert_not_called()
+        warned = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert any(
+            "5757" in r.getMessage() and "may still be running" in r.getMessage() for r in warned
+        ), "a process left standing was logged as gone"
+        assert not any(
+            "not running" in r.getMessage() and "leak-unverified" in r.getMessage()
+            for r in caplog.records
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_acknowledgement_does_not_erase_the_flag(
+        self, agent_root: Any
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-ack", pid=5353)
+        await self._fail_the_kill(manager, info, key)
+
+        mark_delivered("leak-ack", elapsed=1.0, credits=0.0)
+
+        tombstone = read_tombstone("leak-ack") or {}
+        assert tombstone.get("leaked_process") is True
+        assert [state["id"] for state in list_leaked_processes()] == ["leak-ack"]
+
+    @pytest.mark.asyncio
+    async def test_a_flagged_folder_with_no_readable_state_drops_its_flag(
+        self, agent_root: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-nostate", pid=5858)
+        await self._fail_the_kill(manager, info, key)
+        (agent_root / "leak-nostate" / "state.json").unlink()
+
+        with caplog.at_level(logging.INFO, logger="kiro_crew"):
+            _mock_sel, notify = await self._restart("leak-nostate", kill={})
+
+        notify.assert_not_awaited()
+        assert "leaked_process" not in (
+            read_tombstone("leak-nostate") or {}
+        ), "a flagged folder with no state was kept, and the pruner keeps it forever"
+        assert any(
+            "leak-nostate" in r.getMessage() and "names no pid" in r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.WARNING
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_refused_kill_is_not_logged_as_ended(
+        self, agent_root: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-refused", pid=5959)
+        await self._fail_the_kill(manager, info, key)
+        kill = MagicMock()
+
+        with (
+            caplog.at_level(logging.INFO, logger="kiro_crew"),
+            patch("kiro_crew.runtime_ownership.authorize_runtime_kill", return_value=False),
+        ):
+            mock_sel, _notify = await self._restart("leak-refused", kill={"new": kill})
+
+        kill.assert_not_called()
+        assert _audit(mock_sel, "orphan_reconcile_kill")["outcome"] == "refused"
+        mine = [r.getMessage() for r in caplog.records if "leak-refused" in r.getMessage()]
+        assert not any(m.startswith("Ended") for m in mine), mine
+        assert any("refused" in m for m in mine), mine
+
+    @pytest.mark.asyncio
+    async def test_an_acknowledged_leaked_completion_cleans_the_workspace_copy(
+        self, agent_root: Any, tmp_path: Any
+    ) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-ws", pid=6060)
+        ws_copy = tmp_path / "agent-leak-ws.md"
+        ws_copy.write_text("the answer")
+
+        with patch("kiro_crew.subagent._ws_result_path", return_value=ws_copy):
+            await self._fail_the_kill(manager, info, key)
+
+        assert (read_tombstone("leak-ws") or {}).get("leaked_process") is True
+        assert not ws_copy.exists(), "the delivered leaked run kept the parent's workspace copy"
+
+    @pytest.mark.asyncio
+    async def test_a_completion_still_queued_at_restart_is_delivered_again(
+        self, agent_root: Any
+    ) -> None:
+        """A parent that only queued the completion has not received it: restart re-delivers."""
+        manager, info, key = self._completed_run_on_disk("leak-queued", pid=5555)
+        await self._fail_the_kill(manager, info, key, queued=True)
+
+        assert (
+            read_tombstone("leak-queued") is None
+        ), "a queued completion was excluded from recovery"
+        _mock_sel, notify = await self._restart("leak-queued", kill={})
+
+        notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_completion_whose_injection_was_given_up_is_delivered_again(
+        self, agent_root: Any
+    ) -> None:
+        """An injection the gateway gave up on returns normally; the parent still lacks it."""
+        manager, info, key = self._completed_run_on_disk("leak-undelivered", pid=6161)
+        await self._fail_the_kill(manager, info, key, undelivered=True)
+
+        assert (
+            read_tombstone("leak-undelivered") is None
+        ), "an undelivered completion was excluded from recovery"
+        _mock_sel, notify = await self._restart("leak-undelivered", kill={})
+
+        notify.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_pruner_keeps_a_flagged_folder_past_its_window(self, agent_root: Any) -> None:
+        manager, info, key = self._completed_run_on_disk("leak-old", pid=5656)
+        await self._fail_the_kill(manager, info, key)
+
+        # Aged on disk rather than by moving the clock: the tombstone's own
+        # ``died`` is what the pruner compares against its windows.
+        path = agent_root / "leak-old" / "tombstone.json"
+        tombstone = json.loads(path.read_text())
+        tombstone["died"] = time.time() - 30 * 86400
+        path.write_text(json.dumps(tombstone))
+
+        prune_stale_tombstones(max_age_days=7, delivered_ttl_secs=3600)
+
+        assert [state["id"] for state in list_leaked_processes()] == ["leak-old"]
+
+    @pytest.mark.asyncio
+    async def test_a_plain_orphan_is_still_announced(self, agent_root: Any) -> None:
+        """Control: a run with no tombstone is an undelivered result and keeps its notice."""
+        _orphan_on_disk("orphan-plain", pid=5454)
+
+        _mock_sel, notify = await self._restart("orphan-plain", kill={})
+
+        notify.assert_awaited_once()
+        assert list_leaked_processes() == []
 
 
 class TestTheOrphanKillLeavesTheLoopRunning:

@@ -1028,10 +1028,10 @@ class TestTheCarryForwardReadIsNeverOnTheLoop:
                         " an _impl method resolves 'asyncio' only"
                     )
                     checked += 1
-        # Five offloads live in _impl methods: the delivery path, the two
-        # gateway_restart writes, the digest-hold settlement, and the drained
-        # queue's, which predates this change and is the pattern the others follow.
-        assert checked == 5, f"expected 5 _impl offloads, found {checked}"
+        # Six offloads live in _impl methods: the delivery path, the leaked
+        # delivery's mark, the two gateway_restart writes, the digest-hold
+        # settlement, and the drained queue's, the pattern the others follow.
+        assert checked == 6, f"expected 6 _impl offloads, found {checked}"
 
     def test_the_source_reads_do_not_depend_on_the_working_directory(self, tmp_path, monkeypatch):
         """The modules are read from this file's own tree, not from the cwd.

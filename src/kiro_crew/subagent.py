@@ -224,8 +224,10 @@ from kiro_crew.subagent_persistence import (  # noqa: F401 - read_tombstone reso
     _cleanup_session_files_sync,
     _subagents_dir,
     agent_dir_for_display,
+    clear_leaked_process,
     clear_tombstone,
     create_agent_folder,
+    list_leaked_processes,
     list_orphans,
     mark_delivered,
     prune_stale_tombstones,
@@ -3118,6 +3120,11 @@ class SubagentInfo:
     # a report cancelled BEFORE delivery — which must be made recoverable on the
     # next start — from one cancelled AFTER it, which must not be re-delivered.
     _reported_to_parent: bool = False
+    # Set by the run's teardown when its kill left the process standing and no
+    # tombstone exists yet (a completed run). The terminal report reads it: a
+    # delivery the parent acknowledged writes the ``delivered`` tombstone with
+    # ``leaked_process`` so the next start ends the process without a notice.
+    _leaked_process: bool = False
     # The run's final ACP ``stop_reason`` and its ``classify_stop_reason``
     # class (a ``STOP_CLASS_*`` value), recorded by ``_run_inner`` on the
     # completion that ended the run
@@ -4237,6 +4244,12 @@ class SubagentManager:
 
     async def _reconcile_orphans(self) -> None:
         return await self._monitor._reconcile_orphans_impl()
+
+    async def _end_leaked_processes(self) -> None:
+        return await self._monitor._end_leaked_processes_impl()
+
+    async def _end_orphan_process(self, agent_id: str, state: dict, *, reason: str) -> str | None:
+        return await self._monitor._end_orphan_process_impl(agent_id, state, reason=reason)
 
     @staticmethod
     def _is_pid_alive(pid: int) -> bool:
@@ -5988,7 +6001,7 @@ class SubagentManager:
         return self._run_events._emit_queue_depth_impl(parent_session_key, batch_id, wait=wait)
 
     @staticmethod
-    def _write_tombstone(info: SubagentInfo, cause: str) -> None:
+    def _write_tombstone(info: SubagentInfo, cause: str, *, leaked_process: bool = False) -> None:
         """Best-effort tombstone write for abnormal exits.
 
         A run that is not persistent gets no tombstone. ``write_tombstone``
@@ -5996,6 +6009,11 @@ class SubagentManager:
         that ended before its folder was seeded -- a declined spawn prompt, a
         stop or a reap while it waited for admission into startup -- has
         neither, so the run's own mode decides here.
+
+        ``leaked_process`` records that the kill left the run's process
+        standing. The tombstone still ends the run (orphan reconciliation will
+        not report it again); the flag is what the next start reads to end the
+        survivor without a second notice (``list_leaked_processes``).
         """
         if info.memory_mode != "persistent":
             return
@@ -6028,6 +6046,7 @@ class SubagentManager:
                 # dies with the gateway, so without this the specific reason is
                 # recoverable from nothing but the log.
                 detail=(_redact(info.error)[:MAX_ERROR_DETAIL_LEN] if info.error else ""),
+                **({"leaked_process": True} if leaked_process else {}),
             )
         except Exception:
             logger.debug("Failed to write tombstone for %s", info.id, exc_info=True)

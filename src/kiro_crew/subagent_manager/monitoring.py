@@ -61,9 +61,11 @@ if TYPE_CHECKING:
         append_cost_sample,
         asyncio,
         cap_buckets,
+        clear_leaked_process,
         compact_cost_log,
         consult_offloaded,
         has_dashboard_surface,
+        list_leaked_processes,
         list_orphans,
         logger,
         maintenance_executor,
@@ -430,23 +432,14 @@ class OrphanStallMonitor(ManagerComponent):
         restart cut off mid-turn.
         """
         try:
+            await self._manager._end_leaked_processes()
+        except Exception:
+            logger.warning("Ending leaked subagent processes failed", exc_info=True)
+        try:
 
             orphans = list_orphans()
             if not orphans:
                 return
-            # Imported HERE, not at this module's top, and structurally required
-            # rather than a style choice: ``bind_component_globals`` rebuilds every
-            # ``*_impl`` with ``subagent``'s module dict as its ``__globals__``
-            # (``subagent_manager/_component.py``), whose own docstring states the
-            # consequence -- "an import at the top of its defining module is inert
-            # for it. Every global it loads must resolve in ``namespace`` -- add the
-            # name there, or import it inside the function." A top-level import here
-            # would raise NameError at the first call. ABSOLUTE, because the rebound
-            # function's package is ``kiro_crew`` -- a relative import resolves
-            # against that and walks off the top of the package.
-            from kiro_crew.process_identity import teardown_barriers
-            from kiro_crew.runtime_ownership import authorize_runtime_kill
-
             logger.info("Reconciling %d orphaned subagent(s)", len(orphans))
             processed = 0
             # DM-fallback messages are DIGESTED: collected across the whole
@@ -463,72 +456,12 @@ class OrphanStallMonitor(ManagerComponent):
                     pid = state.get("pid")
                     recovery = tombstone_recovery_action(agent_id, state)
                     has_result = recovery != "notification_pending"
-                    if pid and self._manager._is_pid_alive(pid):
-                        # Use pid_recorded_at (when PID was actually written) instead of
-                        # started (folder creation time) to avoid false negatives under load
-                        pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))
-                        if self._manager._is_orphan_process(pid, pid_recorded_at):
-                            # ``state.json`` is a record this run wrote before the
-                            # restart, and it says nothing about who is using the
-                            # process NOW. A shared runtime carries the parent and
-                            # every sibling sub-agent on one pid, so a per-run file
-                            # naming it is not authority to end it: the lease table
-                            # is, and it is the only thing that can see the tenants
-                            # this file never knew about.
-                            #
-                            # A refused kill still tombstones below. That is the
-                            # point: this run is over either way, and the tombstone
-                            # is what tells the user so. What the refusal prevents
-                            # is ending a process the tombstone has no claim on.
-                            authorized = authorize_runtime_kill(
-                                pid,
-                                reason=f"orphaned subagent {agent_id} from a prior gateway run",
-                                caller="subagent_manager.reconcile_orphans",
-                            )
-                            # Awaited: the Windows arm is a taskkill spawn that
-                            # waits on the target, kept off the loop. Behind a barrier,
-                            # because the tree kill re-reads and walks before signalling
-                            # and a shared turn can claim a tenancy in that window.
-                            with teardown_barriers(
-                                [pid] if authorized else [], who="Reaper"
-                            ) as barriered:
-                                kill_failed = (
-                                    await self._manager._kill_orphan_pid(pid)
-                                    if authorized and barriered
-                                    else None
-                                )
-                            try:
-                                # Never ``killed`` for a process the kill
-                                # left standing: the folder is reconciled
-                                # below either way, so this row is the only
-                                # place the process's fate is recorded. A
-                                # refusal and a failed signal are separate
-                                # outcomes because only one of them means
-                                # something tried and could not.
-                                #
-                                # TWO ways to be refused, and both must read as
-                                # one: the gate declining, and the teardown
-                                # barrier declining because a tenant arrived
-                                # after it allowed. The second leaves
-                                # ``kill_failed`` None -- no signal was even
-                                # attempted -- which is indistinguishable from a
-                                # clean kill by that field alone.
-                                if not authorized or not barriered:
-                                    outcome = "refused"
-                                elif kill_failed is None:
-                                    outcome = "killed"
-                                else:
-                                    outcome = "failed"
-                                sel().log_tool_invocation(
-                                    session_key=f"subagent:{agent_id}",
-                                    source="subagent",
-                                    tool_name="orphan_reconcile_kill",
-                                    outcome=outcome,
-                                    error=kill_failed or "",
-                                    metadata={"subagent_id": agent_id, "pid": pid},
-                                )
-                            except Exception:
-                                logger.debug("SEL audit failed for orphan %s", agent_id)
+                    if pid:
+                        await self._manager._end_orphan_process(
+                            agent_id,
+                            state,
+                            reason=f"orphaned subagent {agent_id} from a prior gateway run",
+                        )
 
                     try:
                         # Off the loop: this writes a file and reads any existing
@@ -596,6 +529,174 @@ class OrphanStallMonitor(ManagerComponent):
                     logger.debug("Orphan digest DM failed", exc_info=True)
         except Exception:
             logger.warning("Orphan reconciliation failed", exc_info=True)
+
+    async def _end_leaked_processes_impl(self) -> None:
+        """End the processes a prior gateway run's kills left standing, without a notice.
+
+        A run whose own teardown (or reap) could not kill its process was
+        tombstoned with ``leaked_process``. A completed run gets that tombstone
+        only once the parent acknowledged its completion; any other ending's is
+        its terminal record, written before the report (a report the shutdown
+        drain abandons clears it, which hands the run to :func:`list_orphans`
+        instead). Either way the parent holds the outcome, and announcing it
+        here would hand over the same completion a second time. The process is still owed its end, so it gets the same
+        guarded kill an orphan gets. The flag is dropped once nothing is left
+        to try -- the kill landed, the process is gone, or the lease table
+        refused it because other tenants hold it -- and kept after a kill that
+        failed, so the next start tries again.
+        """
+        for state in await asyncio.to_thread(list_leaked_processes):
+            agent_id = state.get("id", "")
+            if not agent_id or agent_id in self._manager._agents:
+                continue
+            try:
+                outcome = await self._manager._end_orphan_process(
+                    agent_id,
+                    state,
+                    reason=f"subagent {agent_id}'s process outlived its kill in a prior gateway run",
+                )
+                if outcome == "unverified":
+                    # The pid is live but cannot be shown to be the run's (no
+                    # /proc, or a /proc entry newer than the recorded spawn).
+                    # Nothing was signalled, and the next start would read the
+                    # same answer, so the flag goes -- but the log says a
+                    # process may still be running rather than that none is.
+                    logger.warning(
+                        "Leaked process of subagent %s not ended: pid=%s is running but "
+                        "cannot be verified as the run's; it may still be running",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "failed":
+                    logger.warning(
+                        "Leaked process of subagent %s not ended: the kill of pid=%s failed; "
+                        "the next start tries again",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "refused":
+                    logger.info(
+                        "Leaked process of subagent %s left running: the lease table refused "
+                        "the kill of pid=%s because other tenants hold it",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif outcome == "killed":
+                    logger.info(
+                        "Ended leaked process of subagent %s: pid=%s",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                elif state.get("pid"):
+                    logger.info(
+                        "Leaked process of subagent %s already gone: pid=%s is not running",
+                        agent_id,
+                        state.get("pid"),
+                    )
+                else:
+                    logger.warning(
+                        "Leaked process of subagent %s cannot be ended: its state record "
+                        "names no pid; dropping the flag",
+                        agent_id,
+                    )
+                if outcome != "failed":
+                    await asyncio.to_thread(clear_leaked_process, agent_id)
+            except Exception:
+                logger.warning("Failed to end leaked process of %s", agent_id, exc_info=True)
+
+    async def _end_orphan_process_impl(
+        self, agent_id: str, state: dict, *, reason: str
+    ) -> str | None:
+        """End the process a prior gateway run's record names, and audit what happened.
+
+        Returns the audited outcome -- ``killed``, ``refused`` or ``failed`` --
+        ``unverified`` when the recorded pid is running but cannot be shown to be
+        the run's (``_is_orphan_process`` is False: no ``/proc`` on this
+        platform, a ``/proc`` entry newer than the recorded spawn, or a recycled
+        pid), so nothing was signalled, or None when the recorded pid is not
+        running, so there was nothing to end.
+        """
+        # Imported HERE, not at this module's top, and structurally required
+        # rather than a style choice: ``bind_component_globals`` rebuilds every
+        # ``*_impl`` with ``subagent``'s module dict as its ``__globals__``
+        # (``subagent_manager/_component.py``), whose own docstring states the
+        # consequence -- "an import at the top of its defining module is inert
+        # for it. Every global it loads must resolve in ``namespace`` -- add the
+        # name there, or import it inside the function." A top-level import here
+        # would raise NameError at the first call. ABSOLUTE, because the rebound
+        # function's package is ``kiro_crew`` -- a relative import resolves
+        # against that and walks off the top of the package.
+        from kiro_crew.process_identity import teardown_barriers
+        from kiro_crew.runtime_ownership import authorize_runtime_kill
+
+        pid = state.get("pid")
+        if not pid or not self._manager._is_pid_alive(pid):
+            return None
+        # Stays ``unverified`` unless the identity check below passes: a live
+        # pid it cannot vouch for was not signalled, which is not "not running".
+        outcome: str | None = "unverified"
+        # Use pid_recorded_at (when PID was actually written) instead of
+        # started (folder creation time) to avoid false negatives under load
+        pid_recorded_at = state.get("pid_recorded_at", state.get("started", 0))
+        if self._manager._is_orphan_process(pid, pid_recorded_at):
+            # ``state.json`` is a record this run wrote before the
+            # restart, and it says nothing about who is using the
+            # process NOW. A shared runtime carries the parent and
+            # every sibling sub-agent on one pid, so a per-run file
+            # naming it is not authority to end it: the lease table
+            # is, and it is the only thing that can see the tenants
+            # this file never knew about.
+            #
+            # A refused kill still leaves the run tombstoned by the
+            # caller. That is the point: this run is over either way,
+            # and the tombstone is what says so. What the refusal
+            # prevents is ending a process the tombstone has no claim on.
+            authorized = authorize_runtime_kill(
+                pid,
+                reason=reason,
+                caller="subagent_manager.reconcile_orphans",
+            )
+            # Awaited: the Windows arm is a taskkill spawn that
+            # waits on the target, kept off the loop. Behind a barrier,
+            # because the tree kill re-reads and walks before signalling
+            # and a shared turn can claim a tenancy in that window.
+            with teardown_barriers([pid] if authorized else [], who="Reaper") as barriered:
+                kill_failed = (
+                    await self._manager._kill_orphan_pid(pid) if authorized and barriered else None
+                )
+            try:
+                # Never ``killed`` for a process the kill
+                # left standing: the caller tombstones the
+                # run either way, so this row is the only
+                # place the process's fate is recorded. A
+                # refusal and a failed signal are separate
+                # outcomes because only one of them means
+                # something tried and could not.
+                #
+                # TWO ways to be refused, and both must read as
+                # one: the gate declining, and the teardown
+                # barrier declining because a tenant arrived
+                # after it allowed. The second leaves
+                # ``kill_failed`` None -- no signal was even
+                # attempted -- which is indistinguishable from a
+                # clean kill by that field alone.
+                if not authorized or not barriered:
+                    outcome = "refused"
+                elif kill_failed is None:
+                    outcome = "killed"
+                else:
+                    outcome = "failed"
+                sel().log_tool_invocation(
+                    session_key=f"subagent:{agent_id}",
+                    source="subagent",
+                    tool_name="orphan_reconcile_kill",
+                    outcome=outcome,
+                    error=kill_failed or "",
+                    metadata={"subagent_id": agent_id, "pid": pid},
+                )
+            except Exception:
+                logger.debug("SEL audit failed for orphan %s", agent_id)
+        return outcome
 
     async def _notify_orphan_impl(self, agent_id: str, state: dict, has_result: bool) -> str | None:
         """Notify user about an orphaned subagent.
