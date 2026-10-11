@@ -1338,6 +1338,39 @@ def seal_readonly(launch):
             )
 
 
+def _seal_masked_dir_if_windowless(launch, name, has_window):
+    """Remount a masked directory's empty stand-in read-only when nothing writes to it.
+
+    The hide this follows is a bind of a fresh empty directory, and on Linux that bind
+    is a WRITABLE empty tmpfs: with no read-only remount a write into the masked path
+    lands in that disposable backing and is lost when the namespace is torn down, so the
+    job reports success while nothing was persisted. For a masked directory with no
+    explicit writable window there is no legitimate in-sandbox writer, so the stand-in is
+    sealed read-only and the write fails loudly with EROFS instead -- the fail-safe side
+    of a data-loss choice.
+
+    A masked directory that DOES carry a window keeps its stand-in writable: the window
+    is the explicit write surface, and the launcher binds it on top of this stand-in, so
+    sealing it would be a larger, separate change. ``has_window`` is the caller's answer
+    to whether any private window sits at or below *name*.
+
+    The remount names the NAME, the same way :func:`mask_sensitive_files` seals its
+    unreadable file masks, and re-asserts the kernel-locked nosuid/nodev/noexec bits via
+    :func:`_locked_mount_flags`. ``_verify_masked_name`` has already confirmed the name
+    reaches this launcher's own stand-in before this runs, so the remount cannot land on
+    a racing writer's substitute.
+    """
+    if has_window:
+        return
+    _mount_or_die(
+        launch,
+        name,
+        name,
+        _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(name),
+        "sealing masked directory %s read-only" % os.fsdecode(name),
+    )
+
+
 def mask_sensitive(launch):
     """Bind an empty directory over each sensitive dir, re-open its windows, re-hide nested leaves.
 
@@ -1415,6 +1448,11 @@ def mask_sensitive(launch):
                 "opening private window %s" % p,
             )
             launch.bound_windows.add(p.rstrip("/"))
+        # No window inside this mask means no in-sandbox writer should reach it: seal the
+        # empty stand-in read-only so a write fails loudly rather than landing in the
+        # throwaway tmpfs. A windowed mask keeps its stand-in writable (the window IS the
+        # write surface) -- the nested re-hides below land on top either way.
+        _seal_masked_dir_if_windowless(launch, d.encode(), bool(_windows))
         # A window may CONTAIN a masked leaf -- ``apps/meetings/data`` holds the masked
         # ``apps/meetings/data/edits`` -- and the bind above just replaced the empty
         # stand-in that covered it with the real tree. Re-apply those nested masks NOW,
@@ -1451,6 +1489,13 @@ def mask_sensitive(launch):
                     os.close(_nested_fd)
                 _verify_masked_name(launch, _nested.encode(), _nested_id, _nested)
                 launch.masked_names[_nested] = _nested_id
+                # A nested mask can itself hold a deeper window; seal it read-only only
+                # when none sits at or below it, matching the top-level rule.
+                _nested_has_window = any(
+                    w.rstrip("/") == _nested or w.startswith(_nested + "/")
+                    for w in launch.private_stage
+                )
+                _seal_masked_dir_if_windowless(launch, _nested.encode(), _nested_has_window)
     # Every stage is retired HERE, in one place, once every window is bound and every
     # nested mask re-applied -- the earliest point where no stage is still needed, and
     # still long before the payload is exec'd. A stage left behind is a second path to

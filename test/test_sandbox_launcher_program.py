@@ -667,8 +667,13 @@ def test_every_stand_in_carries_the_pid_prefix_the_janitor_reclaims(tmp_path: Pa
     assert run.src_prefix == "kirocrew_sb_%d_" % os.getpid()
 
 
-#: Every mount a child run over :class:`_Home` makes, in order.
-_MOUNTS_PER_RUN = 16
+#: Every mount a child run over :class:`_Home` makes, in order. The four extra over the
+#: bare hide/seal/window/file/ssh set are the read-only seals the mask stage now places
+#: on each windowless masked directory (``.aws``, ``policy_cache`` and the nested
+#: ``edits`` leaf, which is both a top-level sensitive dir and re-hidden under the
+#: ``apps/alpha/data`` window, so it is sealed on both passes); the windowed ``apps``
+#: mask keeps its writable stand-in.
+_MOUNTS_PER_RUN = 20
 
 
 @pytest.mark.parametrize("fail_at", range(1, _MOUNTS_PER_RUN + 1), ids=lambda n: f"mount-{n}")
