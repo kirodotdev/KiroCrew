@@ -3215,6 +3215,9 @@ class _FakeHandle:
     def begin_session(self, servers):
         return None
 
+    def record_mcp_launches(self, spec, wire_servers):
+        return None
+
     def queued_frame_count(self):
         return 0
 
