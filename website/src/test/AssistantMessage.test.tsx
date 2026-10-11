@@ -38,7 +38,7 @@ describe('AssistantMessage', () => {
   it('offers Read aloud for a short nonblank completed reply and sends its exact content', () => {
     const onSpeak = vi.fn()
     render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onSpeak={onSpeak} />)
-    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    expect(screen.queryByTitle(/^Copy as Markdown/)).not.toBeInTheDocument()
     fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
     const readAloud = screen.getByRole('menuitem', { name: 'Read aloud' })
     expect(readAloud).toHaveAttribute('aria-description', 'Read message aloud')
@@ -49,7 +49,7 @@ describe('AssistantMessage', () => {
   it('does not offer Read aloud for a blank completed reply', () => {
     render(<AssistantMessage content={' \n\t '} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} />)
     expect(screen.queryByTestId('assistant-more-actions')).not.toBeInTheDocument()
-    expect(screen.getByTitle('Copy')).toBeInTheDocument()
+    expect(screen.getByTitle(/^Copy as Markdown/)).toBeInTheDocument()
   })
 
   it('distinguishes copying reply text from copying its message link', async () => {
@@ -58,7 +58,7 @@ describe('AssistantMessage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Copy link to message' }))
     expect(copySessionLink).toHaveBeenCalledWith('chat-a', 'My chat', '2026-09-07T12:00:00Z', undefined)
     fireEvent.pointerDown(screen.getByTitle('More actions'), { button: 0, ctrlKey: false, pointerType: 'mouse' })
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Copy text' }))
+    fireEvent.click(screen.getByTestId('copy-message-menu-item'))
     await act(async () => {})
     expect(copyToClipboard).toHaveBeenCalledWith('Done.')
     expect(screen.getByTestId('copy-message-menu-item')).toHaveTextContent('Copied')
@@ -75,7 +75,7 @@ describe('AssistantMessage', () => {
     const voiced = render(<AssistantMessage content={content} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} {...extra} />)
     const voicedButtons = voiced.container.querySelectorAll('[data-role="assistant"] > .opacity-0 button').length
     expect(voicedButtons).toBe(baseButtons)
-    expect(screen.queryByTitle('Copy')).not.toBeInTheDocument()
+    expect(screen.queryByTitle(/^Copy as Markdown/)).not.toBeInTheDocument()
     expect(screen.getByTestId('assistant-more-actions')).toBeInTheDocument()
   })
 
@@ -113,7 +113,7 @@ describe('AssistantMessage', () => {
   it('surfaces inline Copy failure without stealing focus to the existing More trigger', async () => {
     vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     render(<AssistantMessage content="Done." isStreaming={false} slotRunning={false} onFork={vi.fn()} forkIndex={0} shareEnabled />)
-    const copy = screen.getByTitle('Copy')
+    const copy = screen.getByTitle(/^Copy as Markdown/)
     copy.focus()
     fireEvent.click(copy)
     await act(async () => {})
@@ -304,7 +304,7 @@ describe('AssistantMessage', () => {
     )
     expect(screen.queryByTitle('Fork conversation from here')).not.toBeInTheDocument()
     const more = screen.getByTestId('assistant-more-actions')
-    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    const row = screen.getByTitle(/^Copy as Markdown/).parentElement as HTMLElement
     // IN the row for the AVAILABLE state: this state removed the row's
     // dedicated fork button in favour of this menu, so the trigger inside
     // does not grow the row, which is what the out-of-row placement exists to
@@ -361,7 +361,7 @@ describe('AssistantMessage', () => {
     // footers. One row, same shape in every state, is the contract now.
     const props = { content: 'x'.repeat(80), isStreaming: false, slotRunning: false, onSpeak: vi.fn(), onRegenerate: vi.fn() }
     render(<AssistantMessage {...props} onFork={vi.fn()} onLoadEarlier={vi.fn()} />)
-    const row = screen.getByTitle('Copy').parentElement as HTMLElement
+    const row = screen.getByTitle(/^Copy as Markdown/).parentElement as HTMLElement
     expect(row).toContainElement(screen.getByTestId('assistant-more-actions'))
     // …and it is the ONLY reveal row: no sibling row was added below it.
     const rows = document.querySelectorAll('[data-role="assistant"] .opacity-0')
@@ -583,7 +583,7 @@ describe('AssistantMessage', () => {
     const d = render(<AssistantMessage content={'x'.repeat(80)} isStreaming={false} slotRunning={false} onSpeak={vi.fn()} onFork={vi.fn()} variants={variants} />)
     expect(screen.getAllByTitle('More actions')).toHaveLength(1)
     expect(screen.getByTitle('Show raw markdown')).toBeTruthy()
-    expect(screen.getByTitle('Copy')).toBeTruthy()
+    expect(screen.getByTitle(/^Copy as Markdown/)).toBeTruthy()
     openOverflow()
     expect(screen.getByTestId('speak-message')).toHaveTextContent('Read aloud')
     d.unmount()
@@ -707,7 +707,7 @@ describe('action footer on touch devices', () => {
   // hovers — without the hover:none override the actions (copy, speak,
   // regenerate, fork) are permanently invisible on phones. happy-dom does not
   // evaluate media queries, so pin the utility class itself.
-  const footer = () => screen.getByTitle('Copy').closest('div') as HTMLElement
+  const footer = () => screen.getByTitle(/^Copy as Markdown/).closest('div') as HTMLElement
 
   it('reveals the footer where the pointer cannot hover', () => {
     render(<AssistantMessage content="Hello world" isStreaming={false} slotRunning={false} />)
@@ -926,7 +926,7 @@ describe('parseOptions', () => {
     // whole-comment strip): copy preserves message fidelity and has no
     // fence-protection pass, so comments inside fenced code must survive.
     render(<AssistantMessage content={'Substantive report body\n\n<!-- keep-visible -->'} isStreaming={false} slotRunning={false} />)
-    fireEvent.click(screen.getByTitle('Copy'))
+    fireEvent.click(screen.getByTitle(/^Copy as Markdown/))
     expect(copyToClipboard).toHaveBeenCalledWith('Substantive report body')
   })
 

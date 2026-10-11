@@ -10,15 +10,13 @@
  */
 import React, { useContext, memo, useEffect, useLayoutEffect, useMemo, useCallback, useRef, useState } from 'react'
 import { GitPullRequest } from 'lucide-react'
-import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
+import { capWhitespaceRuns, rehypeBoundRawDepth } from '../utils/markdownDepthBound'
+import { REMARK_BASE_PLUGINS } from './markdown/remarkBase'
 import { canonicalChatHref, chatHrefSid, namesASession } from '../utils/sessionKeys'
 import ReactMarkdown from 'react-markdown'
 import type { Components, ExtraProps } from 'react-markdown'
-import remarkGfm from 'remark-gfm'
 import remarkAutolinkRules from '../utils/remarkAutolinkRules'
 import { remarkLatexDelimiters } from '../utils/remarkLatexDelimiters'
-import remarkCjkFriendly from 'remark-cjk-friendly'
-import remarkCjkFriendlyGfmStrikethrough from 'remark-cjk-friendly-gfm-strikethrough'
 import remarkMath from 'remark-math'
 import remarkParse from 'remark-parse'
 import { unified } from 'unified'
@@ -538,13 +536,10 @@ const MD_COMPONENTS = {
 // delimiters are classified), and the strikethrough companion AFTER, because it
 // extends gfm's own `~~` construct.
 const REMARK_PLUGINS: PluggableList = [
-  // FIRST: bounds the parsed tree's depth as part of parse(), ahead of
-  // remark-gfm's own post-parse transform, which recurses over the tree.
-  // Input-controlled nesting otherwise overflows the call stack there.
-  remarkBoundDepth,
-  remarkCjkFriendly,
-  remarkGfm,
-  remarkCjkFriendlyGfmStrikethrough,
+  // FIRST: depth bound, CJK-friendly emphasis, gfm and its strikethrough
+  // companion, in the order `remarkBase.ts` explains. Shared with the
+  // rich-text copy so both parse a reply the same way.
+  ...REMARK_BASE_PLUGINS,
   [remarkMath, { singleDollarTextMath: false }],
   // LaTeX-native `\( … \)` / `\[ … \]` → the same math nodes remark-math emits,
   // from ELIGIBLE TEXT NODES only (code, html, link destinations and reference
