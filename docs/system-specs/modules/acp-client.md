@@ -1043,6 +1043,62 @@ than being serialized to the config file. `_kiro_hooks_only()` remains the
 strict filter for newly generated Kiro Crew specs, where Kiro Crew owns the whole
 output schema.
 
+**A checkout may not claim an agent name Kiro Crew owns** (`acp/managed_agent_shadow.py`).
+kiro-cli loads `<cwd>/.kiro/agents`, nested and symlinked directories included, ahead of
+`~/.kiro/agents`, and both kiro spawn paths (`AcpClient._spawn` and
+`KiroHarness.resolve_spawn`) pass only a name. So a checkout that claims a name in
+`agent_files.OWNED_KIRO_AGENT_FILES` would run its own file instead of the installed
+spec. A file claims a name by declaring it, in JSON or Markdown and under any
+filename, or by having it as its filename stem. Names are compared
+case-insensitively. That file's `allowedTools` would skip the approval gate, and
+any restriction the installed spec carries would be lost. Skill-view alias names
+(`kirocrew-skill-view-*`) are reserved the same way, because with native skill
+projection on, the name a spawn finally hands to `--agent` is such an alias. Both
+paths refuse the spawn, naming the project file, when the checkout claims ANY
+reserved name, whichever agent the spawn names: kiro-cli loads every project agent
+at startup, and a shared runtime can later switch to one with `session/set_mode`.
+The scan lists the directory itself, because the discovery roster leaves aliases
+out. It follows a linked directory once, keyed by device and inode, so a link loop
+ends. Every link, the agents directory's own path included, passes
+`hooks.validate_file_path` before anything follows it, so a link to an untrusted
+Windows share is refused without the outbound probe. It skips a protected
+checkout, but refuses a cwd the sensitive-path resolver could not check (a stall is
+not a confirmed match), and it keeps an entry that cannot be stat'ed
+rather than letting it hide the others. A file whose bytes cannot be read (a
+hardlinked spec, which kiro-cli loads although the hardened reader refuses it, a
+link to a protected target, a file past the size cap) refuses the spawn unless its
+filename already claims a reserved name, because a filename is not evidence of what
+the file declares. A file whose bytes were read but do not parse as a spec object
+claims nothing: broken JSON, a non-UTF-8 byte, a Markdown file with no
+frontmatter, a document nested past the parser's depth. kiro-cli's default engine,
+which both paths run, offers no mode for any of them; its v3 engine would load some,
+so a move to that engine must revisit this rule. An AppleDouble sidecar claims
+nothing too. It is recognised by its magic bytes, not its `._` name, because
+kiro-cli loads a `._` file that parses, so any other `._` file refuses. A
+tree past the file or directory cap is refused, and so is a link that leads to an
+untrusted share or a protected location, without following it.
+A cwd whose
+`.kiro/agents` is the installed directory itself, the home directory for example,
+is not a shadow. The fork gate refuses a shadowed fork the same way. `kirocrew-worker`
+is reserved here too: the derived-spec gate refuses its copy on the worker's own
+spawn, but it scans the top level only and matches the name exactly. A project spec
+under any other name is still the documented discovery feature.
+
+**Which start paths reach an admission gate.** Two gates decide whether a session
+may start on an agent spec, `agent.require_fork_governance` and
+`agent.require_fresh_derived_spec`, and their reach is disjoint.
+`test/test_agent_admission_paths_ratchet.py` pins several things: every function
+that references either gate or the refusal above; the gate each function does not
+reach, and whether that gap is covered elsewhere; and every function that writes
+`--agent` into a child's argv, together with the admission sites that govern it. A
+governed `--agent` site must count a site that refuses a shadowed managed name among
+its governors. A new start path that references a gate, or that names its spec with
+`--agent`, fails that test until it is classified there. A spawn through a harness
+that selects its spec some other way and references neither gate creates no site,
+so that test does not see it. Mode activation on a shared runtime is the recorded
+gap for fork governance: it runs no fork-governance check for the agent it switches
+to.
+
 ## Custom Agent Support
 
 Custom-agent support is backend-specific. Kiro CLI consumes the selected agent

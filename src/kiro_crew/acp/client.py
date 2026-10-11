@@ -61,6 +61,7 @@ from kiro_crew import (
 )
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import launch as launch_mod
+from kiro_crew.acp import managed_agent_shadow as managed_shadow_mod
 from kiro_crew.acp import runtime_models, runtime_process_tree, seed_provenance, transport_framing
 from kiro_crew.acp._dispatch import (
     ACP_BACKENDS_META_IDENTITY,
@@ -6001,6 +6002,13 @@ class AcpClient:
                 await asyncio.to_thread(require_fork_governance, self._agent, self._work_dir)
             except ForkGovernanceUnresolved as exc:
                 raise AcpError(str(exc)) from exc
+            # The same cwd-first resolution makes a checkout that declares a MANAGED
+            # agent name the spec that runs, whatever Kiro Crew installed under it.
+            shadowed = await asyncio.to_thread(
+                managed_shadow_mod.managed_agent_shadow_refusal, self._agent, self._work_dir
+            )
+            if shadowed:
+                raise AcpError(shadowed)
             # The agents-tree seal is a launcher rule, and a spawn delegated to
             # kiro-cli's internal sandbox never sees the launcher — so on those
             # paths a workspace overlapping the agents directory is the one way
