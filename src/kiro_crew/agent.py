@@ -271,11 +271,13 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         _KNOWLEDGE_AGENT_FILENAME,
         _LITE_AGENT_FILENAME,
         _RESEARCH_AGENT_FILENAME,
+        _TEAM_LEAD_AGENT_FILENAME,
         _install_dashboard_manager_agent,
         _install_guest_agent,
         _install_knowledge_agent,
         _install_lite_agent_fallback,
         _install_research_agent,
+        _install_team_lead_agent,
     )
     from kiro_crew.agent_materialization.worker_agent import (  # noqa: F401
         _DEFAULT_SPEC_OBSERVATION_ATTEMPTS,
@@ -2190,12 +2192,14 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_install_lite_agent_fallback",
         "_install_knowledge_agent",
         "_install_research_agent",
+        "_install_team_lead_agent",
         "_install_dashboard_manager_agent",
         "_DASHBOARD_MANAGER_AGENT_FILENAME",
         "_GUEST_AGENT_FILENAME",
         "_KNOWLEDGE_AGENT_FILENAME",
         "_LITE_AGENT_FILENAME",
         "_RESEARCH_AGENT_FILENAME",
+        "_TEAM_LEAD_AGENT_FILENAME",
     ),
     "kiro_crew.agent_materialization.conductor_agents": (
         "_conductor_mcp_servers",
@@ -4320,11 +4324,63 @@ def rebuild_agent_config(
         except Exception:
             logger.debug("kirocrew-knowledge agent install failed", exc_info=True)
 
+        # Tracks a failed research rewrite the same way ``team_lead_held`` below tracks
+        # team-lead. ``_install_research_agent`` derives from ``build_agent_config()``,
+        # so its ``allowedTools`` is re-filtered through the governance ceiling on every
+        # boot -- a ceiling-TIGHTENING rebuild whose research rewrite failed leaves the
+        # previous list, with the now-revoked grants, on disk. Swallowing that at debug
+        # would let ``reproject_for_ceiling_change`` advance its generation memo so the
+        # next poll would NOT retry, and the stale grants would persist for the process
+        # lifetime. Mark the hold instead, exactly like team-lead and the conductor specs
+        # (GPT 6.1 F1 / First Principles Item 4: a ceiling-filtered installer must not be
+        # recorded as synced over an unrewritten grant list). Folded into ``conductor_held``
+        # beside ``team_lead_held`` below.
+        research_held = False
+
         # Install kirocrew-research agent (used by the Research Lab campaign loop)
         try:
             service_agents._install_research_agent()
         except Exception:
-            logger.debug("kirocrew-research agent install failed", exc_info=True)
+            research_held = True
+            logger.warning(
+                "kirocrew-research agent install failed; marking the ceiling held so a "
+                "tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
+
+        # Tracks a failed team-lead rewrite the way ``conductor_held`` tracks the
+        # conductor specs. It is folded into ``_conductor_spec_held`` AFTER that flag
+        # is settled below, because the settle is a plain assignment that would
+        # otherwise clobber a hold set here (this installer runs before it).
+        team_lead_held = False
+
+        # Install kirocrew-team-lead agent (a default agent an operator selects like
+        # any other). Its ``allowedTools`` is re-filtered through the governance
+        # ceiling on every boot, exactly like the conductor specs above -- it derives
+        # from ``build_agent_config()`` and passes its added dispatch grants through
+        # the same ceiling filter before the write.
+        # So a ceiling-TIGHTENING rebuild whose team-lead rewrite failed (a read-only
+        # file, a refused ``os.replace``, a spec-lock timeout) leaves the previous
+        # list -- with the now-revoked grants -- on disk. Swallowing that at debug
+        # would let ``reproject_for_ceiling_change`` advance its generation memo and
+        # the next poll would NOT retry, so the stale grants would persist for the
+        # process lifetime (GPT 6.1 F1). Mark the hold instead, like the conductor
+        # specs and the dashboard-author below: ``prime_ceiling_projection`` then does
+        # not seed the ceiling as projected, and ``retry_held_conductor_specs`` retries
+        # the rewrite on the next maintenance poll. With the spec simply absent the
+        # lead is not offered and nothing else depends on it; the hold is only about
+        # not recording a tightened ceiling as synced over an unrewritten grant list.
+        try:
+            service_agents._install_team_lead_agent()
+        except Exception:
+            team_lead_held = True
+            logger.warning(
+                "kirocrew-team-lead agent install failed; marking the ceiling held so a "
+                "tightened ceiling is retried rather than recorded as synced over the "
+                "stale grant list left on disk",
+                exc_info=True,
+            )
 
         # Install kirocrew-dashboard-manager agent (the subagent a crewmate hands page
         # work to). Degrades to a debug line like the two above: with the spec absent a
@@ -4395,6 +4451,11 @@ def rebuild_agent_config(
         # Settled here, not at the end: ``prime_ceiling_projection`` seeds the ceiling
         # baseline from this after the boot rebuild, and a rebuild that raises further
         # down must still leave the installers' verdict behind, not the previous one.
+        # ``team_lead_held`` folds in here (not only into ``_conductor_spec_held``)
+        # because the end-of-rebuild ``_held_out.append`` reads ``conductor_held``.
+        # ``research_held`` folds in for the same reason: both derive from
+        # ``build_agent_config`` and must not be recorded synced over a stale grant list.
+        conductor_held = conductor_held or team_lead_held or research_held
         _conductor_spec_held = conductor_held
 
         # Install kirocrew-dashboard-author agent (authors one dashboard template and lands
@@ -4868,6 +4929,37 @@ automatically. The Research Lab app drives you; the nudge names the campaign and
   auto-completes when `passed` is true.
 - On the final cycle (`cycle == max_cycles - 1`), write an executive summary +
   recommendation at the TOP of `FINDINGS.md` instead of new research.
+"""
+
+
+_TEAM_LEAD_SYSTEM_PROMPT = """# Kiro Crew Team Lead
+
+You are `kirocrew-team-lead`. A person hands you a goal and you own it end to
+end. You run it as a team, and unlike a conductor you can also do a piece of it
+yourself: you carry the full default toolset beside the dispatch tools
+(`session_create`, `chat_folder_*`, `work_ledger_*`). You are the root of your
+own goal; the person is the only reader above you.
+
+## The one rule: do it yourself only when it fits one turn
+
+**Read each task as if you were writing its work-ledger item.** ONE acceptance
+condition, met before this turn ends, with nothing outside this session to wait
+on: do it yourself, now. Everything else is dispatched. Say in one line which
+half you picked for each task. A task you started yourself and did not finish in
+that turn becomes a dispatch, not a second turn.
+
+## Your procedure lives in two skills
+
+Read the `team-lead` skill before acting on a goal: it carries the
+do-it-yourself test, the one-level dispatch rule and how to run the team. Its
+procedure is `goal-conductor` -- dispatch order, the work ledger, the patrol
+loop, acceptance and stop conditions -- and it applies to you unchanged. With
+MCP Tool Search active the dispatch tools are deferred: load them by id with
+`tool_search` before the first call.
+
+The owner can message you at any time: apply a goal change at the next natural
+boundary, except a message that invalidates work already in flight, which you
+handle at once.
 """
 
 

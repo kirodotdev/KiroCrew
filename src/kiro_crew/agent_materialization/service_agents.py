@@ -9,6 +9,10 @@ inherits the governance ceiling. Each is rewritten on every rebuild.
 
 from __future__ import annotations
 
+import json
+import time
+from pathlib import Path
+
 from kiro_crew import agent as agent_mod
 from kiro_crew import agent_state
 from kiro_crew.agent_files import (
@@ -18,6 +22,7 @@ from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp
 
 
@@ -150,6 +155,136 @@ def _install_research_agent() -> None:
     path = agent_mod.kiro_agents_dir_path() / _RESEARCH_AGENT_FILENAME
     agent_mod._atomic_json_write(path, config)
     agent_mod.logger.info("Installed research agent config: %s", path)
+
+
+def _migrate_foreign_team_lead_spec_once(path: Path) -> None:
+    """Move a pre-existing NON-managed file at the team-lead path aside, once.
+
+    ``kirocrew-team-lead`` is a newly reserved stem, so a first boot can meet a file
+    an operator authored under this name. The overwrite-on-boot design would destroy
+    it; this one-time migration preserves it instead. A file this installer wrote --
+    recognised by the ``name`` field it always sets to ``kirocrew-team-lead`` -- is
+    left for the normal overwrite. Anything else (a different declared name, or a file
+    that does not parse) is moved to a timestamped ``<name>.<ts>.bak`` sibling and
+    logged at warning level, so the operator keeps a recoverable copy.
+
+    This is a migration, not ownership tracking: it never records a digest, gates no
+    start, and runs the same check every boot -- but once the file has been moved aside
+    the path is free, so it fires at most once per operator-authored file. The ``name``
+    check is deliberately simple; a forged name only costs that one file the same
+    overwrite ``kirocrew-research`` would give it, which is the accepted contract.
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except OSError:
+        # Unreadable (a dangling link, a permission error): do not overwrite blind,
+        # preserve it.
+        raw = None
+    if raw is not None:
+        try:
+            if json.loads(raw).get("name") == "kirocrew-team-lead":
+                return  # our own prior write -- let the normal overwrite replace it
+        except (ValueError, AttributeError):
+            pass  # unparseable -> treat as foreign, preserve below
+    backup = path.with_name(f"{path.name}.{int(time.time())}.bak")
+    try:
+        path.rename(backup)
+        agent_mod.logger.warning(
+            "preserved a non-managed file at %s as %s before installing the managed "
+            "team-lead spec; the operator keeps a recoverable copy",
+            path,
+            backup,
+        )
+    except OSError:
+        agent_mod.logger.warning(
+            "could not move a non-managed file at %s aside before overwriting it",
+            path,
+            exc_info=True,
+        )
+
+
+def _mount_team_lead_dispatch(config: dict) -> None:
+    """Mount the dispatch surface a team lead needs, in place.
+
+    ``build_agent_config`` skips every ``opt_in`` server, so a spec derived from it
+    carries no ``kirocrew-dashboard`` (``session_create``, ``chat_folder_*``) and no
+    ``kirocrew-work`` (``work_ledger_*``). Naming them in ``tools`` alone is a DEAD
+    grant: kiro-cli mounts nothing for a server the spec declares but does not
+    configure. So both entries are built here through
+    ``managed_mcp._managed_opt_in_entry`` -- the call the dashboard-manager and
+    worker installers make -- which carries the two fields that fail silently:
+    ``"type": "registry"`` (a registry-mode client drops an entry without it) and
+    the ``KIROCREW_HOME`` pin (without it session control acts on a different
+    session store than the one it reports on).
+
+    The verbs auto-approved on them are the goal conductor's own tuples,
+    ``_CONDUCTOR_DASHBOARD_GRANTS`` and ``_LEDGER_CONDUCTOR_WORK_GRANTS``, reused
+    rather than restated, and the whole ``allowedTools`` list goes back through the
+    governance ceiling before it is written. A withheld verb stays mounted and
+    prompts. The KAS ``permissions`` block is derived from the filtered list, as the
+    conductor and worker installers derive theirs.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        servers = {}
+    servers["kirocrew-dashboard"] = managed_mcp._managed_opt_in_entry("mcp-dashboard")
+    servers["kirocrew-work"] = managed_mcp._managed_opt_in_entry("mcp-work")
+    config["mcpServers"] = servers
+    tools = [t for t in config.get("tools") or [] if isinstance(t, str)]
+    for ref in ("@kirocrew-dashboard", "@kirocrew-work"):
+        if ref not in tools:
+            tools.append(ref)
+    config["tools"] = tools
+    allowed = [t for t in config.get("allowedTools") or [] if isinstance(t, str)]
+    grants = (*agent_mod._CONDUCTOR_DASHBOARD_GRANTS, *agent_mod._LEDGER_CONDUCTOR_WORK_GRANTS)
+    config["allowedTools"] = list(dict.fromkeys((*allowed, *grants)))
+    auto_approve._apply_allowed_tools_ceiling(config, source="_install_team_lead_agent")
+    auto_approve._write_derived_permissions(
+        config, config["allowedTools"], _TEAM_LEAD_AGENT_FILENAME
+    )
+
+
+def _install_team_lead_agent() -> None:
+    """Generate and install the kirocrew-team-lead agent config.
+
+    Derives from the kirocrew agent (MCP servers, security, tools) and swaps in the
+    team-lead charter + identity, leaving out the platform guide server
+    (:func:`_without_guide_server`) exactly as research does. On top of that surface
+    it mounts the two opt-in servers dispatch needs, ``kirocrew-dashboard`` and
+    ``kirocrew-work`` (:func:`_mount_team_lead_dispatch`), granting the goal
+    conductor's existing verb tuples through the governance ceiling.
+
+    Rewritten on every boot, like ``kirocrew-research`` and ``kirocrew-knowledge``:
+    a spec this installer wrote is replaced in place with no ceremony -- no ownership
+    digest, no refusal and no start gate, which is the whole point of the overwrite
+    design. An operator who wants a lead with different rules copies it to a different
+    agent name.
+
+    ONE narrow guard the long-reserved research/knowledge names do not need, because
+    this stem is newly reserved and a file an operator authored under this name may
+    already sit here: a one-time migration. If the file at the path is NOT one this
+    installer wrote -- recognised by the ``name`` field it always sets -- it is moved
+    aside once to a timestamped ``.bak`` and logged at warning level before the write,
+    so a first install destroys no operator-authored copy. This is a migration, not
+    ongoing ownership tracking: a file we wrote (its ``name`` is already ours) is just
+    overwritten, and no model/skills/reset renewal table is involved.
+    """
+    config = _without_guide_server(agent_mod.build_agent_config())
+    config["name"] = "kirocrew-team-lead"
+    config["description"] = (
+        "Owns a goal end to end and runs a team on it — splits it into work-ledger "
+        "items, does the small focused ones itself, dispatches a session for every "
+        "other one, and patrols that fleet."
+    )
+    config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
+    _mount_team_lead_dispatch(config)
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = agent_mod.kiro_agents_dir_path() / _TEAM_LEAD_AGENT_FILENAME
+    _migrate_foreign_team_lead_spec_once(path)
+    agent_mod._atomic_json_write(path, config)
+    agent_mod.logger.info("Installed team lead agent config: %s", path)
 
 
 def _install_dashboard_manager_agent() -> None:

@@ -46,6 +46,12 @@ WORKER_AGENT_FILENAME = "kirocrew-worker.json"
 DASHBOARD_AUTHOR_AGENT_FILENAME = "kirocrew-dashboard-author.json"
 KNOWLEDGE_AGENT_FILENAME = "kirocrew-knowledge.json"
 RESEARCH_AGENT_FILENAME = "kirocrew-research.json"
+# The team lead: owns a goal and does the focused work on it itself (running a
+# goal as a team is a planned follow-up). A DEFAULT agent beside research rather
+# than a kind of its own -- it derives the same ceiling, is written by the same
+# install sequence and is overwritten on every boot, so an operator who wants a
+# customized copy makes one under a different name.
+TEAM_LEAD_AGENT_FILENAME = "kirocrew-team-lead.json"
 HEARTBEAT_AGENT_FILENAME = "kirocrew-heartbeat.json"
 DASHBOARD_MANAGER_AGENT_FILENAME = "kirocrew-dashboard-manager.json"
 
@@ -96,6 +102,7 @@ OWNED_KIRO_AGENT_FILES = (
     DASHBOARD_AUTHOR_AGENT_FILENAME,
     KNOWLEDGE_AGENT_FILENAME,
     RESEARCH_AGENT_FILENAME,
+    TEAM_LEAD_AGENT_FILENAME,
     HEARTBEAT_AGENT_FILENAME,
     DASHBOARD_MANAGER_AGENT_FILENAME,
 )
