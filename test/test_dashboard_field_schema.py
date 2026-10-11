@@ -210,6 +210,35 @@ class TestTheWriteChecksTheShape:
         entry = dashboard_agentic.correction_entry("for_you", book)
         assert entry is not None and entry["corrects"] == ["for_you"]
 
+    def test_the_shape_is_asked_again_about_the_value_that_actually_lands(self) -> None:
+        """The STORED value is the scrubbed one, so the shape has to hold for THAT.
+
+        The shape check runs before the scrub, and the scrub rewrites strings. A choice
+        that is itself credential-shaped therefore passes the check and then becomes a
+        placeholder that is outside the declared choices -- so the cell ends up holding
+        a value the page's own Model says cannot be there, and nothing said so. Asking
+        only whether the cleaned value is still a `string` does not catch it: the
+        placeholder is a perfectly good string.
+        """
+        secret = "ghp_" + "A" * 36
+        manifest = parse_manifest(_raw(type="string", enum=[secret, "ok"]))
+        instance = dashboard_agentic.Instance(manifest=manifest, instance_version=1)
+        with pytest.raises(dashboard_agentic.WriteRefused) as caught:
+            dashboard_agentic.check_write(instance, "f", secret)
+        refused = caught.value
+        assert refused.code == "redacted_value_invalid"
+        # The reason has to name the SCRUB, or the agent reads it as "your value was
+        # not one of the choices" and sends the same string again.
+        assert "redact" in str(refused).lower()
+
+    def test_a_choice_the_scrub_leaves_alone_is_still_accepted(self) -> None:
+        # The limit: re-asking the shape must not refuse an ordinary enum choice, which
+        # the scrub passes through untouched.
+        manifest = parse_manifest(_raw(type="string", enum=["ok", "nope"]))
+        instance = dashboard_agentic.Instance(manifest=manifest, instance_version=1)
+        entry = dashboard_agentic.check_write(instance, "f", "ok")
+        assert entry["value"] == {"v": "ok"}
+
 
 # -------------------------------------------------------------------------- #
 # dashboard_fields: the shape, the current value, a summary per fold field

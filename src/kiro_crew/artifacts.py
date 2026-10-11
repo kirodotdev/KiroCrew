@@ -1984,6 +1984,33 @@ class ArtifactStore:
         results.sort(key=lambda a: (a.updated_at, a.slug), reverse=True)
         return results
 
+    def unreadable_record_count(self) -> int:
+        """How many stored records have metadata this build cannot read.
+
+        :meth:`list` drops such a record with a warning, and that is the right
+        default: one corrupt ``meta.json`` must not take a whole library down.
+        The cost is that its result cannot tell "there is no record like this"
+        apart from "a record was skipped and nobody knows what it was" -- a
+        skipped record's ``kind`` is exactly what could not be read.
+
+        A caller for which ABSENCE is a decision asks this first. The dashboard
+        binding lookup is one: answering "this member has no package" sends a
+        write to a different Model, which can replace a stored value with one of
+        the wrong shape, so it refuses to answer rather than guess.
+
+        Counted with the same tolerance :meth:`list` skips on, so the two agree
+        on what "unreadable" means.
+        """
+        with self._lock:
+            meta_paths = list(self._iter_meta_paths())
+        unreadable = 0
+        for meta_path in meta_paths:
+            try:
+                self._read_meta_file(meta_path)
+            except (ArtifactError, OSError, ValueError, TypeError):
+                unreadable += 1
+        return unreadable
+
     def migrate_kinds(self, *, apply: bool = False) -> _List[dict[str, Any]]:
         """Corrective one-time migration: reclassify markdown artifacts that
         were mis-saved as ``widget`` before ``kind`` inference existed.

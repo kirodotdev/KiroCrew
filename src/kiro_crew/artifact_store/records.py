@@ -144,7 +144,21 @@ def backfill_events(art: Artifact) -> bool:
 
 
 def decode_meta(raw: Any, path: Path) -> Artifact:
-    """Build an :class:`Artifact` from a parsed ``meta.json`` (the file at *path*)."""
+    """Build an :class:`Artifact` from a parsed ``meta.json`` (the file at *path*).
+
+    A record whose top level is not a JSON OBJECT is refused as an
+    :class:`ArtifactError`, which is the class every caller already handles: the walk
+    below reads keys off *raw*, so a list or a bare number would raise
+    ``AttributeError`` instead -- and ``ArtifactStore.list`` tolerates
+    ``ArtifactError``, ``OSError``, ``ValueError`` and ``TypeError`` and not that one, so
+    one such file turns a whole listing into an unhandled crash rather than one skipped
+    record. The store cannot write such a file (``_write_meta`` always serializes an
+    object), so this is about a file something else edited.
+    """
+    if not isinstance(raw, dict):
+        raise ArtifactError(
+            f"meta.json is a {type(raw).__name__}, not an object: {path}",
+        )
     # Tolerant load: ignore unknown keys, fill defaults for missing keys.
     slug = raw.get("slug")
     if not slug:

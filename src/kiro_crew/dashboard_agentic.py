@@ -129,6 +129,94 @@ class Instance:
     instance_version: int
 
 
+#: Every non-live package state, and the refusal an agent is told for it.
+#:
+#: Keyed by the STATE STRING, which is what lets this table live here rather than in
+#: :mod:`kiro_crew.dashboard_package`: the Model type travels from this module to that
+#: one, so a type import back would close a cycle. The two halves are pinned against
+#: each other by ``test_dashboard_package`` -- a state added there with no row here
+#: would reach an agent as a bare "no package", which is the wrong instruction for two
+#: of the three.
+#:
+#: ``no_instance`` is kept as the code for an absent package rather than renamed, so a
+#: mistake book already grouping refusals under it goes on grouping them: the group key
+#: is ``(code, field)`` and a new code would strand every lesson a crewmate has learnt.
+PACKAGE_REFUSALS: Final[dict[str, str]] = {
+    "empty": "no_instance",
+    "error": "package_model_invalid",
+}
+
+#: The refusal a package-bound write gets while the DISPLAY still selects a different
+#: Model from the one the write would be checked against. Its own code, because the
+#: remedy is neither "create a package" nor "repair this one": the package is fine and
+#: the write is fine, and what is missing is the half that draws it.
+PACKAGE_DISPLAY_PENDING: Final[str] = "package_display_pending"
+
+
+def display_pending_refusal(field: str) -> WriteRefused:
+    """A live package whose values nothing would draw yet.
+
+    Checking a write against the package's Model while the member's page renders from
+    its TEMPLATE instance lets a value land that the display cannot draw -- a string
+    where the page reads a list renders as nothing, so the cards that were there
+    disappear and no error is raised anywhere. The old values are still in the log, but
+    a reader looking at the page cannot tell that from an empty list.
+
+    Refused rather than written, because the two halves disagreeing is not something an
+    agent can see or work around. The caller decides WHEN to ask this: the condition is
+    about the display, which is not this module's to read.
+    """
+    return WriteRefused(
+        PACKAGE_DISPLAY_PENDING,
+        field,
+        "this crewmate's page is composed from a dashboard package, and the display "
+        "still draws it from the template instance -- so a value checked against the "
+        "package could be one the page cannot draw, and writing it would blank what is "
+        "already there. Nothing is wrong with the package or the value: wait for the "
+        "display to read the package, and write it then",
+    )
+
+
+#: What each refusal tells the agent to DO, which is the half a bare state cannot
+#: supply. One sentence per state, and they differ in the action rather than in tone:
+#: create one, tell a human, stop reaching for it.
+_PACKAGE_REMEDIES: Final[dict[str, str]] = {
+    "empty": (
+        "this crewmate has no dashboard package yet, so it has no field to write: "
+        "create one with a Model that declares this field, then write it"
+    ),
+    "error": (
+        "this crewmate's dashboard package has a Model that does not load, so there is "
+        "nothing to check a write against -- ask the human to repair or replace the "
+        "package"
+    ),
+}
+
+
+def package_refusal(state: str, state_reason: str, field: str) -> WriteRefused | None:
+    """The refusal for a non-live package state, or ``None`` when the state is live.
+
+    ONE mapping, called by the write path immediately after the reader. The state's own
+    sentence is quoted after the remedy rather than instead of it, because the two
+    answer different questions: ``state_reason`` says what the reader found and the
+    remedy says what to do about it, and an agent handed only the first retries the
+    same write forever.
+
+    An UNKNOWN state refuses as well, and refuses honestly. Reporting an unrecognised
+    state as live would check the write against a ``None`` Model; reporting it as
+    "no package" would tell the agent to create one it may well already have.
+    """
+    if state == "live":
+        return None
+    code = PACKAGE_REFUSALS.get(state, "package_unreadable")
+    remedy = _PACKAGE_REMEDIES.get(
+        state,
+        f"this gateway does not understand what state {state!r} its dashboard package "
+        "is in, so it will not check a write against it -- ask the human",
+    )
+    return WriteRefused(code, field, f"{remedy}. {state_reason}".strip())
+
+
 def agentic_fields(manifest: TemplateManifest) -> dict[str, FieldSpec]:
     """The fields the crewmate may write, by name."""
     return {name: spec for name, spec in manifest.fields.items() if spec.agentic}
@@ -436,6 +524,28 @@ def check_write(
             f"is not a storable {spec.type}, so nothing could store or draw it -- send a "
             "value with no credential-like text in it",
         )
+    # The SHAPE is asked again too, and not only the type. The scrub rewrites strings,
+    # so a declared choice that is itself credential-shaped passes the check above --
+    # a placeholder is a perfectly good ``string`` -- and then lands in the cell as a
+    # value the page's own Model says cannot be there. Everything the shape constrains
+    # beyond the type is in the same position: an enum member, a required key under a
+    # scrubbed name, an item in a typed array.
+    if spec.shape is not None:
+        cleaned_problems: list[str] = []
+        shape_problems(spec.shape, cleaned, field, cleaned_problems)
+        if cleaned_problems:
+            raise WriteRefused(
+                "redacted_value_invalid",
+                field,
+                (
+                    f"redacting credentials from this value for {field!r} leaves "
+                    f"something the shape {instance.manifest.id!r} draws does not "
+                    "accept: "
+                    + "; ".join(cleaned_problems)
+                    + ". The STORED value is the scrubbed one, so send a value whose "
+                    "credential-like text is not part of what the shape requires"
+                ).strip(),
+            )
     if cleaned_size > DASHBOARD_VALUE_BYTES:
         raise WriteRefused(
             "redacted_value_too_large",
