@@ -7553,6 +7553,10 @@ class AcpRuntime:
         # as a bare list of names.
         handle.mcp_session_report().begin_session(mcp_servers)
         self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, mcp_servers)
+        # How the session's stdio servers were launched, from the spec and array
+        # already in hand: the watchdog's remote_flat scan finds the in-flight
+        # tool's own server process by it. In-memory, so no scheduling point.
+        handle.record_mcp_launches(ref_spec, mcp_servers)
 
         mode_switched = False
         staged_before_switch = 0
@@ -8144,6 +8148,8 @@ class AcpRuntime:
         # session gets its own report against the roster load re-declared.
         handle.mcp_session_report().begin_session(wire_servers)
         self._guard_unresolved_mcp_refs(handle, ref_spec, active_agent, wire_servers)
+        # Mirrors create_session: load re-declares the servers, so re-record them.
+        handle.record_mcp_launches(ref_spec, wire_servers)
 
         mode_switched = False
         staged_before_switch = 0

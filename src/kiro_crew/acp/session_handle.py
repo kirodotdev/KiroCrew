@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -502,9 +502,9 @@ def _watchdog_evidence_class(evidence: str) -> str:
     backend socket, flat subtree), ``mcp_flat`` (opaque MCP tool, moving or
     flat), ``shell_absent`` (shell tool in flight with nothing this dispatch
     could have started still running), ``shell`` (other shell-child evidence),
-    ``remote_flat`` (opaque MCP tool, flat subtree, a tool-side process
-    holding an established TCP connection — a tool blocked on its own remote
-    call), ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
+    ``remote_flat`` (opaque MCP tool, flat subtree, the tool's own MCP
+    server holding an established TCP connection — a tool blocked on its own
+    remote call), ``wait`` (the declared-duration wait tool), ``platform_limited`` (the
     oracle had no platform evidence to sharpen the verdict — a live-but-flat
     shell child on macOS, any tree probe on Windows), ``degraded`` (everything
     else: sampling baseline, unreadable /proc, no pid, oracle error — the
@@ -530,6 +530,94 @@ def _watchdog_evidence_class(evidence: str) -> str:
     if e.startswith("wait tool"):
         return "wait"
     return "degraded"
+
+
+# Bounds on one session's MCP launch roster (``mcp_launch_roster``), applied where
+# it is RETAINED. The population is the session's MCP servers, which the session
+# report already bounds by ``BUCKET_CAP`` servers and ``NAME_CAP`` name length, so
+# the roster shares those two. The argv bounds are this structure's own: a real
+# launch is a command and a few dozen arguments at most, and an entry past them is
+# refused whole, never truncated, because a truncated argv matches a different
+# process (or none) and attribution must not rest on it.
+_LAUNCH_MAX_ARGS = 64
+_LAUNCH_MAX_TOKEN = 4096
+# One argv per source naming the server (the agent spec, the wire array), with
+# room for a wire array that names a server twice.
+_LAUNCHES_PER_SERVER = 4
+
+
+def _launch_argv(entry: Mapping[str, Any]) -> tuple[str, ...] | None:
+    """``(command, *args)`` for one stdio server entry, or None.
+
+    None for a remote (``url``) server, which has no process, and for an entry
+    whose launch cannot be predicted: no command, or ``args`` that is not a list
+    of strings (the host could not start it as written either).
+    """
+    command = entry.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None
+    args = entry.get("args", ())
+    if args is None:
+        args = ()
+    if not isinstance(args, (list, tuple)) or not all(isinstance(a, str) for a in args):
+        return None
+    return (command, *args)
+
+
+def mcp_launch_roster(
+    spec: object, wire_servers: object
+) -> tuple[dict[str, tuple[tuple[str, ...], ...]], int]:
+    """One session's :data:`~kiro_crew.acp.liveness.LaunchRoster`, and how many
+    stdio entries it refused for a bound. Pure, and never raises.
+
+    *spec* is the agent spec the session runs (its ``mcpServers`` map is what the
+    host mounts natively); *wire_servers* is the ``mcpServers`` array the session
+    sent. Either may be None or malformed, which contributes nothing. An entry is
+    refused whole -- no name, no argv kept -- when its name is past ``NAME_CAP``,
+    its argv past :data:`_LAUNCH_MAX_ARGS` arguments or :data:`_LAUNCH_MAX_TOKEN`
+    characters in any one string, its server past ``BUCKET_CAP`` servers, or its
+    launch past :data:`_LAUNCHES_PER_SERVER` for that server. A refused server is
+    simply not found by the scan, which keeps its full window.
+    """
+    roster: dict[str, list[tuple[str, ...]]] = {}
+    refused = 0
+
+    def _add(name: object, entry: object) -> None:
+        nonlocal refused
+        if not isinstance(name, str) or not name or not isinstance(entry, Mapping):
+            return
+        argv = _launch_argv(entry)
+        if argv is None:
+            return
+        oversized = len(argv) > _LAUNCH_MAX_ARGS + 1 or any(
+            len(token) > _LAUNCH_MAX_TOKEN for token in argv
+        )
+        known = roster.get(name)
+        if not oversized and known is not None and argv in known:
+            return
+        if (
+            oversized
+            or len(name) > NAME_CAP
+            or (known is None and len(roster) >= BUCKET_CAP)
+            or (known is not None and len(known) >= _LAUNCHES_PER_SERVER)
+        ):
+            refused += 1
+            return
+        roster.setdefault(name, []).append(argv)
+
+    try:
+        servers = spec.get("mcpServers") if isinstance(spec, Mapping) else None
+        if isinstance(servers, Mapping):
+            for name, entry in servers.items():
+                _add(name, entry)
+        if isinstance(wire_servers, (list, tuple)):
+            for element in wire_servers:
+                if isinstance(element, Mapping):
+                    _add(element.get("name"), element)
+    except Exception:
+        logger.debug("MCP launch roster unreadable", exc_info=True)
+        return {}, 0
+    return {name: tuple(argvs) for name, argvs in roster.items()}, refused
 
 
 # Unresponsive-cancel budget: after cancel() is sent, if kiro-cli does not
@@ -1118,9 +1206,15 @@ class AcpSessionHandle:
         # load below is only the fallback for direct constructions (tests).
         self._crew_agent = crew_agent
         self._watchdog = watchdog if watchdog is not None else _load_watchdog_settings(crew_agent)
+        # How this session launched its stdio MCP servers, recorded by the
+        # runtime once the session's array is final (``record_mcp_launches``).
+        # The oracle's remote_flat scan reads it to find the in-flight tool's
+        # own server process; empty means no server can be found, which keeps
+        # the full window.
+        self._mcp_launches: dict[str, tuple[tuple[str, ...], ...]] = {}
         self._oracle = LivenessOracle(
             sample_min_secs=self._watchdog.wellness_sample_secs,
-            socket_tenancy=self._socket_tenancy,
+            server_launches=self._remote_flat_launches,
         )
         # Keep the executor future, not an await-scoped flag: wait_for can time
         # out while the underlying thread continues its /proc walk. A pending
@@ -5045,7 +5139,7 @@ class AcpSessionHandle:
                             and wd.remote_flat_probe_secs > 0
                         ):
                             # An MCP tool blocked on its own remote call: the
-                            # tree is flat and a tool-side process holds an
+                            # tree is flat and the tool's own server holds an
                             # established TCP connection. With no client timeout
                             # a peer that never answers holds the call until the
                             # build-scale window, which is the hang users see as
@@ -5901,9 +5995,9 @@ class AcpSessionHandle:
             log_label="oracle consultation",
         )
 
-    def _socket_tenancy(self) -> int | None:
-        """The tenancy declared to the oracle's socket scan, or None while the
-        ``remote_flat`` window is off.
+    def _remote_flat_launches(self) -> dict[str, tuple[tuple[str, ...], ...]] | None:
+        """The launch roster declared to the oracle's socket scan, or None while
+        the ``remote_flat`` window is off.
 
         None reads as undeclared, so with ``watchdog.remote_flat_probe_secs`` at
         0 the oracle never tags ``remote_flat`` and the evidence, the metric
@@ -5912,25 +6006,33 @@ class AcpSessionHandle:
         """
         if self._watchdog.remote_flat_probe_secs <= 0:
             return None
-        return self._runtime_tenancy()
+        return self._mcp_launches
 
-    def _runtime_tenancy(self) -> int | None:
-        """Sessions on this handle's runtime, counting ones still initializing.
+    def record_mcp_launches(self, spec: Any, wire_servers: Any) -> None:
+        """Record how this session launched its stdio MCP servers.
 
-        Declared to the liveness oracle for the tool-side socket scan only, so
-        the opt-in ``remote_flat`` tag needs the tree to be this session's alone. None when the runtime exposes no
-        session table, which the oracle reads as unreadable, not as exclusive.
+        *spec* is the agent spec the session runs and *wire_servers* the final
+        ``mcpServers`` array it sent; both were already read by the runtime, so
+        this is in-memory, synchronous and never raises. Replaces any earlier
+        roster: ``session/load`` re-declares the session's servers. Entries the
+        roster refuses for a bound are counted and logged once per recording, so
+        a server missing from the scan is never silent.
         """
-        queues = getattr(self._runtime, "_session_queues", None)
-        if not isinstance(queues, dict):
-            return None
-        inits = getattr(self._runtime, "_session_inits_in_flight", 0)
-        # A timed-out session/new leaves a StartCollector that may still own a
-        # second session tree after the init scope has closed; count it, since
-        # an over-count only keeps the full window.
-        starts = getattr(self._runtime, "_start_collectors", None)
-        pending = len(starts) if isinstance(starts, dict) else 0
-        return len(queues) + (inits if isinstance(inits, int) else 0) + pending
+        try:
+            roster, refused = mcp_launch_roster(spec, wire_servers)
+        except Exception:
+            logger.debug(
+                "session %s: MCP launch roster not recorded", self._session_id, exc_info=True
+            )
+            roster, refused = {}, 0
+        self._mcp_launches = roster
+        if refused:
+            logger.warning(
+                "session %s: %d MCP server launch(es) past the roster bounds are not "
+                "recorded; the remote_flat window cannot attribute a call to them",
+                self._session_id,
+                refused,
+            )
 
     def _working_tool_bound_reached(self, evidence: str, tool_idle: float) -> bool:
         """Whether a tool-branch WORKING reading has run out of forbearance.
