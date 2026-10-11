@@ -1160,9 +1160,19 @@ class HistoryConsolidator:
             # A seed's transcript may be cold and large, so it is never read here on the
             # loop: ``_consolidate`` snapshots it off the loop and enforces the backoff.
             total, unconsolidated = (0, 1) if seeded else self._log.consolidation_counts(key)
+            if unconsolidated < 1:
+                # Nothing is left to consolidate: stop tracking the session until its next
+                # turn tracks it again through ``maybe_consolidate``, or every session ever
+                # used costs a transcript read on every sweep. A key with its own pass in
+                # flight waits a sweep, because that pass writes the throttle when it ends.
+                # ``_prefs_offset`` stays: without it the next turn would rerun the
+                # preferences pass over the whole transcript.
+                if key not in self._running:
+                    self._last_activity.pop(key, None)
+                    self._history_consolidated.pop(key, None)
+                continue
             if (
-                unconsolidated < 1
-                or now - self._history_consolidated.get(key, 0) < self._history_idle_secs
+                now - self._history_consolidated.get(key, 0) < self._history_idle_secs
                 or self._busy(key)
                 # Durable backoff, checked last so it only costs a metadata read
                 # once the cheap conditions pass. The in-memory throttle above is

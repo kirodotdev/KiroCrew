@@ -311,3 +311,119 @@ async def test_a_seeded_session_looks_up_the_receipt_committed_before_restart(
         await after._consolidate(seeded, include_history=True)
 
     assert len(asked) == 2 and asked[0] == asked[1]
+
+
+# Sessions that had a turn in this process. ``maybe_consolidate`` tracks each one;
+# once a session has nothing left to consolidate, the sweep stops tracking it until
+# its next turn, so a session used once is not reread on every sweep.
+
+
+def _live(
+    tmp_path, keys: list[str], *, consolidated: bool
+) -> tuple[ConversationLog, HistoryConsolidator]:
+    """Sessions with a turn in this process, idle since, each fully consolidated or not."""
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    log.init()
+    with history_mod.allow_on_loop_persist():
+        for key in keys:
+            for i in range(3):
+                log.append(key, "user", f"m{i}")
+            if consolidated:
+                log.mark_consolidated(key, 3)
+    memory = MagicMock()
+    memory.read_preferences.return_value = ""
+    memory.read_projects.return_value = ""
+    consolidator = HistoryConsolidator(
+        log=log, memory=memory, migrated=True, history_idle_secs=3600
+    )
+    consolidator._activity_seeded = True  # the restart seed is covered above
+    for key in keys:
+        consolidator.maybe_consolidate(key)  # the session's turn
+        consolidator._last_activity[key] = 0.0  # idle ever since
+    return log, consolidator
+
+
+async def _sweep(
+    consolidator: HistoryConsolidator, log: ConversationLog
+) -> tuple[list[str], AsyncMock]:
+    """One idle sweep with ``_consolidate`` stubbed; returns the keys whose transcript it read."""
+    reads: list[str] = []
+    counts = log.consolidation_counts
+
+    def counting(key: str) -> tuple[int, int]:
+        reads.append(key)
+        return counts(key)
+
+    fake = AsyncMock(return_value=None)
+    with (
+        patch.object(log, "consolidation_counts", counting),
+        patch.object(consolidator, "_consolidate", fake),
+    ):
+        consolidator.check_idle_sessions()
+        await asyncio.gather(*list(consolidator._tasks), return_exceptions=True)
+    return reads, fake
+
+
+@pytest.mark.asyncio
+async def test_a_consolidated_idle_session_is_read_once_then_dropped(tmp_path):
+    keys = [f"dashboard:chat-{i}" for i in range(3)]
+    log, consolidator = _live(tmp_path, keys, consolidated=True)
+
+    first, fake = await _sweep(consolidator, log)
+    second, _ = await _sweep(consolidator, log)
+
+    assert sorted(first) == keys  # one read each finds nothing left to consolidate
+    assert second == [], f"idle sessions with nothing left are reread on every sweep: {second}"
+    tracked = consolidator._last_activity.keys() | consolidator._history_consolidated.keys()
+    assert not set(keys) & tracked
+    fake.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_dropped_session_is_tracked_again_on_its_next_turn(tmp_path):
+    key = "dashboard:chat-back"
+    log, consolidator = _live(tmp_path, [key], consolidated=True)
+    consolidator._prefs_offset[key] = 3
+
+    await _sweep(consolidator, log)
+    assert key not in consolidator._last_activity, "a session with nothing left stays tracked"
+    # The preferences offset stays: without it the session's next turn would rerun
+    # the preferences pass over the whole transcript.
+    assert consolidator._prefs_offset[key] == 3
+
+    with history_mod.allow_on_loop_persist():
+        log.append(key, "user", "back again")
+    consolidator.maybe_consolidate(key)
+    assert key in consolidator._last_activity
+    consolidator._last_activity[key] = 0.0
+
+    reads, fake = await _sweep(consolidator, log)
+    assert reads == [key]
+    fake.assert_awaited_once_with(key, include_history=True)
+
+
+@pytest.mark.asyncio
+async def test_an_idle_session_with_rows_left_stays_tracked(tmp_path):
+    key = "dashboard:chat-pending"
+    log, consolidator = _live(tmp_path, [key], consolidated=False)
+
+    first, fake = await _sweep(consolidator, log)  # the stub leaves its rows unconsolidated
+    second, _ = await _sweep(consolidator, log)
+
+    fake.assert_awaited_once_with(key, include_history=True)
+    assert first == [key] and second == [key]
+    assert key in consolidator._last_activity
+
+
+@pytest.mark.asyncio
+async def test_a_seed_with_nothing_left_still_goes_to_consolidate(tmp_path):
+    log, consolidator = _restarted(tmp_path, unconsolidated=False)
+    consolidator._activity_seeded = True
+    consolidator._last_activity[LIVE] = 0.0
+    consolidator._seeded_keys.add(LIVE)
+
+    reads, fake = await _sweep(consolidator, log)
+
+    assert reads == []  # a seed is never read on the loop
+    fake.assert_awaited_once_with(LIVE, include_history=True)
+    assert LIVE in consolidator._last_activity  # only ``_consolidate`` drops a finished seed
