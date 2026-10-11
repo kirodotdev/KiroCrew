@@ -647,7 +647,7 @@ function ChatInput({
   const {
     mirrorRef, hoverRef, pastePreviewPanelId, setPastePreviewPanelId, rawPasteRef, noteKeyDown,
     handleTokenKey, handlePaste, handleTextareaClick, handleSelectSnap, handleCopy, handleCut,
-  } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime })
+  } = usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChange, showFullPastes, onUploadFiles, inputRef, valueRef, valueFromUserRef, recordCaret, ime, mentionEditRange })
   // The textarea's Cmd/Ctrl+Shift+Enter optimize chord, for the Lexical
   // composer. Unset when the host opted out of the optimizer, so the chord
   // falls through to the send rules there too.

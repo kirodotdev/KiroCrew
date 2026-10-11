@@ -35,7 +35,7 @@ async function stageMention(page: Page): Promise<{ ta: ReturnType<Page['locator'
       contentType: 'application/json',
       body: JSON.stringify({
         root: project,
-        results: [{ path: `${project.replace(/\/$/, '')}/src/main.ts`, name: 'main.ts', size: 10, mtime: Math.floor(Date.now() / 1000), kind: 'file' }],
+        results: [{ path: `${project.replace(/\/$/, '')}/src/main.ts`, name: 'main.ts', size: 10, mtime: 1_700_000_000, kind: 'file' }],
       }),
     }))
   const created = await page.request.post('/api/chat/slots', { data: { agent: 'default' } })
@@ -97,6 +97,51 @@ test.describe('#18263 atomic @mention delete through the value-change seam', () 
     await expect(page.getByRole('group', { name: /main\.ts/ })).toHaveCount(0)
   })
 
+  test('a keystroke right after a type-over seam edit inserts at the caret, not the end', async ({ page }) => {
+    // The seam restores the caret in a post-commit layout effect, not a deferred
+    // frame. A deferred restore raced the user: a keystroke landing after the
+    // controlled commit but before the frame moved the caret to the end,
+    // corrupting the draft to `review x nowy` instead of `review xy now`
+    // (GPT 6.1). Real Chromium runs the real caret timing; `type('xy')` fires two
+    // back-to-back key events, the second of which must insert where the first
+    // left the caret.
+    const { ta, slot } = await stageMention(page)
+    ;(test.info() as unknown as { _mentionSlot?: string })._mentionSlot = slot
+    await setDraftAndSelect(ta, `review ${MENTION} now`, 'review @src/'.length, `review ${MENTION}`.length)
+    // First char replaces the whole mention via the seam; the second must land
+    // right after it, not at the end of the field.
+    await page.keyboard.type('xy')
+    await expect(ta).toHaveValue('review xy now')
+    await expect(ta).not.toHaveValue('review x nowy')
+    await expect(ta).not.toHaveValue(/@src\//)
+  })
+
+  test('a same-value seam replacement still restores the caret, so the next key inserts after the mention', async ({ page }) => {
+    // When the seam's replacement leaves the value unchanged (pasting the whole
+    // mention back over a selection that only cut its tail), onChange hits the
+    // draft store's same-value no-op, so React runs no commit and a post-commit
+    // caret restore never fires. The seam collapses the selection to the caret
+    // directly in that case, so the next keystroke inserts at the caret (just
+    // past the pasted mention text) rather than replacing the still-selected
+    // mention (which would delete it, leaving `review xnow`) (GPT 6.1).
+    const { ta, slot } = await stageMention(page)
+    ;(test.info() as unknown as { _mentionSlot?: string })._mentionSlot = slot
+    // Select `main.ts` (the mention's tail, cutting into it); pasting the whole
+    // mention back reconstructs the same text, so the committed value is equal.
+    await setDraftAndSelect(ta, `review ${MENTION} now`, 'review @src/'.length, `review ${MENTION}`.length)
+    await pasteOver(page, MENTION)
+    await expect(ta).toHaveValue(`review ${MENTION} now`)
+    // The mention is still staged (its chip survives) and the caret sits just
+    // past the pasted mention text (end of `@src/main.ts`, before the space).
+    await expect(page.getByRole('group', { name: /main\.ts/ }).first()).toBeVisible()
+    await page.keyboard.type('x')
+    // `x` inserts at the restored caret -> `@src/main.tsx`, NOT by replacing the
+    // still-selected mention (which would have produced `review xnow`).
+    await expect(ta).toHaveValue(`review ${MENTION}x now`)
+    await expect(ta).not.toHaveValue('review xnow')
+    await expect(ta).not.toHaveValue(/@src\/x/)
+  })
+
   test('pasting over a selection that overlaps the mention removes it whole', async ({ page }) => {
     const { ta, slot } = await stageMention(page)
     ;(test.info() as unknown as { _mentionSlot?: string })._mentionSlot = slot
@@ -113,6 +158,24 @@ test.describe('#18263 atomic @mention delete through the value-change seam', () 
     await setDraftAndSelect(ta, `review ${MENTION} now`, 'review @src/'.length, `review ${MENTION}`.length)
     await pasteOver(page, 'main.py')
     await expect(ta).toHaveValue('review main.py now')
+  })
+
+  test('a LARGE paste over the mention collapses to a chip and still removes the whole mention', async ({ page }) => {
+    // A big paste is intercepted in JS (`usePasteTokens`), which preventDefaults
+    // and splices the value itself — so NO `insertFromPaste` beforeinput fires
+    // and the native seam never sees it. The paste interceptor must expand the
+    // range over the mention on its own, else `@src/` survives beside the new
+    // `[ Paste #N ]` chip and its file chip silently unstages (#18263).
+    const { ta, slot } = await stageMention(page)
+    ;(test.info() as unknown as { _mentionSlot?: string })._mentionSlot = slot
+    await setDraftAndSelect(ta, `review ${MENTION} now`, 'review @src/'.length, `review ${MENTION}`.length)
+    // Multi-line + long enough to trip the collapse-to-chip threshold.
+    await pasteOver(page, `${'x'.repeat(250)}\nsecond\nthird\nfourth`)
+    // No half-reference left behind, and the file chip is gone.
+    await expect(ta).not.toHaveValue(/@src\//)
+    await expect(page.getByRole('group', { name: /main\.ts/ })).toHaveCount(0)
+    // The big paste landed as a collapsed paste chip, not as inline text.
+    await expect(page.getByText(/Paste #\d/).first()).toBeVisible({ timeout: 5000 })
   })
 
   test('cutting a selection that overlaps the mention removes it whole and keeps the clipboard', async ({ page }) => {

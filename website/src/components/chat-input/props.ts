@@ -347,13 +347,21 @@ export interface ChatInputProps {
   /** The value-change companion to `onMentionKey` (#18263), structural. A cut,
    *  type-over, paste-over or drop erases part of a staged `@mention` through
    *  the textarea's value-change seam, not a keydown. Given the pre-edit text
-   *  and the selection [s, e) the browser is about to replace (read at
-   *  `beforeinput`), this returns that range EXPANDED to cover the whole of
-   *  every staged mention it cuts into, or null when it touches none. The
-   *  composer then replaces the expanded range with the edit's own inserted
-   *  data via the controlled value, so a half-reference is never produced and
-   *  no after-the-fact text diff is needed. TEXTAREA ONLY, like `onMentionKey`;
-   *  the Lexical composer is tracked in #18186. */
+   *  and the selection [s, e) the browser is about to replace, this returns
+   *  that range EXPANDED to cover the whole of every staged mention it cuts
+   *  into, or null when it touches none. The composer then replaces the
+   *  expanded range with the edit's own inserted data via the controlled value,
+   *  so a half-reference is never produced and no after-the-fact text diff is
+   *  needed. Read at two seams: the native `beforeinput` listener (for the
+   *  browser's own edits), and the JS clipboard interceptors (`usePasteTokens`),
+   *  whose paste collapse/trailing-blank branches and the `handleCut` branch
+   *  `preventDefault` and splice the value themselves so no `insertFromPaste` /
+   *  `deleteByCut` `beforeinput` fires. The
+   *  `beforeinput` seam also owns SELECTION-deletes (and the keydown-miss
+   *  collapsed delete the gated `onMentionKey` path lets through), so a delete
+   *  that reaches it still removes the whole mention rather than a fragment.
+   *  TEXTAREA ONLY, like `onMentionKey`; the Lexical composer is tracked in
+   *  #18186. */
   mentionEditRange?: (text: string, selStart: number, selEnd: number) => { start: number; end: number } | null
   onFileOpen?: (path: string) => void
   project?: string

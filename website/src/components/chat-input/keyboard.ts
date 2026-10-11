@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { consumeComposerRelease } from '../../pages/chat/composerFocus'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
@@ -289,6 +289,29 @@ export function useEditorInput({ onChange, valueFromUserRef, openPickersForText,
   inputRef: React.RefObject<HTMLTextAreaElement>
 }) {
   const detachRef = useRef<(() => void) | null>(null)
+  // The caret to restore AFTER the controlled value from a seam edit has
+  // committed, as { value, caret }. The seam cannot set the caret inline: it
+  // hands `next` to the controlled onChange, and React writes that value to the
+  // textarea on the following commit, which moves the caret to the end. The
+  // layout effect below restores the caret once the DOM value equals `value`.
+  const pendingSeamCaretRef = useRef<{ value: string; caret: number } | null>(null)
+  // Restore the seam's caret in a POST-COMMIT layout effect, keyed on the
+  // committed value — not a bare requestAnimationFrame. A deferred rAF raced
+  // the user: a keystroke landing after the controlled commit but before the
+  // frame moved the caret to the end, and the frame's `el.value === next` guard
+  // then silently skipped the restore, corrupting the draft (GPT 6.1). React
+  // commits a discrete input event synchronously, so this layout effect runs
+  // before the next keystroke's handler, leaving no window for the race. The
+  // value match guards against clobbering a newer edit that already landed.
+  useLayoutEffect(() => {
+    const pending = pendingSeamCaretRef.current
+    if (!pending) return
+    const el = inputRef.current
+    if (el && el.value === pending.value) {
+      el.setSelectionRange(pending.caret, pending.caret)
+      pendingSeamCaretRef.current = null
+    }
+  })
   // The value-change seam, done ENTIRELY in a NATIVE `beforeinput` listener
   // from the event's own inputType + the pre-edit selection (React 18's
   // synthetic onBeforeInput is unreliable, so the composer hooks the native
@@ -356,17 +379,26 @@ export function useEditorInput({ onChange, valueFromUserRef, openPickersForText,
       const next = text.slice(0, range.start) + data + text.slice(range.end)
       const caret = range.start + data.length
       valueFromUserRef.current = true
-      onChange(next)
-      // We prevented the browser's edit, so no `input`/`change` event follows —
-      // this path owns everything `handleTextareaChange` would do. After the
-      // controlled value commits, restore the caret (guarded: only while the
-      // live value still equals `next`, so a newer edit that landed first is
-      // never clobbered), open whichever picker the caret calls for, and
-      // publish the caret the dictation splice reads.
-      requestAnimationFrame(() => {
-        const el = inputRef.current
-        if (el && el.value === next) el.setSelectionRange(caret, caret)
-      })
+      if (next === text) {
+        // The replacement leaves the value UNCHANGED (e.g. pasting a mention
+        // back over its own selection). onChange(next) then hits the draft
+        // store's same-value no-op, so React runs no commit and the layout
+        // effect never fires — the old selection would stay active and the next
+        // keystroke would replace the still-selected mention (GPT 6.1). There
+        // is nothing to wait for, so collapse the selection to `caret` directly
+        // and now; do not arm the pending-caret record (no commit will clear
+        // it). onChange is still called so pickers/caret bookkeeping run.
+        inputRef.current?.setSelectionRange(caret, caret)
+        onChange(next)
+      } else {
+        // The value changes, so React will commit: hand it the controlled value
+        // and record a pending {value, caret}; the layout effect above applies
+        // the caret once the DOM value equals `next`, synchronously before the
+        // next keystroke's handler. (Replaces a requestAnimationFrame that
+        // raced interleaved keystrokes.)
+        onChange(next)
+        pendingSeamCaretRef.current = { value: next, caret }
+      }
       openPickersForText(next, next.slice(0, caret))
       recordCaret()
     }
