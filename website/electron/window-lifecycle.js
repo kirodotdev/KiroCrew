@@ -59,6 +59,7 @@ const {
 const { createWindowPrompts } = require("./runtime/window/prompts");
 const { createSessionSecurity } = require("./runtime/window/session-security");
 const { injectLinuxCaptionControls } = require("./runtime/window/linux-captions");
+const { wireWillDownloadOnce } = require("./download-handler");
 const { attachBrowserPanels, dispatchBrowserOp } = require("./runtime/window/browser-panels");
 
 const BROWSER_PARTITION = "persist:kirocrew-browser";
@@ -108,6 +109,10 @@ function createWindowLifecycle(options) {
     syncTunnel = () => {},
     platform = process.platform,
     env = process.env,
+    // Shared single-use registry of downloads the renderer explicitly asked
+    // for; passed to the will-download handler so only announced downloads
+    // auto-save (see download-expectations.js).
+    downloadExpectations = null,
   } = options || {};
 
   if (!electron) throw new Error("createWindowLifecycle: electron is required");
@@ -550,6 +555,29 @@ function createWindowLifecycle(options) {
     view.webContents.session.webRequest.onBeforeSendHeaders((details, callback) => {
       delete details.requestHeaders.Referer;
       callback({ requestHeaders: details.requestHeaders });
+    });
+
+    // Give renderer-triggered downloads (e.g. the Portability "Download Export
+    // (.zip)" button's <a download> blob) a real save path. The dashboard view
+    // is a WebContentsView under a BaseWindow, which Chromium cannot parent a
+    // native "Save As" dialog to, so without this the DownloadItem never
+    // resolves a path and nothing lands on disk (issue #13047). Attached once
+    // per session (every window shares the default session), so N windows do
+    // not stack N handlers.
+    //
+    // Because the single handler is shared by every window, it must resolve the
+    // dashboard origin for the window that OWNS each download rather than
+    // capturing one window's URL: a later window on a different gateway (the
+    // remote-host secondary windows main supports) would otherwise fail the
+    // origin checks and its export would never land. `resolveDashboardUrl` maps
+    // the download's own `webContents` back to its window's `_mcBackendUrl`;
+    // `dashboardUrl` is the fallback for the first window / an unmatched sender.
+    wireWillDownloadOnce(view.webContents.session, {
+      app,
+      log: glog,
+      dashboardUrl: windowBackendUrl,
+      resolveDashboardUrl: (wc) => windowForWebContents(wc)?._mcBackendUrl,
+      pending: downloadExpectations,
     });
 
     return view;

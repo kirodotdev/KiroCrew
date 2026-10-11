@@ -9,6 +9,7 @@ import { i18nT } from '../../i18n/t'
 import { noteStaleOwnerResponse } from '../../api/staleOwnerSignal'
 import { uiLocation } from '../../uiLocations/uiLocation'
 import { adoptHostUiPrefsOnNextLoad, pauseUiPrefsSync, resumeUiPrefsSync } from '../../lib/uiPrefs'
+import { downloadBlob } from '../../utils/download'
 
 /**
  * Where a settings restore leaves its result for the load it triggers.
@@ -312,16 +313,9 @@ export default function PortabilityTab() {
         return
       }
       const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
       const cd = resp.headers.get('Content-Disposition') || ''
       const m = cd.match(/filename="?([^"]+)"?/)
-      a.download = m ? m[1] : 'kirocrew-export.zip'
-      document.body.appendChild(a)
-      a.click()
-      a.remove()
-      URL.revokeObjectURL(url)
+      downloadBlob(blob, m ? m[1] : 'kirocrew-export.zip')
       setExportStatus({ type: 'ok', msg: i18nT('pages.overview.portabilityTab.download_started') })
       const { names, more } = unbundledTemplates(resp.headers.get('X-Kirocrew-Unbundled-Templates'))
       if (names.length) setExportWarning(i18nT('pages.overview.portabilityTab.export_templates_not_included', { names: joinWithMore(names, more) }))

@@ -1003,6 +1003,7 @@ function dashboardWindowHarness({ platform, frameless = false } = {}) {
       webRequest: {
         onBeforeSendHeaders() { log.push("view.session.onBeforeSendHeaders"); },
       },
+      on(event) { log.push(`view.session.on:${event}`); return this; },
     },
     setWindowOpenHandler(handler) {
       log.push("view.setWindowOpenHandler");
@@ -1128,6 +1129,7 @@ describe("dashboard window wiring order", () => {
       "view.setWindowOpenHandler",
       "view.on:did-create-window",
       "view.session.onBeforeSendHeaders",
+      "view.session.on:will-download",
     ]);
     assert.deepEqual(onLoad, [
       "view.send:fullscreen-changed",

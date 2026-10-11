@@ -136,6 +136,27 @@ describe('PortabilityTab template warnings', () => {
     expect(screen.getByText('Download started.')).toBeTruthy()
   })
 
+  it('does not revoke the export blob URL synchronously after the click (issue #13047)', async () => {
+    // Electron turns the <a download> click into an async DownloadItem in the
+    // main process; revoking the blob URL synchronously after click() tears the
+    // source down before that item resolves, so no file is written. The export
+    // must go through downloadBlob(), which defers the revoke (setTimeout) so
+    // the revoke has NOT run by the time "Download started." is shown. Asserted
+    // with real timers (no fake-clock leak): the deferred revoke is a tick away,
+    // so it cannot have fired synchronously.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(new Blob(['PK']), { status: 200 })))
+    const revoke = vi.fn()
+    vi.stubGlobal('URL', class extends URL {
+      static createObjectURL = () => 'blob:x'
+      static revokeObjectURL = revoke
+    })
+    render(<PortabilityTab />)
+    fireEvent.click(screen.getByRole('button', { name: /download export/i }))
+    await screen.findByText('Download started.')
+    // The revoke is deferred, not run inline after click(): this is the fix.
+    expect(revoke).not.toHaveBeenCalled()
+  })
+
   it('names each imported crew whose template is missing, beside the success line', async () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => new Response(JSON.stringify(
       url.includes('preview')
