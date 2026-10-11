@@ -2556,6 +2556,13 @@ Examples:
         ),
     )
 
+    # gateway-pid — read-only: print the PID holding this home's gateway.lock as
+    # JSON, resolved through the same socket-independent lock_holder oracle that
+    # `stop --expect-pid`/`restart` use. The desktop supervisor calls this when
+    # its listener snapshot cannot name a draining gateway (socket released, lock
+    # still held) so recovery can wait for that pid instead of giving up.
+    cli_help.add_command(sub, "gateway-pid")
+
     # service — install/uninstall/status as a system-level systemd unit (Linux,
     # /etc/systemd/system/, requires sudo) or launchd LaunchAgent (macOS,
     # ~/Library/LaunchAgents/, no sudo) so the gateway survives SSH disconnect,
@@ -3779,6 +3786,10 @@ env var overrides it.
         from kiro_crew.cli_server import _restart
 
         _restart(args.port)
+    elif args.command == "gateway-pid":
+        from kiro_crew.cli_server import _gateway_pid
+
+        _gateway_pid()
     elif args.command == "service":
         from kiro_crew.cli_server import _service_cmd
 

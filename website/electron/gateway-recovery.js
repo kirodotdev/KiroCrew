@@ -1,4 +1,5 @@
 "use strict";
+const path = require("path");
 //
 // Injectable recovery-strategy decisions, extracted from main.js so they can
 // be unit-tested without Electron (mirrors gateway-liveness.js / gateway-wait.js
@@ -181,6 +182,200 @@ function incumbentSnapshotBlocksRespawn({ pids, isWindows = false }) {
   return pids === null && isWindows;
 }
 
+// When the lock probe reports the lock is HELD but its owner is unnameable (a
+// draining gateway whose pid is unreadable under a Windows mandatory lock), the
+// recovery waits for the lock to be released rather than giving up. A draining
+// gateway finishes teardown in seconds to low minutes; this budget covers that
+// while still bounding one pass; a lock still held after it reads as
+// "unverified", and recoverIncumbentWithBackoff re-runs the pass later.
+const INCUMBENT_LOCK_HELD_BUDGET_MS = 120_000;
+const INCUMBENT_LOCK_HELD_POLL_MS = 2_000;
+
+/**
+ * Name the incumbent gateway so recovery can wait for it to exit before
+ * respawning — first from a single LISTEN-socket lookup, then, when that cannot
+ * name it, from a SOCKET-INDEPENDENT lock-holder probe.
+ *
+ * One socket lookup is taken. When it names the incumbent, that is used. When
+ * it names no one — either a shutting-down gateway caught mid-exit, or a
+ * draining gateway that has released its socket but still holds `gateway.lock`
+ * (which `lsof`/`netstat` can never name, since they see only LISTEN-socket
+ * owners) — the lock-holder probe is consulted straight away. The probe closes
+ * both cases, so there is no socket-retry loop: retrying the socket would only
+ * delay recovery without resolving anything the probe does not.
+ *
+ * The fallback is `lockHolderProbe` (the CLI's `gateway-pid`, resolved through
+ * the backend's maintained `lock_holder` oracle), which reads the incumbent
+ * from the lock file and outlives the socket. Its verdicts drive the outcome:
+ *
+ *  - `"captured"` — a live lock holder is named; the caller waits for THAT pid
+ *    to exit (`waitForIncumbentExit`) before spawning. The kernel releases the
+ *    lock atomically on exit, so this is race-free.
+ *  - `"released"` — the lock itself (not merely the socket) is released; the
+ *    incumbent is gone, so the caller may spawn now. This is LOCK-released, the
+ *    authoritative signal, distinct from a free socket: a free port is never
+ *    treated as a released lock.
+ *  - `"held"` — the lock is POSITIVELY held but its owner cannot be named: a
+ *    draining gateway whose pid is unreadable under a Windows mandatory lock.
+ *    We cannot wait on a pid, but we CAN wait for the lock to be RELEASED — the
+ *    same authoritative signal — so the probe is polled on a bounded budget
+ *    until it reports "released" (then spawn) or the budget expires (then
+ *    "unverified"). This is what lets recovery heal on a Windows host where the pid
+ *    is unreadable.
+ *  - `"unverified"` — the probe gave no answer this time (it timed out, or died
+ *    before printing one), or a held lock never released within the budget.
+ *    Both are transient. Spawning blind would race the lock, so the caller
+ *    retries later via recoverIncumbentWithBackoff.
+ *  - `"refused"` — the probe cannot answer and retrying does not change that:
+ *    a packaged app with no bundled backend refuses to run one from PATH, or
+ *    the CLI ran to completion and reported the lock indeterminate. It is
+ *    returned at once so the caller ends on its terminal error instead of
+ *    backing off behind a status line that names the wrong cause.
+ *
+ * With no `lockHolderProbe` injected a socket lookup that names no one yields
+ * `"unverified"`.
+ *
+ * Pure/injectable so the whole policy is unit-testable without Electron.
+ *
+ * @param {object} o
+ * @param {() => Promise<number[]|null>} o.snapshot      capture listener PIDs now
+ * @param {(pids:number[]|null) => boolean} o.blocksRespawn  is this snapshot unusable?
+ * @param {(ms:number) => Promise<void>} o.sleep
+ * @param {() => Promise<{verdict:"captured"|"released"|"held"|"unverified"|"refused", pid:number|null}>} [o.lockHolderProbe]
+ *        socket-independent incumbent identity, consulted when the socket lookup names no one
+ * @param {number} [o.lockHeldBudgetMs]  how long to wait for a held-but-unnameable lock to release
+ * @param {number} [o.lockHeldPollMs]
+ * @param {(message:string) => void} [o.log]
+ * @returns {Promise<{verdict:"captured"|"released"|"unverified"|"refused", pids:number[]|null, via:"snapshot"|"lock"}>}
+ */
+async function snapshotIncumbentForRespawn({
+  snapshot,
+  blocksRespawn,
+  sleep,
+  lockHolderProbe = null,
+  lockHeldBudgetMs = INCUMBENT_LOCK_HELD_BUDGET_MS,
+  lockHeldPollMs = INCUMBENT_LOCK_HELD_POLL_MS,
+  log = () => {},
+}) {
+  // One socket lookup. When it names the incumbent, use it. There is no retry
+  // loop: the lock probe below resolves BOTH the transient drain gap (a gateway
+  // mid-exit) and the socket-shed case (socket released, lock still held), so a
+  // socket retry would only delay recovery without closing any gap the probe
+  // leaves.
+  const pids = await snapshot();
+  if (!blocksRespawn(pids)) {
+    return { verdict: "captured", pids, via: "snapshot" };
+  }
+  // The listener snapshot named no one. A draining gateway that has shed its
+  // socket but still holds the lock cannot be named by a socket probe at all,
+  // so ask the lock itself, which outlives the socket.
+  if (lockHolderProbe) {
+    log(
+      "the listener snapshot named no incumbent "
+      + "— asking the gateway lock directly (it outlives the socket)",
+    );
+    const lockDeadline = Date.now() + lockHeldBudgetMs;
+    for (;;) {
+      const lock = await lockHolderProbe();
+      if (lock.verdict === "captured") {
+        // The lock named a live pid — wait for THAT process to exit.
+        return { verdict: "captured", pids: [lock.pid], via: "lock" };
+      }
+      if (lock.verdict === "released") {
+        // The lock is released: the incumbent has fully exited, spawn now.
+        return { verdict: "released", pids: null, via: "lock" };
+      }
+      if (lock.verdict === "held") {
+        // A live gateway holds the lock but cannot be named (Windows mandatory
+        // lock hides the pid). We cannot wait on a pid, but we CAN wait for the
+        // lock to be released — the authoritative "safe to spawn" signal — on a
+        // bounded budget. Past the budget this pass reads as "unverified" and
+        // the caller's backoff tries again later.
+        if (Date.now() >= lockDeadline) {
+          log(
+            `the gateway lock is still held after waiting ${lockHeldBudgetMs}ms `
+            + "and its owner stayed unnameable — ending this pass unverified",
+          );
+          return { verdict: "unverified", pids: null, via: "lock" };
+        }
+        log(
+          "the gateway lock is held but its owner is unnameable (a draining gateway) "
+          + `— waiting ${lockHeldPollMs}ms for it to release before spawning`,
+        );
+        await sleep(lockHeldPollMs);
+        continue;
+      }
+      if (lock.verdict === "refused") {
+        // The probe can never answer here (no bundled backend, or an
+        // indeterminate lock); waiting would only hide the error.
+        return { verdict: "refused", pids: null, via: "lock" };
+      }
+      // No answer this time: the caller's backoff tries again.
+      return { verdict: "unverified", pids: null, via: "lock" };
+    }
+  }
+  return { verdict: "unverified", pids: null, via: "snapshot" };
+}
+
+// After an "unverified" capture, recovery re-runs the whole capture on this
+// capped schedule instead of stopping: the last delay repeats for as long as
+// the incumbent stays unnameable. A gateway that drains past the held-lock
+// budget, or a lock probe that times out once (a slow interpreter start),
+// therefore heals on a later attempt instead of leaving an unattended host with
+// no gateway. A "refused" capture is not retried: it cannot heal on its own.
+const INCUMBENT_RECOVERY_BACKOFF_MS = Object.freeze([30_000, 60_000, 120_000]);
+
+// Splash status line shown while recovery backs off. It names no delay: the
+// line is sent once per wait and would otherwise read as a frozen countdown.
+// The splash's own close control (with its hint) is the way to stop waiting.
+const INCUMBENT_RETRY_STATUS = "Previous gateway still exiting — retrying automatically";
+
+/**
+ * Keep trying to name the incumbent until it can be named, the lock is
+ * released, the probe refuses, or the caller stops recovering.
+ *
+ * Runs `capture` (one {@link snapshotIncumbentForRespawn} pass). Any verdict
+ * other than `"unverified"` is returned as-is, so a `"refused"` pass reaches
+ * the caller's terminal error at once. On `"unverified"` (a transient miss) it
+ * waits the next delay of `backoffMs` (the last one repeats) and runs `capture`
+ * again — it never spawns blind, and it never gives up on a transient miss
+ * while the caller still wants recovery. `cancelled()` is checked before every
+ * attempt and after every wait; once it is true the result is
+ * `{ verdict: "cancelled" }` so the caller can stop quietly (window closed, app
+ * quitting).
+ *
+ * @param {object} o
+ * @param {() => Promise<{verdict:string, pids:number[]|null, via:string}>} o.capture
+ * @param {(ms:number) => Promise<void>} o.sleep
+ * @param {() => boolean} [o.cancelled]
+ * @param {(delayMs:number, attempt:number) => void} [o.onWaiting]  e.g. update the status line
+ * @param {readonly number[]} [o.backoffMs]
+ * @param {(message:string) => void} [o.log]
+ * @returns {Promise<{verdict:"captured"|"released"|"refused"|"cancelled", pids:number[]|null, via?:string, attempts:number}>}
+ */
+async function recoverIncumbentWithBackoff({
+  capture,
+  sleep,
+  cancelled = () => false,
+  onWaiting = () => {},
+  backoffMs = INCUMBENT_RECOVERY_BACKOFF_MS,
+  log = () => {},
+}) {
+  for (let attempt = 1; ; attempt += 1) {
+    if (cancelled()) return { verdict: "cancelled", pids: null, attempts: attempt - 1 };
+    const result = await capture();
+    if (result.verdict !== "unverified") return { ...result, attempts: attempt };
+    if (cancelled()) return { verdict: "cancelled", pids: null, attempts: attempt };
+    const delayMs = backoffMs[Math.min(attempt - 1, backoffMs.length - 1)];
+    log(
+      `attempt ${attempt}: the incumbent is still unnameable and the lock not released `
+      + `— trying again in ${delayMs}ms rather than spawning blind or giving up`,
+    );
+    onWaiting(delayMs, attempt);
+    await sleep(delayMs);
+  }
+}
+
 /**
  * Build the terminal recovery dialog without loading Electron.
  *
@@ -357,7 +552,26 @@ function isStaleBundleSignal({ exitCode = null, spawnErrorCode = "" }) {
   return exitCode === STALE_ASSET_EXIT_CODE || spawnErrorCode === "ENOENT";
 }
 
+// Resolve how to invoke a `kirocrew` SUBCOMMAND through execFile/spawn. Both
+// the gateway spawn and the lock-holder probe go through here, so the Windows
+// unwrap has one spelling: Node's shell-free execFile/spawn refuses a
+// `.cmd`/`.bat` (spawn EINVAL), so a bundled `bin\kirocrew.cmd` is replaced by
+// the bundled `python.exe` one directory up, run with `-s -P -m kiro_crew`
+// (`-s`/`-P` keep the user site and the spawn cwd off sys.path, exactly as the
+// shim does). Any other bin (a POSIX console script, a dev entry point) is
+// called as-is. Pure: `pathMod` defaults to the host's `path`.
+function gatewayCliInvocation(bin, subArgs, pathMod = path) {
+  if (bin.endsWith("kirocrew.cmd")) {
+    return {
+      bin: pathMod.resolve(pathMod.dirname(bin), "..", "python.exe"),
+      args: ["-s", "-P", "-m", "kiro_crew", ...subArgs],
+    };
+  }
+  return { bin, args: subArgs };
+}
+
 module.exports = {
+  gatewayCliInvocation,
   chooseRecoveryStrategy,
   classifyAdoptedGateway,
   revealWindowForConnect,
@@ -369,6 +583,10 @@ module.exports = {
   waitForProcessExit,
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
+  snapshotIncumbentForRespawn,
+  recoverIncumbentWithBackoff,
+  INCUMBENT_RECOVERY_BACKOFF_MS,
+  INCUMBENT_RETRY_STATUS,
   unrecoverableGatewayDialog,
   SERVICE_REBIND_GRACE_MS,
   INCUMBENT_EXIT_GRACE_MS,

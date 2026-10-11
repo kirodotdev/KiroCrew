@@ -124,6 +124,90 @@ describe("gateway supervisor wiring (source pins)", () => {
     assertNoReveal(fnBody("reconnectOrRespawnAdoptedGateway"), "reconnectOrRespawnAdoptedGateway");
   });
 
+  // Liveness recovery must resolve the incumbent from a SOCKET-INDEPENDENT
+  // source: a draining gateway releases its socket while still holding
+  // gateway.lock, so the socket snapshot can never name it. One snapshot, then
+  // the CLI's lock-holder probe; while the incumbent stays unnameable the whole
+  // capture is retried on a capped backoff instead of ending on the terminal
+  // dialog.
+  it("reconnectOrRespawnAdoptedGateway keeps recovering while the incumbent is unnameable", () => {
+    const body = fnBody("reconnectOrRespawnAdoptedGateway");
+    assert.match(
+      body,
+      /recoverIncumbentWithBackoff\(\{\s*capture: \(\) => snapshotIncumbentForRespawn\(/,
+      "the incumbent capture must run inside the backoff loop",
+    );
+    assert.match(
+      body,
+      /lockHolderProbe:\s*\(\)\s*=>\s*probeLockHolderPid\(\)/,
+      "liveness recovery must fall back to the socket-independent lock-holder probe",
+    );
+    assert.doesNotMatch(
+      body,
+      /verdict === "unverified"[\s\S]*?showUnrecoverableGatewayError\(window, PORT, \{ probeFailed: true \}\)/,
+      "an unnameable incumbent must not end liveness recovery on the terminal dialog",
+    );
+    // A probe that refuses cannot heal by waiting, so it ends on the
+    // probe-failed dialog rather than on the retry status line.
+    assert.match(
+      body,
+      /if \(capture\.verdict === "refused"\) \{[\s\S]*?return showUnrecoverableGatewayError\(window, PORT, \{ probeFailed: true \}\);/,
+      "a refused lock probe must end liveness recovery on the probe-failed dialog",
+    );
+    // A captured PID still drives waitForIncumbentExit so the lock is released
+    // before spawning; a "released" lock means nothing to wait on.
+    assert.match(
+      body,
+      /const incumbentPids = capture\.verdict === "released" \? null : capture\.pids[\s\S]*?waitForIncumbentExit\(incumbentPids/,
+      "the resolved PID must drive waitForIncumbentExit so the lock is released before spawning",
+    );
+  });
+
+  // The probe itself must reach the backend's maintained lock_holder oracle
+  // through the CLI, not reimplement lock reading in JS.
+  it("probeLockHolderPid invokes the kirocrew gateway-pid CLI probe", () => {
+    const body = fnBody("probeLockHolderPid");
+    assert.match(
+      body,
+      /gatewayCliInvocation\(bin,\s*\["gateway-pid"\],\s*path\)/,
+      "the lock-holder probe must invoke `kirocrew gateway-pid` through the Windows-safe helper",
+    );
+    assert.match(
+      body,
+      /execFile\(probeBin,\s*probeArgs/,
+      "the probe must execFile the resolved (bin, args) so a bundled kirocrew.cmd is unwrapped to python.exe",
+    );
+    assert.match(body, /payload\.holder === "nobody"[\s\S]*?verdict: "released"/, "holder=nobody maps to the lock-released verdict");
+    assert.match(body, /payload\.holder === "process"[\s\S]*?verdict: "captured"/, "holder=process maps to the captured verdict");
+    assert.match(body, /payload\.holder === "held"[\s\S]*?verdict: "held"/, "holder=held maps to the held verdict (the Windows mandatory-lock case)");
+    assert.match(
+      body,
+      /if \(IS_WIN && app\.isPackaged && isPathFallback\(bin\)\) \{[\s\S]*?verdict: "refused"[\s\S]*?execFile\(probeBin/,
+      "a packaged Windows app must refuse to run a PATH-fallback kirocrew before execFile, as spawnGateway does, and say so as refused",
+    );
+  });
+
+  // The adopt-time drain path has the same race and the same backoff, and the
+  // same terminal exit for a refused probe.
+  it("the drain path keeps recovering while the incumbent is unnameable", () => {
+    assert.match(
+      SUPERVISOR_JS,
+      /drainCapture = await recoverIncumbentWithBackoff\(\{\s*capture: \(\) => snapshotIncumbentForRespawn\([\s\S]*?lockHolderProbe:\s*\(\)\s*=>\s*probeLockHolderPid\(\)[\s\S]*?cancelled: \(\) => quitting\(\) \|\| Boolean\(mainWindow\(\)\?\.isDestroyed\(\)\)/,
+      "the drain branch must retry the capture on the backoff, cancelled by quitting or a destroyed window",
+    );
+    assert.doesNotMatch(SUPERVISOR_JS, /drainCapture\.verdict === "unverified"/, "the drain path must not refuse on an unnameable incumbent");
+    assert.match(
+      SUPERVISOR_JS,
+      /if \(drainCapture\.verdict === "refused"\) \{[\s\S]*?return "probe-failed";/,
+      "a refused lock probe must end the drain on the probe-failed outcome",
+    );
+  });
+
+  it("both backoff loops show the shared retry status on the splash", () => {
+    const uses = SUPERVISOR_JS.match(/onWaiting: \(\) => sendStatus\(INCUMBENT_RETRY_STATUS\)/g) || [];
+    assert.equal(uses.length, 2, "liveness and drain must both report the wait on the splash");
+  });
+
   it("showLoadingThenConnect routes its initial reveal through the helper", () => {
     const body = fnBody("showLoadingThenConnect");
     assert.match(

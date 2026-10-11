@@ -41,6 +41,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("status", "Show runtime stats"),
             ("restart", "Restart a running gateway (service-aware)"),
             ("stop", "Stop a running gateway"),
+            ("gateway-pid", "Print the PID holding this home's gateway lock (JSON)"),
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
             ("logout", "Revoke all active dashboard sessions"),

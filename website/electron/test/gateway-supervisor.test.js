@@ -2229,6 +2229,109 @@ test("linux refuses the respawn too, where unverifiedIncumbent is false by desig
   assert.deepStrictEqual(quits, []);
 });
 
+// A same-version gateway that answers /api/status but reports shutting-down on
+// /api/ready is waited out, never adopted. On Windows a socket lookup that names
+// no PID hands the decision to the `kirocrew gateway-pid` lock probe. The probe
+// answer is scripted per test; `quits` records a backoff cancellation, because
+// the harness reports the app quitting as soon as the probe has answered once
+// (so a transient miss stops at the first backoff check instead of sleeping).
+function drainingGatewayHarness({ isPackaged = false, gatewayPid }) {
+  const state = { held: true, failNetstatCall: 2, gatewayPidCalls: 0 };
+  const ownerExecFile = windowsOwnerExecFile(state);
+  const quits = [];
+  let built = null;
+  built = harness({
+    app: { getVersion: () => PROD_VERSION, isPackaged },
+    httpMod: {
+      get(url, _options, callback) {
+        const request = new EventEmitter();
+        request.destroy = () => {};
+        queueMicrotask(() => {
+          const ready = String(url).includes("/api/ready");
+          const response = new EventEmitter();
+          response.statusCode = ready ? 503 : 200;
+          response.resume = () => {};
+          callback(response);
+          response.emit("data", ready
+            ? JSON.stringify({ ready: false, shutting_down: true })
+            : JSON.stringify({ ok: true, app: "kirocrew", version: PROD_VERSION }));
+          response.emit("end");
+        });
+        return request;
+      },
+    },
+    execFileFn: (file, args, options, callback) => {
+      if (Array.isArray(args) && args.includes("gateway-pid")) {
+        state.gatewayPidCalls += 1;
+        gatewayPid(callback);
+        return;
+      }
+      ownerExecFile(file, args, options, callback);
+    },
+    isQuitting: () => Boolean(built) && built.logs.some((line) => line.includes("lock probe") || line.includes("gateway-pid")),
+    requestQuit: () => quits.push("quit"),
+    processRef: {
+      platform: "win32",
+      arch: "x64",
+      env: { KIROCREW_HOME: "/virtual/kirocrew-home" },
+      resourcesPath: "/virtual/resources",
+      kill() { /* the incumbent stays alive */ },
+    },
+  });
+  return { ...built, state, quits };
+}
+
+test("win32 drain: an indeterminate lock ends the launch on the probe-failed error, without backing off", async () => {
+  const { supervisor, logs, spawnCalls, state, quits } = drainingGatewayHarness({
+    gatewayPid: (callback) => {
+      const error = new Error("Command failed: kirocrew gateway-pid");
+      error.code = 2;
+      callback(error, `${JSON.stringify({ holder: "indeterminate", reason: "lock file unreadable" })}\n`, "");
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0, "nothing is spawned over a lock that could not be read");
+  assert.strictEqual(state.gatewayPidCalls, 1, "the refusal is not retried");
+  assert.ok(logs.some((line) => line.includes("lock probe is indeterminate (lock file unreadable)")));
+  assert.ok(logs.some((line) => line.includes("drain: could not verify the incumbent on :5476")));
+  assert.ok(!logs.some((line) => line.includes("trying again in")), "no backoff for a refusal");
+  assert.deepStrictEqual(quits, [], "the launch ends on its error, not on a cancelled backoff");
+});
+
+test("win32 drain: a packaged app with no bundled backend ends on the probe-failed error, without backing off", async () => {
+  const { supervisor, logs, spawnCalls, state, quits } = drainingGatewayHarness({
+    isPackaged: true,
+    gatewayPid: () => { throw new Error("a packaged app must not run kirocrew from PATH"); },
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0);
+  assert.strictEqual(state.gatewayPidCalls, 0, "the PATH fallback is refused before anything runs");
+  assert.ok(logs.some((line) => line.includes("lock probe REFUSED: no bundled backend")));
+  assert.ok(logs.some((line) => line.includes("drain: could not verify the incumbent on :5476")));
+  assert.ok(!logs.some((line) => line.includes("trying again in")), "no backoff for a refusal");
+  assert.deepStrictEqual(quits, []);
+});
+
+test("win32 drain: a lock probe that times out is backed off, not ended on the error", async () => {
+  const { supervisor, logs, spawnCalls, state, quits } = drainingGatewayHarness({
+    gatewayPid: (callback) => {
+      const error = new Error("Command failed: kirocrew gateway-pid");
+      error.killed = true;
+      error.signal = "SIGTERM";
+      callback(error, "", "");
+    },
+  });
+
+  assert.strictEqual(await supervisor.start(), false);
+  assert.strictEqual(spawnCalls.length, 0, "a transient miss never spawns blind");
+  assert.strictEqual(state.gatewayPidCalls, 1);
+  assert.ok(logs.some((line) => line.includes("gave no usable answer")));
+  assert.ok(!logs.some((line) => line.includes("could not verify the incumbent")), "a timeout is not a refusal");
+  assert.deepStrictEqual(quits, ["quit"], "the miss reached the backoff, which the quitting app cancelled");
+});
+
 // ---------------------------------------------------------------------------
 // "Installation still finishing" dialog: auto-retry while the bundle lands.
 // ---------------------------------------------------------------------------

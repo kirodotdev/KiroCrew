@@ -54,6 +54,10 @@ const {
   classifyAdoptedGateway,
   revealWindowForConnect,
   waitForServiceRebind,
+  snapshotIncumbentForRespawn,
+  recoverIncumbentWithBackoff,
+  INCUMBENT_RETRY_STATUS,
+  gatewayCliInvocation,
   unrecoverableGatewayDialog,
   shouldReresolveBackend,
   isStaleBundleSignal,
@@ -889,6 +893,85 @@ function createGatewaySupervisor({
   }
 
   /**
+   * Ask the CLI who holds this home's `gateway.lock`, SOCKET-INDEPENDENTLY.
+   *
+   * `kirocrew gateway-pid` resolves the incumbent through the backend's
+   * `lock_holder` oracle — the same one `stop --expect-pid`/`restart` use — so
+   * it names a draining gateway that has already released its LISTEN socket but
+   * still holds the lock. That is the identity `snapshotGatewayPortPids` (lsof /
+   * netstat, LISTEN owners only) cannot see: when the socket snapshot names
+   * nothing, recovery would otherwise refuse to respawn and leave the desktop
+   * with no gateway. Cross-platform, so it answers on a Windows host too, where
+   * the POSIX lock-file check does not run.
+   *
+   * The command prints one line of JSON and exits 0 for a resolvable lock
+   * (holder=process, holder=nobody, or holder=held) or 2 for a truly
+   * indeterminate one (holder=indeterminate) — exit 2 surfaces as an execFile
+   * error, but the JSON is still on stdout, so the body is parsed regardless of
+   * exit code. holder=held means the lock is POSITIVELY held but its owner
+   * cannot be named (a draining gateway whose pid is unreadable under a Windows
+   * mandatory lock): a gateway is alive, so the caller waits for the lock to be
+   * released rather than giving up.
+   *
+   * Two outcomes differ by whether time can change them. No parseable answer
+   * (the probe timed out, or died before printing) is `unverified`: transient,
+   * so the caller backs off and asks again, never spawning blind. An answer
+   * that names no known holder (holder=indeterminate), and a packaged app's
+   * refusal to run a PATH-fallback `kirocrew`, are `refused`: the next attempt
+   * gets the same answer, so the caller ends on its terminal error.
+   *
+   * @returns {Promise<{verdict:"captured"|"released"|"held"|"unverified"|"refused", pid:number|null}>}
+   */
+  function probeLockHolderPid() {
+    const { KIROCREW_PORT: _ignored, ...cleanEnv } = processObj.env;
+    const bin = resolveGatewayBin();
+    // The same refusal spawnGateway applies: a packaged Windows app with no
+    // backend at a probed path does not run whatever `kirocrew` PATH names.
+    // Refused, not a guess: every later attempt resolves the same PATH entry.
+    if (IS_WIN && app.isPackaged && isPathFallback(bin)) {
+      glog(`liveness: lock probe REFUSED: no bundled backend — a packaged app does not run ${bin} from PATH`);
+      return Promise.resolve({ verdict: "refused", pid: null });
+    }
+    const bundled = bin.includes("backend-dist");
+    const { bin: probeBin, args: probeArgs } = gatewayCliInvocation(bin, ["gateway-pid"], path);
+    return new Promise((resolve) => {
+      execFile(probeBin, probeArgs, {
+        timeout: STUCK_GATEWAY_STOP_TIMEOUT_MS,
+        windowsHide: true,
+        env: buildGatewayEnvironment({ ...cleanEnv, KIROCREW_HOME }, { bundled, platform: processObj.platform }),
+      }, (error, stdout) => {
+        let payload = null;
+        try { payload = JSON.parse(String(stdout || "").trim()); }
+        catch { payload = null; }
+        if (!payload || typeof payload !== "object") {
+          glog(`liveness: \`kirocrew gateway-pid\` gave no usable answer${error ? ` (${error.message})` : ""} — cannot name the incumbent via the lock this time`);
+          resolve({ verdict: "unverified", pid: null });
+          return;
+        }
+        if (payload.holder === "nobody") {
+          glog(`liveness: lock probe says :${PORT}'s gateway.lock is free — the incumbent has exited`);
+          resolve({ verdict: "released", pid: null });
+          return;
+        }
+        if (payload.holder === "process" && Number.isInteger(payload.pid) && payload.pid > 0) {
+          glog(`liveness: lock probe named the incumbent (pid ${payload.pid}, source ${payload.source || "?"}) — waiting for it to exit`);
+          resolve({ verdict: "captured", pid: payload.pid });
+          return;
+        }
+        if (payload.holder === "held") {
+          // A live gateway holds the lock but cannot be named (Windows mandatory
+          // lock hides the pid). Wait for the lock to be released, not forever.
+          glog(`liveness: lock probe says :${PORT}'s gateway.lock is held but its owner is unnameable (likely a draining gateway) — waiting for it to release`);
+          resolve({ verdict: "held", pid: null });
+          return;
+        }
+        glog(`liveness: lock probe is indeterminate (${payload.reason || payload.holder || "unnamed"}) — refusing an automatic respawn that could race gateway.lock, and surfacing the error`);
+        resolve({ verdict: "refused", pid: null });
+      });
+    });
+  }
+
+  /**
    * Launch found the port held but no health answer. Today's answer is to
    * spawn anyway. That stays the answer for every holder except one: a local
    * Kiro Crew gateway for this app's own data folder that keeps failing its
@@ -1042,11 +1125,36 @@ function createGatewaySupervisor({
       if (readiness === "shutting-down") {
         glog(`gateway on :${PORT} answers but /api/ready reports shutting-down — refusing to adopt a draining gateway`);
         sendStatus("Waiting for the previous gateway to exit…");
-        const drainingPids = await snapshotGatewayPortPids(PORT);
-        if (unverifiedIncumbent(drainingPids)) {
-          glog(`drain: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+        // Same drain race as the liveness path: a socket lookup can name no PID
+        // while the gateway sheds its socket, and a gateway that has released
+        // its socket but still holds the lock is never named by a socket probe
+        // at all. Take one lookup, then fall back to the CLI's socket-
+        // independent lock-holder probe instead of refusing on the miss.
+        // An incumbent that stays unnameable is retried on the same capped
+        // backoff as the liveness path, never spawned over blind; a probe that
+        // refuses ends the launch on the probe-failed error instead.
+        const drainCapture = await recoverIncumbentWithBackoff({
+          capture: () => snapshotIncumbentForRespawn({
+            snapshot: () => snapshotGatewayPortPids(PORT),
+            blocksRespawn: (pids) => unverifiedIncumbent(pids),
+            sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+            lockHolderProbe: () => probeLockHolderPid(),
+            log: (message) => glog(`drain: ${message}`),
+          }),
+          sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+          cancelled: () => quitting() || Boolean(mainWindow()?.isDestroyed()),
+          onWaiting: () => sendStatus(INCUMBENT_RETRY_STATUS),
+          log: (message) => glog(`drain: ${message}`),
+        });
+        if (drainCapture.verdict === "cancelled") return "abort";
+        if (drainCapture.verdict === "refused") {
+          glog(`drain: could not verify the incumbent on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
           return "probe-failed";
         }
+        sendStatus("Waiting for the previous gateway to exit…");
+        // "released" = the lock is released (incumbent gone), nothing to outwait;
+        // "captured" names the pid to wait on before spawning.
+        const drainingPids = drainCapture.verdict === "released" ? null : drainCapture.pids;
         if (await waitForPortFree()) {
           if (localOwner === "service") {
             // A service may be between release and manager rebind. Orphans also
@@ -1183,6 +1291,10 @@ function createGatewaySupervisor({
           resolve(false);
           return;
         }
+        // Two producers: the drain path when the lock probe refuses, and the
+        // manual takeover (runtime/gateway/family-takeover.js) when it cannot
+        // capture the incumbent. Falling through would spawn into a lock that
+        // may still be held.
         if (outcome === "probe-failed") {
           gatewayStartFailure = {
             error: `could not verify the previous gateway process on port ${PORT}`,
@@ -1321,18 +1433,17 @@ function createGatewaySupervisor({
     glog(SPAWN_MARKER);
     gatewayStartFailure = null;
 
-    let spawnBin = bin;
-    let spawnArgs = ["gateway", "--no-open", "--port", String(PORT)];
-    // Node refuses .cmd/.bat without shell:true. Use the relocatable bundled
-    // Python directly instead of opening the command-injection-prone shell path.
-    // `-P` mirrors the shim this replaces (bin/kirocrew.cmd): it keeps the spawn
-    // cwd off sys.path, so a stdlib-named directory there cannot shadow the
-    // interpreter's own standard library.
+    // Node refuses .cmd/.bat without shell:true, so gatewayCliInvocation runs the
+    // relocatable bundled Python directly instead of opening the
+    // command-injection-prone shell path. Its `-P` mirrors the launcher shim it
+    // replaces: it keeps the spawn cwd off sys.path, so a stdlib-named
+    // directory there cannot shadow the interpreter's own standard library.
     // The refusal above already required python.exe beside a .cmd shim.
-    if (bin.endsWith("kirocrew.cmd")) {
-      spawnBin = path.resolve(path.dirname(bin), "..", "python.exe");
-      spawnArgs = ["-s", "-P", "-m", "kiro_crew", ...spawnArgs];
-    }
+    const { bin: spawnBin, args: spawnArgs } = gatewayCliInvocation(
+      bin,
+      ["gateway", "--no-open", "--port", String(PORT)],
+      path,
+    );
 
     const child = spawn(spawnBin, spawnArgs, {
       stdio: ["ignore", childOut, childOut],
@@ -2055,11 +2166,42 @@ function createGatewaySupervisor({
     if (!window || window.isDestroyed() || quitting()) return;
     glog(`liveness: adopted local gateway did not recover within ${ADOPTED_RECOVERY_WAIT_MS}ms — waiting for :${PORT} to clear, then spawning our own backend`);
     sendStatus("Waiting for the previous gateway to exit…");
-    const incumbentPids = await snapshotGatewayPortPids(PORT);
-    if (unverifiedIncumbent(incumbentPids)) {
-      glog(`liveness: could not capture the incumbent PID on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
+    // The incumbent may be draining: a socket lookup can name no PID while the
+    // gateway sheds its socket, and once it has released the socket but still
+    // holds gateway.lock a socket probe can never name it. Take one lookup;
+    // when it names no one, fall back to the CLI's lock-holder probe, which
+    // reads the incumbent from the lock file and outlives the socket. Then wait
+    // for that process to exit (releasing the lock) before spawning. When the
+    // incumbent stays unnameable for a transient reason (lock held past the
+    // wait, or no answer from the probe), recovery never spawns blind and
+    // never stops: it tries again on a capped backoff behind the reconnect
+    // splash, whose close control and the tray's Quit stay available
+    // throughout. When the probe refuses (no bundled backend, or an
+    // indeterminate lock), time cannot fix it, so recovery ends on the
+    // probe-failed dialog, which tells the user what to do.
+    const capture = await recoverIncumbentWithBackoff({
+      capture: () => snapshotIncumbentForRespawn({
+        snapshot: () => snapshotGatewayPortPids(PORT),
+        blocksRespawn: (pids) => unverifiedIncumbent(pids),
+        sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+        lockHolderProbe: () => probeLockHolderPid(),
+        log: (message) => glog(`liveness: ${message}`),
+      }),
+      sleep: (ms) => new Promise((resolve) => setTimeoutFn(resolve, ms)),
+      cancelled: () => !window || window.isDestroyed() || quitting(),
+      onWaiting: () => sendStatus(INCUMBENT_RETRY_STATUS),
+      log: (message) => glog(`liveness: ${message}`),
+    });
+    if (capture.verdict === "cancelled" || !window || window.isDestroyed() || quitting()) return;
+    if (capture.verdict === "refused") {
+      glog(`liveness: could not verify the incumbent on :${PORT} — refusing an automatic respawn that could race gateway.lock`);
       return showUnrecoverableGatewayError(window, PORT, { probeFailed: true });
     }
+    sendStatus("Waiting for the previous gateway to exit…");
+    // "released" means the lock itself is released (incumbent fully exited), so
+    // there is no pid to wait on; "captured" names the pid to outwait. Both
+    // then confirm the socket is free before spawning.
+    const incumbentPids = capture.verdict === "released" ? null : capture.pids;
     if (!(await waitForPortFree())) {
       glog(`liveness: :${PORT} still held by a process we did not spawn — surfacing port-held instead of waiting forever`);
       return showUnrecoverableGatewayError(window, PORT, "held");

@@ -10,10 +10,15 @@ const {
   waitForProcessExit,
   snapshotPortPids,
   incumbentSnapshotBlocksRespawn,
+  snapshotIncumbentForRespawn,
+  recoverIncumbentWithBackoff,
+  INCUMBENT_RECOVERY_BACKOFF_MS,
+  INCUMBENT_RETRY_STATUS,
   unrecoverableGatewayDialog,
   shouldReresolveBackend,
   isStaleBundleSignal,
   STALE_ASSET_EXIT_CODE,
+  gatewayCliInvocation,
 } = require("../gateway-recovery");
 
 describe("chooseRecoveryStrategy", () => {
@@ -299,6 +304,380 @@ describe("incumbentSnapshotBlocksRespawn", () => {
   });
 });
 
+// A transient PID-capture failure during an adopted
+// gateway's drain must NOT terminate recovery for good. The helper takes ONE
+// socket lookup; when it names no PID (a draining gateway that has shed its
+// socket but still holds gateway.lock), it falls back to the socket-independent
+// lock-holder probe, which names the incumbent (so the caller can wait for it
+// to exit and release gateway.lock), reports the lock already released, or waits
+// for a held-but-unnameable lock to release. "Port free" is NOT a success
+// signal — a draining gateway frees its socket while still holding the lock.
+describe("snapshotIncumbentForRespawn", () => {
+  // A controllable clock + instant sleep so the held-wait budget is tested
+  // without real time.
+  const clockHarness = () => {
+    let now = 0;
+    const realDateNow = Date.now;
+    Date.now = () => now;
+    const slept = [];
+    const sleep = async (ms) => { slept.push(ms); now += ms; };
+    return {
+      sleep,
+      slept,
+      advance: (ms) => { now += ms; },
+      restore: () => { Date.now = realDateNow; },
+    };
+  };
+
+  // On Windows a null snapshot is unusable; a named PID is usable.
+  const blocksRespawn = (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: true });
+
+  it("uses the socket lookup directly when it names the PID — no lock probe, no sleep", async () => {
+    const h = clockHarness();
+    try {
+      let probed = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => [4242],
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => { probed += 1; return { verdict: "captured", pid: 1 }; },
+      });
+      assert.deepEqual(result, { verdict: "captured", pids: [4242], via: "snapshot" });
+      assert.deepEqual(h.slept, [], "no sleep when the socket lookup works");
+      assert.equal(probed, 0, "the lock probe is a fallback, not consulted when the socket answers");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("takes exactly ONE socket lookup, then goes straight to the lock (no retry loop)", async () => {
+    const h = clockHarness();
+    try {
+      let snaps = 0;
+      let probed = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => { snaps += 1; return null; },
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => { probed += 1; return { verdict: "captured", pid: 9191 }; },
+      });
+      assert.equal(snaps, 1, "the socket is looked up once, not retried");
+      assert.equal(probed, 1, "the lock probe is consulted immediately after the single lookup");
+      assert.equal(result.verdict, "captured");
+      assert.equal(result.via, "lock");
+      assert.deepEqual(result.pids, [9191]);
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("without a lock probe, a socket lookup that names no one is unverified", async () => {
+    const h = clockHarness();
+    try {
+      let snaps = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => { snaps += 1; return null; },
+        blocksRespawn,
+        sleep: h.sleep,
+      });
+      assert.equal(result.verdict, "unverified");
+      assert.equal(result.pids, null);
+      assert.equal(snaps, 1, "one lookup, no retry");
+      assert.deepEqual(h.slept, [], "nothing to wait on without a lock probe");
+    } finally {
+      h.restore();
+    }
+  });
+
+  // The lock probe, and with it the held wait, runs only where a lookup that
+  // names no one blocks a respawn: Windows. On a POSIX host the replacement's
+  // own lock refusal arbitrates instead.
+  it("never consults the lock probe on a POSIX host, where an empty lookup does not block", async () => {
+    let probed = 0;
+    const result = await snapshotIncumbentForRespawn({
+      snapshot: async () => null,
+      blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: false }),
+      sleep: async () => { throw new Error("a POSIX host waits on no held lock"); },
+      lockHolderProbe: async () => { probed += 1; return { verdict: "held", pid: null }; },
+    });
+    assert.deepEqual(result, { verdict: "captured", pids: null, via: "snapshot" });
+    assert.equal(probed, 0, "the lock probe is not consulted off Windows");
+  });
+
+  // The hard case: the draining gateway released its LISTEN socket but still
+  // holds gateway.lock, so the socket lookup NEVER names it. The lock-holder
+  // probe (socket-independent) is what actually fixes the bug.
+  it("falls back to the lock-holder probe when the socket lookup names no incumbent", async () => {
+    const h = clockHarness();
+    try {
+      let probed = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null, // socket released
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => { probed += 1; return { verdict: "captured", pid: 9191 }; },
+      });
+      assert.equal(result.verdict, "captured");
+      assert.equal(result.via, "lock", "the identity came from the lock, not the socket");
+      assert.deepEqual(result.pids, [9191], "the lock-named pid is returned so the caller can outwait it");
+      assert.equal(probed, 1, "the lock probe is consulted exactly once");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("reports 'released' when the lock probe says the lock is released — safe to spawn now", async () => {
+    const h = clockHarness();
+    try {
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => ({ verdict: "released", pid: null }),
+      });
+      assert.equal(result.verdict, "released");
+      assert.equal(result.via, "lock");
+      assert.equal(result.pids, null, "lock-released means nothing to wait on");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("stays 'unverified' when the lock probe gives no answer — the caller retries later", async () => {
+    const h = clockHarness();
+    try {
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => ({ verdict: "unverified", pid: null }),
+      });
+      assert.equal(result.verdict, "unverified");
+      assert.equal(result.via, "lock");
+      assert.equal(result.pids, null);
+    } finally {
+      h.restore();
+    }
+  });
+
+  // No bundled backend, or an indeterminate lock: the next attempt gets the
+  // same answer, so the pass hands back "refused" at once and waits on nothing.
+  it("reports 'refused' at once when the lock probe refuses — nothing to wait for", async () => {
+    const h = clockHarness();
+    try {
+      let probes = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHolderProbe: async () => { probes += 1; return { verdict: "refused", pid: null }; },
+      });
+      assert.equal(result.verdict, "refused");
+      assert.equal(result.via, "lock");
+      assert.equal(result.pids, null);
+      assert.equal(probes, 1, "a refusal is not polled");
+      assert.deepEqual(h.slept, [], "a refusal waits on nothing");
+    } finally {
+      h.restore();
+    }
+  });
+
+  // The Windows reality: the draining gateway holds the lock but its pid
+  // is unreadable under a mandatory lock, so the probe can only say "held". The
+  // helper must WAIT for the lock to release (poll until released), not give up —
+  // this is what actually fixes the outage on the reported host.
+  it("waits on a held-but-unnameable lock and spawns once it is released (the Windows path)", async () => {
+    const h = clockHarness();
+    try {
+      // held, held, then released: the draining gateway finishes teardown.
+      const answers = [
+        { verdict: "held", pid: null },
+        { verdict: "held", pid: null },
+        { verdict: "released", pid: null },
+      ];
+      let i = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHeldBudgetMs: 60_000,
+        lockHeldPollMs: 2_000,
+        lockHolderProbe: async () => answers[i++],
+      });
+      assert.equal(result.verdict, "released", "once the lock is released it is safe to spawn");
+      assert.equal(result.via, "lock");
+      assert.equal(i, 3, "polled the lock until it reported released");
+    } finally {
+      h.restore();
+    }
+  });
+
+  it("ends one pass unverified when a held lock never releases within the held budget", async () => {
+    const h = clockHarness();
+    try {
+      let probes = 0;
+      const result = await snapshotIncumbentForRespawn({
+        snapshot: async () => null,
+        blocksRespawn,
+        sleep: h.sleep,
+        lockHeldBudgetMs: 10_000,
+        lockHeldPollMs: 2_000,
+        lockHolderProbe: async () => { probes += 1; return { verdict: "held", pid: null }; },
+      });
+      assert.equal(result.verdict, "unverified", "a pass that outlasts the budget hands back to the caller's backoff");
+      assert.equal(result.via, "lock");
+      assert.ok(probes > 1, "polled the held lock across the budget before ending the pass");
+    } finally {
+      h.restore();
+    }
+  });
+});
+
+describe("recoverIncumbentWithBackoff", () => {
+  const recordingSleep = () => {
+    const slept = [];
+    return { slept, sleep: async (ms) => { slept.push(ms); } };
+  };
+
+  it("uses a capped 30s / 60s / 120s schedule that stays at 120s", () => {
+    assert.deepEqual([...INCUMBENT_RECOVERY_BACKOFF_MS], [30_000, 60_000, 120_000]);
+    assert.ok(Object.isFrozen(INCUMBENT_RECOVERY_BACKOFF_MS));
+  });
+
+  it("its splash status names no delay, so it never reads as a frozen countdown", () => {
+    assert.match(INCUMBENT_RETRY_STATUS, /retrying automatically/);
+    assert.doesNotMatch(INCUMBENT_RETRY_STATUS, /\d/);
+  });
+
+  it("returns the first pass as-is when the incumbent is named — no backoff", async () => {
+    const s = recordingSleep();
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => ({ verdict: "captured", pids: [4242], via: "snapshot" }),
+      sleep: s.sleep,
+    });
+    assert.deepEqual(result, { verdict: "captured", pids: [4242], via: "snapshot", attempts: 1 });
+    assert.deepEqual(s.slept, []);
+  });
+
+  // A gateway stuck holding the lock past every bounded wait must not end
+  // recovery: each pass runs the real held-lock wait, then the loop backs off
+  // and tries again, and the lock freeing later is what recovers it.
+  it("keeps retrying a lock stuck held past the budget, then recovers once the lock frees", async () => {
+    let now = 0;
+    const realDateNow = Date.now;
+    Date.now = () => now;
+    try {
+      const passSleeps = [];
+      const backoffSleeps = [];
+      let probes = 0;
+      const releaseAfterProbes = 40; // well past several held budgets
+      const waiting = [];
+      const result = await recoverIncumbentWithBackoff({
+        capture: () => snapshotIncumbentForRespawn({
+          snapshot: async () => null,
+          blocksRespawn: (pids) => incumbentSnapshotBlocksRespawn({ pids, isWindows: true }),
+          sleep: async (ms) => { passSleeps.push(ms); now += ms; },
+          lockHeldBudgetMs: 10_000,
+          lockHeldPollMs: 2_000,
+          lockHolderProbe: async () => {
+            probes += 1;
+            return probes >= releaseAfterProbes
+              ? { verdict: "released", pid: null }
+              : { verdict: "held", pid: null };
+          },
+        }),
+        sleep: async (ms) => { backoffSleeps.push(ms); now += ms; },
+        onWaiting: (delayMs, attempt) => waiting.push([delayMs, attempt]),
+      });
+      assert.equal(result.verdict, "released", "the freed lock recovers instead of a terminal stop");
+      assert.ok(result.attempts >= 5, `retried across several stuck passes (attempts=${result.attempts})`);
+      assert.deepEqual(
+        backoffSleeps,
+        [30_000, 60_000, 120_000, ...Array(result.attempts - 4).fill(120_000)],
+        "the backoff grows to 120s and stays there",
+      );
+      assert.deepEqual(waiting.map(([d]) => d), backoffSleeps, "the status line is told about every wait");
+      assert.ok(passSleeps.length > 0, "each pass still ran the bounded held-lock wait");
+    } finally {
+      Date.now = realDateNow;
+    }
+  });
+
+  it("keeps retrying a lock probe that gives no answer and recovers when it later names the holder", async () => {
+    const s = recordingSleep();
+    const answers = [
+      { verdict: "unverified", pids: null, via: "lock" },
+      { verdict: "unverified", pids: null, via: "lock" },
+      { verdict: "captured", pids: [9191], via: "lock" },
+    ];
+    let i = 0;
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => answers[i++],
+      sleep: s.sleep,
+    });
+    assert.deepEqual(result, { verdict: "captured", pids: [9191], via: "lock", attempts: 3 });
+    assert.deepEqual(s.slept, [30_000, 60_000]);
+  });
+
+  // A refusal cannot heal by waiting, so it must reach the caller's terminal
+  // error on the first pass instead of the "still exiting" status line.
+  it("returns a refused pass at once, with no backoff and no retry status", async () => {
+    const s = recordingSleep();
+    const waiting = [];
+    let captures = 0;
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => { captures += 1; return { verdict: "refused", pids: null, via: "lock" }; },
+      sleep: s.sleep,
+      onWaiting: (delayMs) => waiting.push(delayMs),
+    });
+    assert.deepEqual(result, { verdict: "refused", pids: null, via: "lock", attempts: 1 });
+    assert.equal(captures, 1);
+    assert.deepEqual(s.slept, []);
+    assert.deepEqual(waiting, [], "the retry status line is never shown for a refusal");
+  });
+
+  it("ends on a refusal that follows transient misses", async () => {
+    const s = recordingSleep();
+    const answers = [
+      { verdict: "unverified", pids: null, via: "lock" },
+      { verdict: "refused", pids: null, via: "lock" },
+    ];
+    let i = 0;
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => answers[i++],
+      sleep: s.sleep,
+    });
+    assert.equal(result.verdict, "refused");
+    assert.equal(result.attempts, 2);
+    assert.deepEqual(s.slept, [30_000], "only the transient miss was backed off");
+  });
+
+  it("stops quietly once the caller cancels (window closed or app quitting)", async () => {
+    const s = recordingSleep();
+    let captures = 0;
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => { captures += 1; return { verdict: "unverified", pids: null, via: "lock" }; },
+      sleep: s.sleep,
+      cancelled: () => s.slept.length >= 2,
+    });
+    assert.equal(result.verdict, "cancelled");
+    assert.equal(result.pids, null);
+    assert.equal(captures, 2, "no further capture after cancellation");
+    assert.deepEqual(s.slept, [30_000, 60_000]);
+  });
+
+  it("does not start a capture when already cancelled", async () => {
+    let captures = 0;
+    const result = await recoverIncumbentWithBackoff({
+      capture: async () => { captures += 1; return { verdict: "captured", pids: [1], via: "snapshot" }; },
+      sleep: async () => {},
+      cancelled: () => true,
+    });
+    assert.deepEqual(result, { verdict: "cancelled", pids: null, attempts: 0 });
+    assert.equal(captures, 0);
+  });
+});
+
 describe("shouldReresolveBackend", () => {
   const mac = { isMac: true, bundled: true };
 
@@ -473,5 +852,22 @@ describe("isStaleBundleSignal", () => {
       assert.equal(isStaleBundleSignal({ spawnErrorCode }), false, spawnErrorCode);
     }
     assert.equal(isStaleBundleSignal({}), false);
+  });
+});
+
+describe("gatewayCliInvocation", () => {
+  it("unwraps a Windows kirocrew.cmd to the bundled python.exe (win32 path rules)", () => {
+    const cmd = "C:\\App\\resources\\backend-dist\\kirocrew-backend\\bin\\kirocrew.cmd";
+    assert.deepEqual(gatewayCliInvocation(cmd, ["gateway-pid"], path.win32), {
+      bin: "C:\\App\\resources\\backend-dist\\kirocrew-backend\\python.exe",
+      args: ["-s", "-P", "-m", "kiro_crew", "gateway-pid"],
+    });
+  });
+
+  it("passes any other bin through unchanged", () => {
+    assert.deepEqual(gatewayCliInvocation("/opt/kc/bin/kirocrew", ["gateway-pid"]), {
+      bin: "/opt/kc/bin/kirocrew",
+      args: ["gateway-pid"],
+    });
   });
 });
