@@ -11014,7 +11014,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "실행 중인 턴을 리디렉션하는 중 — 아직 확인되지 않았습니다.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "적용되기 전에 턴이 종료되어 별도의 메시지로 실행됩니다.",
         "quote_message": "메시지 인용",
-        "more_actions": "추가 작업"
+        "more_actions": "추가 작업",
+        "edit_replaces_below": "보내면 아래 답변이 바뀝니다"
       },
       "workflowCompletionCard": {
         "hide_result": "결과 숨기기",
@@ -11407,10 +11408,6 @@
         "close": "크루 채팅 닫기",
         "load_failed": "{{name}}에서 이 세션을 불러오지 못했습니다.",
         "empty": "아직 메시지가 없습니다.",
-        "rewind": "여기로 되돌리기",
-        "interrupted": "턴이 중단됨",
-        "continue": "계속",
-        "regenerate": "다시 생성",
         "action_failed": "{{name}}이(가) 해당 작업을 거부했습니다. 다시 시도하거나 크루의 자체 대시보드를 여세요.",
         "offline": "{{name}}이(가) 연결되어 있지 않습니다. 보내려면 다시 연결하세요.",
         "rewinding": "되돌리는 중: 보내면 이 메시지부터의 대화가 대체됩니다.",

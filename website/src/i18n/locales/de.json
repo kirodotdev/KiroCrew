@@ -11177,7 +11177,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "Der laufende Zug wird umgeleitet — noch nicht bestätigt.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "Der Zug endete, bevor dies angewendet wurde — wird als eigene Nachricht ausgeführt.",
         "quote_message": "Nachricht zitieren",
-        "more_actions": "Weitere Aktionen"
+        "more_actions": "Weitere Aktionen",
+        "edit_replaces_below": "Senden ersetzt die Antworten darunter"
       },
       "workflowCompletionCard": {
         "hide_result": "Ergebnis ausblenden",
@@ -11572,10 +11573,6 @@
         "close": "Crew-Chat schließen",
         "load_failed": "Diese Sitzung konnte nicht von {{name}} geladen werden.",
         "empty": "Noch keine Nachrichten.",
-        "rewind": "Bis hierher zurückspulen",
-        "interrupted": "Runde unterbrochen",
-        "continue": "Fortsetzen",
-        "regenerate": "Neu generieren",
         "action_failed": "{{name}} hat diese Aktion abgelehnt. Versuche es erneut oder öffne das Dashboard der Crew.",
         "offline": "{{name}} ist nicht verbunden. Verbinde es erneut, um zu senden.",
         "rewinding": "Zurückspulen: Beim Senden wird die Unterhaltung ab dieser Nachricht ersetzt.",

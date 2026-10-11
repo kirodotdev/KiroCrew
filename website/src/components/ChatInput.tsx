@@ -183,7 +183,8 @@ function ChatInput({
   clampDropOffset,
   onMentionKey,
   onFileOpen,
-  project,
+  project: projectProp,
+  sessionOnPeer = false,
   projectBranch,
   projectDetached,
   memoryMode,
@@ -269,6 +270,8 @@ function ChatInput({
   } = composerVoice?.inputProps ?? NO_VOICE
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
   const disabled = disabledProp
+  // A peer session's folder is another machine's: only the chip shows it.
+  const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
@@ -375,13 +378,13 @@ function ChatInput({
   // previously discoverable is lost, and names the branch even when the label
   // is truncated or the shelf has collapsed to icon-only.
   const projectChipTitle = useMemo(() => {
-    if (!project) return i18nT('components.chatInput.select_project')
-    const base = i18nT('components.chatInput.project_2', { path: project })
+    if (!projectProp) return i18nT('components.chatInput.select_project')
+    const base = i18nT('components.chatInput.project_2', { path: projectProp })
     if (!projectBranch) return base
     return projectDetached
       ? `${base}\n${i18nT('components.chatInput.detached_head_at', { branch: projectBranch })}`
       : `${base}\n${i18nT('components.chatInput.branch', { branch: projectBranch })}`
-  }, [project, projectBranch, projectDetached])
+  }, [projectProp, projectBranch, projectDetached])
   const { ctxPopoverOpen, setCtxPopoverOpen, ctxWrapRef } = useContextPopover()
   const plus = usePlusMenu({ pickers, value, onChange, composerControl, fileInputRef })
   const { setPlusOpen, sketchOpen, setSketchOpen } = plus
@@ -464,7 +467,8 @@ function ChatInput({
   const continueLabel = i18nT(continueIsRecovery
     ? 'components.chatInput.resume_interrupted_turn'
     : 'components.chatInput.continue_thread')
-  const autoCompactThreshold = useAutoCompactThreshold({ activeSlot, ctxPopoverOpen, queryClient, dispatch })
+  // A peer session's threshold is the peer's; this machine has none to show.
+  const autoCompactThreshold = useAutoCompactThreshold({ activeSlot: sessionOnPeer ? null : activeSlot, ctxPopoverOpen, queryClient, dispatch })
   const { composerCollapsed, collapsedBarRef, collapseComposer, expandComposer, collapsedDraftLine } = useComposerCollapse({ collapsible, composerControl, value })
   // The message box's guide scope (`composer.box`): a step through the
   // collapsed bar completes the moment the box reads open again.
@@ -1354,6 +1358,7 @@ function ChatInput({
       {!showGhost &&
         !composerCollapsed &&
         (onProjectClick ||
+          (sessionOnPeer && !!projectProp) ||
           (onModelClick && modelName) ||
           // An app-contributed chip is reason enough to draw the shelf. Without
           // this the chip is silently invisible whenever no other pill happens
@@ -1375,6 +1380,15 @@ function ChatInput({
           <div className="flex items-center gap-2 min-w-0 flex-1">
           {onAgentClick && agentName && (
             <AgentChip agentName={agentName} agentLabel={agentLabel} agentIsInheritedDefault={agentIsInheritedDefault} agentSource={agentSource} isRunning={isRunning} shelfCompact={shelfCompact} onAgentClick={onAgentClick} />
+          )}
+          {!onProjectClick && sessionOnPeer && !!projectProp && (
+            /* The same pill as a plain label: the folder is another machine's,
+               so there is nothing here to pick. The tooltip holds the full path. */
+            <span className="inline-flex items-center gap-1.5 h-7 min-w-0 text-[12px] text-muted px-2.5" title={projectChipTitle} data-testid="composer-project-readonly">
+              <FolderOpen size={13} className="shrink-0 opacity-70" aria-hidden="true" />
+              {/* Compact, the name stays for screen readers: the icon alone names nothing. */}
+              <span className={shelfCompact ? 'sr-only' : 'truncate max-w-[160px]'}>{projectProp.split('/').filter(Boolean).pop() || projectProp}</span>
+            </span>
           )}
           {onProjectClick && (
           /* Two sibling buttons inside one visual pill, NOT a nested button:

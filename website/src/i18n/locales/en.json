@@ -6615,7 +6615,8 @@
         "send_enter": "Send (Enter)",
         "steered_into_the_running_turn": "Steered into the running turn",
         "pin_message": "Pin message",
-        "unpin_message": "Unpin message"
+        "unpin_message": "Unpin message",
+        "edit_replaces_below": "Sending replaces the replies below"
       },
       "workflowCompletionCard": {
         "open_in_the_workflows_panel": "Open in the Workflows panel",

@@ -11340,7 +11340,8 @@
         "redirecting_the_running_turn_not_yet_confirmed": "Redirigiendo el turno en curso — aún sin confirmar.",
         "turn_ended_before_this_applied_runs_as_its_own_message": "El turno terminó antes de que esto se aplicara — se ejecuta como un mensaje independiente.",
         "quote_message": "Citar mensaje",
-        "more_actions": "Más acciones"
+        "more_actions": "Más acciones",
+        "edit_replaces_below": "Al enviar se reemplazan las respuestas de abajo"
       },
       "workflowCompletionCard": {
         "hide_result": "Ocultar el resultado",
@@ -11737,10 +11738,6 @@
         "close": "Cerrar chat de la tripulación",
         "load_failed": "No se pudo cargar esta sesión desde {{name}}.",
         "empty": "Aún no hay mensajes.",
-        "rewind": "Retroceder hasta aquí",
-        "interrupted": "Turno interrumpido",
-        "continue": "Continuar",
-        "regenerate": "Regenerar",
         "action_failed": "{{name}} rechazó esa acción. Inténtalo de nuevo o abre el panel propio de la tripulación.",
         "offline": "{{name}} no está conectado. Vuelve a conectarlo para enviar.",
         "rewinding": "Retrocediendo: al enviar se reemplaza la conversación a partir de este mensaje.",

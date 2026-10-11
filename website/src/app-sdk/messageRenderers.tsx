@@ -402,6 +402,9 @@ export interface AssistantBubbleOptions {
    *  `messageTs`, which also versions this row's local image URLs, so a host
    *  passes it with the triple rather than on its own. */
   messageTs?: string
+  /** The bubble's own Regenerate action (its hover row), for the host that
+   *  can regenerate this reply. Absent: no Regenerate. */
+  onRegenerate?: () => void
 }
 
 /**
@@ -486,6 +489,7 @@ export function renderAssistantBubble(
       decisionsStrip={decisionStripFieldOf(m)}
       fileChanges={(m.meta as Record<string, unknown> | undefined)?.file_changes as FileChangeEntry[] | undefined}
       fileChangesOmittedFiles={(m.meta as Record<string, unknown> | undefined)?.file_changes_omitted_files}
+      onRegenerate={opts.onRegenerate}
       suppressSteerAck={opts.suppressSteerAck || turnHadPolicyBlock(ctx.messages, ctx.index)}
       bubbleClassName={bubbleClassName}
       onReplyInThread={isStreaming ? undefined : replyInThreadFor(m, ctx)}
