@@ -1565,12 +1565,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Windows interpreter discovery for the worktree venv, the same class as
         # platform_compat.py::find_python_interpreter above. Fixed argv: the `py`
         # launcher plus `-<version>` and a literal `-I -X utf8 -c` probe that
-        # prints sys.executable. The only variable is the version string, which is
-        # this module's own "3.12" default or a caller-supplied literal -- never
-        # agent input -- and it is a later argv element, never the command. No
-        # shell, no cwd, bounded timeout, stderr discarded, and the result is used
-        # only after it is confirmed to name a real file.
+        # prints sys.executable. The only variable is the version string, built
+        # by _python_candidates from this module's own MIN_PYTHON/_NAMED_MINORS
+        # constants and sys.version_info -- never agent input -- and it is a later
+        # argv element, never the command. No shell, no cwd, bounded timeout,
+        # stderr discarded, and the result is used only after it is confirmed to
+        # name a real file.
         "pod/provision.py::_find_python_via_launcher",
+        # Interpreter probe for the worktree venv: runs a candidate interpreter
+        # with a literal `-I -m venv --without-pip <tempdir>`, then that temp
+        # venv's own python with a literal `-I -c` snippet built from the
+        # MIN_PYTHON constant. Candidates are this process's own interpreter and
+        # names resolved from fixed install dirs / PATH -- the same interpreters
+        # `_run` then builds the venv with, unsandboxed, today. No shell, no
+        # cwd, no worktree code runs, bounded timeout, stdin closed.
+        "pod/provision.py::_probe_python",
+        # `uv python find --no-python-downloads '>=<MIN_PYTHON>'`: a fixed argv
+        # from resolve_uv() (the wheel's own locator, then an absolute PATH hit)
+        # and a module constant. Read-only lookup, never a download, bounded
+        # timeout, stdin closed, stderr discarded.
+        "pod/provision.py::_uv_found_python",
         "pod/provision.py::_run",
         "pod/runtime.py::_git_worktrees",
         "pod/runtime.py::_run",

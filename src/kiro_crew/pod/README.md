@@ -63,11 +63,22 @@ and collapses them, honoring their very different costs:
 | **venv** | ~1 min, idempotent | `pod up` **auto-builds** it on demand; set `KIROCREW_PROVISION_USE_UV` to build it with `uv` from its shared cache instead of `python -m venv` + pip (opt-in; falls back to pip when `uv` cannot be found) |
 | **dist** | minutes (Vite SPA build) | only on **explicit consent** |
 
-The venv is built with Python 3.12, found as `python3.12` in the usual POSIX
-locations and then on `PATH`. A python.org install on Windows ships `python.exe`
-and never a `python3.12.exe`, so there the `py` launcher is asked next
-(`py -3.12`): it is the platform's own index of installed interpreters, and it
-picks the right one on a host that has several.
+The venv is built with the first Python >= 3.12 (the package's `requires-python`)
+that can actually build one. Candidates, in order: the interpreter running the
+gateway or CLI, so a pod gets the version its operator already runs; then
+`python3.N` by name, the gateway's minor first and then 3.12 upward, in the usual
+POSIX locations and on `PATH`, then `python3`; on Windows, where python.org ships
+`python.exe` and never a `python3.12.exe`, the `py` launcher per minor (`py -3.12`);
+finally `uv python find '>=3.12'`, which never downloads.
+
+Each candidate is PROBED rather than trusted because it exists: a venv without pip
+is created in a temp dir and that venv's own interpreter must start and import
+`ensurepip`. That rejects a version-manager shim with no install behind it (mise,
+pyenv, asdf), a relocatable interpreter that only starts through a launcher that
+passes its library path (the Builder Toolbox build: a venv made from it cannot find
+`libpython`), and a bundled interpreter stripped of `ensurepip` (the desktop app).
+Every rejection is printed with its reason; when none passes, provisioning says so
+and suggests `uv python install 3.12`.
 
 So plain `pod up <wt>` builds the cheap venv for you but **fails loud** if the
 dist is missing — pointing you at the slow build — while `pod up <wt> --provision`
