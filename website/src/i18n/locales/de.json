@@ -17771,7 +17771,6 @@
       "fresh_start_confirm_title": "Diesen Crewmate neu anfangen lassen?",
       "fresh_start_confirm_body": "Woran er gerade arbeitet, stoppt, und er vergisst dieses Gespräch. Die Nachrichten bleiben hier, eingeklappt.",
       "fresh_start_confirm_action": "Neu anfangen",
-      "fresh_start_hint": "Startet ein neues Gespräch mit diesem Crewmate. Frühere Nachrichten bleiben sichtbar.",
       "fresh_start_failed_queued": "Es warten noch Nachrichten. Warte, bis sie fertig sind, und versuche Neu anfangen dann erneut.",
       "fresh_start_failed_busy": "Der Crewmate arbeitet noch und hat nicht gestoppt. Stoppe ihn zuerst und versuche es dann erneut."
     },

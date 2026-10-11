@@ -18029,7 +18029,6 @@
       "fresh_start_confirm_title": "¿Que este compañero empiece de cero?",
       "fresh_start_confirm_body": "Lo que esté haciendo se detiene y olvida esta conversación. Los mensajes se quedan aquí, plegados.",
       "fresh_start_confirm_action": "Empezar de cero",
-      "fresh_start_hint": "Empieza una conversación nueva con este compañero. Los mensajes anteriores siguen visibles.",
       "fresh_start_failed_queued": "Aún hay mensajes en cola. Espera a que terminen y vuelve a intentar Empezar de cero.",
       "fresh_start_failed_busy": "El compañero sigue trabajando y no se detuvo. Detenlo primero y vuelve a intentarlo."
     },

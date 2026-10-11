@@ -18029,7 +18029,6 @@
       "fresh_start_confirm_title": "Far ricominciare questo compagno da capo?",
       "fresh_start_confirm_body": "Quello che sta facendo si ferma e dimentica questa conversazione. I messaggi restano qui, ripiegati.",
       "fresh_start_confirm_action": "Ricomincia da capo",
-      "fresh_start_hint": "Avvia una nuova conversazione con questo compagno. I messaggi precedenti restano visibili.",
       "fresh_start_failed_queued": "Ci sono ancora messaggi in coda. Aspetta che finiscano, poi riprova Ricomincia da capo.",
       "fresh_start_failed_busy": "Il compagno sta ancora lavorando e non si è fermato. Fermalo prima, poi riprova."
     },

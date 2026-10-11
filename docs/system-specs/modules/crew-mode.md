@@ -969,29 +969,33 @@ or host name. The route answers `{"outcome": ...}` (`started`, `already_greeted`
 fails surfaces through the ordinary turn error path once; the marker is already
 claimed, so it never loops, and the composer stays usable.
 
-**Fresh start.** The Profile card's "Fresh start…" row (on every screen width; the DM
-header carries no button; the row says it starts a new conversation and earlier
-messages stay visible) asks once in the page's themed confirm, closes the card, then calls
-`POST /api/members/{slug}/fresh-start` (owner-only, app tokens get 404, same gates as
-the greet route). The route resolves the slot through the DM binding and never makes
-one, so the slot key, its monitor loops, the work ledger and the crew log stay bound.
-A thread with queued messages or unconsumed steers answers 409 `slot_queue_pending`
-before anything is stopped, and again if one arrives during a stop wait: a soft stop
-keeps them, and they would then run on the old conversation. Otherwise it runs
-existing paths in order: `stop_slot_turn` on a running turn, a second `stop_slot_turn`
-when the turn has not ended within the wait (its hard-kill escalation, which frees a
-stuck process), then the typed `/clear` path (`_answer_slash_without_channel`): the
-discard with replay off, the plan dropped, the eager respawn, and its transcript line
-saying the agent no longer remembers what is above it. A turn that outlives both stops
-answers 409 `turn_in_flight` and nothing is cleared; a session that still refuses the
-discard keeps it queued, as `/clear` does; the route passes on the outcome `/clear`
-returns, and the reply says `outcome: "queued"`. The
-reply carries `reset_at`; on `cleared` the pane folds rows written before it under one
-closed divider that names the reset time and the count ("Started fresh at … · Show
-earlier messages (N)") and opens them again ("… · Hide earlier messages (no longer remembered)"). The fold is
-page state only; after a reload the `/clear` line still marks the reset. A refused
-press shows a notice by cause: `slot_queue_pending` says to wait, `turn_in_flight` says
-to stop the turn first.
+**Fresh start.** A quiet "Fresh start…" link under the crewmate's name, in the Profile
+card's head (on every screen width; the DM header carries no button; no danger colour,
+no sub line -- the confirm carries the warning) asks once in the page's themed confirm,
+closes the card, then calls `POST /api/members/{slug}/fresh-start` (owner-only, app
+tokens get 404, same gates as the greet route). The route resolves the slot through the
+DM binding and never makes one, so the slot key, its monitor loops, the work ledger and
+the crew log stay bound. A thread with queued messages or unconsumed steers answers 409
+`slot_queue_pending` before anything is stopped, and again if one arrives during a stop
+wait: a soft stop keeps them, and they would then run on the old conversation.
+Otherwise it runs existing paths in order: `stop_slot_turn` on a running turn, a second
+`stop_slot_turn` when the turn has not ended within the wait (its hard-kill escalation,
+which frees a stuck process), then the typed `/clear` path
+(`_answer_slash_without_channel`): the discard with replay off, the plan dropped, the
+eager respawn, and its transcript line saying the agent no longer remembers what is
+above it. A turn that outlives both stops answers 409 `turn_in_flight` and nothing is
+cleared; a session that still refuses the discard keeps it queued, as `/clear` does;
+the route passes on the outcome `/clear` returns, and the reply says
+`outcome: "queued"`. The reply carries `reset_at`; on `cleared` the pane folds rows
+written before it under one closed divider that names the reset time and the count
+("Started fresh at … · Show earlier messages (N)") and opens them again ("… · Hide
+earlier messages (no longer remembered)"). On `cleared` the route also appends
+`member/reset {reset_at}` to the crewmate's own event log (best-effort, off the
+response path), which the roster projection folds into `reset_at`; `GET /api/members`
+serves it back on every row, and `MembersPage` reads it into `foldBefore` on load, so
+the fold survives a reload instead of living only in page state -- a queued reset that
+has not actually cleared yet folds nothing. A refused press shows a notice by cause:
+`slot_queue_pending` says to wait, `turn_in_flight` says to stop the turn first.
 
 The primary New crewmate action and a crewmate's proposal link open the same embedded
 `MeetCrewmatesFlow`: goal, name, schedule and confirmation in the chapter shell's

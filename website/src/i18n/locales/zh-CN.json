@@ -17513,7 +17513,6 @@
       "fresh_start_confirm_title": "让这位队友重新开始吗？",
       "fresh_start_confirm_body": "它正在做的事会停止，它会忘记这段对话。消息会折叠起来留在这里。",
       "fresh_start_confirm_action": "重新开始",
-      "fresh_start_hint": "和这位队友开始新的对话。之前的消息仍然可见。",
       "fresh_start_failed_queued": "还有排队的消息。等它们完成后，再试一次重新开始。",
       "fresh_start_failed_busy": "队友还在工作，没有停下。先停止它，再试一次。"
     },

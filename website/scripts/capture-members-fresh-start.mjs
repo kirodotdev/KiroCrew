@@ -6,7 +6,11 @@
  * conversation and reads idle (the `idle` capture frame); the fresh-start
  * route answers a reset time after all of it. Every frame asserts its state
  * before it is written, at 1280px and 320px: the header has no button and
- * the Profile card carries the labelled action on both.
+ * the quiet link sits under the crewmate's name in the Profile card's head
+ * (#16339, on top of #18797's row-in-tab placement). A last frame reloads
+ * the page from a roster whose row already carries `reset_at` (what the
+ * member event log folds a cleared reset into) and asserts the fold is
+ * drawn from that alone, with no fresh-start call in the session.
  *
  * Usage (two shells, from website/):
  *   npx vite --host 127.0.0.1 --port 6835 --strictPort
@@ -56,12 +60,13 @@ async function openDm(theme, width, lang = 'en') {
   return page
 }
 
-/** Open the Profile card's Profile tab; return the Fresh start row. */
+/** Open the Profile card; return the Fresh start link under the crewmate's
+ *  name. It lives in the card's head, so it is there on every tab -- no need
+ *  to switch to Profile first. */
 async function openCardRow(page) {
   await page.getByTestId('member-identity-pill').click()
   const card = page.getByTestId('crew-profile-panel')
   await card.waitFor()
-  await card.getByRole('tab', { name: 'Profile' }).click()
   const row = page.getByTestId('crew-profile-fresh-start')
   await row.waitFor()
   await row.scrollIntoViewIfNeeded()
@@ -78,7 +83,12 @@ async function run(theme, width, tag) {
   await page.screenshot({ path: `${OUT}/${tag}-01-header.png` })
   const row = await openCardRow(page)
   const text = (await row.innerText()).replace(/\s+/g, ' ')
-  check(`${tag}: labelled row in the Profile card`, text.includes('Fresh start…') && /earlier messages stay visible/i.test(text), JSON.stringify(text))
+  const underName = await page.evaluate(() => {
+    const name = document.querySelector('[data-testid="crew-profile-name"]')
+    const link = document.querySelector('[data-testid="crew-profile-fresh-start"]')
+    return !!(name && link && name.parentElement.contains(link))
+  })
+  check(`${tag}: quiet link under the crewmate's name`, text.includes('Fresh start…') && underName, JSON.stringify(text))
   await page.screenshot({ path: `${OUT}/${tag}-02-card.png` })
   await row.click()
   const dialog = page.getByRole('dialog').filter({ hasText: 'Give this crewmate a fresh start?' })
@@ -124,6 +134,28 @@ await run('dark', 320, 'narrow-dark')
   check('refused: notice says to wait, nothing folded', /still queued/i.test(await notice.innerText())
     && (await page.getByTestId('earlier-conversation').count()) === 0)
   await page.screenshot({ path: `${OUT}/desktop-dark-06-refused.png` })
+  await page.close()
+}
+
+// A fresh LOAD, no press this session: the roster row already carries
+// `reset_at` (what a prior Fresh start folded into the member event log), and
+// the pane must fold from that alone -- proving the boundary survives a
+// reload instead of living only in the page's React state.
+{
+  const RESET_ROSTER = MEMBERS.map(m => (m.slug === 'radar' ? { ...m, reset_at: RESET_AT } : m))
+  const page = await browser.newPage({ viewport: { width: 1280, height: 760 }, deviceScaleFactor: 1 })
+  await routeMembersApi(page, { messages: MESSAGES, running: false, has_more: false, total: MESSAGES.length }, { members: RESET_ROSTER })
+  await page.route(u => new URL(u).pathname === '/api/teams', route => route.fulfill({ status: 200, contentType: 'application/json', body: '{"teams":[]}' }))
+  await page.goto(`${BASE}/capture/members-page.html?theme=dark&route=${encodeURIComponent('/members?member=radar')}`)
+  await page.waitForSelector('[data-capture-root]')
+  await page.getByTestId('earlier-conversation').waitFor()
+  await page.waitForTimeout(500)
+  const toggle = page.getByTestId('earlier-conversation-toggle')
+  const closed = await toggle.innerText()
+  check('reload: the roster\'s reset_at alone folds the pane', (await page.getByText(OLD_TEXT).count()) === 0
+    && closed.includes('Show earlier messages (4)'), JSON.stringify(closed))
+  await page.mouse.move(5, 5)
+  await page.screenshot({ path: `${OUT}/desktop-dark-07-reload-persists.png` })
   await page.close()
 }
 await browser.close()

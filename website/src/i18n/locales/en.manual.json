@@ -8294,7 +8294,6 @@
       "fresh_start_confirm_title": "Give this crewmate a fresh start?",
       "fresh_start_confirm_body": "Anything it's working on stops, and it forgets this conversation. The messages stay here, folded away.",
       "fresh_start_confirm_action": "Start fresh",
-      "fresh_start_hint": "Starts a new conversation with this crewmate. Earlier messages stay visible.",
       "fresh_start_failed_queued": "Messages are still queued. Wait for them to finish, then try Fresh start again.",
       "fresh_start_failed_busy": "The crewmate is still working and didn't stop. Stop it first, then try Fresh start again."
     }

@@ -287,6 +287,20 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
             {/* Face and name only: the id, the role and the activity line were
                 dropped from the head (they live in the pill and the editor). */}
             <div className="mt-1 text-[19px] font-bold tracking-tight text-text-strong leading-tight" data-testid="crew-profile-name">{name}</div>
+            {/* Fresh start: a small muted link under the name, where the person
+                is. Quiet on purpose -- no danger colour, no sub line -- the
+                dialog carries the warning. Held while its own flow runs. */}
+            {p.onFreshStart && (
+              <button
+                type="button"
+                onClick={p.onFreshStart}
+                className="inline-flex items-center gap-1 bg-transparent border-none p-0 text-[12px] text-muted hover:text-text transition-colors cursor-pointer focus-ring rounded"
+                data-testid="crew-profile-fresh-start"
+              >
+                <RotateCcw size={12} aria-hidden="true" />
+                {t('pages.membersPage.fresh_start')}
+              </button>
+            )}
             <button
               type="button"
               onClick={p.onEdit}
@@ -349,12 +363,6 @@ export default function CrewProfilePanel(p: CrewProfilePanelProps) {
                 <div className="rounded-2xl border border-border bg-bg overflow-hidden">
                   <Row icon={<NotebookPen size={16} />} tone="warn" label={t('pages.membersPage.notes_tab')} sub={t('pages.membersPage.profile_notes_sub')} onClick={() => push('notes')} testId="crew-profile-notes" />
                 </div>
-
-                {p.onFreshStart && (
-                  <div className="rounded-2xl border border-border bg-bg overflow-hidden" data-testid="crew-profile-fresh-start-group">
-                    <Row icon={<RotateCcw size={16} />} tone="info" label={t('pages.membersPage.fresh_start')} sub={t('pages.membersPage.fresh_start_hint')} onClick={p.onFreshStart} testId="crew-profile-fresh-start" />
-                  </div>
-                )}
 
                 {p.settingsBody}
               </div>

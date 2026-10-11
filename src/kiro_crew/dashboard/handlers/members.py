@@ -854,6 +854,15 @@ async def api_members(request: web.Request) -> web.Response:
         block = projections.get(row["slug"], {"asOfSeq": _SEQ_UNATTRIBUTABLE, "values": {}})
         row["projections"] = _redact_projection_value(_roster_only(block))
         row["last_active_ts"] = _recency_for_row(block, row.get("last_active_ts"))
+        # Fresh start's fold boundary, read back from the member log so a
+        # reload keeps the "earlier conversation" fold the page otherwise only
+        # holds in React state. Omitted (not "") for a member never reset, so
+        # the client's `foldBefore` prop stays absent rather than an empty string.
+        values = block.get("values") if isinstance(block, dict) else None
+        roster = values.get("roster") if isinstance(values, dict) else None
+        reset_at = roster.get("reset_at") if isinstance(roster, dict) else None
+        if isinstance(reset_at, str) and reset_at:
+            row["reset_at"] = reset_at
 
     # When the PERSON last messaged each crew, in its DM or in a normal chat
     # (`crew_recency`). `last_active_ts` above also moves for background work (a
@@ -1813,11 +1822,28 @@ async def api_member_fresh_start(request: web.Request) -> web.Response:
     # keeps it queued for its next turn boundary, as /clear does.
     reset_at = datetime.now(timezone.utc).isoformat()
     outcome = await runner._answer_slash_without_channel(state, slot, key, "/clear")
+    cleared = outcome == "discarded"
+    if cleared:
+        # Durable fold so the "earlier conversation" boundary survives a reload:
+        # the roster projection carries `reset_at`, which `GET /api/members`
+        # serves back to the page that otherwise only holds it in React state.
+        # Best-effort and off-loop, same posture as the rules-change emit above
+        # -- a logging fault never turns a cleared conversation into an error
+        # response, since the clear itself already landed.
+        member_name = binding.get("member") if binding else None
+
+        def _emit_reset() -> None:
+            from kiro_crew import eventlog_hooks
+            from kiro_crew.eventlog.types import MEMBER_RESET
+
+            eventlog_hooks.emit(slug, member_name, MEMBER_RESET, {"reset_at": reset_at})
+
+        await asyncio.to_thread(_emit_reset)
     return web.json_response(
         {
             "slot": name,
             "reset_at": reset_at,
-            "outcome": "cleared" if outcome == "discarded" else "queued",
+            "outcome": "cleared" if cleared else "queued",
         }
     )
 

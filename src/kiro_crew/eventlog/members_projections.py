@@ -134,6 +134,13 @@ class RosterProjection:
                 new["slot_key"] = slot_key
                 return new
             return state
+        if etype == types.MEMBER_RESET:
+            reset_at = data.get("reset_at")
+            if isinstance(reset_at, str) and reset_at and state.get("reset_at") != reset_at:
+                new = dict(state)
+                new["reset_at"] = reset_at
+                return new
+            return state
         if etype == types.MEMBER_MESSAGE:
             new = dict(state)
             # MONOTONE, unlike every other field here. "When was this member last

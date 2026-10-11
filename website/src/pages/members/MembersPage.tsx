@@ -1824,6 +1824,7 @@ export default function MembersPage() {
       // message copy is a second copy and a refused append leaves it behind.
       last_active_ts: active.last_active_ts || activeRoster.last_active_ts,
       last_message: active.last_message || activeRoster.last_message,
+      reset_at: active.reset_at ?? activeRoster.reset_at,
     }
   }, [active, activeRoster])
   // The identity the DM pane draws the crewmate's messages under. Memoised on
@@ -2072,7 +2073,11 @@ export default function MembersPage() {
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
   // Fresh start: the server stops any turn and drops the conversation; the
   // slot key and its transcript stay. Each slot's reset time folds the rows
-  // before it in the pane. Page state only: the rows are still on disk.
+  // before it in the pane. The server folds `reset_at` into the member's own
+  // event log (member/reset -> the roster projection), which is what makes the
+  // fold survive a reload -- `activeView.reset_at` below reads it back. This
+  // map is only the IN-SESSION override for the moment between a successful
+  // clear and the next roster/projection read catching up to it.
   const [freshStarts, setFreshStarts] = useState<Record<string, string>>({})
   const [freshStartError, setFreshStartError] = useState<{ slot: string; message: string; report?: ErrorReport } | null>(null)
   const freshStart = useMutation({
@@ -4734,7 +4739,7 @@ export default function MembersPage() {
                     // ready" would contradict it one line down.
                     // A greeting card above already speaks for the empty chat.
                     hideEmptyHint={activeThreadFailed || mateGreeting?.kind === 'cold'}
-                    foldBefore={freshStarts[activeSlot]}
+                    foldBefore={freshStarts[activeSlot] ?? activeView?.reset_at}
                     // Under the floating header only when nothing sits between
                     // them (see the block above); a card between already paid.
                     topInset={betweenHeaderH > 0 ? 0 : threadHeaderH}

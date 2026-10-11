@@ -33,6 +33,9 @@ export interface RosterView {
   slot_key?: string
   last_active_ts?: number
   last_message?: string
+  /** The server's time of this crewmate's last Fresh start (ISO-8601); absent
+   *  when it has never been reset. See `MemberRosterRow.reset_at`. */
+  reset_at?: string
 }
 
 /** The 'activity' projection: recent participation records plus rolling counts. */
