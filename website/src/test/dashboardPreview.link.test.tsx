@@ -18,6 +18,8 @@ import {
   dashboardPreviewRef,
   dashboardPreviewSlugFromHref,
   dashboardPreviewSlugFromRef,
+  dashboardPreviewTargetFromHref,
+  dashboardPreviewTargetFromRef,
 } from '../utils/dashboardPreview'
 
 const HREF = '/api/members/atlas/dashboard?preview=1'
@@ -41,7 +43,31 @@ describe('dashboardPreviewSlugFromHref', () => {
   })
 })
 
+describe('dashboardPreviewTargetFromHref', () => {
+  it('reads the slot from the link session_preview_url hands out', () => {
+    expect(dashboardPreviewTargetFromHref('/api/chat/slots/chat-100-1791/dashboard?preview=1'))
+      .toEqual({ kind: 'session', slot: 'chat-100-1791' })
+    expect(dashboardPreviewTargetFromHref(HREF)).toEqual({ kind: 'member', slug: 'atlas' })
+  })
+
+  it('declines the live session read, another origin, and a nested path', () => {
+    expect(dashboardPreviewTargetFromHref('/api/chat/slots/chat-1/dashboard')).toBeNull()
+    expect(dashboardPreviewTargetFromHref('https://elsewhere.test/api/chat/slots/chat-1/dashboard?preview=1')).toBeNull()
+    expect(dashboardPreviewTargetFromHref('/api/chat/slots/chat-1/dashboard/x?preview=1')).toBeNull()
+    expect(dashboardPreviewTargetFromHref('/api/chat/slots/a%2Fb/dashboard?preview=1')).toBeNull()
+    // The member-only reader still answers for members alone.
+    expect(dashboardPreviewSlugFromHref('/api/chat/slots/chat-1/dashboard?preview=1')).toBeNull()
+  })
+})
+
 describe('dashboardPreviewRef', () => {
+  it('round-trips a session slot, and never reads it as a member slug', () => {
+    const ref = dashboardPreviewRef({ kind: 'session', slot: 'chat-100-1791' })
+    expect(dashboardPreviewTargetFromRef(ref)).toEqual({ kind: 'session', slot: 'chat-100-1791' })
+    expect(dashboardPreviewSlugFromRef(ref)).toBeNull()
+    expect(dashboardPreviewTargetFromRef(dashboardPreviewRef('atlas'))).toEqual({ kind: 'member', slug: 'atlas' })
+  })
+
   it('round-trips a slug, and no artifact slug reads as a reference', () => {
     expect(dashboardPreviewSlugFromRef(dashboardPreviewRef('atlas'))).toBe('atlas')
     expect(dashboardPreviewSlugFromRef('atlas')).toBeNull()
@@ -70,6 +96,16 @@ describe('MarkdownRenderer staged-dashboard link', () => {
     expect(onArtifactOpen).toHaveBeenCalledTimes(1)
     expect(onArtifactOpen).toHaveBeenCalledWith('dashboard-preview:atlas')
     expect(notCancelled).toBe(false)
+  })
+
+  it('opens a session page\'s staged link in the side panel too', () => {
+    const href = '/api/chat/slots/chat-7/dashboard?preview=1'
+    const onArtifactOpen = vi.fn()
+    const { container } = render(
+      <MarkdownRenderer content={`[See the page](${href})`} onArtifactOpen={onArtifactOpen} onFileOpen={vi.fn()} />,
+    )
+    fireEvent.click(container.querySelector(`a[href="${href}"]`)!)
+    expect(onArtifactOpen).toHaveBeenCalledWith('dashboard-preview:session:chat-7')
   })
 
   it.each([

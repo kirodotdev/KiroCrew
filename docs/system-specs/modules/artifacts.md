@@ -98,60 +98,53 @@ re-binds the numbers on a task of its own, with no model
 call, no permit and none of the hourly budget; the layout and the sentences stay as the
 model last returned them. The opt-in and the budget therefore pace the sentences only.
 
-An HTML/widget artifact tagged `task-dashboard` is a model-authored task view,
-not a fixed dashboard schema. The chat's **Dynamic Dashboard** side-panel tab
-(labelled **Dashboard**; the three-tile dock above the composer opens it) and Crew's
-single **Dashboard** tab select
-only artifacts whose recorded originating slot is the current slot or a durable
-`created_by` descendant. A presentation-only child session can therefore publish
-without impersonating its conductor. The same slug is updated at milestones;
-visible hosts re-read the artifact inventory on each `artifact_update` frame and
-load new revisions.
+### The root session's side-panel Dashboard
 
-The side panel's Dashboard view hands its whole **Overview** to that published
-view: the host draws the header (title, help, permission mode), the Overview /
-Questions / Approvals segments with their counts, and the stale / missing-source
-notices, then renders the selected published view and nothing native beside it.
-The automatic card (`SessionStatusFrame`) shows only while no published view
-exists; progress bars, status tiles, blocked and work-item lists are not drawn
-in the panel (the dock above the composer keeps its native tiles). Questions and
-Approvals remain host-rendered `AttentionCard`s — the sandboxed page can name a
-decision but never answer or approve one. The Questions tab also lists an idle
-session whose newest reply ends in an `[OPTIONS: ...]` ask, keyed by the slot's
-`options_ts` and answered with the bare labels; a label starting with `/` is
-dropped, since sent bare it would run as a slash command, and a real question
-card for the same session wins. The automatic card's prompt forbids restating
-pending questions, choices or decisions, since the Questions tab is the one
-place they are answered. The request that asks the agent for a
-page (`commandCenter.prompt.ts`, `REQUEST_PUBLISHED_VIEW`) recommends, without
-enforcing, a layout for that whole-Overview placement: what needs the user first
-with the decision named or linked (answering happens in the Questions tab), one
-line per work item with a status word and details folded, dependencies shown when
-tasks wait on others, cost and technical detail inside the folds, theme CSS
-variables. The artifacts skill repeats the recommendation.
+The chat side panel's **Dashboard** tab renders a ROOT session's own Dynamic
+Dashboard: `CommandCenterPanel` mounts `CrewDynamicDashboard` with a session
+target, the same frame a crewmate's Dashboard tab draws. The page comes from the
+shared built-in template catalog (`dashboard_templates/builtin/`, one catalog for
+crewmates and sessions alike), and its read is
+`GET /api/chat/slots/{slot}/dashboard`, which answers the member route's body
+(`member_dashboard._serve`, `_render`, `_safe_body`, `_page_safe` redaction) for a
+store key derived from the slot (`instance.session_instance_key`, a digest under
+`session-dashboards/`). Every fold a field reads is read from that slot, so the
+page shows the work ledger and crew log that session wrote. The read is
+owner-only and denies app callers, like the member route. Root is
+`card_lifecycle.is_root_session`; a dispatched or adopted session is answered 404
+`not_root_session`, and the panel drops the Overview segment for it (mirroring
+`created_by` and `parent`) and opens on Questions.
+
+The dashboard MCP tools (`/api/agent-panel/dashboard/*`) accept a caller bound to
+no crew when it is a root session writing its own page: `_resolve_publishing_crew`
+with `root_session=True` returns the caller's own session store key after every
+other gate (internal secret, `agent.crew_panel`, app denial, strict session
+identity, restricted mode, slot check). A non-root caller is refused 403
+`not_root_session`; a caller with no slot (a subagent) is refused
+`no_dashboard_slot`; the crew webview publish route does not take the branch.
+Writes broadcast `{slot}` rather than `{slug}`, and the client invalidates the
+`session-dashboard` query by slot.
+
+The Questions and Approvals segments remain host-rendered `AttentionCard`s; the
+sandboxed page can name a decision but never answer or approve one. The
+Questions tab also lists an idle session whose newest reply ends in an
+`[OPTIONS: ...]` ask, keyed by the slot's `options_ts` and answered with the bare
+labels; a label starting with `/` is dropped, since sent bare it would run as a
+slash command, and a real question card for the same session wins.
+
+No status-tile HUD is drawn above the composer, and no agent-published
+`task-dashboard` artifact is read by the panel or the all-session view.
 
 The whole Dynamic Dashboard surface is a developer Feature Preview
 (`PREVIEW_DASHBOARD`, `website/src/utils/previewFlags.ts`), default OFF and
-gating INGRESS only: with the flag off the dock, the + menu entry, a persisted
-Dashboard tab and the Sessions menu's All Dashboards item are withheld, while
+gating INGRESS only: with the flag off the + menu entry, a persisted Dashboard
+tab and the Sessions menu's All Dashboards item are withheld, while
 `/session-dashboards` stays routable and every API above is unchanged. The Crew
-chat's Dashboard tab is not withheld: it is the crewmate's own published page,
-a standing tab whatever the flag. The **Automatic cards for all sessions** switch
-lives inside that preview's card in Settings > Developer > Feature Previews,
-shown whether the preview is on or off: it is a gateway-wide spend setting, and
-hiding it would leave cards running with no control on this device.
-Session matching strips the dashboard scope and normalizes registered channel
-keys with the history safe-key rules, retaining the channel namespace. Unknown
-prefixes are not folded; missing task roots remain fail-closed.
-Models choose the layout and task-specific content; no particular board or graph
-is mandatory. The `artifacts` skill documents this publishing contract.
-Crew's existing member-published webview shares this presentation selector, not
-its renderer or permissions. Its member-panel API and sandbox remain unchanged;
-a pipeline publication is one view within the same dashboard. The global session
-dashboard supplies the cross-session summary and Needs you inbox, while questions
-and approvals remain native host controls outside every published document.
-The Crew entry stays **Dashboard**; the publication's expand/collapse, dialog,
-loading and error chrome consistently names the **published view**.
+chat's Dashboard tab is not withheld: it is the crewmate's own page, a standing
+tab whatever the flag. The **Automatic cards for all sessions** switch lives
+inside that preview's card in Settings > Developer > Feature Previews, shown
+whether the preview is on or off: it is a gateway-wide spend setting, and hiding
+it would leave cards running with no control on this device.
 
 The host independently projects live sessions, subagents, workflows and accepted
 conductor work. It never treats idle sessions as completed work, nor worker
@@ -179,122 +172,39 @@ does not automatically retry. Native answers steer their own waiting turn when
 either live run state or that slot's reloaded dashboard snapshot is running;
 sibling sessions never determine this decision. Approvals are separate from informational blockers.
 
-`TaskDashboardFrame` uses the sandbox-document service with an empty sandbox:
-no scripts, same-origin, forms, popups or control bridge. A dedicated document
-builder removes executable code, resource hints, nested documents and outbound
+The automatic card (`SessionStatusFrame`) uses the sandbox-document service with
+an empty sandbox (`TASK_DASHBOARD_SANDBOX`): no scripts, same-origin, forms,
+popups or control bridge. A dedicated document builder (`dashboardDocument.ts`)
+removes executable code, resource hints, nested documents and outbound
 navigation before rendering. It inspects actual attributes irrespective of SVG
 namespace and keeps only fragment hrefs; empty hrefs are navigation too.
-Models freely design supported HTML/CSS/SVG layouts and native
-disclosures; dynamic evidence arrives through published revisions, not model
-JavaScript. Deny-by-default CSP permits only inline styling and data fonts; no
-image loads, since an image is bytes the browser decodes for display and the
-backend text scan cannot read them, so image-source attributes are removed too.
+Deny-by-default CSP permits only inline styling and data fonts; no image loads.
 An automatic card is held to the text the backend scanned: its CSP also refuses
 fonts and its `@font-face` rules are deleted (a font remaps the glyphs shown),
 declarations that draw characters absent from the markup (`content`, `quotes`,
 `list-style*`, `hyphenate-character`, `text-emphasis*`, `text-overflow`) are
 removed, and so are the `alt`, `title`, `start` and `value` attributes the
-browser displays as text. Saved views keep their authored CSS and attributes.
-The page receives no credentials or host state. Model-authored status is labeled a
-published view; it never replaces the host's trusted approval inventory.
+browser displays as text. The page receives no credentials or host state.
 Automatic card data binds through `data-dashboard-field` text containers using
 `textContent`, never HTML interpolation or an executable update script. An absent
 field clears the old text. Only visible frames obtain a sandbox document; hiding
-or paging them out releases it. The fleet keeps wrappers for the bounded live
-slot inventory (`MAX_LIVE_SLOTS`, 500) to retain each saved-view selection. Twelve
-session summaries are active on a page, with one automatic card and at most one
-selected saved view each: at most 24 iframe documents, not twelve mounted wrappers.
-Native attention controls remain mounted independently to preserve drafts across
-filters and pages. The task panel
-mounts its own session's automatic card (a worker carries none) plus its selected
-task publication. Under Progress it shows the work items whenever the board has
-any, and adds the running runs, uncapped, only when the board is not the progress
-source (absent, or with omitted entries): that is when the dock's Progress
-list shows runs, and that list caps its rows and hands its overflow to the panel,
-so the rest must be readable there. It carries no live run roster beyond that; idle and done runs
-stay with the sidebar's Subagents and Workflows tabs; Crew's
-existing protected-template renderer retains its own lifecycle.
-The optional creation request is a model-facing English prompt; translated UI
-copy names the published view, and the artifacts skill owns its technical
-publishing contract. Source failures render through the shared error notice in
-both the dock and panel, with no navigation hand-off beside unsent answer drafts.
-The chat dock above the composer, in the composer's own column, is three tiles
-and nothing else: progress (accepted or checked-off count, else the running
-count written as "N running", under one Progress label either way), blocked, and Needs you. Each tile
-is a disclosure button for its own short list (`aria-expanded`; the open tile
-points at its region with `aria-controls`, and a second click closes it), grouped
-under the Dashboard name; in a narrow column the tiles wrap onto further rows
-rather than truncating their labels. Beside them sit two actions, open the
-Dashboard tab (icon plus its "Open Dashboard" text) and hide. A tile discloses a list read from the same source as its
-number: the running work items when a board exists (a blocked item is the
-Blocked tile's row, a waiting one is nobody's progress), else the running runs;
-the blocked runs and items; the requests. Each row hands off to the panel (the
-row is the button, named by its item) and never mounts an answer or approval
-control, so a draft has one home: the panel, which the dock's labelled Open
-Dashboard button also reaches. The panel loads lazily with its tab, so the shell chunk carries only the
-dock; a panel chunk that fails to load is caught by a boundary local to the tab,
-which says so through the shared error notice with no navigation hand-off, and
-never reaches the route boundary that would replace the chat page. Opening the
-panel moves focus to the panel heading once it shows, unless the user
-has moved focus elsewhere meanwhile. The dock hides to a single pill that
-carries the hide glyph, or a red count while something needs the user (persisted
-per browser as `mc-task-dashboard-hidden`), and it is one element in both forms;
-the toggle unmounts the pressed control, so a hide or show made from the dock's
-own controls hands focus to the counterpart (hide lands on the pill, show on the
-hide button), while a mount or a persisted value takes no focus. It is removed
-once a complete, current read shows every run at rest, no request waiting and
-the plan complete; a paused workflow rests (no tile counts it), a queued worker
-or an item's open question does not; a work board settles when every item is
-accepted, rejected or abandoned, a half-loaded or disconnected inventory is
-never settled, and a session with an open plan stays shown even when a board
-supplies the progress number. That verdict is retained in page memory per
-root across dock remounts, but is not persisted across a page reload: one entry
-per root that ever settled in this page lifetime, released when that root shows
-new work, cleared by reload; it arms only
-after a complete read of a readable scope: before the first slot list lands
-nothing is loading or stale and the empty model is vacuously settled, which
-must not count. Once a
-complete read has settled the task, a later connection drop, source error or
-remount's loading window does not bring the dock back, and only evidence of new
-work releases it — a complete read showing something running, blocked or asking,
-or a live slot state that already says someone is waiting on the user. The panel header carries the same three
-tiles; its explanatory copy (scope, permission-mode note, containment statement,
-last-checked time) lives behind one info control.
-No command-center source polls. The dock, panel and all-session view read each
-source once and re-read it on the frame that announces its change: `approval` and
+or paging them out releases it. The all-session view keeps twelve session
+summaries active on a page, with one automatic card each. Native attention
+controls remain mounted independently to preserve drafts across filters and pages.
+
+No command-center source polls. The panel and all-session view read each source
+once and re-read it on the frame that announces its change: `approval` and
 `approval_resolved` for both approval systems, `question_card` and its retirement
-for questions, `artifact_update` for a task dashboard, the crew log's
-`slot_projection` for the work board of a team holding that slot, and workflow
-events into the store, with a finished, failed or cancelled run also re-reading
-the workflow snapshot the store's live runs are laid over, and the store's own
-workflow heal read replacing that snapshot; a reconnect re-reads all of them.
-Window focus re-reads a command-center source only while it has failed, since the frame
-that would refresh it may never come; a healthy source is left to its frames. The dock, mounted in every chat, reads the work
-board only for a team (a slot with sessions created under it) or whenever a published
-view keeps the dock relevant for that slot, so a verdict never settles over an item the
-unread board still holds open; the panel always
-does. Only questions and approvals decide the stale notice and the "updated"
-clock, so an optional source that fails (workflows answer 503 while their service
-starts) cannot hide a fresh decision; the dock, panel and all-session view show
-one notice listing every failed source (workflow runs, the work items under Live
-activity, published views) beside those decisions, with the reassurance said once,
-so a missing source is never read as an empty one. A work board the dock does not read contributes nothing, even when an
-open panel cached one. Approvals share the app shell's
-`global-approvals` cache, which keeps its own 30-second refresh and is re-read on
-reconnect. A `slot_projection` frame never cancels a work read in flight; one
-more read follows it once it settles. The shared model's session-state rule — a
-session is running while its turn runs, while subagents run, or while it
-holds queued messages; a paused workflow waits and a planning
-one runs — also governs the all-session view's Running badge and its sort
-priority, which read the same model rather than the slot's turn flag alone. The all-session view takes its sort order
-when the set of sessions, what needs attention, the filter or the page changes,
-not on activity, since moving a card reloads its iframes and their single-use
-documents; a card shows the published views of its whole
-`created_by` team, as the task panel does. The work board is the one host source the crew log
-owns, a checkpointed slot fold. Pending approvals and questions stay on the live
-host inventory rather than a crew-log projection: a card needs the request's tool
-input, which the crew log only digests, and a decision needs the live future the
-resolve endpoints check, which a recorded request cannot prove still exists.
+for questions, the crew log's `slot_projection` for the work board, and workflow
+events into the store; a reconnect re-reads all of them. Window focus re-reads a
+command-center source only while it has failed. Only questions and approvals
+decide the stale notice and the "updated" clock, so an optional source that
+fails cannot hide a fresh decision; one notice lists every failed source
+(workflow runs, work items) beside those decisions. Approvals share the app
+shell's `global-approvals` cache. The all-session view takes its sort order when
+the set of sessions, what needs attention, the filter or the page changes, not
+on activity. Pending approvals and questions stay on the live host inventory
+rather than a crew-log projection.
 Incognito/temporary artifact persistence restrictions remain unchanged.
 
 Every artifact route that changes state is owner-only for dashboard callers.

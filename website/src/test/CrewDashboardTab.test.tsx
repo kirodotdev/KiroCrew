@@ -6,8 +6,8 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 
 vi.mock("../pages/members/CrewDynamicDashboard", () => ({
-  default: (p: { slug: string; displayName: string }) => (
-    <div data-testid="frame-stub">{`${p.slug}/${p.displayName}`}</div>
+  default: (p: { target: { slug: string }; displayName: string }) => (
+    <div data-testid="frame-stub">{`${p.target.slug}/${p.displayName}`}</div>
   ),
 }));
 

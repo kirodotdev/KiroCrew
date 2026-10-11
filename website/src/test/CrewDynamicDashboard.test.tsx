@@ -14,6 +14,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api, type DashboardManifest } from '../api/client'
 import { renderWithProviders } from './helpers'
 import CrewDynamicDashboard, {
+  ACT_MESSAGE_TYPE,
   DASHBOARD_FALLBACK_REFETCH_MS,
   READY_MESSAGE_TYPE,
 } from '../pages/members/CrewDynamicDashboard'
@@ -73,7 +74,7 @@ function page(over: Record<string, unknown> = {}) {
 
 function mount() {
   return renderWithProviders(
-    <CrewDynamicDashboard slug="oncall" member="oncall" displayName="On Call" />,
+    <CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" />,
   )
 }
 
@@ -110,6 +111,54 @@ describe('CrewDynamicDashboard', () => {
     } finally {
       localStorage.removeItem(LANG_STORAGE_KEY)
     }
+  })
+
+  it('reads a root session\'s own page by its slot, through the same frame', async () => {
+    const member = vi.spyOn(api, 'memberDashboard').mockResolvedValue(page())
+    const session = vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
+    renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" />)
+    await waitFor(() => expect(session).toHaveBeenCalledWith('chat-7', expect.any(String), false))
+    expect(member).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('crew-dashboard-iframe')).toHaveAttribute('sandbox', 'allow-scripts')
+  })
+
+  it('reads a root session\'s STAGED page when asked for the preview', async () => {
+    const session = vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
+    renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" preview />)
+    await waitFor(() => expect(session).toHaveBeenCalledWith('chat-7', expect.any(String), true))
+  })
+
+  it('asks the session route for preview=1, and for nothing extra on a live read', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response('null', { status: 200, headers: { 'content-type': 'application/json' } }))
+    await api.sessionDashboard('chat-7', 'en', true)
+    await api.sessionDashboard('chat-7')
+    expect(fetchSpy.mock.calls.map(c => String(c[0]))).toEqual([
+      '/api/chat/slots/chat-7/dashboard?locale=en&preview=1',
+      '/api/chat/slots/chat-7/dashboard',
+    ])
+  })
+
+  it('hands a session page\'s chosen reply to onAct, and only from its own frame', async () => {
+    vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
+    const onAct = vi.fn()
+    renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" onAct={onAct} />)
+    const frame = (await screen.findByTestId('crew-dashboard-iframe')) as HTMLIFrameElement
+    // A message from some other window is ignored.
+    window.dispatchEvent(new MessageEvent('message', { data: { type: ACT_MESSAGE_TYPE, text: 'nope' }, source: window }))
+    expect(onAct).not.toHaveBeenCalled()
+    window.dispatchEvent(new MessageEvent('message', {
+      data: { type: ACT_MESSAGE_TYPE, text: 'Re-dispatch it' }, source: frame.contentWindow,
+    }))
+    expect(onAct).toHaveBeenCalledWith('Re-dispatch it')
+  })
+
+  it('re-reads a session page when the gateway names its slot', async () => {
+    const session = vi.spyOn(api, 'sessionDashboard').mockResolvedValue(page())
+    const { queryClient } = renderWithProviders(<CrewDynamicDashboard target={{ kind: 'session', slot: 'chat-7' }} displayName="Root" />)
+    await waitFor(() => expect(session).toHaveBeenCalledTimes(1))
+    handleDashboardMoved(queryClient, { slot: 'chat-8' })
+    handleDashboardMoved(queryClient, { slot: 'chat-7' })
+    await waitFor(() => expect(session).toHaveBeenCalledTimes(2))
   })
 
   it('shows the page the read resolved, in a frame granting scripts and nothing else', async () => {
@@ -211,7 +260,7 @@ describe('CrewDynamicDashboard', () => {
     await waitFor(() => expect(retrySpy).toHaveBeenCalled())
     // The re-mint is what the component must notice, so re-render to let it read the
     // new url the retry produced.
-    rerender(<CrewDynamicDashboard slug="oncall" member="oncall" displayName="On Call" />)
+    rerender(<CrewDynamicDashboard target={{ kind: 'member', slug: 'oncall', member: 'oncall' }} displayName="On Call" />)
     window.dispatchEvent(new MessageEvent('message', { data: { type: READY_MESSAGE_TYPE } }))
     await waitFor(() =>
       expect(screen.queryByTestId('crew-dashboard-kept-band')).not.toBeInTheDocument(),

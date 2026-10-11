@@ -7,20 +7,18 @@ import { useAppDispatch, useAppSelector } from '../../../store'
 import { isAnsweredQuestionEnding, markQuestionSettled } from '../../../store/chatSlice'
 import { answersAsText, questionName } from '../../../utils/questionAnswers'
 import { restoreToComposer } from '../../../utils/composerRestore'
-import type { Artifact, SubagentActivity } from '../../../types'
+import type { SubagentActivity } from '../../../types'
 import { baselineOrHeld } from '../../../hooks/useWebSocket'
 import { buildCommandCenter, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
 
 /** The work board as its route serves it: the folded value plus its revision. */
 type WorkProjection = { value?: { items: WorkItem[]; omitted?: number }; revision?: number }
 
-export const TASK_DASHBOARD_TAG = 'task-dashboard'
 /** Names of the optional sources that can fail. Literal keys, so the catalog
  * tooling sees every one. */
 const MISSING_SOURCE_KEYS = {
   runs: 'commandCenter.source_runs',
   work: 'commandCenter.source_work',
-  views: 'commandCenter.source_views',
 } as const
 
 /** One notice naming every optional source that failed, so the reassurance is
@@ -30,23 +28,17 @@ export function missingSourcesNotice(missing: readonly (keyof typeof MISSING_SOU
   return i18nT('commandCenter.partial_sources', { sources: fmtList(missing.map(name => i18nT(MISSING_SOURCE_KEYS[name]))) })
 }
 const EMPTY_AGENTS: Record<string, SubagentActivity> = {}
-const settledLatches = new Map<string, boolean>()
-
-export function __resetSettledLatchesForTests() {
-  settledLatches.clear()
-}
-
 /** One identity per card: a blocking ask by its ask_id, a stateless card by slot and
  * card_id, a session's trailing `[OPTIONS:]` ask by its slot alone. */
 const questionId = (q: PendingQuestion) => q.ask_id ? JSON.stringify(['ask', q.ask_id])
   : JSON.stringify([slotKey(q.slot), q.card_id || (q.followUp ? 'follow-up' : '')])
 
-/** Shared query keys let the dock and panel observe one read, not one per worker.
- * Nothing here polls: every source is refreshed by the frame that announces its
- * change (`approval*`, `question_card*`, `artifact_update`, the crew log's
- * `slot_projection` for the work board, workflow events into the store) and all
- * of them again on reconnect, so an open chat tab costs no periodic requests. */
-export function useCommandCenter(root: string | null, enabled = true, scope: 'task' | 'fleet' = 'task', { dock = false }: { dock?: boolean } = {}) {
+/** Shared query keys let the panel and the fleet page observe one read, not one per
+ * worker. Nothing here polls: every source is refreshed by the frame that announces
+ * its change (`approval*`, `question_card*`, the crew log's `slot_projection` for the
+ * work board, workflow events into the store) and all of them again on reconnect, so
+ * an open chat tab costs no periodic requests. */
+export function useCommandCenter(root: string | null, enabled = true, scope: 'task' | 'fleet' = 'task') {
   const dispatch = useAppDispatch()
   const slots = useAppSelector(s => s.dashboard.slots)
   const approvalMode = useAppSelector(s => s.dashboard.approvalMode)
@@ -61,7 +53,6 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   const queryClient = useQueryClient()
   const scoped = useMemo(() => fleet ? slots : root ? scopedSlots(slots, root) : [], [slots, root, fleet])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
-  const scopedKeySet = useMemo(() => new Set(scoped.map(s => s.key)), [scoped])
   // The app-wide policy is never-stale; a finite staleTime here made every
   // window focus re-read all of these. Frames and reconnect own freshness; a
   // failed source also re-reads on focus, since its frame may never come.
@@ -157,15 +148,6 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   // The same inventory the app shell already keeps: one cache, one request per frame.
   const approvals = useQuery({ queryKey: ['global-approvals'], queryFn: () => api.approvals(), ...sourceOptions })
   const workflows = useQuery({ queryKey: ['command-center', 'workflows'], queryFn: api.workflowRuns, ...sourceOptions })
-  const artifacts = useQuery({
-    queryKey: ['command-center', 'artifacts'],
-    queryFn: () => api.artifacts({ tag: TASK_DASHBOARD_TAG }) as Promise<{ artifacts?: Artifact[] }>,
-    ...sourceOptions,
-  })
-  const dashboards = (artifacts.data?.artifacts || []).filter(a =>
-    (a.kind === 'html' || a.kind === 'widget') && a.tags.includes(TASK_DASHBOARD_TAG)
-    && !!a.session_key && scopedKeySet.has(slotKey(a.session_key)),
-  )
   const work = useQuery({
     queryKey: ['command-center', root, 'work'],
     // Gated on the revision floor the socket handed this tab before any read went
@@ -176,13 +158,7 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
       const response = (await api.sessionWorkProjection(root!)) as WorkProjection
       return baselineOrHeld(root!, 'work', response, queryClient.getQueryData<WorkProjection>(key))
     },
-    // The dock is mounted in every chat and the board is a whole-log fold, so it
-    // reads the board only where it can be on screen: for a team (workers are
-    // what feed it), or for a lone slot whose published view keeps the dock
-    // relevant on its own, since a verdict taken there without the board could
-    // settle over an item the board still holds open. A lone slot with no view
-    // leaves the board unread; the panel, opened on purpose, always reads it.
-    ...sourceOptions, enabled: canRead && !fleet && (!dock || scoped.length > 1 || dashboards.length > 0),
+    ...sourceOptions, enabled: canRead && !fleet,
   })
   const model = useMemo(() => {
     const subagents = Object.fromEntries(scoped.map(s => [s.key,
@@ -215,7 +191,7 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
       return { ...previous, cards }
     })
   }, [model.attention, drafts, draftScope])
-  const sources = [questions, approvals, workflows, ...(work.isEnabled ? [work] : []), artifacts]
+  const sources = [questions, approvals, workflows, ...(work.isEnabled ? [work] : [])]
   // Questions and approvals are what a person must act on; the rest decorate.
   // An optional source failing (workflows answer 503 while their service starts)
   // must not hide fresh decisions behind a stale notice.
@@ -226,34 +202,9 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
   // name what is missing rather than hand the person a vague uncertainty. Only
   // once both decision reads have answered, since the notice vouches for them.
   const missing = canRead && connected && required.every(q => q.isSuccess)
-    ? ([['runs', workflows], ['work', work], ['views', artifacts]] as const)
+    ? ([['runs', workflows], ['work', work]] as const)
       .filter(([, q]) => q.isEnabled && q.isError).map(([name]) => name)
     : []
-  // A settle verdict trusts nothing: it needs a readable scope, a live
-  // connection, and a successful answer from EVERY enabled source, required or
-  // optional, because an empty model is vacuously settled and a source that has
-  // not answered may hold the work still going. The notices above keep their
-  // required/optional split on purpose: a notice must not hide a fresh decision
-  // behind an optional source that is slow, while a verdict must wait for it.
-  // The verdict is LATCHED for this root, so an incomplete later read does not
-  // bring the dock back for a task that is over. Only evidence of new work
-  // releases it — a complete read that shows something running, blocked or
-  // asking, or a live slot state that already says someone is waiting on the
-  // user (`attention` reads the slot flags, so it needs no completed read to be
-  // current). The release half is gated the same way: with no readable scope
-  // the model is built from an empty slot list plus whatever work-board data
-  // the query cache still holds, and that must not count as a read that shows
-  // new work. The verdict is a strict boolean: the latch compares it to the
-  // stored one, and a connection flag the store has not set yet would otherwise
-  // make `finished` undefined and re-render on every pass. The latch is keyed by
-  // SURFACE as well as root: the dock and the panel read different sources (a
-  // lone slot's dock leaves the board unread, the panel always reads it), so
-  // each may only latch — and release — the verdict its own sources support.
-  // One shared key let the panel erase a dock verdict every render.
-  const complete = Boolean(canRead && connected && sources.every(q => !q.isEnabled || q.isSuccess))
-  const [, rerenderSettledLatch] = useState(0)
-  const latchKey = JSON.stringify([scope, root, dock ? 'dock' : 'panel'])
-  const latched = settledLatches.get(latchKey) || false
   const restoredQuestionNotices = Object.entries(drafts.notices)
     .map(([id, notice]) => ({ id, ...notice }))
   const dismissRestoredQuestionNotice = (id: string) => setDrafts(previous => {
@@ -262,17 +213,10 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     delete notices[id]
     return { ...previous, notices }
   })
-  const unsettledNow = (complete && !model.settled) || model.attention.length > 0 || restoredQuestionNotices.length > 0
-  const finished = latched ? !unsettledNow : complete && model.settled && !restoredQuestionNotices.length
-  if (finished !== latched) {
-    if (finished) settledLatches.set(latchKey, true)
-    else settledLatches.delete(latchKey)
-    rerenderSettledLatch(version => version + 1)
-  }
   // Whether any card on this scope holds a half-entered answer, blocking ask included, so a HOST keeps its panel mounted while text is unsent.
   const hasQuestionDraft = drafts.scope === draftScope && Object.keys(drafts.cards).length > 0
   return {
-    ...model, dashboards, connected, onQuestionDraftChange, hasQuestionDraft,
+    ...model, connected, onQuestionDraftChange, hasQuestionDraft,
     restoredQuestionNotices, dismissRestoredQuestionNotice,
     approvalMode: effectiveApprovalMode(approvalMode, slots.find(s => s.key === root)),
     loading, stale, missing,
@@ -280,12 +224,6 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     // establish that a server-side question/approval inventory is up to date.
     updatedAt: Math.min(...required.map(q => q.dataUpdatedAt)),
     approvalCount: model.attention.filter(a => a.kind === 'approval').length,
-    // Anything waiting on the user makes the dock relevant, whatever its kind: the
-    // Needs you tile is the dock's reason to exist. A lone session's TODO list is
-    // deliberately NOT enough: TaskProgressBar already shows that plan above the
-    // composer, and a second readout of the same numbers would only repeat it.
-    relevant: scoped.length > 1 || model.nodes.some(n => n.kind !== 'session') || model.workItems.length > 0 || dashboards.length > 0 || model.attention.length > 0 || restoredQuestionNotices.length > 0,
-    finished,
   }
 }
 

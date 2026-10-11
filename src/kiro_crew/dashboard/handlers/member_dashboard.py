@@ -134,17 +134,21 @@ def _write_session(slug: str, member: str) -> str:
     -- lists the retired unit last, and this would then attribute every later change to
     a session that is already over.
     """
+    return _newest_unit(_dashboard_slot(member, slug))
+
+
+def _newest_unit(slot: str) -> str:
+    """The live session unit on *slot*, or ``""`` when it has none or it cannot be read."""
     try:
         # Imported here, not at module scope, for the reason every other store call in
         # this handler is: the crew log is an optional subsystem and the boot path must
         # not load it.
         from kiro_crew.crew_log.projection import units_in_succession
 
-        slot = _dashboard_slot(member, slug)
         units = units_in_succession(slot)
         return units[-1] if units else ""
     except Exception:
-        logger.debug("dashboard: no DM session for %r", member, exc_info=True)
+        logger.debug("dashboard: no session unit on %r", slot, exc_info=True)
         return ""
 
 
@@ -218,7 +222,55 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
     owner_denied = await _owner_only(request, "members.dashboard")
     if owner_denied is not None:
         return owner_denied
-    slug, _member = resolved
+    slug, member = resolved
+    return await _serve(request, slug, member, None)
+
+
+async def api_session_dashboard(request: web.Request) -> web.Response:
+    """GET /api/chat/slots/{slot}/dashboard -- one ROOT session's own dashboard.
+
+    The member route's body and its gates, keyed by the session instead of a crewmate:
+    the instance is the session's own (:func:`instance.session_instance_key`), and every
+    fold a field reads is read from THIS slot, so a session's page shows the work
+    ledger and crew log that session wrote.
+
+    ROOT SESSIONS ONLY, by :func:`card_lifecycle.is_root_session`, the test the
+    automatic card already applies. A dispatched or adopted session is answered 404
+    ``not_root_session``, which the side panel reads as "this session has no page" --
+    a worker's records belong to the board of whoever dispatched it.
+
+    App tokens are denied and the read is owner-only, for the reasons the member route
+    gives: the fields are work-ledger and crew-log data.
+    """
+    denied = await _deny_app_caller(request, "sessions.dashboard")
+    if denied is not None:
+        return denied
+    owner_denied = await _owner_only(request, "sessions.dashboard")
+    if owner_denied is not None:
+        return owner_denied
+    from kiro_crew.dashboard.card_lifecycle import is_root_session
+
+    state = request.app["state"]
+    slot = state.get_slot(request.match_info.get("slot", ""))
+    if slot is None:
+        return _bad("slot_not_found", "no session for this slot", status=404)
+    if not is_root_session(slot):
+        return _bad(
+            "not_root_session",
+            "only a root session has a dashboard; this one was dispatched or adopted",
+            status=404,
+        )
+    slot_key = str(slot.key)
+    return await _serve(request, instance.session_instance_key(slot_key), "", slot_key)
+
+
+async def _serve(request: web.Request, slug: str, member: str, slot: str | None) -> web.Response:
+    """The dashboard read for one store key, after the caller's gates have passed.
+
+    *slug* is the store key, *member* the crewmate's name (``""`` for a session) and
+    *slot* the slot every fold is read from, or ``None`` for the crewmate's DM slot.
+    """
+    _member = member
     # The reader's UI language, as the browser resolved it. Checked against the
     # shipped catalogs in `dashboard_frame.page_locale`; anything else is English.
     locale = request.query.get("locale", "")
@@ -236,7 +288,7 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
         # The CURRENT version, not a new one, because staging wrote none. A reader that
         # saw this number move would believe the page had been installed.
         body["preview"] = True
-        rendered = await _run(lambda: _render(slug, _member, staged, locale))
+        rendered = await _run(lambda: _render(slug, _member, staged, locale, slot=slot))
         if rendered is not None:
             body["rendered_html"] = rendered
         return web.json_response(body)
@@ -269,7 +321,7 @@ async def api_member_dashboard(request: web.Request) -> web.Response:
         instance.STATE_EMPTY,
         instance.STATE_STALE,
     ):
-        rendered = await _run(lambda: _render(slug, _member, record, locale))
+        rendered = await _run(lambda: _render(slug, _member, record, locale, slot=slot))
         if rendered is not None:
             body["rendered_html"] = rendered
     return web.json_response(body)
@@ -492,7 +544,7 @@ def _trusted_page(slug: str, record: Any) -> str | None:
     return entry.html
 
 
-def read_fields(slug: str, member: str, manifest: Any) -> Any:
+def read_fields(slug: str, member: str, manifest: Any, *, slot: str | None = None) -> Any:
     """One read of *manifest*'s field values for this crewmate, as the page gets them.
 
     The page's own read, shared with ``dashboard_fields`` so the values an agent is
@@ -501,8 +553,12 @@ def read_fields(slug: str, member: str, manifest: Any) -> Any:
     from kiro_crew.crew_log import projection
     from kiro_crew.dashboard_feed import DashboardFeed
 
-    slot = _dashboard_slot(member, slug)
-    feed = DashboardFeed(slot, _write_session(slug, member))
+    if slot is None:
+        slot = _dashboard_slot(member, slug)
+        session = _write_session(slug, member)
+    else:
+        session = _newest_unit(slot)
+    feed = DashboardFeed(slot, session)
     try:
         feed.subscribe(manifest)
         agentic: Any = {}
@@ -513,7 +569,9 @@ def read_fields(slug: str, member: str, manifest: Any) -> Any:
         feed.unsubscribe()
 
 
-def _render(slug: str, member: str, record: Any, locale: str = "") -> str | None:
+def _render(
+    slug: str, member: str, record: Any, locale: str = "", *, slot: str | None = None
+) -> str | None:
     """The live page with its values filled in: the frame's half of contract v3 part 5.
 
     Fold values come through :class:`~kiro_crew.dashboard_feed.DashboardFeed`, which
@@ -551,7 +609,7 @@ def _render(slug: str, member: str, record: Any, locale: str = "") -> str | None
         page = _trusted_page(slug, record)
         if page is None:
             return None
-        read = read_fields(slug, member, manifest)
+        read = read_fields(slug, member, manifest, slot=slot)
         payload = dashboard_frame.read_payload(
             # MASKED AND REDACTED on the way out, at the one step that hands fold
             # values to a page's own script. A snapshot is taken from what the page
@@ -565,6 +623,8 @@ def _render(slug: str, member: str, record: Any, locale: str = "") -> str | None
             # the one chokepoint and a field added here later would otherwise skip it.
             written_at={name: str(_page_safe(at)) for name, at in read.written_at.items()},
             locale=locale,
+            # A root session's page is read by its slot; a crewmate's never is.
+            subject="crewmate" if slot is None else "session",
         )
         # The catalog's page, redacted like the values that go into it. The scrub is
         # kept because this is the one step producing both the raw body and the
@@ -577,12 +637,13 @@ def _render(slug: str, member: str, record: Any, locale: str = "") -> str | None
 
 
 def register_member_dashboard_routes(app: web.Application) -> None:
-    """Register the dynamic dashboard's read route.
+    """Register the dynamic dashboard's read routes: a crewmate's and a root session's.
 
-    One route, so there is no ordering question here yet. ``server.py`` duplicates the
-    path through its deferred binder rather than calling this function, because calling
+    Neither path is a prefix of another route's pattern, so there is no ordering question
+    here yet. ``server.py`` duplicates the paths through its deferred binder rather than calling this function, because calling
     it would import this module at boot and the boot-path rule forbids that for an
     optional subsystem; ``test_member_dashboard_routes`` pins the two spellings against
     each other.
     """
     app.router.add_get("/api/members/{slug}/dashboard", api_member_dashboard)
+    app.router.add_get("/api/chat/slots/{slot}/dashboard", api_session_dashboard)

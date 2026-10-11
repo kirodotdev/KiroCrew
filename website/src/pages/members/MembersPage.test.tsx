@@ -173,8 +173,8 @@ vi.mock('../chat/FolderPanel', () => ({ default: () => null }))
 // (CrewDynamicDashboard.test.tsx); here the stub reports the identity the tab
 // passes it, which is all a page case can claim.
 vi.mock('./CrewDynamicDashboard', () => ({
-  default: ({ slug, displayName }: { slug: string; displayName: string }) => (
-    <div data-testid="crew-dashboard-stub" data-slug={slug} data-display-name={displayName} />
+  default: ({ target, displayName }: { target: { slug?: string }; displayName: string }) => (
+    <div data-testid="crew-dashboard-stub" data-slug={target.slug} data-display-name={displayName} />
   ),
 }))
 vi.mock('../../components/DiffPanel', () => ({ default: () => null }))
@@ -216,13 +216,12 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput, crewmateCreated, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown; crewmateCreated?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, composerInput, crewmateCreated, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; composerInput?: unknown; crewmateCreated?: import('react').ReactNode } & Record<string, unknown>) {
     // Mount count: the guided flow must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
       <div data-testid="chat-pane-stub" data-agent-locked={agentLocked ? '1' : '0'} data-follow-content-width={followContentWidth ? '1' : '0'} data-busy-mode={busyMode ?? 'split'} data-top-inset={topInset ?? ''} data-crew-composer={composerInput === CrewComposerRef.current ? '1' : '0'}>
         {slotKey}
-        {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
         {crewmateCreated}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
@@ -1297,16 +1296,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.queryByRole('tab', { name: 'Side Chat' })).toBeNull()
   })
 
-  it('the Dashboard tab stays across the preview flag and the chat has no dock opener', async () => {
+  it('the Dashboard tab stays across the preview flag', async () => {
     act(() => { setPreviewFlag(PREVIEW_DASHBOARD, false) })
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     // The tab is the crewmate's own published page, not the preview's surface.
     expect(await screen.findByTestId(`side-panel-leading-tab-${CREW_DASHBOARD_TAB_ID}`)).toHaveTextContent('Dashboard')
     expect(await screen.findByTestId('member-dashboard')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Open task dashboard' })).toBeNull()
     act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
-    expect(screen.queryByRole('button', { name: 'Open task dashboard' })).toBeNull()
+    expect(screen.getByTestId('member-dashboard')).toBeInTheDocument()
   })
 
   it('the Dashboard is the crewmate\'s generated page, with no repeated identity row', async () => {

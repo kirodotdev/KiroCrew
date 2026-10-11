@@ -22,10 +22,12 @@ is the contract for the machinery underneath it.
 
 ## Components
 
-Long runs can expose a model-designed `task-dashboard` HTML artifact in the
-shared chat/Crew Dynamic Dashboard, published by an authorized descendant and
-updated under the same slug. This is a presentation of the pipeline's existing
-facts, not a new status store or a broader conductor role. The host independently
+No panel reads a `task-dashboard` HTML artifact. A root session's side-panel
+Overview is that session's catalog dashboard page, whose fields read the
+pipeline's own work ledger and crew log (see [artifacts](artifacts.md)); it is a
+presentation of the pipeline's existing facts, not a new status store or a
+broader conductor role. The skill text that still names the artifact is retired
+separately (CREW-21664). The host independently
 shows native questions and tool approvals for the session subtree; Normal
 permission users can act on an exact request without visiting every worker.
 Publishing never changes permissions. See [artifacts](artifacts.md).

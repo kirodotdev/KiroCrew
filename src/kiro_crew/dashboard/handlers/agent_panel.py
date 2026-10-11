@@ -99,11 +99,16 @@ def _live_session_key(state: DashboardState, sk: str) -> str:
 
 
 async def _resolve_publishing_crew(
-    request: web.Request, operation: str
+    request: web.Request, operation: str, *, root_session: bool = False
 ) -> tuple[tuple[str, str], None] | tuple[None, web.Response]:
     """Vet the caller and resolve it to the crew whose panel it may write.
 
     Returns ``((slug, crew_name), None)`` or ``(None, refusal)``.
+
+    With *root_session*, a caller bound to no crew that is a ROOT session resolves to
+    ``(session store key, "")``: its own dashboard instance, keyed by its own slot. The
+    dynamic dashboard's routes pass it; the panel publish routes do not, so a crew
+    webview is still published only from a crew's own thread.
 
     The crew comes from the session's own agent binding, never from the body: a
     body-supplied name would let one crew publish a webview that presents as
@@ -288,6 +293,40 @@ async def _resolve_publishing_crew(
                 "code": "session_not_resolved",
             },
             status=400,
+        )
+    if not crew_name and root_session:
+        # A ROOT session writing ITS OWN page. Only the dynamic dashboard's routes ask
+        # for this, and every gate above has already passed: the internal secret, the
+        # operator switch, the app-caller denial, the strict session identity, the
+        # restricted-mode block and the slot check.
+        #
+        # The page is named by the CALLER's own slot and never by the body, so a session
+        # can reach no instance but its own. A dispatched or adopted session is refused
+        # here: its records belong to whoever dispatched it, and the side panel shows it
+        # no page to write to. The root test is `is_root_session`, the one the
+        # automatic card applies, which fails closed on an unseeded session tree.
+        from kiro_crew.dashboard.card_lifecycle import is_root_session
+        from kiro_crew.dashboard_templates import instance as instance_store
+
+        if is_root_session(slot):
+            return (instance_store.session_instance_key(str(slot.key)), ""), None
+        sel().log_api_access(
+            caller=sk,
+            operation=operation,
+            outcome="denied",
+            source="dashboard",
+            resources=request.path,
+            error="caller is not a root session and not bound to a crew",
+        )
+        return None, web.json_response(
+            {
+                "error": (
+                    "only a root session or a crew has a dashboard to write to; this "
+                    "session was dispatched or adopted, so its page is its dispatcher's"
+                ),
+                "code": "not_root_session",
+            },
+            status=403,
         )
     if not crew_name:
         # No agent binding means no crew, and a panel has nowhere to go. Said
@@ -1564,11 +1603,16 @@ async def _resolve_dashboard_caller(
     surface reaches the same files through MCP and therefore owes the same refusal.
     It is asked HERE rather than per route so a route added later inherits it.
     """
-    resolved, refusal = await _resolve_publishing_crew(request, operation)
+    resolved, refusal = await _resolve_publishing_crew(request, operation, root_session=True)
     if refusal is not None:
         return None, refusal
     assert resolved is not None
     slug, crew_name = resolved
+    if not crew_name:
+        # A root session's own page. Its slot is the caller's, and the store key was
+        # derived from it, so no slug can be shared and there is no owner to ask about.
+        sk = request.headers.get("X-Session-Key", "")
+        return (slug, "", _normalize_slot_key(sk)), None
 
     def _owners_then_slot() -> tuple[list[str], str]:
         # ONE config load for both answers, and the OWNERS question first: an
@@ -1622,7 +1666,9 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     # know its fields, the rows are capped at ten, and a second round trip for ten rows
     # is a cycle spent on a payload that fits in this one.
     rows, retained = await asyncio.to_thread(_instance_history, slug, slot)
-    values, written_at = await asyncio.to_thread(_current_values, slug, crew_name, instance)
+    values, written_at = await asyncio.to_thread(
+        _current_values, slug, crew_name, instance, "" if crew_name else slot
+    )
     return web.json_response(
         dashboard_agentic.fields_for_agent(
             instance,
@@ -1636,9 +1682,15 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
 
 
 def _current_values(
-    slug: str, crew_name: str, instance: dashboard_agentic.Instance | None
+    slug: str,
+    crew_name: str,
+    instance: dashboard_agentic.Instance | None,
+    session_slot: str = "",
 ) -> tuple[dict[str, Any] | None, dict[str, str]]:
     """The page's current field values, read the way the page reads them.
+
+    *session_slot* is set for a root session's own page, whose folds are read from that
+    slot rather than from a crewmate's DM slot.
 
     ``(None, {})`` when there is no instance or the read fails, so the listing still
     answers with the fields and their shapes rather than failing the whole read.
@@ -1648,7 +1700,10 @@ def _current_values(
     try:
         from kiro_crew.dashboard.handlers.member_dashboard import read_fields
 
-        read = read_fields(slug, crew_name, instance.manifest)
+        if session_slot:
+            read = read_fields(slug, crew_name, instance.manifest, slot=session_slot)
+        else:
+            read = read_fields(slug, crew_name, instance.manifest)
     except Exception:
         logger.warning("dashboard values for %s are unreadable", slug, exc_info=True)
         return None, {}
@@ -1698,7 +1753,7 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
     value = args.get("value")
     instance = await asyncio.to_thread(read_instance, slug, crew_name)
     mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
-    owner_key = agent_panel.crew_key(crew_name)
+    owner_key = _writer_key(crew_name, slot)
     try:
         entry = dashboard_agentic.check_write(instance, field, value, mistakes)
     except dashboard_agentic.WriteRefused as refused:
@@ -1778,10 +1833,32 @@ async def api_dashboard_write(request: web.Request) -> web.Response:
     # Tell an open dashboard a value changed. The fold's own bus event is what
     # drives the frame's refill; this frame is for a client watching the panel
     # surface, and it carries the SLUG only, like the publish broadcast.
-    state.broadcast_ws("dashboard_value_written", {"slug": slug})
+    _broadcast_changed(state, "dashboard_value_written", slug, crew_name, slot)
     return web.json_response(
         {"ok": True, "written": {"field": field, "type": entry["type"]}, "corrected": corrected}
     )
+
+
+def _writer_key(crew_name: str, slot: str) -> str:
+    """The ownership digest a dashboard entry carries: the crew's, or the root session's."""
+    return agent_panel.crew_key(crew_name if crew_name else f"session:{slot}")
+
+
+def _broadcast_changed(
+    state: DashboardState, msg_type: str, slug: str, crew_name: str, slot: str
+) -> None:
+    """Tell an open dashboard to re-read, without telling an app which slot changed.
+
+    A crewmate's page is named by its SLUG and broadcast as before. A root session's
+    page -- the caller bound to no crew -- is named by its SLOT, which is what the
+    side panel holds; its store key is a digest no client can match. A slot key is
+    hidden from an app socket unless it holds slot visibility, and these frames are
+    scoped as global ``panels`` events, so the slot frame goes to owner sockets only.
+    """
+    if crew_name:
+        state.broadcast_ws(msg_type, {"slug": slug})
+    else:
+        state.broadcast_ws_owners(msg_type, {"slot": slot})
 
 
 def _record_refusal(state: DashboardState, sk: str, entry: dict[str, Any]) -> bool:
@@ -2006,7 +2083,7 @@ async def api_dashboard_preview(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     assert resolved is not None
-    slug, _crew_name, _slot = resolved
+    slug, crew_name, slot = resolved
     body = await _instance_body(request)
     if isinstance(body, web.Response):
         return body
@@ -2024,7 +2101,12 @@ async def api_dashboard_preview(request: web.Request) -> web.Response:
         preview = instance_store.stage_preview(
             slug, template_id=template_id, html=html, manifest=manifest
         )
-        return preview.wire()
+        wire = preview.wire()
+        if not crew_name:
+            # A session's page is read by its SLOT, and the store key is a one-way
+            # digest of it, so the link is built from the slot this caller resolved to.
+            wire["preview_url"] = instance_store.session_preview_url(slot)
+        return wire
 
     try:
         staged = await asyncio.to_thread(_stage)
@@ -2046,7 +2128,7 @@ async def api_dashboard_apply(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     assert resolved is not None
-    slug, _crew_name, slot = resolved
+    slug, crew_name, slot = resolved
 
     from kiro_crew.dashboard_templates import instance as instance_store
 
@@ -2060,7 +2142,7 @@ async def api_dashboard_apply(request: web.Request) -> web.Response:
     # Tell an open dashboard its page changed, the same one-key frame the agentic
     # write broadcasts. The tab refetches the page; this carries the slug only.
     state: DashboardState = request.app["state"]
-    state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
+    _broadcast_changed(state, "dashboard_instance_changed", slug, crew_name, slot)
     return web.json_response(
         {
             "ok": True,
@@ -2082,7 +2164,7 @@ async def api_dashboard_rollback(request: web.Request) -> web.Response:
     if refusal is not None:
         return refusal
     assert resolved is not None
-    slug, _crew_name, slot = resolved
+    slug, crew_name, slot = resolved
     body = await _instance_body(request)
     if isinstance(body, web.Response):
         return body
@@ -2103,7 +2185,7 @@ async def api_dashboard_rollback(request: web.Request) -> web.Response:
     except Exception as exc:
         return _instance_refusal(exc)
     state: DashboardState = request.app["state"]
-    state.broadcast_ws("dashboard_instance_changed", {"slug": slug})
+    _broadcast_changed(state, "dashboard_instance_changed", slug, crew_name, slot)
     return web.json_response(
         {
             "ok": True,

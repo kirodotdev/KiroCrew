@@ -9,7 +9,6 @@ import { fmtDateTime } from '../../../i18n/format'
 import { Btn } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
 import { dashboardDocument } from './dashboardDocument'
-import { TASK_DASHBOARD_SANDBOX } from './TaskDashboardFrame'
 import type { DynamicDashboardCard } from '../../../types/dynamicDashboard'
 import { useAppSelector } from '../../../store'
 import { isPrivateMemoryMode } from '../../../utils/sessionRefs'
@@ -20,6 +19,11 @@ const STATUS_KEYS: Record<Exclude<DynamicDashboardCard['status'], 'published'>, 
   budget: 'commandCenter.card_budget', failed: 'commandCenter.card_failed',
   unavailable: 'commandCenter.card_unavailable',
 }
+
+/** A presentation surface, deliberately NOT an agent-control bridge: no grant at
+ * all, so the gateway's card can lay itself out but cannot run script, read the
+ * host, or submit or approve on its behalf. */
+export const TASK_DASHBOARD_SANDBOX = ''
 
 /** The host owns freshness and controls. The isolated document owns presentation. */
 export default function SessionStatusFrame({ slot, title, active }: { slot: string; title: string; active: boolean }) {

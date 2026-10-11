@@ -251,6 +251,9 @@ export function handleMemberProjection(data: FrameData): void {
  *  -- the refetch re-asks the server, which re-checks ownership. */
 export const MEMBER_DASHBOARD_QUERY_PREFIX = 'member-dashboard'
 
+/** The query key prefix a root session's Dashboard Overview reads under. */
+export const SESSION_DASHBOARD_QUERY_PREFIX = 'session-dashboard'
+
 /** A crewmate's dashboard moved, so an open tab must re-read it.
  *
  *  Two frames reach here and both mean the same thing to this tab. A
@@ -265,9 +268,16 @@ export const MEMBER_DASHBOARD_QUERY_PREFIX = 'member-dashboard'
  *  its data island, its agentic marks and its stale band already decided, so there
  *  is no client-side shape to patch. */
 export function handleDashboardMoved(queryClient: QueryClient, data: FrameData): void {
-  const slug = String(((data ?? {}) as { slug?: unknown }).slug || '')
+  const frame = (data ?? {}) as { slug?: unknown; slot?: unknown }
+  const slug = String(frame.slug || '')
   if (slug) {
     queryClient.invalidateQueries({ queryKey: [MEMBER_DASHBOARD_QUERY_PREFIX, slug] })
+  }
+  // A ROOT session's own page is named by its slot: its store key is a digest no
+  // client can match, so the gateway's frame carries the slot instead.
+  const slot = String(frame.slot || '')
+  if (slot) {
+    queryClient.invalidateQueries({ queryKey: [SESSION_DASHBOARD_QUERY_PREFIX, slot] })
   }
 }
 

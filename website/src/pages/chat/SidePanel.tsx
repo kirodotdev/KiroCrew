@@ -52,7 +52,7 @@ import { useAppSelector } from '../../store'
 import { selectSlotSubagents, selectSlotToolLog } from '../../store/chatSlice'
 import { mcpAppKey } from '../../store/chatSlice'
 import McpAppFrame from '../../components/McpAppFrame'
-import { dashboardPreviewSlugFromRef } from '../../utils/dashboardPreview'
+import { dashboardPreviewTargetFromRef } from '../../utils/dashboardPreview'
 import type { ExtractedLink } from '../../utils/extractChatLinks'
 import type { PullRequestLink } from '../../utils/pullRequestLinks'
 import type { ChatPin } from '../../api/pins'
@@ -340,6 +340,8 @@ interface SidePanelProps {
    *  path and whether it is a file or a directory to the composer host, which
    *  inserts the same `@`-mention the file picker does. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
+  /** Put a reply a dashboard page offered into this chat's composer; the person sends it. */
+  onComposerInsert?: (text: string) => void
   projectDir?: string
   navLinks?: ExtractedLink[]
   navResolving?: boolean
@@ -510,7 +512,7 @@ export function sidePanelEffectiveWidth(
 }
 
 export default function SidePanel({
-  tabsCtl, slot, slotOwner, persistSlot, onFileOpen, onOpenWorkingTreeDiff, onArtifactOpen, onAddToContext,
+  tabsCtl, slot, slotOwner, persistSlot, onFileOpen, onOpenWorkingTreeDiff, onArtifactOpen, onAddToContext, onComposerInsert,
   projectDir, navLinks, navResolving, sources, selectedSourceUrl, onSelectSource, onReconcileSource,
   issues, selectedIssueUrl, onSelectIssue, onReconcileIssue,
   onAddSourceToChat, onSubmitComments, connected = true, onFileSave, onClose, panelHidden,
@@ -1374,12 +1376,11 @@ export default function SidePanel({
                   to load after main.tsx's preload-reload heal declined would
                   otherwise reject up to the ROUTE boundary and replace the whole
                   chat page with an error card. The fallback is the shared error
-                  surface, not nothing, so the tab says why it is empty; the dock
-                  above the composer keeps working from its own chunk. */}
+                  surface, not nothing, so the tab says why it is empty. */}
               {/* No hand-off: the adjacent chat composer holds unsent text and the
                   panel's own answer drafts live in this tab. */}
               <ErrorBoundary scope="command-center" fallback={<ErrorNotice className="m-3" message={i18nT('commandCenter.panel_load_failed')} />}>
-                <Suspense fallback={null}><CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} /></Suspense>
+                <Suspense fallback={null}><CommandCenterPanel slot={slot ?? null} active={isActive && !panelHidden} onAct={onComposerInsert} /></Suspense>
               </ErrorBoundary>
             </div>
           )
@@ -1850,10 +1851,10 @@ function TabBody({ tab, active, slot, projectDir, onClose, onContentChange, onDi
   }
   if (tab.kind === 'artifact') {
     // A crewmate's staged dashboard rides the artifact tab (see `dashboardPreviewRef`).
-    const previewSlug = dashboardPreviewSlugFromRef(tab.artifactSlug)
+    const previewTarget = dashboardPreviewTargetFromRef(tab.artifactSlug)
     // A local boundary: a failed chunk load must not reach the route boundary and
     // unmount the host page (and any unsaved form on it).
-    if (previewSlug) return <ErrorBoundary scope="dashboard-preview" retryOnly><Suspense fallback={null}><DashboardPreviewPanel slug={previewSlug} /></Suspense></ErrorBoundary>
+    if (previewTarget) return <ErrorBoundary scope="dashboard-preview" retryOnly><Suspense fallback={null}><DashboardPreviewPanel target={previewTarget} /></Suspense></ErrorBoundary>
     return (
       <ArtifactPanel
         embedded

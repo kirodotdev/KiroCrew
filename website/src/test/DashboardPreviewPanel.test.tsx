@@ -50,14 +50,24 @@ describe('DashboardPreviewPanel', () => {
   it('labels the page as a preview that is not applied', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     expect(await screen.findByTestId('dashboard-preview-badge', undefined, LAZY)).toHaveTextContent('Preview, not applied')
+  })
+
+  it('reads a root session\'s STAGED page by its slot, with no roster read', async () => {
+    const members = roster([])
+    const read = vi.spyOn(api, 'sessionDashboard').mockResolvedValue(staged())
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'session', slot: 'chat-7' }} />)
+    await waitFor(() => expect(read).toHaveBeenCalledWith('chat-7', 'en', true), LAZY)
+    expect(await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)).toBeInTheDocument()
+    expect(screen.getByTestId('dashboard-preview-badge')).toHaveTextContent('Preview, not applied')
+    expect(members).not.toHaveBeenCalled()
   })
 
   it('reads the STAGED page for the member the roster names', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     await waitFor(() => expect(read).toHaveBeenCalledWith('atlas', 'Atlas', 'en', true), LAZY)
     expect(read.mock.calls.every(call => call[3] === true)).toBe(true)
     expect(await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)).toBeInTheDocument()
@@ -67,7 +77,7 @@ describe('DashboardPreviewPanel', () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
     const fetchSpy = vi.spyOn(globalThis, 'fetch')
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     expect(await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /apply/i })).toBeNull()
     const posted = fetchSpy.mock.calls.map(([url]) => String(url))
@@ -77,7 +87,7 @@ describe('DashboardPreviewPanel', () => {
   it('reports a failed roster refresh even over a cached crewmate name', async () => {
     const members = roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    const { queryClient } = renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    const { queryClient } = renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)
     members.mockRejectedValue(new Error('gateway restarting'))
     await queryClient.refetchQueries({ queryKey: ['kirocrew-agents', 'members-roster'] }).catch(() => {})
@@ -87,7 +97,7 @@ describe('DashboardPreviewPanel', () => {
   it('offers no browser link, because the preview URL is JSON, not a page', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     await screen.findByTestId('crew-dashboard-frame', undefined, LAZY)
     expect(screen.queryByRole('link')).toBeNull()
   })
@@ -95,7 +105,7 @@ describe('DashboardPreviewPanel', () => {
   it('says the roster read failed instead of claiming no crewmate', async () => {
     vi.spyOn(api, 'members').mockRejectedValue(new Error('gateway restarting'))
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     expect(await screen.findByTestId('dashboard-preview-roster-error', undefined, LAZY)).toBeInTheDocument()
     expect(screen.queryByTestId('dashboard-preview-no-member')).toBeNull()
     expect(read).not.toHaveBeenCalled()
@@ -108,7 +118,7 @@ describe('DashboardPreviewPanel', () => {
     vi.spyOn(api, 'memberDashboard').mockRejectedValue(
       new ApiError(404, 'nothing is staged to preview', JSON.stringify({ error: 'nothing is staged to preview', code: 'no_preview' })),
     )
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     expect(await screen.findByTestId('crew-dashboard-preview-gone', undefined, LAZY)).toBeInTheDocument()
     expect(screen.queryByTestId('crew-dashboard-error')).toBeNull()
     expect(screen.queryByTestId('crew-dashboard-error-retry')).toBeNull()
@@ -119,7 +129,7 @@ describe('DashboardPreviewPanel', () => {
   it('wraps its header so the hint keeps a full line in a narrow panel', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }])
     vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     const badge = await screen.findByTestId('dashboard-preview-badge', undefined, LAZY)
     expect(badge.parentElement).toHaveClass('flex-wrap')
     expect(screen.getByText(/Not live yet/)).toHaveClass('basis-full')
@@ -128,7 +138,7 @@ describe('DashboardPreviewPanel', () => {
   it('withholds the page when no single roster name owns the slug', async () => {
     roster([{ name: 'Atlas', slug: 'atlas' }, { name: 'ATLAS', slug: 'atlas' }])
     const read = vi.spyOn(api, 'memberDashboard').mockResolvedValue(staged())
-    renderWithProviders(<DashboardPreviewPanel slug="atlas" />)
+    renderWithProviders(<DashboardPreviewPanel target={{ kind: 'member', slug: 'atlas' }} />)
     expect(await screen.findByTestId('dashboard-preview-no-member', undefined, LAZY)).toBeInTheDocument()
     expect(read).not.toHaveBeenCalled()
     expect(screen.getByTestId('dashboard-preview-badge')).toBeInTheDocument()

@@ -5,11 +5,12 @@ import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
 import { Badge } from '../../components/ui'
 import { membersRosterQuery } from '../../api/membersQuery'
+import type { DashboardPreviewTarget } from '../../utils/dashboardPreview'
 
 const CrewDynamicDashboard = lazy(() => import('../members/CrewDynamicDashboard'))
 
 /**
- * A crewmate's STAGED dashboard, in the chat's side panel.
+ * A STAGED dashboard, a crewmate's or a root session's, in the chat's side panel.
  *
  * The page `dashboard_preview` set aside, rendered by the same frame as the
  * crewmate's Dashboard tab with its `preview` read. Looking at it changes
@@ -24,11 +25,13 @@ const CrewDynamicDashboard = lazy(() => import('../members/CrewDynamicDashboard'
  * a browser tab would show data instead of the page. A modified click on the
  * chat link still reaches that URL.
  */
-export default function DashboardPreviewPanel({ slug }: { slug: string }) {
+export default function DashboardPreviewPanel({ target }: { target: DashboardPreviewTarget }) {
   const { t } = useTranslation()
-  // The read is keyed by member NAME as well as slug. The roster names it; a slug
-  // two names share is not resolved by guessing, so the frame is withheld.
-  const { data: rows, isLoading, isError } = useQuery(membersRosterQuery)
+  const slug = target.kind === 'member' ? target.slug : ''
+  // A crewmate's read is keyed by member NAME as well as slug. The roster names it;
+  // a slug two names share is not resolved by guessing, so the frame is withheld.
+  // A session's page is keyed by its slot alone, so it needs no roster.
+  const { data: rows, isLoading, isError } = useQuery({ ...membersRosterQuery, enabled: target.kind === 'member' })
   const matches = (rows ?? []).filter(r => r.slug === slug)
   const member = matches.length === 1 ? matches[0].name : null
   // Once the staged page is applied or expires, "not applied" would be false.
@@ -42,7 +45,13 @@ export default function DashboardPreviewPanel({ slug }: { slug: string }) {
         </div>
       )}
       <div className="flex-1 min-h-0 overflow-auto">
-        {isError ? (
+        {target.kind === 'session' ? (
+          <ErrorBoundary retryOnly>
+            <Suspense fallback={null}>
+              <CrewDynamicDashboard key={target.slot} target={target} displayName={t('commandCenter.title')} preview onPreviewGone={setGone} />
+            </Suspense>
+          </ErrorBoundary>
+        ) : isError ? (
           // A failed roster read is not "no such crewmate", and a failed refresh is
           // reported even over a cached name. No agent hand-off: it navigates, and the
           // side panel's other tabs can hold unsaved file edits.
@@ -50,7 +59,7 @@ export default function DashboardPreviewPanel({ slug }: { slug: string }) {
         ) : member ? (
           <ErrorBoundary retryOnly>
             <Suspense fallback={null}>
-              <CrewDynamicDashboard key={slug} slug={slug} member={member} displayName={member} preview onPreviewGone={setGone} />
+              <CrewDynamicDashboard key={slug} target={{ kind: 'member', slug, member }} displayName={member} preview onPreviewGone={setGone} />
             </Suspense>
           </ErrorBoundary>
         ) : isLoading ? null : (
