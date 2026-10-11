@@ -25,6 +25,7 @@ from typing import Any
 # stub. Only the exception type is bound directly -- an exception class is
 # compared by identity, never substituted.
 from kiro_crew import agent as agent_mod
+from kiro_crew import mcp_declined_home
 from kiro_crew.acp import kas_agents as kas_agents_mod
 from kiro_crew.acp._dispatch import advertised_mode_origin
 from kiro_crew.acp.child_env_defaults import apply_child_env_defaults
@@ -308,6 +309,17 @@ class KasHarness(MembershipHarness):
                 from kiro_crew.members import MEMBER_PANEL_SERVER
 
                 stubbed = frozenset(stubbed) | {MEMBER_PANEL_SERVER}
+            # A refused shared spec cannot name this instance's mcp.json servers in
+            # ``tools``, and KAS grants only what ``tools`` names -- it mounts those
+            # servers on its own. Passed only when non-empty, so the projection's
+            # call shape is unchanged everywhere the shared home is writable.
+            grants = mcp_declined_home.kas_tool_grants(
+                agent,
+                spec=spec,
+                work_dir=work_dir,
+                present=stubbed,
+            )
+            extra = {"extra_tool_refs": grants} if grants else {}
             # The snapshot travels WITH the payload it built. This payload is where the
             # spec is CONSUMED on this host -- ``set_mode`` activates what is already
             # registered and reads nothing -- so the check that proves the consumed spec
@@ -322,6 +334,7 @@ class KasHarness(MembershipHarness):
                     member_dispatch=member_dispatch,
                     crew_panel=crew_panel,
                     session_key=session_key,
+                    **extra,
                 ),
                 snapshot,
             )

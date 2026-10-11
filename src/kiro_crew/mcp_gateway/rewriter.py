@@ -324,7 +324,7 @@ def _resolve_target_command(
     if not target_command:
         return ""
     if os.path.isabs(target_command):
-        # Same predicate as ``agent.py::_resolve_command``: an absolute path
+        # Same predicate as ``agent.py::_resolve_mcp_command``: an absolute path
         # must exist and be executable, or the entry is left unwrapped — a
         # dead absolute path would ENOENT identically in gatewayd and in the
         # session, so failing it in the session (visible) beats a per-session

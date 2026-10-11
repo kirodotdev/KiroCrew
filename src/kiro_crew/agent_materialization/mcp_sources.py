@@ -324,11 +324,12 @@ class ResolvedServers(NamedTuple):
         return {mcp_server_alias(_n) for _n in self.unresolved}
 
 
-def merge_mcp_sources(config: dict) -> McpSources:
+def merge_mcp_sources(config: dict, *, audit: bool = True) -> McpSources:
     """Merge the app, Kiro-global, provider-global and store MCP servers into *config*.
 
     Returns the scope maps as read, so the later passes resolve against the same
-    reads.
+    reads. ``audit=False`` is for a pass that writes no spec (the refused-home
+    projection): the app pass then records no SEL entry for a config nobody wrote.
     """
     managed_names = set(agent_mod._MANAGED_MCP_SERVERS)
 
@@ -348,7 +349,7 @@ def merge_mcp_sources(config: dict) -> McpSources:
     # Names a PREVIOUS rebuild left behind -- the only stale projections a changed
     # source reconciles. Seeded here so the app loop can retire what it claims.
     _stale = set(config.get("mcpServers", {}))
-    for _app_srv, _app_spec in _collect_app_mcp_servers().items():
+    for _app_srv, _app_spec in _collect_app_mcp_servers(audit=audit).items():
         if _app_srv not in managed_names:
             config.setdefault("mcpServers", {})[_app_srv] = _app_spec
             # The manifest just spoke, so a same-named shared-file leftover must
@@ -742,8 +743,15 @@ def resolve_mcp_servers(
     return ResolvedServers(_unresolved_this_pass, _oauth_client_targets)
 
 
-def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str, str]) -> None:
-    """Mount every user-installed server, strip disabled ones, and govern their grants."""
+def sync_shared_server_refs(
+    config: dict, sources: McpSources, mounted: dict[str, str], *, audit: bool = True
+) -> None:
+    """Mount every user-installed server, strip disabled ones, and govern their grants.
+
+    ``audit=False`` skips the SEL records, for an in-memory pass whose config is
+    never written as a spec (the refused-home projection): recording grants for
+    a spec nobody wrote would misstate what the agent was given.
+    """
     kirocrew_mcp = sources.kirocrew
     shared_mcp = sources.kiro_global
     extra_shared_mcp = sources.provider_global
@@ -921,7 +929,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 _strip_owned_refs("allowedTools", strip_per_tool=True)
                 if ref not in _shared_not_auto:
                     _shared_not_auto.append(ref)
-    if _shared_added:
+    if audit and _shared_added:
         agent_mod.sel().log_api_access(
             caller="system",
             operation="mcp_tools_added",
@@ -929,7 +937,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             source="install_agent",
             resources=f"{', '.join(_shared_added)} added to tools/allowedTools (shared)",
         )
-    if _shared_not_auto:
+    if audit and _shared_not_auto:
         # Its own SEL record: "mounted but not auto-approved" is a governance
         # outcome an operator has to be able to see, and it is invisible in the
         # added/removed pair (the ref still shows as added, to `tools`).
@@ -943,7 +951,7 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 f"(governance ceiling); calls go through the approval gate"
             ),
         )
-    if _shared_removed:
+    if audit and _shared_removed:
         agent_mod.sel().log_api_access(
             caller="system",
             operation="mcp_tools_removed",

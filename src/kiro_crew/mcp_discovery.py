@@ -3303,7 +3303,7 @@ def _pinned_command_missing(cmd: str) -> bool:
       portable config on every pass.
 
     The test is the resolver's own, ``isfile`` plus ``X_OK``, as
-    ``agent._resolve_command`` applies it to an absolute command -- deliberately
+    ``agent._resolve_mcp_command`` applies it to an absolute command -- deliberately
     not ``shutil.which``, which can report a perfectly good file as unresolvable
     inside a user-namespace sandbox. Asking a different question than the writer
     would let this report a live pin as gone and re-sync it forever, which is the
@@ -3361,7 +3361,7 @@ def _names_a_location(cmd: str) -> bool:
 def _basenames_match(resolved: str, bare: str) -> bool:
     """True when *resolved*'s basename names the same binary as *bare*.
 
-    On Windows the resolver (``shutil.which``, via ``agent._resolve_command``)
+    On Windows the resolver (``shutil.which``, via ``agent._resolve_mcp_command``)
     appends the extension as ``PATHEXT`` spells it — commonly UPPER case — so
     ``npx`` resolves to ``...\\npx.CMD``. An exact basename comparison therefore
     reports every stdio MCP server as diverged forever, and each discovery pass
