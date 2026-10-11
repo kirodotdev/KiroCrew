@@ -30,6 +30,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import urllib.error
 from pathlib import Path
 from types import SimpleNamespace
@@ -150,16 +151,30 @@ def _fake_proc(pid: int = 4242, returncode: int | None = None) -> Any:
     return _FakeProc(pid=pid, returncode=returncode)
 
 
-def _join_started(*threads: threading.Thread) -> None:
+# A lost-run ceiling for the threaded spawn-ownership tests, never their race window:
+# every wait below ends on an event the test or the spawn path sets, and once the
+# gates are released the workers depend on nothing the test still holds. The bound
+# only turns a broken handoff into a named failure instead of a hung worker.
+# Measured from the windows-pytest-progress artifacts: a passing call takes 0.16-0.17 s,
+# and a contended runner has held the post-gate publication work (real pidfile and log
+# writes) past 2 s, so this is more than 10x that, and half the suite's --timeout=120.
+_SPAWN_RACE_CEILING_SECS = 30.0
+
+
+def _join_started(*threads: threading.Thread) -> float:
     """Join every worker that was started, so none outlives its test's monkeypatches.
 
     A thread that was never started (because an earlier coordination assert failed)
-    cannot be joined, so it is skipped; a started one is given the same bound the
-    tests use for their own waits.
+    cannot be joined, so it is skipped. The started ones share one lost-run ceiling,
+    so a broken run fails after one ceiling, not one per thread. Returns the seconds
+    spent joining, for the caller's failure message.
     """
+    started = time.monotonic()
+    deadline = started + _SPAWN_RACE_CEILING_SECS
     for thread in threads:
         if thread.ident is not None:
-            thread.join(2)
+            thread.join(max(0.0, deadline - time.monotonic()))
+    return time.monotonic() - started
 
 
 class _FakeSock:
@@ -925,7 +940,7 @@ class TestSpawnPublicationOwnership:
             with lifecycle_lock:
                 yield
             if call_number == 1:
-                assert successor_reserved.wait(2)
+                assert successor_reserved.wait(_SPAWN_RACE_CEILING_SECS)
 
         def _body(name: str, _manifest: Any) -> AppProcess | None:
             nonlocal body_calls
@@ -936,7 +951,7 @@ class TestSpawnPublicationOwnership:
                 first_owner.append(owner)
                 assert bmod._reserve_free_port(name) == 9100
                 first_reserved.set()
-                assert release_first.wait(2)
+                assert release_first.wait(_SPAWN_RACE_CEILING_SECS)
                 return None
             assert cleanup_complete.is_set()
             port = bmod._reserve_free_port(name)
@@ -978,17 +993,17 @@ class TestSpawnPublicationOwnership:
         # released and every started thread joined on the way out.
         first_thread.start()
         try:
-            assert first_reserved.wait(2)
+            assert first_reserved.wait(_SPAWN_RACE_CEILING_SECS)
             assert bmod.stop_app_backend("app") is True
 
             successor_thread.start()
-            assert successor_waiting.wait(2)
+            assert successor_waiting.wait(_SPAWN_RACE_CEILING_SECS)
         finally:
             release_first.set()
-            _join_started(first_thread, successor_thread)
+            joined_after = _join_started(first_thread, successor_thread)
 
-        assert not first_thread.is_alive()
-        assert not successor_thread.is_alive()
+        assert not first_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
+        assert not successor_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
         assert errors == []
         assert first_results == [None]
         assert len(successor_results) == 1
@@ -1036,7 +1051,7 @@ class TestSpawnPublicationOwnership:
         def _survived(proc: _FakeProc, _port: int | None = None) -> bool:
             if proc.pid == 701:
                 restart_child_spawned.set()
-                assert allow_restart_publication.wait(2)
+                assert allow_restart_publication.wait(_SPAWN_RACE_CEILING_SECS)
             return True
 
         monkeypatch.setattr(bmod, "_survived_spawn", _survived)
@@ -1084,17 +1099,17 @@ class TestSpawnPublicationOwnership:
         start_thread = threading.Thread(target=_public_start)
         restart_thread.start()
         try:
-            assert restart_child_spawned.wait(2)
+            assert restart_child_spawned.wait(_SPAWN_RACE_CEILING_SECS)
             assert bmod.stop_app_backend("app") is True
 
             start_thread.start()
-            assert public_start_waiting.wait(2)
+            assert public_start_waiting.wait(_SPAWN_RACE_CEILING_SECS)
         finally:
             allow_restart_publication.set()
-            _join_started(restart_thread, start_thread)
+            joined_after = _join_started(restart_thread, start_thread)
 
-        assert not restart_thread.is_alive()
-        assert not start_thread.is_alive()
+        assert not restart_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
+        assert not start_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
         assert errors == []
         assert restart_results == [True]
         assert len(start_results) == 1
@@ -1136,7 +1151,7 @@ class TestSpawnPublicationOwnership:
 
         def _survived(_proc: _FakeProc, _port: int | None = None) -> bool:
             child_spawned.set()
-            assert allow_publication.wait(2)
+            assert allow_publication.wait(_SPAWN_RACE_CEILING_SECS)
             return True
 
         monkeypatch.setattr(bmod, "_survived_spawn", _survived)
@@ -1164,16 +1179,16 @@ class TestSpawnPublicationOwnership:
         )
         public_thread.start()
         try:
-            assert child_spawned.wait(2)
+            assert child_spawned.wait(_SPAWN_RACE_CEILING_SECS)
 
             restart_thread.start()
-            assert await_called.wait(2)
+            assert await_called.wait(_SPAWN_RACE_CEILING_SECS)
         finally:
             allow_publication.set()
-            _join_started(public_thread, restart_thread)
+            joined_after = _join_started(public_thread, restart_thread)
 
-        assert not public_thread.is_alive()
-        assert not restart_thread.is_alive()
+        assert not public_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
+        assert not restart_thread.is_alive(), f"alive after {joined_after:.1f} s of joining"
         assert errors == []
         assert len(public_results) == 1
         assert restart_results == public_results
