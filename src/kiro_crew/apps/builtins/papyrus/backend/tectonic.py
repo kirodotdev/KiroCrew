@@ -51,14 +51,17 @@ work on a daemon thread, and the ``no-blocking-call-on-event-loop`` rule.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import http.client
 import logging
 import os
 import platform
 import shutil
+import stat
 import sys
 import tarfile
+import tempfile
 import threading
 import time
 import urllib.error
@@ -68,7 +71,7 @@ import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from kiro_crew import asset_downloader, platform_compat
+from kiro_crew import asset_downloader, pinned_fs, platform_compat
 from kiro_crew.apps.builtins.papyrus.backend import store
 from kiro_crew.sel import sel
 
@@ -534,13 +537,101 @@ def _locate_binary(tree: Path) -> Path | None:
     top-level directory does not need a code change to keep working.
     """
     wanted = binary_name()
+    root = tree.resolve()
+
+    def contained(candidate: Path) -> bool:
+        """True only when *candidate* is a file the extraction itself produced.
+
+        The walk below already refuses a candidate that IS a link, so refusing a
+        link-mediated escape is this function's own intent. But ``rglob``
+        DESCENDS through a directory link, and the executable on the far side is
+        an ordinary file -- ``is_file()`` true, ``is_symlink()`` false -- so it
+        passes that filter while resolving outside the tree. On Windows the link
+        is typically a junction, which ``is_symlink`` does not report at all.
+
+        Resolving is what makes the check hold for both: it follows every
+        reparse point on the way down and answers where the bytes actually live.
+
+        This is a NAME-level filter and deliberately not the containment
+        witness: it resolves a path, and whatever opens that path afterwards
+        resolves it again, so a link swapped in between is followed by the
+        second resolution and not the first. It exists to refuse the ordinary
+        case early and to name the right file in the failure message.
+        :func:`_open_inside` is what actually decides containment, on the
+        descriptor the install then reads.
+        """
+        try:
+            return candidate.resolve().is_relative_to(root)
+        except OSError:
+            return False
+
     direct = tree / wanted
-    if direct.is_file():
+    if direct.is_file() and contained(direct):
         return direct
     for candidate in sorted(tree.rglob(wanted)):
-        if candidate.is_file() and not candidate.is_symlink():
+        if candidate.is_file() and not candidate.is_symlink() and contained(candidate):
             return candidate
     return None
+
+
+def _open_inside(candidate: Path, root_real: str) -> int | None:
+    """Open *candidate* and return a descriptor, but only if it lives in *root_real*.
+
+    This is the containment witness. Every by-name check in this module --
+    ``resolve()``, ``is_file()``, ``is_symlink()`` -- validates a path and then
+    hands that path to something that opens it again, so the inode that was
+    checked and the inode that is used are two separate lookups with a window
+    between them. Inside that window a local writer can retarget the
+    ``.provision.*`` tree the unpack ran into, and the second lookup follows
+    the new link.
+
+    So the order is inverted: open FIRST, then ask the kernel where the thing
+    already held open actually is (:func:`pinned_fs.fd_real_path` --
+    ``/proc/self/fd``, ``F_GETPATH`` or ``GetFinalPathNameByHandleW``). A
+    descriptor cannot be re-pointed, so that answer stays true for as long as it
+    is held, and the caller installs FROM the descriptor rather than reopening
+    the name.
+
+    *root_real* must be captured before the tree is filled, and by the caller --
+    resolving it here would re-open the same window one level up, since the
+    directory whose containment is being asserted is exactly the one an attacker
+    would swap.
+
+    ``O_NOFOLLOW`` guards only the final component and does not exist on
+    Windows; it is passed where available as a cheap early refusal, and the
+    fd-path check is what closes the gap on every platform. ``O_BINARY`` keeps
+    the descriptor in binary mode on Windows, where ``os.open`` otherwise
+    translates CRLF and stops the install's copy at the first ``0x1A`` byte of a
+    PE file. Every failure route -- unreadable, not a regular file, unknowable
+    real path -- returns ``None``, never a fallback to the pathname.
+    """
+    try:
+        fd = os.open(
+            candidate,
+            os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0),
+        )
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        real = pinned_fs.fd_real_path(fd)
+        if real is None:
+            return None  # cannot witness containment -> fail closed
+        try:
+            if os.path.commonpath([real, root_real]) != root_real:
+                return None
+        except ValueError:  # different drives on Windows
+            return None
+    except OSError:
+        return None
+    else:
+        held, fd = fd, -1
+        return held
+    finally:
+        if fd >= 0:
+            with contextlib.suppress(OSError):
+                os.close(fd)
 
 
 # ── download ────────────────────────────────────────────────────────────────
@@ -693,22 +784,66 @@ def _download_to(asset: TectonicAsset, staging: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def _install_binary(extracted: Path, target: Path) -> None:
-    """Move *extracted* into place atomically and make it executable.
+def _install_binary(source_fd: int, target: Path) -> None:
+    """Install the bytes behind *source_fd* atomically and make them executable.
 
     Staged inside the TARGET directory so ``os.replace`` is a same-filesystem
     rename, and named per-process so two concurrent installs cannot interleave
     writes into one staging file. The mode is applied BEFORE the rename, so the
-    binary is never observable at its final path without its exec bit — a
+    binary is never observable at its final path without its exec bit -- a
     half-installed compiler that "looks valid" is exactly the state
     :func:`binary_installed` must never see.
+
+    The source is a DESCRIPTOR, not a path, and that is the whole point. Moving
+    the located path by name re-resolves it: the file that is validated and the
+    file that is installed are then two lookups of the same name, and a local
+    writer who retargets the unpack tree between them has an arbitrary file
+    promoted onto the path papyrus executes. A descriptor cannot be re-pointed,
+    so the bytes copied here are exactly the bytes :func:`_open_inside`
+    witnessed inside the tree. The cost is a copy instead of a rename, once, for
+    an artifact that was just downloaded over the network.
+
+    The staging write itself is the symmetric hazard: ``.{target}.<pid>.tmp`` is
+    a predictable name in a directory a local writer may reach, so a link
+    planted there before the write would send ~50MB of Tectonic bytes into an
+    arbitrary host file and then take its mode. The create therefore goes
+    through :func:`asset_downloader.open_staging_nofollow`, the downloader's
+    no-follow-create primitive: it removes whatever is at the name (a link AS a
+    link, never followed), creates it ``O_CREAT | O_EXCL | O_NOFOLLOW``, and
+    compares the descriptor to the name so a planted link is refused on Windows
+    too. The exec mode is applied with ``platform_compat.fchmod_safe`` THROUGH
+    that descriptor (a no-op on Windows, which has no POSIX perms), not ``chmod``
+    on the name, so the file that is marked executable is the file the bytes
+    were written to.
+
+    The rename is by name, so it goes through
+    :func:`asset_downloader.install_verified`: after the rename the installed
+    name is reopened no-follow and compared to the identity of the descriptor
+    the bytes were written through. A file swapped in at the staging name
+    between the write and the rename is removed and refused, never installed.
+    On POSIX the staging descriptor stays open across that check so its inode
+    cannot be reused; Windows will not rename a file with an open handle, so
+    there it is closed first (NTFS file ids carry a reuse sequence number).
     """
     target.parent.mkdir(parents=True, exist_ok=True)
-    staging = target.parent / f".{target.name}.{os.getpid()}.tmp"
+    staging_name = f".{target.name}.{os.getpid()}.tmp"
+    staging = target.parent / staging_name
+    where = asset_downloader.TargetDir(target.parent)
     try:
-        shutil.move(str(extracted), str(staging))
-        platform_compat.chmod_safe(staging, _BINARY_MODE)
-        os.replace(staging, target)
+        os.lseek(source_fd, 0, os.SEEK_SET)
+        out = asset_downloader.open_staging_nofollow(where, staging_name)
+        try:
+            shutil.copyfileobj(os.fdopen(os.dup(source_fd), "rb", closefd=True), out)
+            out.flush()
+            platform_compat.fchmod_safe(out.fileno(), _BINARY_MODE)
+            verified = asset_downloader.file_identity(os.fstat(out.fileno()))
+            if not platform_compat.IS_POSIX:
+                out.close()
+            asset_downloader.install_verified(
+                where, staging_name, target.name, verified=verified, restrict_to_owner=False
+            )
+        finally:
+            out.close()
     finally:
         if staging.exists():
             staging.unlink(missing_ok=True)
@@ -724,17 +859,32 @@ def _provision_once(root: Path | None) -> tuple[bool, str]:
             "or tectonic manually"
         )
     target = binary_path(root)
-    work = target.parent / f".provision.{os.getpid()}"
+    # A PRIVATE unpack tree: ``mkdtemp`` creates it ``0o700`` under an
+    # unpredictable name, so another account cannot plant links inside it or
+    # rewrite the extracted file in place. Swapping the whole tree by name is
+    # caught by the descriptor witness in :func:`_open_inside`. A writer who can
+    # overwrite the installed binary in the vendor directory itself is out of
+    # scope: no install-time check can stop that. Windows ignores the mode (the
+    # directory inherits the vendor dir's DACL).
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        work = Path(tempfile.mkdtemp(prefix=".provision.", dir=target.parent))
+    except OSError as exc:
+        return False, f"install failed: {exc}"
     archive = work / asset.name
     try:
-        shutil.rmtree(work, ignore_errors=True)
-        work.mkdir(parents=True, exist_ok=True)
         ok, error = _download_to(asset, archive)
         if not ok:
             return False, error
         _set_state(STATE_INSTALLING)
         unpacked = work / "unpacked"
         unpacked.mkdir()
+        # Captured HERE, on a directory this process just created and before the
+        # archive is written into it, so it is the extraction's own tree that
+        # containment is asserted against. Resolving it later -- inside the
+        # locator, or after the walk -- would resolve whatever the name points at
+        # by then, which is precisely the thing an attacker would have swapped.
+        root_real = os.path.realpath(unpacked)
         try:
             _extract(archive, unpacked, is_zip=asset.is_zip)
         except (ArchiveRejected, tarfile.TarError, zipfile.BadZipFile, OSError) as exc:
@@ -742,12 +892,23 @@ def _provision_once(root: Path | None) -> tuple[bool, str]:
         binary = _locate_binary(unpacked)
         if binary is None:
             return False, f"no {binary_name()} found inside {asset.name}"
-        if binary.stat().st_size < _MIN_BINARY_BYTES:
-            return (
-                False,
-                f"extracted {binary_name()} is implausibly small ({binary.stat().st_size} bytes)",
+        source_fd = _open_inside(binary, root_real)
+        if source_fd is None:
+            return False, (
+                f"the {binary_name()} found inside {asset.name} does not live inside "
+                "the unpacked tree — refusing to install it"
             )
-        _install_binary(binary, target)
+        try:
+            # From the descriptor, not the path: a second stat() of the name is a
+            # second lookup, and the size that gates the install must be the size
+            # of the file that gets installed.
+            size = os.fstat(source_fd).st_size
+            if size < _MIN_BINARY_BYTES:
+                return False, f"extracted {binary_name()} is implausibly small ({size} bytes)"
+            _install_binary(source_fd, target)
+        finally:
+            with contextlib.suppress(OSError):
+                os.close(source_fd)
         if not binary_installed(root):
             return False, "installed binary failed its post-install check"
         return True, ""
