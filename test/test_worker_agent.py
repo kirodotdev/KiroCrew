@@ -3103,19 +3103,40 @@ def test_a_revocation_between_the_payload_build_and_activation_is_caught(tmp_pat
 
 
 def _runtime_for_spawn(monkeypatch, attempts_outcomes):
-    """A runtime whose ``_spawn_admitted`` plays back the given outcomes in order."""
+    """A runtime whose ``_spawn_admitted`` plays back the given outcomes in order.
+
+    A ``DerivedSpecStale`` outcome leaves the state the real failed-start guard
+    leaves for the post-handshake refusal -- its reap is a ``kill()``, so the child
+    is gone and the runtime marked dead -- and an attempt on a runtime still marked
+    dead fails the way the real handshake does, so a retry that skipped the revive
+    cannot pass here. Any other raised outcome stands for a refusal before a child
+    exists, which leaves nothing to reap.
+    """
     from kiro_crew.acp import runtime as runtime_mod
+    from kiro_crew.acp.session_handle import AcpRuntimeDead
     from kiro_crew.acp.types import ACP_BACKEND_KIRO
 
     rt = object.__new__(runtime_mod.AcpRuntime)
     rt._acp_backend = ACP_BACKEND_KIRO
     rt._process = None
+    rt._dead = False
+    rt._process_tree_confirmed_dead = False
+    rt._initialized = False
+    rt._session_queues = {}
+    rt._answer_tasks = set()
+    rt._scratch_dir = None
+    rt._stderr_lines = []
     calls: list[int] = []
     outcomes = list(attempts_outcomes)
 
     async def _spawn_admitted():
+        if rt._dead:
+            raise AcpRuntimeDead("runtime is dead")
         calls.append(len(calls))
         outcome = outcomes.pop(0)
+        if isinstance(outcome, agent.DerivedSpecStale):
+            rt._dead = True
+            rt._process_tree_confirmed_dead = True
         if isinstance(outcome, BaseException):
             raise outcome
 
