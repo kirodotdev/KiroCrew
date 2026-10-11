@@ -599,6 +599,58 @@ async def test_structured_fields_cannot_silently_patch_a_legacy_loop(tmp_path):
     service.stop()
 
 
+class _SteppedTime:
+    """The ``time`` module with ``time()`` stepped by *step* seconds; every other name is real.
+
+    Bound as a module's own ``time``, never over the stdlib clock, so the event loop and
+    every other module keep the real one.
+    """
+
+    def __init__(self, step: float) -> None:
+        self._step = step
+
+    def time(self) -> float:
+        return time.time() + self._step
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("step", [0.0, 7200.0], ids=["no_step", "forward_step"])
+@pytest.mark.asyncio
+async def test_budget_raise_is_judged_on_the_timers_clock(tmp_path, monkeypatch, step):
+    """The spent-budget guard reads the loop's age as the timer reads it.
+
+    The loop is 30 minutes into a 1 hour budget. Read as ``time.time() - created_ts``,
+    a 2 hour forward step makes it 2.5 hours old, and a raise to 2 hours is refused as
+    spent while the timer would still fire.
+    """
+    from kiro_crew.autonudge_service.model import runtime_budget_exceeded
+
+    service = AutoNudgeService(base_dir=tmp_path)
+    loop = await service.add("chat-1", "legacy prompt", idle_secs=600, max_runtime_secs=3600)
+    try:
+        loop.created_ts = time.time() - 1800
+        runtime_budget_exceeded(loop)  # the timer's read in this process
+        from kiro_crew.autonudge_service import model, mutations
+
+        for module in (sda, model, mutations):
+            monkeypatch.setattr(module, "time", _SteppedTime(step))
+        with patch("kiro_crew.autonudge.get_instance", return_value=service):
+            result = await apply_session_directive(
+                SimpleNamespace(),
+                SimpleNamespace(key="chat-1", _app=""),
+                "dashboard:chat-1",
+                "monitor_update",
+                {"patch": {"max_runtime_secs": 7200}},
+            )
+
+        assert "elapsed runtime" not in result, result
+        assert service.get_by_slot("chat-1").max_runtime_secs == 7200, result
+    finally:
+        service.stop()
+
+
 @pytest.mark.asyncio
 async def test_monitor_watch_does_not_replace_a_legacy_loop(tmp_path):
     service = AutoNudgeService(base_dir=tmp_path)

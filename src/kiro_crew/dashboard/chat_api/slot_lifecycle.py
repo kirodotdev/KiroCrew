@@ -188,6 +188,7 @@ async def _restore_slot_nudge_loop(
         return
     try:
         from kiro_crew import autonudge  # circular: autonudge -> dashboard.chat -> chat_handlers
+        from kiro_crew.autonudge_service.model import runtime_elapsed
 
         svc = autonudge.get_instance()
         if svc is None:
@@ -203,7 +204,9 @@ async def _restore_slot_nudge_loop(
                 return
             # >=1: a budget of 0 means UNLIMITED, so a spent-to-the-second
             # remainder must not round into "no budget at all".
-            runtime_left = max(1, int(loop.max_runtime_secs - (time.time() - loop.created_ts)))
+            runtime_left = max(
+                1, int(loop.max_runtime_secs - runtime_elapsed(loop, loop.created_ts))
+            )
         await svc.add(
             loop.slot_key,
             loop.message,

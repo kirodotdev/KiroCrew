@@ -37,6 +37,7 @@ from kiro_crew.autonudge_service.model import (
     is_channel_key,
     is_structured_monitor_loop,
     runtime_budget_exceeded,
+    runtime_elapsed,
 )
 from kiro_crew.autonudge_service.timers import (
     _REARM_BACKOFF_MAX_SHIFT,
@@ -915,7 +916,8 @@ async def _extend_for_open_ledger(self: AutoNudgeService, loop: NudgeLoop, bound
 
     The RUNAWAY BACKSTOP is the configured monitoring runtime ceiling
     (``monitoring.max_runtime_secs``, seven days as shipped), measured as the
-    loop's age from ``created_ts``. Past it nothing is extended, the bound stops
+    loop's age from ``created_ts`` by :func:`runtime_elapsed`, the same reading
+    the budget uses. Past it nothing is extended, the bound stops
     the loop as before, and that refusal is logged at WARNING too. A runtime
     extension is also clamped to the ceiling, so it never writes a budget the
     update path would refuse.
@@ -933,8 +935,9 @@ async def _extend_for_open_ledger(self: AutoNudgeService, loop: NudgeLoop, bound
     created = loop.created_ts
     if isinstance(created, bool) or not isinstance(created, (int, float)) or created <= 0:
         return False
-    now = time.time()
-    age = max(0.0, now - created)
+    # The age the budget itself is measured with, so the two cannot disagree after
+    # a wall-clock step: a budget spent on that clock is extended past the same age.
+    age = runtime_elapsed(loop, created)
     ceiling = _ledger_backstop_secs()
     if age >= ceiling:
         logger.warning(

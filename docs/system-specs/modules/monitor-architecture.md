@@ -260,7 +260,10 @@ then ends only through the probe's terminal settlement (every item closed) or a
 user or agent stop. The runaway backstop is the same
 `monitoring.max_runtime_secs` ceiling, measured as the loop's age from
 `created_ts`: past it nothing is extended, the bound stops the loop as before,
-and the refusal is logged at WARNING.
+and the refusal is logged at WARNING. The age is read from `created_ts` once per
+process (on the first read after a load, or after `created_ts` moves) and
+advances on the monotonic clock from there, so a wall-clock step while the
+gateway runs neither spends a loop's runtime budget nor gives it back.
 
 A work-ledger watch also HOLDS while every open item waits on a person: each is
 `blocked` or `question` with the worker's `reason` `approval` or `needs_human`,

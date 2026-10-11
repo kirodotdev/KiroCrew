@@ -949,6 +949,7 @@ async def _monitor_update(
         external_arm_refusal,
         is_self_arm,
     )
+    from kiro_crew.autonudge_service.model import runtime_elapsed
 
     svc = get_instance()
     # Not-applied paths raise (audited denied) — see _monitor_start.
@@ -1028,11 +1029,12 @@ async def _monitor_update(
         )
     # Spent-budget guard, same shape as the cycle-cap one: a wall-clock budget
     # at/below the loop's elapsed age deactivates it on the next timer without
-    # another fire — refuse rather than promise a wake that never comes.
+    # another fire — refuse rather than promise a wake that never comes. The age
+    # is the timer's own reading (``runtime_elapsed``), so the two cannot disagree.
     if "max_runtime_secs" in patch:
         new_budget = int(patch["max_runtime_secs"] or 0)
         created_ts = float(getattr(loop, "created_ts", 0.0) or 0.0)
-        elapsed = int(time.time() - created_ts) if created_ts else 0
+        elapsed = int(runtime_elapsed(loop, created_ts)) if created_ts else 0
         if new_budget and created_ts and elapsed >= new_budget:
             raise _DirectiveDenied(
                 f"monitor_update: max_runtime_secs={new_budget} is at or below "

@@ -273,6 +273,68 @@ async def test_failed_persist_gives_the_session_its_clock_back(tmp_path, monkeyp
     svc.stop()
 
 
+class _SteppedTime:
+    """The ``time`` module with ``time()`` stepped by *step* seconds; every other name is real.
+
+    Bound as a module's own ``time``, never over the stdlib clock, so the event loop and
+    every other module keep the real one.
+    """
+
+    def __init__(self, step: float) -> None:
+        self._step = step
+
+    def time(self) -> float:
+        return time.time() + self._step
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)
+
+
+@pytest.mark.parametrize("step", [0.0, 7200.0], ids=["no_step", "forward_step"])
+@pytest.mark.asyncio
+async def test_failed_persist_restores_the_budget_the_timer_reads_as_left(
+    tmp_path, monkeypatch, step
+) -> None:
+    """The replacement carries the remaining budget as the timer reads it.
+
+    The loop is 30 minutes into a 3 hour budget. Read as ``time.time() - created_ts``,
+    a 2 hour forward step leaves the replacement 30 minutes instead of 2.5 hours.
+    """
+    from kiro_crew.autonudge_service.model import runtime_budget_exceeded
+
+    state = _state_with_slot(tmp_path)
+    svc = await _service(tmp_path, monkeypatch)
+    loop = await svc.add(NAME, "check the PR", idle_secs=300, max_runtime_secs=10800)
+    # Every second that really passes from here on comes out of the budget the timer
+    # reads as left, so the bound below is taken relative to the span measured here.
+    started = time.monotonic()
+    loop.created_ts = time.time() - 1800
+    runtime_budget_exceeded(loop)  # the timer's read in this process
+
+    async def _persist(*_a, **_kw) -> None:
+        raise RuntimeError("disk wedged")
+
+    monkeypatch.setattr(handlers, "save_slot_off_loop", _persist)
+    from kiro_crew.autonudge_service import model, mutations
+
+    # The close path's components read ``time`` through the chat_handlers facade.
+    for module in (handlers, model, mutations):
+        monkeypatch.setattr(module, "time", _SteppedTime(step))
+    try:
+        resp = await handlers.api_chat_slot_delete(_Req(state, NAME))
+        spent = time.monotonic() - started
+
+        assert resp.status == 500
+        replacement = svc.get_by_slot(NAME)
+        assert replacement is not None, "the restored session was left with no clock"
+        # 9000 s are left at the timer's read. The wall step may take none of them; the
+        # seconds this test spent may, plus the one the restore's int() can drop.
+        left = replacement.max_runtime_secs
+        assert 9000 - spent - 1 <= left <= 9000, f"{left} s of the 9000 s left were restored"
+    finally:
+        svc.stop()
+
+
 @pytest.mark.asyncio
 async def test_structured_rollback_rechecks_the_restored_slot_generation(
     tmp_path, monkeypatch

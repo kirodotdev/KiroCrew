@@ -664,11 +664,33 @@ def runtime_budget_exceeded(loop: "NudgeLoop", now: float | None = None) -> bool
     notifier (wording), so the two can never disagree on WHY a loop stopped.
     A loop with no ``created_ts`` (a malformed/legacy store entry) never
     trips the budget — there is no anchor to measure from, and guessing one
-    could kill a healthy loop on its first cycle after an upgrade.
+    could kill a healthy loop on its first cycle after an upgrade. A *now*
+    the caller passes is a wall-clock reading and is used as given; without
+    one the spent time comes from :func:`runtime_elapsed`.
     """
     if not loop.max_runtime_secs or not loop.created_ts:
         return False
-    return (now if now is not None else time.time()) - loop.created_ts >= loop.max_runtime_secs
+    if now is not None:
+        return now - loop.created_ts >= loop.max_runtime_secs
+    return runtime_elapsed(loop, loop.created_ts) >= loop.max_runtime_secs
+
+
+def runtime_elapsed(loop: "NudgeLoop", created_ts: float) -> float:
+    """Seconds of the runtime budget spent since *created_ts*.
+
+    ``created_ts`` is wall-clock and persisted, which is what lets the budget
+    survive a restart. The time spent is read from it once per process -- on
+    the first read after a load, or after ``created_ts`` is re-anchored -- and
+    advanced on the monotonic clock from there, so a wall-clock step while the
+    gateway runs neither spends the budget nor gives it back. The anchor lives
+    in the instance's ``__dict__``, outside the dataclass fields, so it is
+    never serialized and every load takes a fresh one.
+    """
+    anchor = loop.__dict__.get("_runtime_anchor")
+    if anchor is None or anchor[0] != created_ts:
+        anchor = (created_ts, max(0.0, time.time() - created_ts), time.monotonic())
+        loop.__dict__["_runtime_anchor"] = anchor
+    return float(anchor[1] + (time.monotonic() - anchor[2]))
 
 
 def cap_reached(loop: "NudgeLoop") -> bool:
@@ -692,13 +714,15 @@ def budget_elapsed(loop: "NudgeLoop", now: float | None = None) -> bool:
     ``runtime_budget_exceeded`` asked at resume time, with the same defensive
     reads as :func:`cap_reached` and for the same reason. The clock keeps running
     through a pause, so a loop paused with an hour of budget left and resumed the
-    next day reads as spent here exactly as the timer would read it.
+    next day reads as spent here exactly as the timer would read it. Without *now*
+    the time spent is :func:`runtime_elapsed`, the timer's own reading, so a
+    wall-clock step cannot make the resume and the timer disagree.
     """
     budget = _positive_number(loop.max_runtime_secs)
     anchor = _positive_number(loop.created_ts)
     if not budget or not anchor:
         return False
-    return (now if now is not None else time.time()) - anchor >= budget
+    return (now - anchor if now is not None else runtime_elapsed(loop, anchor)) >= budget
 
 
 #: Share of a loop's cycle or runtime cap at or under which the nudge header
@@ -758,7 +782,7 @@ def nudge_cycle_header(loop: "NudgeLoop", now: float | None = None) -> str:
         parts.append(f"cycle {cycle}/{int(max_cycles)}")
         due = max(0, max_cycles - cycle) <= NUDGE_RENEW_DUE_SHARE * max_cycles
     if max_runtime and created_ts:
-        elapsed = (now if now is not None else time.time()) - created_ts
+        elapsed = (now - created_ts) if now is not None else runtime_elapsed(loop, created_ts)
         left = max(0, int(max_runtime - elapsed))
         parts.append(f"{left}s/{int(max_runtime)}s runtime left")
         due = due or left <= NUDGE_RENEW_DUE_SHARE * max_runtime

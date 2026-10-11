@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time as time_module
 from types import SimpleNamespace
 
 import pytest
@@ -209,6 +210,59 @@ async def test_runtime_extension_is_clamped_to_the_backstop(svc, _nosleep, ledge
     await svc._timer(loop)
 
     assert svc._loops[loop.id].max_runtime_secs == 8000
+    await _drain(svc)
+
+
+class _ScriptedClock:
+    """Stands in for ``time`` in the timer and the budget: seconds pass only when told.
+
+    ``monotonic()`` follows the time the test says really passed; ``time()``
+    follows it too, plus any wall-clock step. Every other name is the real module's.
+    """
+
+    def __init__(self) -> None:
+        self._wall = 1_900_000_000.0
+        self._mono = 5_000.0
+
+    def time(self) -> float:
+        return self._wall
+
+    def monotonic(self) -> float:
+        return self._mono
+
+    def advance(self, passed: float, *, step: float = 0.0) -> None:
+        self._mono += passed
+        self._wall += passed + step
+
+    def __getattr__(self, name: str):
+        return getattr(time_module, name)
+
+
+@pytest.mark.asyncio
+async def test_a_backward_clock_step_still_extends_a_spent_ledger_watch(
+    svc, _nosleep, ledger, monkeypatch
+):
+    """The extension reads the loop's age from the same clock as the budget.
+
+    The loop has really run 5 h against a 4 h budget, and the wall clock then
+    stepped back 2 h. The budget is spent, so the extension runs. Read from the
+    wall clock the age was 3 h, so the budget was raised to 3 h + 1 h -- no higher
+    than the 4 h it already had -- and the loop stopped with its ledger still open.
+    """
+    loop = await _armed(svc, max_runtime_secs=4 * 3600)
+    clock = _ScriptedClock()
+    for module in (firing, model):
+        monkeypatch.setattr(module, "time", clock)
+    loop.created_ts = clock.time()
+    assert not _an.runtime_budget_exceeded(loop)
+    clock.advance(5 * 3600, step=-2 * 3600)
+    svc._cancel_timer(loop.id)
+
+    await svc._timer(loop)
+
+    refreshed = svc._loops[loop.id]
+    assert refreshed.active is True, f"stopped as {refreshed.stopped_reason!r}"
+    assert refreshed.max_runtime_secs == 5 * 3600 + 3600
     await _drain(svc)
 
 

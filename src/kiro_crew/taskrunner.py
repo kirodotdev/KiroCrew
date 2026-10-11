@@ -132,6 +132,31 @@ _WORKFLOW_RESULT_SUMMARY_CAP = 120
 _UNATTENDED_SOURCES = frozenset({"cron", "mcp"})
 
 
+class _MonotonicAge:
+    """How old one of a run's wall-clock stamps is, measured on the monotonic clock.
+
+    ``started_at`` and ``last_task_time`` stay wall-clock for display and
+    ``runs.json``; the watchdog reads their AGE from here, so a wall-clock step
+    (an NTP correction, a manual change, a restored VM) neither cancels a task
+    that is progressing nor spares one that is stalled. The watchdog sees a new
+    stamp on its next read, so the age a new stamp starts at is bounded by the
+    monotonic time since the previous read.
+    """
+
+    def __init__(self, wall: float) -> None:
+        self._wall = wall
+        self._read = time.monotonic()
+        self._at = self._read - max(0.0, time.time() - wall)
+
+    def age(self, wall: float) -> float:
+        mono = time.monotonic()
+        if wall != self._wall:
+            self._wall = wall
+            self._at = mono - min(max(0.0, time.time() - wall), mono - self._read)
+        self._read = mono
+        return mono - self._at
+
+
 class WorkflowInitializing(RuntimeError):
     """Task mutations are unavailable until workflow attachment."""
 
@@ -2768,6 +2793,8 @@ class TaskRunner:
         stall_notified = False
         dead_process_count = 0
         dead_process_key: str | None = None
+        started = _MonotonicAge(run.started_at)
+        progress = _MonotonicAge(run.last_task_time)
         while run.status == "running":
             try:
                 await asyncio.sleep(_HEARTBEAT_INTERVAL)
@@ -2809,12 +2836,11 @@ class TaskRunner:
                 logger.debug("Watchdog heartbeat check failed", exc_info=True)
                 dead_process_count = 0
 
-            now = time.time()
-            elapsed = now - run.started_at
+            elapsed = started.age(run.started_at)
             if self._global_timeout > 0 and elapsed >= self._global_timeout:
                 logger.warning("Watchdog: global timeout reached (%.0fs)", elapsed)
                 return
-            since_last = now - run.last_task_time
+            since_last = progress.age(run.last_task_time)
             if since_last >= _STALL_CANCEL_TIMEOUT and run.task_id not in self._stall_cancelled_ids:
                 self._stall_cancelled_ids.add(run.task_id)
                 logger.warning("Watchdog: stall cancel after %d min", int(since_last / 60))
@@ -2835,7 +2861,7 @@ class TaskRunner:
                     f"No task completed in {int(since_last / 60)} min. Current: task {run.current_task}",
                     run=run,
                 )
-            if run.last_task_time > now - _STALL_TIMEOUT:
+            if since_last < _STALL_TIMEOUT:
                 stall_notified = False
                 self._stall_cancelled_ids.discard(run.task_id)
 

@@ -55,6 +55,34 @@ def _non_git_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str) -> 
     return work
 
 
+class _SteppedClock:
+    """Stands in for the ``time`` module: seconds pass only when a test says so.
+
+    ``monotonic()`` follows the real passage of time the test scripts;
+    ``time()`` follows it too, plus any wall-clock step on top. Every other
+    name is the real module's.
+    """
+
+    def __init__(self) -> None:
+        self._wall = 1_800_000_000.0
+        self._mono = 5_000.0
+
+    def time(self) -> float:
+        return self._wall
+
+    def monotonic(self) -> float:
+        return self._mono
+
+    def advance(self, passed: float, *, step: float = 0.0) -> None:
+        self._mono += passed
+        self._wall += passed + step
+
+    def __getattr__(self, name: str) -> Any:
+        import time as _time
+
+        return getattr(_time, name)
+
+
 def _make_mock_sessions() -> MagicMock:
     """Create a mock SessionManager with the methods TaskRunner uses."""
     sessions = MagicMock()
@@ -2754,6 +2782,58 @@ class TestWatchdog:
                 pass
 
         assert any("stalled" in t.lower() for t, _ in notifications)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("passed", "step", "cancelled"),
+        [
+            (5.0, 0.0, False),
+            (5.0, 2 * 3600.0 + 60, False),
+            (_STALL_CANCEL_TIMEOUT + 60.0, 0.0, True),
+            (_STALL_CANCEL_TIMEOUT + 60.0, -3600.0, True),
+        ],
+        ids=["progressing", "progressing_forward_step", "stalled", "stalled_backward_step"],
+    )
+    async def test_watchdog_measures_stalls_on_the_monotonic_clock(
+        self, monkeypatch: pytest.MonkeyPatch, passed: float, step: float, cancelled: bool
+    ) -> None:
+        """A wall-clock step neither cancels a progressing task nor spares a stalled one.
+
+        *passed* seconds really pass after the last progress stamp, and the wall
+        clock also steps by *step*. Before the fix the watchdog read the age from
+        the wall clock: the forward step reset a task that progressed 5 s ago,
+        and the backward step left a task stalled past the cancel timeout alone.
+        """
+        clock = _SteppedClock()
+        monkeypatch.setattr(taskrunner_module, "time", clock)
+        sessions = _make_mock_sessions()
+        sessions.is_provider_alive = AsyncMock(return_value=True)
+        runner = TaskRunner(sessions=sessions, auto_test=False)
+        run = TaskRun(spec_path="/t.md", spec_content="s", status="running")
+        run.current_task = 1
+        run.started_at = run.last_task_time = clock.time()
+        ticks = [lambda: clock.advance(passed, step=step)]
+
+        async def _tick(_secs: float) -> None:
+            if not ticks:
+                raise asyncio.CancelledError()
+            ticks.pop(0)()
+
+        class _AsyncioWithSleep:
+            """The watchdog's own ``asyncio`` with a scripted ``sleep``; the rest is real."""
+
+            sleep = staticmethod(_tick)
+
+            def __getattr__(self, name: str):
+                return getattr(asyncio, name)
+
+        monkeypatch.setattr(taskrunner_module, "asyncio", _AsyncioWithSleep())
+        await runner._watchdog_loop(run)
+
+        assert sessions.reset.await_count == (1 if cancelled else 0), (
+            f"{passed:.0f} s after the last progress, with a {step:+.0f} s wall-clock step, "
+            f"the watchdog reset the step's session {sessions.reset.await_count} time(s)"
+        )
 
     @pytest.mark.asyncio
     async def test_watchdog_exits_when_not_running(self) -> None:
