@@ -7,13 +7,11 @@ import { api } from '../../../api/client'
 import { useAppSelector } from '../../../store'
 import { Badge, Btn, Card, CardTitle, EmptyState, PageHeader, PanelSectionHeader, SearchInput } from '../../../components/ui'
 import ErrorNotice from '../../../components/ErrorNotice'
-import SimpleSelect from '../../../components/SimpleSelect'
 import { fmtDateTime, fmtNumber } from '../../../i18n/format'
 import { lastActivityEpoch } from '../sessionOrder'
 import { missingSourcesNotice, useCommandCenter, type CommandCenterData } from './useCommandCenter'
-import { runTitle, scopedSlots, slotKey, type RunNode } from './model'
+import { runTitle, type RunNode } from './model'
 import AttentionCard, { RestoredQuestionNotice } from './AttentionCard'
-import TaskDashboardFrame from './TaskDashboardFrame'
 import SessionStatusFrame from './SessionStatusFrame'
 
 /** One free summary read per visible card, sharing chat's websocket-invalidated cache. */
@@ -41,16 +39,11 @@ function SavedSummary({ slot, active }: { slot: string; active: boolean }) {
   </section>
 }
 
-function SessionDashboardCard({ node, data, active, team }: { node: RunNode; data: CommandCenterData; active: boolean; team: Set<string> }) {
+function SessionDashboardCard({ node, data, active }: { node: RunNode; data: CommandCenterData; active: boolean }) {
   const { t } = useTranslation()
   const attention = data.attention.filter(item => item.slot === node.slot)
   const runs = data.nodes.filter(n => n.slot === node.slot && n.kind !== 'session')
   const blocked = runs.some(n => n.state === 'blocked')
-  // A conductor's view is usually published by a builder it created, the same
-  // team the task panel reads; showing only this slot's own said "no view".
-  const dashboards = data.dashboards.filter(a => team.has(slotKey(a.session_key || '')))
-  const [view, setView] = useState('')
-  const selectedView = dashboards.find(a => a.slug === view) ?? dashboards[0]
   return <Card hidden={!active} data-testid="session-dashboard-card" data-slot={node.slot} className="min-w-0 self-start space-y-4">
     <div className="flex items-start gap-3">
       <div className="flex-1 min-w-0 space-y-1">
@@ -69,9 +62,6 @@ function SessionDashboardCard({ node, data, active, team }: { node: RunNode; dat
       {/* No hand-off: this session's unsent answers stay in the cards above. */}
       <ErrorNotice message={n.error} />
     </div>)}
-    {dashboards.length > 1 && <SimpleSelect aria-label={t('commandCenter.published_view')} options={dashboards.map(a => a.slug)} optionLabels={dashboards.map(a => a.name)} value={selectedView.slug} onChange={setView} />}
-    {selectedView ? <TaskDashboardFrame key={selectedView.slug} artifact={selectedView} active={active} />
-      : <p className="text-sm text-muted border-t border-border pt-3">{t('commandCenter.no_dashboard')}</p>}
   </Card>
 }
 
@@ -154,7 +144,7 @@ export default function SessionDashboardsPage() {
       <PanelSectionHeader label={t('pages.sessionsPage.page_title')} count={matching.length} />
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-4 items-start">
         {/* Preserve selection, but unmount inactive iframe documents to cap resources. */}
-        {nodes.map(node => <SessionDashboardCard key={node.slot} node={node} data={data} active={visible.has(node.slot)} team={new Set(scopedSlots(slots, node.slot).map(s => s.key))} />)}
+        {nodes.map(node => <SessionDashboardCard key={node.slot} node={node} data={data} active={visible.has(node.slot)} />)}
       </div>
       {slotsLoaded && !data.loading && !matching.length && <EmptyState icon={<LayoutDashboard size={24} />} title={t(nodes.length ? 'commandCenter.no_matches' : 'pages.sessionsPage.empty_title')} />}
       <div className="flex flex-wrap gap-2">

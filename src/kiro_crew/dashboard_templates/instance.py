@@ -43,17 +43,27 @@ to see, not a shape this module will write.
 
 from __future__ import annotations
 
+import contextvars
+import hashlib
 import json
 import logging
 import os
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Final, Iterator, Mapping
+from urllib.parse import quote
 
-from kiro_crew import dashboard_frame
-from kiro_crew.atomic_write import atomic_write, fsync_dir
+from kiro_crew import dashboard_frame, pinned_fs
+from kiro_crew.atomic_write import (
+    atomic_write,
+    fsync_dir,
+    fsync_open_dir,
+    pinned_parent_replace_supported,
+    refuse_linked_parent,
+)
 from kiro_crew.config.paths import data_home
 from kiro_crew.crew_log.entry_types import (
     DASHBOARD_INSTANCE_ACTIONS,
@@ -67,7 +77,7 @@ from kiro_crew.dashboard_templates.manifest import (
     parse_manifest,
 )
 from kiro_crew.owner_only_files import mkdirs_owner_only
-from kiro_crew.platform_compat import release_lock, try_acquire_lock
+from kiro_crew.platform_compat import open_create_or_existing, release_lock, try_acquire_lock
 
 __all__ = [
     "ACTIONS",
@@ -79,6 +89,7 @@ __all__ = [
     "MAX_RETAINED_VERSIONS",
     "RENDERABLE_SOURCES",
     "SCHEMA_VERSION",
+    "SESSION_KEY_PREFIX",
     "STATE_EMPTY",
     "STATE_ERROR",
     "STATE_LIVE",
@@ -94,9 +105,12 @@ __all__ = [
     "edit",
     "history",
     "instance_dir",
+    "is_session_key",
     "preview_url",
     "read",
     "rollback",
+    "session_instance_key",
+    "session_preview_url",
     "stage_preview",
     "staged_preview",
     "versions",
@@ -161,6 +175,12 @@ MAX_HISTORY_ROWS: Final[int] = 50
 #: match drops a real change with nothing raised.
 ENTRY_TYPE: Final[str] = DASHBOARD_INSTANCE_ENTRY_TYPE
 
+#: The prefix of a ROOT session's store key. See :func:`session_instance_key`.
+SESSION_KEY_PREFIX: Final[str] = "session:"
+_SESSION_DIGEST_LEN: Final[int] = 32
+_SESSION_DIGEST_RE: Final[re.Pattern[str]] = re.compile(rf"[0-9a-f]{{{_SESSION_DIGEST_LEN}}}")
+_SESSION_DASHBOARDS_DIR: Final[str] = "session-dashboards"
+
 _RECORD_FILE: Final[str] = "instance.json"
 _HISTORY_FILE: Final[str] = "history.json"
 _VERSIONS_SUBDIR: Final[str] = "versions"
@@ -224,15 +244,141 @@ def _now_ms() -> int:
     return int(time.time() * 1000)
 
 
-def instance_dir(slug: str) -> Path:
-    """Where one crewmate's dashboard instance lives.
+def session_instance_key(slot_key: str) -> str:
+    """The store key one ROOT session's dashboard instance is filed under.
 
-    Under the member's own space, beside everything else keyed by that slug, so a
-    crewmate removed from the roster takes its dashboard with it.
+    Every function in this module takes a store key where it says ``slug``: a member
+    slug for a crewmate's page, or this key for a session's. The prefix carries a
+    ``:``, which the member slug grammar refuses, so no crewmate's slug can ever name
+    a session's directory or the other way round.
+
+    A digest of the slot key rather than the key itself, because a slot key is not a
+    path segment: channel slots carry dots, and nothing here should have to argue
+    that a given key cannot climb out of the directory it names.
+    """
+    if not slot_key:
+        raise InstanceError("a session dashboard instance needs a slot key")
+    digest = hashlib.sha256(slot_key.encode("utf-8", "replace")).hexdigest()[:_SESSION_DIGEST_LEN]
+    return f"{SESSION_KEY_PREFIX}{digest}"
+
+
+def is_session_key(slug: str) -> bool:
+    """Whether *slug* is a session's store key rather than a member slug."""
+    return slug.startswith(SESSION_KEY_PREFIX)
+
+
+def instance_dir(slug: str) -> Path:
+    """Where one dashboard instance lives, for a crewmate or for a root session.
+
+    A crewmate's is under the member's own space, beside everything else keyed by that
+    slug, so a crewmate removed from the roster takes its dashboard with it. A session's
+    is under one directory of session pages, named by the digest
+    :func:`session_instance_key` made; a key whose digest is not exactly that shape is
+    refused rather than joined onto a path.
     """
     if not slug:
         raise InstanceError("a dashboard instance needs a member slug")
+    if is_session_key(slug):
+        digest = slug[len(SESSION_KEY_PREFIX) :]
+        if not _SESSION_DIGEST_RE.fullmatch(digest):
+            raise InstanceError("a session dashboard key must come from session_instance_key")
+        directory = data_home() / _SESSION_DASHBOARDS_DIR / digest
+        _refuse_linked_session_dir(directory)
+        return directory
     return data_home() / "members" / slug / "dashboard"
+
+
+def _refuse_linked_session_dir(directory: Path) -> None:
+    """Refuse a session page directory reached through a link or junction.
+
+    A root session's agent runs in a sandbox that can create links inside the data
+    home, while this module runs in the gateway, outside it. A link planted at
+    ``session-dashboards/<digest>`` -- or at ``session-dashboards`` itself -- would
+    have the gateway create, lock and write files wherever it points, including a
+    folder the agent's own sandbox holds read-only.
+
+    Two checks, before any directory is made. ``refuse_linked_parent`` walks every
+    component below the data-home anchor with ``lstat`` (the only test that sees a
+    Windows junction) and requires the resolved path to equal the one rebuilt from
+    the anchor, so it covers the leaf directory as well as its parents. Then the
+    resolved directory must still sit directly under the resolved session-pages
+    root, which is what makes a link pointing elsewhere inside the data home fail
+    too. The lstat walk is not race-free on its own; :func:`_locked` pins the
+    directory with ``O_NOFOLLOW`` for the rest of the operation.
+    """
+    try:
+        refuse_linked_parent(directory / _LOCK_FILE)
+    except OSError as exc:
+        raise InstanceError(
+            "this session's dashboard directory is a link or sits behind one; refusing to "
+            "write through it"
+        ) from exc
+    root = (data_home() / _SESSION_DASHBOARDS_DIR).resolve()
+    resolved = directory.resolve()
+    if resolved.parent != root or resolved.name != directory.name:
+        raise InstanceError("this session's dashboard directory is outside the session pages")
+
+
+def _refuse_linked_versions_dir(versions_dir: Path) -> None:
+    """Refuse a session page's ``versions`` directory that is a link or junction.
+
+    The guard where the platform cannot pin (Windows): a junction there could point at
+    another dashboard's retained versions, and a commit through it would overwrite the
+    payload that dashboard's rollback restores. The leaf checked is inside the
+    directory, so the directory itself is one of the components the walk inspects.
+    """
+    try:
+        refuse_linked_parent(versions_dir / "1.json")
+    except OSError as exc:
+        raise InstanceError(
+            "this session's dashboard versions directory is a link or sits behind one; "
+            "refusing to write through it"
+        ) from exc
+
+
+#: The pinned descriptor of the session page directory the current lock holds, or
+#: ``None`` for a crewmate's page and for a platform that cannot pin. Every write
+#: inside :func:`_locked` reads it, so nothing re-joins the directory by name.
+_PINNED_DIR: contextvars.ContextVar[int | None] = contextvars.ContextVar(
+    "dashboard_instance_pinned_dir", default=None
+)
+
+
+def _pinned_session_dir(directory: Path) -> int | None:
+    """Create and open *directory* one ``O_NOFOLLOW`` component at a time.
+
+    ``None`` where the platform cannot open relative to a directory descriptor, which
+    leaves the ``lstat`` walk in :func:`_refuse_linked_session_dir` as the guard.
+    """
+    if not (pinned_fs.supports_pinned_walk() and pinned_parent_replace_supported()):
+        return None
+    root = data_home() / _SESSION_DASHBOARDS_DIR
+    mkdirs_owner_only(data_home())
+    try:
+        root_fd = pinned_fs.create_and_open_dir_pinned(
+            root, what="session dashboard pages", refusal=InstanceError
+        )
+        try:
+            # Relative to root_fd, never by name: a session-pages root swapped for a
+            # link after it was opened cannot move where the page directory lands.
+            return pinned_fs.create_and_open_dir_at(
+                root_fd, directory.name, what="session dashboard page", refusal=InstanceError
+            )
+        finally:
+            os.close(root_fd)
+    except InstanceError:
+        raise
+    except OSError as exc:
+        raise InstanceError("this session's dashboard directory could not be opened") from exc
+
+
+def _write(directory: Path, name: str, body: str) -> None:
+    """Write *name* in *directory*, through the pinned descriptor when the lock holds one."""
+    fd = _PINNED_DIR.get()
+    if fd is not None:
+        atomic_write(directory / name, body, fsync=True, parent_dir_fd=fd)
+        return
+    atomic_write(directory / name, body, fsync=True)
 
 
 @contextmanager
@@ -246,9 +392,23 @@ def _locked(directory: Path) -> Iterator[None]:
     interleaving produces two writes claiming the same ``instance_version`` and one of
     the two pages is lost with nothing recorded.
     """
-    mkdirs_owner_only(directory)
-    lock_path = directory / _LOCK_FILE
-    fd = os.open(str(lock_path), os.O_CREAT | os.O_RDWR, 0o600)
+    pinned: int | None = None
+    if directory.parent == data_home() / _SESSION_DASHBOARDS_DIR:
+        _refuse_linked_session_dir(directory)
+        pinned = _pinned_session_dir(directory)
+    if pinned is None:
+        mkdirs_owner_only(directory)
+    nofollow = getattr(os, "O_NOFOLLOW", 0)
+    try:
+        if pinned is not None:
+            fd = open_create_or_existing(_LOCK_FILE, os.O_RDWR | nofollow, 0o600, dir_fd=pinned)
+        else:
+            fd = open_create_or_existing(directory / _LOCK_FILE, os.O_RDWR | nofollow, 0o600)
+    except OSError:
+        if pinned is not None:
+            os.close(pinned)
+        raise
+    token = _PINNED_DIR.set(pinned)
     try:
         deadline = time.monotonic() + _LOCK_TIMEOUT_SECS
         while not try_acquire_lock(fd, exclusive=True):
@@ -262,7 +422,10 @@ def _locked(directory: Path) -> Iterator[None]:
         finally:
             release_lock(fd)
     finally:
+        _PINNED_DIR.reset(token)
         os.close(fd)
+        if pinned is not None:
+            os.close(pinned)
 
 
 # --------------------------------------------------------------------------
@@ -619,14 +782,24 @@ def _check(manifest: Any, html: str) -> dict[str, Any]:
     return dict(manifest)
 
 
-def _prune_versions(directory: Path) -> None:
-    """Drop all but the newest :data:`MAX_RETAINED_VERSIONS` payloads."""
+def _prune_versions(directory: Path, dir_fd: int | None = None) -> None:
+    """Drop all but the newest :data:`MAX_RETAINED_VERSIONS` payloads.
+
+    With *dir_fd* the listing and the unlinks go through that pinned descriptor, so a
+    session page's versions are never reached by name.
+    """
+    names = os.listdir(dir_fd) if dir_fd is not None else [p.name for p in directory.iterdir()]
     kept = sorted(
-        (int(p.stem), p) for p in directory.iterdir() if p.suffix == ".json" and p.stem.isdigit()
+        (int(n[: -len(".json")]), n)
+        for n in names
+        if n.endswith(".json") and n[: -len(".json")].isdigit()
     )
-    for _n, path in kept[: max(0, len(kept) - MAX_RETAINED_VERSIONS)]:
+    for _n, name in kept[: max(0, len(kept) - MAX_RETAINED_VERSIONS)]:
         try:
-            path.unlink()
+            if dir_fd is not None:
+                os.unlink(name, dir_fd=dir_fd)
+            else:
+                (directory / name).unlink()
         except OSError:  # pragma: no cover - a losing race with another pruner
             pass
 
@@ -651,7 +824,14 @@ def _commit(
     """
     directory = instance_dir(slug)
     versions_dir = directory / _VERSIONS_SUBDIR
-    mkdirs_owner_only(versions_dir)
+    pinned = _PINNED_DIR.get()
+    unpinned_session = pinned is None and directory.parent == data_home() / _SESSION_DASHBOARDS_DIR
+    if unpinned_session:
+        _refuse_linked_versions_dir(versions_dir)
+    if pinned is None:
+        mkdirs_owner_only(versions_dir)
+    if unpinned_session:
+        _refuse_linked_versions_dir(versions_dir)
     current = _read_record(slug) or {}
     previous = current.get("instance_version")
     previous = previous if isinstance(previous, int) and previous > 0 else 0
@@ -671,10 +851,35 @@ def _commit(
         "updated_ms": at_ms,
     }
     body = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    atomic_write(versions_dir / f"{next_version}.json", body, fsync=True)
-    atomic_write(directory / _RECORD_FILE, body, fsync=True)
-    fsync_dir(directory)
-    _prune_versions(versions_dir)
+    if pinned is not None:
+        # The versions subdirectory is opened from the pinned page directory, so it
+        # is never reached by name either.
+        try:
+            os.mkdir(_VERSIONS_SUBDIR, 0o700, dir_fd=pinned)
+        except FileExistsError:
+            pass
+        flags = pinned_fs.dir_flags()
+        versions_fd = os.open(_VERSIONS_SUBDIR, flags, dir_fd=pinned)
+        try:
+            atomic_write(
+                versions_dir / f"{next_version}.json", body, fsync=True, parent_dir_fd=versions_fd
+            )
+            _write(directory, _RECORD_FILE, body)
+            # Mirror the ``else`` branch's ``fsync_dir(directory)``: force the page
+            # directory's entries out, tolerating the filesystems that cannot express a
+            # directory fsync (network mounts answer EINVAL/ENOTSUP) while still raising
+            # a genuine I/O failure. A bare ``os.fsync`` here would turn every apply on
+            # such a mount into a 503 that skips the history append, even though the
+            # rename plus the file fsync already made the write durable.
+            fsync_open_dir(pinned, directory)
+            _prune_versions(versions_dir, versions_fd)
+        finally:
+            os.close(versions_fd)
+    else:
+        atomic_write(versions_dir / f"{next_version}.json", body, fsync=True)
+        _write(directory, _RECORD_FILE, body)
+        fsync_dir(directory)
+        _prune_versions(versions_dir)
 
     entry = {
         "slug": slug,
@@ -703,10 +908,10 @@ def _append_history(slug: str, entry: dict[str, Any], session_id: str) -> None:
     state = _read_history_state(slug) or _fold_history_from_log(slug, session_id)
     _history_step(state, entry)
     try:
-        atomic_write(
-            instance_dir(slug) / _HISTORY_FILE,
+        _write(
+            instance_dir(slug),
+            _HISTORY_FILE,
             json.dumps(state, ensure_ascii=False, sort_keys=True),
-            fsync=True,
         )
     except OSError:
         logger.warning("dashboard instance: could not write the history savepoint", exc_info=True)
@@ -921,6 +1126,15 @@ def preview_url(slug: str) -> str:
     return f"/api/members/{slug}/dashboard?preview=1"
 
 
+def session_preview_url(slot_key: str) -> str:
+    """:func:`preview_url` for a root session's page, which is read by its slot.
+
+    The store key is a one-way digest, so the link is built from the slot key the
+    caller already holds rather than recovered from the key.
+    """
+    return f"/api/chat/slots/{quote(slot_key, safe='')}/dashboard?preview=1"
+
+
 @dataclass(frozen=True)
 class Preview:
     """One page staged for a look: which template it is, and when it was staged."""
@@ -1017,10 +1231,10 @@ def stage_preview(
         "staged_ms": staged_ms,
     }
     with _locked(instance_dir(slug)):
-        atomic_write(
-            _preview_path(slug),
+        _write(
+            instance_dir(slug),
+            _PREVIEW_FILE,
             json.dumps(payload, ensure_ascii=False, sort_keys=True),
-            fsync=True,
         )
     return Preview(
         slug=slug,
@@ -1073,7 +1287,11 @@ def staged_preview(slug: str) -> Preview | None:
 
 def discard_preview(slug: str) -> None:
     """Drop the staged page. Idempotent, and never raises for one that is not there."""
+    pinned = _PINNED_DIR.get()
     try:
+        if pinned is not None:
+            os.unlink(_PREVIEW_FILE, dir_fd=pinned)
+            return
         _preview_path(slug).unlink()
     except OSError:
         pass

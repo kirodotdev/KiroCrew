@@ -75,7 +75,7 @@ export { __resetRedactionHealForTests, healRedactionSwitchAfterReconnect } from 
 // this facade like every other owner binding. Both are named so a caller can
 // invalidate the same key the handler invalidates: a second spelling of that
 // prefix would let a refresh reach a different cache entry from the frame.
-export { MEMBER_DASHBOARD_QUERY_PREFIX, handleDashboardMoved } from './websocket/serverState'
+export { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX, handleDashboardMoved } from './websocket/serverState'
 export { identityOf, askIdsOf, reconcileQuestions, staleAskIds } from './websocket/composerCards'
 export { resolvedSince } from './websocket/retiredIds'
 export { UPDATE_RESTART_LATCH_KEY, UPDATE_RESTART_LATCH_TTL_MS, consumeUpdateRestartLatch } from './websocket/bundleReload'
@@ -353,9 +353,11 @@ export function useWebSocket() {
             break
           }
           case 'dashboard_value_written':
-            // A crewmate wrote one of its own dashboard fields mid-turn. The frame
-            // carries only {slug}; the tab's refetch re-asks the server, which
-            // re-composes the page and re-checks ownership.
+          case 'dashboard_instance_changed':
+            // A crewmate or a root session wrote one of its own dashboard fields, or
+            // changed its page, mid-turn. The frame carries only {slug} or {slot};
+            // the tab's refetch re-asks the server, which re-composes the page and
+            // re-checks ownership.
             handleDashboardMoved(queryClient, data)
             break
           case 'notification_ack':

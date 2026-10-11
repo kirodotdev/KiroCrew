@@ -16,15 +16,11 @@
  * props) with the find pane open and asserts the find input disappears and the
  * target panel appears.
  *
- * The Dashboard dock (CommandCenterDock) is the third such opener: its
- * open-panel action must land on a visible panel, not one mounted and hidden
- * behind the find pane.
- *
  * Uses the REAL useMessageSearch hook so the
  * single-dock precedence + close-on-open wiring is exercised end to end.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, waitFor, act, within } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import type { ReactNode } from 'react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
@@ -280,39 +276,15 @@ describe('ChatPage – opening a dock panel closes the find pane', () => {
     })
   })
 
-  it('the dock\'s open-panel action closes the find pane and shows the command-center panel', async () => {
+  it('draws no status-tile HUD above the composer, even with the Dynamic Dashboard preview on', async () => {
     localStorage.clear()
-    // The dock is a Feature Preview: on, so there is a dock to open from.
     localStorage.setItem(PREVIEW_DASHBOARD, '1')
     renderChatPage({ withWorker: true })
-    const card = await screen.findByTestId('command-center-dock')
-    openFind()
-    expect(await screen.findByPlaceholderText(FIND_PLACEHOLDER)).toBeTruthy()
-
-    act(() => {
-      fireEvent.click(within(card).getByRole('button', { name: 'Open Dashboard' }))
-    })
-
-    // The panel must be visible, not mounted-and-hidden behind the find pane.
-    await waitFor(() => {
-      expect(screen.queryByPlaceholderText(FIND_PLACEHOLDER)).toBeNull()
-      const heading = document.querySelector<HTMLElement>('[data-command-center-heading]')
-      expect(heading).toBeTruthy()
-      expect(heading!.closest('[hidden]')).toBeNull()
-    })
-  })
-
-  it('mounts no dock while the Dynamic Dashboard preview is off, and the dock in the same tick it turns on', async () => {
-    localStorage.clear()
-    renderChatPage({ withWorker: true })
-    // The worker makes a team, which is what would show the dock: with the flag
-    // off the dock is not offered at all, not merely empty.
+    // A worker makes a team, which is exactly what used to raise the tiles.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)) })
     expect(screen.queryByTestId('command-center-dock')).toBeNull()
-    act(() => { setPreviewFlag(PREVIEW_DASHBOARD, true) })
-    expect(await screen.findByTestId('command-center-dock')).toBeTruthy()
     act(() => { setPreviewFlag(PREVIEW_DASHBOARD, false) })
-    await waitFor(() => expect(screen.queryByTestId('command-center-dock')).toBeNull())
+    expect(screen.queryByTestId('command-center-dock')).toBeNull()
   })
 })
 

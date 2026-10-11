@@ -274,6 +274,8 @@ class TestTheComposedDocument:
             "written_at": {},
             # English when the caller names no language, for the same reason.
             "locale": "en",
+            # Whose page it is; a crewmate's unless the host says otherwise.
+            "subject": "crewmate",
         }
 
     def test_the_document_language_comes_from_the_read(self) -> None:

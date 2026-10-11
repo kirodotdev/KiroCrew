@@ -4,7 +4,6 @@ import { act, fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { api } from '../api/client'
 import { createTestStore, renderWithProviders } from './helpers'
 import SessionDashboardsPage from '../pages/chat/command-center/SessionDashboardsPage'
-import type { Artifact } from '../types'
 
 vi.mock('../hooks/useSandboxDoc', () => ({
   useSandboxDoc: (html: string | null) => ({ url: html ? '/sandbox/card' : null, pending: false, failed: false, retry: vi.fn() }),
@@ -31,7 +30,6 @@ describe('all session dashboards', () => {
     vi.spyOn(api, 'pendingQuestions').mockResolvedValue([{ slot: 'slot-1', ask_id: 'question-1', questions: [{ question: 'Which release?', options: [{ label: 'Stable' }] }] }])
     vi.spyOn(api, 'approvals').mockResolvedValue([{ id: 'approval-2', instance: 'inst-2', slot: 'slot-2', tool: 'shell', tool_input: 'git status' }])
     vi.spyOn(api, 'workflowRuns').mockResolvedValue({ runs: [] })
-    vi.spyOn(api, 'artifacts').mockResolvedValue({ artifacts: [] })
     vi.spyOn(api, 'sessionSummary').mockImplementation(async slot => ({ enabled: true, stale: false, constraints: [], generated_at: null, user_turns: 2, last_activity: null, intents: [{
       title: `Summary for ${slot}`, initial_intent: 'Ship the release', progress: ['Tests passed'], next_steps: [], ranges: [[1, 2]], status: 'active', verified: null, state: 'in-progress', last_touched_turn: 2, origin_turn: 1,
     }] }))
@@ -45,7 +43,6 @@ describe('all session dashboards', () => {
     await screen.findByText('Summary for slot-1')
     expect(screen.getByText('Dashboards for currently open sessions, with saved summaries and requests that need you.')).toBeVisible()
     const cards = visualCards()
-    expect(within(cards[0]).getByText('No published view yet. Use Open session, then ask the agent to publish a view for this task.')).toBeVisible()
     expect(within(cards[0]).getByRole('link', { name: 'Open session' })).toHaveAttribute('href', '/chat?sid=slot-1')
     expect(cards.map(c => c.getAttribute('data-slot')).slice(0, 2)).toEqual(['slot-1', 'slot-2'])
     const inbox = screen.getByRole('region', { name: 'Needs you' })
@@ -63,29 +60,7 @@ describe('all session dashboards', () => {
     await waitFor(() => expect(approve).toHaveBeenCalledWith('approval-2', 'approve', { origin: 'coordinator', slot: 'slot-2', instance: 'inst-2' }))
   })
 
-  it('shows the restored-answer notice when the only pending question expires with a draft', async () => {
-    vi.mocked(api.approvals).mockResolvedValue([])
-    const initial = createTestStore().getState()
-    const idle = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
-      { key: 'slot-1', title: 'Session 1', messages: 2, running: false },
-    ] } })
-    const { queryClient } = renderWithProviders(<SessionDashboardsPage />, { store: idle })
-    const inbox = await screen.findByRole('region', { name: 'Needs you' })
-    fireEvent.change(await within(inbox).findByPlaceholderText(/type a custom answer/i), { target: { value: 'eu-west-1' } })
-    vi.mocked(api.pendingQuestions).mockResolvedValue([])
-    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
-    expect(await screen.findByText(/The agent in "Session 1" stopped waiting for "Which release\?", so your answers weren't sent\. They're in that session's composer/)).toBeVisible()
-    expect(screen.queryByText('Which release?')).not.toBeInTheDocument()
-    // The notice is listed but not counted: nothing in it needs an answer.
-    expect(screen.getByRole('button', { name: 'Needs you (0)' })).toBeInTheDocument()
-    expect(within(inbox).getByTestId('panel-section-header')).toHaveTextContent('Needs you0')
-  })
-
-  it('keeps cards in place on live activity, re-sorts on a filter change, and shows a builder\'s view on its conductor', async () => {
-    const view = (slug: string, session: string): Artifact => ({ slug, session_key: session, name: slug, kind: 'html', source: 'chat', description: '', tags: ['task-dashboard'],
-      version: 1, created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>view</p>' })
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [view('built-by-worker', 'dashboard:builder')] })
-    vi.spyOn(api, 'artifact').mockImplementation(async slug => view(slug, 'dashboard:builder'))
+  it('keeps cards in place on live activity and re-sorts on a filter change', async () => {
     const initial = store().getState()
     const team = createTestStore({ ...initial, dashboard: { ...initial.dashboard, slots: [
       ...initial.dashboard.slots, { key: 'builder', title: 'Builder', messages: 2, running: false, created_by: 'slot-2' },
@@ -96,8 +71,6 @@ describe('all session dashboards', () => {
     await screen.findByRole('button', { name: 'Approve once' })
     await screen.findByText('Stable')
     const before = domOrder()
-    const conductor = screen.getAllByTestId('session-dashboard-card').find(card => card.getAttribute('data-slot') === 'slot-2')!
-    await waitFor(() => expect(within(conductor).queryByText(/No published view yet/)).not.toBeInTheDocument())
     act(() => { team.dispatch({ type: 'dashboard/sseSlots', payload: team.getState().dashboard.slots.map(s => s.key === 'slot-2' ? { ...s, running: true, last_turn_ts: '2030-01-01T00:00:00Z' } : s) }) })
     // Live activity does not move cards; changing the filter re-takes the order.
     await new Promise(resolve => setTimeout(resolve, 50))
@@ -203,44 +176,19 @@ describe('all session dashboards', () => {
     expect(within(inbox).getByText('Decision 0')).not.toBeVisible()
   })
 
-  it('bounds active documents while retaining published-view selection and native drafts across pages', async () => {
-    const artifacts: Artifact[] = Array.from({ length: 20 }, (_, i) => [0, 1].map(view => ({
-      slug: `view-${i}-${view}`, session_key: `dashboard:slot-${i}`, name: `View ${i}-${view}`,
-      kind: 'html' as const, source: 'chat', description: '', tags: ['task-dashboard'], version: 1,
-      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', content: '<p>Published evidence</p>',
-    }))).flat()
-    vi.mocked(api.artifacts).mockResolvedValue({ artifacts })
-    vi.spyOn(api, 'artifact').mockImplementation(async slug => artifacts.find(a => a.slug === slug)!)
+  it('bounds active documents to the shown page and keeps native drafts across pages', async () => {
     vi.mocked(api.dashboardCard).mockResolvedValue({ card: { html: '<p>Automatic evidence</p>', data: {} }, status: 'published', published_at: 1, content_event_at: 1, stale: false })
     const { container } = renderWithProviders(<SessionDashboardsPage />, { store: store(20) })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(12))
     expect(screen.getAllByTestId('session-dashboard-card')).toHaveLength(20)
-    expect(api.sessionSummary).toHaveBeenCalledTimes(12)
     expect(api.dashboardCard).toHaveBeenCalledTimes(12)
-    expect(api.artifact).toHaveBeenCalledTimes(12)
-    const first = visualCards()[0]
-    fireEvent.change(within(first).getByRole('combobox', { name: 'Published view' }), { target: { value: 'view-1-1' } })
-    await within(first).findByTitle('View 1-1')
     fireEvent.click(screen.getByText('Stable'))
     fireEvent.click(screen.getByRole('button', { name: 'Next sessions' }))
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(16))
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(8))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
-    expect(api.sessionSummary).toHaveBeenCalledTimes(20)
-    expect(api.dashboardCard).toHaveBeenCalledTimes(20)
-    expect(api.artifact).toHaveBeenCalledTimes(21)
     fireEvent.click(screen.getByRole('button', { name: 'Previous sessions' }))
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
-    expect(within(first).getByRole('combobox', { name: 'Published view' })).toHaveValue('view-1-1')
-    const search = screen.getByPlaceholderText('Search sessions…')
-    fireEvent.change(search, { target: { value: 'Session 19' } })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(2))
-    fireEvent.change(search, { target: { value: '' } })
-    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(24))
-    expect(within(first).getByRole('combobox', { name: 'Published view' })).toHaveValue('view-1-1')
+    await waitFor(() => expect(container.querySelectorAll('iframe')).toHaveLength(12))
     expect(screen.getByRole('button', { name: 'Send answer' })).toBeEnabled()
-    expect(api.sessionSummary).toHaveBeenCalledTimes(20)
-    expect(api.dashboardCard).toHaveBeenCalledTimes(20)
-    expect(api.artifact).toHaveBeenCalledTimes(21)
   })
 
   it('shows actual task context alongside the decision without inventing a default', async () => {
@@ -293,4 +241,23 @@ describe('all session dashboards', () => {
     renderWithProviders(<SessionDashboardsPage />, { store: store(1) })
     expect(await screen.findByText(/behind the conversation/)).toBeInTheDocument()
   })
+
+  it('shows the restored-answer notice when the only pending question expires with a draft', async () => {
+    vi.mocked(api.approvals).mockResolvedValue([])
+    const initial = createTestStore().getState()
+    const idle = createTestStore({ ...initial, dashboard: { ...initial.dashboard, connected: true, slotsLoaded: true, slots: [
+      { key: 'slot-1', title: 'Session 1', messages: 2, running: false },
+    ] } })
+    const { queryClient } = renderWithProviders(<SessionDashboardsPage />, { store: idle })
+    const inbox = await screen.findByRole('region', { name: 'Needs you' })
+    fireEvent.change(await within(inbox).findByPlaceholderText(/type a custom answer/i), { target: { value: 'eu-west-1' } })
+    vi.mocked(api.pendingQuestions).mockResolvedValue([])
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['command-center', 'questions'] }) })
+    expect(await screen.findByText(/The agent in "Session 1" stopped waiting for "Which release\?", so your answers weren't sent\. They're in that session's composer/)).toBeVisible()
+    expect(screen.queryByText('Which release?')).not.toBeInTheDocument()
+    // The notice is listed but not counted: nothing in it needs an answer.
+    expect(screen.getByRole('button', { name: 'Needs you (0)' })).toBeInTheDocument()
+    expect(within(inbox).getByTestId('panel-section-header')).toHaveTextContent('Needs you0')
+  })
+
 })

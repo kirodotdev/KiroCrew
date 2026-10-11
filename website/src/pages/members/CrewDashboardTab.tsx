@@ -32,7 +32,7 @@ export default function CrewDashboardTab({ slug, member, displayName, onAct }: {
               "last good page" must not survive the switch -- one crewmate's
               numbers under another's name is the one thing this surface must
               never show. */}
-          <CrewDynamicDashboard key={slug} slug={slug} member={member} displayName={displayName || member} onAct={onAct} />
+          <CrewDynamicDashboard key={slug} target={{ kind: 'member', slug, member }} displayName={displayName || member} onAct={onAct} />
         </Suspense>
       </ErrorBoundary>
     </div>

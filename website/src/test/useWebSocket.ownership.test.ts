@@ -93,6 +93,7 @@ describe('one public surface', () => {
       'MEMBER_DASHBOARD_QUERY_PREFIX',
       'ROW_STALL_MS',
       'ROW_STALL_TICK_MS',
+      'SESSION_DASHBOARD_QUERY_PREFIX',
       'UPDATE_RESTART_LATCH_KEY',
       'UPDATE_RESTART_LATCH_TTL_MS',
       'WS_SILENCE_CHECK_MS',

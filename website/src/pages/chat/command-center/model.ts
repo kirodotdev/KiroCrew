@@ -247,8 +247,8 @@ export function buildCommandCenter(source: CommandCenterSources) {
     running: nodes.filter(n => n.state === 'running').length,
     blocked: nodes.filter(n => n.state === 'blocked').length + workItems.filter(w => w.state === 'blocked').length,
     // Nothing runs, waits or asks, and every counted item rests. An idle session
-    // with an open plan is NOT settled: the plan is the thing the dock still has
-    // to show, so the plan is tested on its own whether or not a work board
+    // with an open plan is NOT settled: the plan is unfinished work in its own
+    // right, so the plan is tested on its own whether or not a work board
     // supplies the progress number. A board that omitted entries is not settled
     // either: the items it did not return may be the open ones. The board needs
     // no done-over-total test: `done` counts acceptances, so a rejected or

@@ -1080,6 +1080,37 @@ def is_regular_at(dir_fd: int, name: str) -> bool:
     return st is not None and _stat.S_ISREG(st.st_mode)
 
 
+def create_and_open_dir_at(
+    parent_fd: int,
+    name: str,
+    *,
+    what: str,
+    refusal: type[Exception] = PinnedPathRefusal,
+) -> int:
+    """Create directory *name* under the open *parent_fd* if absent, and open it.
+
+    Both calls are relative to the caller's descriptor, so no path is resolved again:
+    a parent swapped for a link after the caller opened it cannot steer the create
+    elsewhere. The open is ``O_NOFOLLOW`` + ``O_DIRECTORY``, so a link (or a non
+    directory) planted at *name* itself is refused with *refusal*. *name* must be one
+    component. Returns the directory fd; the caller owns it.
+    """
+    if not name or name in (".", "..") or os.sep in name or (os.altsep and os.altsep in name):
+        raise refusal(f"refusing to open the {what}: {name!r} is not a single path component")
+    try:
+        os.mkdir(name, 0o700, dir_fd=parent_fd)
+    except FileExistsError:
+        pass
+    try:
+        return os.open(name, dir_flags(), dir_fd=parent_fd)
+    except (NotADirectoryError, OSError) as exc:
+        if isinstance(exc, NotADirectoryError) or exc.errno in (errno.ELOOP, errno.EMLINK):
+            raise refusal(
+                f"refusing to open the {what}: {name!r} is a link or not a directory"
+            ) from exc
+        raise
+
+
 def _apply_metadata(
     dst_fd: int,
     st: os.stat_result,

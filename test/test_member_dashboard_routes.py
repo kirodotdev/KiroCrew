@@ -447,10 +447,14 @@ async def test_every_route_denies_an_app_caller_and_gates_the_values_it_serves()
             for n in ast.walk(node)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
         }
-        # Every handler resolves, and _resolve is where the app-caller denial and the
-        # four member-identity checks live. One chokepoint, so a new route cannot
-        # forget one of five rules.
-        assert "_resolve" in called, f"{name} does not resolve the member"
+        # Every crewmate handler resolves, and _resolve is where the app-caller denial
+        # and the four member-identity checks live. One chokepoint, so a new route
+        # cannot forget one of five rules. The SESSION read names no member, so it
+        # carries the app-caller denial itself.
+        if name in _SESSION_READS:
+            assert "_deny_app_caller" in called, f"{name} does not deny an app caller"
+        else:
+            assert "_resolve" in called, f"{name} does not resolve the member"
         if name in _VALUE_SERVING_READS:
             assert "_owner_only" in called, f"{name} is not owner-gated"
 
@@ -462,7 +466,10 @@ async def test_every_route_denies_an_app_caller_and_gates_the_values_it_serves()
 #:
 #: A SET rather than a check inside the loop, so adding a route that serves values is a
 #: one-line change HERE and a visible one in review.
-_VALUE_SERVING_READS = frozenset({"api_member_dashboard"})
+_VALUE_SERVING_READS = frozenset({"api_member_dashboard", "api_session_dashboard"})
+
+#: Reads keyed by a root session's slot rather than by a crewmate.
+_SESSION_READS = frozenset({"api_session_dashboard"})
 
 
 async def test_a_non_owner_cannot_read_a_crewmates_values():

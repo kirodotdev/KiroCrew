@@ -10,7 +10,8 @@ import { createTestStore } from './helpers'
  * staged page beside the chat; any other artifact tab is still the artifact. */
 const previewFails = { on: false }
 vi.mock('../pages/chat/DashboardPreviewPanel', () => ({
-  default: ({ slug }: { slug: string }) => {
+  default: ({ target }: { target: { kind: string; slug?: string; slot?: string } }) => {
+    const slug = target.slug
     if (previewFails.on) throw new Error('chunk load failed')
     return <div data-testid="dashboard-preview-stub" data-slug={slug} />
   },

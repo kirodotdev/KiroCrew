@@ -204,7 +204,7 @@ export default [
       // Same parser-only boundary as the srcdoc builders above: this module
       // sanitizes model markup and injects CSP, a DOCTYPE and theme CSS. None
       // of its literals are human-facing copy; translating them breaks the
-      // policy or the frame. TaskDashboardFrame.tsx stays fully gated.
+      // policy or the frame. SessionStatusFrame.tsx stays fully gated.
       // False-negative class: copy added here would not be checked. Keep this
       // exact module parser-only, with all host text in its translated consumer.
       'src/pages/chat/command-center/dashboardDocument.ts',

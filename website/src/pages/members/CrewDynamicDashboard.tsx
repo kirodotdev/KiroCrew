@@ -11,6 +11,7 @@ import { buildSrcdoc, readThemeVars } from '../../lib/widgetSrcdoc'
 import { i18nT } from '../../i18n/t'
 import { apiErrorCode } from '../../api/apiError'
 import { useLanguage } from '../../i18n/LanguageProvider'
+import { MEMBER_DASHBOARD_QUERY_PREFIX, SESSION_DASHBOARD_QUERY_PREFIX } from '../../hooks/useWebSocket'
 
 /**
  * The sandbox grants for a crewmate's dynamic dashboard, and the ONE line of
@@ -123,9 +124,22 @@ interface Loaded {
  *    can see that, so the held `Loaded` is re-mounted and the new html is dropped
  *    until the next read brings a different one.
  */
-export default function CrewDynamicDashboard({ slug, member, displayName, onAct, preview = false, onPreviewGone }: {
-  slug: string
-  member: string
+/** Whose dashboard this frame reads: a crewmate's, or one ROOT session's own page. */
+export type DashboardTarget =
+  | { kind: 'member'; slug: string; member: string }
+  | { kind: 'session'; slot: string }
+
+/** The query key a target's read is cached under. The first segment is the prefix
+ *  `handleDashboardMoved` invalidates by, so a frame naming only a slug or a slot
+ *  reaches the read. */
+export function dashboardQueryKey(target: DashboardTarget): readonly string[] {
+  return target.kind === 'member'
+    ? [MEMBER_DASHBOARD_QUERY_PREFIX, target.slug, target.member]
+    : [SESSION_DASHBOARD_QUERY_PREFIX, target.slot]
+}
+
+export default function CrewDynamicDashboard({ target, displayName, onAct, preview = false, onPreviewGone }: {
+  target: DashboardTarget
   displayName: string
   /** Put a reply the page offered into the chat box. Absent: the page's options do nothing. */
   onAct?: (text: string) => void
@@ -161,10 +175,13 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
   // UI language re-reads the page in the new one.
   const { resolved: locale } = useLanguage()
 
+  const staged = preview
   const { data, isLoading, isError, error, refetch } = useQuery({
-    queryKey: ['member-dashboard', slug, member, locale, preview ? 'preview' : 'live'],
-    queryFn: () => (preview ? api.memberDashboard(slug, member, locale, true) : api.memberDashboard(slug, member, locale)),
-    enabled: Boolean(slug) && Boolean(member),
+    queryKey: [...dashboardQueryKey(target), locale, staged ? 'preview' : 'live'],
+    queryFn: () => target.kind === 'member'
+      ? (staged ? api.memberDashboard(target.slug, target.member, locale, true) : api.memberDashboard(target.slug, target.member, locale))
+      : api.sessionDashboard(target.slot, locale, staged),
+    enabled: target.kind === 'member' ? Boolean(target.slug) && Boolean(target.member) : Boolean(target.slot),
     // THE FALLBACK, not the mechanism. Liveness comes from the two WS frames
     // `handleDashboardMoved` listens for; this is what covers the gap when one is
     // missed -- a dropped socket, a fold that advanced while the tab was closed, a
@@ -178,7 +195,7 @@ export default function CrewDynamicDashboard({ slug, member, displayName, onAct,
     refetchInterval: DASHBOARD_FALLBACK_REFETCH_MS,
     refetchIntervalInBackground: false,
   })
-  const previewGone = preview && isError && apiErrorCode(error) === 'no_preview'
+  const previewGone = staged && isError && apiErrorCode(error) === 'no_preview'
   useEffect(() => { onPreviewGone?.(previewGone) }, [onPreviewGone, previewGone])
 
   /**

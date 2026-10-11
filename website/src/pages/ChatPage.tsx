@@ -268,7 +268,6 @@ import SessionTitleControl from './chat/SessionTitleControl'
 import { useChatNavigation } from '../hooks/useChatNavigation'
 import { useChatPins } from '../hooks/useChatPins'
 import SubagentProgressBar from './chat/SubagentProgressBar'
-import CommandCenterDock from './chat/command-center/CommandCenterDock'
 import { usePreviewFlag } from '../hooks/usePreviewFlag'
 import { PREVIEW_DASHBOARD } from '../utils/previewFlags'
 import TaskProgressBar from './chat/TaskProgressBar'
@@ -872,6 +871,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // re-renders only when that fact changes.
   const composerDraft = useState(() => createComposerDraftStore(activeSlot ? drafts.current[activeSlot] ?? '' : ''))[0]
   const setInput = composerDraft.set
+  // A dashboard page's reply lands in this chat's composer, merged after anything
+  // already typed; the person reviews and sends it.
+  const insertDashboardReply = useCallback((text: string) => {
+    setInput(prev => mergeIntoDraft(prev, text))
+    focusComposer()
+  }, [setInput])
   const inputNonBlank = useComposerDraftSelector(composerDraft, isNonBlank)
 
   const sendingRef = useRef(false)
@@ -2787,22 +2792,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // Refs so the "run in terminal" listener (registered once) always sees the
   // live panel controller + this chat's working directory.
   const tabsCtlRef = useRef(tabsCtl); tabsCtlRef.current = tabsCtl
-  // Stable, so the memoized dock does not re-render on every streamed chunk.
-  // Close the find pane FIRST, as revealAppInPanel / handleFileOpen /
-  // handleOpenDiff do: the find pane owns the right-hand dock exclusively
-  // (shouldMountSidePanel returns false while it is open), so without the close
-  // the dashboard would open behind a pane the user cannot see past. `close()`
-  // is safe with nothing open.
   // The Dynamic Dashboard is a Feature Preview (Settings > Developer). While it
-  // is off there is no dock to open from, no menu entry to open with, and a
-  // persisted `command-center` tab is withheld from the strip (SidePanel), so
-  // the opener is absent rather than a path onto a view nothing else offers.
+  // is off a persisted `command-center` tab is withheld from the strip
+  // (SidePanel), and the menu offers no entry onto it.
   const dashboardPreview = usePreviewFlag(PREVIEW_DASHBOARD)
-  const openCommandCenterOn = useCallback(() => {
-    search.close(); dispatch(openActivityPanel()); tabsCtlRef.current.openView('command-center')
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `search.close` is a useCallback([]) in useMessageSearch; the object around it is rebuilt every render
-  }, [dispatch, search.close])
-  const openCommandCenter = dashboardPreview ? openCommandCenterOn : undefined
 
   /** Bring an app's panel tab back — focusing it if open, re-creating it if the
    *  user closed it (`openApp` upserts).
@@ -6248,7 +6241,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                   calls and goes stale when the user clicks a tab in the panel. */}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'subagents') && <SubagentProgressBar slot={activeSlot} />}
               {!(activityOpen && !search.isOpen && tabsCtl.tabs.find(t => t.id === tabsCtl.activeId)?.kind === 'workflows') && <WorkflowProgressBar slot={activeSlot} />}
-              {openCommandCenter && <CommandCenterDock slot={activeSlot} onOpen={openCommandCenter} />}
               <SubagentDeliveryProgress count={systemDeliveryCount} />
               <QueueStack messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
@@ -6751,7 +6743,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
               onFileOpen={handleFileOpen}
               onArtifactOpen={handleArtifactOpen}
-              onAddToContext={handleAddToContext}
+              onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
               onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
               projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
               sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}
@@ -6793,7 +6785,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
                 panelHidden={isSidePanelHidden({ activityOpen, hasLiveAppTab, hasBrowserTab, hasTaskDashboard, searchOpen: search.isOpen })}
                 onFileOpen={handleFileOpen}
                 onArtifactOpen={handleArtifactOpen}
-                onAddToContext={handleAddToContext}
+                onAddToContext={handleAddToContext} onComposerInsert={insertDashboardReply}
                 onOpenWorkingTreeDiff={handleOpenWorkingTreeDiff}
                 projectDir={currentSlot?.project || undefined} navLinks={chatNav.links} navResolving={chatNav.resolving}
                 sources={panelSources} selectedSourceUrl={selectedSourceUrl} onSelectSource={selectSourceUrl} onReconcileSource={reconcileSourceUrl}

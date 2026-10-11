@@ -296,6 +296,24 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
         manifest: DashboardManifest
         state: 'empty' | 'live' | 'stale' | 'error'
       } | null>,
+    // A ROOT session's own dynamic dashboard, the same body as `memberDashboard`.
+    // Keyed by the slot: the gateway reads every field from that session's own work
+    // ledger and crew log, and answers 404 `not_root_session` for a dispatched or
+    // adopted one.
+    sessionDashboard: (slot: string, locale = '', preview = false) => {
+      const p = new URLSearchParams()
+      if (locale) p.set('locale', locale)
+      if (preview) p.set('preview', '1')
+      const query = p.toString()
+      return fetch('/api/chat/slots/' + encodeURIComponent(slot) + '/dashboard' + (query ? '?' + query : '')).then(j) as Promise<{
+        instance_version: number
+        template: { id: string; version: number }
+        html: string
+        rendered_html?: string
+        manifest: DashboardManifest
+        state: 'empty' | 'live' | 'stale' | 'error'
+      } | null>
+    },
     // The crewmate's self-maintained briefing markdown. Read-only from the UI
     // (no editor: the file is agent-written and edited where the crewmate keeps
     // it). `member` is the exact crew name (slugs are lossy).
