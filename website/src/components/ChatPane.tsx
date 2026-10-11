@@ -147,6 +147,7 @@ export default function ChatPane({
   onArtifactOpen,
   busyMode = 'split',
   crewmate,
+  crewmateGreeting,
   onOpenCrewWorkLog,
   onOpenCommandCenter,
   threads,
@@ -248,6 +249,12 @@ export default function ChatPane({
    *  (components/chat/crewmateBubbles). Undefined = an ordinary transcript;
    *  decided by the host, never inferred from the slot. */
   crewmate?: CrewmateIdentity
+  /** A message from the crewmate the HOST draws after the last row (the
+   *  Members page's warm resume / cold welcome, `mateGreeting.ts`). It sits in
+   *  the transcript like a reply but is not one: never a slot row, never sent,
+   *  so it costs no model call and the model never reads it back. Only
+   *  meaningful with `crewmate`. */
+  crewmateGreeting?: React.ReactNode
   /** Focus the crewmate's Work log tab (the side-panel tab that holds what
    *  the filter hid). When given, the quiet hint's "where the work went" line
    *  is a link that opens it, so the words that read as a destination are one;
@@ -1894,6 +1901,7 @@ export default function ChatPane({
                  it, mounted for the whole live turn so the indicator never
                  moves while steps come and go (#18238). */
               <>
+              {crewmate && crewmateGreeting}
               {crewmate && crewmateLive && <CrewmateLiveActivity activity={liveActivity} />}
               <ChatFooter
                 running={running || !!paneSlot?.running}

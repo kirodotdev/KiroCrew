@@ -2830,7 +2830,7 @@ export default function MembersPage() {
   // pill is a Glass chip, so the conversation scrolls under it the way it
   // scrolls under the composer dock. Two measurements, never constants: the
   // header's own height is what the content under it pays, and the block of
-  // notices / greeting cards that can sit between header and pane reports
+  // notices that can sit between header and pane reports
   // its VISIBLE height (its own content, never the padding above it) so the
   // pane knows whether IT is the thing under the header (nothing between: the
   // pane's rows pad below the header) or something else is (a card between:
@@ -4658,10 +4658,6 @@ export default function MembersPage() {
                 )}
               </div>
             )}
-            {mateGreeting && crewmateIdentity && (mateGreeting.kind === 'warm'
-              ? <MateResumeCard resume={mateGreeting.resume} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
-              : <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
-            )}
             {mateGreetingFailure && crewmateIdentity && (
               /* The status read failed (not "no ledger", which is no greeting).
                  No hand-off, for the reason the notices above give: the DM
@@ -4732,13 +4728,19 @@ export default function MembersPage() {
                     // The failure notice above owns the verdict on this thread
                     // while a repair has failed; the pane's own "Session
                     // ready" would contradict it one line down.
-                    // A greeting card above already speaks for the empty chat.
-                    hideEmptyHint={activeThreadFailed || mateGreeting?.kind === 'cold'}
+                    // The crewmate's greeting already speaks for the empty chat.
+                    hideEmptyHint={activeThreadFailed || !!mateGreeting}
                     foldBefore={freshStarts[activeSlot]}
                     // Under the floating header only when nothing sits between
                     // them (see the block above); a card between already paid.
                     topInset={betweenHeaderH > 0 ? 0 : threadHeaderH}
                     crewmate={crewmateIdentity}
+                    // The greeting (cold welcome or warm resume) is a message
+                    // from the crewmate at the end of its chat, drawn here and
+                    // never sent: no model call, nothing in the transcript.
+                    crewmateGreeting={mateGreeting && crewmateIdentity && (mateGreeting.kind === 'warm'
+                      ? <MateResumeCard resume={mateGreeting.resume} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
+                      : <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />)}
                     onOpenCrewWorkLog={openCrewWorkLog}
                     openSideChat={openMemberSideChat}
                     threads={threadHooks}

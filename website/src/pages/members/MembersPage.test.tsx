@@ -216,7 +216,7 @@ const CrewComposerRef = vi.hoisted(() => ({ current: null as unknown }))
 const chatPaneMounts = vi.hoisted(() => ({ count: 0 }))
 vi.mock('../../components/ChatPane', async () => {
   const { useEffect } = await import('react')
-  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput, crewmateCreated, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown; crewmateCreated?: import('react').ReactNode } & Record<string, unknown>) {
+  function ChatPaneStub({ slotKey, agentLocked, followContentWidth, busyMode, topInset, onOpenCommandCenter, composerInput, crewmateCreated, crewmateGreeting, ...rest }: { slotKey: string; agentLocked?: boolean; followContentWidth?: boolean; busyMode?: string; topInset?: number; onOpenCommandCenter?: () => void; composerInput?: unknown; crewmateCreated?: import('react').ReactNode; crewmateGreeting?: import('react').ReactNode } & Record<string, unknown>) {
     // Mount count: the guided flow must HIDE the pane, never unmount it.
     useEffect(() => { chatPaneMounts.count += 1 }, [])
     return (
@@ -224,6 +224,7 @@ vi.mock('../../components/ChatPane', async () => {
         {slotKey}
         {onOpenCommandCenter && <button onClick={onOpenCommandCenter}>Open task dashboard</button>}
         {crewmateCreated}
+        {crewmateGreeting}
         {/* A static opening card is gone: no host may pass one. */}
         {'assistantWelcome' in rest && <div data-testid="assistant-welcome-stub" />}
         {/* Stands in for rendered transcript links (markdown anchors). */}
@@ -6066,6 +6067,16 @@ describe('MembersPage colliding slugs (live projection)', () => {
   })
 })
 
+/** The greeting is drawn INSIDE the chat (ChatPane's `crewmateGreeting`), in
+ *  the crewmate's own message bubble, not as a card above the transcript. */
+function expectCrewmateMessage(card: HTMLElement) {
+  expect(within(screen.getByTestId('chat-pane-stub')).getByTestId(card.dataset.testid!)).toBe(card)
+  expect(card.closest('[data-testid="crewmate-message"]')).not.toBeNull()
+  expect(card.querySelector('.message-bubble.crewmate-bubble')).not.toBeNull()
+  // Never wider than the chat column: a long goal must not size it past a 320px chat.
+  expect(within(card).getByTestId('mate-greeting-bubble').style.maxWidth).toBe('min(100%, 72ch)')
+}
+
 describe('MembersPage cold welcome (a new or long-idle thread)', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
 
@@ -6078,6 +6089,8 @@ describe('MembersPage cold welcome (a new or long-idle thread)', () => {
     await renderPage([row({ last_active_ts: 1 })])
     fireEvent.click(await rosterRow('oncall'))
     const card = await screen.findByTestId('member-welcome-card', undefined, PANE_READY)
+    // A message from the crewmate in its chat, not a card above it.
+    expectCrewmateMessage(card)
     expect(api.memberRecap).toHaveBeenCalledExactlyOnceWith('oncall', 'oncall')
     expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent('Paused: Rotate the pager keys (next: confirm with Sam)')
     expect(within(card).getByTestId('member-welcome-items')).toHaveTextContent("Recent session, may be finished: Triage last night's alarms")
@@ -6100,11 +6113,12 @@ describe('MembersPage warm greeting (a return in the middle of a goal)', () => {
   }
   beforeEach(() => { sessionStorage.clear() })
 
-  it('opening a crewmate mid-goal says where the goal stands and the next step, above the chat, without a chat turn', async () => {
+  it('opening a crewmate mid-goal says where the goal stands and the next step, as its message in the chat, without a chat turn', async () => {
     vi.mocked(api.crewBoard).mockResolvedValue(midGoal as never)
     await renderPage([row()])
     fireEvent.click(await rosterRow('oncall'))
     const card = await screen.findByTestId('member-resume-card', undefined, PANE_READY)
+    expectCrewmateMessage(card)
     expect(api.crewBoard).toHaveBeenCalledExactlyOnceWith('member-oncall')
     expect(within(card).getByTestId('member-resume-goal')).toHaveTextContent('Ship the crew page')
     expect(within(card).getByTestId('member-resume-counts')).toHaveTextContent('Finished 1 · Running 1 · Idle 0 · Needs a look 1')

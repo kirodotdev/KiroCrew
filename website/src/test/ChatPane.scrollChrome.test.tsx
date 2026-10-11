@@ -77,7 +77,7 @@ function makeStore() {
   })
 }
 
-function renderPane(props: { topInset?: number } = {}) {
+function renderPane(props: Partial<React.ComponentProps<typeof ChatPane>> = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const store = makeStore()
   const view = render(
@@ -241,5 +241,20 @@ describe('ChatPane shared scroll chrome', () => {
     expect(state.scrollTop).toBe(600)
     act(() => { scroller.dispatchEvent(new Event('scroll')) })
     expect(screen.queryByLabelText('Scroll to bottom')).toBeNull()
+  })
+})
+
+describe('ChatPane crewmate greeting (`crewmateGreeting`)', () => {
+  const greeting = <div data-testid="host-greeting">Where we left off</div>
+
+  it("draws the host's greeting inside the transcript scroller, after the rows", () => {
+    const { container } = renderPane({ crewmate: { name: 'oncall' }, crewmateGreeting: greeting })
+    const drawn = screen.getByTestId('host-greeting')
+    expect(container.querySelector('.chat-container')!.contains(drawn)).toBe(true)
+  })
+
+  it('draws nothing for an ordinary chat: the greeting belongs to a crewmate', () => {
+    renderPane({ crewmateGreeting: greeting })
+    expect(screen.queryByTestId('host-greeting')).toBeNull()
   })
 })
