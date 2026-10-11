@@ -454,7 +454,7 @@ def open_routes(monkeypatch) -> None:
     predictable unit.
     """
     _SLOTS.clear()
-    routes._BOARD_LOCKS.clear()
+    routes._BOARD_LOCKS._locks.clear()
 
     async def _recognized(*a: Any, **k: Any) -> None:
         return None

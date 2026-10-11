@@ -51,7 +51,7 @@ def _isolated(tmp_path, monkeypatch):
     # Each test runs on its own event loop and an ``asyncio.Lock`` binds to the
     # loop it is first contended on, so a lock left from one test would fail the
     # next test's contended wait with "bound to a different event loop".
-    routes._BOARD_LOCKS.clear()
+    routes._BOARD_LOCKS._locks.clear()
 
     async def _recognized(*a: Any, **k: Any) -> None:
         return None
@@ -2526,8 +2526,20 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
     _real_units(monkeypatch)
     item_id = await _board()
 
-    lock = routes._board_lock(CONDUCTOR)
-    await lock.acquire()
+    async def _hold_the_board() -> tuple[asyncio.Future[None], asyncio.Event]:
+        """Hold CONDUCTOR's board lock in a helper task until the returned event is set."""
+        held, release = asyncio.Event(), asyncio.Event()
+
+        async def _holder() -> None:
+            async with routes._board_lock(CONDUCTOR):
+                held.set()
+                await asyncio.wait_for(release.wait(), 10)
+
+        holder = asyncio.ensure_future(_holder())
+        await asyncio.wait_for(held.wait(), 10)
+        return holder, release
+
+    holder, release = await _hold_the_board()
     queued = asyncio.ensure_future(
         _record(CONDUCTOR, {"action": "decide", "item_id": item_id, "decision": "go"})
     )
@@ -2535,7 +2547,8 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
         await asyncio.sleep(0.005)
     assert not queued.done()  # past the early check, waiting on the lock
     wl.mark_cache_dirty(CONDUCTOR, "the write ahead could not be undone")
-    lock.release()
+    release.set()
+    await asyncio.wait_for(holder, 10)
 
     status, body = await queued
     assert (status, body["code"]) == (409, "cache_dirty"), body
@@ -2543,13 +2556,14 @@ async def test_a_write_queued_behind_the_lock_rechecks_the_dirty_flag_under_it(m
 
     # The same race on the worker's route.
     wl.clear_cache_dirty(CONDUCTOR)
-    await lock.acquire()
+    holder, release = await _hold_the_board()
     queued = asyncio.ensure_future(_report(WORKER, {"status": "progress", "summary": "x"}))
     for _ in range(20):
         await asyncio.sleep(0.005)
     assert not queued.done()
     wl.mark_cache_dirty(CONDUCTOR, "the write ahead could not be undone")
-    lock.release()
+    release.set()
+    await asyncio.wait_for(holder, 10)
     status, body = await queued
     assert (status, body["code"]) == (409, "cache_dirty"), body
     assert wl.read_work_item(CONDUCTOR, item_id).status is None

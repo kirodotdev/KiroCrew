@@ -198,7 +198,7 @@ async def test_a_pipeline_conductor_item_lands_on_a_workstreams_board(tmp_path, 
     assert "@kirocrew-work/work_ledger_record" in spec["allowedTools"]
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
-    routes._BOARD_LOCKS.clear()
+    routes._BOARD_LOCKS._locks.clear()
 
     async def _recognized(*a: Any, **k: Any) -> None:
         return None

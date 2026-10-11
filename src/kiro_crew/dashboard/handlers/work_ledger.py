@@ -42,6 +42,7 @@ against a binding that exists.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import logging
 from dataclasses import dataclass
@@ -65,6 +66,7 @@ from kiro_crew.dashboard.handlers._shared import (
 # Module-scope like ``session_ledger.py``'s identical imports: the recognition
 # gate and the incognito classifier are this module's own load-bearing deps.
 from kiro_crew.dashboard.handlers.cron import _recognize_session
+from kiro_crew.dashboard.handlers.office_slides import _KeyedLocks
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.history import is_incognito_transcript
 from kiro_crew.messaging.link import is_channel_session_key
@@ -953,15 +955,14 @@ def _baseline_fields(item: Any, header: Any) -> dict[str, Any]:
 #: append and across a rebuild, so a rebuild can never fold between the two and
 #: write the cache back to before a mutation the log then records. Every writer
 #: and every rebuild runs on this gateway's one loop, which is what makes an
-#: in-process lock the complete answer.
-_BOARD_LOCKS: dict[str, asyncio.Lock] = {}
+#: in-process lock the complete answer. The registry is ``office_slides``'s
+#: ``_KeyedLocks``: a board's entry lives only while someone holds or waits for
+#: its lock, so it is bounded by the boards in use.
+_BOARD_LOCKS = _KeyedLocks()
 
 
-def _board_lock(slot: str) -> asyncio.Lock:
-    lock = _BOARD_LOCKS.get(slot)
-    if lock is None:
-        lock = _BOARD_LOCKS[slot] = asyncio.Lock()
-    return lock
+def _board_lock(slot: str) -> contextlib.AbstractAsyncContextManager[None]:
+    return _BOARD_LOCKS.hold(slot)
 
 
 async def _drain_before_cancelling(coro: Any) -> Any:

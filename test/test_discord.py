@@ -3944,7 +3944,7 @@ class TestDispatcher:
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-owner-dm-turn", raising=False)
         monkeypatch.setattr(FakeProvider, "served_model", "model-x", raising=False)
-        ledger_routes._BOARD_LOCKS.clear()
+        ledger_routes._BOARD_LOCKS._locks.clear()
 
         async def _recognized(*a: Any, **k: Any) -> None:
             return None
@@ -3992,7 +3992,7 @@ class TestDispatcher:
             assert "parent" not in opened[0].data
             assert [e.type for e in entries].count("work/recorded") == 1
         finally:
-            ledger_routes._BOARD_LOCKS.clear()
+            ledger_routes._BOARD_LOCKS._locks.clear()
             await asyncio.to_thread(settle)
 
     @pytest.mark.asyncio

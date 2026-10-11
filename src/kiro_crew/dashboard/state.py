@@ -1824,11 +1824,20 @@ _PUBLIC_STATUS_DENY_AUDIT: dict[str, float] = {}
 _PUBLIC_STATUS_GRANT_WINDOW_SECS = 300.0
 
 
+def _drop_expired_public_status_audits(audit: dict[str, float], now: float) -> None:
+    # An entry past its window is never read again, so each insert drops those;
+    # the map then holds only the links audited inside the current window.
+    cutoff = now - _PUBLIC_STATUS_GRANT_WINDOW_SECS
+    for stale in [url for url, at in list(audit.items()) if at <= cutoff]:
+        audit.pop(stale, None)
+
+
 def _audit_public_status_grant(url: str) -> None:
     now = time.monotonic()
     last = _PUBLIC_STATUS_GRANT_AUDIT.get(url)
     if last is not None and (now - last) < _PUBLIC_STATUS_GRANT_WINDOW_SECS:
         return
+    _drop_expired_public_status_audits(_PUBLIC_STATUS_GRANT_AUDIT, now)
     _PUBLIC_STATUS_GRANT_AUDIT[url] = now
     try:
         sel().log_api_access(
@@ -1852,6 +1861,7 @@ def _audit_public_status_denied(url: str) -> None:
     last = _PUBLIC_STATUS_DENY_AUDIT.get(url)
     if last is not None and (now - last) < _PUBLIC_STATUS_GRANT_WINDOW_SECS:
         return
+    _drop_expired_public_status_audits(_PUBLIC_STATUS_DENY_AUDIT, now)
     _PUBLIC_STATUS_DENY_AUDIT[url] = now
     try:
         sel().log_api_access(

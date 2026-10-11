@@ -4634,7 +4634,7 @@ class TestAutomaticOriginMirror:
         monkeypatch.setenv(emit.CREW_LOG_ENV, "1")
         monkeypatch.setattr(emit, "_retry_delay", lambda _attempts: 0.0)
         monkeypatch.setattr(FakeProvider, "session_id", "acp-owner-dm-turn", raising=False)
-        ledger_routes._BOARD_LOCKS.clear()
+        ledger_routes._BOARD_LOCKS._locks.clear()
 
         async def _recognized(*a: Any, **k: Any) -> None:
             return None
@@ -4679,7 +4679,7 @@ class TestAutomaticOriginMirror:
         finally:
             emit.drain_for_shutdown(timeout=2.0)
             emit.reset_caches()
-            ledger_routes._BOARD_LOCKS.clear()
+            ledger_routes._BOARD_LOCKS._locks.clear()
 
     def test_a_recycled_conversation_opens_its_successor_log_citing_the_predecessor(
         self, monkeypatch
