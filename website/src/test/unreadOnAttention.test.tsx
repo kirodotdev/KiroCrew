@@ -86,6 +86,15 @@ describe('chatMessageMarksUnread', () => {
     expect(chatMessageMarksUnread(undefined)).toBe(false)
     expect(chatMessageMarksUnread('permission')).toBe(true)
   })
+
+  it.each([false, true])('never badges a watchdog recycle notice (opt-in %s)', (optIn) => {
+    if (optIn) localStorage.setItem(UNREAD_ON_ATTENTION_KEY, '1')
+    expect(chatMessageMarksUnread('assistant', 'session_recycled')).toBe(false)
+  })
+
+  it('still badges the other assistant notices, such as a stuck turn', () => {
+    expect(chatMessageMarksUnread('assistant', 'stuck_turn')).toBe(true)
+  })
 })
 
 describe('memberThreadRowMarksUnread', () => {
@@ -105,6 +114,10 @@ describe('memberThreadRowMarksUnread', () => {
     expect(memberThreadRowMarksUnread('tool_call')).toBe(false)
     expect(memberThreadRowMarksUnread('permission')).toBe(true)
   })
+
+  it('never badges a watchdog recycle notice', () => {
+    expect(memberThreadRowMarksUnread('assistant', 'session_recycled')).toBe(false)
+  })
 })
 
 describe('member turn record', () => {
@@ -119,6 +132,11 @@ describe('member turn record', () => {
     noteMemberThreadRow('member-ada', 'permission')
     expect(takeMemberThreadSpoke('member-ada')).toBe(true)
     expect(takeMemberThreadSpoke('member-bob')).toBe(false)
+  })
+
+  it('does not count a watchdog recycle notice as the turn speaking', () => {
+    noteMemberThreadRow('member-ada', 'assistant', 'session_recycled')
+    expect(takeMemberThreadSpoke('member-ada')).toBe(false)
   })
 })
 
@@ -181,6 +199,16 @@ describe('unread badge over the dashboard socket', () => {
     const ws = mount()
     send(ws, row('tool_call'))
     expect(unread()).toContain(BACKGROUND)
+  })
+
+  it('off: a watchdog recycle notice leaves a background session unbadged', () => {
+    const ws = mount()
+    send(ws, { type: 'chat_message', data: {
+      slot: BACKGROUND, role: 'assistant', ts: '2026-09-28T00:00:00Z',
+      content: '♻️ This session was recycled by the watchdog (memory limit (2425MB)).',
+      meta: { kind: 'compaction', notice: 'session_recycled', mid: 'm-recycle' },
+    } })
+    expect(unread()).not.toContain(BACKGROUND)
   })
 
   it('off: a question card and an approval add no badge of their own', () => {
@@ -274,6 +302,20 @@ describe('unread badge over the dashboard socket', () => {
   })
 
   const memberDone = { type: 'chat_done', data: { slot: MEMBER, ts: '2026-09-28T00:00:05Z' } }
+
+  it('member thread: a watchdog recycle notice badges nothing, nor does the next quiet chat_done', () => {
+    const ws = mount()
+    globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: false, mode: 'member', agent: 'ada' }]))
+    send(ws, { type: 'chat_message', data: {
+      slot: MEMBER, role: 'assistant', ts: '2026-09-28T00:00:00Z',
+      content: '♻️ This session was recycled by the watchdog (memory limit (2425MB)).',
+      meta: { kind: 'compaction', notice: 'session_recycled', mid: 'm-recycle' },
+    } })
+    expect(unread()).not.toContain(MEMBER)
+    send(ws, row('tool_call', MEMBER))
+    send(ws, memberDone)
+    expect(unread()).not.toContain(MEMBER)
+  })
 
   it('member thread: a tool-only turn ending quietly badges nothing', () => {
     const ws = mount()

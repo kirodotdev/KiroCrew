@@ -18,10 +18,17 @@ export function saveUnreadOnAttention(on: boolean): boolean {
   return safeSetItem(UNREAD_ON_ATTENTION_KEY, on ? '1' : '0')
 }
 
+/** `meta.notice` on the row the watchdog appends when it recycles an idle
+ *  session (`wire_session_recycle_callback` in `dashboard/state.py`). */
+const SESSION_RECYCLED_NOTICE = 'session_recycled'
+
 /** Whether a `chat_message` row badges its session. With the opt-in on, only
  *  a `permission` row does: the turn is parked on the user's approval. The
- *  finished turn (`chat_done`) and a question card badge on their own paths. */
-export function chatMessageMarksUnread(role: string | undefined): boolean {
+ *  finished turn (`chat_done`) and a question card badge on their own paths.
+ *  A recycle notice never does: it lands in a session that is not running
+ *  and has nothing new to read, so the badge would point at nothing. */
+export function chatMessageMarksUnread(role: string | undefined, notice?: unknown): boolean {
+  if (notice === SESSION_RECYCLED_NOTICE) return false
   return !loadUnreadOnAttention() || role === 'permission'
 }
 
@@ -35,9 +42,10 @@ const MEMBER_MESSAGE_ROLES: ReadonlySet<string> = new Set(['assistant', 'permiss
 /** Whether a `chat_message` row badges a member DM thread (`slot.mode ===
  *  'member'`). Narrower than `chatMessageMarksUnread`, never wider: only an
  *  `assistant` or `permission` row qualifies, and the opt-in still applies on
- *  top (with it on, an `assistant` row stays quiet here too). */
-export function memberThreadRowMarksUnread(role: string | undefined): boolean {
-  return role !== undefined && MEMBER_MESSAGE_ROLES.has(role) && chatMessageMarksUnread(role)
+ *  top (with it on, an `assistant` row stays quiet here too). A recycle
+ *  notice never badges here either, through `chatMessageMarksUnread`. */
+export function memberThreadRowMarksUnread(role: string | undefined, notice?: unknown): boolean {
+  return role !== undefined && MEMBER_MESSAGE_ROLES.has(role) && chatMessageMarksUnread(role, notice)
 }
 
 /** The member threads whose CURRENT turn has delivered a row to the user.
@@ -48,8 +56,10 @@ export function memberThreadRowMarksUnread(role: string | undefined): boolean {
 const memberTurnsThatSpoke = new Set<string>()
 
 /** Record that *slotKey*'s running turn delivered *role* to the user, when it
- *  is one of the rows a member thread badges on. */
-export function noteMemberThreadRow(slotKey: string, role: string | undefined): void {
+ *  is one of the rows a member thread badges on. A recycle notice is not:
+ *  the watchdog wrote it, not the crewmate, so the turn did not speak. */
+export function noteMemberThreadRow(slotKey: string, role: string | undefined, notice?: unknown): void {
+  if (notice === SESSION_RECYCLED_NOTICE) return
   if (role !== undefined && MEMBER_MESSAGE_ROLES.has(role)) memberTurnsThatSpoke.add(slotKey)
 }
 
