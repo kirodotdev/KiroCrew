@@ -5631,6 +5631,7 @@ async def set_model_target(
             pick_gen=slot._model_pick_gen,
             reasoning_effort=reasoning_effort,
             effort_gen=slot._effort_pick_gen,
+            effort_intent_gen=slot._session_effort_intent_gen,
             pair_id_backend=backend in ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
         )
 
@@ -5882,10 +5883,15 @@ class PendingModelPick:
     setting alone. ``effort_gen`` is the target's effort write generation at
     call time: any write since (the effort dropdown, a fork, a restore) means
     a newer choice landed, and it wins over this one even when it returned to
-    the level the caller saw. ``pair_id_backend`` records that the target's
-    backend spells effort into the model id (``gpt-6-astra[max]``), so a
-    committed level must also fold a legacy suffix off the pin, as the effort
-    dropdown route does.
+    the level the caller saw. ``effort_intent_gen`` is the target slot's
+    explicit-Default intent generation at call time. A later effort-picker
+    choice on any slot driving the same session bumps every such slot when it
+    changes the session's explicit-Default flag (a Default pick, or a level
+    pick that clears a pending Default) and supersedes this pick's effort half.
+    A level pick with no Default pending does not. ``pair_id_backend`` records
+    that the target's backend spells effort into the model id
+    (``gpt-6-astra[max]``), so a committed level must also fold a legacy suffix
+    off the pin, as the effort dropdown route does.
     """
 
     model: str | None
@@ -5895,6 +5901,7 @@ class PendingModelPick:
     pick_gen: int
     reasoning_effort: str | None = None
     effort_gen: int = 0
+    effort_intent_gen: int = 0
     pair_id_backend: bool = False
 
 
@@ -5983,6 +5990,51 @@ def effort_commit_needs_reset(provider: object) -> bool:
     return provider.supports_effort() is not False  # type: ignore[attr-defined]
 
 
+@dataclass(frozen=True)
+class PendingModelPickCommitSnapshot:
+    """The slot state a pending-pick commit can change."""
+
+    pending_model_pick: PendingModelPick
+    model: str
+    jev_route: bool
+    reasoning_effort: str
+    model_pick_gen: int
+    effort_pick_gen: int
+
+
+def capture_pending_model_pick_commit(slot: "_ChatSlot") -> PendingModelPickCommitSnapshot:
+    """Capture the exact slot state a pending-pick commit can change."""
+    pick = slot._pending_model_pick
+    assert pick is not None
+    return PendingModelPickCommitSnapshot(
+        pending_model_pick=pick,
+        model=slot.model,
+        jev_route=slot.jev_route,
+        reasoning_effort=slot._reasoning_effort,
+        model_pick_gen=slot._model_pick_gen,
+        effort_pick_gen=slot._effort_pick_gen,
+    )
+
+
+def restore_pending_model_pick_commit(
+    slot: "_ChatSlot", snapshot: PendingModelPickCommitSnapshot
+) -> None:
+    """Restore a deferred commit without advancing either pick generation."""
+    slot._pending_model_pick = snapshot.pending_model_pick
+    slot.model = snapshot.model
+    slot.jev_route = snapshot.jev_route
+    slot._reasoning_effort = snapshot.reasoning_effort
+    slot._model_pick_gen = snapshot.model_pick_gen
+    slot._effort_pick_gen = snapshot.effort_pick_gen
+    _audit(
+        caller_session_key=snapshot.pending_model_pick.caller_session_key,
+        operation="set_model",
+        slot_key=slot.key,
+        outcome="deferred",
+        detail={"code": "effort_default_clear_unsaved", "stage": "turn_start"},
+    )
+
+
 def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool:
     """Commit *slot*'s pending ``session_set_model`` pick, if it is still allowed.
 
@@ -5991,9 +6043,16 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
     SYNCHRONOUS on purpose: the gate and the writes to ``slot.model`` and
     ``slot.reasoning_effort`` run with no suspension between them, so nothing
     can link or mirror the target after it was authorized and before either
-    changed. A pick the gate now refuses is dropped and audited, and the turn
-    runs on the model and effort it already had. So is each half of a pick the
-    user has overtaken with a newer choice from that half's own control.
+    changed. An effort commit also clears the key's pending explicit Default in
+    that same step. A failed save of that clear restores the pick, the slot's
+    values and the flag, so this turn runs on its prior values and the next turn
+    tries the pick again. A pick the gate now refuses is dropped and audited,
+    and the turn runs on the model and effort it already had. So is each half
+    of a pick the user has overtaken with a newer choice from that half's own
+    control; for effort, a later effort-picker choice on any slot driving the
+    same session is newer only when it changes the session's explicit-Default
+    flag: a Default pick, or a level pick that clears a pending Default. A
+    level pick with no Default pending does not supersede the call.
 
     The ownership fence only tightens: a caller fenced at call time stays
     fenced, and one that was not is re-checked now, since it may have become a
@@ -6043,6 +6102,7 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
     # newer model pick supersedes the effort half as well.
     if effort is not None and (
         slot._effort_pick_gen != pick.effort_gen
+        or slot._session_effort_intent_gen != pick.effort_intent_gen
         or (pick.pair_id_backend and slot._model_pick_gen != pick.pick_gen)
     ):
         effort = None
@@ -6126,6 +6186,7 @@ def apply_pending_model_pick(state: "DashboardState", slot: "_ChatSlot") -> bool
             # that takes no level keeps it stored only, as the dropdown does.
             changed = True
         slot.reasoning_effort = effort
+        state.sessions.set_explicit_effort_default(effective_session_key(slot), False)
     _audit(
         caller_session_key=pick.caller_session_key,
         operation="set_model",

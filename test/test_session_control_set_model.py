@@ -382,7 +382,7 @@ def test_the_turn_arms_the_reset_for_a_live_or_spawning_session_only():
     import kiro_crew.dashboard.chat_runner as runner
 
     source = Path(runner.__file__).read_text(encoding="utf-8")
-    body = source[source.index("if apply_pending_model_pick(state, slot):") :]
+    body = source[source.index("if await _apply_pending_model_pick_at_turn_start(") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
     assert "_pending_reset_history_key" in body
     assert "get_provider(" in body
@@ -396,7 +396,7 @@ def test_the_turn_persists_a_committed_pick_before_it_acquires_a_session():
     import kiro_crew.dashboard.chat_runner as runner
 
     source = Path(runner.__file__).read_text(encoding="utf-8")
-    body = source[source.index("if apply_pending_model_pick(state, slot):") :]
+    body = source[source.index("if await _apply_pending_model_pick_at_turn_start(") :]
     body = body[: body.index("await _consume_pending_reset(state, slot)")]
     assert "await save_slot_off_loop(" in body
     assert "expected_history_key=_pick_history_key" in body
@@ -415,7 +415,7 @@ def test_the_turn_applies_the_pick_before_it_acquires_a_session():
 
     source = Path(runner.__file__).read_text(encoding="utf-8")
     body = source[source.index("async def _run_chat(") :]
-    apply_at = body.index("apply_pending_model_pick(state, slot)")
+    apply_at = body.index("_apply_pending_model_pick_at_turn_start(")
     assert apply_at < body.index("await _consume_pending_reset(state, slot)")
     assert apply_at < body.index("_requested_model = slot.model")
 

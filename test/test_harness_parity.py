@@ -725,6 +725,14 @@ def test_only_overlay_readers_are_written_to() -> None:
     assert ACP_BACKEND_KAS not in ACP_BACKENDS_TOOL_SEARCH_OVERLAY
 
 
+def test_non_kiro_spawn_does_not_take_the_effort_overlay_fence(tmp_path) -> None:
+    """H6: a backend that does not read cli.json never joins its fence."""
+    provider = providers_acp.AcpProvider(
+        acp_backend=ACP_BACKEND_CODEX, work_dir=tmp_path, model="claude-opus-4.7"
+    )
+    assert provider._effort_overlay_fence_mode() is None
+
+
 def test_codex_resolves_its_own_adapter_and_declares_its_own_handshake() -> None:
     """H9/H10, on the core that drives codex.
 

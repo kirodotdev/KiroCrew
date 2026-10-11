@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from test_effort import _read_cli_overlay
 
 import kiro_crew.sandbox as sb
 
@@ -344,7 +345,7 @@ class TestOverlayIsKeyedByWorkDir:
         session: two sessions on one runtime share the work directory and
         therefore this file, and kiro-cli reads it at spawn.
         """
-        from kiro_crew.providers.acp import _read_cli_overlay, _write_cli_overlay
+        from kiro_crew.providers.acp import _write_cli_overlay
 
         _write_cli_overlay(tmp_path, "claude-sonnet-4", "high")
         written = tmp_path / ".kiro" / "settings" / "cli.json"
@@ -354,7 +355,7 @@ class TestOverlayIsKeyedByWorkDir:
 
     def test_a_second_write_for_one_model_replaces_the_first(self, tmp_path):
         """One entry per model per work dir: the last writer is what a respawn reads."""
-        from kiro_crew.providers.acp import _read_cli_overlay, _write_cli_overlay
+        from kiro_crew.providers.acp import _write_cli_overlay
 
         _write_cli_overlay(tmp_path, "claude-sonnet-4", "high")
         _write_cli_overlay(tmp_path, "claude-sonnet-4", "low")

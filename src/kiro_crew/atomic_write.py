@@ -1010,6 +1010,7 @@ def atomic_write(
     restrict_on_error: RestrictErrorPolicy = "raise",
     preserve_access_control_from: int | None = None,
     parent_dir_fd: int | None = None,
+    mtime_ns: int | None = None,
 ) -> None:
     """Write *content* to *path* atomically via unique temp file + rename.
 
@@ -1085,6 +1086,11 @@ def atomic_write(
     there are none. Reading from the descriptor rather than by name keeps the
     read pinned to the inode the caller validated. The carry is ADDITIVE to
     ``mode=``, not a replacement.
+
+    *mtime_ns* sets the staged inode's access and modification times after its
+    content is complete (and synced when requested) but before the publishing
+    rename. Applying the timestamp through the open descriptor keeps a later
+    writer at the destination name from receiving this write's timestamp.
 
     *parent_dir_fd* is an OPEN descriptor for the destination's directory,
     already pinned component-by-component by the caller (``pinned_fs`` supplies
@@ -1221,6 +1227,19 @@ def atomic_write(
             _carry_xattrs(fd, src_xattrs, path)
         if fsync:
             os.fsync(fd)
+        if mtime_ns is not None:
+            timestamp = (mtime_ns, mtime_ns)
+            if os.utime in os.supports_fd:
+                os.utime(fd, ns=timestamp)
+            elif pin is None:
+                os.utime(tmp, ns=timestamp)
+            elif os.utime in os.supports_dir_fd:
+                os.utime(os.path.basename(tmp), ns=timestamp, dir_fd=pin)
+            else:  # pragma: no cover - no supported platform has this capability gap
+                raise NotImplementedError(
+                    "stamping a descriptor-relative atomic write requires "
+                    "descriptor- or dir_fd-capable os.utime"
+                )
         # Close BEFORE the rename: on Windows os.replace cannot swap a file that
         # still has an open handle. Clear fd first so the except branch below
         # cannot double-close if this close is itself what fails.

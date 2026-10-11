@@ -2715,7 +2715,47 @@ refused at the same gate, tightening a row already retained is never refused,
 and no retained row is ever evicted -- it is the record the channel gate
 hydrates from. Retiring rows once the header carries the mode needs the channel
 gate to read the header, a separate change. Immortality of durable
-settings stays opt-in (`_DURABLE_FLAGS`).
+settings stays opt-in (`_DURABLE_FLAGS`). `EXPLICIT_EFFORT_DEFAULT_FLAG` is one
+of them: an explicit Default that could not remove the model's workspace
+`cli.json` effort entry itself leaves it on the key, and the first cold start of
+that key that applies it clears it. It is carried there, not applied at the
+pick, because the cold start resolves the work directory and the model whose
+entry it removes, and either can change after the pick. A start that applies
+the flag clears it. A level `session_set_model` committed at the turn start
+clears a pending flag in the same step, and the turn saves that clear before it
+acquires a session. A later effort-picker choice on any slot driving the same
+session that changes the session's explicit-Default flag (a Default pick, or a
+level pick that clears a pending Default) bumps every open slot driving that
+session and supersedes the call's effort half. A level pick with no Default
+pending does not. A
+failed or cancelled save puts the pick, the slot's values and the flag back; the
+turn runs on the values it had, and the next turn applies the pick again. The
+flag stays armed on disk until
+that start's projection removes the entry and the clear is saved. A kill before
+the saved clear therefore leaves the next cold start armed, so it applies the
+Default again. That replay finds the entry already gone, unless a level was
+written by hand after the killed start; that level is replaced just as one
+written between the original pick and its first start is replaced. A start
+carrying a `reasoning_effort_override` runs that level, arms nothing and leaves
+the flag pending for the key's next start without an override: the override is
+not a newer effort action on the key (a level pick through the effort handler,
+or a level `session_set_model` commits at the turn start, clears the flag itself)
+but a slot's level read before the Default pick landed, an alias slot's own
+level (two slot objects can drive one session), or a caller's pin.
+Explicit-Default rows are bounded, and a pick past that bound is refused
+before it changes the slot. Clearing the flag on a row that holds nothing else
+removes the row, so none is left outside that bound. A pick that clears a key's flag holds its row until it ends
+(`SessionMap.hold_explicit_effort_default`), so putting the flag back after a
+failed save or a rollback needs no new row and cannot be refused.
+
+Dashboard eager prefetch takes the session-keyed switch lock from its slot effort
+read through `get_or_create`. A concurrent effort picker therefore either commits
+before the prefetch re-checks its captured bindings, causing that prefetch to stand
+down, or waits until the allocation has registered. It cannot record
+`explicit_effort_default` between a stale level read and the allocation reservation.
+The prefetch passes `wait_if_busy=False` while holding this lock: if a real turn
+registered first, `SessionBusyError` makes speculation stand down rather than wait
+for a lease under a lock the live turn's refusal fallback may need.
 
 **Mapped-session enumeration:** `SessionMap.mapped_sids_by_key()` returns session
 key → kiro-cli session ID for every entry that has one. Disk accounting

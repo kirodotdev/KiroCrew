@@ -2952,6 +2952,8 @@ class _ChatSlot:
         "_tool_stall_exhausted_emitted",
         "_transient_5xx_retries",
         "_transient_ladder_started",
+        "_effort_intent_owed",
+        "_session_effort_intent_gen",
         "_infra_retries",
         "_fallback_candidate_idx",
         "_fallback_walked",
@@ -3716,6 +3718,15 @@ class _ChatSlot:
         # start of the network-drop recovery window. Re-stamped whenever the
         # ladder starts from zero, so it needs no reset of its own.
         self._transient_ladder_started: float = 0.0
+        # Set while this chat's pick is live but its explicit-Default intent was
+        # not saved, so the same pick again is a retry rather than a no-op; it is
+        # never persisted and goes with the slot.
+        self._effort_intent_owed: bool = False
+        # Bumped on every open slot of this slot's session when the effort
+        # picker saves a change to the session's explicit-Default flag, so a
+        # pending session_set_model effort can tell a newer choice landed. Other
+        # writes of the flag do not bump it. Never persisted; goes with the slot.
+        self._session_effort_intent_gen: int = 0
         # L1 gateway-capacity retries: how many times THIS cycle waited out an
         # infrastructure refusal of a tool call (the ladder owns the budget; this
         # is the slot-visible count the health panel classifies as recovering).

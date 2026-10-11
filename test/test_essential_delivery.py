@@ -48,6 +48,7 @@ SENTINEL = "Preference anchor: 请保留中文原文。"
 class Wire:
     def __init__(self, project, backend=ACP_BACKEND_CLAUDE):
         self._work_dir = project
+        self._model = ""
         self.backend = backend
         self._session_id = "native-conversation"
         self.process_instance = "process-one"

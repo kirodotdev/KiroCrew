@@ -197,6 +197,16 @@ reads the file only after acquiring it. Projection holds that lock from the
 fresh read through alias publication and settings commit, so a concurrent writer
 cannot be replaced by a stale pre-enumeration snapshot. Lock identity changes or
 a two-second acquisition timeout fail closed without writing the settings file.
+The lock admits a `.kiro` or `settings` link component by component. It uses
+`lstat` and `readlink` only on names already inside the resolved work directory,
+then decides containment from the link text before probing the target. A link
+naming a remote, outside, other-drive, or looping path is refused without being
+opened or resolved. Projection and rollback then read and write the admitted
+folder. A clear or Default under a refused link reports that it could not change
+the file, whether or not the target contains `cli.json`. A component swapped for
+a link after admission is still refused by the pinned walk (see
+[providers](providers.md)); an outside link skips projection and logs the existing
+refusal.
 Crew records the original local inheritance key's presence and value in
 `kirocrew.skillDiscovery.previousInheritance`. Rollback restores that snapshot
 only while the native key still equals Crew's asserted `true`, removes Crew's

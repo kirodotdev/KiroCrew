@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock
+from contextlib import contextmanager
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from chat_test_helpers import _make_state
 
 from kiro_crew.acp.session_provider import AcpSessionProvider
+from kiro_crew.dashboard import chat_handlers
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.chat_runner import _apply_pending_model_pick_at_turn_start
+from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.handlers import session_control as handlers_sc
 from kiro_crew.mcp_dashboard import TABLE
 from kiro_crew.mcp_tools.dashboard_client import InMemoryDashboardClient
@@ -46,6 +49,377 @@ def _set(state, caller, target: str, **kwargs) -> dict:
 def _pair(tmp_path):
     state = _make_state(tmp_path)
     return state, state.get_or_create_slot("chat-1"), state.get_or_create_slot("chat-2")
+
+
+def _track_explicit_default(state, *pending_keys: str, events: list[str] | None = None):
+    flags = {key: True for key in pending_keys}
+
+    def pending(key: str) -> bool:
+        if key.startswith("slack:"):
+            return flags.get(key, False) or flags.get(key.removeprefix("slack:"), False)
+        return flags.get(key, False)
+
+    def set_pending(key: str, value: bool) -> bool:
+        if events is not None:
+            events.append("clear" if not value else "set")
+        aliases = (key, key.removeprefix("slack:")) if key.startswith("slack:") else (key,)
+        for alias in aliases:
+            flags[alias] = value
+        return True
+
+    @contextmanager
+    def effort_intent_write(_key: str):
+        if events is not None:
+            events.append("intent-enter")
+        try:
+            yield
+        finally:
+            if events is not None:
+                events.append("intent-exit")
+
+    @contextmanager
+    def hold_default(_key: str):
+        if events is not None:
+            events.append("hold-enter")
+        try:
+            yield
+        finally:
+            if events is not None:
+                events.append("hold-exit")
+
+    state.sessions.explicit_effort_default_pending = MagicMock(side_effect=pending)
+    state.sessions.set_explicit_effort_default = MagicMock(side_effect=set_pending)
+    state.sessions.effort_intent_write = MagicMock(side_effect=effort_intent_write)
+    state.sessions.hold_explicit_effort_default = MagicMock(side_effect=hold_default)
+    return flags
+
+
+@pytest.mark.parametrize("pending_key", ["slack:1700000000.000100", "1700000000.000100"])
+def test_an_effort_commit_clears_both_spellings_of_a_folded_key(tmp_path, monkeypatch, pending_key):
+    from kiro_crew import session as session_module
+
+    state, caller, target = _pair(tmp_path)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    cfg = MagicMock()
+    cfg.session.pool_size = 0
+    cfg.session.pool_agent = "kirocrew"
+    cfg.session.pool_ttl_secs = 1800
+    cfg.session.timeout_secs = 3600
+    cfg.agent.default_agent = ""
+    cfg.agent.model = "auto"
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew-home"))
+    monkeypatch.setattr(session_module, "default_project_dir", lambda: str(tmp_path))
+    manager = session_module.SessionManager(cfg, provider_factory=MagicMock())
+    manager.set_explicit_effort_default(pending_key, True)
+    legacy_key = "1700000000.000100"
+    provider = MagicMock(has_active_turn=MagicMock(return_value=False))
+    manager._allocation_boundary()._sessions[legacy_key] = provider
+    state.sessions = manager
+    target.linked_session_key = "slack:1700000000.000100"
+    monkeypatch.setattr(sc, "_another_alias_is_mid_turn", lambda *_args: False)
+    monkeypatch.setattr(sc, "authorize_target", lambda *_args, **_kwargs: target)
+
+    assert sc.apply_pending_model_pick(state, target) is True
+
+    assert manager.explicit_effort_default_pending("slack:1700000000.000100") is False
+    assert manager.explicit_effort_default_pending(legacy_key) is False
+
+
+def test_a_model_only_commit_leaves_the_default_pending(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    key = effective_session_key(target)
+    _track_explicit_default(state, key)
+    _set(state, caller, "chat-2", model="sonnet")
+
+    assert sc.apply_pending_model_pick(state, target) is True
+
+    assert state.sessions.explicit_effort_default_pending(key) is True
+    state.sessions.set_explicit_effort_default.assert_not_called()
+
+
+def test_a_superseded_effort_half_leaves_the_default_pending(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    key = effective_session_key(target)
+    _track_explicit_default(state, key)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    target.reasoning_effort = "low"
+
+    assert sc.apply_pending_model_pick(state, target) is False
+
+    assert state.sessions.explicit_effort_default_pending(key) is True
+    state.sessions.set_explicit_effort_default.assert_not_called()
+
+
+def test_a_turn_start_gate_refusal_leaves_the_default_pending(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    target.linked_session_key = "slack:1700000000.000100"
+    key = effective_session_key(target)
+    _track_explicit_default(state, key)
+
+    assert sc.apply_pending_model_pick(state, target) is False
+
+    assert state.sessions.explicit_effort_default_pending(key) is True
+    state.sessions.set_explicit_effort_default.assert_not_called()
+
+
+def test_a_same_level_effort_commit_clears_the_default_without_a_reset(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    target.reasoning_effort = "medium"
+    key = effective_session_key(target)
+    _track_explicit_default(state, key)
+    _set(state, caller, "chat-2", reasoning_effort="medium")
+
+    assert sc.apply_pending_model_pick(state, target) is False
+
+    assert state.sessions.explicit_effort_default_pending(key) is False
+
+
+def _record_saved_handler_intent(state, key: str, pending: bool, *, save_succeeds=True):
+    """Drive the effort handler's public flag, save-result, and generation effects."""
+    prior = state.sessions.explicit_effort_default_pending(key)
+    state.sessions.set_explicit_effort_default(key, pending)
+    if not save_succeeds:
+        state.sessions.set_explicit_effort_default(key, prior)
+        return
+    if prior != pending:
+        chat_handlers._bump_session_effort_intent_slots(state, key)
+
+
+def _alias_pair(tmp_path, monkeypatch, *, default_pending: bool):
+    state, caller, target = _pair(tmp_path)
+    alias = state.get_or_create_slot("chat-alias")
+    session_key = "slack:1700000000.000100"
+    target.linked_session_key = session_key
+    alias.linked_session_key = session_key
+    _track_explicit_default(state, *(session_key,) if default_pending else ())
+    monkeypatch.setattr(sc, "authorize_target", lambda *_args, **_kwargs: target)
+    monkeypatch.setattr(sc, "_another_alias_is_mid_turn", lambda *_args: False)
+    return state, caller, target, alias, session_key
+
+
+def test_a_saved_default_on_an_alias_supersedes_the_calls_effort_half(tmp_path, monkeypatch):
+    state, caller, target, _alias, key = _alias_pair(tmp_path, monkeypatch, default_pending=False)
+    target.reasoning_effort = "low"
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kwargs: audits.append(kwargs))
+
+    _record_saved_handler_intent(state, key, True)
+
+    assert sc.apply_pending_model_pick(state, target) is False
+    assert target.reasoning_effort == "low"
+    assert state.sessions.explicit_effort_default_pending(key) is True
+    assert any(
+        audit.get("detail", {}).get("code") == "superseded_by_newer_effort" for audit in audits
+    )
+
+
+def test_a_saved_level_on_an_alias_supersedes_the_calls_effort_half(tmp_path, monkeypatch):
+    state, caller, target, _alias, key = _alias_pair(tmp_path, monkeypatch, default_pending=True)
+    target.reasoning_effort = "low"
+    _set(state, caller, "chat-2", reasoning_effort="high")
+
+    _record_saved_handler_intent(state, key, False)
+
+    assert sc.apply_pending_model_pick(state, target) is False
+    assert target.reasoning_effort == "low"
+    assert state.sessions.explicit_effort_default_pending(key) is False
+
+
+def test_an_alias_level_without_a_pending_default_does_not_supersede_the_call(
+    tmp_path, monkeypatch
+):
+    state, caller, target, _alias, key = _alias_pair(tmp_path, monkeypatch, default_pending=False)
+    target.reasoning_effort = "low"
+    _set(state, caller, "chat-2", reasoning_effort="high")
+
+    _record_saved_handler_intent(state, key, False)
+
+    assert sc.apply_pending_model_pick(state, target) is True
+    assert target.reasoning_effort == "high"
+
+
+def test_a_failed_alias_intent_save_does_not_supersede_the_call(tmp_path, monkeypatch):
+    state, caller, target, _alias, key = _alias_pair(tmp_path, monkeypatch, default_pending=True)
+    target.reasoning_effort = "low"
+    _set(state, caller, "chat-2", reasoning_effort="high")
+
+    _record_saved_handler_intent(state, key, False, save_succeeds=False)
+
+    assert sc.apply_pending_model_pick(state, target) is True
+    assert target.reasoning_effort == "high"
+    assert state.sessions.explicit_effort_default_pending(key) is False
+
+
+def test_the_turn_saves_a_cleared_default_before_acquiring_a_session(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    key = effective_session_key(target)
+    events: list[str] = []
+    _track_explicit_default(state, key, events=events)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+
+    async def flush() -> None:
+        events.append("save")
+
+    async def acquire(*_args, **_kwargs):
+        events.append("acquire")
+        return MagicMock(), True, None
+
+    state.sessions.aflush = MagicMock(side_effect=flush)
+    state.sessions.get_or_create = MagicMock(side_effect=acquire)
+
+    async def run() -> bool:
+        reset_needed = await _apply_pending_model_pick_at_turn_start(
+            state, target, sc.apply_pending_model_pick
+        )
+        await state.sessions.get_or_create(key)
+        return reset_needed
+
+    assert asyncio.run(run()) is True
+    assert events == [
+        "intent-enter",
+        "hold-enter",
+        "clear",
+        "save",
+        "hold-exit",
+        "intent-exit",
+        "acquire",
+    ]
+
+
+def test_a_failed_turn_start_clear_save_defers_the_pick(tmp_path, caplog, monkeypatch):
+    state, caller, target = _pair(tmp_path)
+    target.model = "opus"
+    target.jev_route = True
+    target.reasoning_effort = "low"
+    key = effective_session_key(target)
+    flags = _track_explicit_default(state, key)
+    out = _set(state, caller, "chat-2", model="sonnet", reasoning_effort="high")
+    pick = target._pending_model_pick
+    before = (
+        target.model,
+        target.reasoning_effort,
+        target.jev_route,
+        target._model_pick_gen,
+        target._effort_pick_gen,
+    )
+    audits: list[dict] = []
+    monkeypatch.setattr(sc, "_audit", lambda **kwargs: audits.append(kwargs))
+    state.sessions.aflush = AsyncMock(side_effect=OSError("disk full"))
+
+    reset_needed = asyncio.run(
+        _apply_pending_model_pick_at_turn_start(state, target, sc.apply_pending_model_pick)
+    )
+
+    assert reset_needed is False
+    assert (
+        target.model,
+        target.reasoning_effort,
+        target.jev_route,
+        target._model_pick_gen,
+        target._effort_pick_gen,
+    ) == before
+    assert target._pending_model_pick is pick
+    assert flags[key] is True
+    assert "the pending pick waits for the next turn" in caplog.text
+    assert any(
+        audit.get("outcome") == "deferred"
+        and audit.get("detail", {}).get("code") == "effort_default_clear_unsaved"
+        for audit in audits
+    )
+
+    state.sessions.aflush = AsyncMock()
+    assert (
+        asyncio.run(
+            _apply_pending_model_pick_at_turn_start(state, target, sc.apply_pending_model_pick)
+        )
+        is True
+    )
+    assert target._pending_model_pick is None
+    assert target.model == out["model"]
+    assert target.reasoning_effort == "high"
+    assert flags[key] is False
+
+
+def test_a_cancelled_turn_start_clear_save_defers_the_pick(tmp_path):
+    state, caller, target = _pair(tmp_path)
+    target.model = "opus"
+    target.jev_route = True
+    target.reasoning_effort = "low"
+    key = effective_session_key(target)
+    flags = _track_explicit_default(state, key)
+    _set(state, caller, "chat-2", model="sonnet", reasoning_effort="high")
+    pick = target._pending_model_pick
+    before = (
+        target.model,
+        target.reasoning_effort,
+        target.jev_route,
+        target._model_pick_gen,
+        target._effort_pick_gen,
+    )
+    calls = 0
+
+    async def cancel_once() -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise asyncio.CancelledError
+
+    state.sessions.aflush = AsyncMock(side_effect=cancel_once)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            _apply_pending_model_pick_at_turn_start(state, target, sc.apply_pending_model_pick)
+        )
+
+    assert (
+        target.model,
+        target.reasoning_effort,
+        target.jev_route,
+        target._model_pick_gen,
+        target._effort_pick_gen,
+    ) == before
+    assert target._pending_model_pick is pick
+    assert flags[key] is True
+    assert calls == 2, "the restored flag gets one best-effort save"
+
+
+def test_a_failed_turn_start_clear_keeps_its_row_while_restoring(tmp_path, monkeypatch):
+    from kiro_crew import session_map as session_map_module
+    from kiro_crew.session import SessionManager
+    from kiro_crew.session_map import SessionMap
+
+    state, caller, target = _pair(tmp_path)
+    key = effective_session_key(target)
+    _set(state, caller, "chat-2", reasoning_effort="high")
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "kirocrew-home"))
+    monkeypatch.setattr(session_map_module, "EXPLICIT_EFFORT_DEFAULT_ROW_CAP", 1)
+    manager = SessionManager.__new__(SessionManager)
+    manager._session_map = SessionMap()
+    manager._fold_key = lambda raw: raw
+    manager.set_explicit_effort_default(key, True)
+    state.sessions = manager
+    monkeypatch.setattr(sc, "_another_alias_is_mid_turn", lambda *_args: False)
+    monkeypatch.setattr(sc, "authorize_target", lambda *_args, **_kwargs: target)
+    newcomer_was_refused = False
+
+    async def fail_after_competitor() -> None:
+        nonlocal newcomer_was_refused
+        newcomer_was_refused = not manager.set_explicit_effort_default("dashboard:newcomer", True)
+        raise OSError("disk full")
+
+    manager.aflush = fail_after_competitor
+
+    assert (
+        asyncio.run(
+            _apply_pending_model_pick_at_turn_start(state, target, sc.apply_pending_model_pick)
+        )
+        is False
+    )
+    assert newcomer_was_refused is True
+    assert manager.explicit_effort_default_pending(key) is True
+    assert manager.explicit_effort_default_pending("dashboard:newcomer") is False
 
 
 def test_an_effort_only_pick_keeps_the_model_and_commits_the_level(tmp_path):

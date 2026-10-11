@@ -89,6 +89,13 @@ class SessionBusyError(RuntimeError):
     """A caller requested an immediate turn claim while the session was held."""
 
 
+class _WarmPoolEffortRewriteDiscard(RuntimeError):
+    """A claimed warm runtime crossed an explicit-Default rewrite before registration."""
+
+    def __init__(self, provider: LLMProvider) -> None:
+        self.provider = provider
+
+
 #: How long a claim or cold start waits at the door of ``get_or_create`` for a
 #: key's ending fence to lift before it is refused (:class:`SessionEndingError`).
 #: An independent caller-refusal bound, not a multiple of the fence's length: a
@@ -233,6 +240,7 @@ class SessionRegistryState:
     #: still cold-starting. Reads like the set it replaces.
     starting_pids: PidRefcount = field(default_factory=PidRefcount)
     allocation_reservations: dict[str, set[object]] = field(default_factory=dict)
+    explicit_effort_default_reservations: set[str] = field(default_factory=set)
     inbound_callback_reservations: set[object] = field(default_factory=set)
     ownership_generations: dict[str, int] = field(default_factory=dict)
     subagent_runtimes: dict[str, Any] = field(default_factory=dict)
@@ -318,6 +326,18 @@ class _AllocationOwner(Protocol):
 
     def _bg_backend_supports_runtime(self) -> bool: ...
 
+    def explicit_effort_default_pending(self, key: str) -> bool: ...
+
+    def set_explicit_effort_default(self, key: str, pending: bool) -> bool: ...
+
+    def hold_explicit_effort_default(self, key: str) -> contextlib.AbstractContextManager[None]: ...
+
+    async def wait_for_effort_intent_writes(self, key: str) -> None: ...
+
+    def fence_effort_overlay_rewrite(self) -> contextlib.AbstractContextManager[None]: ...
+
+    async def aflush(self) -> None: ...
+
     async def await_replay_gap(self, key: str) -> None: ...
 
     def absorb_orphaned_release(self, key: str) -> bool: ...
@@ -366,11 +386,17 @@ class _AllocationOwner(Protocol):
 
     async def _drain_and_claim(self, agent: str | None) -> LLMProvider | None: ...
 
+    def _take_claim_spawn_time(self, provider: LLMProvider) -> float | None: ...
+
+    def _may_predate_effort_overlay_rewrite(self, spawn_time: float) -> bool: ...
+
     def _record_pool_decision(self, decision: str, key: str) -> None: ...
 
     def _schedule_replenish(self) -> None: ...
 
     def _dispatch_hard_kill(self, provider: LLMProvider) -> None: ...
+
+    async def _discard_pool_provider(self, provider: LLMProvider, context: str) -> None: ...
 
     def _resolve_agent_model(self, agent: str) -> str: ...
 
@@ -1586,6 +1612,25 @@ class SessionAllocationService:
     def mapped_session_keys(self) -> frozenset[str]:
         return frozenset(self._owner._session_map.mapped_sids_by_key())
 
+    def _reserve_explicit_effort_default(self, key: str) -> bool:
+        """Reserve *key*'s pending explicit Default for one in-flight start.
+
+        The durable flag stays armed until the provider's projection applies it.
+        A process death before that clear is saved therefore leaves the next cold
+        start to apply the Default again. The reservation is process-local and
+        canonical-keyed so two spellings of one conversation cannot both arm.
+        """
+        reservation_key = self._deps.canonical_key(key)
+        reservations = self.state.explicit_effort_default_reservations
+        if not self._owner.explicit_effort_default_pending(key) or reservation_key in reservations:
+            return False
+        reservations.add(reservation_key)
+        return True
+
+    def _release_explicit_effort_default(self, key: str) -> None:
+        """Release *key*'s process-local explicit Default reservation."""
+        self.state.explicit_effort_default_reservations.discard(self._deps.canonical_key(key))
+
     def seed_conversation(
         self,
         key: str,
@@ -2127,6 +2172,14 @@ class SessionAllocationService:
                 await self._remove_reservation_cancellation_drained(reserved_key, token)
                 fence_deadline = await self.wait_for_ending_fence(reserved_key, fence_deadline)
                 continue
+            except _WarmPoolEffortRewriteDiscard as discarded:
+                try:
+                    await self._owner._discard_pool_provider(
+                        discarded.provider, "Warm pool effort registration discard"
+                    )
+                finally:
+                    await self._remove_reservation_cancellation_drained(reserved_key, token)
+                continue
             except BaseException:
                 await self._remove_reservation_cancellation_drained(reserved_key, token)
                 raise
@@ -2363,6 +2416,33 @@ class SessionAllocationService:
             owner._pool_cwd,
         )
         provider_switched = False
+        # A pending explicit Default (the session map's one-shot flag) needs a
+        # cold start: a warm process read cli.json at its own spawn, and Default
+        # cannot be pushed to a live session. Read once, here: the key's
+        # allocation reservation is held from before this read until the
+        # session is registered, and the effort handler refuses a pick that
+        # would change the flag while it is (``SessionManager.effort_basis_locked``),
+        # so what this start reads is the basis the session it publishes runs
+        # on. A pick that passed that check before the reservation was taken
+        # may still be saving: wait for its write to settle first, so the value
+        # read is one a save kept (or the one a failed save put back), never
+        # one no save will keep. The count can only fall while this waits,
+        # because every later pick is refused or has nothing to write. A
+        # cancellation here propagates; nothing was read or written.
+        await owner.wait_for_effort_intent_writes(key)
+        explicit_effort_default = owner.explicit_effort_default_pending(key)
+        if explicit_effort_default and extra_factory_kwargs.get("reasoning_effort_override"):
+            # A start on a level its caller chose runs that level and does not
+            # apply or clear the pending Default. The flag is pending because
+            # the key's latest effort action was a Default pick (a level pick
+            # through the effort handler, or a level session_set_model commits
+            # at the turn start, clears it), and this override is not a newer
+            # one: a slot's level read before that pick landed, an alias slot's
+            # own level, or a caller's pin. The flag stays for the next start
+            # that takes no override, which applies and clears it. The start
+            # keeps the pool: the override is pushed to the claimed process
+            # below.
+            explicit_effort_default = False
         cwd_blocks_pool = bool(cwd and cwd != owner._pool_cwd)
         if not owner._pool_size:
             pool_decision = "disabled"
@@ -2396,6 +2476,8 @@ class SessionAllocationService:
             # fixed when it was pre-spawned with no parent. Cold-starting is what
             # makes ``$KIROCREW_SCRATCH`` name the same place as the parent's.
             pool_decision = "bypass_shared_scratch"
+        elif explicit_effort_default:
+            pool_decision = "bypass_effort"
         elif await self._crew_pins_effort(agent, extra_factory_kwargs.get("crew_agent")):
             # A CREW's pinned effort is fixed at spawn time and the warm-pool
             # claim path never re-pushes it, so a warm hit would silently run
@@ -2411,6 +2493,7 @@ class SessionAllocationService:
             pool_decision = ""
 
         pooled = None if pool_decision else await owner._drain_and_claim(agent)
+        claim_spawn_time = owner._take_claim_spawn_time(pooled) if pooled is not None else None
         if not pool_decision:
             pool_decision = "hit" if pooled is not None else "miss_empty"
         owner._record_pool_decision(pool_decision, key)
@@ -2616,6 +2699,7 @@ class SessionAllocationService:
                 on_queued=extra_factory_kwargs.get("on_gate_queued"),
                 on_acquired=extra_factory_kwargs.get("on_gate_acquired"),
             ):
+                default_reserved = False
                 try:
                     if preparation.revision:
                         from kiro_crew.session_capabilities import (
@@ -2641,12 +2725,41 @@ class SessionAllocationService:
                     pre_spawn = await pre_spawn_identity(
                         getattr(owner, "spawn_identity_reader", None)
                     )
+                    if explicit_effort_default:
+                        # Re-read and reserve without an await between them. The
+                        # durable flag is not cleared until this start confirms
+                        # that its overlay projection applied the Default.
+                        if self._reserve_explicit_effort_default(key):
+                            default_reserved = True
+                            provider.arm_explicit_effort_default(owner.fence_effort_overlay_rewrite)
                     await provider.start()
+                    if default_reserved and provider.explicit_effort_default_applied:
+                        owner.set_explicit_effort_default(key, False)
+                        try:
+                            await owner.aflush()
+                        except Exception:
+                            # ``aflush`` restores the dirty mark, so the map's
+                            # next successful save retries this already-applied
+                            # Default's clear. The live start remains valid.
+                            self._deps.logger.warning(
+                                "Could not save the explicit effort Default clear for %s; "
+                                "the Default already ran and the map's next save retries its clear",
+                                key,
+                                exc_info=True,
+                            )
                 except (asyncio.CancelledError, Exception):
+                    if default_reserved and provider.explicit_effort_default_applied:
+                        # The projection ran before the failure. Keep its clear in
+                        # memory for the deferred map flush; never await here,
+                        # because this path also handles cancellation.
+                        owner.set_explicit_effort_default(key, False)
                     if preparation.revision:
                         self._remember_capability_failure(key, preparation)
                     owner._dispatch_hard_kill(provider)
                     raise
+                finally:
+                    if default_reserved:
+                        self._release_explicit_effort_default(key)
                 # start() has published the PID, and the stamp read below is a
                 # real suspension point before registry ownership becomes
                 # visible in the lock section further down -- shield the PID
@@ -2726,6 +2839,20 @@ class SessionAllocationService:
                 # duplicate this call shuts down itself -- from here on it is not
                 # a start an ending caller must be told about.
                 self.state.spawning_reservations.discard(_reservation)
+
+                if (
+                    pooled is not None
+                    and claim_spawn_time is not None
+                    and owner._may_predate_effort_overlay_rewrite(claim_spawn_time)
+                ):
+                    # The post-claim rekey and model work await off the loop, so
+                    # another session can rewrite cli.json after the first fence
+                    # check. Refuse before this provider becomes a live session.
+                    self._deps.logger.info(
+                        "Warm pool: explicit effort Default rewrote cli.json after claim, "
+                        "discarding before registration"
+                    )
+                    raise _WarmPoolEffortRewriteDiscard(provider)
 
                 existing = self._sessions.get(key)
                 recycling = existing is not None and owner._recycling.get(key) is existing
@@ -2863,6 +2990,8 @@ class SessionAllocationService:
                     session.turn_owner = asyncio.current_task()
                     self._deps.inc_session_created()
                     result = (provider, True, resumed)
+        except _WarmPoolEffortRewriteDiscard:
+            raise
         except BaseException:
             if preparation.revision:
                 self._remember_capability_failure(key, preparation)

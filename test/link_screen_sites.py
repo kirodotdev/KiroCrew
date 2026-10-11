@@ -154,6 +154,7 @@ DECLARED_SITES = frozenset(
         ("pod/runtime_home.py", "orphan_homes"),
         ("pod/runtime_home.py", "write_pod_config"),
         ("portability.py", "apply_import_zip"),
+        ("providers/acp.py", "_read_cli_overlay_document"),
         ("sandbox.py", "cleanup_stale_sandbox_profiles"),
         ("seed.py", "copy_fixture_into_witnessed_dir"),
         ("seed.py", "copy_fixture_into_witnessed_dir._walk"),
@@ -206,6 +207,7 @@ DECLARED_SITES = frozenset(
         ("snapshot_restore.py", "_refuse_corrupt_source_databases"),
         ("snapshot_restore.py", "_restore_everything_from_rollback"),
         ("work_root.py", "sweep_work_root"),
-        ("workspace_cli_settings.py", "workspace_cli_settings_lock"),
+        ("workspace_cli_settings.py", "_settings_dir_within_work_dir"),
+        ("workspace_cli_settings.py", "locked_workspace_cli_settings"),
     }
 )

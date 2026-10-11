@@ -415,7 +415,32 @@ def _write_all(fd: int, data: bytes) -> None:
         view = view[written:]
 
 
-def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
+def _set_staged_mtime(
+    fd: int,
+    temp_path: str | os.PathLike,
+    mtime_ns: int | None,
+    *,
+    dir_fd: int | None = None,
+) -> None:
+    if mtime_ns is None:
+        return
+    timestamp = (mtime_ns, mtime_ns)
+    if os.utime in os.supports_fd:
+        os.utime(fd, ns=timestamp)
+    elif dir_fd is None:
+        os.utime(temp_path, ns=timestamp)
+    elif os.utime in os.supports_dir_fd:
+        os.utime(temp_path, ns=timestamp, dir_fd=dir_fd)
+    else:  # pragma: no cover - no supported platform has this capability gap
+        raise NotImplementedError(
+            "stamping a descriptor-relative atomic write requires "
+            "descriptor- or dir_fd-capable os.utime"
+        )
+
+
+def atomic_write_locked(
+    path: str | os.PathLike, data: bytes, *, mtime_ns: int | None = None
+) -> None:
     """Write *data* to *path* atomically, resolving the parent directory ONCE.
 
     Every writer in this app stages a private temp file beside its target and
@@ -505,6 +530,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
         try:
             try:
                 _write_all(fd, data)
+                _set_staged_mtime(fd, tmp, mtime_ns)
             finally:
                 os.close(fd)
             os.replace(tmp, target)
@@ -533,6 +559,7 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
         try:
             try:
                 _write_all(fd, data)
+                _set_staged_mtime(fd, tmp_name, mtime_ns, dir_fd=dir_fd)
             finally:
                 os.close(fd)
             os.rename(tmp_name, target.name, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
@@ -576,9 +603,11 @@ def atomic_write_locked(path: str | os.PathLike, data: bytes) -> None:
         os.close(dir_fd)
 
 
-def atomic_write_text(path: str | os.PathLike, text: str) -> None:
+def atomic_write_text(
+    path: str | os.PathLike, text: str, *, mtime_ns: int | None = None
+) -> None:
     """UTF-8 convenience wrapper over :func:`atomic_write_locked`."""
-    atomic_write_locked(path, text.encode("utf-8"))
+    atomic_write_locked(path, text.encode("utf-8"), mtime_ns=mtime_ns)
 
 
 def _refuse_unsafe_leaf(target: Path) -> None:
