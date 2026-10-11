@@ -1378,6 +1378,40 @@ class TestASpecLeftInPlaceHoldsTheCeilingMemo:
             )
             assert retry() is True
 
+    @pytest.mark.parametrize(
+        "main_unreadable", [True, False], ids=["unreadable-main", "held-conductor"]
+    )
+    def test_the_retry_warning_names_the_remedy_for_its_cause(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+        main_unreadable: bool,
+    ) -> None:
+        """An unreadable main spec is told to restore read access and is never told
+        to run ``--clean``, which would write defaults over the very file the skip
+        keeps. A held conductor spec keeps the ``--clean`` advice. Mutation pin:
+        dropping the unreadable branch puts ``--clean`` in the first case."""
+        monkeypatch.setattr(agent, "_conductor_spec_held", True, raising=False)
+        monkeypatch.setattr(agent, "_main_spec_unreadable", main_unreadable, raising=False)
+        monkeypatch.setattr(agent, "kiro_agents_dir_path", lambda: tmp_path)
+
+        def _held_rebuild(*, _held_out: list[bool]) -> tuple[Path, bool]:
+            _held_out.append(True)
+            return tmp_path / agent.AGENT_FILENAME, not main_unreadable
+
+        monkeypatch.setattr(agent, "rebuild_agent_config_reporting", _held_rebuild)
+        with caplog.at_level(logging.WARNING, logger=agent.logger.name):
+            assert agent.retry_held_conductor_specs() is False
+        [message] = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+        if main_unreadable:
+            assert "restore read access" in message
+            assert "--clean" not in message
+            assert str(tmp_path / agent.AGENT_FILENAME) in message
+        else:
+            assert "still unwritten" in message
+            assert "kirocrew setup --agent-only --clean" in message
+
     def test_the_hourly_maintenance_wake_retries_held_specs_before_its_sweeps(self) -> None:
         """The retry rides the gateway's existing hourly maintenance wake -- the one
         loop that already hosts the scratch, work-root and session-dir sweeps rather

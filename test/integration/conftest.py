@@ -176,6 +176,14 @@ cross-home flake three tests later.
      sample (``DEFAULT_SAMPLE_SECS``) and ``debug_threads mode=now`` takes one
      on request, so whether a boot leaves entries depends on how long it ran;
      a fresh process has none.
+   * ``agent._main_spec_unreadable``, ``agent._main_spec_skip_generation`` and
+     ``agent._main_spec_declared_name`` -- whether the home's ``kirocrew.json``
+     could not be read, the governance generation the episode's last sibling
+     pass ran under, and the name it declared. All describe the
+     previous home's spec, which the main-agent start gate must not judge the
+     next home's by; a fresh process has neither. The episode's early-retry
+     timer and attempt count, and its set of agents whose refusal was audited,
+     belong to the same episode and are cleared with it.
 
 2. **Snapshot and restore** around the boot by ``booted_gateway``, on every
    exit: the SIGINT/SIGTERM handlers ``run()`` installs; the event loop's
@@ -254,6 +262,7 @@ from typing import Any, AsyncIterator, Callable, Iterator, NoReturn
 import pytest
 from aiohttp import ClientSession, ClientTimeout
 
+from kiro_crew import agent as agent_mod
 from kiro_crew import (
     autonudge,
     crash_guard,
@@ -795,6 +804,16 @@ def _reset_home_bound_globals() -> None:
     inventory_gauges.reset_for_testing()
     with diag_threads._prev_lock:
         diag_threads._prev_reading.clear()
+    agent_mod._main_spec_unreadable = False
+    agent_mod._main_spec_skip_generation = None
+    agent_mod._main_spec_declared_name = None
+    pending_retry, agent_mod._main_spec_retry_timer = agent_mod._main_spec_retry_timer, None
+    if pending_retry is not None:
+        with contextlib.suppress(Exception):
+            pending_retry.cancel()
+    agent_mod._main_spec_retry_attempts = 0
+    agent_mod._main_spec_retry_stopped = False
+    agent_mod._main_spec_denial_audit_warned = False
     live_nudge = autonudge._INSTANCE
     if live_nudge is not None:
         with contextlib.suppress(Exception):
@@ -825,6 +844,13 @@ def home_bound_globals_are_clear() -> bool:
         and not config_loader._MATERIALIZED_AGENTS_READY
         and dashboard_updates._auto_effect is None
         and not browser_launch._warned_lifecycle_losses
+        and not agent_mod._main_spec_unreadable
+        and agent_mod._main_spec_skip_generation is None
+        and agent_mod._main_spec_declared_name is None
+        and agent_mod._main_spec_retry_timer is None
+        and agent_mod._main_spec_retry_attempts == 0
+        and not agent_mod._main_spec_retry_stopped
+        and not agent_mod._main_spec_denial_audit_warned
     )
 
 

@@ -6055,7 +6055,8 @@ class AcpRuntime:
           payload's OWN snapshot. No gate call on this path: a second snapshot for one
           consumed load is the defect, not a safeguard.
         * otherwise -- the spec is consumed HERE: kiro-cli reads it from disk at
-          ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send,
+          ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send, by
+          ``require_main_spec_projected`` and then the snapshot,
           because a stale mirror activated here mounts and auto-approves a server the
           default agent does not have.
 
@@ -6067,7 +6068,9 @@ class AcpRuntime:
         """
         from kiro_crew.agent import (
             DerivedSpecStale,
+            ForkGovernanceUnresolved,
             require_fresh_derived_spec,
+            require_main_spec_projected,
             require_unchanged_derived_spec,
         )
 
@@ -6075,10 +6078,16 @@ class AcpRuntime:
             mode_snapshot = payload_snapshot
         else:
             try:
+                # The main-spec part of the spawn's start gate, for the agent
+                # this line activates: the main spec's agent switched to here
+                # passed no spawn gate. Bounded to the unreadable-spec episode.
+                # Before the snapshot, so the snapshot judges whatever the
+                # gate's own rebuild wrote.
+                await asyncio.to_thread(require_main_spec_projected, mode_agent, self._work_dir)
                 mode_snapshot = await asyncio.to_thread(
                     require_fresh_derived_spec, mode_agent, self._work_dir
                 )
-            except DerivedSpecStale as exc:
+            except (DerivedSpecStale, ForkGovernanceUnresolved) as exc:
                 await self.terminate_session(session_id)
                 raise AcpRuntimeError(str(exc)) from exc
         try:

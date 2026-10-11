@@ -1016,6 +1016,48 @@ class TestShutdown:
         await orch._shutdown()  # should not raise
 
     @pytest.mark.asyncio
+    async def test_shutdown_cancels_the_early_main_spec_retry(self, monkeypatch):
+        """No early main-spec retry timer outlives the gateway's teardown.
+
+        Mutation pin: dropping the cancel from ``_shutdown`` leaves it pending.
+        """
+        import kiro_crew.agent as agent_mod
+
+        timer = MagicMock()
+        monkeypatch.setattr(agent_mod, "_main_spec_retry_timer", timer)
+        orch = _make_orchestrator()
+        await orch._shutdown()
+        timer.cancel.assert_called_once_with()
+        assert agent_mod._main_spec_retry_timer is None
+        assert agent_mod._main_spec_retry_stopped is True
+
+    @pytest.mark.asyncio
+    async def test_a_restarted_gateway_gets_early_main_spec_retries_again(self, monkeypatch):
+        """A gateway run in the same process clears the previous shutdown's stop.
+
+        ``run`` is cut short just after its first steps. Mutation pin: dropping
+        the resume from ``run`` leaves the flag set, so the restarted gateway's
+        episodes get only the hourly wake.
+        """
+        import kiro_crew.agent as agent_mod
+        import kiro_crew.slack.gateway as gateway_mod
+
+        class _Stop(Exception):
+            pass
+
+        def _stop_here(_limit):
+            raise _Stop
+
+        monkeypatch.setattr(gateway_mod.crash_guard, "install_loop_handler", lambda _loop: None)
+        monkeypatch.setattr(gateway_mod.platform_compat, "raise_nofile_soft_limit", _stop_here)
+        orch = _make_orchestrator()
+        await orch._shutdown()
+        assert agent_mod._main_spec_retry_stopped is True
+        with pytest.raises(_Stop):
+            await orch.run()
+        assert agent_mod._main_spec_retry_stopped is False
+
+    @pytest.mark.asyncio
     async def test_shutdown_stops_cron(self):
         orch = _make_orchestrator()
         orch.cron_svc = MagicMock()

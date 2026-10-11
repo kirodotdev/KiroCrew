@@ -996,7 +996,65 @@ wrote and the rebuild reports the hold through its private `_held_out` out-param
 the hook reads beside `wrote`. The hold is deliberately NOT folded into `wrote=False`:
 `kirocrew.json` was written, and the dashboard's default-model applier reads `wrote=False` as
 a change that did not land — a held conductor spec would otherwise announce every model
-change as failed and retry it forever. Either way,
+change as failed and retry it forever. An **unreadable** main spec is the third case:
+`kirocrew.json` is present but a read still fails after `read_bytes_with_retry` (a Windows
+sharing violation that outlasts the retry, `EACCES`/`EPERM`, `EIO`). Writing defaults over it
+would erase the user's spec, so the read raises `_AgentSpecUnreadable` and
+`_skip_unreadable_main_spec` ends the cycle. The rebuild checks the file before its self-heal
+migrations run, and takes the same exit if the load or the alias reconcile inside the write
+lock (`mcp_aliases._durable_tool_aliases`, which reports such a file as present, never as
+missing) fails later. `kirocrew.json` and the heartbeat and worker specs mirrored from it are
+left as they are. The steps that write other files (the service and conductor specs, the fork
+refresh, the hook repair) still run, so a moved ceiling still re-filters the forks and the
+conductor specs, and a fork refresh that cannot finish still records the failure the fork gate
+refuses on. Only a missing file (`FileNotFoundError`) or a read that returns invalid UTF-8 or
+JSON (`ValueError`) rebuilds from defaults, and a clean rebuild is the explicit reset that
+writes over an unreadable file. The skip returns `wrote=False`, reports a hold and sets
+`_conductor_spec_held`, so the memo stays pending, the boot baseline stays unseeded, the hourly
+maintenance wake retries, the default-model applier reports the change as not landed, and
+`kirocrew setup` says the config was left unchanged. It warns once per path and errno, since
+the config watcher retries a failed model change every tick, and logs one INFO when a rebuild
+writes the file again. For the same reason the sibling steps run on the first skip of an
+episode and again only when `governance_answer_generation` has moved since the last pass that
+completed without a held write; a repeat skip under the same generation only keeps the flags set. Until then `require_fork_governance` also gates the main agent and the
+heartbeat and worker specs mirrored from it (`require_main_spec_projected`). It is keyed on the
+spec file a start resolves to, never on a name, since `kirocrew.json` may declare its own
+(`_governed_by_main_spec`): a start resolving to one of those files, by path or file identity,
+is gated, and one resolving to another readable spec is not, whether that spec declares the
+name or is found only by its file stem. A name that resolves to no file is gated, since the
+unreadable spec may declare it, and so are the main spec's and the mirrors' own names (their
+stems and the name the last written main spec declared) unless another spec declares them. A
+user agent on its own file is therefore never refused for the episode. A name a readable project spec declares
+(`<cwd>/.kiro/agents`, which kiro-cli resolves first) is not gated, unless it is the main spec's
+or a mirror's own name. Every launch reaches `require_fork_governance`. A `set_mode` switch
+reaches only its main-spec part, `require_main_spec_projected`, so outside an episode a switch
+reads no lineage sidecar and waits on no fork refresh; fork gating at `set_mode` is #18646. The
+ratchet `test_agent_start_gate_ratchet.py` fails any launch or switch that reaches neither. Their
+auto-approvals bypass the PreToolUse gate as a fork's do, so the gate is fail-closed within
+the process: while the episode lasts, every start it covers that this process makes is refused, and the refusal tells the user to restore read
+access and that the next rebuild picks the file up. The first refusal of an episode schedules
+the existing held-spec retry (`retry_held_conductor_specs`) early, off the event loop, at 5, 15
+and 60 s apart, then every 60 s for as long as the episode is open, with one timer pending at
+most. A rebuild that writes the spec cancels it, and so does gateway shutdown, so nothing is
+pending outside an episode; a gateway started again in the same process allows them again. The
+open episode is itself a hold (`_spec_hold_open`): the retry and the boot baseline read the
+unreadable flag beside `_conductor_spec_held`, and a rebuild that wrote the spec never clears the
+hold while an overlapping rebuild's skip has the episode open, both flags being written under one
+lock. A start is therefore admitted within about a minute of the lock clearing, however long the
+lock lasted.
+Every refusal, a retried start included, also writes a best-effort governance denial to the
+security event log (`log_governance_decision`, `outcome=denied`, `reason` starting
+`cause=unreadable_main_spec`), because each refusal is a permission decision. A failed write
+is logged once per episode and the start is refused regardless.
+The hourly retry's own warning gives the same remedy while the episode lasts and never
+suggests `kirocrew setup --agent-only --clean`, which would write defaults over the kept file.
+The gate resolves which spec a start runs on and runs no rebuild. The episode ends only when an existing
+rebuild path writes the spec. Recovery inside the gate itself and admitting a start while the
+file stays unreadable are a follow-up. Every other start, and every start on a host with no unreadable
+episode, is unaffected. The episode is PROCESS-LOCAL: the flag lives in the process whose
+rebuild hit the read failure, so another process that starts `--agent kirocrew` on the same
+agents directory without running a rebuild of its own is not gated by it. Binding every start to
+the verdict across processes is #18646. Either way,
 marking the generation synchronised would lose the retry the next poll gives and leave
 forbidden auto-approvals on disk for the process lifetime; holding the memo means every later
 poll retries and the projection lands the moment the failure or refusal clears. The verdict

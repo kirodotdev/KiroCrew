@@ -11513,6 +11513,12 @@ class GatewayOrchestrator:
             # saves active chat slots; it is a daemon thread, so whatever is still
             # running after that dies at exit anyway.
             await asyncio.wait_for(asyncio.to_thread(stop_refresher, 0.5), timeout=1.5)
+        # Cancel the early main-spec retry so no timer thread rebuilds specs
+        # under the teardown below. It only cancels a timer: nothing is joined.
+        with contextlib.suppress(Exception):
+            from kiro_crew.agent import cancel_main_spec_early_retry
+
+            cancel_main_spec_early_retry()
 
         # Disarm the loop-stall watchdog FIRST, before any of the teardown below.
         # close_all()/cancel_all() deliberately kill every kiro-cli child, which
@@ -13500,6 +13506,13 @@ class GatewayOrchestrator:
         # Install the asyncio exception handler on the running loop.
         # atexit + excepthook were already installed in cli.py before asyncio.run().
         crash_guard.install_loop_handler(asyncio.get_running_loop())
+
+        # A previous run's shutdown in this same process stopped the early
+        # main-spec retry; this run gets its own. It only clears a flag.
+        with contextlib.suppress(Exception):
+            from kiro_crew.agent import resume_main_spec_early_retry
+
+            resume_main_spec_early_retry()
 
         # Log process identity to the gateway log (D3 of Lorikeets-3929)
         logger.info(

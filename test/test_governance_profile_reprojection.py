@@ -397,9 +397,14 @@ class TestTheBaselineSeed:
         record = src.index("answer_generation = _answer_generation_after_profile_poll()")
         assert record < src.index("_load_existing_config(path")
         assert src.index("declined = _decline_shared_agent_home()") < record
-        # Published, and checked against the live answer, only once the rebuild completed.
+        # Published, and checked against the live answer, only once the rebuild completed:
+        # after the sibling pass, which re-raises a dashboard-author install error.
         publish = src.index("_rebuild_answer_generation = answer_generation")
-        assert src.index("raise dashboard_author_install_error") < publish
+        assert src.index("_install_sibling_specs(refresh_forks") < publish
+        sibling_src = inspect.getsource(agent_mod._install_sibling_specs)
+        assert sibling_src.index("raise dashboard_author_install_error") < sibling_src.index(
+            "return conductor_held"
+        )
         assert publish < src.index("_invalidate_projection_if_answer_moved(answer_generation)")
 
     def test_a_seed_over_a_rebuild_that_raised_projects_nothing(self, profiles_dir, rebuilds):

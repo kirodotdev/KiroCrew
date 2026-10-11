@@ -318,8 +318,18 @@ def _setup_impl(
 
     # 2. Install the agent config
     print("Installing agent config...")
-    agent_path = install_agent(clean=clean)
-    print(f"  ✅ Agent installed: {agent_path}")
+    wrote_out: list[bool] = []
+    agent_path = install_agent(clean=clean, _wrote_out=wrote_out)
+    if wrote_out == [False]:
+        # The rebuild left the spec as it was: this instance may not rewrite a
+        # shared agent home, or the existing spec could not be read. The log
+        # names which; reporting it installed would claim a write that did not land.
+        print(
+            f"  ⚠️  Agent config left unchanged: {agent_path} "
+            "(see the log for why it was not rewritten)"
+        )
+    else:
+        print(f"  ✅ Agent installed: {agent_path}")
 
     # 2a. Ensure `kirocrew` is reachable on PATH (the packaged Electron app
     #     doesn't run install.sh) and purge stale predecessor MCP entries left

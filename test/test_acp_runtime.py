@@ -3871,6 +3871,56 @@ async def test_handle_set_mode():
 
 
 @pytest.mark.asyncio
+async def test_handle_set_mode_refused_by_the_start_gate_sends_nothing():
+    """A switched-to agent passes the spawn's start gate; a refusal sends no set_mode."""
+    from kiro_crew.agent import ForkGovernanceUnresolved
+
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    gate = MagicMock(side_effect=ForkGovernanceUnresolved("agent 'custom-main' may not start"))
+    with patch("kiro_crew.agent.require_main_spec_projected", gate):
+        with pytest.raises(AcpRuntimeError, match="may not start"):
+            await handle.set_mode("custom-main")
+    assert gate.call_args.args[0] == "custom-main"
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_handle_set_mode_outside_an_unreadable_episode_reads_no_sidecar(monkeypatch):
+    """A switch runs only the main-spec check, which is bounded to the episode.
+
+    With the spec readable, a switch reads no lineage sidecar, resolves no spec,
+    waits on no fork refresh and runs no rebuild, so it cannot refuse. Fork
+    gating at ``set_mode`` is outside this check.
+    """
+    import kiro_crew.agent as agent_mod
+    from kiro_crew import agent_state
+    from kiro_crew.agent_materialization import fork_refresh
+
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    rt, _, proc = _make_runtime()
+    q = _register(rt, "sA")
+    handle = AcpSessionHandle("sA", q["sA"], rt)
+    sidecar = MagicMock(side_effect=AssertionError("sidecar read"))
+    resolve = MagicMock(side_effect=AssertionError("spec resolved"))
+    rebuild = MagicMock(side_effect=AssertionError("rebuild"))
+    settled = MagicMock()
+    settled.wait.side_effect = AssertionError("fork refresh wait")
+    with (
+        patch.object(agent_state, "get_fork_info", sidecar),
+        patch.object(agent_mod, "agent_spec_path", resolve),
+        patch.object(agent_mod, "rebuild_agent_config_reporting", rebuild),
+        patch.object(fork_refresh, "_fork_refresh_settled", settled),
+    ):
+        await handle.set_mode("a-fork")
+    sidecar.assert_not_called()
+    resolve.assert_not_called()
+    settled.wait.assert_not_called()
+    proc.stdin.write.assert_called()
+
+
+@pytest.mark.asyncio
 async def test_handle_set_model():
     rt, _, proc = _make_runtime()
     q = _register(rt, "sA")
@@ -10275,6 +10325,34 @@ async def test_verify_spawn_agent_active_still_fails_closed_when_declared_name_i
             override=None,
         )
     rt.terminate_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_switch_refused_by_the_start_gate_ends_the_session_unsent():
+    """An agent switched to on a running backend passes the spawn's start gate.
+
+    The gate runs before the derived-spec snapshot, and its refusal terminates the
+    session that ``session/new`` already created, with no ``set_mode`` sent.
+    """
+    from kiro_crew.agent import ForkGovernanceUnresolved
+
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew-lite"
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    gate = MagicMock(side_effect=ForkGovernanceUnresolved("agent 'custom-main' may not start"))
+    snapshot = MagicMock()
+    with (
+        patch("kiro_crew.agent.require_main_spec_projected", gate),
+        patch("kiro_crew.agent.require_fresh_derived_spec", snapshot),
+        pytest.raises(AcpRuntimeError, match="may not start"),
+    ):
+        await rt._activate_mode_bracketed(
+            "s1", "custom-main", budget=5.0, payload_snapshot=None, wire_registered=False
+        )
+    assert gate.call_args.args == ("custom-main", rt._work_dir)
+    snapshot.assert_not_called()
+    rt.terminate_session.assert_awaited_once_with("s1")
+    proc.stdin.write.assert_not_called()
 
 
 @pytest.mark.asyncio

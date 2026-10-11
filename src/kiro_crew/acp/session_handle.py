@@ -2759,12 +2759,22 @@ class AcpSessionHandle:
 
         A stored skill-view name maps back to the agent it was built from first,
         so the projection sends that agent's CURRENT view, never the stored one.
+        The switched-to agent passes the main-spec part of a spawn's start gate
+        (``require_main_spec_projected``), since no spawn gate saw it. That part
+        is bounded to the unreadable-spec episode.
         """
         from kiro_crew.acp.skill_projection import RetiredSkillView, resolve_source_agent
+        from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_projected
 
         try:
             agent_name = await resolve_source_agent(agent_name)
         except RetiredSkillView as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+        try:
+            await asyncio.to_thread(
+                require_main_spec_projected, agent_name, getattr(self._runtime, "_work_dir", None)
+            )
+        except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         # send_request only queues the request; it does not await a mode ACK.
         self.active_agent = ""

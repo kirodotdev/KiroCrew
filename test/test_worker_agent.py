@@ -270,7 +270,9 @@ def test_the_worker_install_runs_on_the_rebuild_path():
     from kiro_crew.agent_files import REQUIRED_KIRO_AGENT_FILES
 
     src = inspect.getsource(agent.rebuild_agent_config)
-    assert "_install_worker_agent()" in src
+    assert "_install_sibling_specs(refresh_forks, gated_off, clean=clean)" in src
+    siblings = inspect.getsource(agent._install_sibling_specs)
+    assert "_install_worker_agent()" in siblings
     assert WORKER_AGENT_FILENAME not in REQUIRED_KIRO_AGENT_FILES
 
 

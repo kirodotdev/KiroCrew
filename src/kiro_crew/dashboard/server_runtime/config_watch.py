@@ -131,8 +131,9 @@ def _register_config_watch(
             from kiro_crew.agent import rebuild_agent_config_reporting
 
             # ``rebuild_agent_config_reporting`` returns ``wrote=False`` — WITHOUT
-            # writing — exactly when the shared-home guard refuses to rewrite this
-            # instance's spec. That is a no-op, not a success: the installed
+            # writing — when the shared-home guard refuses to rewrite this
+            # instance's spec or the existing spec could not be read. That is a
+            # no-op, not a success: the installed
             # ``kirocrew.json`` keeps its old ``model`` pin, so treating it as
             # applied would clear the failure state, broadcast a refresh, and log
             # "rebuilt" while new sessions still run the previous model. Route a
@@ -141,8 +142,9 @@ def _register_config_watch(
             _spec_path, wrote = await asyncio.to_thread(rebuild_agent_config_reporting)
             if not wrote:
                 raise RuntimeError(
-                    "agent spec rebuild was refused (shared agent home); "
-                    "config saved but kirocrew.json still pins the previous model"
+                    "agent spec rebuild did not write (shared agent home refused, "
+                    "or the existing spec could not be read); config saved but "
+                    "kirocrew.json still pins the previous model"
                 )
             # Close the ordering window against SessionManager's own applier.
             # It subscribes to ``agent.model`` FIRST (its subscription predates

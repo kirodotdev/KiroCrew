@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.proactor_events
+import contextlib
 import json
 import os
 import pathlib
@@ -1149,6 +1150,44 @@ def _reset_reasoning_effort_globals():
     finally:
         _cp._reasoning_effort_values = saved_values
         _cp._reasoning_effort_ordered = saved_ordered
+
+
+@pytest.fixture(autouse=True)
+def _reset_main_spec_gate_globals():
+    """Clear the main-agent start gate's process globals around each test.
+
+    ``agent._main_spec_unreadable`` arms the gate, the skip generation bounds the
+    episode's sibling pass, and the declared name describes the spec the last
+    rebuild wrote. A test that hits
+    the unreadable-spec skip without monkeypatching them would leave the gate
+    armed for whichever test runs next on the worker. A refused start schedules
+    an early retry on a real timer thread, so the factory is swapped for one that
+    records the request and starts nothing; tests that drive the retry install
+    their own.
+    """
+    import kiro_crew.agent as _agent
+
+    real_factory = _agent._main_spec_retry_timer_factory
+
+    def _clear() -> None:
+        _agent._main_spec_unreadable = False
+        _agent._main_spec_skip_generation = None
+        _agent._main_spec_declared_name = None
+        pending, _agent._main_spec_retry_timer = _agent._main_spec_retry_timer, None
+        if pending is not None:
+            with contextlib.suppress(Exception):
+                pending.cancel()
+        _agent._main_spec_retry_attempts = 0
+        _agent._main_spec_retry_stopped = False
+        _agent._main_spec_denial_audit_warned = False
+
+    _clear()
+    _agent._main_spec_retry_timer_factory = lambda _delay, _callback: None
+    try:
+        yield
+    finally:
+        _agent._main_spec_retry_timer_factory = real_factory
+        _clear()
 
 
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
