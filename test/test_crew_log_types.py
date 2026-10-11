@@ -29,6 +29,7 @@ from kiro_crew.crew_log import (
     emit,
 )
 from kiro_crew.crew_log import entry_types as reg
+from kiro_crew.crew_log import lease
 from kiro_crew.crew_log import (
     render_markdown,
 )
@@ -284,6 +285,14 @@ def _isolated_home(tmp_path, monkeypatch):
     yield
     emit.drain_for_shutdown(timeout=2.0)
     emit.reset_caches()
+    # The holder table is process-global, so a handle a test here keeps reachable
+    # is a lease the next test on this worker reads as held. The v0.9.0-insider.4
+    # release run caught one in ``test_crew_log_writer.py``'s teardown, from this
+    # file. Read here, where it is created, without a ``gc.collect()``: a lease
+    # still held is a retention (typically a ``pytest.raises`` record whose
+    # traceback holds the ``append`` frame, and so the handle), not a frame that
+    # has not finished unwinding.
+    assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
 
 # --- what is declared ------------------------------------------------------
@@ -817,7 +826,11 @@ def test_append_refuses_a_bad_payload_and_leaves_the_file_identical():
     before = crew_log_path("session", SESSION).read_bytes()
     with pytest.raises(CrewLogError) as caught:
         led.append("turn/started", {"turn": 1, "actor": "user"}, src="gateway")
-    assert caught.value.code == CODE_BAD_DATA_FIELD
+    code = caught.value.code
+    # The record's traceback holds this frame, and so ``led``: a cycle that keeps
+    # the write lease held past the test until the collector runs.
+    del caught
+    assert code == CODE_BAD_DATA_FIELD
     assert crew_log_path("session", SESSION).read_bytes() == before
     # The handle is still usable: a refusal happens before any byte is written.
     led.append("turn/started", CANONICAL["turn/started"], src="gateway")
@@ -848,7 +861,10 @@ def test_a_group_refuses_a_citing_entry_the_registry_rejects():
             src="acp",
             cite=lambda seqs: {"type": "message/sent", "data": {"turn": 1, "typo": seqs}},
         )
-    assert caught.value.field == "data.typo"
+    field = caught.value.field
+    # Same cycle as above: the record's traceback would keep ``led`` and its lease.
+    del caught
+    assert field == "data.typo"
     assert crew_log_path("session", SESSION).read_bytes() == before
 
 
