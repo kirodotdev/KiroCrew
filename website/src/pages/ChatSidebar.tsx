@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, memo, useMemo, useCallback, useId, useContext, Fragment } from 'react'
 import { createPortal } from 'react-dom'
 import { LayoutGroup, AnimatePresence, motion } from 'framer-motion'
-import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, Ghost, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
+import { Plus, X, Pin, Monitor, ArrowUpDown, Eye, EyeOff, VenetianMask, FolderPlus, FolderX, MessageSquare, MessageSquarePlus, Folder, ChevronRight, ChevronDown, ChevronUp, Clock, Pencil, BrushCleaning, Link2, Circle, MoreVertical, Tag as TagIcon, Columns3, CornerDownRight, GripVertical, Check, GitFork, List, ListTree, Loader, Loader2, Settings, RotateCcw, Bot, ExternalLink, Cpu, GitMerge, Workflow, CircleDot, Users, TriangleAlert, Goal, MessageCircleQuestionMark, ShieldCheck, Server, Pause, Play, Hourglass } from 'lucide-react'
 import GithubLogo from '../components/icons/GithubLogo'
 import GitlabLogo from '../components/icons/GitlabLogo'
 import { FolderBody } from '../components/FolderBody'
@@ -21,7 +21,7 @@ import { useAppDispatch, useAppSelector } from '../store'
 import type { RootState } from '../store'
 import { useConnected } from '../hooks/useConnected'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuSub, DropdownMenuSubTrigger, DropdownMenuSubContent } from '../components/ui/dropdown-menu'
-import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent } from '../components/ui/context-menu'
+import { ContextMenu, ContextMenuTrigger, ContextMenuContent, ContextMenuItem, ContextMenuSeparator } from '../components/ui/context-menu'
 import { offlineProps } from '../utils/offline'
 import { switchSlot, deleteSlot, fetchHistory, resumeFromHistory, deleteHistorySession, setCloseRefused, selectSidebarWorkflowActive, selectAutomationForSlot } from '../store/chatSlice'
 import { slotIsRemoteBound } from '../store/dashboardSlice'
@@ -103,6 +103,7 @@ import { compareText, fmtDateFields, fmtList } from '../i18n/format'
 import { sidebarCollision } from './chat-sidebar/dnd/collision'
 export { sidebarCollision, isFolderNestBand } from './chat-sidebar/dnd/collision'
 export { boardSidebarWidth } from './chat-sidebar/board'
+import { PrivateChatRow } from './chat-sidebar/PrivateChatRow'
 import { ChatPaneDropZone, RootDropHint, BoardUnfileDropStrip, SortableFolderBlock, SortableSubfolderBlock, SortableColumnFolder, FolderDragGhost, SessionDragGhost } from './chat-sidebar/dnd/targets'
 import type { Slot, SourceLinkState, SidebarSourceLink, HistoryItem, AgentInfo, SessionFilterKey } from './chat-sidebar/types'
 import { FOLDERS_SHELVED_LS_KEY, FLAT_VIEW_LS_KEY } from './chat-sidebar/persistence'
@@ -3247,37 +3248,15 @@ function ChatSidebar({
               <DropdownMenuContent align="start" className="min-w-[180px]" onClick={e => e.stopPropagation()} onCloseAutoFocus={onMenuCloseAutoFocus}>
                 <DropdownMenuItem onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope(columnId); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</DropdownMenuItem>
                 <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-sub`} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</DropdownMenuItem>
-                {(() => {
-                  const rows = (
-                    <>
-                      {/* Menu create entries take NO open-in-tab gesture (#10575,
-                       *  scoped out): a menu closes on select, and Radix keyboard
-                       *  activation synthesizes a modifier-free click, so the
-                       *  gesture would be mouse-only and undiscoverable. */}
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</DropdownMenuItem>
-                      <DropdownMenuItem data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</DropdownMenuItem>
-                    </>
-                  )
-                  // A flyout has nowhere to open at phone width, so inline the rows
-                  // under a caption there instead (parity with the + New menu).
-                  if (isMobile) {
-                    return (
-                      <>
-                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</DropdownMenuLabel>
-                        {rows}
-                      </>
-                    )
-                  }
-                  return (
-                    <DropdownMenuSub>
-                      <DropdownMenuSubTrigger data-testid={`col-${columnId}-folder-${folder.id}-new-ephemeral`}>
-                        <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                        <ChevronRight size={13} className="ml-auto text-muted" />
-                      </DropdownMenuSubTrigger>
-                      <DropdownMenuSubContent>{rows}</DropdownMenuSubContent>
-                    </DropdownMenuSub>
-                  )
-                })()}
+                {/* Menu create entries take NO open-in-tab gesture (#10575,
+                 *  scoped out): a menu closes on select, and Radix keyboard
+                 *  activation synthesizes a modifier-free click, so the
+                 *  gesture would be mouse-only and undiscoverable. Listed flat,
+                 *  same as the list-view folder menu (renderFolderMenuItems). */}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-incognito`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'incognito' }) }}><PrivateChatRow kind="incognito" /></DropdownMenuItem>
+                <DropdownMenuItem className="items-start" data-testid={`col-${columnId}-folder-${folder.id}-new-temporary`} onClick={() => { createChatInFolder(folder.id, { columnId, memoryMode: 'temporary' }) }}><PrivateChatRow kind="temporary" /></DropdownMenuItem>
+                <DropdownMenuSeparator />
                 {/* Re-parent: board-view parity with the list-view folder menu. */}
                 <FolderMoveSubmenu variant="dropdown" label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
                   folders={reparentTargets}
@@ -3643,44 +3622,33 @@ function ChatSidebar({
     const ctx = variant === 'context'
     const Item = ctx ? ContextMenuItem : DropdownMenuItem
     const Separator = ctx ? ContextMenuSeparator : DropdownMenuSeparator
-    const Sub = ctx ? ContextMenuSub : DropdownMenuSub
-    const SubTrigger = ctx ? ContextMenuSubTrigger : DropdownMenuSubTrigger
-    const SubContent = ctx ? ContextMenuSubContent : DropdownMenuSubContent
     const tid = (name: string) => `folder-${name}-${folder.id}${ctx ? '-ctx' : ''}`
-    const ephemeralRows = (
+    const privateChatRows = (
       <>
         {/* Menu create entries take NO open-in-tab gesture (#10575,
          *  scoped out): a menu closes on select, and Radix keyboard
          *  activation synthesizes a modifier-free click, so the
          *  gesture would be mouse-only and undiscoverable. */}
-        <Item data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}><EyeOff size={13} className="text-warn" /> {i18nT('components.welcomeView.incognito')}</Item>
-        <Item data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}><VenetianMask size={13} className="text-aim" /> {i18nT('components.welcomeView.temporary')}</Item>
+        <Item className="items-start" data-testid={tid('new-incognito')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'incognito' }) }}>
+          <PrivateChatRow kind="incognito" />
+        </Item>
+        <Item className="items-start" data-testid={tid('new-temporary')} onClick={() => { createChatInFolder(folder.id, { memoryMode: 'temporary' }) }}>
+          <PrivateChatRow kind="temporary" />
+        </Item>
       </>
     )
     return (
       <>
         <Item data-testid={tid('rename')} onClick={() => { suppressMenuRestoreRef.current = true; setEditingId(folder.id); setEditScope('list'); setEditName(folder.name) }}><Pencil size={13} /> {i18nT('pages.chatSidebar.rename')}</Item>
         <Item data-testid={tid('new-subfolder')} onClick={() => { setFolderModal({ mode: 'create', parentId: folder.id }) }}><FolderPlus size={13} /> {i18nT('pages.chatSidebar.new_subfolder')}</Item>
-        {/* A flyout has nowhere to open at phone width, so inline the rows
-         *  under a caption there instead (parity with the + New menu). The
-         *  context family has no Label primitive, so the caption is a plain
-         *  div styled like DropdownMenuLabel. */}
-        {isMobile ? (
-          <>
-            {ctx
-              ? <div className="px-3 py-1.5 text-[11px] font-semibold text-muted uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</div>
-              : <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2"><Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}</DropdownMenuLabel>}
-            {ephemeralRows}
-          </>
-        ) : (
-          <Sub>
-            <SubTrigger data-testid={tid('new-ephemeral')}>
-              <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-              <ChevronRight size={13} className="ml-auto text-muted" />
-            </SubTrigger>
-            <SubContent>{ephemeralRows}</SubContent>
-          </Sub>
-        )}
+        {/* The two private modes are listed flat, each naming its own action
+         *  and what it does with memory. A grouping caption read as a button
+         *  at phone width and named the pair with a word no other surface
+         *  uses, so neither a caption nor a submenu stands between the user
+         *  and the choice. */}
+        <Separator />
+        {privateChatRows}
+        <Separator />
         {/* Re-parent: move this folder under another folder or back to the
          *  top level. Self + descendants are excluded (cycle guard). */}
         <FolderMoveSubmenu variant={variant} label={i18nT('pages.chatSidebar.move_folder_to')} sortMode={folderSortMode}
@@ -4379,57 +4347,17 @@ function ChatSidebar({
                 <DropdownMenuItem disabled={creatingSlot} onClick={() => { createChatMutation.mutate({ inNewTab: false }) }}>
                   <MessageSquarePlus size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat')}
                 </DropdownMenuItem>
-                {/* Ephemeral session types are grouped one level down: they are two
-                 *  spellings of one choice (a session that leaves no lasting memory),
-                 *  so listing both at the top level would double the session-type rows
-                 *  a user reads before picking an ordinary chat. max-w bounds the
-                 *  submenu for the same reason the parent content is bounded — the
-                 *  glosses are full sentences and would otherwise stretch it across
-                 *  the session list instead of wrapping. */}
-                {(() => {
-                  const ephemeralRows = (
-                    <>
-                      <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }} {...uiLocation('sessions.create-menu.incognito')}>
-                        <EyeOff size={14} className="text-muted mt-[3px] shrink-0" />
-                        <span className="flex min-w-0 flex-col gap-px">
-                          <span>{i18nT('components.welcomeView.incognito')}</span>
-                          <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.incognito_desc')}</span>
-                        </span>
-                      </DropdownMenuItem>
-                      <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }}>
-                        <VenetianMask size={14} className="text-muted mt-[3px] shrink-0" />
-                        <span className="flex min-w-0 flex-col gap-px">
-                          <span>{i18nT('components.welcomeView.temporary')}</span>
-                          <span className="whitespace-normal text-[11px] leading-snug text-muted">{i18nT('components.welcomeView.temporary_desc')}</span>
-                        </span>
-                      </DropdownMenuItem>
-                    </>
-                  )
-                  // A flyout has nowhere to open at phone width (Radix pins a
-                  // submenu to the trigger's side and only shifts it vertically),
-                  // so on a phone the two modes are listed inline under a caption.
-                  if (isMobile) {
-                    return (
-                      <>
-                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2">
-                          <Ghost size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                        </DropdownMenuLabel>
-                        {ephemeralRows}
-                      </>
-                    )
-                  }
-                  return (
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger {...uiLocation('sessions.create-menu.ephemeral')}>
-                      <Ghost size={14} className="text-muted" /> {i18nT('pages.chatSidebar.new_ephemeral_chat')}
-                      <ChevronRight size={13} className="ml-auto text-muted" />
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="max-w-[264px]">
-                      {ephemeralRows}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                  )
-                })()}
+                {/* The two private modes sit at the top level beside New chat,
+                 *  each naming its own action and what it does with memory. They
+                 *  used to share a submenu named for a word no other surface uses,
+                 *  which at phone width collapsed into a caption that read as a
+                 *  button. */}
+                <DropdownMenuItem className="items-start" data-testid="new-incognito-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('incognito') }} {...uiLocation('sessions.create-menu.incognito')}>
+                  <PrivateChatRow kind="incognito">{i18nT('pages.chatSidebar.new_incognito_chat')}</PrivateChatRow>
+                </DropdownMenuItem>
+                <DropdownMenuItem className="items-start" data-testid="new-temporary-chat" disabled={creatingSlot} onClick={() => { createEphemeralChatMutation.mutate('temporary') }} {...uiLocation('sessions.create-menu.temporary')}>
+                  <PrivateChatRow kind="temporary">{i18nT('pages.chatSidebar.new_temporary_chat')}</PrivateChatRow>
+                </DropdownMenuItem>
                 {/* Import creates a session too, so it sits with the create rows
                  *  rather than only in a per-session ⋯ menu that has to be opened
                  *  on some unrelated session first. */}
@@ -4479,11 +4407,15 @@ function ChatSidebar({
                   // A flyout has nowhere to open at phone width (Radix pins a
                   // submenu to the trigger's side and only shifts it vertically),
                   // so on a phone the folders are listed inline under a caption.
+                  // The caption carries no icon: drawn with the same Folder glyph
+                  // as the rows under it, it read as one more tappable row. Text
+                  // alone, in the FILTER / SORT BY caption style, marks a heading.
                   if (isMobile) {
                     return (
                       <>
-                        <DropdownMenuLabel className="text-[11px] uppercase tracking-[.04em] flex items-center gap-2">
-                          <Folder size={13} className="text-muted" /> {i18nT('pages.chatSidebar.new_chat_in_folder')}
+                        <DropdownMenuSeparator />
+                        <DropdownMenuLabel data-testid="new-chat-in-folder-caption" className="text-[11px] uppercase tracking-[.04em]">
+                          {i18nT('pages.chatSidebar.new_chat_in_folder')}
                         </DropdownMenuLabel>
                         <div className="max-h-[240px] overflow-y-auto">{folderRows}</div>
                       </>

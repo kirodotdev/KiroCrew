@@ -6,7 +6,7 @@
  * here.
  */
 import { describe, expect, it, afterEach } from 'vitest'
-import { unregisteredMarkers } from '../test/guideTargets'
+import { marks, unregisteredMarkers } from '../test/guideTargets'
 import { UI_OPENER_FACT_PREDICATES } from './conditions'
 import { spawnSync } from 'node:child_process'
 import * as fs from 'node:fs'
@@ -353,13 +353,14 @@ describe('the custom components real markers sit on forward them', () => {
     const r = render(h(DropdownMenu, { open: true },
       h(DropdownMenuTrigger, null, 'More'),
       h(DropdownMenuContent, null, h(DropdownMenuSub, null,
-        h(DropdownMenuSubTrigger, { ...uiLocation('sessions.create-menu.ephemeral') }, 'New ephemeral chat'),
-        h(DropdownMenuSubContent, null, h(DropdownMenuItem, null, 'Incognito')),
+        // No shipped location sits on a submenu row, so a fixture id stands in.
+        h(DropdownMenuSubTrigger, { ...marks({ location: 'fixture.submenu-row' }) }, 'More kinds'),
+        h(DropdownMenuSubContent, null, h(DropdownMenuItem, null, 'One kind')),
       )),
     ))
-    const row = document.body.querySelector(`[${UI_LOCATION_ATTR}="sessions.create-menu.ephemeral"]`)
+    const row = document.body.querySelector(`[${UI_LOCATION_ATTR}="fixture.submenu-row"]`)
     expect(row?.getAttribute('role')).toBe('menuitem')
-    expect(row?.textContent).toBe('New ephemeral chat')
+    expect(row?.textContent).toBe('More kinds')
     expect(unregisteredMarkers()).toEqual([])
     r.unmount()
   })

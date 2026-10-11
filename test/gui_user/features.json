@@ -1320,7 +1320,7 @@
       "title": "Session folders",
       "user_story": "As a user with many sessions, I want to group session rows into folders and start mode-pinned ephemeral chats inside them, so that my sidebar stays organised.",
       "start_url": "/chat",
-      "entry_path": "Sidebar folder header → drag a row; folder ⋯ menu → New ephemeral chat",
+      "entry_path": "Sidebar folder header → drag a row; folder ⋯ menu → New incognito chat / New temporary chat",
       "preconditions": {
         "seed": "sessions-a-few",
         "members": [],

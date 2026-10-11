@@ -1,23 +1,23 @@
 /**
- * The per-folder menu carries a "New ephemeral chat" submenu (incognito,
- * temporary) so a mode-pinned session can be started INSIDE a folder in
- * one step. The create call must carry both the memory mode and the
- * folder membership, since correcting either afterwards is already too late —
- * the mode gates the first memory access and the folder placement gates the
- * first paint.
+ * The per-folder menu lists "New incognito chat" and "New temporary chat" as
+ * two flat rows so a mode-pinned session can be started INSIDE a folder in one
+ * step. The create call must carry both the memory mode and the folder
+ * membership, since correcting either afterwards is already too late — the
+ * mode gates the first memory access and the folder placement gates the first
+ * paint.
  *
  * Load-bearing assertions:
  *   (1) incognito / temporary create with their memory_mode, and every one
  *       rides the CREATE call with the folder id;
  *   (2) they create in the default run mode ('') — they name a memory type,
  *       not a run mode;
- *   (3) at phone width the rows are listed inline under a caption (a Radix
- *       submenu pins to the trigger's side and opens off-screen at 390px), and
- *       the inline row still creates with its mode and folder id.
+ *   (3) the rows are top-level items with their one-line memory hint, on
+ *       desktop and phone alike: no grouping caption (it read as a button at
+ *       phone width) and no submenu (one opens off-screen at 390px).
  *
  * Radix menus cannot be opened by mouse in jsdom (needs PointerEvent), so the
- * trigger is activated by keyboard and the submenu opens on ArrowRight at its
- * sub-trigger — the paths jsdom handles (see ChatSidebar.ephemeralCreate).
+ * trigger is activated by keyboard — the path jsdom handles (see
+ * ChatSidebar.ephemeralCreate).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, fireEvent, waitFor } from '@testing-library/react'
@@ -141,11 +141,6 @@ function openFolderMenu() {
   expect(screen.getByTestId(`folder-settings-${FOLDER_ID}`)).toBeTruthy()
 }
 
-// Submenus open on ArrowRight at their sub-trigger, in the same tick.
-function openEphemeralSubmenu() {
-  fireEvent.keyDown(screen.getByTestId(`folder-new-ephemeral-${FOLDER_ID}`), { key: 'ArrowRight' })
-}
-
 beforeEach(() => {
   localStorage.clear()
   mobile.value = false
@@ -156,11 +151,10 @@ beforeEach(() => {
 })
 afterEach(() => vi.clearAllMocks())
 
-describe('folder menu: ephemeral chat creation', () => {
+describe('folder menu: private chat creation', () => {
   it('incognito creates with memory_mode "incognito" in the folder', async () => {
     renderSidebar()
     openFolderMenu()
-    openEphemeralSubmenu()
     fireEvent.click(screen.getByTestId(`folder-new-incognito-${FOLDER_ID}`))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
@@ -173,7 +167,6 @@ describe('folder menu: ephemeral chat creation', () => {
   it('temporary creates with memory_mode "temporary" in the folder', async () => {
     renderSidebar()
     openFolderMenu()
-    openEphemeralSubmenu()
     fireEvent.click(screen.getByTestId(`folder-new-temporary-${FOLDER_ID}`))
     await waitFor(() => expect(mocks.createChatSlot).toHaveBeenCalledTimes(1))
     const call = mocks.createChatSlot.mock.calls[0]
@@ -181,20 +174,22 @@ describe('folder menu: ephemeral chat creation', () => {
     expect(call[ARG_FOLDER_ID]).toBe(FOLDER_ID)
   })
 
-  it('lists the modes inline under a caption at phone width, with no flyout', () => {
-    // No submenu step: at phone width all three rows are already in the one open
-    // menu (a Radix submenu opens off-screen there), so they resolve
-    // synchronously right after the menu opens.
-    mobile.value = true
+  it.each([false, true])('lists both modes as flat rows with their memory hint (mobile=%s)', (isPhone) => {
+    mobile.value = isPhone
     renderSidebar()
     openFolderMenu()
-    expect(screen.getByTestId(`folder-new-incognito-${FOLDER_ID}`)).toBeInTheDocument()
-    expect(screen.getByTestId(`folder-new-temporary-${FOLDER_ID}`)).toBeInTheDocument()
-    // The label is a caption here, not a sub-trigger.
+    const incognito = screen.getByTestId(`folder-new-incognito-${FOLDER_ID}`)
+    const temporary = screen.getByTestId(`folder-new-temporary-${FOLDER_ID}`)
+    expect(incognito).toHaveTextContent('New incognito chat')
+    expect(incognito).toHaveTextContent('Uses memory, learns nothing new')
+    expect(temporary).toHaveTextContent('New temporary chat')
+    expect(temporary).toHaveTextContent('No memory, learns nothing new')
+    // Neither a submenu trigger nor a grouping caption stands in front of them.
     expect(screen.queryByTestId(`folder-new-ephemeral-${FOLDER_ID}`)).toBeNull()
+    expect(screen.queryByText(/ephemeral/i)).toBeNull()
   })
 
-  it('creates from the inline row at phone width', async () => {
+  it('creates from the row at phone width', async () => {
     mobile.value = true
     renderSidebar()
     openFolderMenu()

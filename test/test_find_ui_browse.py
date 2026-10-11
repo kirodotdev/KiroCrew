@@ -425,9 +425,9 @@ def test_sessions_in_english_and_chinese() -> None:
     order = [e["id"] for e in en["entries"]]
     menu = order.index("sessions.create-menu")
     assert order[menu + 1 : menu + 4] == [
-        "sessions.create-menu.ephemeral",
         "sessions.create-menu.incognito",
         "sessions.create-menu.new-folder",
+        "sessions.create-menu.temporary",
     ]
 
 

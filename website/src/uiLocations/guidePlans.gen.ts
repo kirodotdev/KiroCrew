@@ -3,7 +3,7 @@
 import type { UiGuidePlan } from './types'
 
 /** The `build_digest` of the packaged index this bundle was built with (see `guideBuildDigest`). */
-export const GUIDE_BUILD_DIGEST = "sha256:98366f31a2aa7737ee5224d799c268c34959e54369a03a8e3c0afc5840c344fc"
+export const GUIDE_BUILD_DIGEST = "sha256:624e26094142051c53df4852eaf8a3c8add24cc8d6095f85b75f54d6ca0f2c13"
 
 /** Curated location ids: the only ids a live observation may name. */
 export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
@@ -110,9 +110,9 @@ export const GUIDE_OBSERVABLE_IDS: readonly string[] = [
   "schedule.templates",
   "schedule.view-executions",
   "sessions.create-menu",
-  "sessions.create-menu.ephemeral",
   "sessions.create-menu.incognito",
   "sessions.create-menu.new-folder",
+  "sessions.create-menu.temporary",
   "sessions.list",
   "sessions.list-menu",
   "sessions.list-menu.add-lanes",
@@ -210,10 +210,6 @@ export const GUIDE_REVEAL_SCOPES = {
   "menu:sessions.create-menu": {
     "kind": "menu",
     "revealer": "sessions.create-menu"
-  },
-  "menu:sessions.create-menu.ephemeral": {
-    "kind": "menu",
-    "revealer": "sessions.create-menu.ephemeral"
   },
   "menu:sessions.list-menu": {
     "kind": "menu",
@@ -2323,44 +2319,9 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
       }
     ]
   },
-  "sessions.create-menu.ephemeral": {
-    "version": 2,
-    "label_key": "pages.chatSidebar.new_ephemeral_chat",
-    "placements": [
-      {
-        "id": "desktop",
-        "route": "/chat",
-        "viewport": "desktop",
-        "steps": [
-          {
-            "id": "desktop:chat.sessions-sidebar-toggle",
-            "location": "chat.sessions-sidebar-toggle",
-            "label_key": "pages.chatPage.show_sessions_sidebar",
-            "when": "sessions_sidebar_collapsed",
-            "scope": "chat.sessions-sidebar",
-            "requires": [
-              "has_open_sessions",
-              "full_dashboard"
-            ]
-          },
-          {
-            "id": "desktop:sessions.create-menu",
-            "location": "sessions.create-menu",
-            "label_key": "pages.chatSidebar.more_create_options",
-            "scope": "menu:sessions.create-menu"
-          },
-          {
-            "id": "desktop:sessions.create-menu.ephemeral",
-            "location": "sessions.create-menu.ephemeral",
-            "label_key": "pages.chatSidebar.new_ephemeral_chat"
-          }
-        ]
-      }
-    ]
-  },
   "sessions.create-menu.incognito": {
     "version": 2,
-    "label_key": "components.welcomeView.incognito",
+    "label_key": "pages.chatSidebar.new_incognito_chat",
     "placements": [
       {
         "id": "desktop",
@@ -2383,17 +2344,11 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "location": "sessions.create-menu",
             "label_key": "pages.chatSidebar.more_create_options",
             "scope": "menu:sessions.create-menu"
-          },
-          {
-            "id": "desktop:sessions.create-menu.ephemeral",
-            "location": "sessions.create-menu.ephemeral",
-            "label_key": "pages.chatSidebar.new_ephemeral_chat",
-            "scope": "menu:sessions.create-menu.ephemeral"
           },
           {
             "id": "desktop:sessions.create-menu.incognito",
             "location": "sessions.create-menu.incognito",
-            "label_key": "components.welcomeView.incognito"
+            "label_key": "pages.chatSidebar.new_incognito_chat"
           }
         ]
       },
@@ -2418,7 +2373,7 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
           {
             "id": "mobile:sessions.create-menu.incognito",
             "location": "sessions.create-menu.incognito",
-            "label_key": "components.welcomeView.incognito"
+            "label_key": "pages.chatSidebar.new_incognito_chat"
           }
         ]
       }
@@ -2479,6 +2434,66 @@ export const GUIDE_PLANS: Readonly<Record<string, UiGuidePlan>> = {
             "id": "mobile:sessions.create-menu.new-folder",
             "location": "sessions.create-menu.new-folder",
             "label_key": "pages.chatSidebar.new_folder"
+          }
+        ]
+      }
+    ]
+  },
+  "sessions.create-menu.temporary": {
+    "version": 2,
+    "label_key": "pages.chatSidebar.new_temporary_chat",
+    "placements": [
+      {
+        "id": "desktop",
+        "route": "/chat",
+        "viewport": "desktop",
+        "steps": [
+          {
+            "id": "desktop:chat.sessions-sidebar-toggle",
+            "location": "chat.sessions-sidebar-toggle",
+            "label_key": "pages.chatPage.show_sessions_sidebar",
+            "when": "sessions_sidebar_collapsed",
+            "scope": "chat.sessions-sidebar",
+            "requires": [
+              "has_open_sessions",
+              "full_dashboard"
+            ]
+          },
+          {
+            "id": "desktop:sessions.create-menu",
+            "location": "sessions.create-menu",
+            "label_key": "pages.chatSidebar.more_create_options",
+            "scope": "menu:sessions.create-menu"
+          },
+          {
+            "id": "desktop:sessions.create-menu.temporary",
+            "location": "sessions.create-menu.temporary",
+            "label_key": "pages.chatSidebar.new_temporary_chat"
+          }
+        ]
+      },
+      {
+        "id": "mobile",
+        "route": "/chat",
+        "viewport": "mobile",
+        "steps": [
+          {
+            "id": "mobile:chat.mobile-sessions-toggle",
+            "location": "chat.mobile-sessions-toggle",
+            "label_key": "pages.chatPage.toggle_sessions",
+            "when": "sessions_drawer_closed",
+            "scope": "chat.sessions-drawer"
+          },
+          {
+            "id": "mobile:sessions.create-menu",
+            "location": "sessions.create-menu",
+            "label_key": "pages.chatSidebar.more_create_options",
+            "scope": "menu:sessions.create-menu"
+          },
+          {
+            "id": "mobile:sessions.create-menu.temporary",
+            "location": "sessions.create-menu.temporary",
+            "label_key": "pages.chatSidebar.new_temporary_chat"
           }
         ]
       }

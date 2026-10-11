@@ -196,29 +196,26 @@ export const LOCATIONS = {
       ],
     }],
   },
-  // The create menu's "New ephemeral chat ›" submenu on a wide screen: it
-  // holds Incognito and Temporary. On a phone the two rows are inline.
-  'sessions.create-menu.ephemeral': {
-    kind: 'menu-item',
-    label: { from: 'text', key: 'pages.chatSidebar.new_ephemeral_chat' },
-    terms: {
-      en: ['ephemeral chat', 'chat that leaves no memory'],
-      'zh-CN': ['临时会话', '不留记忆的会话'],
-    },
-    placements: [{ surface: 'chat', parent: 'sessions.create-menu', entry: 'menu', parentPlacement: 0, requires: [{ kind: 'viewport', value: 'desktop' }] }],
-  },
-  // The create menu's incognito chat: a session that leaves no memory behind.
+  // The create menu's two private-chat rows. They sit at the top level beside
+  // New chat on every viewport, each labelled by its own action.
   'sessions.create-menu.incognito': {
     kind: 'menu-item',
-    label: { from: 'text', key: 'components.welcomeView.incognito' },
+    label: { from: 'text', key: 'pages.chatSidebar.new_incognito_chat' },
     terms: {
-      en: ['incognito chat', 'start an incognito chat', 'private chat', 'chat without memory', 'a chat that is not remembered'],
-      'zh-CN': ['无痕聊天', '无痕会话', '开一个无痕对话', '不留记忆的聊天', '隐身聊天'],
+      en: ['incognito chat', 'start an incognito chat', 'private chat', 'chat without memory', 'a chat that is not remembered', 'ephemeral chat', 'chat that leaves no memory'],
+      'zh-CN': ['无痕聊天', '无痕会话', '开一个无痕对话', '不留记忆的聊天', '隐身聊天', '临时会话', '不留记忆的会话'],
     },
-    placements: [
-      { surface: 'chat', parent: 'sessions.create-menu.ephemeral', entry: 'menu', requires: [{ kind: 'viewport', value: 'desktop' }] },
-      { surface: 'chat', parent: 'sessions.create-menu', entry: 'menu', parentPlacement: 1, requires: [{ kind: 'viewport', value: 'mobile' }] },
-    ],
+    placements: inMenu('sessions.create-menu'),
+  },
+  // A temporary chat: no memory is read and nothing new is learned.
+  'sessions.create-menu.temporary': {
+    kind: 'menu-item',
+    label: { from: 'text', key: 'pages.chatSidebar.new_temporary_chat' },
+    terms: {
+      en: ['temporary chat', 'start a temporary chat', 'chat with no memory at all', 'a throwaway chat'],
+      'zh-CN': ['临时聊天', '开一个临时对话', '完全不用记忆的聊天'],
+    },
+    placements: inMenu('sessions.create-menu'),
   },
   // A session row's ⋯ (More options) menu on a wide screen. Every row draws
   // one; the open session's row keeps it shown, and a guide bound to the open
