@@ -1001,3 +1001,50 @@ class TestAgentMismatchFix:
 
         resp = await api_completions(request)
         assert resp.status == 400
+
+
+@pytest.mark.asyncio
+async def test_a_stream_write_the_client_never_drains_aborts_the_connection(monkeypatch):
+    slot = _make_slot()
+    state = _make_state(slot)
+    body = {
+        "model": "vanellope",
+        "messages": [{"role": "user", "content": "count"}],
+        "stream": True,
+    }
+    request = _make_request(body, state)
+    request.transport = MagicMock()
+    never_read = asyncio.Event()  # the client never takes the bytes
+
+    async def parked_write(data):
+        await never_read.wait()
+
+    mock_resp = MagicMock()
+    mock_resp.prepare = AsyncMock()
+    mock_resp.write = AsyncMock(side_effect=parked_write)
+    mock_resp.content_type = None
+    mock_resp.headers = {}
+
+    async def fake_run_chat(s, sl, prompt, **_kwargs):
+        slot._pending.append({"role": "assistant", "content": "1 2 3"})
+        slot._pending.append({"cls": "done"})
+        slot.event.set()
+
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_handlers._SSE_WRITE_DEADLINE_SECS", 0.1, raising=False
+    )
+    with (
+        patch("kiro_crew.dashboard.openai_compat._run_chat", side_effect=fake_run_chat),
+        patch("kiro_crew.dashboard.openai_compat.web.StreamResponse", return_value=mock_resp),
+    ):
+        task = asyncio.ensure_future(api_completions(request))
+        finished, _ = await asyncio.wait({task}, timeout=10)
+        if not finished:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    assert finished, (
+        "a stream write the client never drains keeps the request open after 10 s; "
+        "the connection is never aborted"
+    )
+    request.transport.abort.assert_called_once_with()

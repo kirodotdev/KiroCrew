@@ -26242,3 +26242,110 @@ class TestHistoryResumeInterruptedTurnMarker:
             (m.get("meta") or {}).get("kind") != "gateway_restart_interruption"
             for m in restored.messages
         )
+
+
+def _long_turn(n_chunks: int, finished: asyncio.Event):
+    """A turn that streams *n_chunks* rows of about 1 KB through the real ``append``."""
+
+    async def fake_run_chat(st, sl, msg, *, _directive_user_origin):
+        for i in range(n_chunks):
+            sl.append("chunk", f"{i:06d}" + "x" * 1024, "chunk")
+            if i % 16 == 0:
+                await asyncio.sleep(0)
+        sl.append("assistant", "final answer", "msg")
+        sl.purge_chunks()  # the runner's turn end
+        sl.append("done", "", "done")
+        finished.set()
+
+    return fake_run_chat
+
+
+async def _post_and_never_read(client, slot_key: str):
+    """A client that sends a whole ``POST /api/chat`` and then never reads its socket."""
+    import socket
+
+    host, port = client.server.host, client.server.port
+    loop = asyncio.get_running_loop()
+    raw = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    raw.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    raw.setblocking(False)
+    await loop.sock_connect(raw, (host, port))
+    body = json.dumps({"message": "hello", "slot": slot_key}).encode()
+    head = (
+        f"POST /api/chat HTTP/1.1\r\nHost: {host}:{port}\r\n"
+        f"Content-Type: application/json\r\nContent-Length: {len(body)}\r\n\r\n"
+    ).encode()
+    await loop.sock_sendall(raw, head + body)
+    return raw
+
+
+@pytest.mark.asyncio
+class TestApiChatStalledReader:
+    """An SSE reader that stops reading is cut off, so it stops holding its slot."""
+
+    async def test_a_stalled_reader_is_cut_off_and_releases_the_slot(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._SSE_WRITE_DEADLINE_SECS", 0.5, raising=False
+        )
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        broadcast: list[str] = []
+        slot._on_message = lambda _key, msg: broadcast.append(str(msg.get("content", "")))
+        finished = asyncio.Event()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._run_chat", _long_turn(8000, finished)
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            raw = await _post_and_never_read(client, "s1")
+            try:
+                await asyncio.wait_for(finished.wait(), 60)
+                for _ in range(200):  # the reader has up to 10 s to be released
+                    if slot._pending_consumers == 0:
+                        break
+                    await asyncio.sleep(0.05)
+                consumers, reader = slot._pending_consumers, slot._has_reader
+                held = [m for m in slot._pending if m.get("role") == "chunk"]
+                # A row from outside the turn, as a cron or sub-agent notice adds one.
+                slot.append("assistant", "a later notice", "msg")
+                # The next turn on the slot, sent from a dashboard tab.
+                finished.clear()
+                sent = await client.post("/api/chat?ws=1", json={"message": "again", "slot": "s1"})
+                assert (await sent.json())["ok"] is True
+                await asyncio.wait_for(finished.wait(), 60)
+                held_next = [m for m in slot._pending if m.get("role") == "chunk"]
+            finally:
+                raw.close()
+
+        noticed = "a later notice" in broadcast
+        assert (consumers, reader, len(held), noticed, len(held_next)) == (0, False, 0, True, 0), (
+            f"a stalled SSE reader still holds its slot 10 s after the turn: "
+            f"pending_consumers={consumers}, _has_reader={reader}, {len(held)} chunk rows "
+            f"({sum(len(m['content']) for m in held)} bytes) held, a later row broadcast to other "
+            f"tabs={noticed}; after the next turn {len(held_next)} chunk rows "
+            f"({sum(len(m['content']) for m in held_next)} bytes) stay held"
+        )
+
+    async def test_a_reading_client_gets_the_whole_turn(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: tmp_path)
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("s1")
+        finished = asyncio.Event()
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers._run_chat", _long_turn(8000, finished)
+        )
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"message": "hello", "slot": "s1"}, timeout=None
+            )
+            body = await resp.read()
+            await asyncio.wait_for(finished.wait(), 60)
+
+        assert body.endswith(b"data: [DONE]\n\n")
+        assert all(f"{i:06d}x".encode() in body for i in (0, 3999, 7999))
+        assert slot._pending_consumers == 0 and slot._has_reader is False
+        assert not [m for m in slot._pending if m.get("role") == "chunk"]

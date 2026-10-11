@@ -1664,7 +1664,7 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                     if msg["cls"] == "done" or (
                         turn_scoped_stream and (msg["cls"] == TURN_END_WIRE_CLS or foreign_user_row)
                     ):
-                        await resp.write(b"data: [DONE]\n\n")
+                        await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
                         slot._has_reader = False
                         return resp
                     if msg["cls"] == TURN_END_WIRE_CLS:
@@ -1675,11 +1675,11 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                         # an MCP-App message queued meanwhile), never this one.
                         continue
                     chunk = _build_stream_chunk(msg)
-                    await resp.write(f"data: {chunk}\n\n".encode())
+                    await write_sse_or_abort(request, resp, f"data: {chunk}\n\n".encode())
                 try:
                     await asyncio.wait_for(slot.event.wait(), timeout=30)
                 except asyncio.TimeoutError:
-                    await resp.write(b": keepalive\n\n")
+                    await write_sse_or_abort(request, resp, b": keepalive\n\n")
         except (ConnectionResetError, ClientConnectionResetError, asyncio.CancelledError):
             pass
         finally:
@@ -11112,3 +11112,32 @@ _chat_api.compose(
         _owner_source_links,
     ),
 )
+
+
+# How long one SSE write may wait for the client to take the bytes. aiohttp parks
+# a write once the socket and its own buffer are full, and resumes it when the
+# client has read the buffer down by about 48 KiB, so a reader that is merely
+# slow (a few hundred bytes a second) finishes every write well inside this.
+_SSE_WRITE_DEADLINE_SECS = 120.0
+
+
+async def write_sse_or_abort(request: web.Request, resp: web.StreamResponse, data: bytes) -> None:
+    """Write one SSE frame; abort the connection when the client stops reading.
+
+    ``resp.write`` has no deadline of its own. A client that stops reading without
+    closing its socket would park the write, and with it the stream loop and the
+    slot state that loop owns (the pending queue and the broadcast hold), for as
+    long as the socket stays open. Past the deadline the transport is aborted and
+    the write raises ``ConnectionResetError``, so the caller's existing disconnect
+    handling releases that state.
+    """
+    try:
+        await asyncio.wait_for(resp.write(data), timeout=_SSE_WRITE_DEADLINE_SECS)
+    except asyncio.TimeoutError:
+        transport = request.transport
+        if transport is not None:
+            transport.abort()
+        logger.info(
+            "SSE client stopped reading for %.0fs; connection aborted", _SSE_WRITE_DEADLINE_SECS
+        )
+        raise ConnectionResetError("SSE client stopped reading") from None

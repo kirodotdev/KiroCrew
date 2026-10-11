@@ -25,6 +25,7 @@ from aiohttp import web
 from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
+from kiro_crew.dashboard.chat_handlers import write_sse_or_abort
 from kiro_crew.dashboard.chat_runner import TURN_FAILED_META, _run_chat
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.relay_archive import (
@@ -649,10 +650,12 @@ def _turn_failed(msg: dict[str, Any]) -> bool:
     return isinstance(meta, dict) and bool(meta.get(TURN_FAILED_META))
 
 
-async def _stream_server_error(resp: web.StreamResponse) -> web.StreamResponse:
+async def _stream_server_error(
+    request: web.Request, resp: web.StreamResponse
+) -> web.StreamResponse:
     """End an SSE completion with the server-error frame and ``[DONE]``."""
-    await resp.write(f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
-    await resp.write(b"data: [DONE]\n\n")
+    await write_sse_or_abort(request, resp, f"data: {json.dumps(_SERVER_ERROR)}\n\n".encode())
+    await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
     return resp
 
 
@@ -681,7 +684,7 @@ async def _stream_response(
             for msg in pending:
                 failed = failed or _turn_failed(msg)
                 if msg.get("cls") == "done" and failed:
-                    return await _stream_server_error(resp)
+                    return await _stream_server_error(request, resp)
                 if msg.get("cls") == "done":
                     # Flush remaining buffer
                     if _redact_buffer:
@@ -701,7 +704,9 @@ async def _stream_response(
                                     }
                                 ],
                             }
-                            await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                            await write_sse_or_abort(
+                                request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
+                            )
                     chunk = {
                         "id": completion_id,
                         "object": _OPENAI_OBJECT_CHUNK,
@@ -709,8 +714,10 @@ async def _stream_response(
                         "model": model,
                         "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
                     }
-                    await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
-                    await resp.write(b"data: [DONE]\n\n")
+                    await write_sse_or_abort(
+                        request, resp, f"data: {json.dumps(chunk)}\n\n".encode()
+                    )
+                    await write_sse_or_abort(request, resp, b"data: [DONE]\n\n")
                     return resp
 
                 # Stream assistant and chunk roles (token-level streaming)
@@ -742,7 +749,7 @@ async def _stream_response(
                         }
                     ],
                 }
-                await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())
+                await write_sse_or_abort(request, resp, f"data: {json.dumps(chunk)}\n\n".encode())
 
             # Detect task failure — prevents infinite loop
             if slot.task and slot.task.done():
@@ -750,12 +757,12 @@ async def _stream_response(
                     slot.task.result()
                 except BaseException as exc:
                     logger.warning("chat task failed: %s", exc)
-                    return await _stream_server_error(resp)
+                    return await _stream_server_error(request, resp)
 
             try:
                 await asyncio.wait_for(slot.event.wait(), timeout=30)
             except asyncio.TimeoutError:
-                await resp.write(b": keepalive\n\n")
+                await write_sse_or_abort(request, resp, b": keepalive\n\n")
     except (ConnectionResetError, asyncio.CancelledError):
         pass
     finally:
