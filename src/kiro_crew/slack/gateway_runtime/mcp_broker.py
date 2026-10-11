@@ -146,6 +146,38 @@ async def _init_mcp_gateway(
     except Exception:
         logger.exception("mcp-gateway rewriter failed — falling back")
         return
+    # The boot rebuild ran before this overlay existed, so a server routed since
+    # the last start is still withheld in the agent spec, with its tool refs
+    # stripped: the session gets the stub but none of its tools. One more
+    # rebuild, now that the overlay holds the stub, lifts the mute. It waits for
+    # process readiness, like the approval persist, so the boot path gains no
+    # work; until it lands the server stays withheld, which is the safe side.
+    ready = getattr(self, "_mcp_launch_approval_ready", None)
+    if ready is None:
+        ready = asyncio.Event()
+        self._mcp_launch_approval_ready = ready
+
+    async def _lift_newly_routed() -> None:
+        await ready.wait()  # type: ignore[union-attr]  # narrowed above
+        try:
+            from kiro_crew.agent import (  # circular import
+                rebuild_agent_config,
+                withheld_servers_now_routed,
+            )
+
+            if await asyncio.to_thread(withheld_servers_now_routed):
+                await asyncio.to_thread(rebuild_agent_config, refresh_forks="defer")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "mcp-gateway: could not lift the secret:// withhold for newly routed servers",
+                exc_info=True,
+            )
+
+    lift_task = asyncio.create_task(_lift_newly_routed(), name="mcp-withheld-lift")
+    self._background_tasks.add(lift_task)
+    lift_task.add_done_callback(self._background_tasks.discard)
     if dropped_targets:
         logger.warning(
             "mcp launch approvals: withheld %d unapproved target(s) from the gateway daemon",

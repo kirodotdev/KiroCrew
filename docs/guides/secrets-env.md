@@ -46,8 +46,23 @@ the server (this adds it to `mcp_gateway.stub_servers`). For the servers the
 default agent mounts (from either `mcp.json` above), an unrouted server with a
 `secret://` value is not started at all, and a warning names the env key —
 rather than starting it with the literal `secret://` text as its credential.
+Routing takes effect at the next gateway start, as any routing change does,
+and the server stays off until then: it counts as routed only once the running
+gateway serves it. Switching the server on in MCP Management, or **Enable
+all**, does not start it before that either. On a platform where the MCP
+gateway does not run, no reference can be resolved: put the credential in the
+server's `env` directly instead.
 An agent file you maintain by hand under `~/.kiro/agents/` is launched as
 written, so route any server it declares with a `secret://` value.
+
+Such a server is kept in `~/.kiro/agents/kirocrew.json` with
+`"disabled": true` and `"x-kirocrew-withheld": true`. If you roll back to a
+release without this check, that release's rebuild switches a server declared
+in either `mcp.json` back on by itself. A server declared only in
+`kirocrew.json` stays off: the older release reads its `disabled` as your own
+switch-off and lists no row for it in MCP Management. To clear it, delete both
+keys from its entry in that file. Either way the older release can again start
+the server with the literal `secret://` text as its credential.
 
 ### Managed secrets in Settings
 

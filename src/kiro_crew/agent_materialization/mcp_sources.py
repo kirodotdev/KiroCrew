@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import functools
 import itertools
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -22,6 +23,7 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as agent_mod
 from kiro_crew import user_json
+from kiro_crew.agent_files import AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, mcp_aliases
 from kiro_crew.env import MCP_PATH_HINT, dedup_path, describe_search_path, emit_env
 from kiro_crew.mcp_cleanup import (
@@ -30,10 +32,12 @@ from kiro_crew.mcp_cleanup import (
     mcp_entry_is_muted,
     warn_invalid_disabled,
 )
-from kiro_crew.mcp_gateway.secret_uri import secret_reference_keys
+from kiro_crew.mcp_gateway.secret_uri import routed_for_secret_reference, secret_reference_keys
 from kiro_crew.mcp_provenance import (
     DERIVED_KEY,
+    WITHHELD_KEY,
     command_is_ours,
+    is_withheld_mute,
     record_derived,
     recorded_source,
     source_view,
@@ -418,14 +422,6 @@ def merge_mcp_sources(config: dict) -> McpSources:
     return McpSources(kirocrew_mcp, shared_mcp, extra_shared_mcp, managed_names)
 
 
-#: Rebuild-owned record that THIS rebuild wrote ``disabled: true`` onto an
-#: agent-only entry because its env holds a ``secret://`` reference nothing will
-#: resolve. It is what lets the next pass lift exactly that mute and no
-#: ``disabled`` the user wrote. The ``x-`` namespace never collides with a kiro-cli
-#: field (see ``mcp_provenance.MARKER_KEY``).
-WITHHELD_KEY = "x-kirocrew-withheld"
-
-
 def _mute_withheld(entry: dict) -> dict:
     """*entry* muted in place, with the record that this rebuild muted it.
 
@@ -434,7 +430,7 @@ def _mute_withheld(entry: dict) -> dict:
     it with the literal reference. A user-written ``disabled`` is left as found
     and gains no record, so it is never lifted.
     """
-    if entry.get("disabled") is True and WITHHELD_KEY not in entry:
+    if mcp_entry_is_muted(entry) and WITHHELD_KEY not in entry:
         return entry
     muted = dict(entry)
     muted["disabled"] = True
@@ -453,18 +449,45 @@ def _lift_withheld_mute(entry: dict) -> dict:
 
 
 def _gateway_routed_names() -> frozenset[str]:
-    """The servers routed through the MCP gateway, as configured; empty on any failure.
+    """The servers the running MCP gateway starts for this agent; empty on any failure.
+
+    Routed means BOTH: the saved routing lists the server
+    (``mcp_gateway.stub_servers``), AND the overlay the running gateway built at
+    its start holds a stub for it that a session is handed
+    (:func:`~kiro_crew.mcp_gateway.session_servers.injection_server_names`). The
+    saved list alone is only intent: the routing switch records it and asks for
+    a restart (``mcp_broker._apply_mcp_stub``), and until that restart the
+    overlay has no stub, so a session launches the agent spec's own entry --
+    which would start the server with the literal reference. The overlay alone
+    is not enough either: routing turned off still leaves a stale stub there
+    until the next start.
 
     Empty is the fail-closed answer for :func:`_unrouted_secret_reference`: a
-    config that cannot be read routes nothing, so a server with a vault reference
-    is withheld rather than launched with the reference unresolved.
+    config or overlay that cannot be read routes nothing, so a server with a
+    vault reference is withheld rather than launched with the reference
+    unresolved.
     """
     try:
         # Deferred: the config loader is heavy and only a server that carries a
         # ``secret://`` reference needs it, so most rebuilds never import it here.
         from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.mcp_gateway import is_gateway_supported
+        from kiro_crew.mcp_gateway.rewriter import resolve_overlay_dir
+        from kiro_crew.mcp_gateway.session_servers import injection_server_names
 
-        return frozenset(KiroCrewConfig.load().mcp_gateway.stub_servers)
+        if not is_gateway_supported():
+            # No gateway runs here, so nothing listed is ever served by one.
+            return frozenset()
+        gateway = KiroCrewConfig.load().mcp_gateway
+        saved = frozenset(gateway.stub_servers)
+        if not saved:
+            return frozenset()
+        # ``work_dir=None``: the rebuild writes the USER-level agent spec, so the
+        # user-level overlay is the one a session running it is handed stubs from.
+        served = injection_server_names(
+            resolve_overlay_dir(gateway.overlay_dir), Path(AGENT_FILENAME).stem, work_dir=None
+        )
+        return frozenset(n for n in served if routed_for_secret_reference(n, saved))
     except Exception:  # noqa: BLE001 -- any failure means "cannot prove routed"
         agent_mod.logger.warning(
             "Could not read the MCP gateway routing; treating every server as "
@@ -499,21 +522,82 @@ def _unrouted_secret_reference(
     keys = secret_reference_keys(chosen.get("env"))
     if not keys:
         return False
-    alias = mcp_server_alias(name)
-    routed_names = routed()
-    if name in routed_names or alias in routed_names:
+    # The same helper the overlay rewriter asks before it wraps the server, so
+    # the two cannot disagree about which servers the gateway starts.
+    if routed_for_secret_reference(name, routed()):
         return False
-    if alias in app_owned():
+    if mcp_server_alias(name) in app_owned():
         return False
+    from kiro_crew.mcp_gateway import is_gateway_supported  # deferred, like the routing read
+
+    if is_gateway_supported():
+        remedy = (
+            "Turn on routing for the server in MCP Management, approve its launch "
+            "there and restart, so the gateway starts it and resolves the reference "
+            "from the vault."
+        )
+    else:
+        # Routing cannot help here: the gateway does not run on this platform.
+        remedy = (
+            "The MCP gateway does not run on this platform, so no reference can be "
+            "resolved here: put the credential in the env directly, or remove the "
+            "server."
+        )
     agent_mod.logger.warning(
         "Not starting MCP server %r: env %s holds a secret:// reference, which is "
-        "resolved only when the MCP gateway starts the server. Turn on routing for "
-        "the server in MCP Management and approve its launch there, so the "
-        "reference is resolved from the vault.",
+        "resolved only when the MCP gateway starts the server. %s",
         name,
         ", ".join(repr(k) for k in keys),
+        remedy,
     )
     return True
+
+
+def entry_as_enabled(name: str, entry: dict) -> dict:
+    """*entry* as the dashboard's enable switch may write it into the agent spec.
+
+    The switch lifts ``disabled``. For a server this rebuild withholds -- a
+    stdio command whose env holds a ``secret://`` reference, not started by the
+    running gateway -- lifting it hands kiro-cli a live entry with the literal
+    reference, and the switch runs no rebuild that would put the mute back. So
+    the rebuild's own decision is taken here too, on the same predicate: such an
+    entry comes back muted with :data:`WITHHELD_KEY`, which the first pass after
+    the server is routed lifts as usual. Any other entry comes back without
+    ``disabled`` and without a stale record.
+    """
+    live = {k: v for k, v in entry.items() if k not in ("disabled", WITHHELD_KEY)}
+    if "command" in live and _unrouted_secret_reference(
+        name, live, _gateway_routed_names, _app_owned_mcp_keys
+    ):
+        return _mute_withheld(live)
+    return live
+
+
+def withheld_servers_now_routed() -> bool:
+    """True when the agent spec withholds a server the running gateway now starts.
+
+    The boot rebuild runs BEFORE the gateway writes its overlay, so the first
+    start after a server is routed still reads the previous start's overlay and
+    keeps the server withheld, with its ``tools`` refs stripped. The session is
+    handed the gateway's stub all the same (a stub outranks the spec's entry),
+    but without the refs it exposes none of the server's tools. The gateway asks
+    this once its overlay is written; True means one more rebuild is due. Any
+    read failure answers False: the mute stays, which is the safe side.
+    """
+    try:
+        spec = json.loads(
+            (agent_mod.kiro_agents_dir_path() / AGENT_FILENAME).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError):
+        return False
+    servers = spec.get("mcpServers") if isinstance(spec, dict) else None
+    if not isinstance(servers, dict):
+        return False
+    withheld = [n for n, e in servers.items() if isinstance(n, str) and is_withheld_mute(e)]
+    if not withheld:
+        return False
+    routed = _gateway_routed_names()
+    return any(routed_for_secret_reference(n, routed) for n in withheld)
 
 
 def resolve_mcp_servers(
@@ -749,20 +833,14 @@ def resolve_mcp_servers(
                 chosen = cand
                 break
 
-        if resolved and _unrouted_secret_reference(name, chosen, _routed, _app_owned):
-            if _scope_owned:
-                # A command resolved, but the session would launch this server with
-                # a ``secret://`` value it cannot resolve. The scope file still holds
-                # the declaration, so the server is withheld exactly like an
-                # unresolved command: the refs stay, and the pass after the server
-                # is routed through the gateway emits it again.
-                _unresolved_this_pass.add(name)
-                continue
-            # This file is the only copy of an agent-only declaration, so it is kept
-            # and muted in place rather than dropped; see _mute_withheld.
-            _mute_here = True
-        else:
-            _mute_here = False
+        # Kept and muted in place rather than dropped, whichever file declares
+        # it: the entry this rebuild writes carries the user's spec-only fields
+        # (``disabledTools``, ``autoApprove``), and an agent-only declaration has
+        # no other copy. The mute lifts on the first pass after the server is
+        # routed; see _mute_withheld.
+        _mute_here = bool(resolved) and _unrouted_secret_reference(
+            name, chosen, _routed, _app_owned
+        )
         if resolved:
             # Start from the merged winner so user-set NON-command fields
             # (autoApprove, disabled, ...) are preserved.  When we fall back to
@@ -1002,7 +1080,13 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
                 ),
             )
         )
-        if muted_here or alias in _disabled_mounted_aliases:
+        rendered_entry = valid_servers.get(alias)
+        withheld_here = isinstance(rendered_entry, dict) and WITHHELD_KEY in rendered_entry
+        # A source scope muting the server makes the mute the user's: the
+        # withheld record is dropped, or the rewriter would lift the mute the
+        # moment the server is routed and start a server the user switched off.
+        source_muted = muted_here or alias in _disabled_mounted_aliases
+        if source_muted or withheld_here:
             # The rendered entry says ``true`` whenever the server is muted --
             # over a merged ``false`` from a higher-priority scope as much as over
             # a raw ``null``/``0``/``"false"``. The file kiro-cli parses must
@@ -1011,9 +1095,15 @@ def sync_shared_server_refs(config: dict, sources: McpSources, mounted: dict[str
             rendered = valid_servers.get(alias)
             if isinstance(rendered, dict):
                 rendered["disabled"] = True
+                if source_muted:
+                    rendered.pop(WITHHELD_KEY, None)
+            # A withheld mute alone strips only the bare refs: ``disabled``
+            # already keeps the server from starting, and a per-tool grant the
+            # user wrote cannot be re-derived once it is gone, while the mute
+            # lifts on its own once the server is routed.
             for key in ("tools", "allowedTools"):
                 if (
-                    _strip_owned_refs(key, strip_per_tool=key == "allowedTools")
+                    _strip_owned_refs(key, strip_per_tool=key == "allowedTools" and source_muted)
                     and ref not in _shared_removed
                 ):
                     _shared_removed.append(ref)

@@ -1026,6 +1026,37 @@ class TestListServers:
         rows = await probe_all()
         assert [(s.name, s.status) for s in rows] == [("pending", "disabled")]
 
+    def test_a_rebuild_withheld_server_is_listed_not_hidden(self, tmp_path, monkeypatch) -> None:
+        """The rebuild's own withheld mute is not the user's: the row stays listed
+        so the routing switch that lifts it can be reached from this table."""
+        agent_dir = tmp_path / "agents"
+        agent_dir.mkdir()
+        (agent_dir / "defaults.json").write_text(
+            json.dumps(
+                {
+                    "mcpServers": {
+                        "srv": {
+                            "command": "a",
+                            "env": {"API_TOKEN": "secret://X"},
+                            "disabled": True,
+                            "x-kirocrew-withheld": True,
+                        }
+                    }
+                }
+            )
+        )
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            json.dumps(
+                {"mcpServers": {"srv": {"command": "a", "env": {"API_TOKEN": "secret://X"}}}}
+            )
+        )
+        monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(tmp_path))
+        monkeypatch.setattr("kiro_crew.mcp_discovery._MCP_JSON_PATHS", (mcp_json,))
+        monkeypatch.setattr("kiro_crew.mcp_discovery.Path.home", lambda: tmp_path)
+        rows = [s for s in list_servers() if s.name == "srv"]
+        assert len(rows) == 1 and not rows[0].disabled
+
     def test_disabled_in_agent_blocks_mcp_json(self, tmp_path, monkeypatch) -> None:
         """Server disabled in agent config is not re-added from mcp.json."""
         agent_dir = tmp_path / "agents"
@@ -6943,3 +6974,25 @@ class TestManagedToolsInProcessNamesOnly:
                 "read path (build_tool_names / schemas(names_only=True)) is what keeps "
                 "the live reads off the gateway loop now"
             )
+
+
+class TestProbeRefusesSecretReferences:
+    """A direct probe runs outside the gateway, so it must not spawn a server
+    whose env still holds an unresolved ``secret://`` reference."""
+
+    @pytest.mark.asyncio
+    async def test_probe_refuses_before_any_spawn(self, monkeypatch) -> None:
+        def _no_spawn(*_a, **_kw):
+            raise AssertionError("probe spawned a server holding a secret:// reference")
+
+        monkeypatch.setattr("kiro_crew.mcp_discovery._probe_on_private_loop", _no_spawn)
+        server = McpServerInfo(
+            name="srv", command="srv-mcp", env={"API_TOKEN": "secret://NAME", "MODE": "x"}
+        )
+        out = await probe_server(server)
+        # No handshake was attempted, so the status carries no probe verdict.
+        from kiro_crew.mcp_quarantine import FAILING_STATUSES
+
+        assert out.status not in FAILING_STATUSES and out.status != "ok"
+        assert "API_TOKEN" in out.error
+        assert "NAME" not in out.error.replace("API_TOKEN", "")

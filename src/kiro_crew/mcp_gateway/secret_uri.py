@@ -8,9 +8,10 @@ the secret is never persisted in plaintext outside the vault.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
+from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.secrets import SecretVault
 
 #: Scheme prefix for a vault secret reference. Single source of truth: the
@@ -55,6 +56,26 @@ def secret_reference_keys(env: object) -> list[str]:
         for key, value in env.items()
         if isinstance(value, str) and value.startswith(SECRET_URI_PREFIX)
     )
+
+
+def routed_for_secret_reference(name: str, routed: Collection[str]) -> bool:
+    """True when server *name* counts as routed by *routed*, for a ``secret://`` server.
+
+    The ONE answer to "does the gateway start this server", shared by the
+    agent-spec rebuild (which withholds an unrouted server that carries a
+    reference) and the overlay rewriter (which wraps a routed one). The two
+    must agree exactly: a server the rebuild lets through and the rewriter
+    leaves unwrapped launches with the literal reference, and one the rebuild
+    withholds while the rewriter would wrap it stays off with nothing said.
+
+    Matches the exact name, or the slash-free alias on both sides: the routing
+    list (``mcp_gateway.stub_servers``) may hold a raw name (``npm:@acme/mcp``)
+    while the rebuilt spec keys the same server by its alias (``acme-mcp``).
+    """
+    if name in routed:
+        return True
+    alias = mcp_server_alias(name)
+    return any(mcp_server_alias(r) == alias for r in routed if isinstance(r, str))
 
 
 def _is_valid_secret_name(name: str) -> bool:
