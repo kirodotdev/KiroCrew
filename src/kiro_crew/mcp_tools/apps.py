@@ -30,7 +30,9 @@ from typing import Any, TypeGuard
 from urllib.parse import quote
 
 from kiro_crew import mcp_core
+from kiro_crew.apps import manager as app_manager
 from kiro_crew.apps.manager import app_enabled_state
+from kiro_crew.constants import APP_REQUEST_HEADER, APP_REQUEST_HEADER_VALUE
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     _ISSUE_RADAR_CREW_CLEARABLE_FIELDS,
@@ -529,6 +531,49 @@ def schemas() -> list[dict[str, Any]]:
                 "required": [],
             },
         },
+        {
+            "name": "app_request",
+            "description": (
+                "Call an installed app's declared agent route: one of the "
+                '`"METHOD /path"` entries in the app\'s `agentRoutes` manifest '
+                "field. Apps document their agent routes, and what each one "
+                "expects, in the skills they ship, so read the app's skill first. "
+                "The gateway refuses an undeclared route, and this tool refuses "
+                "a disabled app. The app is told which session is calling, so "
+                "an unidentified caller is refused. A refusal before the gateway is "
+                "safe to retry; a transport failure after a mutation has an unknown "
+                "outcome and must be read back with GET instead of resent. Otherwise "
+                "the tool returns the gateway's or app's answer. This is the ONLY way "
+                "to reach an app's routes: raw HTTP has no credential and is refused "
+                "with 403."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "app": {
+                        "type": "string",
+                        "description": "The installed app's name, e.g. 'slack-poller'",
+                    },
+                    "method": {
+                        "type": "string",
+                        "enum": ["DELETE", "GET", "PATCH", "POST", "PUT"],
+                        "description": "HTTP method of the declared route",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": (
+                            "Route path relative to the app, with parameters filled "
+                            "in, e.g. '/subscriptions/42'. No query string"
+                        ),
+                    },
+                    "body": {
+                        "type": "object",
+                        "description": "JSON body for POST, PUT, PATCH or DELETE",
+                    },
+                },
+                "required": ["app", "method", "path"],
+            },
+        },
     ]
 
 
@@ -596,7 +641,37 @@ def advertised() -> list[dict[str, Any]]:
             continue
         if state is False:
             hidden.update(tool for tool, owner in TOOL_APPS.items() if owner == app)
+    if not _some_enabled_app_may_declare_agent_routes():
+        hidden.add("app_request")
     return [spec for spec in schemas() if spec["name"] not in hidden]
+
+
+def _some_enabled_app_may_declare_agent_routes() -> bool:
+    """Whether any installed app that is not provably disabled declares ``agentRoutes``.
+
+    ``app_request`` has no single owning app, so it follows the whole set: with no
+    such app every call can only refuse, and the descriptor would spend context in
+    every session for nothing. Fail-OPEN for the reasons ``advertised()`` gives: an
+    unreadable apps directory, enablement record or exception lists the tool, and
+    only a readable ``False`` enablement counts as disabled.
+    """
+    try:
+        root = app_manager.apps_dir()
+        if not root.is_dir():
+            return False
+        for entry in sorted(root.iterdir()):
+            if not entry.is_dir() or app_enabled_state(entry.name) is False:
+                continue
+            manifest = app_manager.get_app_manifest(entry.name)
+            if (
+                manifest is not None
+                and isinstance(manifest.agentRoutes, list)
+                and manifest.agentRoutes
+            ):
+                return True
+        return False
+    except Exception:
+        return True
 
 
 def _crew_session_key() -> tuple[str, str]:
@@ -1081,6 +1156,126 @@ def issue_radar_crew_record(name: str, args: dict[str, Any]) -> str:
     return redact("\n".join(_cw_lines))
 
 
+#: One number, two bounds. First it caps the RAW BYTES ``mcp_core._send`` reads
+#: from the wire before decoding (``max_response_bytes``), so an app cannot flood
+#: this process with a body it never finishes reading. Then it caps the
+#: CHARACTERS of the redacted text returned to the model, so a cut cannot split a
+#: credential the redactor would have matched. The units differ, the figure is
+#: shared because neither bound needs to be tighter than the other.
+_APP_REQUEST_RESPONSE_CAP = 60_000
+_APP_REQUEST_HEADERS = {APP_REQUEST_HEADER: APP_REQUEST_HEADER_VALUE}
+
+
+def app_request(name: str, args: dict[str, Any]) -> str:
+    _ar_sk, _ar_err = mcp_core.require_strict_session_key(
+        "Error: app_request needs a directly-identified session. The app is told "
+        "which session is calling, and a subagent resolves to its parent's session, "
+        "which would act as the parent."
+    )
+    if not _ar_sk:
+        return _redact_and_cap_app_response(_ar_err)
+    _ar_chan_deny = mcp_core._deny_channel_agent_messaging(_ar_sk, "app_request")
+    if _ar_chan_deny:
+        return _redact_and_cap_app_response(_ar_chan_deny)
+    _ar_app = args["app"]
+    _ar_method = args["method"]
+    _ar_path = args["path"]
+    if redact(_ar_path) != _ar_path:
+        return _redact_and_cap_app_response(
+            f"Error: app_request refused {_ar_method} {_ar_path} because the path contains "
+            "credential material. The request did not reach the app or gateway."
+        )
+    if not app_manager.is_app_enabled(_ar_app):
+        return _redact_and_cap_app_response(
+            f"Error: app_request refused {_ar_method} {_ar_path} before the request reached "
+            "the gateway, so it is safe to retry after correcting the refusal. "
+            f"{_ar_app!r} is not an enabled installed app."
+        )
+    # Whether the route is declared is decided only by the gateway: token_auth
+    # admits marked app_request traffic solely on a declared route of an enabled
+    # app, so an undeclared route comes back as the gateway's refusal.
+    _ar_url = f"/api/apps/{quote(_ar_app)}{_ar_path}"
+    # Redacted on the way IN: the body reaches app code that may persist or forward
+    # it, so a credential quoted into it is scrubbed before it leaves this process.
+    _ar_body = mcp_core._redact_json_strings(sanitize_json_values(args.get("body") or {}))
+    if _ar_method == "GET":
+        _ar_resp = mcp_core._get(
+            _ar_url,
+            session_key=_ar_sk,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "POST":
+        _ar_resp = mcp_core._post(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "PUT":
+        _ar_resp = mcp_core._put(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    elif _ar_method == "PATCH":
+        _ar_resp = mcp_core._patch(
+            _ar_url,
+            _ar_body,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    else:
+        _ar_resp = mcp_core._delete(
+            _ar_url,
+            _ar_body or None,
+            session_key=_ar_sk,
+            mark_transport_error=True,
+            max_response_bytes=_APP_REQUEST_RESPONSE_CAP,
+            extra_headers=_APP_REQUEST_HEADERS,
+        )
+    # Redact each complete result before its cap. This covers path and app names as
+    # well as app-controlled response text, and prevents a cut from splitting a
+    # credential that the redactor would otherwise match.
+    if isinstance(_ar_resp, dict) and _ar_resp.get("error"):
+        _ar_err_text = str(_ar_resp["error"])
+        if _ar_resp.get("refused"):
+            return _redact_and_cap_app_response(
+                f"Error: {_ar_method} {_ar_path} was refused before reaching the gateway, "
+                f"so it is safe to retry: {_ar_err_text}"
+            )
+        if _ar_resp.get("transport_error"):
+            return _redact_and_cap_app_response(
+                f"Error: outcome unknown: the {_ar_method} {_ar_path} request may have been "
+                "applied; read state back with a GET instead of resending. "
+                f"Transport failure: {_ar_err_text}"
+            )
+        return _redact_and_cap_app_response(
+            f"Error: {_ar_app} answered {_ar_method} {_ar_path} with: {_ar_err_text}"
+        )
+    _ar_resp = mcp_core._redact_json_strings(_ar_resp)
+    _ar_text = json.dumps(_ar_resp, ensure_ascii=False, default=str)
+    return _redact_and_cap_app_response(f"OK {_ar_method} {_ar_path}\n{_ar_text}")
+
+
+def _redact_and_cap_app_response(text: str) -> str:
+    """Redact a complete app_request result, then apply its character cap."""
+    return _cap_app_response(redact(text))
+
+
+def _cap_app_response(text: str) -> str:
+    """Truncate an already-redacted app_request result to the response cap."""
+    if len(text) <= _APP_REQUEST_RESPONSE_CAP:
+        return text
+    return text[:_APP_REQUEST_RESPONSE_CAP] + f"\n… truncated ({len(text)} chars total)."
+
+
 HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "issue_radar_record_investigation": issue_radar_record_investigation,
     "ops_mission_control_api": ops_mission_control_api,
@@ -1091,4 +1286,5 @@ HANDLERS: dict[str, Callable[[str, dict[str, Any]], str]] = {
     "pod_ls": pod_ls,
     "issue_radar_crew_read": issue_radar_crew_read,
     "issue_radar_crew_record": issue_radar_crew_record,
+    "app_request": app_request,
 }

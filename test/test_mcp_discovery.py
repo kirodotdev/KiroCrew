@@ -6942,7 +6942,8 @@ class TestManagedToolsInProcessNamesOnly:
     def test_core_names_are_correct_and_complete(self, monkeypatch) -> None:
         """The names returned match a full ``_list_tools`` build exactly, in order.
 
-        Every app is held enabled for the comparison: the full build omits a
+        Every app is held enabled, and ``app_request``'s agent-route gate held
+        open, for the comparison: the full build omits a
         disabled app's tools (``mcp_tools.apps.advertised``), while the names-only
         build takes the declaration and names them all without reading enablement
         -- the one state in which the two legitimately differ.
@@ -6952,6 +6953,7 @@ class TestManagedToolsInProcessNamesOnly:
         from kiro_crew.mcp_discovery import _managed_tools_in_process
 
         monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
+        monkeypatch.setattr(apps_tools, "_some_enabled_app_may_declare_agent_routes", lambda: True)
         full = [t["name"] for t in core._list_tools()]
         got = _managed_tools_in_process("kirocrew-core")
         assert got == full
