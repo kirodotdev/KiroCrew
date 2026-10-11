@@ -342,7 +342,46 @@ def _mint_pod_token_locked(cfg, name: str, expected_checkout: str) -> dict:
             runtime.logger.warning("SEL audit failed for pod.token: %s", runtime._redact(str(exc)))
 
 
+#: What a pod start answers while its worktree is being removed or rebased.
+_POD_START_REFUSAL = (
+    "refusing: this worktree is being removed or rebased -- start its pod once that finishes"
+)
+
+
 async def _pod_up(name: str) -> dict:
+    """Start the worktree's pod while holding the worktree's lock and reservation.
+
+    The pod runs from the checkout a removal deletes, and its unit goes active from
+    the ``pod up`` child at a moment no in-process check can observe. So the start
+    holds ``_wt_lock(name)`` from its guard through its verification: a removal or
+    rebase already holding the lock refuses this start, and a removal that arrives
+    mid-start refuses itself. The check and the acquisition are adjacent with no
+    intervening await, as in ``_worktree_remove``.
+
+    ``_wt_lock`` is per process, and an agent's start runs in the gateway
+    (``agent_pod_api``) while every removal runs in the backend. So the start also holds
+    :func:`live.pod_start_reservation` on the checkout for the same span: the gateway
+    refuses a removal lease on it meanwhile, and refuses this start while a removal
+    holds one. In the backend the reservation grants and records nothing.
+
+    The name is resolved first, because ``_wt_lock`` keeps its row for good: a name
+    that names no worktree gets no row. The guard under the lock resolves it again,
+    so a removal that lands in between still refuses the start.
+    """
+    target, ferr = await repository._find_worktree(name)
+    if target is None:
+        return {"ok": False, "error": ferr or f"unknown worktree: {name!r}"}
+    worktree_lock = _wt_lock(name)
+    if worktree_lock.locked():
+        return {"ok": False, "error": _POD_START_REFUSAL}
+    async with worktree_lock:
+        with live.pod_start_reservation(target["path"]) as reserved:
+            if not reserved:
+                return {"ok": False, "error": _POD_START_REFUSAL}
+            return await _pod_up_locked(name)
+
+
+async def _pod_up_locked(name: str) -> dict:
     guard = await _pod_checkout_guard(name)
     if guard:
         return {"ok": False, "error": guard}
@@ -626,7 +665,7 @@ async def _worktree_remove(
         return {
             "ok": False,
             "error": (
-                "refusing: a rebase is in progress for this worktree -- "
+                "refusing: a rebase or pod start is in progress for this worktree -- "
                 "wait for it to finish or abort it first"
             ),
         }
@@ -1119,7 +1158,8 @@ async def _worktree_remove_locked(
             return {
                 "ok": False,
                 "error": (
-                    "refusing: a Make Live cutover is in progress -- retry once it " "has completed"
+                    "refusing: a Make Live cutover is in progress or this worktree's pod "
+                    "is starting -- retry once it has completed"
                 ),
             }
         # Protection re-check under the lock closes the TOCTOU window between
