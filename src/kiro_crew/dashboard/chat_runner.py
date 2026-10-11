@@ -3093,7 +3093,7 @@ _RECIPIENT_LOGGED_CAP = 512
 _name_grant_refusal_off_loop = refusal_for_command_off_loop
 
 
-async def _retire_sessions_on_identity_change(state: Any) -> None:
+async def _retire_sessions_on_identity_change(state: Any, *, unattended: bool = False) -> None:
     """Recycle kiro-backed children when the signed-in account has changed.
 
     The counterpart to :func:`_mark_kiro_signed_out`, for the case that function
@@ -3108,6 +3108,24 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
     invalidated child and lets the send proceed on a fresh one, which is a
     process recycle rather than a readiness verdict. It stays off the spawn path
     too -- the trigger is a local database read, briefly cached, not a ``whoami``.
+
+    ``unattended`` marks a caller with no person behind it, an agent cron. An
+    EMPTY live fingerprint is never reconciled, so every call under it sweeps, and
+    that sweep spares nothing: it retires every idle kiro-backed session,
+    cancelling an idle parent's ``spawn_run`` children and dropping each one's
+    native conversation. After a real sign-out that is the point: every child
+    still holding the old credential has to go. But the same
+    empty fingerprint comes from a store the reader cannot identify (a social
+    login, an unreadable or relocated store), where it never goes away; a cron
+    would then repeat the sweep on every fire. Its own session survives from one
+    fire to the next mostly while its sub-agents are still running, so even
+    retiring just that one would usually end them. So an unattended caller sweeps
+    under an empty fingerprint only when the read proved nobody is signed in
+    (``identity_absence_is_definitive``), and only until one sweep under that
+    sign-out completes (``identity_absence_already_swept``): a session started after
+    it holds no account or brings its own ``KIRO_API_KEY`` (a cron job's ``env``
+    block), which no sweep spares, so sweeping again would only cancel its
+    sub-agents. Otherwise it does nothing.
 
     Best-effort: a failure here must not fail the turn, which would be a worse
     outcome than the staleness it exists to correct.
@@ -3126,6 +3144,19 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
         # keep the latch armed -- see note_sessions_reconciled. Looked up
         # defensively like the other optional surfaces in this gate.
         observed_gen = getattr(service, "identity_observation_generation", None)
+        # Captured with the read for the same reason: the sweep below awaits, and a
+        # read that lands meanwhile must not speak for the one that started it.
+        absence_proven = getattr(service, "identity_absence_is_definitive", False)
+        absence_run = getattr(service, "identity_absence_run", None)
+        if (
+            unattended
+            and not live
+            and (not absence_proven or getattr(service, "identity_absence_already_swept", False))
+        ):
+            # See the docstring: an account the reader cannot identify, or a
+            # sign-out a sweep already finished, is no reason for an unattended
+            # caller to recycle anything.
+            return
         # BEFORE the unchanged early-return: the stamp check exists precisely
         # for the case where the baseline (and the interim latch) compare
         # equal -- an A->B->A round trip no read ever observed -- while a
@@ -3174,6 +3205,12 @@ async def _retire_sessions_on_identity_change(state: Any) -> None:
         # whatever the store now holds even when we cannot fingerprint it.
         if complete and live:
             service.note_sessions_reconciled(live, observations_before=observed_gen)
+        elif complete and absence_proven and absence_run is not None:
+            # A sign-out is never reconciled, so record that a sweep finished this
+            # one: unattended callers then leave it alone (identity_absence_already_swept).
+            note_absence_swept = getattr(service, "note_absence_swept", None)
+            if note_absence_swept is not None:
+                note_absence_swept(absence_run)
         # Narrow the latch ONLY on an actual sign-out (no identity on disk). On a
         # switch to another valid account, narrowing would strand readiness: if a
         # status poll observed the switch first it has already stamped the new

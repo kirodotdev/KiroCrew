@@ -190,6 +190,21 @@ def _store_write_time(db: Path) -> float:
     return newest
 
 
+def kiro_cli_store_candidates(platform: str, home: Path) -> tuple[Path, ...]:
+    """Every fixed anchor kiro-cli's own store can live at on ``platform``, in table order.
+
+    One on POSIX and macOS. On Windows the Local anchor (current layout) and then
+    the Roaming one (legacy), between which :func:`selected_store` chooses.
+    """
+
+    plat = Platform(platform) if platform in {"darwin", "win32"} else Platform.POSIX
+    return tuple(
+        home.joinpath(*root.home_relative_dir.split("/")) / AUTH_SQLITE_DB
+        for root in _rows_for_product(Product.KIRO_CLI)
+        if root.platform is plat
+    )
+
+
 def selected_store(
     platform: str,
     home: Path,
@@ -215,12 +230,7 @@ def selected_store(
     is returned as the safe default.
     """
 
-    plat = Platform(platform) if platform in {"darwin", "win32"} else Platform.POSIX
-    candidates = [
-        home.joinpath(*root.home_relative_dir.split("/")) / AUTH_SQLITE_DB
-        for root in _rows_for_product(Product.KIRO_CLI)
-        if root.platform is plat
-    ]
+    candidates = kiro_cli_store_candidates(platform, home)
     if len(candidates) == 1:
         return candidates[0]
     # Windows: table order is Local (current layout) then Roaming (legacy).

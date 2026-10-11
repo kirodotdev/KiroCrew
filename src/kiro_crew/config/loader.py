@@ -690,7 +690,9 @@ def warn_undecodable_env(ep: Path, exc: UnicodeDecodeError) -> None:
     logger.warning("%s", undecodable_env_message(ep, exc))
 
 
-def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
+def read_env_file_credential(
+    key: str, env_file: Path | None = None, *, definitive: list[bool] | None = None
+) -> str:
     """Best-effort read of one ``KEY=VALUE`` entry from the data home's ``.env``.
 
     Same line format :meth:`KiroCrewConfig.load_credentials` parses (one pair
@@ -698,15 +700,29 @@ def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
     Returns ``""`` when the file is absent, unreadable or UTF-16/UTF-32 encoded —
     callers treat the credential as unset rather than failing.
 
+    ``definitive``, when given, receives ONE bool from this same read: True when
+    the file was decoded or does not exist, so an empty answer means the key is
+    not there; False when it could not be read or is UTF-16/UTF-32, so an empty
+    answer proves nothing. Any other decode error propagates, as before, and
+    records nothing.
+
     Blocking file IO: call via ``asyncio.to_thread`` from async paths.
     """
     ep = env_file if env_file is not None else env_path()
     try:
         text = read_env_text(ep)
+    except FileNotFoundError:
+        if definitive is not None:
+            definitive.append(True)
+        return ""
     except OSError:
+        if definitive is not None:
+            definitive.append(False)
         return ""
     except EnvFileWideEncodingError as exc:
         warn_undecodable_env(ep, exc)
+        if definitive is not None:
+            definitive.append(False)
         return ""
     value = ""
     for line in text.splitlines():
@@ -717,6 +733,8 @@ def read_env_file_credential(key: str, env_file: Path | None = None) -> str:
             k, v = line.split("=", 1)
             if k.strip() == key:
                 value = v.strip()
+    if definitive is not None:
+        definitive.append(True)
     return value
 
 

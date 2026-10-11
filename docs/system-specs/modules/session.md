@@ -556,7 +556,31 @@ starts and keeps that account for life, so an out-of-band account switch or
 logout leaves running children answering turns on the previous account. The
 retirement machinery detects and recycles them, in `session_lifecycle.py`
 (`retire_kiro_identity_sessions`) driven by the per-turn gate in
-`chat_runner.py`, against baselines owned by `KiroPrerequisiteService`.
+`chat_runner.py` (`_retire_sessions_on_identity_change`), against baselines
+owned by `KiroPrerequisiteService`. The gate runs before each dashboard chat
+turn acquires its session (`_run_chat`) and before each agent cron run does
+(`_acquire_with_model_fallback` in `slack/gateway.py`, every `agent_sequence`
+step included). A `cron:` key never claims a warm-pool process
+(`bypass_stateless`), so the child that can still hold the previous account is
+the cron's own session: a fire whose sub-agents are still running skips the
+reset in its `finally`, and the next fire of a `persistent_session` job, or of
+the same `agent_sequence` step, reuses that live session. A host where only
+crons run has no dashboard turn to retire it. A cron run is an unattended
+caller (`unattended=True`). An empty live fingerprint is never reconciled and
+its sweep spares nothing. After a sign-out that is wanted, but a store the
+reader cannot identify reads empty on every call, so a cron sweeping on it
+would retire every idle kiro-backed session on every fire, cancelling idle
+parents' `spawn_run` children. The cron's own session survives from one fire to
+the next mostly while its sub-agents are still running, so retiring even that
+one would usually end them.
+So an unattended caller sweeps under an empty fingerprint only when
+`identity_absence_is_definitive` says the read proved nobody is signed in, and
+only until one sweep under that sign-out completes
+(`identity_absence_already_swept`; a read that proves anything else starts a
+new sign-out). After that sweep nothing that held the old account is left. A
+session started since holds no account or brings its own `KIRO_API_KEY` (a
+cron job's `env` block), which no sweep spares, so sweeping again would only
+cancel its sub-agents. Otherwise it touches no session.
 
 **Identity fingerprint** (`current_identity_fingerprint`): one string over
 every credential source a child may have loaded, each kept as its OWN
@@ -575,6 +599,15 @@ found a login no stable claim identifies (a social login), only the key
 component is withheld and the fingerprint is exactly what it was before the key
 was counted, because a child can authenticate from the store rather than the
 key, and a key-only baseline would let a store account switch compare equal.
+With each value the service also records whether that read proved nobody is
+signed in (`identity_absence_is_definitive`): the value is empty, the store's
+answer definitive and from the only store the host can have (every anchor the
+store can live at holds a file or `stat` reports it missing, and at most one holds
+a file: with both Windows stores present the choice rests on write times that may
+not be readable), the API key's `.env` absent or cleanly read, and the Crew vault's
+entry map read with no identity entry, or missing. Every source reports a read
+it could not complete, or a path it may not look at, as empty too, so an empty
+value with any source unread proves nothing.
 A child whose per-session env overlay (`extra_env`, e.g. a cron job's `env`
 block) names `KIRO_API_KEY` is never spawn-stamped and never spared by the
 sweep: the fingerprint reads the gateway's credentials, and that child may have
@@ -1132,10 +1165,15 @@ against sweep completeness, and are torn down at `close_all`.
   neither axis, even after its job is deleted. The RSS recycle, when enabled, or
   a restart still ends it. So does the identity sweep
   (`retire_kiro_identity_sessions`, which reads no list). Before each dashboard
-  chat turn (`_retire_sessions_on_identity_change` in `chat_runner.py`) it
-  retires a kiro-backed one once the live Kiro account is no longer the one it
-  was spawned under, so an account change made outside the dashboard reaches
-  such a session at the next dashboard chat turn. A Kiro sign-out from the
+  chat turn and each agent cron run (`_retire_sessions_on_identity_change` in
+  `chat_runner.py`) it retires a kiro-backed one once the live Kiro account is
+  no longer the one it was spawned under, so an account change made outside the
+  dashboard reaches such a session at the next dashboard chat turn or agent cron
+  run. An agent cron run is the exception when the live fingerprint is empty
+  without proving a sign-out (a social login the reader cannot identify, an
+  unreadable or relocated store): it touches no session, so such a change
+  reaches a listed session at the next dashboard chat turn.
+  A Kiro sign-out from the
   dashboard runs it at once with no live account, which retires every idle
   kiro-backed session, whatever account each signed in with; a busy one is
   flagged and retired later (see "Account-identity retirement").

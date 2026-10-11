@@ -1385,7 +1385,49 @@ def _crew_vault_fingerprint() -> str:
     return vault_identity_fingerprint()
 
 
-def _api_key_identity_claim(environ: Mapping[str, str], env_file: Path) -> str:
+def _store_choice_is_certain(platform_name: str, home: Path) -> bool:
+    """Whether the store the identity read chose is the only kiro-cli store the host can have.
+
+    Every anchor the store can live at must hold a file or be reported missing, and at
+    most one may hold a file. Neither reader of the store's location can tell a missing
+    file from one it may not look at: :func:`identity_fingerprint` counts a store with no
+    file as definitive through ``os.path.lexists``, and on Windows
+    :func:`identity_stores.selected_store` skips an anchor whose ``Path.exists`` is False,
+    which CPython 3.14 answers for a path it may not look at. With both Windows stores
+    present the choice rests on write times, of main files and WAL sidecars that may not
+    be readable, so a read of one proves nothing about the other.
+    """
+    stores = 0
+    for anchor in identity_stores.kiro_cli_store_candidates(platform_name, home):
+        try:
+            os.stat(anchor)
+        except FileNotFoundError:
+            continue
+        except (OSError, ValueError):
+            return False
+        stores += 1
+    return stores <= 1
+
+
+def _crew_vault_holds_no_identity() -> bool:
+    """Whether the Crew vault was read and stores no identity.
+
+    :func:`_crew_vault_fingerprint` reports a vault it cannot read or decrypt as ``""``
+    too, so this asks :meth:`TokenStore.holds_no_identity`, which raises on such a
+    vault instead; a raise proves nothing. Deferred import and blocking file IO for the
+    reasons that function gives.
+    """
+    from kiro_crew.auth.bridge import default_token_store
+
+    try:
+        return default_token_store().holds_no_identity()
+    except Exception:  # noqa: BLE001 - a vault that will not read proves nothing
+        return False
+
+
+def _api_key_identity_claim(
+    environ: Mapping[str, str], env_file: Path, *, definitive: list[bool] | None = None
+) -> str:
     """The hashed identity claim of Kiro CLI's own API-key credential, or ``""``.
 
     A host authenticated by :data:`CRED_KIRO_API_KEY` keeps NOTHING about that
@@ -1401,13 +1443,16 @@ def _api_key_identity_claim(environ: Mapping[str, str], env_file: Path) -> str:
     (:meth:`KiroPrerequisiteService._audited_identity_probe`): the process
     environment first, then the data home's ``.env`` -- where a post-scrub
     Docker entrypoint moves the credential -- so the fingerprint and the
-    readiness probe agree on whether a key exists. Blocking file IO; the caller
-    runs on a worker thread.
+    readiness probe agree on whether a key exists. ``definitive``, when given,
+    receives the ``.env`` read's own answer (see :func:`read_env_file_credential`)
+    when no key is set in the environment, so a caller can tell "no key" from "a
+    ``.env`` that would not read". Blocking file IO; the caller runs on a worker
+    thread.
     """
 
     value = str(environ.get(CRED_KIRO_API_KEY, "") or "").strip()
     if not value:
-        value = read_env_file_credential(CRED_KIRO_API_KEY, env_file)
+        value = read_env_file_credential(CRED_KIRO_API_KEY, env_file, definitive=definitive)
     if not value:
         return _AUTH_FINGERPRINT_ABSENT
     return _claim_digest(value)
@@ -2915,6 +2960,13 @@ class KiroPrerequisiteService:
         # Real-time cache bounding the store reads and their SEL audit events.
         self._identity_cache = _AUTH_FINGERPRINT_ABSENT
         self._identity_cache_at = 0.0
+        # Whether the read behind _identity_cache proved nobody is signed in; see
+        # identity_absence_is_definitive.
+        self._identity_cache_absence_definitive = False
+        # Unbroken runs of proven sign-out reads, numbered from 1, and the run a
+        # complete sweep covered; see identity_absence_already_swept.
+        self._identity_absence_run = 0
+        self._identity_absence_run_swept = 0
         # Whether the relocation refusal has been logged. The relocated arm runs
         # on every identity poll, so the diagnostic logs once per service rather
         # than flooding; see current_identity_fingerprint.
@@ -3452,7 +3504,7 @@ class KiroPrerequisiteService:
         ):
             return self._identity_cache
 
-        def _read() -> str:
+        def _read() -> tuple[str, bool]:
             # Both the relocation guard and the win32 path resolver stat the
             # filesystem, so the whole resolve-and-read runs in this worker
             # thread and stats stay off the event loop.
@@ -3493,24 +3545,106 @@ class KiroPrerequisiteService:
             # fingerprint is exactly what it was before the key was counted: the
             # store and vault components as read (possibly all absent).
             api_key = _AUTH_FINGERPRINT_ABSENT
-            if store_definitive and store_definitive[-1]:
-                api_key = _api_key_identity_claim(self._environ, self._data_home / ".env")
+            store_is_definitive = bool(store_definitive) and store_definitive[-1]
+            key_definitive: list[bool] = []
+            if store_is_definitive:
+                api_key = _api_key_identity_claim(
+                    self._environ, self._data_home / ".env", definitive=key_definitive
+                )
             # The latch judges every component from the combined string (see
             # _identity_components), so only the combined value is returned.
-            return _combine_identity_fingerprints(store, _crew_vault_fingerprint(), api_key)
+            fingerprint = _combine_identity_fingerprints(store, _crew_vault_fingerprint(), api_key)
+            # Each source reports a read it could not complete as "" too, so an
+            # empty value proves a sign-out only when every one of them answered:
+            # the store definitively, as the only store the host can have; the
+            # key's .env in the claim's own read; the vault at all. Checked only on
+            # an empty value, so a signed-in host pays nothing.
+            absence_is_definitive = (
+                not fingerprint
+                and store_is_definitive
+                and _store_choice_is_certain(self._platform, self._home)
+                and bool(key_definitive)
+                and key_definitive[-1]
+                and _crew_vault_holds_no_identity()
+            )
+            return fingerprint, absence_is_definitive
 
         try:
-            fingerprint = await asyncio.to_thread(_read)
+            fingerprint, absence_is_definitive = await asyncio.to_thread(_read)
         except Exception:
             # An unreadable store reports "no identity", matching
             # identity_fingerprint's own contract, rather than "unchanged" --
             # guessing "unchanged" is what keeps a stale account alive.
             logger.warning("Kiro identity fingerprint could not be read", exc_info=True)
-            fingerprint = _AUTH_FINGERPRINT_ABSENT
+            fingerprint, absence_is_definitive = _AUTH_FINGERPRINT_ABSENT, False
         self._maybe_latch_interim_identity(fingerprint)
+        if absence_is_definitive and not self._identity_cache_absence_definitive:
+            # A proven sign-out after any other reading starts a new run; see
+            # identity_absence_already_swept.
+            self._identity_absence_run += 1
         self._identity_cache = fingerprint
+        self._identity_cache_absence_definitive = absence_is_definitive
         self._identity_cache_at = now
         return fingerprint
+
+    @property
+    def identity_absence_is_definitive(self) -> bool:
+        """Whether the last identity read PROVED that no account is signed in.
+
+        An empty fingerprint has two causes this distinguishes. Nobody is signed in:
+        the store holds no credential (or has no file at all), no API key is set in
+        the environment or a cleanly read ``.env``, and the Crew vault answered with no
+        identity. Or the reader cannot tell who is: a social login whose row carries
+        no stable claim, an unreadable or env-relocated store, a store or vault it may
+        not look at, an audit that could not be recorded, a ``.env`` or a vault that
+        would not read. Every source reports those failures as ``""`` as well, so this
+        is True only when each of them answered. It describes the value the last
+        :meth:`current_identity_fingerprint` read returned (cached reads reuse it).
+        A caller with no person behind it reads this to tell a sign-out, after which
+        a child still holding the old credential must be retired, from a store it
+        merely cannot identify, where retiring on every call would recycle
+        healthy sessions forever.
+        """
+
+        return self._identity_cache_absence_definitive
+
+    @property
+    def identity_absence_run(self) -> int:
+        """Which unbroken run of proven sign-out reads the last read belongs to.
+
+        A gate captures it with its read and hands it to :meth:`note_absence_swept`
+        once its sweep completes, so a read that lands while the sweep runs cannot
+        stand in for the one that started it.
+        """
+
+        return self._identity_absence_run
+
+    @property
+    def identity_absence_already_swept(self) -> bool:
+        """Whether a complete sweep already covered the sign-out the last read proved.
+
+        A sign-out is never reconciled (:meth:`note_sessions_reconciled` takes only a
+        real account), so every gate call under it sweeps again. After one complete
+        sweep nothing that held the old account is left. A session started since holds
+        no account, or brings its own ``KIRO_API_KEY`` (a cron job's ``env`` block),
+        which no sweep spares, so sweeping again would only cancel its sub-agents.
+        True while every read since that sweep has proved the same sign-out: any other
+        reading starts a new run.
+        """
+
+        return (
+            self._identity_cache_absence_definitive
+            and self._identity_absence_run == self._identity_absence_run_swept
+        )
+
+    def note_absence_swept(self, run: int) -> None:
+        """Record that a sweep under the proven sign-out *run* completed.
+
+        Runs only grow, so the newest one wins: a slower sweep that started under an
+        older run cannot undo the record of a newer one.
+        """
+
+        self._identity_absence_run_swept = max(self._identity_absence_run_swept, run)
 
     def _maybe_latch_interim_identity(self, fingerprint: str) -> None:
         """Latch when a fresh read observes a DIFFERENT account than the baseline.
