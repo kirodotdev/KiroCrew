@@ -1,9 +1,10 @@
 """Host-resource rows of ``kirocrew doctor``.
 
-Memory-pressure preparedness, the sandbox's tmpfs roots, leftover kiro-cli
-installers, and what the shared agents directory and the workspace root have
-accumulated. Every scan is bounded and read-only: the doctor names what a sweep
-would reclaim and deletes nothing.
+Memory-pressure preparedness, the live ACP runtimes and what their backends cost
+in CPU, the sandbox's tmpfs roots, leftover kiro-cli installers, and what the
+shared agents directory and the workspace root have accumulated. Every scan is
+bounded and read-only: the doctor names what a sweep would reclaim and deletes
+nothing.
 """
 
 from __future__ import annotations
@@ -11,7 +12,10 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
+import time
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any, NamedTuple
 
 from kiro_crew import cli_doctor
 from kiro_crew.doctor_checks import render
@@ -200,6 +204,425 @@ def _doctor_memory_pressure(issues: list[str]) -> None:
     print("               thrashes file-backed pages and the host can livelock before")
     print("               the kernel OOM killer intervenes.")
     print("               Fix: add swap, enable systemd-oomd, or install earlyoom.")
+
+
+# ── ACP runtimes (live count and backend CPU; Linux procfs) ──────────────────
+# A runtime is what one ACP spawn leaves running: the root the gateway recorded
+# in its session registry (a sandbox launcher, or the harness itself when nothing
+# wraps it) and the harness processes under it. Its BACKEND is that root plus
+# every process on a path from it down to a harness process -- the launcher and
+# the ``kiro-cli``/``kiro-cli-chat`` pair -- and nothing else. Tool commands and
+# MCP servers hang below the harness and are left out, so a session running a
+# build is not mistaken for a spinning backend.
+
+#: Seconds between the census's two CPU reads. CPU time is a cumulative tick
+#: count, so one read is not a rate; across one second a clock tick (1/100 s on a
+#: typical host) is about one percent of a core, the same floor the process
+#: view's rate sampler holds for the same reason.
+_ACP_CPU_WINDOW_SECS = 1.0
+
+#: Share of one core at or above which a runtime's backend reads as hot. A
+#: backend waiting between turns costs close to nothing and one streaming a turn
+#: a few percent, while the runaway this row is for held about a third of a core
+#: per launcher with no turn in flight, so a quarter of a core sits clear of both.
+_ACP_HOT_CPU_PCT = 25.0
+
+#: Most hot runtimes, and most unowned pids, the section names one by one.
+_ACP_LISTED = 5
+
+#: Most processes the census reads from the host's process table, and most one
+#: runtime's tree walk keeps. The two bound different populations (the whole
+#: host, one runtime's descendants). Every field either structure retains is a
+#: fixed-width number the kernel wrote -- ``comm`` is never read -- so the count
+#: is what bounds them, and past either cap the overflow is counted and the
+#: section says so rather than reading as a smaller host.
+_ACP_TABLE_CAP = 65_536
+_ACP_TREE_CAP = 4096
+
+_PROC_ROOT = Path("/proc")
+
+
+class _AcpRuntime(NamedTuple):
+    """One live runtime as the census found it.
+
+    ``owner`` is ``gateway`` (the running gateway recorded it, or spawned it and
+    is still its ancestor), ``other`` (another live process recorded it and is
+    still its ancestor -- a ``kirocrew chat`` records its own runtime under its
+    own pid), ``stale`` (whoever recorded it is not its ancestor, so it is gone
+    or the runtime was orphaned), ``untracked`` (this install spawned it, no
+    registry names it and the running gateway is not its ancestor) or
+    ``unknown`` (the gateway lock could not say which gateway is running).
+    ``cpu_pct`` is the backend's share of one core over the window, ``None`` when
+    no rate could be taken.
+    """
+
+    root: int
+    owner: str
+    cpu_pct: float | None
+    age_secs: float | None
+
+
+class _AcpCensus(NamedTuple):
+    """A finished census and what its caps left unread.
+
+    ``unread`` counts processes past :data:`_ACP_TABLE_CAP` in the host table;
+    ``capped_trees`` counts runtimes whose tree held more than
+    :data:`_ACP_TREE_CAP` processes and ``capped_procs`` the processes those
+    walks refused. Any of them non-zero is printed, so a truncated read never
+    passes for a complete one.
+    """
+
+    runtimes: list[_AcpRuntime]
+    unread: int = 0
+    capped_trees: int = 0
+    capped_procs: int = 0
+
+
+def _proc_table(proc_root: Path) -> tuple[dict[int, Any], int] | None:
+    """``({pid: ProcStat}, unread)`` for the processes with a readable parent and start.
+
+    At most :data:`_ACP_TABLE_CAP` entries are kept; ``unread`` counts the pids
+    past it. ``None`` when the process table cannot be listed at all, which the
+    section reports as a skipped check rather than as a host with no runtimes.
+    """
+    try:
+        # In pid order, so a capped read and every child list it builds are the
+        # same on each run rather than whatever order the directory listed.
+        pids = sorted(int(entry.name) for entry in proc_root.iterdir() if entry.name.isdigit())
+    except OSError:
+        return None
+    table: dict[int, Any] = {}
+    unread = 0
+    for pid in pids:
+        if len(table) >= _ACP_TABLE_CAP:
+            unread += 1
+            continue
+        stat = cli_doctor.platform_compat.read_proc_stat(pid, proc_root=proc_root)
+        if stat is not None and stat.ppid is not None and stat.start_ticks is not None:
+            table[pid] = stat
+    return table, unread
+
+
+def _subtree(root: int, children: Mapping[int, list[int]]) -> tuple[dict[int, int], int]:
+    """``({pid: parent}, refused)`` for *root*'s tree, *root* mapped to 0.
+
+    The cap is checked at every insertion, so the map never holds more than
+    :data:`_ACP_TREE_CAP` entries; ``refused`` counts the descendants it turned
+    away, and none of them is walked further.
+    """
+    parents = {root: 0}
+    refused = 0
+    frontier = [root]
+    while frontier:
+        reached: list[int] = []
+        for pid in frontier:
+            for child in children.get(pid, ()):
+                if child in parents:
+                    continue
+                if len(parents) >= _ACP_TREE_CAP:
+                    refused += 1
+                    continue
+                parents[child] = pid
+                reached.append(child)
+        frontier = reached
+    return parents, refused
+
+
+def _reaches(pid: int, targets: set[int], table: Mapping[int, Any]) -> bool:
+    """Whether *pid* or one of its ancestors in *table* is in *targets*.
+
+    Walks parent edges, so a process a capped tree walk refused is still found
+    inside the runtime it belongs to.
+    """
+    seen: set[int] = set()
+    cursor = pid
+    while cursor > 1 and cursor not in seen:
+        if cursor in targets:
+            return True
+        seen.add(cursor)
+        stat = table.get(cursor)
+        if stat is None:
+            return False
+        cursor = stat.ppid
+    return False
+
+
+def _backend_chain(tree: Mapping[int, int], harness: set[int], root: int) -> set[int]:
+    """*root* plus each path from it down through wrappers into a run of harnesses.
+
+    A path qualifies when its non-harness processes all sit ABOVE its first
+    harness: the launcher above ``kiro-cli`` above ``kiro-cli-chat``. A
+    ``kiro-cli`` that a tool command runs below the harness is the tool's, and
+    pulling it in would bring the tool command's CPU with it.
+    """
+    chain = {root}
+    for pid in tree:
+        if pid not in harness or pid in chain:
+            continue
+        path = [pid]
+        while path[-1] != root:
+            path.append(tree[path[-1]])
+        in_harness = False
+        for node in reversed(path):
+            if node in harness:
+                in_harness = True
+            elif in_harness:
+                break
+        else:
+            chain.update(path)
+    return chain
+
+
+def _acp_runtime_census(
+    *,
+    tracked: Mapping[int, tuple[int, str | None]],
+    tracked_pids: set[int],
+    gateway_pid: int | None,
+    ownership_known: bool,
+    own_home: str,
+    proc_root: Path = _PROC_ROOT,
+    window_secs: float = _ACP_CPU_WINDOW_SECS,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Callable[[], float] = time.monotonic,
+    clk_tck: int | None = None,
+    age_of: Callable[[int], float | None] | None = None,
+) -> _AcpCensus | None:
+    """Every live ACP runtime on this host, with its backend's CPU over a window.
+
+    Read-only, and only ``/proc``: two reads of each backend's ``stat``, one
+    ``cmdline`` per process to recognise a harness, and the environment of a
+    harness no registry root covers, to learn whether this install spawned it.
+
+    *tracked* is the session registry (see
+    :func:`kiro_crew.session_pid.tracked_session_roots`). A recorded root is
+    counted only while a process with that pid AND the recorded start identity is
+    alive, so a recycled pid is never reported as a runtime.
+
+    A harness outside every recorded root is counted only when the reaper's own
+    report calls it untracked (:func:`kiro_crew.session_pid.
+    _is_untracked_managed_agent_orphan`, against *tracked_pids*, both pid files)
+    AND it names this data home -- the pairing the leaked-runtime reclaim makes,
+    because the reaper's predicate is uid-wide and a pod or a second install on
+    this account is not ours to report. One that still hangs off the running
+    gateway is that gateway's, whatever the registry says. Harness recognition is
+    the reaper's :func:`~kiro_crew.session_pid._cmdline_names_a_harness`.
+
+    ``None`` when the process table cannot be listed.
+    """
+    sp = cli_doctor.session_pid
+    first_at = clock()
+    read = _proc_table(proc_root)
+    if read is None:
+        return None
+    first, unread = read
+    children: dict[int, list[int]] = {}
+    for pid, stat in first.items():
+        children.setdefault(stat.ppid, []).append(pid)
+    harness = {pid for pid in first if sp._cmdline_names_a_harness(sp._pid_cmdline(pid, proc_root))}
+
+    found: list[tuple[int, str, set[int]]] = []
+    claimed: set[int] = set()
+    capped_trees = capped_procs = 0
+
+    def _claim(root: int, owner: str) -> None:
+        nonlocal capped_trees, capped_procs
+        tree, refused = _subtree(root, children)
+        if refused:
+            capped_trees += 1
+            capped_procs += refused
+        claimed.update(tree)
+        found.append((root, owner, _backend_chain(tree, harness, root)))
+
+    for root, (recorder, token) in sorted(tracked.items()):
+        stat = first.get(root)
+        if stat is None or _reaches(root, claimed, first):
+            continue
+        if token is not None and token != str(stat.start_ticks):
+            continue  # the recorded runtime is gone and its pid was handed on
+        if not ownership_known:
+            _claim(root, "unknown")
+        elif recorder == gateway_pid:
+            _claim(root, "gateway")
+        else:
+            # A recorder that is still an ancestor is alive and still holds the
+            # runtime; asking the tree rather than whether the pid exists also
+            # keeps a recycled recorder pid from reading as an owner.
+            _claim(root, "other" if _reaches(root, {recorder}, first) else "stale")
+    for pid in sorted(harness):
+        if first[pid].ppid in harness or _reaches(pid, claimed, first):
+            continue  # not the top of a harness chain, or inside a counted runtime
+        if not sp._is_untracked_managed_agent_orphan(
+            pid, sp._pid_cmdline(pid, proc_root), tracked_pids
+        ):
+            continue
+        if sp._env_spawn_home(pid, proc_root) != own_home:
+            continue
+        root = pid
+        parent = first[pid].ppid
+        if parent in first and sp._SANDBOX_LAUNCHER_MARKER in sp._pid_cmdline(parent, proc_root):
+            root = parent  # its own sandbox launcher is part of its backend
+        if not ownership_known:
+            owner = "unknown"
+        elif gateway_pid is not None and _reaches(root, {gateway_pid}, first):
+            owner = "gateway"
+        else:
+            owner = "untracked"
+        _claim(root, owner)
+
+    if clk_tck is None:
+        try:
+            clk_tck = int(os.sysconf("SC_CLK_TCK"))
+        except (AttributeError, OSError, ValueError):
+            clk_tck = 0
+    if age_of is None:
+        age_of = cli_doctor.platform_compat.process_age_secs
+    sleep(max(0.0, window_secs - (clock() - first_at)))
+    elapsed = clock() - first_at
+    runtimes: list[_AcpRuntime] = []
+    for root, owner, chain in found:
+        cpu_pct: float | None = None
+        if clk_tck > 0 and elapsed > 0:
+            ticks = 0
+            for pid in chain:
+                before = first[pid]
+                after = cli_doctor.platform_compat.read_proc_stat(pid, proc_root=proc_root)
+                if after is None or after.start_ticks != before.start_ticks:
+                    continue  # exited or replaced inside the window: no delta to take
+                if after.cpu_ticks is None or before.cpu_ticks is None:
+                    continue
+                ticks += max(0, after.cpu_ticks - before.cpu_ticks)
+            cpu_pct = 100.0 * ticks / clk_tck / elapsed
+        runtimes.append(_AcpRuntime(root, owner, cpu_pct, age_of(first[root].start_ticks)))
+    return _AcpCensus(runtimes, unread, capped_trees, capped_procs)
+
+
+def _acp_runtime_lines(census: _AcpCensus, window_secs: float) -> list[str]:
+    """The section's rows for a finished census. Pure, so every shape is testable.
+
+    Names processes by pid, share of a core and age only: a command line can
+    carry a token, so none is ever printed.
+    """
+    runtimes = census.runtimes
+    caps = _acp_cap_lines(census)
+    if not runtimes:
+        return ["  runtimes:    ✅ none running", *caps]
+    owned = sum(1 for r in runtimes if r.owner == "gateway")
+    other = sum(1 for r in runtimes if r.owner == "other")
+    unowned = [r for r in runtimes if r.owner in ("stale", "untracked")]
+    unknown = sum(1 for r in runtimes if r.owner == "unknown")
+    parts = []
+    if owned:
+        parts.append(f"{owned} owned by the running gateway")
+    if other:
+        parts.append(f"{other} owned by another live process (a kirocrew chat)")
+    if unowned:
+        parts.append(f"{len(unowned)} no running gateway owns")
+    if unknown:
+        parts.append(f"{unknown} whose owner is unknown (the gateway lock probe could not answer)")
+    lines = [f"  runtimes:    {len(runtimes)} alive: " + ", ".join(parts)]
+
+    rated = [r for r in runtimes if r.cpu_pct is not None]
+    if not rated:
+        lines.append("  cpu:         ⏹ could not take a rate (no clock tick rate on this host)")
+    else:
+        total = sum(r.cpu_pct or 0.0 for r in rated)
+        hot = sorted(
+            (r for r in rated if (r.cpu_pct or 0.0) >= _ACP_HOT_CPU_PCT),
+            key=lambda r: r.cpu_pct or 0.0,
+            reverse=True,
+        )
+        overall = f"all {len(rated)} backends: {total:.0f}% of a core over {window_secs:.1f}s"
+        if not hot:
+            lines.append(
+                f"  cpu:         ✅ none at or above {_ACP_HOT_CPU_PCT:.0f}% of a core ({overall})"
+            )
+        else:
+            lines.append(
+                f"  cpu:         ⚠️  {len(hot)} at or above {_ACP_HOT_CPU_PCT:.0f}% of a core "
+                f"({overall})"
+            )
+            for runtime in hot[:_ACP_LISTED]:
+                age = "" if runtime.age_secs is None else f", up {runtime.age_secs / 3600:.1f}h"
+                whose = {
+                    "gateway": "owned by the running gateway",
+                    "other": "owned by another live process",
+                    "unknown": "owner unknown",
+                }.get(runtime.owner, "no running gateway owns it")
+                lines.append(
+                    f"               pid {runtime.root}: {runtime.cpu_pct or 0.0:.0f}%{age}, {whose}"
+                )
+            if len(hot) > _ACP_LISTED:
+                lines.append(f"               … and {len(hot) - _ACP_LISTED} more")
+            lines.append("               A backend waiting between turns costs almost nothing,")
+            lines.append("               so one this busy is working a turn or spinning. Doctor")
+            lines.append("               cannot see which: check the session before ending it.")
+    if unowned:
+        pids = ", ".join(str(r.root) for r in unowned[:_ACP_LISTED])
+        more = f" and {len(unowned) - _ACP_LISTED} more" if len(unowned) > _ACP_LISTED else ""
+        lines.append(
+            f"  no owner:    ⚠️  {len(unowned)} no running gateway owns, so no turn can be "
+            "in flight on them"
+        )
+        lines.append(f"               pids {pids}{more}")
+    return lines + caps
+
+
+def _acp_cap_lines(census: _AcpCensus) -> list[str]:
+    """The rows that say a cap cut the read short, empty when nothing was cut."""
+    lines = []
+    if census.unread:
+        lines.append(
+            f"  read cap:    ⚠️  {census.unread} processes past the first {_ACP_TABLE_CAP} were "
+            "not read; a runtime among them is not counted"
+        )
+    if census.capped_trees:
+        lines.append(
+            f"  tree cap:    ⚠️  {census.capped_trees} runtime(s) hold more than {_ACP_TREE_CAP} "
+            f"processes; {census.capped_procs} past the cap were not walked"
+        )
+    return lines
+
+
+def _doctor_acp_runtimes(issues: list[str]) -> None:
+    """How many ACP runtimes are alive, who owns them, and what their backends cost.
+
+    A runtime that outlives its session can keep a core busy with nothing to show
+    for it, and enough of them take the whole host down; this row names them in
+    the ordinary health pass instead of leaving them to a raw ``ps``.
+
+    Advisory only (never appended to ``issues``), and every failure degrades to a
+    line saying the check was skipped: an unreadable process table is a fact
+    about where doctor ran, not a fault in the install. Linux-only, because the
+    census reads procfs.
+    """
+    del issues  # advisory-only diagnostic; keeps the call-site signature uniform
+    print("\nACP Runtimes")
+    if not sys.platform.startswith("linux"):
+        print(f"  runtimes:    ⏹ not measured ({sys.platform} — the census reads Linux procfs)")
+        return
+    try:
+        tracked = cli_doctor.session_pid.tracked_session_roots()
+        if tracked is None:
+            print("  runtimes:    ⚠️  could not read the session registry — check skipped")
+            return
+        gateway_pid = cli_doctor._read_gateway_pid()
+        census = _acp_runtime_census(
+            tracked=tracked,
+            tracked_pids=cli_doctor.session_pid._tracked_agent_pids(),
+            gateway_pid=gateway_pid,
+            ownership_known=gateway_pid is not None or not _gateway_lock_indeterminate(),
+            own_home=str(cli_doctor.data_home()),
+            proc_root=_PROC_ROOT,
+            window_secs=_ACP_CPU_WINDOW_SECS,
+        )
+    except Exception:
+        print("  runtimes:    ⚠️  could not take the census (probe failed) — check skipped")
+        return
+    if census is None:
+        print("  runtimes:    ⚠️  could not read the process table — check skipped")
+        return
+    for line in _acp_runtime_lines(census, _ACP_CPU_WINDOW_SECS):
+        print(line)
 
 
 # ── Runtime tmpfs headroom (sandbox mount-source roots) ──────────────────────

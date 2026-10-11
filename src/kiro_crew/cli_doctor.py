@@ -61,6 +61,7 @@ from kiro_crew import (  # noqa: F401
     diagnostics,
     platform_compat,
     sandbox,
+    session_pid,
     stdlib_shadow,
     stt,
     user_json,
@@ -2095,6 +2096,9 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
 
     # ── Memory pressure preparedness (swap / userspace OOM killer) ──
     resources._doctor_memory_pressure(issues)
+
+    # ── ACP runtimes: live count, owner and backend CPU (advisory; Linux) ──
+    resources._doctor_acp_runtimes(issues)
 
     # ── Runtime tmpfs headroom (sandbox mount-source roots; Linux only) ──
     resources._doctor_runtime_tmpfs(issues)

@@ -4637,6 +4637,42 @@ def tracked_agent_pid_owners() -> dict[int, int]:
     return owners
 
 
+def tracked_session_roots() -> dict[int, tuple[int, str | None]] | None:
+    """``{runtime root pid: (gateway pid, recorded start token)}`` -- READ ONLY.
+
+    The runtime roots ``kiro_session_pids.txt`` records: one per runtime a gateway
+    spawned, with the gateway that wrote the entry and the start identity it
+    recorded (``None`` for an entry written without one). A diagnostic accessor
+    for the doctor's runtime census, so that report does not re-spell this file
+    format. Like :func:`tracked_agent_pid_owners` it neither writes, locks,
+    signals nor reports completeness, and no reaper consults it; a malformed line
+    is skipped.
+
+    ``None`` when the file exists and cannot be read, so a report can say the
+    ownership is unknown rather than call every runtime untracked. A missing file
+    is an empty registry.
+    """
+    try:
+        raw = _read_pid_file_text(_session_pid_file_path())
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return None
+    roots: dict[int, tuple[int, str | None]] = {}
+    for line in raw.split():
+        fields = line.split(":")
+        if len(fields) not in (2, 3):
+            continue
+        try:
+            gateway, pid = int(fields[0]), int(fields[1])
+        except ValueError:
+            continue
+        if gateway > 0 and pid > 0:
+            token = (fields[2] or None) if len(fields) == 3 else None
+            roots.setdefault(pid, (gateway, token))
+    return roots
+
+
 def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: set[int]) -> bool:
     """REPORT-ONLY: a managed agent runtime that no reaper can reach.
 
