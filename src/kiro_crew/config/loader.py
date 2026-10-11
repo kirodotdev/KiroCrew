@@ -4905,6 +4905,10 @@ class ConfigDocument:
     adoptable: list[SupersededDefault] = field(default_factory=list)
     #: The 0.6.x-or-older writer stamp when the legacy ``skills.lazy_load`` rewrite is due.
     legacy_lazy_stamp: str | None = None
+    #: True when this read parsed the files, False on a cache hit or an in-memory
+    #: document. The build's advisory warnings fire only on a disk read, as
+    #: validation's do, so a cached load does not repeat them.
+    disk_read: bool = False
 
 
 def read_config_document() -> ConfigDocument:
@@ -5204,6 +5208,7 @@ def read_config_document() -> ConfigDocument:
         overlay=local_data,
         adoptable=adoptable,
         legacy_lazy_stamp=legacy_lazy_stamp,
+        disk_read=True,
     )
 
 
@@ -5651,6 +5656,10 @@ def build_config(
     # could drift from them. Same base-not-merged view as _extra_sections
     # above, for the same reason.
     cfg._extra_keys = _resolution.capture_extra_section_keys(capture_view, cfg)
+    if doc.disk_read:
+        # The MERGED view, unlike the capture: a misspelling in either file has
+        # no effect, so either one is worth naming.
+        _resolution.warn_misspelled_section_keys(data, cfg)
 
     cfg._base_unreadable = doc.base_unreadable
     return cfg

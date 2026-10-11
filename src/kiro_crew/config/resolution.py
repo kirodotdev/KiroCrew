@@ -7,6 +7,7 @@ validation modules.
 
 from __future__ import annotations
 
+import difflib
 import logging
 from dataclasses import fields, is_dataclass
 from pathlib import Path
@@ -201,6 +202,74 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
     captured key only if the emitted section lacks it, so a stale copy can never
     clobber a live value.
     """
+    captured = _collect_extra_section_keys(data, cfg)
+    for section, unknown in captured.items():
+        if section in _RECORD_MAP_SECTIONS:
+            logger.debug(
+                "config: preserving unmodelled %s record key(s) on round-trip: %s",
+                section,
+                ", ".join(f"{n}.{k}" for n, ks in sorted(unknown.items()) for k in ks),
+            )
+        else:
+            logger.debug(
+                "config: preserving unmodelled %s key(s) on round-trip: %s",
+                section,
+                ", ".join(sorted(unknown)),
+            )
+    return captured
+
+
+#: How close an unrecognized key must be to a real field of its section to be
+#: reported as a likely misspelling (``difflib`` ratio).
+_MISSPELLING_CUTOFF = 0.8
+
+
+def warn_misspelled_section_keys(data: dict, cfg: object) -> None:
+    """Warn about an unrecognized key that looks like a misspelled field.
+
+    A key inside a modelled section that no field reads is kept in the file
+    (:func:`capture_extra_section_keys`) and has no effect. When it is close to a
+    real field of the same section (``agent.subagent_timeout_sec`` beside
+    ``subagent_timeout_secs``) it is almost certainly a typo, and the setting the
+    operator meant keeps its default with nothing saying so. One WARNING names
+    every such key with the field it resembles.
+
+    A key with no close field stays at the capture's DEBUG line: a config file can
+    carry keys an older build wrote that this build does not model, and warning
+    about those would report Kiro Crew's own bookkeeping as an operator mistake.
+    """
+    hints: list[str] = []
+    for section, unknown in sorted(_collect_extra_section_keys(data, cfg).items()):
+        owner = getattr(cfg, section, None)
+        if section in _RECORD_MAP_SECTIONS:
+            for name, keys in sorted(unknown.items()):
+                record = owner.get(name) if isinstance(owner, dict) else None
+                hints.extend(_misspelling_hints(f"{section}.{name}", keys, record))
+        else:
+            hints.extend(_misspelling_hints(section, unknown, owner))
+    if hints:
+        logger.warning(
+            "Config: unrecognized keys inside known sections, kept in the file but "
+            "not in effect: %s",
+            "; ".join(hints),
+        )
+
+
+def _misspelling_hints(prefix: str, keys: dict, obj: object) -> list[str]:
+    """``<prefix>.<key> (did you mean <prefix>.<field>?)`` for each key close to a field."""
+    if obj is None or not is_dataclass(obj):
+        return []
+    names = [f.name for f in fields(obj) if not f.name.startswith("_")]
+    hints: list[str] = []
+    for key in sorted(keys):
+        match = difflib.get_close_matches(key, names, n=1, cutoff=_MISSPELLING_CUTOFF)
+        if match:
+            hints.append(f"{prefix}.{key} (did you mean {prefix}.{match[0]}?)")
+    return hints
+
+
+def _collect_extra_section_keys(data: dict, cfg: object) -> dict:
+    """The unknown keys :func:`capture_extra_section_keys` returns, without logging."""
     captured: dict = {}
     for section, raw in data.items():
         if section not in _KNOWN_CONFIG_SECTIONS or not isinstance(raw, dict):
@@ -223,11 +292,6 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
                 if unknown:
                     per_record[name] = unknown
             if per_record:
-                logger.debug(
-                    "config: preserving unmodelled %s record key(s) on round-trip: %s",
-                    section,
-                    ", ".join(f"{n}.{k}" for n, ks in sorted(per_record.items()) for k in ks),
-                )
                 captured[section] = per_record
             continue
 
@@ -235,11 +299,6 @@ def capture_extra_section_keys(data: dict, cfg: object) -> dict:
             continue
         unknown = _unknown_keys_of(raw, section_obj, extra)
         if unknown:
-            logger.debug(
-                "config: preserving unmodelled %s key(s) on round-trip: %s",
-                section,
-                ", ".join(sorted(unknown)),
-            )
             captured[section] = unknown
     return captured
 
