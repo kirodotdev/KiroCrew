@@ -65,8 +65,9 @@ from kiro_crew.dashboard.chat_utils import (
     slot_transcript_key,
 )
 from kiro_crew.dashboard.slot_buffers import (
-    committed_filtered_note_ids,
-    drop_committed_restored_notes,
+    MAX_FORK_PARENT_KEY_CHARS,
+    bounded_transcript_created_at,
+    restore_deferred_note_hold,
     sanitize_restored_deferred_notes,
 )
 from kiro_crew.dashboard.slot_queue_repository import (
@@ -869,9 +870,28 @@ def _read_memory_mode(r: _Read) -> None:
         r.state._restricted_keys.discard(restricted)
 
 
+def _restore_fork_lineage(slot: _ChatSlot, meta: dict) -> None:
+    """Restore a bounded fork parent key and its transcript identity.
+
+    ``forked_from_created_at`` is that transcript's ``created_at``: a merge back
+    checks a chat on the parent's key against it.
+    """
+    forked_from = meta.get("forked_from")
+    if not isinstance(forked_from, str) or not forked_from:
+        if "forked_from" in meta:
+            logger.warning("Discarding invalid persisted forked_from: %r", forked_from)
+        return
+    if len(forked_from) > MAX_FORK_PARENT_KEY_CHARS:
+        logger.warning(
+            "Discarding invalid persisted forked_from of %d characters", len(forked_from)
+        )
+        return
+    slot.forked_from = forked_from
+    slot.forked_from_created_at = bounded_transcript_created_at(meta.get("forked_from_created_at"))
+
+
 def _read_forked_from(r: _Read) -> None:
-    if r.meta.get("forked_from") is not None:
-        r.slot.forked_from = r.meta["forked_from"]
+    _restore_fork_lineage(r.slot, r.meta)
 
 
 def _read_linked_session_key(r: _Read) -> None:
@@ -1290,12 +1310,12 @@ FIELDS: tuple[Field, ...] = (
     ),
     Field(
         "deferred_notes",
-        _STARTUP,
+        _ALL,
         attr="_deferred_notes",
         line=lambda s, f: f.deferred_notes or OMIT,
         merge=lambda s, f: f.deferred_notes,
         read=_read_deferred_notes,
-        why="RESUME does not replay the held notes (#17025); a later save keeps them on disk",
+        why="settled after the loaded window so committed merge-card context is restored once",
     ),
     Field(
         "queued_prompts",
@@ -1325,6 +1345,14 @@ FIELDS: tuple[Field, ...] = (
         line=lambda s, f: s.forked_from if s.forked_from is not None else OMIT,
         merge=lambda s, f: s.forked_from if s.forked_from is not None else OMIT,
         read=_read_forked_from,
+    ),
+    Field(
+        "forked_from_created_at",
+        _ALL,
+        attr="forked_from_created_at",
+        line=_truthy(lambda s: s.forked_from_created_at if s.forked_from is not None else ""),
+        merge=_truthy(lambda s: s.forked_from_created_at if s.forked_from is not None else ""),
+        why="validated and restored with forked_from by its leading row",
     ),
     # Nothing re-creates a channel slot's binding on restart (no injection
     # re-fires), so without it the slot comes back unbound, as a dashboard-only
@@ -1434,6 +1462,7 @@ LINE_ORDER: tuple[str, ...] = (
     "deferred_notes",
     "queued_prompts",
     "forked_from",
+    "forked_from_created_at",
     "linked_session_key",
     "channel_origin",
     "tab_id",
@@ -1472,6 +1501,7 @@ MERGE_ORDER: tuple[str, ...] = (
     "linked_session_key",
     "channel_origin",
     "forked_from",
+    "forked_from_created_at",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
     "executor",
@@ -1569,11 +1599,14 @@ class AppliedMeta:
         in that order. Returns whether a local-turn marker was present.
         """
         slot = self.slot
-        if self.purpose.purpose in _STARTUP and self.restored_notes and persisted is not None:
-            pending = slot._deferred_notes
-            slot._deferred_notes = drop_committed_restored_notes(persisted, pending)
-            slot._dropped_note_ids.update(
-                committed_filtered_note_ids(pending, slot._deferred_notes)
+        if self.restored_notes and persisted is not None:
+            transcript_key = (
+                self.purpose.history_key
+                if isinstance(self.purpose, (Recent, Resume))
+                else slot_transcript_key(self.purpose.name)
+            )
+            restore_deferred_note_hold(
+                slot, self.meta.get("deferred_notes"), persisted, transcript_key
             )
         from kiro_crew.dashboard import chat_persistence as cp  # circular import
 

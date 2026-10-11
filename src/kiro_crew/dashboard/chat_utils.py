@@ -933,15 +933,22 @@ def effective_session_key(slot: _ChatSlot) -> str:
     return session_key_for(slot.key, getattr(slot, "linked_session_key", "") or "")
 
 
+def transcripts_share_file(first_key: str, second_key: str) -> bool:
+    """Whether two transcript keys, in any spelling, name one ``.jsonl`` file.
+
+    ``slack:<ts>``, its filename stem ``slack_<ts>`` and the bare legacy
+    ``<ts>`` all address one channel transcript, so comparing the raw strings
+    mistakes one file for two.
+    """
+    return bool(set(transcript_stems(first_key)) & set(transcript_stems(second_key)))
+
+
 def replacement_shares_transcript(state: DashboardState, name: str, slot: _ChatSlot) -> bool:
     """Whether a different slot at *name* writes *slot*'s transcript file."""
     current = state._slots.get(name)
     if current is None or current is slot:
         return False
-    return bool(
-        set(transcript_stems(slot_history_key(current)))
-        & set(transcript_stems(slot_history_key(slot)))
-    )
+    return transcripts_share_file(slot_history_key(current), slot_history_key(slot))
 
 
 @dataclass(frozen=True)

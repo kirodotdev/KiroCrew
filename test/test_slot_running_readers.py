@@ -137,7 +137,6 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_detail.py", "api_chat_slot_detail"),
                 ("chat_handlers.py", "api_chat_slot_interrupt"),
                 ("chat_handlers.py", "api_chat_slot_model"),
-                ("chat_handlers.py", "api_chat_slot_note"),
                 ("chat_handlers.py", "api_chat_slot_reasoning_effort"),
                 ("chat_api/slot_lifecycle.py", "api_chat_slot_reset_conversation"),
                 ("chat_api/resume.py", "api_chat_slot_resume"),
@@ -145,7 +144,11 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/slot_lifecycle.py", "api_chat_slots_cleanup"),
                 ("chat_handlers.py", "api_chat_slots_model"),
                 ("chat_handlers.py", "continue_slot_turn"),
+                ("chat_handlers.py", "deliver_note"),
                 ("chat_handlers.py", "stop_slot_turn"),
+                # Merge-back sends its card to the parent slot that is working,
+                # because that slot's turn owns the transcript's tail.
+                ("chat_merge_back.py", "_live_parent"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.

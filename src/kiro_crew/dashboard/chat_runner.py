@@ -280,10 +280,24 @@ from kiro_crew.dashboard.chat_turn.tool_approval import (  # noqa: F401
     _spec_keys_notice,
 )
 from kiro_crew.dashboard.chat_turn.turn_context import (  # noqa: F401
+    TurnContext,
+    _consumed_merge_contexts,
     _detach_appended_context,
+    _drain_pending_frames,
     _folder_steering_turn,
+    _join_context_frames,
+    _merge_card_identity,
+    _merge_card_row_committed,
     _read_and_tighten_turn_execution,
+    _record_consumed_merge_contexts,
+    _restore_consumed_merge_contexts,
+    _retire_merge_cards_with_live_rows,
+    _same_merge_card,
+    _session_card_holders,
+    adopt_alias_note_context,
     drain_pending_context,
+    resolve_turn_transcript_identity,
+    take_turn_context,
 )
 from kiro_crew.dashboard.chat_turn.turn_marker import (  # noqa: F401
     _LOCAL_TURN_OPENER_ROLES,
@@ -343,6 +357,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slot_history_key,
     tighten_live_slot_memory_mode,
     tighten_replacement_to_restricted_original,
+    transcripts_share_file,
     user_text_span,
     with_bounded_redaction_records,
 )
@@ -380,6 +395,8 @@ from kiro_crew.dashboard.session_directive_apply import (  # noqa: F401
 )
 from kiro_crew.dashboard.slot_queue_repository import RESTORED_QUEUE_KEY
 from kiro_crew.dashboard.state import (  # noqa: F401
+    _MAX_CONTEXT_PER_SOURCE,
+    _MAX_PENDING_CONTEXT,
     _MAX_SLOT_MESSAGES,
     _TURN_CONTINUING_INJECT_KINDS,
     CRON_NOTIFY_PREFIX,
@@ -9228,14 +9245,15 @@ async def _run_chat(
             directive_user_origin=_directive_user_origin,
             directive_channel_origin=_directive_channel_origin,
         )
-        if content == message and _turn_is_completion:
+        _replays_this_turn = content in (message, _message_without_merge_cards)
+        if _replays_this_turn and _turn_is_completion:
             # A verbatim requeue still replays the completion; runner-written
             # text queued after it (a continuation, a retry prompt) does not.
             for _entry in slot._queue:
                 if _entry.get("id") == _recovery_qid:
                     _entry[_REPLAYS_COMPLETION_KEY] = True
                     break
-        if _is_refusal_retry_turn and index == 0 and content == message:
+        if _is_refusal_retry_turn and index == 0 and _replays_this_turn:
             # A verbatim requeue of the refusal retry's own message REPLACES
             # the consumed replay, whichever recovery family issued it: carry
             # the retry identity and fresh stop snapshots onto the new entry.
@@ -9281,10 +9299,14 @@ async def _run_chat(
         )
 
     def _requeue_owed_completion() -> None:
-        """Queue this turn's owed completion again, as a completion."""
+        """Queue this turn's owed completion again, as a completion.
+
+        Without its merge-card frames: the finally puts the cards' contexts back
+        on the queue and the replay turn drains them.
+        """
         _queue_recovery(
             0,
-            message,
+            _message_without_merge_cards,
             kind=SUBAGENT_COMPLETION_KIND,
             extra_meta=(
                 _current_message.get("meta")
@@ -9483,7 +9505,9 @@ async def _run_chat(
     # cold-starts a fresh conversation — while keeping the session-map entry,
     # whose Slack thread/channel linkage must survive the recovery. Set only
     # by the consecutive pre-stream-exhaustion branch or the typed
-    # unsupported-history-image recovery in the AcpError handler below.
+    # unsupported-history-image recovery in the AcpError handler below. A
+    # discarded conversation cannot hold this turn's prompt, so drained merge
+    # cards return for the fresh one (``_native_session_lacks_the_prompt``).
     needs_conversation_discard = False
     _auth_required = False
     saw_compaction = False
@@ -9607,6 +9631,103 @@ async def _run_chat(
     # EVENT_COMPLETE, but config / memory-prep / stop-before-stream paths exit to
     # teardown before that, so it must be bound up front.
     _stop_reason = ""
+    # Merge-card context is retired once the prompt carrying it has reached the
+    # model's native session and stays there (``_merge_cards_reached_the_model``
+    # below); every other exit returns it to the draining slot from the outer
+    # finally below.
+    _drained_merge_contexts: list[dict[str, Any]] = []
+    _merge_contexts_completed = False
+    # Whether this turn lands, decided after the stream; bound here so the
+    # finally reads a defined value on every exit, including one that never
+    # reached the decision.
+    _turn_lands = False
+    # Whether the session the next turn runs on still holds this turn's prompt
+    # is DERIVED (``_native_session_lacks_the_prompt`` below) from the reset
+    # and discard flags and the terminal, never set by a recovery arm: a new
+    # exit that resets the session gets the merge-card answer for free.
+
+    def _kiro_cli_kept_the_prompt() -> bool:
+        """Whether kiro-cli kept the prompt this turn sent, so its native session holds it.
+
+        The one definition of the rule the first-turn history settle in the
+        finally applies (``_first_turn_history_delivered``, whose comment there
+        gives the premise and the exclusions) and the merge-card retirement
+        reads through ``_merge_cards_reached_the_model``.
+        """
+        return (
+            (
+                _stop_reason == STOP_REASON_END_TURN
+                and not _terminal_synthetic
+                and not _had_empty_response_verdict
+            )
+            or (
+                _turn_emitted
+                and _stop_reason != STOP_REASON_CANCELLED
+                and not _had_empty_response_verdict
+            )
+            or (_recovering_compaction and _compaction_completed)
+        )
+
+    def _native_session_lacks_the_prompt() -> bool:
+        """Whether the native session the next turn runs on does NOT hold this turn's prompt.
+
+        kiro-cli appends a prompt to its log only once the model has answered
+        it (``replay.py``'s ``build_interrupted_turn_preamble`` states the
+        contract), so a conversation reloaded or replaced mid-answer lacks the
+        prompt even when output had streamed. That is the case when the native
+        conversation is discarded, when the session is reset before the model
+        reached a real ``end_turn`` (the first clause of
+        ``_kiro_cli_kept_the_prompt``), or when the stream ended with the
+        retryable ``failed`` stop class, the ``error:`` family whose runtime
+        the next claim replaces without any reset flag. A reset AFTER a real
+        ``end_turn`` (an agent switch recorded once the answer landed) keeps
+        the prompt: the reloaded session holds it. Derived here, from facts the
+        turn already records, so no recovery arm has to remember the card rule.
+        Read by ``_merge_cards_reached_the_model`` only.
+        """
+        model_finished_answering = (
+            _stop_reason == STOP_REASON_END_TURN
+            and not _terminal_synthetic
+            and not _had_empty_response_verdict
+        )
+        runtime_died_under_the_turn = classify_stop_reason(_stop_reason).retryable
+        return (
+            needs_conversation_discard
+            or (needs_session_reset and not model_finished_answering)
+            or runtime_died_under_the_turn
+        )
+
+    def _merge_cards_reached_the_model() -> bool:
+        """Whether the prompt carrying this turn's merge-card frames stays in the native session.
+
+        The frames went out inside the prompt, so the question is whether
+        kiro-cli kept it (``_kiro_cli_kept_the_prompt``), landed or not, and
+        whether the session the next turn runs on still holds it
+        (``_native_session_lacks_the_prompt``). An exit that kept the prompt
+        on a session that stays in place (a promise-only turn, a leaked tool
+        call, a capacity retry or a backend error after output streamed, a
+        completed compaction) must not restore its cards: that would prepend
+        the same frame to a session that already holds it. An exit that did
+        not keep it (a Stop, an empty-response re-queue), or whose reset,
+        discard or runtime death leaves the next session without it, restores
+        them, so the recovery turn's bare requeue carries the frame once more.
+        ``_turn_lands`` is read as well: a landed turn whose retirement proof
+        read was cancelled (a Stop pressed during
+        ``_record_consumed_merge_contexts``) reaches the finally as cancelled,
+        yet its prompt was answered and kept. A reset or discard before a real
+        ``end_turn`` wins over landing: a vetoed agent switch on a pinned member
+        thread breaks the stream mid-answer with no terminal, so the turn lands
+        while the finally's reset kills a runtime that may still be answering,
+        and the reloaded session may lack the prompt. The card is delivered
+        again rather than lost.
+        """
+        return (
+            _turn_lands or _kiro_cli_kept_the_prompt()
+        ) and not _native_session_lacks_the_prompt()
+
+    # What a verbatim replay of this turn re-queues: the message without the
+    # merge-card frames the drain below prepends (``TurnContext.prefix_without_cards``).
+    _message_without_merge_cards = message
     # Replay settlement also lives in ``finally``. Bind at turn scope because
     # config, binding and session-start failures can reach teardown before the
     # acquisition block determines whether replay is pending.
@@ -11235,8 +11356,15 @@ async def _run_chat(
             # mirror — avoids leaking injected context to the linked thread.
             _user_msg_for_mirror = message
             # Drain pending context injections (silent background context
-            # from apps/subagents).  Expired entries are discarded.
-            _ctx_prefix = drain_pending_context(slot)
+            # from apps/subagents).  Expired entries are discarded. A merge card
+            # queued on another slot of this session is this turn's as well; the
+            # transcript identity that admits it is read off the loop first.
+            _turn_identity = await resolve_turn_transcript_identity(state, slot)
+            _turn_context = take_turn_context(state, slot, transcript_identity=_turn_identity)
+            _ctx_prefix = _turn_context.prefix
+            _drained_merge_contexts = _turn_context.consumed
+            slot._inflight_merge_contexts = _drained_merge_contexts
+            _message_without_merge_cards = _turn_context.prefix_without_cards + message
             if _ctx_prefix:
                 message = _ctx_prefix + message
             # Use resolved kiro agent name (e.g. "kirocrew"), not the slot
@@ -15288,6 +15416,12 @@ async def _run_chat(
                         "msg msg-info",
                     )
                     needs_session_reset = True
+                    # The stream is broken off below with no terminal, so this
+                    # turn lands, yet the reset kills a runtime that may still
+                    # be mid-answer and the reloaded session may lack the
+                    # prompt: a drained merge card goes back to the queue
+                    # (``_merge_cards_reached_the_model`` lets a reset before a
+                    # real ``end_turn`` win over landing).
                     # The vetoed turn DID produce visible output (the notice
                     # above) — and more importantly, tool calls completed
                     # BEFORE the switch event may have had real side effects.
@@ -15959,6 +16093,12 @@ async def _run_chat(
         # which surfaces the stuck sessions this cannot recover.
         if _stop_reason == STOP_REASON_STALE_RECOVER:
             needs_session_reset = True  # checked in finally block (reset + resume)
+            # Either kiro-cli acked the probe's cancel (a cancelled prompt it
+            # discards, as on a Stop) or it never did and the reset kills the
+            # wedged runtime mid-answer: the model did not answer this prompt,
+            # so the resumed native session lacks it and a drained merge card
+            # goes back to the queue (``_native_session_lacks_the_prompt``
+            # derives that from the reset and this terminal).
 
             def _emit_stale(msg: str, *, will_retry: bool = False) -> None:
                 slot.append(
@@ -16078,6 +16218,9 @@ async def _run_chat(
         # backend hiccup the very next attempt would clear.
         if _stop_reason == STOP_REASON_COMPACTION_FAILED:
             needs_session_reset = True  # checked in finally block
+            # The reset under a synthetic completion also returns a drained
+            # merge card to the queue: the model never answered this prompt,
+            # so the resumed session lacks it (``_native_session_lacks_the_prompt``).
             if (
                 # Attribute, not a stop-reason variant: the reason is the ACP
                 # layer's to classify, and both client classes record it.
@@ -16125,7 +16268,7 @@ async def _run_chat(
                 # replay already sits between this queue and the retry.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, so ORIGINAL only when the incoming text
                     # was the user's own — on a recovery turn it is the
@@ -16155,6 +16298,10 @@ async def _run_chat(
         if _stop_class.name == STOP_CLASS_FAILED and _stop_class.retryable:
             _rc = getattr(client, "exit_code", None)
             _rc_suffix = f" (exit {_rc})" if _rc is not None else ""
+            # The process died mid-answer, so kiro-cli never wrote this prompt
+            # to its log and the respawned session is loaded without it: a
+            # drained merge card goes back to the queue, requeued or not
+            # (``_native_session_lacks_the_prompt`` reads this stop class).
 
             def _emit_error(msg: str, *, will_retry: bool = False) -> None:
                 slot.append(
@@ -16185,7 +16332,7 @@ async def _run_chat(
                 else:
                     runtime_death.note_shared_death(slot.key)
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     cause=ResetCause.CONNECTION_LOST,
                     message_is_synthetic=_is_synthetic,
@@ -16598,9 +16745,12 @@ async def _run_chat(
                 # turn-complete report is still True would drop that callback
                 # and strand a durable producer after the replay succeeds.
                 await _report_consumed(False)
+                # Without this turn's merge-card frames: _retrying_empty keeps
+                # the turn from landing, so the finally puts those contexts back
+                # and the replay turn drains them itself.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay: ORIGINAL only if the incoming text was the
                     # user's. On a recovery turn it is the runner's continuation.
@@ -17260,6 +17410,17 @@ async def _run_chat(
                 "Any raw `<invoke>` text above is that leak, not a reply.",
                 "msg msg-info",
             )
+        # Whether this turn lands. The save below retires the merge cards the
+        # turn consumed and the success record after it counts the turn; both
+        # read this one answer, so they cannot disagree.
+        _turn_lands = (
+            _stop_reason != STOP_REASON_CANCELLED
+            and not _retrying_empty
+            and not _recovering_promise
+            and not _recovering_compaction
+            and not _noticed_leak
+            and not _recovering_infra
+        )
         # On an empty-response re-queue the turn produced nothing and will
         # immediately re-run; skip persistence entirely so we don't save a
         # spurious empty turn or skew reliability metrics.
@@ -17304,6 +17465,14 @@ async def _run_chat(
             # finally's shutdown check must still see the marker to preserve it.
             if _stop_reason != STOP_REASON_CANCELLED:
                 _retire_local_turn_marker(slot, _local_turn_marker_generation)
+            # A consumed merge-card hold retires in this write once its prompt
+            # reached the model, landed or not (``_merge_cards_reached_the_model``);
+            # otherwise a restart, or the next turn's drain, replays context the
+            # native session already holds.
+            if _merge_cards_reached_the_model():
+                await _record_consumed_merge_contexts(state, _drained_merge_contexts)
+                _merge_contexts_completed = True
+                slot._inflight_merge_contexts = []
             # Save to history and trigger memory consolidation
             await save_slot_off_loop(state, slot)
         # Reset ALL retry budgets once the cycle completes (success OR the
@@ -17441,14 +17610,7 @@ async def _run_chat(
         state.sessions.check_context_usage(session_key, client)
         pct = client.context_usage_pct()
         state.broadcast_context_usage(slot.key, _context_usage_payload(slot.key, client))
-        if (
-            _stop_reason != STOP_REASON_CANCELLED
-            and not _retrying_empty
-            and not _recovering_promise
-            and not _recovering_compaction
-            and not _noticed_leak
-            and not _recovering_infra
-        ):
+        if _turn_lands:
             # An unacted turn (promise-only, or a tool call leaked as text) is
             # deliberately NOT recorded as a landed success: it announced or
             # serialized work it never did, so counting it would tell the
@@ -17805,7 +17967,7 @@ async def _run_chat(
         # turn decides whether it produced an exact replacement row.
         await _requeue_auth_retry(
             slot,
-            message,
+            _message_without_merge_cards,
             _synthetic_recovery_turn=_synthetic_recovery_turn,
             _synthetic_payload=_synthetic_payload,
             _turn_actor=_turn_actor,
@@ -17815,6 +17977,11 @@ async def _run_chat(
         )
         _auth_required = True
         needs_session_reset = True
+        # Raised after output streamed only as the translation of a runtime
+        # death (``session_provider._translate_dead``), so the post-login retry
+        # ``session/load``s a log without this prompt and replays the message
+        # without its card frames: the reset returns the drained cards to the
+        # queue (``_native_session_lacks_the_prompt``).
         await _persist_partial_reply("error: auth required")
         _auth_msg = str(exc)
         # Stamped with a kind (live broadcast `kind`, rebuilt transcript
@@ -17833,6 +18000,10 @@ async def _run_chat(
         # here is what keeps `turn/failed` from reporting an unnamed failure.
         _crew_log_error = type(exc).__name__
         needs_session_reset = True
+        # The process died mid-answer, so kiro-cli never wrote this prompt to
+        # its log and the ``session/load`` the next claim runs lacks it: the
+        # reset returns a drained merge card to the queue whether or not a
+        # recovery is queued below (``_native_session_lacks_the_prompt``).
         if getattr(exc, "ambiguous_delivery", False) is True:
             # Every steer written into this turn sits in the same stalled pipe as
             # its prompt, so the teardown requeues each as possibly delivered.
@@ -17877,7 +18048,7 @@ async def _run_chat(
             _retry_msg = "⟳ Connection lost — retrying…"
             slot.append("error", _retry_msg, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
             _requeue_text, _requeue_payload = build_recovery_requeue(
-                message,
+                _message_without_merge_cards,
                 _turn_emitted,
                 cause=ResetCause.CONNECTION_LOST,
                 message_is_synthetic=_is_synthetic,
@@ -17917,7 +18088,7 @@ async def _run_chat(
         slot._prompt_busy_retries += 1
         await _requeue_after_prompt_busy(
             slot,
-            message,
+            _message_without_merge_cards,
             _prompt_depth=_prompt_depth,
             _turn_emitted=_turn_emitted,
             _is_synthetic=_is_synthetic,
@@ -17981,6 +18152,12 @@ async def _run_chat(
             # verdict is the correct one and stays unchanged.
             _own_fault = True
             if _is_pipe_death:
+                # The pipe death that arrives as a plain AcpError is the same
+                # mid-answer death the typed arm handles: the reloaded native
+                # session lacks this prompt, so the reset returns a drained
+                # merge card to the queue (``_native_session_lacks_the_prompt``).
+                # A busy session refused the prompt before any output, so there
+                # the restore follows from nothing having streamed.
                 # Same attribution question as the AcpProcessDied handler below,
                 # and the same answer: this arm catches the pipe-death that
                 # arrives as an AcpError instead of a typed one, so a shared
@@ -18035,7 +18212,7 @@ async def _run_chat(
                 )
                 slot.append("error", _status, "msg msg-err", meta={"kind": TRANSIENT_RETRY_KIND})
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     # Shared branch: `_status` above already told the user
                     # which of the two happened, so the continuation must
@@ -18075,6 +18252,9 @@ async def _run_chat(
                 slot.key,
             )
             needs_session_reset = True  # checked in finally block
+            # The backend holds no session under this id, so nothing it reloads
+            # holds this prompt: the reset returns a drained merge card to the
+            # queue (``_native_session_lacks_the_prompt``).
             await _persist_partial_reply("error: session not found")
             # A Stop that already resolved to idle is invisible to the suppress
             # check; the replay snapshots below are post-Stop, so only this gate
@@ -18090,7 +18270,7 @@ async def _run_chat(
                     meta={"kind": TRANSIENT_RETRY_KIND},
                 )
                 _requeue_text, _requeue_payload = build_recovery_requeue(
-                    message,
+                    _message_without_merge_cards,
                     _turn_emitted,
                     cause=ResetCause.CONNECTION_LOST,
                     message_is_synthetic=_is_synthetic,
@@ -18161,7 +18341,9 @@ async def _run_chat(
             else:
                 # No model activity landed, so the current text is safe to
                 # replay verbatim after removing the poisoned native history.
-                _image_recovery_text = message
+                # Without its merge-card frames: the finally puts the cards'
+                # contexts back on the queue and the replay turn drains them.
+                _image_recovery_text = _message_without_merge_cards
                 _image_recovery_payload = payload_for_replay(_is_synthetic)
             slot.append(
                 "error",
@@ -18348,7 +18530,7 @@ async def _run_chat(
                 else:
                     _queue_recovery(
                         0,
-                        message,
+                        _message_without_merge_cards,
                         kind=SYNTHETIC_RECOVERY_KIND,
                         # Verbatim replay: ORIGINAL only if the incoming text was
                         # the user's. On a recovery turn it is the runner's
@@ -18458,7 +18640,7 @@ async def _run_chat(
                 # long-running jobs most likely to hit throttle fallback.
                 _queue_recovery(
                     0,
-                    message,
+                    _message_without_merge_cards,
                     kind=SYNTHETIC_RECOVERY_KIND,
                     # Verbatim replay, same rule as the same-model retry above.
                     payload=payload_for_replay(_is_synthetic),
@@ -18838,7 +19020,7 @@ async def _run_chat(
                                     _ma_replay_extra = None
                                 _ma_replay_qid = _queue_recovery(
                                     0,
-                                    message,
+                                    _message_without_merge_cards,
                                     kind=SYNTHETIC_RECOVERY_KIND,
                                     # Verbatim replay, same rule as the
                                     # transient/throttle retries.
@@ -19035,7 +19217,7 @@ async def _run_chat(
                 # The verbatim requeue carries the retry identity forward via
                 # _queue_recovery itself (one mechanism for every recovery
                 # family), so this site needs no site-local re-stamp.
-                _queue_recovery(0, message, kind=SYNTHETIC_RECOVERY_KIND)
+                _queue_recovery(0, _message_without_merge_cards, kind=SYNTHETIC_RECOVERY_KIND)
                 # Fresh conversation ⇒ fresh ladder for the recovery cycle.
                 slot._transient_5xx_retries = 0
                 slot._infra_retries = 0
@@ -19249,6 +19431,28 @@ async def _run_chat(
         if not (isinstance(exc, MemoryStartupUnavailable) and not _memory_preparation_admitted):
             await state.sessions.record_failure(session_key)
     finally:
+        if _drained_merge_contexts and not _merge_contexts_completed:
+            if not _merge_cards_reached_the_model():
+                # The prompt never went out, kiro-cli did not keep it (a Stop,
+                # an empty-response re-queue), or the session the next turn
+                # runs on does not hold it: reset before the model finished
+                # answering, discarded, or replaced after a runtime death
+                # (``_native_session_lacks_the_prompt``). The next turn
+                # re-sends it.
+                _restore_consumed_merge_contexts(slot, _drained_merge_contexts)
+            else:
+                # The prompt was kept and the session the next turn runs on
+                # still holds it, but the turn left before the landing
+                # write (a backend error or an exception after output
+                # streamed), or a landed turn was cancelled inside its
+                # retirement proof read. Nothing goes back on the queue. A card
+                # whose row a live window holds retires here; a row-less card
+                # keeps its durable hold, because its proof is a read off the
+                # loop and this finally awaits nothing ahead of the lock
+                # handback and the outcome record below (a cancel landing in
+                # such an await would skip them). A restart re-delivers it.
+                _retire_merge_cards_with_live_rows(state, _drained_merge_contexts)
+        slot._inflight_merge_contexts = []
         # First: hand back the session-switch lock if this turn exited between
         # its acquire and its post-registration release. Before anything that
         # can await, and before the refusal-fallback restore below takes the
@@ -19522,19 +19726,7 @@ async def _run_chat(
         # (``not _turn_emitted``: a pre-stream 5xx re-queue, a bare early return)
         # never streamed, so the history did NOT reach the provider and the debt
         # correctly stays armed for the re-queue to rebuild.
-        _first_turn_history_delivered = (
-            (
-                _stop_reason == STOP_REASON_END_TURN
-                and not _terminal_synthetic
-                and not _had_empty_response_verdict
-            )
-            or (
-                _turn_emitted
-                and _stop_reason != STOP_REASON_CANCELLED
-                and not _had_empty_response_verdict
-            )
-            or (_recovering_compaction and _compaction_completed)
-        )
+        _first_turn_history_delivered = _kiro_cli_kept_the_prompt()
         if _first_turn_history_assembled and _first_turn_history_delivered:
             try:
                 state.sessions.consume_first_turn_history_owed(session_key)

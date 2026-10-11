@@ -1941,6 +1941,10 @@ _NON_DURABLE_SOURCE_LINK_ROLES = frozenset({"chunk", "done", "streaming", "queue
 # An arrival over this is refused, not admitted by evicting a seated entry
 # the caller already holds a 200 for.
 _MAX_PENDING_CONTEXT = 50
+# Live entries one source may hold in that queue. Shared by the /context and
+# /note admission checks and by the turn that takes its session's note
+# context from another slot, so one prompt is bounded as one queue is.
+_MAX_CONTEXT_PER_SOURCE = 10
 
 
 def context_entry_expired(entry: dict, now: float) -> bool:
@@ -2997,6 +3001,7 @@ class _ChatSlot:
         "_pending_memory_mode",
         "_ephemeral",
         "_pending_context",
+        "_inflight_merge_contexts",
         "_deferred_notes",
         "_dropped_note_ids",
         "_app",
@@ -3005,6 +3010,7 @@ class _ChatSlot:
         "_pending_variants",
         "_lock",
         "forked_from",
+        "forked_from_created_at",
         "_fork_lock",
         "_model_pick_lock",
         "_tab_id",
@@ -3921,11 +3927,11 @@ class _ChatSlot:
         self._pending_memory_mode: str | None = None
         self._ephemeral: bool = ephemeral  # Incognito mode: no memory writes
         self._pending_context: list[dict[str, Any]] = []
+        self._inflight_merge_contexts: list[dict[str, Any]] = []
         self._deferred_notes: list[dict[str, Any]] = []
-        # Note ids dropped at the flush's rebind seam. A dropped
-        # note has no delivery obligation left, but its durable entry may only
-        # be retired by a save — the ids recorded here are how the next full
-        # save knows to retire entries whose rows will never exist.
+        # Note ids whose remaining delivery obligation ended without a row-based
+        # retirement: rebind drops and drained merge-card contexts. The next full
+        # save removes their durable hold entries.
         self._dropped_note_ids: set[str] = set()
         self._app: str = ""  # App identity tag (App Kit §5.2)
         # FIX 1 (unattended approval park). Evidence that a HUMAN has driven
@@ -3955,6 +3961,9 @@ class _ChatSlot:
         self._pending_variants: list[dict] = []
         self._lock = asyncio.Lock()
         self.forked_from: str | None = None  # parent slot key if this is a fork
+        # The parent transcript's created_at when forked: a chat later created
+        # on the parent's key after a permanent delete has another.
+        self.forked_from_created_at: str = ""
         self._fork_lock: asyncio.Lock = asyncio.Lock()  # serialises concurrent forks on this slot
         # Serialises explicit model-pick transactions (check → mutate → live
         # switch → rollback) on this slot: picks interleaving at the set_model
@@ -5133,10 +5142,11 @@ class _ChatSlot:
     def has_pending_context_seat(self) -> bool:
         """True if one more entry fits the queue's seat ceiling.
 
-        Counts live entries plus each held note's context half, because the
-        deferred-note flush promotes that half into this same queue -- without the
-        reservation a later arrival takes the seat the flush needs and the note's
-        context is lost after its 200.
+        Counts live entries, each held note's context half, and each merge-card
+        context a running turn has taken (``_inflight_merge_contexts``), because the
+        deferred-note flush promotes that half into this same queue and a turn that
+        does not land puts its merge cards back at the front -- without the
+        reservation a later arrival takes a seat one of them needs.
         """
         now = time.time()
         seats = sum(1 for e in self._pending_context if not context_entry_expired(e, now))
@@ -5144,6 +5154,9 @@ class _ChatSlot:
             ctx = note.get("context")
             if isinstance(ctx, dict) and not context_entry_expired(ctx, now):
                 seats += 1
+        seats += sum(
+            1 for entry in self._inflight_merge_contexts if not context_entry_expired(entry, now)
+        )
         return seats + 1 <= _MAX_PENDING_CONTEXT
 
     def append_pending_context(self, entry: dict[str, Any]) -> bool:

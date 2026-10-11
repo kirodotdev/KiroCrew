@@ -27,8 +27,9 @@ that way is still a read, and review is what catches it.
 The pins kept, each with the reason no turn can stand in for it in its test's
 docstring: the module-wide absence of a bare ``question_card`` emitter, the
 bounded steer never re-wrapped at a call site, the clear arm's start-row reset (an
-equivalent mutant), the runner's import boundary, and every approval-mark site
-flagging the slot dirty.
+equivalent mutant), the runner's import boundary, every approval-mark site
+flagging the slot dirty, and every verbatim recovery replay re-queuing the turn's
+message without its merge cards.
 """
 
 from __future__ import annotations
@@ -59,6 +60,8 @@ BUDGET: dict[str, int] = {
     "test/test_file_change_snapshots.py": 1,  # the clear arm's start-row reset
     "test/test_native_question_card_lifecycle.py": 1,  # no bare question_card emitter
     "test/test_orphaned_approval_card.py": 1,  # every mark site flags the slot dirty
+    # A kept call-site pin outside the turn-harness files; its reason is in its docstring.
+    "test/test_chat_runner_coverage.py": 1,  # every verbatim replay drops the merge cards
     # Other scopes' reads, frozen as measured; each may only fall.
     "src/kiro_crew/apps/builtins/spec_builder/tests/test_routes.py": 1,
     "test/metrics/test_context_trace.py": 2,
