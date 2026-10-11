@@ -1090,12 +1090,12 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     directory-revision memo, while the directory is unchanged: every KAS
     session start otherwise hardened-reads every spec in the directory to
     find one. That keeps the freshness contract above, because the revision
-    is a ``stat`` of the directory and of every spec entry in it, taken
-    before and after the read -- an edit changes it, and a directory
-    containing a symlinked spec, or one written inside the racy window, is
-    never memoized (:func:`kiro_crew.agent_discovery.agents_dir_revision`,
-    which also refuses a spec entry whose kind cannot be read and a directory
-    past its entry cap). The answer handed
+    is a ``stat`` of every spec entry in the directory, plus a digest of the
+    bytes of any entry written inside the racy window, taken before and after
+    the read -- an edit changes it, and a directory containing a symlinked
+    spec is never memoized (:func:`kiro_crew.agent_discovery.agents_dir_revision`,
+    which also refuses a spec entry whose kind cannot be read and a young
+    entry it cannot hash). The answer handed
     back is a deep copy, so it is still a parse the caller owns and a caller's
     mutation cannot reach a later session. The fallback read below is one file
     and is not memoized.
