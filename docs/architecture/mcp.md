@@ -1223,10 +1223,11 @@ after launch therefore has no target the daemon can resolve, so closing that hal
 needs a channel for a target the daemon was not started with.
 
 One host is the exception, and for it the scope must NOT be applied. KAS projects
-the agent spec itself from `paths.kiro_agents_dir()` alone
-(`acp/kas_agents.load_agent_spec`), refusing a project-only agent at session start
-rather than projecting it, so the user-level agent IS the one a KAS session runs
-even when the checkout declares that name. Scoping its lookup would collapse the
+the agent spec itself (`acp/harness/kas.resolve_projected_spec`), nearest-first, but
+a checkout's spec never supplies a server there: a name the user level declares
+resolves to the user-level spec, and a project-only agent gets no servers, so the user-level servers
+ARE the ones a KAS session runs even when the checkout declares that name. Scoping
+its lookup would collapse the
 stub set to empty, the projection would declare the user-level servers
 un-subtracted, and they would run outside the broker while the operator has the
 gateway switched on -- the governance loss inverted. Membership lives in

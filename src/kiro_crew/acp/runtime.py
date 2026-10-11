@@ -70,7 +70,7 @@ from kiro_crew.acp.harness import (
 )
 from kiro_crew.acp.harness.kas import PROTOCOL_VERSION_KAS
 from kiro_crew.acp.harness.kiro import KIRO_CLI_SUBCMD, PROTOCOL_VERSION
-from kiro_crew.acp.kas_agents import hoist_managed_servers, load_agent_spec
+from kiro_crew.acp.kas_agents import hoist_managed_servers
 from kiro_crew.acp.kas_host_auth import HostAuthCallbackError
 from kiro_crew.acp.kas_transport import (
     KAS_AUTH_CALLBACK_ERROR_CODE,
@@ -6307,10 +6307,9 @@ class AcpRuntime:
         an explicit false for such a spec rather than being left to the host's
         default. The spec judged is the one the KAS projection will PUT ON THE
         WIRE at session/new -- the freshness gate's snapshot for a derived agent,
-        else the user-level file ``load_agent_spec`` reads -- never a project
-        checkout's ``.kiro/agents`` spec, which that projection does not consult:
-        a project spec granting the loader while the projected user-level spec
-        does not would otherwise turn deferral on for a session with no loader.
+        else the spec ``resolve_projected_spec`` resolves nearest-first, the same
+        call the projection makes: a spec judged here that differed from the one
+        projected would turn deferral on for a session with no loader.
         An unreadable spec grants nothing (fail closed: ``enabled: false``).
         """
         base = self._harness.client_capabilities
@@ -6337,9 +6336,9 @@ class AcpRuntime:
         branch reads NOTHING: the freshness gate that ran in ``_resolve_spawn_plan``
         already verified those bytes, and a second read here would be a second
         observation of a file a revocation could land in between. Every other
-        agent is read the way ``KasHarness.session_extras`` reads it, from the
-        user-level agents directory, so the two cannot disagree about which spec
-        a session runs.
+        agent is resolved the way ``KasHarness.session_extras`` resolves it,
+        through ``resolve_projected_spec``, so the two cannot disagree about which
+        spec a session runs.
         """
         snapshot = self._derived_spec_snapshot
         spec = getattr(snapshot, "spec", None)
@@ -6351,8 +6350,13 @@ class AcpRuntime:
         # decide "no loader" for the process while the projection, a moment later,
         # materializes a spec that grants one.
         ensure_agent_materialized(self._agent)
+        # Deferred: the harness module imports this package's types at its own top level.
+        from kiro_crew.acp.harness.kas import resolve_projected_spec
+
         try:
-            return load_agent_spec(kiro_agents_dir(), self._agent)
+            return resolve_projected_spec(
+                kiro_agents_dir(), self._agent, getattr(self, "_work_dir", None)
+            )[0]
         except Exception:
             logger.warning(
                 "agent %r: spec unreadable at spawn; MCP Tool Search stays off for this process",

@@ -838,13 +838,13 @@ def project_agent_files(
     Returns the kiro-cli-native ``<project>/.kiro/agents/*.json`` and the markdown
     ``*.md`` form beside it — the only project location the backends resolve
     ``--agent`` against, and therefore the only one whose names are dispatchable.
-    Dispatchable by the kiro-cli backend, which reads the checkout itself: the
-    KAS projection (:func:`kiro_crew.acp.kas_agents.load_agent_spec`) reads the
-    user-level directory only, for either form, so a project-only agent selected
-    on a KAS session is refused at session start there. Whether a checkout's
-    spec may be projected at all is a governance question (a checkout can
-    shadow a managed agent), not a question of which form is scanned, and the
-    two forms are treated alike here.
+    Dispatchable by the kiro-cli backend, which reads the checkout itself, and by
+    the KAS projection (:func:`kiro_crew.acp.harness.kas.resolve_projected_spec`),
+    which projects a project-only agent's prompt and visible tools and nothing it
+    could grant, and reads the user-level spec for a name both levels declare.
+    Whether a checkout's spec may be projected at all is a governance question (a
+    checkout can shadow a managed agent), not a question of which form is
+    scanned, and the two forms are treated alike here.
 
     *include_legacy* additionally returns ``<project>/.kiro/*.agent-spec.json``, Kiro
     Crew's own older convention. It defaults to ``False`` because every dispatch

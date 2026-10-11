@@ -1500,26 +1500,27 @@ ACP_BACKENDS_ACP_CLIENT_SPAWNABLE = frozenset(
 # because none of them reads ``~/.kiro/agents`` at all.
 ACP_BACKENDS_MARKDOWN_AGENT_SPECS = frozenset({ACP_BACKEND_KAS})
 
-# Backends whose agent spec comes from the USER-LEVEL directory alone, so a
-# checkout's same-named spec is not the agent their session is running.
+# Backends whose agent's MCP SERVERS come from the USER-LEVEL spec alone, so a
+# checkout's same-named spec never puts a server of its own in their session.
 #
-# Every other host resolves the nearer layer too: kiro-cli reads
+# Every other host takes the nearer layer's servers too: kiro-cli reads
 # ``<project>/.kiro/agents/`` itself for ``--agent``, and a MIRRORED host receives
 # the array ``acp/session_mcp.py`` translates, which is project-nearest-first. KAS
-# is the exception -- ``acp/kas_agents.load_agent_spec`` is handed
-# ``paths.kiro_agents_dir()`` and reads nothing else, which
-# ``agent_discovery.project_agent_files`` already states, so a project-only agent
-# selected on a KAS session is refused at session start rather than projected.
+# resolves the agent nearest-first as well (``acp.harness.kas.resolve_projected_spec``),
+# but a checkout's spec there never supplies a server: a project-only agent gets
+# its prompt and visible tools and no servers, and a name the user level declares
+# keeps the user-level spec, because a server is a command and a cloned repository
+# is untrusted input.
 #
 # What membership decides is the SCOPE of the broker-overlay lookup
 # (``mcp_gateway.session_servers``). That overlay is keyed by agent name and is
 # also written from the user-level directory, so for every OTHER host a
 # checkout-declared name means the overlay holds no stubs for this session. For a
-# member the reverse holds: the user-level agent IS the one running, so scoping
+# member the reverse holds: the user-level servers ARE the ones running, so scoping
 # its lookup would suppress the stubs for servers the session really has and run
 # them outside the pool, outside caller-identity attribution and outside broker
 # governance. Read through the runtime's own scope helper, never as "is KAS": a
-# host added later that reads the user level alone joins here.
+# host added later whose servers come from the user level alone joins here.
 ACP_BACKENDS_USER_LEVEL_AGENT_SPECS_ONLY = frozenset({ACP_BACKEND_KAS})
 
 
@@ -1561,7 +1562,7 @@ def overlay_project_scope(backend: str, work_dir: Any) -> dict[str, Any]:
 
     :data:`ACP_BACKENDS_MARKDOWN_AGENT_SPECS` -- a host reading the markdown form
     from a checkout itself -- is deliberately NOT OR-ed in: its only member also
-    reads the user level alone and leaves above, so the term would have no caller
+    takes its servers from the user level alone and leaves above, so the term would have no caller
     able to reach it. ``test_agent_sdk_capabilities`` pins that containment, so a
     host which breaks it fails there naming this function.
 
