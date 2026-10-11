@@ -97,6 +97,7 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
   switch (backend.id) {
     case ACP_BACKEND_KIRO: return i18nT('pages.developer.agentBackendTab.kiro_cli')
     case 'claude': return i18nT('pages.developer.agentBackendTab.claude_code')
+    case 'qoder': return i18nT('pages.developer.agentBackendTab.qoder')
     case ACP_BACKEND_KAS: return i18nT('pages.developer.agentBackendTab.kas_kiro_agent')
     case 'codex': return i18nT('pages.developer.agentBackendTab.codex')
     case 'copilot': return i18nT('pages.developer.agentBackendTab.copilot')

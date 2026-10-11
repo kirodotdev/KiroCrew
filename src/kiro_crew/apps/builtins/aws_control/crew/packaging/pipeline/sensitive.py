@@ -53,6 +53,7 @@ _SENSITIVE_RELATIVE_DIRS = (
     ".netrc",
     ".npmrc",
     ".pi/agent/auth.json",
+    ".qoder/.auth",
     ".pypirc",
     ".ssh",
 )

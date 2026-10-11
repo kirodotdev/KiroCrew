@@ -89,7 +89,7 @@ vocabulary.
 |---|---|
 | `ACP_BACKENDS_SESSION_SHARING` | One process may serve several sessions. Wrong membership hands a second session to a process that cannot hold it. |
 | `ACP_BACKENDS_SERIAL_SESSION_STARTS` | Diagnostic only: the harness starts sessions one at a time, so a slow start is attributed as "queued behind" an earlier one rather than as a stall. Membership is measured, and only kiro-cli is a member. It changes no scheduling. |
-| `ACP_BACKENDS_INDEPENDENT_SETUP` | First-run setup may finish without Kiro CLI: the setup picker offers "Use other coding agents", the dashboard bypass applies, and a durable marker records the choice. A new adapter opts in only after its install and its sandbox path are verified. KAS is excluded. |
+| `ACP_BACKENDS_INDEPENDENT_SETUP` | First-run setup may finish without Kiro CLI: the setup picker offers "Use other coding agents", the dashboard bypass applies, and a durable marker records the choice. A new adapter opts in only after its install and its sandbox path are verified. KAS is excluded. Qoder is in: it launches and signs in through its own binary, measured end to end with no Kiro CLI involved. |
 | `ACP_BACKENDS_STEER` | The `_session/steer` extension. A steer sent to a non-implementer answers `-32601`. Also the deny-notice gate (`supports_refusal_steer`). |
 | `ACP_BACKENDS_STEERING_REQUEST` | A user's mid-turn steer sent as a request whose answer is awaited, where an accepted steer can still be dropped with its turn (`steer_needs_loss_recovery`). The `_session/steering` request (codex-acp, claude-agent-acp), whose `injected` / `startedNewTurn` / `failed` / `promptRequired` answer is the delivery evidence, spoken by `AcpSessionHandle` for a shared-runtime host and by `AcpClient` for a per-session one, which also needs the handshake's `_meta.steering.supported` and claude-agent-acp at or above `CLAUDE_ACP_STEERING_MIN_VERSION`; goose's `_goose/unstable/session/steer` (`{runId, messageId}`, then a `user_message_chunk` echo marked `_meta.goose.steer`), spoken by `AcpClient` through `_CLIENT_STEERING_REQUEST_METHODS`; and pi, which takes no request: `AcpClient` writes a sealed steer file Crew's gate extension hands to pi's steering queue, echoed as a pi-acp notify chunk (`acp/pi_steer_turn.py`). Not a deny-notice channel. |
 | `ACP_BACKENDS_STEER_CONCURRENT_PROMPT` | A user's mid-turn steer sent as a second `session/prompt` that joins the running loop (opencode); its answer arriving with the turn's own is the delivery evidence. Spoken only by `AcpClient`; not a deny-notice channel, and a member also needs loss recovery. |
@@ -142,7 +142,7 @@ vocabulary.
 
 Not every per-harness fact is a membership SET. Which `configId` carries the
 reasoning effort is a per-harness *spelling* -- `effort` by default,
-`reasoning_effort` for codex and deepseek, `thought_level` for pi -- and it is
+`reasoning_effort` for codex, deepseek and qoder, `effortLevel` for KAS, `thought_level` for pi -- and it is
 answered by `effort_config_option_id(backend)` in the vocabulary module, which
 reads `EFFORT_CONFIG_OPTION_IDS`: a default of `effort` with a row only for each
 exception. A new harness that spells it
@@ -921,11 +921,9 @@ row (`process_adapter_for`) rather than three sites in `acp/client.py`. Those ar
 only recurring edit points left that a membership set does not already absorb.
 
 ## Worked example: GitHub Copilot CLI
-
 The run to read for what a harness's OWN repository configuration costs, and for a
 permission switch the harness reports too late to act on. It is in
 `ACP_BACKENDS_KNOWN` and it IS selectable.
-
 | Stage | State |
 |---|---|
 | 1 vocabulary | Done — `ACP_BACKEND_COPILOT`, `PROVIDER_LABEL_COPILOT`, policy name mapped, its own `copilot` model namespace. |
@@ -937,9 +935,7 @@ permission switch the harness reports too late to act on. It is in
 | 7 selectability | **Selectable**, on `Routing.SESSION_CONFIG` — Codex's mechanism, `allow_all=off`. |
 | 8 live spill | Reached. A corpus live for all seven classes (`test/fixtures/acp_frames/copilot/`), and a dashboard session that streamed, asked before its shell call, left a declined call's file unwritten, served `auto` alone on the model picker and answered from its restored history after a gateway restart. |
 | verified range | Copilot CLI **1.0.100** exactly (`COPILOT_VERIFIED_VERSION`, the one constant the install hint and the handshake refusal both read). Fail closed on another release: the `allow_all` read-back, the `allow_all`/`autopilot` tripwire, the edit-target seeding (a frame naming no readable absolute target is denied) and the MCP identity recovery (an ambiguous title is refused). Fail open: the prompt slash-command allowlist, the project-config refusal list and the dropped child env vars, which are lists read off this release's bundle. Because those three would fail open, a session on any other release, or on one that names no version, is refused at the handshake with the pinned install command (`_refuse_unverified_copilot_version` reads `agentInfo.version` off `initialize`), so upgrading Copilot CLI turns the harness off until Crew verifies the new release. The refusal is two sentences: the release found, then the install command. The install row says the same before any chat is started: the probe reads the release out of `@github/copilot`'s own `package.json` (`copilot_installed_version`, never by running the binary), and an npm install on another release is reported `missing` with `found_version` set, which the Agent Harness list shows as **Wrong version** beside the pinned install command. A build with no readable manifest stays `installed`, and the handshake decides. Raising the range is one PR by whoever maintains the harness: re-record the frame corpus against the new release (`test/fixtures/acp_frames/copilot/README.md`), re-read its bundle for the three lists and re-drive the repo-hook refusal, then bump `COPILOT_VERIFIED_VERSION` (the install hint follows it). |
-
 Three things this run produced that the checklist did not ask for.
-
 **The first is a switch the harness reports too late.** A prompt beginning `/yolo`,
 `/allow-all` or `/permissions allow-all` turns `allow_all` on, and the
 `config_option_update` that says so arrives only on the NEXT config write — after the
@@ -950,7 +946,6 @@ answer is read back, and a frame or config answer reporting `allow_all` on or th
 `autopilot` mode stops the harness, in a turn's reader or before the next prompt
 (`ACP_BACKEND_FORBIDDEN_MODES`). A permission state a harness can move by prompt text
 is a prompt-path concern, not only a session-start one.
-
 **The second is configuration the REPOSITORY brings.** An independent review read the
 harness's bundle and asked whether a repository's hooks load; driven live, a
 `.github/hooks/*.json` ran its `sessionStart` and `preToolUse` commands with no
@@ -962,7 +957,6 @@ harness acts on — a workspace `.mcp.json`, extensions, plugins, LSP configs
 residual. Ask what a harness reads out
 of the project it is pointed at, and drive it, before trusting its permission prompt
 to be the only door.
-
 **The third is a credential file with a short life.** The launch MCP config carries a
 session credential, so it is written into the data home's `auth-store-staging`
 directory -- masked whole in every agent sandbox and fenced from agents' file tools,
@@ -971,15 +965,10 @@ back read-only to the one Copilot CLI child it is for (`extra_expose_files`). It
 removed as soon as `initialize` answers (measured safe: the harness reads it at boot),
 and on a failed handshake, a failed write or a refused spawn too. An existing masked
 directory whose purpose fits was the answer, not a new entry on a sandbox list.
-
 ## Worked example: Strands
-
 The run to read for a harness whose ACP mode asks for nothing on its own, and for a
 harness that runs the OPERATOR's code as its agent. It is in `ACP_BACKENDS_KNOWN`
 and it IS selectable.
-
-| Stage | State |
-|---|---|
 | 1 vocabulary | Done — `ACP_BACKEND_STRANDS`, `PROVIDER_LABEL_STRANDS`, policy name mapped, its own `strands` model namespace. |
 | 2 capability sets | Decided for every set against Strands CLI **0.2.3** (`@strands-agents/cli`) over `strands-harness` 0.3.3. In the session MCP array (none of it on the wire), the zero-tool ban, `ACP_BACKENDS_HARNESS_OWNED_SESSIONS`, `ACP_BACKENDS_LOAD_WITHOUT_MODES` and `ACP_BACKENDS_LOCAL_CLEAR`; the new sets are `ACP_BACKENDS_MODEL_AT_LAUNCH` and `ACP_BACKENDS_EFFORT_AT_LAUNCH` (the model and effort are the CLI's `--model` and `--effort` launch arguments, project-mode ACP has no channel for either, and a change relaunches the process and reloads the session). Not a compaction, steering, usage or advertised-model member: project-mode ACP sends no `usage_update`, no model list and no compaction status. Deliberately outside `ACP_BACKENDS_CONTEXT_RECYCLE` too: a full context is left to the project's own Strands context manager (strands-harness's `context_manager` defaults to `"auto"`), so Crew neither compacts nor recycles it and the gate logs the unclassified decline. That is a recorded gap, not a claim of harness-managed compaction: it closes when the CLI reports usage and offers `/compact` in project mode. |
 | native Windows | Refused, as for every enforced harness: `tool_gate.enforce_sandbox_floor` names that Crew has no OS sandbox backend there to apply the credential mask. No Strands-specific bypass exists, and `agent.sandbox_allow_no_isolation` does not unlock an enforced harness. The Windows launch pieces (the `strands.cmd` shim, `.venv\Scripts\python.exe`, the PowerShell `&` setup command) are in place for when a backend exists. |
@@ -990,9 +979,6 @@ and it IS selectable.
 | 7 selectability | **Selectable**, on `Routing.VERIFIED_GATE_EXTENSION` with `Readback.LOAD_MARKER` — pi's and DeepSeek's member. |
 | 8 live spill | Reached for the turn classes (`test/fixtures/acp_frames/strands/`): a shell call denied then allowed, and an operator project's custom `@tool` and vended `file_editor` each asking. In a dashboard pod the session started and the read-back passed; the model call there needs a credential the sandbox lets the child read (see the provider table in agent-host-contract.md §3). |
 | verified range | Strands CLI **0.2.3** exactly (`STRANDS_VERIFIED_VERSION`). Fail closed on another release: the install row and the spawn refuse it with the pinned install command. |
-
-Three things this run produced that the checklist did not ask for.
-
 **The first is a harness whose ACP mode never asks.** The CLI's default
 `--acp-server` profile sends no `session/request_permission` at all, and its
 Python-project mode forwards only a Strands interrupt. So the route is Crew's own code
@@ -1003,7 +989,6 @@ process -- the bundled one, the operator's, a sub-agent -- raises one interrupt 
 tool call in Crew's gate envelope. A read-back boot of the same argv proves the module
 loaded from Crew's file under this session's nonce before the session's own process
 starts, and the completed-unasked tripwire watches the session itself.
-
 **The second is the operator's project.** `agent.strands_project` points the gate at
 the operator's own `agent.py`; the gate imports it with every `Agent` already gated,
 re-creates it per session through its `create_agent` (awaited when it is `async`) or
@@ -1021,7 +1006,6 @@ wraps `Agent.stream_async` so that, before any prompt that is not itself the int
 answers, each open interrupt is resumed with a DENY (fail closed: the hook cancels the
 call, the tool never runs), at most three passes, then the state is cleared
 (`test/test_strands_gate_module.py`).
-
 **The operator's project runs only as the version the operator confirmed.** Its module
 code runs in the worker that holds the `agent.strands_env` keys, and the tool gate never
 sees it, so a project in a folder the agent can write could be turned into code nobody
@@ -1062,9 +1046,135 @@ files the project opens itself at run time after the launch check (data, or text
 passes to `exec` or `compile` on its own, a child process it starts on a folder file, a
 library it loads with `ctypes`). The bundled project
 needs no pin (`test/test_strands_project_pin.py`).
-
 **The third is a wire that refuses Crew's MCP array.** Project mode rejects a non-empty
 `session/new` `mcpServers` array, so the whole projected array rides an owner-only
 `--mcp-config` file (Copilot's staging directory and lifetime), and the CLI's own
 discovery of other tools' MCP and skill files is switched off in the child's
 environment (`STRANDS_CLI_MCP_DISCOVERY=off`, `STRANDS_CLI_SKILL_DISCOVERY=off`).
+row (`process_adapter_for`) rather than three sites in `acp/client.py`.
+## Worked example: the Qoder harness
+The run to read for turning a **dormant** harness into a narrowly **selectable** one when
+the blocker is a missing precedence measurement rather than a known hole. Qoder CLI serves
+ACP from its own binary behind a flag `--help` does not list (`qodercli --acp`), so it is a
+row of `ACP_BACKEND_LAUNCH`. It is now in `BASELINE_SELECTABLE_BACKENDS`;
+`NOT_SHIPPED_SELECTABLE` is empty.
+| 1 vocabulary | Done — `ACP_BACKEND_QODER`, in `ACP_BACKENDS_KNOWN`, `PROVIDER_LABEL_QODER`, policy name mapped. |
+| 2 capability sets | Deliberately narrow: independent setup, session-array **broker-only** mounts, client spawning, the advertised-model picker plus `model` selection channel, effort write/reflection, and harness-owned `session/load` replay are measured. Member dispatch, panel, compaction, eviction, session sharing, resume-without-load, meta-identity, full spec mirroring, the unattributed-terminal-error special case, and permission-kind carry-over remain out: no live prompt-failure capture shows the codex `messageId`-less text/end-turn shape, and no Qoder capture shows a kindless permission event needing the preceding tool-call kind. |
+| 3 spawn path | Done — `QoderLaunch` resolves the launch row (`qodercli --acp`, `QODERCLI_BIN`, `npm i -g @qoder-ai/qodercli@1.1.67`), warms the session MCP cache, runs the enforced preflight, and appends the pinned gate argv. |
+| 4 handshake | Done — integer `1`; no `authenticate` is sent. A valid sign-in starts without it (measured on 1.1.17 and 1.1.67), and Crew never sends it because it opens a browser sign-in each time. An unsigned-in `session/new` answers -32000 `Authentication required`, which Crew reports as `run qodercli login`. `session/new` carries `models.availableModels`, `models.currentModelId`, and a `model` select; the picker uses the Qoder namespace and labels its advertised ids. Live writes measured `model=qfmodel` and `reasoning_effort=low`; the effort response reflected `xhigh -> low`. The effect on model behaviour was not measured. |
+| 5 auth declaration | Done — `own_credential_file`, whole-directory leaf `~/.qoder/.auth` on the floor and spared for Qoder's child. **Inferred from directory name, mode and mtime, not read**: the lead observed a 0700 directory whose mtime matches login, and measured on 1.1.17 that `--config-dir` elsewhere loses the login. Contents were never read or listed. |
+| 6 install probe | Done — `_probe_self_served` reads the launch row. |
+| 7 selectability | **Selectable on `Routing.PINNED_ASK_RULE`.** The MCP projection is `broker-only` because a session-array stdio mount was measured, not a full agent-spec mirror. |
+| 8 live spill | The lead re-records the frame corpus against the pinned argv; synthetic tests cover the negative tripwires. |
+| verified against | qodercli **exactly 1.1.67**. There is no resolved-permission read-back, so any other release is refused; a version refusal names the reported release and the pinned 1.1.67 install command, while a mode refusal says only to start a new chat and never names launch flags. Hook suppression (`disableAllHooks`) must be re-probed on every version bump. |
+### Keeping 1.1.67 installed
+Kiro Crew never installs or updates qodercli. The gate accepts only 1.1.67
+(`QODER_MEASURED_VERSIONS`); a qodercli that moves to another release (for example through
+the operator running `qodercli update`) is refused at the next session start with the
+pinned install command `npm i -g @qoder-ai/qodercli@1.1.67`. Whether qodercli updates
+itself unprompted is NOT established.
+What live probes and the existing capture established:
+- **1.1.17 and 1.1.67** evaluate `deny` first, then SAFETY CHECKS and `ask` rules, then
+  `allow` plus mode auto-allow. A broad `allow` rule does not silently execute a call that
+  an `ask` rule names.
+- **1.1.17 and 1.1.67**: inline
+  `--settings '{"permissions":{"ask":["*"],"defaultMode":"default"}}'` beat a project file
+  seeded with Bash/Write/`mcp__*` allows, `bypassPermissions`, and a returning PreToolUse
+  hook. Bash and session-mounted MCP raised requests; the hook fired but did not win. On
+  **1.1.17**, this precedence also held with `--setting-sources ""`; on **1.1.67**,
+  `--strict-mcp-config` dropped project MCP while a server mounted through `session/new`
+  still worked and was asked.
+- **1.1.17 and 1.1.67**: `ask:["*"]` removes even Qoder's read-only/tool exemption
+  (`ls` on 1.1.17; Bash/MCP pins on both). The runtime unasked-call tripwire is armed on
+  that basis.
+- **1.1.17**: a project bypass still returned `currentModeId: default`, so that read-back
+  alone proves nothing. **1.1.17 and 1.1.67**: no SessionStart hook fires during
+  `session/new`, and no resolved-permission read-back exists. That is why the routing is
+  not `VERIFIED_SEEDED_SETTINGS`.
+- **1.1.17**: `--config-dir` moved the login store and broke `session/new`; Crew never
+  passes it. On **1.1.17 and 1.1.67**, Crew also never passes `--allowed-tools`,
+  `--dangerously-skip-permissions`, or a non-default mode.
+- **1.1.17 and 1.1.67**: permission options include `proceed_always_and_save`
+  (`allow_always`), which persists to project local settings. Crew never selects that
+  option or generic `allow_always`.
+- **1.1.17 and 1.1.67**: tool identity travels in `_meta.qoder.toolName`; updates carry
+  title, kind and status.
+- **1.1.17 and 1.1.67**: `initialize` advertises `qodercli-login`, which reuses the
+  operator's own login. With a valid sign-in, `session/new` works without `authenticate`
+  (measured on both). Crew deliberately never sends it, because it triggers a browser
+  sign-in round trip each time. An unsigned-in qodercli answers -32000
+  `Authentication required`, which Crew reports as `run qodercli login`.
+- **1.1.17 and 1.1.67**: model writes are accepted through `model`; **1.1.67** additionally
+  accepted and reflected `reasoning_effort=low` (`xhigh -> low`). The effect on model or
+  reasoning behaviour is not measured.
+- **1.1.17 and 1.1.67**: `session/new` carries `models.availableModels`, a `model` select,
+  and `models.currentModelId`; the picker reads that capture in the `qoder` namespace.
+  **On 1.1.67 (2026-10-11)** the measured catalog had 17 account/release-dependent rows,
+  including a real accepted `auto` id and credit multipliers. Every open/load re-captures
+  it; an unknown explicit id runs one session-less catalog probe and then fails closed if
+  still absent; `GET /api/models` refreshes a stale catalog on a 600-second TTL with a
+  30-second failed-refresh gate. A failed/empty probe keeps the old snapshot. The residual is explicit: a live session accepts its captured id until its next open/load, even if a newer catalog removes it.
+- **1.1.67**: after two real turns, `session/close` then `session/load` replayed two
+  user/agent exchanges and the next prompt showed continuity. **1.1.17** replayed only the
+  user chunk and lost the context. `session/resume` on an empty never-prompted session
+  failed `INVALID_SESSION_IDENTIFIER` on **1.1.67**. The 1.1.67 restore can replay a
+  terminal tool frame before the load response, so live-prompt arming bounds the unasked
+  tripwire.
+- **1.1.67**: a queued second prompt was not rejected and did not interrupt the first:
+  responses stayed first-then-second with both `end_turn`. That is queueing, not steering.
+- **1.1.17 and 1.1.67**: `/compact` answered `Failed to compress: conversation not
+  available.` even after two turns; compaction is measured-not-working and stays out.
+- **1.1.17 and 1.1.67**: Qoder docs say a PreToolUse hook permissionDecision of `allow`
+  skips the permission pipeline, but measured behaviour is that `ask:["*"]` still asks.
+  Hook-allow is irrelevant while hooks are disabled (see the next bullet).
+- **1.1.67**: the pinned argv carries inline `disableAllHooks: true`.
+  - Measured: a project's own `.qoder/settings.json` PreToolUse command hook ran under the
+    argv without the key and does not run with it. The ask still raised for Bash and Read.
+    The inline `true` also beat a project-tier `disableAllHooks: false` in
+    `.qoder/settings.json` and in `.qoder/settings.local.json`.
+  - Static (bundle, not measured): Qoder applies the merged value to every hook source and
+    type (user `~/.qoder/settings.json`, project, local, flag, plugins; command, http,
+    prompt, agent) and keeps its own internal runtime hooks.
+  - Not measured: user-level hooks, MCP tool calls under the key, non-command hook types,
+    events other than PreToolUse, a mid-session settings rewrite, managed tiers, other
+    releases.
+  - Cost: the operator's own user-level and plugin hooks do not run in Crew-run Qoder
+    sessions. The Kiro-derived spec removes hooks and the Claude Side Chat sets
+    `disableAllHooks`, the same cost both already accept.
+### Routing decision: `PINNED_ASK_RULE`
+This is a new mechanism because neither existing member fits. `SESSION_CONFIG` would claim
+that Crew applied and checked an ACP session config option; Qoder's gate is pinned at spawn
+instead. `VERIFIED_SEEDED_SETTINGS` would claim a read-back of the harness's OWN RESOLVED
+configuration; Qoder exposes no such configuration. The argv is evidence of what Crew sent,
+not of what Qoder resolved. Naming this member keeps that gap in the vocabulary instead of
+upgrading a non-read-back to a false "verified".
+`Routing.PINNED_ASK_RULE` asserts four things and no more:
+1. The spawn appends inline `permissions.ask: ["*"]`, `defaultMode: "default"`,
+   `disableAllHooks: true`, `--permission-mode default`, and `--strict-mcp-config`, built
+   with `json.dumps` as one argv element.
+2. `initialize.agentInfo.version` is exactly in `QODER_MEASURED_VERSIONS` (currently
+   `1.1.67`); otherwise the handshake is INDETERMINATE and the session is refused with
+   precise advice: a version refusal names the reported release and the pinned 1.1.67
+   install command; a mode refusal says only to start a new chat.
+3. `session/new` and successful restore report `currentModeId: default`; a move away from
+   `default`—through `current_mode_update` or the `mode` select in
+   `config_option_update`—kills the session.
+4. After the first live `session/prompt` is sent, an executing or terminal tool
+   frame requires Crew's ALLOW answer for that same execution; a mere permission request is
+   not enough. The verdict is consumed at the call, so a reused id must be approved afresh.
+   Restore replay, including its terminal tool frames, is ignored until that first live
+   prompt because it belongs to the prior client session.
+It does **not** assert the complete resolved rule set, per-call emission beyond the frame
+corpus, operator user-level settings, `/allow` or command/session precedence layers beyond
+the measured inline-versus-project probe, any other qodercli version, or the hook behaviour
+listed as not measured above. Hook-allow is irrelevant while hooks are disabled. The
+version gate, live-prompt arming, and unasked-call tripwire are the backstop, and a bump
+must re-run the hook-suppression probe. Those limits are
+why the version set is exact and the runtime tripwires fail closed. The launch golden pins
+the argv; `NOT_SHIPPED_SELECTABLE` is empty, and
+`ACP_BACKEND_PROCESS_NAMES` therefore names `qodercli` for the orphan reclaim.
+### Re-measure procedure for version bumps
+When updating Qoder CLI to a newer release:
+1. Re-record live fixtures under `test/fixtures/acp_frames/qoder/` against the target version (verifying handshake, ask rules, hook suppression with `disableAllHooks: true`, mode updates, and tool call classification).
+2. Update `QODER_MEASURED_VERSIONS` in `src/kiro_crew/agent_sdk/backends.py` (currently `frozenset({"1.1.67"})`) to include or bump to the new version.
+3. Update version pin constants and verify the full test suite (`test_acp_qoder_backend.py`, `test_acp_qoder_models.py`, etc.) before publishing.

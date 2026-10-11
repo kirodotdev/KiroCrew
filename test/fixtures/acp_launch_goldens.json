@@ -197,5 +197,16 @@
     },
     "spawn_label": "strands --acp-server --agent /opt/run/strands/agent.py",
     "stderr_label": "strands --acp-server --agent /opt/run/strands/agent.py"
+  "qoder": {
+      "/opt/bin/qodercli",
+      "--acp",
+      "--settings",
+      "{\"permissions\":{\"ask\":[\"*\"],\"defaultMode\":\"default\"},\"disableAllHooks\":true}",
+      "--permission-mode",
+      "default",
+      "--strict-mcp-config"
+      "PATH": "<augmented-path>"
+    "spawn_label": "qodercli --acp",
+    "stderr_label": "qodercli"
   }
 }

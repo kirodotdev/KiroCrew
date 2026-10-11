@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 
 import pytest
@@ -672,6 +673,24 @@ class TestAdvertisedModelCache:
             assert mr.refresh_advertised_models("acp", ids[:5] + ids[:5]) is True
         assert mr.advertised_models("acp") == ids[:5]
         assert not caplog.records
+    def test_refresh_model_rows_caps_count_and_reports_refused_overflow(
+        self, monkeypatch, caplog
+    ):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        rows = [
+            {"modelId": f"m{i}", "name": f"Model {i}", "description": ""}
+            for i in range(mr.ADVERTISED_MODELS_MAX_IDS + 3)
+        ]
+        with caplog.at_level("WARNING", logger=mr.logger.name):
+            assert mr.refresh_advertised_model_rows("qoder", rows) is True
+        kept_ids = mr.advertised_models("qoder")
+        assert len(kept_ids) == mr.ADVERTISED_MODELS_MAX_IDS
+        assert kept_ids == [f"m{i}" for i in range(mr.ADVERTISED_MODELS_MAX_IDS)]
+        kept_rows = mr.advertised_model_rows("qoder")
+        assert len(kept_rows) == mr.ADVERTISED_MODELS_MAX_IDS
+        assert any("refused 3 model id(s)" in r.message for r in caplog.records)
 
     def test_a_refused_id_is_not_readmitted_from_the_sidecar(self, monkeypatch, tmp_path, caplog):
         # The persisted copy is the same population: an oversized or over-long
@@ -802,13 +821,154 @@ class TestAdvertisedModelCache:
 
     def test_persist_round_trips(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
         monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
-        mr.refresh_advertised_models("claude_code", ["global.anthropic.claude-opus-5[1m]"])
+        mr.refresh_advertised_model_rows(
+            "claude_code",
+            [
+                {
+                    "modelId": "global.anthropic.claude-opus-5[1m]",
+                    "name": "Opus 5 (1M)",
+                    "description": "",
+                }
+            ],
+            observed_at=123,
+        )
         mr.persist_advertised_models()
         # Reload into a fresh dict and confirm the sidecar was written.
         monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
         mr._load_advertised_models()
         assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+        assert mr.advertised_models_observed_at("claude_code") == 123
+        assert mr.advertised_model_rows("claude_code")[0]["name"] == "Opus 5 (1M)"
+
+    def test_a_new_stamp_on_an_unchanged_catalog_never_needs_persist(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        rows = [{"modelId": "a", "name": "Alpha", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", rows, observed_at=1) is True
+        assert mr.refresh_advertised_model_rows("claude_code", rows, observed_at=2) is False
+        # The stamp is still stored in memory; it just never demands a write of
+        # its own, so a poller that re-reads an unchanged catalog is free.
+        assert mr.advertised_models_observed_at("claude_code") == 2
+        # No stamp-only rewrite for a labeled catalog either.
+        assert mr.refresh_advertised_model_rows("qoder", rows, observed_at=1) is True
+        assert mr.refresh_advertised_model_rows("qoder", rows, observed_at=2) is False
+        assert mr.advertised_models_observed_at("qoder") == 2
+
+    def test_a_labeled_catalog_is_the_only_entry_whose_shape_changes(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        # One host that carries the service's own labels, one that carries ids.
+        mr.refresh_advertised_model_rows(
+            "qoder",
+            [{"modelId": "qfmodel", "name": "Qwen3.8-Flash", "description": ""}],
+            observed_at=7,
+        )
+        mr.refresh_advertised_models("acp", ["claude-opus-5"])
+        mr.persist_advertised_models()
+
+        written = json.loads((tmp_path / "pm.json").read_text(encoding="utf-8"))
+        # The id-only provider keeps the plain list every provider has always
+        # been recorded as: adding labels for one catalog must not reshape the
+        # sidecar for the rest of them.
+        assert written["acp"] == ["claude-opus-5"]
+        assert written["qoder"] == {
+            "observed_at": 7,
+            "rows": [{"modelId": "qfmodel", "name": "Qwen3.8-Flash", "description": ""}],
+        }
+
+    def test_changed_ids_or_rows_need_persist(self, monkeypatch):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        alpha = [{"modelId": "a", "name": "Alpha", "description": ""}]
+        mr.refresh_advertised_model_rows("claude_code", alpha, observed_at=1)
+        added = alpha + [{"modelId": "b", "name": "Beta", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", added, observed_at=2) is True
+        renamed = [{"modelId": "b", "name": "Beta 2", "description": ""}]
+        assert mr.refresh_advertised_model_rows("claude_code", renamed, observed_at=3) is True
+
+    def test_persist_round_trips_the_legacy_id_only_shape(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        (tmp_path / "pm.json").write_text(
+            json.dumps({"claude_code": ["global.anthropic.claude-opus-5[1m]"]}),
+            encoding="utf-8",
+        )
+        mr._load_advertised_models()
+        assert mr.advertised_models("claude_code") == ["global.anthropic.claude-opus-5[1m]"]
+        assert mr.advertised_model_rows("claude_code") == [
+            {
+                "modelId": "global.anthropic.claude-opus-5[1m]",
+                "name": "global.anthropic.claude-opus-5[1m]",
+                "description": "",
+            }
+        ]
+
+    def test_persist_round_trips_an_ids_only_catalog(self, monkeypatch, tmp_path):
+        # kiro/KAS retain only ids in the live store. Their sidecar must keep the
+        # same population after restart; writing the raw (empty) row store would
+        # erase the catalog on the next load.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        mr.refresh_advertised_models("acp", ["claude-fable-5", "claude-opus-5"])
+        mr.persist_advertised_models()
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        mr._load_advertised_models()
+        assert mr.advertised_models("acp") == ["claude-fable-5", "claude-opus-5"]
+
+    def test_a_changed_id_catalog_reconciles_cached_rows(self, monkeypatch, tmp_path):
+        # A kiro refresh carries ids only. It must retire rows for removed ids,
+        # keep display data for surviving ids, and synthesize rows for new ids;
+        # otherwise persist restores a stale removed model after restart.
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        monkeypatch.setattr(mr, "_advertised_models_cache_path", lambda: tmp_path / "pm.json")
+        mr.refresh_advertised_model_rows(
+            "acp",
+            [
+                {"modelId": "a", "name": "Alpha", "description": "old"},
+                {"modelId": "b", "name": "Beta", "description": "keep"},
+            ],
+            observed_at=1,
+        )
+
+        assert mr.refresh_advertised_models("acp", ["b", "c"]) is True
+        mr.persist_advertised_models()
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODELS_OBSERVED_AT", {})
+        monkeypatch.setattr(mr, "_ADVERTISED_MODEL_ROWS_LABELED", set())
+        mr._load_advertised_models()
+
+        assert mr.advertised_models("acp") == ["b", "c"]
+        assert mr.advertised_model_rows("acp") == [
+            {"modelId": "b", "name": "Beta", "description": "keep"},
+            {"modelId": "c", "name": "c", "description": ""},
+        ]
 
     def test_wire_id_folds_bare_onto_advertised_versioned(self, monkeypatch):
         # The core fix: a bare id the registry does not carry folds onto the

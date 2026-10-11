@@ -315,6 +315,10 @@ def _deepseek_tripwire_client(monkeypatch):
     client._pi_gate_request_tool = {}
     client._permission_options = {}
     client._permission_gate_events = {}
+    client._qoder_asked_ids = set()
+    client._qoder_request_tool = {}
+    client._qoder_denied_ids = set()
+    client._qoder_executed_ids = set()
     client._session_id = "s1"
     client._session_key = "k1"
     killed: list = []
@@ -550,6 +554,11 @@ def test_no_known_backend_is_unverified() -> None:
 
     A harness absent from the routing table also resolves to ``UNVERIFIED``, and the
     refusal above would then apply to it; this makes that visible.
+    deepseek and qoder were the members at different times, and both changes emptied
+    this set. If any harness resolves to ``UNVERIFIED`` -- including by being absent
+    from the routing table, which ``routing_for`` answers ``UNVERIFIED`` for -- the
+    refusal above starts applying to it. That may be right, but it must be noticed
+    rather than discovered when an edition's registration begins failing.
     """
     unverified = {b for b in ACP_BACKENDS_KNOWN if routing_for(b) is Routing.UNVERIFIED}
     assert unverified == set()
@@ -558,9 +567,10 @@ def test_no_known_backend_is_unverified() -> None:
     from kiro_crew.acp_backends import ACP_BACKEND_ROUTING
 
     assert set(ACP_BACKEND_ROUTING) >= ACP_BACKENDS_KNOWN
-    # And the shipped baseline now carries this harness, which is the point of the
-    # change: every KNOWN harness is selectable because every one of them is routed.
+    # And the shipped baseline carries every routed harness, this one included: the only
+    # known id outside it is the one that is unverified.
     assert ACP_BACKEND_DEEPSEEK in set(BASELINE_SELECTABLE_BACKENDS)
+    assert set(ACP_BACKENDS_KNOWN) - set(BASELINE_SELECTABLE_BACKENDS) == unverified
 
 
 def test_it_carves_nothing_out_of_the_deny_list_because_its_key_comes_from_the_vault() -> None:

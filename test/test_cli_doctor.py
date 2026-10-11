@@ -928,6 +928,17 @@ class TestSelectedBackendProjectionRow:
         The set is pinned by name, so a new ``no-channel`` backend is a deliberate edit.
         None ships: pi gets Crew's servers through its gate extension and is declared
         ``broker-only`` like deepseek, so its row is silent (next case).
+        A ``no-channel`` entry here is not a failure of the row -- it must simply be
+        addressable, which ``McpProjection`` enforces and ``test_provider_mirrors``
+        asserts -- but it IS the state an operator gets told about, so the set is
+        pinned by name and a new one is a deliberate change to this assertion.
+
+        No backend ships as one: pi, whose adapter drops the ``session/new`` array,
+        receives Crew's servers through its gate extension instead and is declared
+        ``broker-only`` like deepseek. The case that follows pins that pi's row is
+        therefore silent.
+        Qoder is ``broker-only`` too, until an agent-spec mirror and per-tool deny
+        projection are measured; it is not a no-channel backend.
         """
         from kiro_crew.providers.mirrors import PROJECTIONS, ProjectionKind
 

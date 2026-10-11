@@ -52,6 +52,7 @@ import { useProvider } from '../providers'
 import { useConnectionsUiEnabled } from '../hooks/useConnectionsUi'
 import { useSessionPalette } from '../hooks/useSessionPalette'
 import { resolveSessionColor, headerBandStyle } from '../utils/sessionColors'
+import { labelFor, useAvailableModels } from '../hooks/useAvailableModels'
 import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
@@ -545,6 +546,8 @@ export default function ChatPane({
     paneSlot?.agent ? displayAgents.find(a => a.name === paneSlot.agent)?.session_color : null,
   )
   const headerColorStyle = headerColor ? headerBandStyle(headerColor, headerPalette.boost, headerPalette.boostFor) : undefined
+  // The picker hook reads the same list; the chip only needs it for the label.
+  const availableModels = useAvailableModels()
 
   // One-time hydrate of this slot's message history via React Query + the api
   // client (caching + cross-pane dedup; staleTime Infinity keeps it one-shot —
@@ -1286,7 +1289,7 @@ export default function ChatPane({
           // a same-name pair needs telling apart.
           agentMemory={sessionMemoryTag(paneSlot?.agent, paneSlot?.agent_kind, defaultAgent, agentChoices)}
           agentSource={installedAgents.find((a) => a.name === paneAgentName)?.source}
-          modelName={shownModel}
+          modelName={labelFor(availableModels, shownModel)}
           reasoningEffort={effectiveEffort}
           effortIsDefault={!paneSlot?.reasoning_effort && !legacyCodexEffort(paneSlot?.model || '', '', codexPairModels) && !!defaultEffort}
           // Effort is edited inside the model picker below; the chip only

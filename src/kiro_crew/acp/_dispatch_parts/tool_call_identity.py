@@ -341,6 +341,14 @@ _MCP_IDENTITY_META_CHANNELS: tuple[_MetaIdentityChannel, ...] = (
         # "this is a command".
         builtin_shell=("developer", "shell"),
     ),
+    # qoder (measured on 1.1.17 and 1.1.67): ``_meta.qoder.toolName``, captured live
+    # in ``test/fixtures/acp_frames/qoder/session-mcp-ask-live.jsonl``. Its toolName
+    # is ``mcp__<server>__<tool>`` for MCP calls or the built-in name (e.g. ``Bash``).
+    _MetaIdentityChannel(
+        key="qoder",
+        server_field="",
+        tool_field="toolName",
+    ),
 )
 
 
@@ -396,6 +404,12 @@ def _meta_identity_full(update: dict[str, Any]) -> tuple[str, str, bool, bool]:
             unreadable = False
             tool = tool if isinstance(tool, str) else ""
             server = server if isinstance(server, str) else ""
+            if channel.key == "qoder" and tool.startswith("mcp__"):
+                parts = tool.split("__", 2)
+                if len(parts) == 3 and parts[1] and parts[2]:
+                    server, tool = parts[1], parts[2]
+                else:
+                    server, tool = "", ""
         # Matched on the RAW pair, before any prefix reduction: the pair is what the
         # harness wrote, and the reduction below is Crew's own normalization of a fused
         # MCP tool name.

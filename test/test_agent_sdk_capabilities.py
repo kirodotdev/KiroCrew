@@ -75,6 +75,7 @@ CAPABILITY_FIELDS = (
     "provider_seam",
     "model_id_namespace",
     "resolves_model_from_advertised_list",
+    "advertised_models_are_exclusive",
     "effort_via_config_option",
     "effort_via_slash_command",
     "compacts_inline",
@@ -351,6 +352,7 @@ def test_known_membership_is_unchanged_by_the_move() -> None:
         "kas",
         "opencode",
         "pi",
+        "qoder",
         "strands",
     ]
 
@@ -731,6 +733,7 @@ def test_honor_zero_tool_ban_membership_matches_the_rule() -> None:
         sdk_backends.ACP_BACKEND_DEEPSEEK,
         sdk_backends.ACP_BACKEND_PI,
         sdk_backends.ACP_BACKEND_STRANDS,
+        sdk_backends.ACP_BACKEND_QODER,
     }
 
 
@@ -749,6 +752,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_OPENCODE,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_QODER,
         ACP_BACKENDS_ACP_CLIENT_SPAWNABLE,
         ACP_BACKENDS_HONOR_ZERO_TOOL_BAN,
     )
@@ -774,6 +778,7 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
         ACP_BACKEND_DEEPSEEK,
         ACP_BACKEND_PI,
         ACP_BACKEND_STRANDS,
+        ACP_BACKEND_QODER,
     }, (
         "the set of backends this pool trusts changed -- decide the effort "
         "channel for whichever member is new or missing deliberately, then "
@@ -797,6 +802,8 @@ def test_the_knowledge_pool_client_takes_the_default_backend() -> None:
     # pool sends it none: neither the config option nor a slash command.
     assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_config_option is False
     assert capabilities_for(ACP_BACKEND_STRANDS).effort_via_slash_command is False
+    assert capabilities_for(ACP_BACKEND_QODER).effort_via_config_option is True
+    assert capabilities_for(ACP_BACKEND_QODER).effort_via_slash_command is False
 
 
 def test_effort_via_slash_command_membership_is_the_command_verb_set() -> None:

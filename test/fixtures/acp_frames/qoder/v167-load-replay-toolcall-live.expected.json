@@ -1,0 +1,182 @@
+[
+  {
+    "action": "server_request_unknown",
+    "frame": "session/close",
+    "params": {
+      "sessionId": "sess-live-v167"
+    }
+  },
+  {
+    "action": "server_request_unknown",
+    "frame": "session/load",
+    "params": {
+      "cwd": "/private/qoder-probe-1167/R4/p",
+      "mcpServers": [],
+      "sessionId": "sess-live-v167"
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "user_message_chunk"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "id-r4-0001",
+        "text": "The user is asking me to run a specific command. It just creates a marker file. Somewhat harmless. Just run it. Note the path is relative: /private/qoder-probe-1167/R4/x.marker — the trailing \".\" is probably just the end of the sentence. I'll run `touch /private/qoder-probe-1167/R4/x.marker`.\n"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "The user is asking me to run a specific command. It just creates a marker file. Somewhat harmless. Just run it. Note the path is relative: /private/qoder-probe-1167/R4/x.marker — the trailing \".\" is probably just the end of the sentence. I'll run `touch /private/qoder-probe-1167/R4/x.marker`.\n",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "is_shell": true,
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "touch /private/qoder-probe-1167/R4/x.marker",
+          "description": "Create marker file /private/qoder-probe-1167/R4/x.marker"
+        },
+        "title": "Create marker file /private/qoder-probe-1167/R4/x.marker",
+        "tool_call_id": "call_15b76ba1c85446f9a139bd34",
+        "tool_input": "{\n  \"command\": \"touch /private/qoder-probe-1167/R4/x.marker\",\n  \"description\": \"Create marker file /private/qoder-probe-1167/R4/x.marker\"\n}",
+        "tool_kind": "execute",
+        "wire_title": "touch /private/qoder-probe-1167/R4/x.marker"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "thinking_chunk",
+        "message_id": "id-r4-0002",
+        "text": "I'm sorry, but I can't help with that. If you have any other questions or need assistance, feel free to let me know."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_thought_chunk",
+    "text_chunk": {
+      "text": "I'm sorry, but I can't help with that. If you have any other questions or need assistance, feel free to let me know.",
+      "thinking": true
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "message_id": "id-r4-0003",
+        "text": "The `touch` command was denied, so the marker file `/private/qoder-probe-1167/R4/x.marker` wasn't created. Let me know if you'd like to proceed differently — for example, if the directory `/private/qoder-probe-1167/R4/` doesn't exist yet, that may be why the command would fail."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "The `touch` command was denied, so the marker file `/private/qoder-probe-1167/R4/x.marker` wasn't created. Let me know if you'd like to proceed differently — for example, if the directory `/private/qoder-probe-1167/R4/` doesn't exist yet, that may be why the command would fail.",
+      "thinking": false
+    }
+  },
+  {
+    "config_options": [
+      {
+        "category": "mode",
+        "currentValue": "default",
+        "id": "mode",
+        "name": "Mode",
+        "options": [
+          {
+            "description": "Prompts for approval",
+            "name": "Default",
+            "value": "default"
+          },
+          {
+            "description": "Auto-approves edit tools",
+            "name": "Accept Edits",
+            "value": "acceptEdits"
+          },
+          {
+            "description": "Auto-approves via the safety classifier",
+            "name": "Auto",
+            "value": "auto"
+          },
+          {
+            "description": "Refuses instead of prompting",
+            "name": "Don't Ask",
+            "value": "dontAsk"
+          },
+          {
+            "description": "Auto-approves all tools",
+            "name": "Bypass Permissions",
+            "value": "yolo"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "model",
+        "currentValue": "qfmodel",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "description": "Reasoning · Vision · New · 0.00x Credit",
+            "name": "Qwen3.8-Flash (default)",
+            "value": "qfmodel"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "thought_level",
+        "currentValue": "xhigh",
+        "id": "reasoning_effort",
+        "name": "Reasoning Effort",
+        "options": [
+          {
+            "name": "Extra High",
+            "value": "xhigh"
+          },
+          {
+            "name": "Low",
+            "value": "low"
+          },
+          {
+            "name": "Medium",
+            "value": "medium"
+          },
+          {
+            "name": "None",
+            "value": "none"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 5,
+    "modes": {
+      "advertised": true,
+      "current": "default",
+      "ids": [
+        "default",
+        "acceptEdits",
+        "auto",
+        "dontAsk",
+        "yolo"
+      ]
+    }
+  }
+]
