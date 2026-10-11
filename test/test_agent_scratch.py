@@ -15,6 +15,15 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import agent_scratch as sc
+from kiro_crew import platform_compat
+from kiro_crew.config import paths
+
+
+class _FakeComponentSecurity:
+    """Minimal stand-in for ``windows_acl.ComponentSecurity`` carrying an owner_sid."""
+
+    def __init__(self, owner_sid: str) -> None:
+        self.owner_sid = owner_sid
 
 
 @pytest.fixture
@@ -42,6 +51,252 @@ class TestAllocate:
 
     def test_two_allocations_are_distinct(self, scratch_root: Path) -> None:
         assert sc.allocate_scratch("a") != sc.allocate_scratch("a")
+
+
+class TestScratchRootOverride:
+    """``KIROCREW_SCRATCH_ROOT`` relocates the managed scratch root."""
+
+    @pytest.fixture(autouse=True)
+    def _reset_warned(self, _floor_monkeypatch) -> None:
+        # The ignore warning fires once per distinct raw value when the override pin is
+        # computed; reset the pin so each test starts fresh regardless of order. Uses
+        # _floor_monkeypatch (undone independently) rather than the shared monkeypatch,
+        # which a test calling monkeypatch.undo() would lift.
+        from kiro_crew.config import paths as _paths
+
+        _floor_monkeypatch.setattr(_paths, "_scratch_root_override_pin", _paths._UNSET)
+
+    def test_default_is_data_home_scratch(self, scratch_root: Path, monkeypatch) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        assert sc.scratch_root() == scratch_root
+
+    def test_valid_override_is_used_as_the_root(self, tmp_path: Path, monkeypatch) -> None:
+        # A real directory on another "drive" becomes the managed root itself,
+        # with no ``scratch`` subcomponent appended -- and allocations land
+        # under it, so the override reaches the allocator, not just the getter.
+        # HOME is pinned off the real tree: pytest's tmp_path is UNDER the real
+        # ``~/.kiro/crew``, and the validator refuses an override inside any crew-home
+        # spelling, so without this the "off-drive" root would be refused as in-home.
+        # The override applies on Windows only, so pin ``win32``.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        # Patch Path.home() too: on Windows Path.home() ignores HOME, so the default home
+        # would otherwise resolve to the real crew home and refuse the override as in-home.
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        # The current user owns the root, so the foreign-owner guard passes (the Windows ACL
+        # layer is not available on the test runner, so stub the owner read).
+        import kiro_crew.windows_acl as windows_acl
+
+        monkeypatch.setattr(sc.platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        monkeypatch.setattr(
+            windows_acl, "describe", lambda p: _FakeComponentSecurity(owner_sid="S-1-5-21-ME")
+        )
+        assert sc.scratch_root() == other.resolve()
+        allocated = sc.allocate_scratch("chat-7")
+        assert allocated.parent == other.resolve()
+        assert allocated.is_dir()
+
+    def test_relocated_root_is_locked_to_the_owner(self, tmp_path: Path, monkeypatch) -> None:
+        # A relocated override root points at an arbitrary directory whose ACL comes from
+        # its parent, and ``mkdir(mode=0o700)`` is ignored on Windows, so the root would
+        # keep the drive's default (world-writable) ACL. Allocation must lock the root to
+        # the owner, as the default data home is. Assert the owner-only tighten is applied
+        # to the relocated root (the default root is already restricted by ensure_data_home,
+        # so it is not re-tightened here).
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        other.mkdir(parents=True)  # exists, so the validator's owner check runs on it
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        # The validator reads the root's owner; the current user owns it, so it is accepted.
+        import kiro_crew.windows_acl as windows_acl
+
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        monkeypatch.setattr(
+            windows_acl, "describe", lambda p: _FakeComponentSecurity(owner_sid="S-1-5-21-ME")
+        )
+        restricted: list[str] = []
+        monkeypatch.setattr(
+            sc.platform_compat, "restrict_dir_to_owner", lambda p: restricted.append(str(p))
+        )
+        sc.allocate_scratch("chat-9")
+        assert str(other.resolve()) in restricted, "the relocated root was not locked to the owner"
+
+    def test_relocated_root_owned_by_another_user_is_refused_by_the_validator(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # A relocated root a DIFFERENT local user already created and owns must be refused by
+        # the validator, so scratch_root() -- the single decider -- falls back to the default
+        # for allocation, the sweep, the log cap and the shared join alike. The owner tighten
+        # is never applied to the foreign root.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        other.mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        import kiro_crew.windows_acl as windows_acl
+
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        monkeypatch.setattr(
+            windows_acl, "describe", lambda p: _FakeComponentSecurity(owner_sid="S-1-5-21-OTHER")
+        )
+        # The validator refuses the foreign-owned root with the specific reason.
+        assert paths.valid_scratch_root_override() is None
+        assert paths.scratch_root_override_refusal_reason() == "not owned by current user"
+        restricted: list[str] = []
+        monkeypatch.setattr(
+            sc.platform_compat, "restrict_dir_to_owner", lambda p: restricted.append(str(p))
+        )
+        # scratch_root() is the single decider: it returns the default, so allocation lands
+        # under the default and the foreign root is never tightened.
+        assert sc.scratch_root() == sc.config_dir() / "scratch"
+        allocated = sc.allocate_scratch("chat-11")
+        assert allocated.parent == sc.config_dir() / "scratch"
+        assert restricted == [], "a foreign-owned root must not be locked (adopted)"
+
+    def test_relocated_root_with_unreadable_owner_is_refused_fail_closed(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # If the root's owner cannot be read, the validator refuses fail-closed rather than
+        # adopt an owner it cannot verify, and scratch_root() returns the default.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        other.mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        import kiro_crew.windows_acl as windows_acl
+
+        def _boom(_p):
+            raise windows_acl.AclUnavailable("cannot read the security descriptor")
+
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        monkeypatch.setattr(windows_acl, "describe", _boom)
+        assert paths.valid_scratch_root_override() is None
+        assert paths.scratch_root_override_refusal_reason() == "owner unreadable"
+        assert sc.scratch_root() == sc.config_dir() / "scratch"
+
+    def test_scratch_root_returns_default_when_owner_check_fails(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The single-decider property: when the owner check refuses the override,
+        # scratch_root() (which the sweep, log cap and shared join all read) returns the
+        # guarded default, not the override.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        other.mkdir(parents=True)
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        import kiro_crew.windows_acl as windows_acl
+
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        monkeypatch.setattr(
+            windows_acl, "describe", lambda p: _FakeComponentSecurity(owner_sid="S-1-5-21-OTHER")
+        )
+        assert sc.scratch_root() == sc.config_dir() / "scratch"
+        assert sc.scratch_root() != other.resolve()
+
+    def test_root_absent_at_validation_then_foreign_owned_is_refused_at_allocation(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # TOCTOU: the validator runs (and CACHES its accept) while the override root does
+        # NOT yet exist -- the boot sweep calls scratch_root() before any mkdir -- so there
+        # is no owner to check and the cached accept pins. Before allocation, another local
+        # user creates the directory and owns it. allocate_scratch must re-check the owner
+        # AFTER its own mkdir and, finding it foreign, fall back to the guarded default
+        # instead of tightening (and thereby cementing) the foreign owner's control.
+        monkeypatch.setattr(sys, "platform", "win32")
+        realhome = tmp_path / "realhome"
+        monkeypatch.setenv("HOME", str(realhome))
+        monkeypatch.setattr(Path, "home", classmethod(lambda cls: realhome))
+        other = tmp_path / "data-drive" / "kirocrew-scratch"
+        # NOTE: `other` is deliberately NOT created here -- it is absent when the validator
+        # resolves and caches the override.
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", str(other))
+        monkeypatch.setattr(paths, "_scratch_root_override_pin", paths._UNSET)
+        import kiro_crew.windows_acl as windows_acl
+
+        monkeypatch.setattr(platform_compat, "current_user_sid", lambda: "S-1-5-21-ME")
+        # Validation while absent: p.exists() is False, so no owner check runs and the
+        # override is accepted (and cached).
+        assert paths.valid_scratch_root_override() == other.resolve()
+        # Now the root "appears" owned by another user before allocation.
+        monkeypatch.setattr(
+            windows_acl, "describe", lambda p: _FakeComponentSecurity(owner_sid="S-1-5-21-OTHER")
+        )
+        restricted: list[str] = []
+        monkeypatch.setattr(
+            sc.platform_compat, "restrict_dir_to_owner", lambda p: restricted.append(str(p))
+        )
+        allocated = sc.allocate_scratch("chat-12")
+        # The allocation-time owner re-check refused the foreign root and fell back to the
+        # guarded default; the foreign root was never tightened (adopted).
+        assert allocated.parent == sc.config_dir() / "scratch"
+        assert restricted == [], "a foreign-owned root created after validation must not be locked"
+
+    def test_default_root_is_not_re_restricted(self, scratch_root: Path, monkeypatch) -> None:
+        # With no override, the root is the default data-home scratch, already owner-only
+        # via ensure_data_home; allocation must not call the owner tighten again.
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        called: list[str] = []
+        monkeypatch.setattr(
+            sc.platform_compat, "restrict_dir_to_owner", lambda p: called.append(str(p))
+        )
+        sc.allocate_scratch("chat-10")
+        assert called == [], "the default root should not be re-restricted on each allocation"
+
+    def test_unsafe_override_is_ignored_with_one_warning(
+        self, scratch_root: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # A drive/filesystem root is refused by the shared ``_is_unsafe_home``
+        # predicate and falls back to the default, logging exactly as an unsafe
+        # ``KIROCREW_HOME`` does. ``Path.cwd().anchor`` is the drive root on
+        # Windows (``C:\``) and ``/`` on POSIX -- the ``p == p.parent`` case the
+        # predicate refuses on every OS, so the file is never created.
+        # Pin ``win32``: the override applies on Windows only, so a non-Windows
+        # platform refuses it earlier with the "unsupported platform" reason, which this
+        # system-dir wording assertion must not see.
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", Path.cwd().anchor)
+        with caplog.at_level("WARNING"):
+            assert sc.scratch_root() == scratch_root
+        warnings = [r for r in caplog.records if "KIROCREW_SCRATCH_ROOT" in r.getMessage()]
+        assert len(warnings) == 1
+        assert "is a system directory, ignoring" in warnings[0].getMessage()
+
+    def test_unsafe_override_warns_only_once_across_calls(
+        self, scratch_root: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        # scratch_root() runs on every allocation/sweep/log-cap pass; a steadily
+        # misconfigured value must not re-warn each time (the pin computes once per value).
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("KIROCREW_SCRATCH_ROOT", Path.cwd().anchor)
+        with caplog.at_level("WARNING"):
+            for _ in range(5):
+                assert sc.scratch_root() == scratch_root
+        warnings = [r for r in caplog.records if "KIROCREW_SCRATCH_ROOT" in r.getMessage()]
+        assert len(warnings) == 1
+
+    def test_unset_override_does_not_warn(
+        self, scratch_root: Path, monkeypatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        monkeypatch.delenv("KIROCREW_SCRATCH_ROOT", raising=False)
+        with caplog.at_level("WARNING"):
+            sc.scratch_root()
+        assert not [r for r in caplog.records if "KIROCREW_SCRATCH_ROOT" in r.getMessage()]
 
 
 class TestEnv:

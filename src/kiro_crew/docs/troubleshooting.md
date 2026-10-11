@@ -407,6 +407,31 @@ Do not delete a directory whose `.owner` names a live process.
 du -sh ~/.kiro/crew/scratch/*/ | sort -h | tail
 ```
 
+#### Moving scratch off the system drive
+
+On Windows the scratch tree lives on `C:` by default and can hold bulky,
+disposable data (staged self-update installers, clones, build logs) that fills
+the system drive. To relocate the whole managed scratch root to a data drive,
+set `KIROCREW_SCRATCH_ROOT` to a real directory and restart the gateway:
+
+```bash
+# Windows (PowerShell), persisted for the user:
+setx KIROCREW_SCRATCH_ROOT "D:\kirocrew-scratch"
+```
+
+The path is used as the scratch root itself. A value naming a drive/filesystem
+root or a known system directory is refused and logged
+(`KIROCREW_SCRATCH_ROOT=… is a system directory, ignoring`), falling back to the
+default `~/.kiro/crew/scratch`. Redirecting the directory with an NTFS junction
+or symlink is refused for safety, so this env var is the supported way to move
+it. `KIROCREW_SCRATCH_ROOT` is honoured on Windows only; it is ignored on Linux
+and macOS, where scratch stays at the default `~/.kiro/crew/scratch`. Note
+`KIROCREW_SCRATCH` (no `_ROOT`) is unrelated — it is an output written
+for child processes, and setting it yourself does nothing.
+
+Setting `KIROCREW_HOME` to a data drive relocates the whole data home,
+scratch included, if you want everything off `C:` rather than scratch alone.
+
 ### Subagent completion event seems cut off
 
 The completion event injected into the parent session is a bounded copy of the
