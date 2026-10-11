@@ -292,6 +292,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                         }
                     ]
                 },
+                "agentRoutes": ["GET /status"],
             }
         )
         # Every declared field must be populated above, otherwise a conditional
