@@ -1529,6 +1529,13 @@ new work": edit the instruction to `DRAIN MODE: no backfill, no new
 dispatches; patrol until in-flight items resolve; then final tally +
 autonudge_stop.`
 
+When that mode change invalidates what an in-flight worker is doing right now,
+forward it with `session_send` and `steer: true` so it lands in the worker's
+running turn rather than after it; a plain send waits out the whole turn. Keep
+`steer` off for rulings, nudges and anything that can wait for the turn
+boundary. A steer does not withdraw messages already queued (`queue_depth` from
+`session_read_message`), so name the instruction it supersedes.
+
 ## Merge, cleanup, reconcile
 
 - On merge: worktree removed non-forced (a dirty tree is kept and flagged,
