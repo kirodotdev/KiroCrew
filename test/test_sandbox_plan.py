@@ -198,6 +198,45 @@ def test_a_lift_of_an_ordinary_mask_only_cancels_it() -> None:
     )
 
 
+def test_the_boolean_opt_in_seals_every_caller_mask_not_the_tier_dirs() -> None:
+    """``seal_hidden_dirs=True`` seals every caller mask of the request; tier dirs never.
+
+    A write into a hidden directory in the sandbox lands in a WRITABLE empty tmpfs
+    stand-in and is lost on namespace teardown. The launcher seals that stand-in
+    read-only so the write fails loudly -- but only when the spawn opted in, and only
+    for its own ``extra_hidden_dirs`` (caller) masks. The tier host-credential dirs
+    (``.aws`` re-exposing ``.aws/config`` in cc mode, ``.gnupg`` ...) are never caller
+    masks, so they keep their writable stand-in -- which is what ``restore_exposed_files``
+    and the vendor CLIs depend on.
+    """
+    bundle = "/data/bundle/data"
+    other = "/data/other"
+    plan = _plan("cc", extra_hidden_dirs=(bundle, other), seal_hidden_dirs=True)
+    seal = set(plan.seal_windowless_masks)
+    # Every caller mask of the opted-in request is sealed.
+    assert bundle in seal and other in seal
+    # The tier host-credential dirs are never caller masks, so never sealed: their tools
+    # keep working and the cc-mode .aws re-expose does not hit a read-only mount.
+    assert f"{HOME}/.aws" not in seal
+    assert f"{HOME}/.gnupg" not in seal
+    # Everything in the set is actually masked (not a cancelled lift).
+    assert seal <= set(plan.sensitive_dirs)
+    # The payload the launcher reads carries the same set.
+    assert set(sandbox_plan.namespace_payload(plan)["seal_windowless_masks"]) == seal
+
+
+def test_a_mask_seals_nothing_by_default() -> None:
+    """With ``seal_hidden_dirs`` unset, nothing is sealed -- the default is unchanged.
+
+    This is the invariant the review asked for: no mask is read-only unless its creator
+    explicitly opted in, so a tier spawn and an ordinary caller mask behave exactly as
+    they did before the opt-in seal existed.
+    """
+    plan = _plan("cc", extra_hidden_dirs=("/data/bundle/data",))
+    assert plan.seal_windowless_masks == ()
+    assert sandbox_plan.namespace_payload(plan)["seal_windowless_masks"] == []
+
+
 # --------------------------------------------------------------------------- #
 # The places the two backends differ, as declared capabilities.
 # --------------------------------------------------------------------------- #

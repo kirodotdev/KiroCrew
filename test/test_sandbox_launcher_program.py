@@ -58,6 +58,7 @@ def payload(**overrides: Any) -> dict[str, Any]:
         "real_uid": os.getuid(),
         "real_gid": os.getgid(),
         "sensitive_dirs": [],
+        "seal_windowless_masks": [],
         "sensitive_dir_ids": {},
         "private_dirs": [],
         "private_dir_ids": {},
@@ -667,13 +668,11 @@ def test_every_stand_in_carries_the_pid_prefix_the_janitor_reclaims(tmp_path: Pa
     assert run.src_prefix == "kirocrew_sb_%d_" % os.getpid()
 
 
-#: Every mount a child run over :class:`_Home` makes, in order. The four extra over the
-#: bare hide/seal/window/file/ssh set are the read-only seals the mask stage now places
-#: on each windowless masked directory (``.aws``, ``policy_cache`` and the nested
-#: ``edits`` leaf, which is both a top-level sensitive dir and re-hidden under the
-#: ``apps/alpha/data`` window, so it is sealed on both passes); the windowed ``apps``
-#: mask keeps its writable stand-in.
-_MOUNTS_PER_RUN = 20
+#: Every mount a child run over :class:`_Home` makes, in order. The _Home tree's masks
+#: are all tier-origin (``.aws``, ``policy_cache``, ``apps``, the nested ``edits`` leaf),
+#: and the windowless read-only seal applies only to CALLER-supplied masks
+#: (``seal_windowless_masks``), so none of them is sealed and the count is unchanged.
+_MOUNTS_PER_RUN = 16
 
 
 @pytest.mark.parametrize("fail_at", range(1, _MOUNTS_PER_RUN + 1), ids=lambda n: f"mount-{n}")

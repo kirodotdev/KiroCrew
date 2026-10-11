@@ -198,9 +198,8 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
     """The guard must not turn a healthy spawn into a refusal."""
     libc, message, _ = _run(tmp_path, fail_at=None)
     assert message is None
-    # propagation + read-only bind + its sealing remount + credential dir + that dir's
-    # read-only seal (no window inside it) + file + ssh
-    assert len(libc.calls) == 7
+    # propagation + read-only bind + its sealing remount + credential dir + file + ssh
+    assert len(libc.calls) == 6
 
 
 @_LINUX_ONLY
@@ -211,16 +210,14 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
         (2, "exposing read-only path"),
         (3, "sealing read-only path"),
         (4, "credential directory"),
-        (5, "sealing masked directory"),
-        (6, "sensitive file"),
-        (7, "ssh key directory"),
+        (5, "sensitive file"),
+        (6, "ssh key directory"),
     ],
     ids=[
         "propagation",
         "readonly-bind",
         "readonly-seal",
         "credential-dir",
-        "masked-dir-seal",
         "sensitive-file",
         "ssh-dir",
     ],
@@ -228,14 +225,18 @@ def test_all_mounts_succeeding_lets_the_exec_proceed(tmp_path: Path) -> None:
 def test_a_failed_mount_refuses_to_exec(
     tmp_path: Path, fail_at: int, expect_in_message: str
 ) -> None:
-    """Each of the seven sites refuses, and says which control failed.
+    """Each of the six sites refuses, and says which control failed.
 
-    ``readonly-seal`` and ``masked-dir-seal`` are the two whose failure is least
-    visibly a security failure and most needs the refusal: the bind succeeded, so
-    the directory is THERE, and only the remount that withholds write did not land.
+    ``readonly-seal`` is the one whose failure is least visibly a security
+    failure and most needs the refusal: the bind succeeded, so the directory is
+    THERE and readable, and only the remount that withholds write did not land.
     Proceeding would hand the child exactly the write access the pair exists to
-    deny, with nothing observably wrong -- and for the masked-dir seal, a write
-    would then land in a throwaway tmpfs and be silently lost.
+    deny, with nothing observably wrong.
+
+    The windowless masked-directory seal added for the cron data-loss fix is not
+    one of these six: it fires only for CALLER-supplied masks
+    (``seal_windowless_masks``), and this tree's one sensitive dir is tier-origin.
+    `test_sandbox_masked_dir_readonly.py` covers that seal's own refusal.
     """
     libc, message, _ = _run(tmp_path, fail_at=fail_at)
     assert message is not None, f"site {fail_at} let the spawn proceed"
@@ -664,10 +665,9 @@ def test_carveout_mounts_run_and_spawn_proceeds(tmp_path: Path) -> None:
     scratch = _carveout_home(tmp_path)
     libc, message, _ = _run(tmp_path, fail_at=None, writable_dirs=[scratch])
     assert message is None
-    # seven guarded sites (incl. the windowless .aws read-only seal) + the carve-out
-    # bind + its rw remount
-    assert len(libc.calls) == 9
-    bind, remount = libc.calls[5], libc.calls[6]
+    # six guarded sites + the carve-out bind + its rw remount
+    assert len(libc.calls) == 8
+    bind, remount = libc.calls[4], libc.calls[5]
     assert bind.target == scratch.encode() and remount.target == scratch.encode()
     # The remount clears the seal: MS_RDONLY must NOT be re-passed.
     assert remount.flags & _MS_REMOUNT
@@ -675,7 +675,7 @@ def test_carveout_mounts_run_and_spawn_proceeds(tmp_path: Path) -> None:
 
 
 @_LINUX_ONLY
-@pytest.mark.parametrize("fail_at", [6, 7], ids=["carveout-bind", "carveout-remount"])
+@pytest.mark.parametrize("fail_at", [5, 6], ids=["carveout-bind", "carveout-remount"])
 def test_a_failed_carveout_mount_degrades_open(
     tmp_path: Path, fail_at: int, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -692,7 +692,7 @@ def test_a_failed_carveout_mount_degrades_open(
     assert message is None, "an access-widening mount failure must not refuse"
     # The hiding mounts AFTER the carve-out still ran: sensitive file + ssh,
     # and on a failed bind the pointless remount is skipped.
-    expected_calls = 8 if fail_at == 6 else 9
+    expected_calls = 7 if fail_at == 5 else 8
     assert len(libc.calls) == expected_calls
     advisory = capsys.readouterr().err
     assert "sandbox: WARNING" in advisory

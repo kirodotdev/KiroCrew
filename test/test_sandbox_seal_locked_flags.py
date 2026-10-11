@@ -209,6 +209,7 @@ def _outer_script() -> str:
             sys.exit(42)
         os.mkdir(os.path.join(mnt, b"sealed"))
         os.mkdir(os.path.join(mnt, b"control"))
+        os.mkdir(os.path.join(mnt, b"masked"))
         nested = ["%s" % unshare, "-Urm", "--propagation", "private"]
         probe = subprocess.run(nested + ["true"], capture_output=True)
         if probe.returncode != 0:
@@ -341,5 +342,138 @@ class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
         assert result.returncode == 0, (
             f"seal did not hold inside the nested namespace: "
             f"stdout={result.stdout!r} stderr={result.stderr!r}"
+        )
+        assert "OK" in result.stdout
+
+
+def _inner_mask_script() -> str:
+    """Stage 2 for the OPTED-IN directory mask: run ``mask_sensitive`` on a real kernel.
+
+    The windowless read-only seal :func:`~kiro_crew.sandbox_launcher_program.mask_sensitive`
+    places (via ``_seal_masked_dir_if_windowless``) uses the SAME remount flags as
+    :func:`seal_readonly`, but it had only ever run against a recording libc. This drives
+    it through ``mask_sensitive`` itself inside a nested namespace whose inherited tmpfs
+    has nosuid/nodev locked, exactly as a granted cron spawn would hit it.
+
+    Control first, as the sibling test does: a bare ``MS_RDONLY`` remount of the control
+    dir must be refused with EPERM, proving the locked-flag condition holds here (else
+    skip 44). Then ``mask_sensitive`` runs over the opted-in ``masked`` dir; its stand-in
+    must seal, a write into it must be refused with EROFS, and the stage must reach this
+    point WITHOUT the launcher exiting (an unhandled seal failure would ``sys.exit`` with
+    the launcher's ``sandbox: BLOCKED`` message before we get here).
+    """
+    body = textwrap.dedent("""\
+        import importlib.util
+        import json
+
+        mnt = sys.argv[1].encode()
+        control = os.path.join(mnt, b"control")
+        if _libc.mount(control, control, None, _MS_BIND, None) != 0:
+            sys.stderr.write("control bind failed: errno %d\\n" % ctypes.get_errno())
+            sys.exit(45)
+        if _libc.mount(control, control, None,
+                       _MS_REMOUNT | _MS_BIND | _MS_RDONLY, None) == 0:
+            sys.stderr.write("control remount succeeded; flags are not locked here\\n")
+            sys.exit(44)
+        _control_errno = ctypes.get_errno()
+        if _control_errno != errno.EPERM:
+            sys.stderr.write("control remount failed with errno %d, not EPERM\\n"
+                             % _control_errno)
+            sys.exit(46)
+
+        spec = importlib.util.spec_from_file_location("launcher_program", sys.argv[2])
+        program = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(program)
+        with open(sys.argv[3], encoding="utf-8") as fh:
+            plan = json.load(fh)
+        run = program.Launch(plan, program._load_libc(), environ={})
+        run.tmpfs_src = sys.argv[1]
+        run.src_prefix = "kirocrew_sb_test_"
+        # Drive the directory-mask stage itself: it binds the empty stand-in and, for an
+        # opted-in windowless mask, seals it read-only. Reaching the line after it means
+        # the launcher did NOT abort on the seal.
+        program.mask_sensitive(run)
+
+        masked = os.path.join(mnt, b"masked")
+        try:
+            with open(os.path.join(masked, b"probe"), "wb") as fh:
+                fh.write(b"x")
+        except OSError as exc:
+            if exc.errno == errno.EROFS:
+                print("OK")
+                sys.exit(0)
+            raise
+        sys.stderr.write("write succeeded; the opted-in mask was not sealed\\n")
+        sys.exit(1)
+        """)
+    return _SHARED_PREAMBLE + "\n" + body
+
+
+@_LINUX_ONLY
+class TestOptedInMaskSealsOnALockedMountRealKernel:
+    def test_an_opted_in_windowless_mask_seals_and_the_spawn_proceeds(self, tmp_path):
+        """mask_sensitive's opt-in seal lands on a real locked-flag kernel.
+
+        Proves the Design concern cannot bite: on a kernel that locks nosuid/nodev,
+        ``mask_sensitive`` seals the opted-in stand-in read-only (a write is refused with
+        EROFS) AND the launcher proceeds past the seal rather than aborting the spawn.
+        Skips — never fails — where namespaces, unshare, tmpfs, or flag locking are
+        unavailable, exactly like the sibling seal_readonly test.
+        """
+        unshare = shutil.which("unshare")
+        if unshare is None:
+            pytest.skip("unshare not available on this host")
+        probe = subprocess.run(
+            [unshare, "-Urm", "--propagation", "private", "true"],
+            capture_output=True,
+            cwd=str(tmp_path),
+            timeout=30,
+        )
+        if probe.returncode != 0:
+            pytest.skip(
+                "user namespaces unavailable: %s" % probe.stderr.decode(errors="replace").strip()
+            )
+
+        outer = tmp_path / "outer_stage.py"
+        outer.write_text(_outer_script())
+        inner = tmp_path / "inner_mask_stage.py"
+        inner.write_text(_inner_mask_script())
+        mnt = tmp_path / "mnt"
+        mnt.mkdir()
+        plan = tmp_path / "plan.json"
+        masked = str(mnt / "masked")
+        plan.write_text(
+            json.dumps(payload(sensitive_dirs=[masked], seal_windowless_masks=[masked]))
+        )
+        result = subprocess.run(
+            [
+                unshare,
+                "-Urm",
+                "--propagation",
+                "private",
+                sys.executable,
+                str(outer),
+                str(mnt),
+                str(inner),
+                unshare,
+                program.__file__,
+                str(plan),
+            ],
+            capture_output=True,
+            cwd=str(tmp_path),
+            text=True,
+            encoding="utf-8",
+            timeout=120,
+        )
+        if result.returncode == 42:
+            pytest.skip("tmpfs mount unavailable inside the namespace: %s" % result.stderr)
+        if result.returncode == 43:
+            pytest.skip("nested user namespaces unavailable: %s" % result.stderr)
+        if result.returncode == 44:
+            pytest.skip("kernel did not lock the flags here: %s" % result.stderr)
+
+        assert result.returncode == 0, (
+            f"opted-in mask did not seal (or the spawn aborted) inside the nested "
+            f"namespace: stdout={result.stdout!r} stderr={result.stderr!r}"
         )
         assert "OK" in result.stdout
