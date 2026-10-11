@@ -1156,6 +1156,10 @@ class SessionAllocationService:
         # An idle Semaphore(1) acquires without suspension, so this is the
         # authoritative non-waiting claim boundary after the locked check.
         await session.semaphore.acquire()
+        # Named before the lock wait below: a reset that pops this session
+        # during that wait reads ``turn_owner`` to learn whose permit it
+        # releases, and from here on that is this task's.
+        session.turn_owner = asyncio.current_task()
         try:
             async with self._lock:
                 self._refuse_if_ending(key, reservation)
@@ -1167,13 +1171,24 @@ class SessionAllocationService:
         except BaseException:
             # The held-semaphore contract was never returned to the caller
             # (a fence refusal above included).
-            session.semaphore.release()
+            self._release_reacquired(key, session)
             raise
         if not still_valid:
-            session.semaphore.release()
-        else:
-            session.turn_owner = asyncio.current_task()
+            self._release_reacquired(key, session)
         return still_valid
+
+    def _release_reacquired(self, key: str, session: Any) -> None:
+        """Give back the permit :meth:`_reacquire_and_validate` took, unless a reset already did.
+
+        A reset that pops the session while this task waits for the lock records
+        this task as the permit's holder and releases the permit to wake the
+        claimants parked on it (``session_lifecycle._wake_turn_waiters``), so a
+        second release here would over-release it. Only a popped session can
+        carry that record, so a session still registered is always released.
+        """
+        if self._sessions.get(key) is not session and self._owner.absorb_orphaned_release(key):
+            return
+        session.semaphore.release()
 
     async def _evict_stale_session(self, key: str, session: Any) -> None:
         """Pop only the observed stale object and close it outside the lock."""

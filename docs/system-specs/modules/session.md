@@ -1084,7 +1084,13 @@ against sweep completeness, and are torn down at `close_all`.
   below; `get_or_create` turns that into a wait for the lift and a fresh
   allocation, `open_task_session` surfaces it). Cancellation while parked on
   `self._lock` after the acquire releases the semaphore before propagating, so
-  the key never stays permanently locked. Liveness uses
+  the key never stays permanently locked. The helper records itself as the
+  permit's holder (`turn_owner`) the moment the acquire completes, before the
+  lock wait: a `reset` that pops the session during that wait records this task
+  as the orphaned holder and releases the permit to wake the parked claimants,
+  so the refusal paths give the permit back through `_release_reacquired`,
+  which absorbs that record (`absorb_orphaned_release`) instead of releasing a
+  second time when the session is no longer registered. Liveness uses
   `_provider_effectively_alive` (a dead Claude-Code `per_session` process
   counts as alive — it reconnects lazily on the next `stream()`).
   Consolidating this acquire→relock→revalidate dance in ONE place is
