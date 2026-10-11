@@ -31,6 +31,7 @@ if TYPE_CHECKING:
         _dashboard_state,
         _discover_project_agents,
         _get_default_agent,
+        _hydrated_sessions,
         _is_slack_restricted,
         _list_all_agent_names,
         _mark_titled,
@@ -660,6 +661,8 @@ async def _bang_thread_agent(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
+    from kiro_crew.slack import thread_override_slots
+
     parts = cmd_text.split()
     if len(parts) < 2:
         current = _thread_agents.get(session_key, "")
@@ -679,6 +682,7 @@ async def _bang_thread_agent(
     agent_name = parts[1]
     if agent_name.lower() in ("default", "off"):
         _thread_agents.pop(session_key, None)
+        thread_override_slots.unpin(session_key, "agent")
         if conversation_log:
             try:
                 await asyncio.to_thread(
@@ -706,6 +710,23 @@ async def _bang_thread_agent(
         await slack.post_message(
             channel, f"❌ Unknown agent `{agent_name}`. Available: {names}", reply_ts
         )
+        return ""
+    # A project agent's name is whatever its spec declares; keep it only within the
+    # maps' per-value limit, checked before anything is pinned or written.
+    too_long = thread_override_slots.setter_refusal("agent", resolved)
+    if too_long:
+        logger.warning(
+            "!ta refused for %s: agent name of %d characters", session_key, len(resolved)
+        )
+        await slack.post_message(channel, too_long, reply_ts)
+        return ""
+    # Pinned: hydration might not read this choice back (see thread_override_slots).
+    # Pinned first: a refused thread gets no override row at all.
+    if not thread_override_slots.pin(
+        session_key, "agent", _hydrated_sessions, _thread_agents, _thread_projects
+    ):
+        logger.warning("!ta refused for %s: every thread slot is pinned", session_key)
+        await slack.post_message(channel, thread_override_slots.refusal_text(), reply_ts)
         return ""
     _thread_agents[session_key] = resolved
     if conversation_log:
@@ -744,6 +765,8 @@ async def _bang_project(
     user_id: str,
     conversation_log: ConversationLog | None,
 ) -> str:
+    from kiro_crew.slack import thread_override_slots
+
     parts = cmd_text.split(maxsplit=1)
     if len(parts) < 2:
         current = _thread_projects.get(session_key, "")
@@ -759,6 +782,7 @@ async def _bang_project(
     raw_path = parts[1].strip()
     if raw_path.lower() in ("off", "clear", "reset"):
         _thread_projects.pop(session_key, None)
+        thread_override_slots.unpin(session_key, "project")
         if conversation_log:
             try:
                 await asyncio.to_thread(
@@ -778,6 +802,20 @@ async def _bang_project(
         await slack.post_message(channel, "Thread project cleared.", reply_ts)
         return ""
     resolved = os.path.realpath(os.path.expanduser(raw_path))
+    # Checked first, so no record below ever carries an over-limit path: the maps keep
+    # a value only within their per-value limit (a Windows long path can pass it).
+    too_long = thread_override_slots.setter_refusal("project", resolved)
+    if too_long:
+        sel().log_tool_invocation(
+            session_key=session_key,
+            source="slack",
+            tool_name="!project",
+            tool_kind="command",
+            outcome="project_denied_too_long",
+            metadata={"user": user_id, "channel": channel, "length": len(resolved)},
+        )
+        await slack.post_message(channel, too_long, reply_ts)
+        return ""
     if is_sensitive_path(resolved):
         sel().log_tool_invocation(
             session_key=session_key,
@@ -801,6 +839,14 @@ async def _bang_project(
             metadata={"user": user_id, "channel": channel, "project": resolved},
         )
         await slack.post_message(channel, f"Not a directory: `{resolved}`", reply_ts)
+        return ""
+    # Pinned: hydration might not read this choice back (see thread_override_slots).
+    # Pinned first: a refused thread gets no override row at all.
+    if not thread_override_slots.pin(
+        session_key, "project", _hydrated_sessions, _thread_agents, _thread_projects
+    ):
+        logger.warning("!project refused for %s: every thread slot is pinned", session_key)
+        await slack.post_message(channel, thread_override_slots.refusal_text(), reply_ts)
         return ""
     _thread_projects[session_key] = resolved
     if conversation_log:

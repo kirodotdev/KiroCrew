@@ -1773,11 +1773,20 @@ def _clean_slack_thread_state():
     scheduling. Idempotent with per-file fixtures that already clear a subset.
     """
     from kiro_crew.slack import handler as _h
+    from kiro_crew.slack import thread_override_slots as _slots
 
-    for _m in (_h._thread_temporary, _h._thread_incognito, _h._titled_threads, _h._thread_agents):
+    _maps = (
+        _h._thread_temporary,
+        _h._thread_incognito,
+        _h._titled_threads,
+        _h._thread_agents,
+        _slots._order,
+        _slots._pinned,
+    )
+    for _m in _maps:
         _m.clear()
     yield
-    for _m in (_h._thread_temporary, _h._thread_incognito, _h._titled_threads, _h._thread_agents):
+    for _m in _maps:
         _m.clear()
 
 

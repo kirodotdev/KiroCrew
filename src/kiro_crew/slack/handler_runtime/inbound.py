@@ -191,17 +191,23 @@ def _read_thread_overrides(
         logger.debug("Failed to hydrate thread overrides for %s", session_key, exc_info=True)
         return "", ""
     from kiro_crew.messaging.session_resume import session_agent_from_metadata
+    from kiro_crew.slack.thread_override_slots import bounded_override
 
-    resolved_agent = session_agent_from_metadata(meta) or meta.get("agent") or ""
+    # Nothing bounds what the metadata holds, so each value is kept only as text within
+    # the per-value limit of the maps it lands in (OVERRIDE_VALUE_MAX_CHARS).
+    resolved_agent = bounded_override(
+        session_key, "agent", session_agent_from_metadata(meta) or meta.get("agent") or ""
+    )
     project = ""
-    if meta.get("project"):
+    raw_project = bounded_override(session_key, "project", meta.get("project") or "")
+    if raw_project:
         # Defense-in-depth: re-validate the persisted path at this input
         # boundary. Conversation-log metadata is normally written through the
         # guarded !project handler, but if it is ever corrupted or tampered
         # with, a sensitive credential path (~/.aws, ~/.ssh, …) must never be
         # loaded into the in-memory cache.
-        if not is_sensitive_path(meta["project"]):
-            project = meta["project"]
+        if not is_sensitive_path(raw_project):
+            project = raw_project
         else:
             logger.warning(
                 "Ignoring sensitive project path from thread metadata for %s",
@@ -214,10 +220,13 @@ async def _hydrate_thread_overrides(
     session_key: str, conversation_log: ConversationLog | None
 ) -> None:
     """Resolve private identity off-loop, then preserve any newer live selections."""
+    from kiro_crew.slack import thread_override_slots as slots
+
     if session_key in _hydrated_sessions:
+        slots.touch(session_key)
         return
     if not conversation_log:
-        _hydrated_sessions.add(session_key)
+        slots.note_hydrated(session_key, _hydrated_sessions, _thread_agents, _thread_projects)
         return
     agent_before = _thread_agents.get(session_key)
     project_before = _thread_projects.get(session_key)
@@ -226,7 +235,7 @@ async def _hydrate_thread_overrides(
     # worker read it. Never publish a stale result over that live selection.
     if session_key in _hydrated_sessions:
         return
-    _hydrated_sessions.add(session_key)
+    slots.note_hydrated(session_key, _hydrated_sessions, _thread_agents, _thread_projects)
     if agent and _thread_agents.get(session_key) == agent_before:
         _thread_agents[session_key] = agent
     if project and _thread_projects.get(session_key) == project_before:
@@ -235,6 +244,10 @@ async def _hydrate_thread_overrides(
 
 def _get_agent_for_session(session_key: str) -> str:
     """Return agent for a session: thread override first, then global default."""
+    from kiro_crew.slack import thread_override_slots
+
+    # Background readers (monitor ticks, subagent notices) keep their thread resident.
+    thread_override_slots.touch(session_key)
     return _thread_agents.get(session_key) or _get_default_agent()
 
 
