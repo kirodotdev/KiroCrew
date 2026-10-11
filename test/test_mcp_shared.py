@@ -1049,6 +1049,26 @@ class TestStdioLoopBusyQueue:
             release.set()
             harness.close()
 
+    @pytest.mark.parametrize("method", ["server/discover", "resources/list"])
+    def test_unknown_method_gets_method_not_found_while_busy(self, monkeypatch, method):
+        call_tool, started, release = _slow_then_echo()
+        harness = _LoopHarness(monkeypatch, call_tool)
+        try:
+            harness.send(_tools_call(601, "slow"))
+            assert started.wait(timeout=5.0)
+            harness.send({"jsonrpc": "2.0", "id": 699, "method": method, "params": {}})
+            # Answered while the slow call still holds the worker, not after it.
+            assert harness.wait_for(lambda: any(r[0] == 699 for r in harness.responses))
+            assert not any(r[0] == 601 for r in harness.responses)
+            answer = next(r for r in harness.responses if r[0] == 699)
+            assert answer[2] is not None
+            assert answer[2]["code"] == mcp_shared.JSONRPC_METHOD_NOT_FOUND
+            release.set()
+            assert harness.wait_for(lambda: any(r[0] == 601 for r in harness.responses))
+        finally:
+            release.set()
+            harness.close()
+
 
 class _ReadSpy:
     """Wraps ``_read_message`` and records what each call returned.

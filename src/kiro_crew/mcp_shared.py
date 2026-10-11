@@ -2312,10 +2312,14 @@ def _run_stdio_dispatch_loop(
                         )
                     else:
                         _pending_calls.append(req)
-                # Other messages while busy: drop gracefully. Notifications are
-                # fine to drop; initialize/initialized never arrive mid-tool.
-                elif method == "tools/list" and req_id is not None:
-                    respond(req_id, {"tools": _listable_tools(_req_caller(params))})
+                # Any other request with an id gets the answer the idle path
+                # gives it: _dispatch serves tools/list, initialize and the like
+                # inline and answers an unknown method (a client's version
+                # probe such as server/discover) with -32601 at once. Left
+                # unanswered, the client would wait out its own timeout.
+                # Notifications without an id are dropped.
+                elif req_id is not None:
+                    _dispatch(method, req_id, params)
             except Exception:  # noqa: BLE001 - one message must not end the server
                 _answer_internal_error(method, req_id)
             continue
