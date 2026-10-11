@@ -70,7 +70,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from aiohttp import web
 
@@ -370,33 +370,64 @@ def _worktree_branches(root: str) -> dict[str, str] | None:
     "nothing is registered", because cleanup keys destructive decisions off this
     answer.
 
-    Parsed from ``worktree list --porcelain``, whose per-tree block carries a
-    ``branch refs/heads/<name>`` line (absent when detached, which maps to "").
+    A thin projection of :func:`_worktree_entries` to just the branch, kept for
+    the callers (cleanup) that do not need the lock state.
+    """
+    entries = _worktree_entries(root)
+    if entries is None:
+        return None
+    return {path: entry.branch for path, entry in entries.items()}
+
+
+#: git's own ``locked`` reason for a worktree whose ``git worktree add`` has
+#: registered it but not yet finished checking it out. The lock is cleared once
+#: the checkout completes, so an entry still carrying it is an add that never
+#: finished (its process was killed, e.g. a gateway restart).
+_INITIALIZING_LOCK = "initializing"
+
+
+class _WorktreeEntry(NamedTuple):
+    #: Branch name without ``refs/heads/`` ("" when detached).
+    branch: str
+    #: ``None`` when not locked; otherwise git's lock reason ("" if none given).
+    locked_reason: str | None
+
+
+def _worktree_entries(root: str) -> dict[str, _WorktreeEntry] | None:
+    """Map ``normalized worktree path -> (branch, lock reason)`` for every tree.
+
+    Returns ``None`` on a git failure, as :func:`_worktree_branches` does and for
+    the same reason. Parsed from ``worktree list --porcelain``, whose per-tree
+    block carries a ``branch refs/heads/<name>`` line (absent when detached) and,
+    when the tree is locked, a ``locked`` line optionally followed by the reason.
     The path alone is not enough to identify a worktree for reuse: ``_dir_slug``
     keeps only a branch's LAST segment, so ``feat/foo`` and ``fix/foo`` derive the
-    same destination. Matching on path only would hand back the wrong branch's
-    worktree as "reused".
+    same destination, and matching on path only would hand back the wrong
+    branch's worktree as "reused".
     """
     # `-z` because a worktree path may itself contain a newline: with the
     # line-oriented form such a path splits across records, never matches its
     # registered entry, and a retry 409s instead of reporting `reused`.
-    # In `-z` mode git NUL-terminates every
-    # attribute and emits an extra NUL between entries, so empty fields are
-    # simply skipped.
+    # In `-z` mode git NUL-terminates every attribute and emits an extra NUL
+    # between entries, so empty fields are simply skipped.
     listing = _run_git(["worktree", "list", "--porcelain", "-z"], root)
     if listing.returncode != 0:
         return None
-    trees: dict[str, str] = {}
+    trees: dict[str, _WorktreeEntry] = {}
     current = ""
     for field in listing.stdout.split("\0"):
         if not field:
             continue
         if field.startswith("worktree "):
             current = _norm_path(field[len("worktree ") :])
-            trees[current] = ""
+            trees[current] = _WorktreeEntry("", None)
         elif field.startswith("branch ") and current:
             ref = field[len("branch ") :]
-            trees[current] = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            name = ref[len("refs/heads/") :] if ref.startswith("refs/heads/") else ref
+            trees[current] = trees[current]._replace(branch=name)
+        elif current and (field == "locked" or field.startswith("locked ")):
+            reason = field[len("locked ") :] if field.startswith("locked ") else ""
+            trees[current] = trees[current]._replace(locked_reason=reason)
     return trees
 
 
@@ -648,8 +679,8 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
             409,
         )
 
-    registered = _worktree_branches(root)
-    if registered is None:
+    entries = _worktree_entries(root)
+    if entries is None:
         return ({"error": "git could not list this repository's worktrees"}, 503)
 
     # Idempotent re-entry: if the destination is ALREADY the registered worktree
@@ -659,7 +690,32 @@ def _create_worktree_sync(root: str, branch: str) -> tuple[dict, int]:
     # path is someone else's — including a worktree for a DIFFERENT branch that
     # happens to derive the same directory name — and is refused.
     if os.path.exists(dest):
-        if registered.get(_norm_path(dest)) == branch:
+        entry = entries.get(_norm_path(dest))
+        if entry is not None and entry.locked_reason == _INITIALIZING_LOCK:
+            # `git worktree add` registers the worktree and sets its lock to
+            # "initializing" BEFORE checking files out, clearing it only once the
+            # checkout finishes. An entry still carrying it is an add that never
+            # finished — its process was killed (a gateway restart) — so the tree
+            # is partly or not at all checked out, and its branch line may not even
+            # be recorded yet (git leaves it detached until the checkout). Reusing
+            # it, or colliding a fresh create with it, would open the session on a
+            # tree missing files, which the next commit would record as deletions.
+            # Refuse rather than reuse; removing it is left to the user (or a
+            # follow-up) because it needs an unlock+remove this request does not do.
+            return (
+                {
+                    "error": (
+                        "A worktree directory exists here but its creation never "
+                        "finished. Remove the unfinished worktree and try again."
+                    ),
+                    "code": "worktree_unfinished",
+                },
+                409,
+            )
+        if entry is not None and entry.branch == branch:
+            # Any other lock (`git worktree lock`) only stops git from pruning,
+            # moving or removing a completed tree, so it is reused like an
+            # unlocked one.
             return (
                 {"ok": True, "path": dest, "branch": branch, "base": "", "reused": True},
                 200,

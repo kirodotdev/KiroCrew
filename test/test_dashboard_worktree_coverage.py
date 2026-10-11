@@ -724,6 +724,13 @@ def sync_env(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(wt, "_checkout_filter", lambda r: state.checkout_filter)
     monkeypatch.setattr(wt, "_worktree_branches", lambda r: state.registered)
+    monkeypatch.setattr(
+        wt,
+        "_worktree_entries",
+        lambda r: None
+        if state.registered is None
+        else {path: wt._WorktreeEntry(branch, None) for path, branch in state.registered.items()},
+    )
     monkeypatch.setattr(wt, "_resolve_base_ref", lambda r: state.base)
     monkeypatch.setattr(wt, "_resolve_commit", lambda r, ref: state.sha)
     monkeypatch.setattr(wt, "_claim_branch", lambda r, b, s: state.claim)

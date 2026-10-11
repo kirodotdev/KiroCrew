@@ -762,7 +762,7 @@ class TestConcurrencySafety:
         """If git cannot enumerate worktrees, refuse rather than guess."""
         async with TestClient(TestServer(_make_app(str(repo)))) as client:
             with patch(
-                "kiro_crew.dashboard.handlers.worktree._worktree_branches", return_value=None
+                "kiro_crew.dashboard.handlers.worktree._worktree_entries", return_value=None
             ):
                 resp = await client.post(
                     "/api/worktree/create", json={"repo": str(repo), "branch": "feat/blind"}
