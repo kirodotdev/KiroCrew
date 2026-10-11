@@ -147,6 +147,46 @@ async def test_provenance_written_once_before_the_spawn_event() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("effort", ["high", ""])
+async def test_provenance_write_records_the_runs_reasoning_effort(effort: str) -> None:
+    """The run's per-spawn reasoning effort rides the same write as
+    ``requested_model``, so a continuation after a gateway restart restores it
+    from state.json. A run spawned without one records ``""``."""
+    sessions = _mock_sessions(served_model="model-served")
+    manager = SubagentManager(
+        sessions=sessions,
+        ctx_builder=_mock_ctx_builder(),
+        is_yolo=lambda: True,
+    )
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov02",
+        task="provenance task",
+        model="model-req",
+    )
+    info.reasoning_effort = effort
+    manager._log_spawned(info)
+    manager._agents[info.id] = info
+    writes: list[dict[str, Any]] = []
+
+    def _spy_update(agent_id: str, **kwargs: Any) -> bool:
+        writes.append(dict(kwargs))
+        return True
+
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.update_state", side_effect=_spy_update),
+    ):
+        await manager._run_inner(info, f"subagent:{info.id}")
+
+    prov_writes = [kw for kw in writes if "requested_model" in kw]
+    assert len(prov_writes) == 1, f"expected one provenance write, got {prov_writes}"
+    assert prov_writes[0]["requested_model"] == "model-req"
+    assert prov_writes[0].get("reasoning_effort") == effort, prov_writes[0]
+
+
+@pytest.mark.asyncio
 async def test_provenance_write_retries_once_on_transient_failure() -> None:
     """The pre-spawn write is the SINGLE owner of the provenance fields, so a
     transient failure gets its second chance from that write's own bounded

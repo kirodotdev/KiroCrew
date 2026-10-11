@@ -3866,3 +3866,135 @@ class TestSuccessorClaim:
         assert second is not None and second.done
         assert second.error.startswith("conversation_busy")
         assert starts == ["x"]
+
+
+# A continuation is another turn of the SAME run: it keeps the model and the
+# reasoning effort the run was spawned with, unless the caller names a model.
+# The provider request is read from ``get_or_create``'s kwargs. Synthetic ids.
+
+
+def _pinned_run(manager: SubagentManager, run_id: str) -> SubagentInfo:
+    run = SubagentInfo(id=run_id, task="first task", done=True)
+    run.model = "model-a"
+    run.reasoning_effort = "high"
+    run.requested_model = "model-a"
+    manager._agents[run_id] = run
+    return run
+
+
+def _provider_request(sessions: MagicMock) -> dict[str, object]:
+    kwargs = sessions.get_or_create.call_args.kwargs
+    return {
+        "model": kwargs.get("model"),
+        "reasoning_effort_override": kwargs.get("reasoning_effort_override"),
+    }
+
+
+@pytest.mark.asyncio
+async def test_continuation_without_a_model_keeps_the_runs_model_and_effort() -> None:
+    await asyncio.to_thread(create_agent_folder, "pinned-b", memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, "pinned-b", "")
+    sessions = _mock_sessions(resumed=True)
+    manager = _manager(sessions)
+    _pinned_run(manager, "pinned-b")
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        info = manager.continue_conversation("pinned-b", "follow-up work")
+        assert info is not None and not info.error, info.error
+        await asyncio.wait_for(manager._tasks[info.id], timeout=10)
+    assert _provider_request(sessions) == {
+        "model": "model-a",
+        "reasoning_effort_override": "high",
+    }
+    assert info.requested_model == "model-a"
+
+
+@pytest.mark.parametrize(
+    ("recorded_model", "recorded_effort", "expected"),
+    [
+        ("model-a", "high", {"model": "model-a", "reasoning_effort_override": "high"}),
+        # "auto" is the record of an unpinned run: there is no model to keep.
+        ("auto", "", {"model": None, "reasoning_effort_override": None}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_continuation_after_a_restart_keeps_the_recorded_model_and_effort(
+    recorded_model: str, recorded_effort: str, expected: dict[str, object]
+) -> None:
+    # After a gateway restart the run is gone from memory; its state.json
+    # records the model and effort it was spawned with.
+    await asyncio.to_thread(create_agent_folder, "pinned-c", memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, "pinned-c", "")
+    sessions = _mock_sessions(resumed=True)
+    sessions.resumable_sid = MagicMock(side_effect=[None, "sid-from-state"])
+    manager = _manager(sessions)
+    state = {
+        "session_id": "sid-from-state",
+        "provider": "acp",
+        "cwd": "",
+        "keep": True,
+        "requested_model": recorded_model,
+        "resolved_model": recorded_model,
+        "reasoning_effort": recorded_effort,
+    }
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch("kiro_crew.subagent.read_state", return_value=state),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        info = manager.continue_conversation("pinned-c", "follow-up after restart")
+        assert info is not None and not info.error, info.error
+        await asyncio.wait_for(manager._tasks[info.id], timeout=10)
+    assert _provider_request(sessions) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_follow_up_keeps_the_runs_model_and_effort() -> None:
+    await asyncio.to_thread(create_agent_folder, "pinned-a", memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, "pinned-a", "")
+    sessions = _mock_sessions(resumed=True)
+    manager = _manager(sessions)
+    run = _pinned_run(manager, "pinned-a")
+    run.done = False
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        ok, detail = await manager.follow_up_run("pinned-a", "one more thing")
+        assert ok, detail
+        run.done = True  # the run's turn ends, so the watcher dispatches
+        for _ in range(200):
+            if sessions.get_or_create.await_count:
+                break
+            await asyncio.sleep(0.05)
+        children = [t for k, t in manager._tasks.items() if k != "pinned-a"]
+        await asyncio.wait_for(asyncio.gather(*children, return_exceptions=True), timeout=10)
+    assert sessions.get_or_create.await_count, "the follow-up was never dispatched"
+    assert _provider_request(sessions) == {
+        "model": "model-a",
+        "reasoning_effort_override": "high",
+    }
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_model_on_a_continuation_wins_over_the_runs_model() -> None:
+    await asyncio.to_thread(create_agent_folder, "pinned-x", memory_mode="persistent")
+    await asyncio.to_thread(write_run_agent, "pinned-x", "")
+    sessions = _mock_sessions(resumed=True)
+    manager = _manager(sessions)
+    _pinned_run(manager, "pinned-x")
+    with (
+        patch("kiro_crew.subagent.Stats"),
+        patch("kiro_crew.subagent.sel"),
+        patch.object(manager, "_promote_conversation", return_value=object()),
+    ):
+        info = manager.continue_conversation("pinned-x", "follow-up work", model="model-b")
+        assert info is not None and not info.error, info.error
+        await asyncio.wait_for(manager._tasks[info.id], timeout=10)
+    assert _provider_request(sessions)["model"] == "model-b"
+    assert info.requested_model == "model-b"

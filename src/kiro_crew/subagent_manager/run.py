@@ -2568,6 +2568,8 @@ class RunEventCoordinator(ManagerComponent):
                     "model provenance",
                     requested_model=info.requested_model,
                     resolved_model=info.resolved_model,
+                    # A continuation after a restart restores the effort from here.
+                    reasoning_effort=info.reasoning_effort,
                 )
                 if _wrote:
                     break

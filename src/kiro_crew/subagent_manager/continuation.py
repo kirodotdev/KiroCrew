@@ -671,6 +671,21 @@ class ContinuationCoordinator(ManagerComponent):
             if _captured_state is ...
             else self._inherited_context_groups_impl(conv_id, state=_captured_state)
         )
+        # A continuation is another turn of the SAME run, so it keeps the model
+        # and the reasoning effort the run was spawned with unless the caller
+        # names a model. After a gateway restart the run is gone from memory;
+        # its state.json records both at spawn, and "auto" there is the record
+        # of an unpinned run, not a model id.
+        if original is not None:
+            run_model, run_effort = original.model or "", original.reasoning_effort
+        else:
+            recorded = (read_state(conv_id) or {}) if _captured_state is ... else _captured_state
+            run_model = str(recorded.get("requested_model") or "")
+            if run_model == "auto":
+                run_model = ""
+            run_effort = str(recorded.get("reasoning_effort") or "")
+        if not model and run_model:
+            model = run_model
         delegation = (
             original.delegation
             if original is not None
@@ -698,6 +713,7 @@ class ContinuationCoordinator(ManagerComponent):
             parent_session_key=parent_session_key,
             agent=agent,
             model=model,
+            reasoning_effort=run_effort,
             max_turns=max_turns,
             keep=True,
             cwd=cwd,
