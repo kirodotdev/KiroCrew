@@ -18,6 +18,7 @@ from kiro_crew.agent_files import GUEST_AGENT_FILENAME as _GUEST_AGENT_FILENAME
 from kiro_crew.agent_files import KNOWLEDGE_AGENT_FILENAME as _KNOWLEDGE_AGENT_FILENAME
 from kiro_crew.agent_files import LITE_AGENT_FILENAME as _LITE_AGENT_FILENAME
 from kiro_crew.agent_files import RESEARCH_AGENT_FILENAME as _RESEARCH_AGENT_FILENAME
+from kiro_crew.agent_files import TEAM_LEAD_AGENT_FILENAME as _TEAM_LEAD_AGENT_FILENAME
 from kiro_crew.agent_materialization import auto_approve, managed_mcp
 
 
@@ -150,6 +151,35 @@ def _install_research_agent() -> None:
     path = agent_mod.kiro_agents_dir_path() / _RESEARCH_AGENT_FILENAME
     agent_mod._atomic_json_write(path, config)
     agent_mod.logger.info("Installed research agent config: %s", path)
+
+
+def _install_team_lead_agent() -> None:
+    """Generate and install the kirocrew-team-lead agent config.
+
+    Derives from the kirocrew agent (MCP servers, security, tools) and swaps in the
+    team-lead charter + identity, leaving out the platform guide server
+    (:func:`_without_guide_server`) exactly as research does. The surface it runs on
+    is therefore whatever ``build_agent_config`` already filtered against the
+    governance ceiling -- this adds no grant, no server and no auto-approval of its
+    own, so there is nothing here for a ceiling change to re-filter separately.
+
+    Overwritten on every boot, like every other agent in this sequence. An operator
+    who wants a customized lead copies it to a different agent name; a hand-edit at
+    THIS name is replaced on the next boot, which is the same contract
+    ``kirocrew-research`` and ``kirocrew-knowledge`` have always had.
+    """
+    config = _without_guide_server(agent_mod.build_agent_config())
+    config["name"] = "kirocrew-team-lead"
+    config["description"] = (
+        "Owns a goal end to end and runs a team on it — splits it into work-ledger "
+        "items, does the small focused ones itself, dispatches a session for every "
+        "other one, and patrols that fleet."
+    )
+    config["prompt"] = agent_mod._TEAM_LEAD_SYSTEM_PROMPT
+    agent_mod.kiro_agents_dir_path().mkdir(parents=True, exist_ok=True)
+    path = agent_mod.kiro_agents_dir_path() / _TEAM_LEAD_AGENT_FILENAME
+    agent_mod._atomic_json_write(path, config)
+    agent_mod.logger.info("Installed team lead agent config: %s", path)
 
 
 def _install_dashboard_manager_agent() -> None:
