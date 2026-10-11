@@ -5492,7 +5492,10 @@
       "unlink_source_link": "Select a PR or Issue chip to permanently hide from this session. The source and transcript stay unchanged.",
       "unlink_source_link_confirm": "Select again to permanently hide “{{label}}”",
       "unlink_source_link_failed": "Could not hide. Try again.",
-      "waiting_for_memory": "Waiting for free RAM"
+      "waiting_for_memory": "Waiting for free RAM",
+      "chat_with_session": "Chat with {{title}}",
+      "chat_with_session_desc": "The session that started this folder's other chats",
+      "conductor_tag": "conductor"
     },
     "connectionsPage": {
       "action_failed": "Action failed: {{error}}",

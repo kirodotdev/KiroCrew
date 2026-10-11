@@ -12070,7 +12070,10 @@
       "crew_enable": "চালু করো",
       "crew_enable_named": "{{name}} চালু করো",
       "crew_spaces_unavailable": "{{name}} থেকে ফোল্ডার লোড করা যায়নি। এর চ্যাটগুলো ফোল্ডার ছাড়াই দেখানো হচ্ছে।",
-      "crew_enable_failed": "{{name}} চালু করা যায়নি"
+      "crew_enable_failed": "{{name}} চালু করা যায়নি",
+      "chat_with_session": "{{title}} এর সাথে চ্যাট",
+      "chat_with_session_desc": "এই ফোল্ডারের বাকি চ্যাটগুলো যে সেশন শুরু করেছে",
+      "conductor_tag": "কন্ডাক্টর"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",

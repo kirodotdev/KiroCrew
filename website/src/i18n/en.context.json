@@ -671,6 +671,9 @@
     "components.guideLayer.select_the_only_one_tick": "Guide panel line on a choose-one step whose pick is the row's checkbox (the outline is on that checkbox) when the list holds exactly one job.",
     "components.guideLayer.select_the_only_one_app": "Guide panel line on the Library's choose-the-app step when only one app card is listed: the outline is on that card's ⋯ (More actions) button.",
     "pages.chatSidebar.bulk_switch_keeps_conversation": "Description under the Switch All Sessions heading, where one model is picked for every live session. The conversation itself (the transcript and the agent's memory of it) is kept and resumes on the new model, so do not word it as a reset, a deletion or a fresh start.",
-    "pages.chatSidebar.bulk_switch_stops_running_reply": "Red caveat in the Switch All Sessions panel, shown only after the user unticks the 'Skip N running sessions' checkbox while some sessions are mid-reply: those sessions are switched as well, and the reply each is producing is cut off."
+    "pages.chatSidebar.bulk_switch_stops_running_reply": "Red caveat in the Switch All Sessions panel, shown only after the user unticks the 'Skip N running sessions' checkbox while some sessions are mid-reply: those sessions are switched as well, and the reply each is producing is cut off.",
+    "pages.chatSidebar.chat_with_session": "First line of the item in a sidebar folder's actions menu that opens the chat of the session which started the folder's other sessions. {{title}} is that session's own title, shown verbatim.",
+    "pages.chatSidebar.chat_with_session_desc": "Second, quieter line of that same menu item, explaining what the named session is to the folder. It carries the whole explanation, so keep it a plain description rather than a label.",
+    "pages.chatSidebar.conductor_tag": "Small tag beside the agent name on the one session card a sidebar folder is drawn around: the session that started the folder's other sessions. It is a role the session plays in that folder, not a status or a job title, and it must stay one short word because it shares a narrow line with the agent name."
   }
 }

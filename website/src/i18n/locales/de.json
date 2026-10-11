@@ -12070,7 +12070,10 @@
       "crew_enable": "Aktivieren",
       "crew_enable_named": "{{name}} aktivieren",
       "crew_spaces_unavailable": "Ordner von {{name}} konnten nicht geladen werden. Die Chats werden ohne sie aufgelistet.",
-      "crew_enable_failed": "{{name}} konnte nicht aktiviert werden"
+      "crew_enable_failed": "{{name}} konnte nicht aktiviert werden",
+      "chat_with_session": "Chat mit {{title}}",
+      "chat_with_session_desc": "Die Sitzung, die die anderen Chats in diesem Ordner gestartet hat",
+      "conductor_tag": "Conductor"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",

@@ -11882,7 +11882,10 @@
       "crew_enable": "有効にする",
       "crew_enable_named": "{{name}} を有効にする",
       "crew_spaces_unavailable": "{{name}} のフォルダーを読み込めませんでした。チャットはフォルダーなしで表示されています。",
-      "crew_enable_failed": "{{name}} を有効にできませんでした"
+      "crew_enable_failed": "{{name}} を有効にできませんでした",
+      "chat_with_session": "{{title}} とチャット",
+      "chat_with_session_desc": "このフォルダーの他のチャットを開始したセッション",
+      "conductor_tag": "コンドクター"
     },
     "connectionsPage": {
       "action_failed": "操作に失敗しました: {{error}}",

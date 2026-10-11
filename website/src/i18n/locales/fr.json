@@ -12258,7 +12258,10 @@
       "crew_enable": "Activer",
       "crew_enable_named": "Activer {{name}}",
       "crew_spaces_unavailable": "Impossible de charger les dossiers de {{name}}. Ses discussions sont listées sans eux.",
-      "crew_enable_failed": "Impossible d'activer {{name}}"
+      "crew_enable_failed": "Impossible d'activer {{name}}",
+      "chat_with_session": "Chat avec {{title}}",
+      "chat_with_session_desc": "La session qui a lancé les autres chats de ce dossier",
+      "conductor_tag": "conducteur"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
