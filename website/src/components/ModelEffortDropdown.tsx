@@ -59,6 +59,10 @@ interface Props {
    *  turns run on a peer crew. Forwarded verbatim to the slider; see
    *  `ReasoningEffortDropdown`'s `levelsOverride`. */
   effortLevelsOverride?: string[]
+  /** See ReasoningEffortDropdown's `writeEffort`. */
+  writeEffort?: (level: string) => Promise<{ reasoning_effort?: string; model?: string } | undefined>
+  /** See ReasoningEffortDropdown's `onWriteError`. */
+  onWriteError?: (message: string) => void
   onListKeyDown: (e: React.KeyboardEvent) => void
   /** Deep-link to the Settings row that sets the GLOBAL fallback model — the
    *  tier that applies to agents pinning no model of their own. Optional so
@@ -98,7 +102,7 @@ export default function ModelEffortDropdown({
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
   pinModelUnavailable = false, pinnedToAgent = false, modelsLoading = false,
-  modelsFailed = false, onRetryModels, retryingModels = false,
+  modelsFailed = false, onRetryModels, retryingModels = false, writeEffort, onWriteError,
 }: Props) {
   const ime = useImeGuard()
   const [attachList, listEdges, remeasureList] = useScrollEdgesY<HTMLDivElement>()
@@ -189,7 +193,7 @@ export default function ModelEffortDropdown({
                 sitting ON the list. */}
             {hasEffort && slot && (
               <div className="mt-2 shrink-0 border-t border-border">
-                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} />
+                <ReasoningEffortDropdown slot={slot} currentEffort={currentEffort} defaultEffort={defaultEffort} onClose={onClose} embedded levelsOverride={effortLevelsOverride} writeEffort={writeEffort} onWriteError={onWriteError} />
               </div>
             )}
             {onPinToAgent && agentName && (
