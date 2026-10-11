@@ -999,6 +999,23 @@ class OrphanStallMonitor(ManagerComponent):
                 await self._manager.retry_owed_teardown_sweeps()
             except Exception:
                 logger.debug("Reaper: teardown store-sweep retry failed", exc_info=True)
+            # A tombstone whose write failed (a full disk) is written once space
+            # returns, so a run already reported is not reported again at the next
+            # start. Off the loop: it writes files. Not during shutdown: cancel_all
+            # retries before it re-admits undelivered runs to orphan recovery, and
+            # a retry still writing when shutdown begins stops before its next write.
+            from functools import partial
+
+            from kiro_crew.subagent_persistence import has_owed_tombstones, retry_owed_tombstones
+
+            if has_owed_tombstones() and not self._manager._shutting_down:
+                try:
+                    await asyncio.get_running_loop().run_in_executor(
+                        maintenance_executor(),
+                        partial(retry_owed_tombstones, stop=lambda: self._manager._shutting_down),
+                    )
+                except Exception:
+                    logger.debug("Reaper: owed tombstone retry failed", exc_info=True)
             try:
                 compact_cost_log()  # periodic FIFO trim (also bounds a long-running gateway)
             except Exception:

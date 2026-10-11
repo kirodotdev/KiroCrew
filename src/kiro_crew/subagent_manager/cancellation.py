@@ -14,6 +14,7 @@ if TYPE_CHECKING:
         _RECOVERY_SLOT_WAIT_SECS,
         _REPORT_DRAIN_TIMEOUT,
         _RESET_TIMEOUT,
+        _STATE_DRAIN_TIMEOUT,
         Stats,
         SubagentInfo,
         _audit_ids,
@@ -1546,6 +1547,24 @@ class CancellationCoordinator(ManagerComponent):
         # answers, which is after the first snapshot here. So the drain
         # re-reads ``_report_tasks`` and waits for what joined it, all inside
         # the one budget, and whatever joined it is a straggler like the rest.
+        # A tombstone whose write failed (a full disk) is tried once more before
+        # exit, so a run already reported is not reported again at the next start.
+        # Before the drain below: a straggler it re-admits to orphan recovery has
+        # its tombstone cleared there, after this write, not before it.
+        from kiro_crew.subagent_persistence import has_owed_tombstones, retry_owed_tombstones
+
+        # Bounded like every off-loop writer at shutdown: it waits at most
+        # _STATE_DRAIN_TIMEOUT for a reaper retry still writing and writes until
+        # that deadline, and the await allows one more such span for a write in
+        # progress, so a wedged disk cannot hold shutdown here.
+        if has_owed_tombstones():
+            try:
+                await asyncio.wait_for(
+                    asyncio.to_thread(retry_owed_tombstones, budget=_STATE_DRAIN_TIMEOUT),
+                    2 * _STATE_DRAIN_TIMEOUT,
+                )
+            except Exception:
+                logger.debug("cancel_all: owed tombstone retry failed", exc_info=True)
         pending_reports = [t for t in self._manager._report_tasks if not t.done()]
         if pending_reports:
             drain_deadline = asyncio.get_running_loop().time() + _REPORT_DRAIN_TIMEOUT

@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import shutil
+import tempfile
 import threading
 import time
 import weakref
@@ -1233,6 +1234,159 @@ def write_finished_result(
         return False
 
 
+#: Tombstone writes that failed (a full disk, say), by run id, with the arguments
+#: the write was given. A missing tombstone leaves the folder to the next boot's
+#: orphan reconciliation, which announces the run again, so the reaper retries
+#: these off the event loop each tick and graceful shutdown once more. Bounded:
+#: past the cap, or for an entry larger than ``_OWED_TOMBSTONE_MAX_BYTES``, the
+#: write is not retried and the folder stays an orphan -- announced again at the
+#: next boot, never lost.
+_OWED_TOMBSTONES_MAX = 4096
+_OWED_TOMBSTONE_MAX_BYTES = 16_384
+_owed_tombstones: dict[str, dict[str, object]] = {}
+#: Held for a whole retry, so two retries never write at once (see
+#: :func:`retry_owed_tombstones`).
+_owed_retry_lock = threading.Lock()
+_owed_tombstones_lock = threading.Lock()
+
+
+def _owe_tombstone(
+    agent_id: str, d: Path, cause: str, recovery_action: str, extra: dict[str, object]
+) -> None:
+    """Record a failed tombstone write for :func:`retry_owed_tombstones`.
+
+    Not recorded when a tombstone is already on disk: the folder is then out of
+    orphan reconciliation whatever the failed write would have replaced.
+    """
+    if (d / "tombstone.json").exists():
+        return
+    entry: dict[str, object] = {
+        "cause": cause,
+        "recovery_action": recovery_action,
+        "extra": dict(extra),
+    }
+    try:
+        size = len(json.dumps(entry, ensure_ascii=False, default=str))
+    except (TypeError, ValueError):
+        size = _OWED_TOMBSTONE_MAX_BYTES + 1
+    with _owed_tombstones_lock:
+        # The size bound applies to every write, a replacement included; the
+        # count bound only to a run not recorded yet. A record that does not fit
+        # also drops the run's earlier one, which describes an older ending.
+        if size > _OWED_TOMBSTONE_MAX_BYTES or (
+            agent_id not in _owed_tombstones and len(_owed_tombstones) >= _OWED_TOMBSTONES_MAX
+        ):
+            _owed_tombstones.pop(agent_id, None)
+            dropped = True
+        else:
+            _owed_tombstones[agent_id] = entry
+            dropped = False
+    if dropped:
+        logger.warning(
+            "write_tombstone for %s is not retried (%d writes already waiting, or the "
+            "entry is too large); the next start reports the run again",
+            agent_id,
+            len(_owed_tombstones),
+        )
+
+
+def has_owed_tombstones() -> bool:
+    """Whether a failed tombstone write is waiting for its retry. No I/O."""
+    return bool(_owed_tombstones)
+
+
+def _create_exclusive(path: Path, data: dict) -> None:
+    """Create *path* holding *data* only if it is absent and its directory exists.
+
+    The content becomes visible whole (a temp file hard-linked into place), an
+    existing file is never replaced (``FileExistsError``) and a removed directory is
+    never recreated (``FileNotFoundError``). The temp file's name is unique to the
+    call, so one left behind by a writer that died never blocks a later write.
+    """
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".owed")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps(data, ensure_ascii=False))
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.link(tmp, path)
+    finally:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+    fsync_dir(path.parent, best_effort=True)
+
+
+def retry_owed_tombstones(
+    *, stop: Callable[[], bool] | None = None, budget: float | None = None
+) -> int:
+    """Retry every failed tombstone write; return how many landed.
+
+    Blocking file I/O: run it off the event loop. An entry is dropped without a
+    write when its run folder is gone or a tombstone has appeared since (another
+    path recorded the run's ending, which a retry must not replace). A write that
+    fails again keeps its entry and logs at DEBUG, so a full disk does not log a
+    WARNING on every tick.
+
+    One retry runs at a time. *stop* is read before each write, and a true
+    reading ends the retry there: the reaper passes the manager's shutdown flag,
+    so a retry it began before shutdown ends after the write it is in, and the
+    shutdown retry, which waits for it, is the last one to write. *budget*, in
+    seconds, bounds that wait and the writes after it; entries still owed at the
+    deadline stay owed, so their runs are reported again at the next start.
+    """
+    deadline = None if budget is None else time.monotonic() + budget
+    if not _owed_retry_lock.acquire(timeout=-1 if budget is None else budget):
+        logger.debug("Owed tombstone retry skipped: an earlier retry is still writing")
+        return 0
+    try:
+        return _retry_owed_tombstones_locked(stop, deadline)
+    finally:
+        _owed_retry_lock.release()
+
+
+def _retry_owed_tombstones_locked(stop: Callable[[], bool] | None, deadline: float | None) -> int:
+    with _owed_tombstones_lock:
+        pending = list(_owed_tombstones.items())
+    landed = 0
+    for agent_id, entry in pending:
+        if stop is not None and stop():
+            break
+        if deadline is not None and time.monotonic() >= deadline:
+            break
+        extra = entry["extra"]
+        if not isinstance(extra, dict):
+            continue
+        try:
+            _write_tombstone_file(
+                agent_id,
+                str(entry["cause"]),
+                str(entry["recovery_action"]),
+                extra,
+                owed_retry=True,
+            )
+        except (FileExistsError, FileNotFoundError):
+            logger.debug(
+                "Dropping the owed tombstone for %s: folder gone or tombstone written", agent_id
+            )
+        except OSError:
+            logger.debug("Owed tombstone for %s still cannot be written", agent_id, exc_info=True)
+            continue
+        else:
+            if (_agent_dir(agent_id) / "tombstone.json").exists():
+                landed += 1
+                logger.info(
+                    "Wrote the %s tombstone for %s after an earlier write failed",
+                    entry["cause"],
+                    agent_id,
+                )
+        with _owed_tombstones_lock:
+            if _owed_tombstones.get(agent_id) is entry:
+                del _owed_tombstones[agent_id]
+    return landed
+
+
 def write_tombstone(
     agent_id: str,
     *,
@@ -1241,6 +1395,18 @@ def write_tombstone(
     **extra: object,
 ) -> None:
     """Write ``tombstone.json`` for an abnormally exited agent."""
+    _write_tombstone_file(agent_id, cause, recovery_action, extra, owed_retry=False)
+
+
+def _write_tombstone_file(
+    agent_id: str,
+    cause: str,
+    recovery_action: str,
+    extra: dict[str, object],
+    *,
+    owed_retry: bool,
+) -> None:
+    """:func:`write_tombstone`'s body; *owed_retry* marks a retry of a failed write."""
     if _live_run_key(agent_id) in _LIVE_RUN_STATES:
         return
     d = _agent_dir(agent_id)
@@ -1308,9 +1474,17 @@ def write_tombstone(
         **extra,
     }
     try:
-        _atomic_write(d / "tombstone.json", tombstone)
+        if owed_retry:
+            _create_exclusive(d / "tombstone.json", tombstone)
+        else:
+            _atomic_write(d / "tombstone.json", tombstone)
     except OSError:
+        if owed_retry:
+            raise
         logger.warning("write_tombstone failed for %s", agent_id, exc_info=True)
+        # Retried with the same fields and the same ``died``: the tombstone a
+        # retry writes describes this ending, not the moment space came back.
+        _owe_tombstone(agent_id, d, cause, recovery_action, {**extra, "died": tombstone["died"]})
     state_sid = cleanup_identity.get("session_id")
     if not live_cleanup_identities and isinstance(state_sid, str) and state_sid:
         # The run folder is agent-writable. Preserve only the retention/exemption
