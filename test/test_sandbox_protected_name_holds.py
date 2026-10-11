@@ -333,7 +333,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #: tier lists hold ``.vault`` only at the two ``$HOME``-joined spellings,
     #: so the resolved ``config_dir()`` spelling is a third, leaf-only name,
     #: the same hold ``kas`` gets there.
-    EXPECTED: dict[str, int] = {"standard": 269, "cc": 276, "strict": 277}
+    #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    EXPECTED: dict[str, int] = {"standard": 272, "cc": 279, "strict": 280}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:

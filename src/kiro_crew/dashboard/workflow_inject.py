@@ -17,6 +17,7 @@ import json
 import re
 from typing import Any, Callable, Optional
 
+from kiro_crew.background_commands import DRIVER, describe_outcome
 from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import (
@@ -56,6 +57,8 @@ def _redact(text: str) -> str:
 
 def _summarize(snapshot: dict) -> str:
     """Build the chat message body from a terminal run snapshot."""
+    if snapshot.get("driver") == DRIVER:
+        return _summarize_command(snapshot)
     name = snapshot.get("name") or snapshot.get("run_id", "")
     status = snapshot.get("status", "")
     run_id = snapshot.get("run_id", "")
@@ -104,6 +107,41 @@ def _summarize(snapshot: dict) -> str:
         f"\nUse workflow_result('{run_id}') for the full event stream, or "
         f"workflow_rerun_subtree('{run_id}', …) to restart from a step."
     )
+    return "\n".join(lines)
+
+
+def _summarize_command(snapshot: dict) -> str:
+    """Completion body for a background command run.
+
+    Keeps the workflow completion header so the chat renders it as the same
+    compact card; the body carries what the waiting agent needs to continue.
+    """
+    # The card's header parser takes a single-line, backtick-free name.
+    name = " ".join(str(snapshot.get("name") or snapshot.get("run_id", "")).split())
+    name = name.replace("`", "'")
+    status = snapshot.get("status", "")
+    run_id = snapshot.get("run_id", "")
+    result = snapshot.get("result")
+    result = result if isinstance(result, dict) else {}
+    lines = ["[Workflow completion event]", f"Workflow `{name}` ({run_id}) → **{status}**"]
+    if result:
+        command = " ".join(str(result.get("command", "")).split()).replace("`", "'")
+        lines.append(f"\nThe background command {describe_outcome(result)}.")
+        lines.append(f"Command: `{command}`")
+        tail = str(result.get("output_tail") or "")
+        if tail:
+            # A fence longer than any backtick run in the output, so command
+            # output can never close it and pass as message text.
+            longest = max((len(run) for run in re.findall(r"`+", tail)), default=0)
+            fence = "`" * max(3, longest + 1)
+            lines.append(f"\nLast lines of output:\n{fence}text\n{tail}\n{fence}")
+        else:
+            lines.append("\nThe command printed no output.")
+        if result.get("log_path"):
+            lines.append(f"Full output: `{result['log_path']}` (open with your file tools).")
+    if snapshot.get("error"):
+        lines.append(f"\nError: {snapshot['error']}")
+    lines.append(f"\nUse workflow_result('{run_id}') for the run record.")
     return "\n".join(lines)
 
 
@@ -255,6 +293,91 @@ def inject_workflow_result(
         return True
     except Exception:  # noqa: BLE001 - injection is best-effort
         return False
+
+
+#: A boot-time delivery waits this long at most for the open tabs to come back:
+#: a surface that restores none never sets ``open_slots_restored``.
+_OPEN_TABS_WAIT_SECS = 60.0
+_OPEN_TABS_POLL_SECS = 0.5
+
+
+async def await_open_tabs(state: DashboardState, since: float) -> None:
+    """Wait for this boot's open-tab restore, up to a bound past ``since`` (monotonic).
+
+    A result delivered before its chat's tab is back lands in a fallback slot no
+    agent watches, so the chat that waits on it never wakes.
+    """
+    import asyncio
+    import time
+
+    give_up = since + _OPEN_TABS_WAIT_SECS
+    while not getattr(state, "open_slots_restored", True) and time.monotonic() < give_up:
+        await asyncio.sleep(_OPEN_TABS_POLL_SECS)
+
+
+async def deliver_command_outcome(
+    state: DashboardState,
+    run_id: str,
+    snapshot: dict,
+    *,
+    prompt: str,
+    wake: Callable[[Any], None],
+) -> bool:
+    """Post a background command's card, wake its chat, and say whether both are saved.
+
+    The card is posted once (a repeat is dropped), and the chat is woken with
+    ``prompt`` unless its slot already holds it queued or as a turn, so a replay
+    wakes a chat whose card came back without its wake. True only once the slot
+    is saved and its transcript carries the card and the wake, which is what the
+    caller settles on; a chat that keeps no transcript has nothing to save.
+    """
+    import asyncio
+
+    from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+
+    if not await inject_bound_workflow_result(state, run_id, snapshot):
+        return False
+    origin = snapshot.get("session_key") or ""
+    slot = state.get_slot(_slot_key_from_session(origin))
+    if slot is not None and effective_session_key(slot) == origin:
+        if not _holds_wake(slot, prompt):
+            wake(slot)
+        if getattr(slot, "memory_mode", "persistent") != "persistent":
+            return True
+    else:
+        # The card went to the fallback slot, which no agent watches.
+        slot, prompt = state.get_slot(f"workflow-{run_id}"), ""
+    log = getattr(state, "conversation_log", None)
+    if log is None:
+        return True
+    if slot is None:
+        return False
+    await asyncio.to_thread(state.flush_slot_now, slot)
+    card = _redact(_summarize(snapshot))
+    return await asyncio.to_thread(_saved_with, log, slot_history_key(slot), card, prompt)
+
+
+def _holds_wake(slot: Any, prompt: str) -> bool:
+    """Whether ``slot`` holds ``prompt`` as a queued prompt or a turn's user row."""
+    queued = (entry.get("content") for entry in slot.durable_queue_entries())
+    rows = (m.get("content") for m in getattr(slot, "messages", []) if m.get("role") == "user")
+    return prompt in queued or prompt in rows
+
+
+def _saved_with(log: Any, key: str, card: str, prompt: str) -> bool:
+    """Whether the transcript holds ``card`` and, when given, ``prompt`` queued or run.
+
+    Blocking: it reads the transcript.
+    """
+    rows = log.read_messages(key)
+    if not any(r.get("role") == "assistant" and r.get("content") == card for r in rows):
+        return False
+    if not prompt or any(r.get("role") == "user" and r.get("content") == prompt for r in rows):
+        return True
+    queued = log.get_metadata(key).get("queued_prompts")
+    return isinstance(queued, list) and any(
+        isinstance(entry, dict) and entry.get("content") == prompt for entry in queued
+    )
 
 
 async def inject_bound_workflow_result(

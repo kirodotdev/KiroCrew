@@ -566,7 +566,7 @@ None-guard, and `validate` rejects the inline unguarded dereference.
 | Token budget | `budget_total` per run | caller-set, `None` = unbounded | `BudgetExceeded` -> `run_failed`, `where="ceiling"` |
 | Script size | `validate.MAX_SCRIPT_BYTES` | 262144 | validation error |
 | Schema re-asks | `schema.DEFAULT_SCHEMA_RETRIES` | 2 | result is `None` |
-| Tracked runs in memory | `registry.DEFAULT_MAX_RUNS` | 200 | oldest **terminal** run evicted; a running run is never evicted |
+| Tracked runs in memory | `registry.DEFAULT_MAX_RUNS` | 200 | oldest **terminal** run evicted; a running run is never evicted, nor one whose host driver set `RunHandle.delivery_pending` (persisted, so a restart's load-time eviction skips it too) |
 | Persisted agent-error text | `runner.MAX_AGENT_ERROR_CHARS` | 500 | truncated after redaction |
 
 `clamp_run_timeout(value, default=...)` is the one door to the wall-clock ceiling.
@@ -1025,7 +1025,10 @@ demoted to failed after interruption, rebuilds its event stream at the next
 sequence number and reopens the same identity when TaskRunner resumes it. Reopening a
 terminal host run first removes its trailing terminal event, so the retried attempt
 still has one terminal event at the end of a contiguous journal. Host drivers keep
-their own completion/reporting path by setting `completion_injection=false`.
+their own completion/reporting path by setting `completion_injection=false`; the
+background-command driver is one, delivering its outcome itself so it can tell
+when the delivery landed. `fail` and `cancel_host_run` accept an optional `result`, so a failed
+or stopped host run can still carry the outcome its driver measured.
 Off-loop checkpoints are serialized per run. When parallel host steps queue
 multiple snapshots behind an active write, superseded intermediate snapshots are
 discarded and the newest snapshot is written last; deletion uses the same queue
@@ -1232,6 +1235,7 @@ launch a script under a trusted chat's identity.
 | `POST /api/workflows/author` | `{intent}` | `{ok, source, meta}` or `{ok:false, errors}` |
 | `POST /api/workflows/run` | `{source, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` or `{error}` (400) |
 | `POST /api/workflows/run_intent` | `{intent, args?, name?, budget_total?, timeout_secs?}` | `{run_id}` immediately |
+| `POST /api/workflows/background` | `{command, cwd?, label?, timeout_secs?}` | `{run_id, name, log_path, timeout_secs}`; internal tool calls only (403 otherwise), 409 without a live dashboard chat for the caller's session, 403 when the shell gate denies the command. See [Background commands](#background-commands) |
 | `GET /api/workflows/runs` | | `{runs: [...]}` compact, newest first |
 | `GET /api/workflows/runs/{run_id}` | | full snapshot incl. `events`; adds `plan` under `?plan=1` when one is readable (404 if the run is absent) |
 | `POST /api/workflows/runs/{run_id}/promote` | `{name?, description?, slug?}` | save exact source from a finished run or paused TaskRunner plan; 404 when unknown, 409 when not promotable or only a restored redacted source remains |
@@ -1393,6 +1397,11 @@ are deliberately absent from the model-facing MCP surface: only the dashboard's
 explicit human management and completed-session confirmation flows may call the
 mutation routes.
 
+`background_run` starts a [background command](#background-commands). It is served
+by `kirocrew-cron` rather than `mcp_tools/workflows.py`, so that kiro-cli asks
+before it runs; the run it creates is then read and stopped with `workflow_status`,
+`workflow_result`, `workflow_list` and `workflow_cancel` like any other run.
+
 The dashboard handles `/workflow <slug> [input]` locally before harness session
 acquisition; `/workflow` alone lists saved definitions. This keeps the command
 identical across Kiro and adapted harnesses, and prevents an explicit reference
@@ -1413,6 +1422,273 @@ which `server.py::_examples_dir()` locates by walking up from the module toward 
 repo root. It resolves only in a source checkout: top-level `docs/` is not packaged,
 so an installed gateway serves an empty list and the dashboard hides the example
 picker.
+
+### Background commands
+
+`background_commands.BackgroundCommandService` is a host driver (`driver:
+"command"`, `source_format: "shell"`) that lets an agent start a long-running
+shell command, end its turn, and be woken with the outcome, instead of spending a
+turn in `wait` or a sleep-and-poll loop. The gateway constructs it beside
+`workflow_service` (`DashboardState.background_commands`).
+
+**Start.** `POST /api/workflows/background` accepts only an internal tool call
+(`internal_auth`), requires a live dashboard slot whose effective session key is
+the caller's, and judges the command with the same `HookManager.on_tool_call` gate
+that judges the agent's own `execute_bash` (`is_shell=True`, the command passed as
+`command=`), in a worker thread because the gate can walk profile storage: the deny floor, the sensitive-path and exfiltration tiers,
+`auto_deny_tools` and governance `commands` all apply, and a deny refuses with
+403. Both verdicts are audited as soon as the gate decides, so an allowed command
+whose start then fails (a bad `cwd`, a full cap) still leaves the allow on record.
+Approval is not decided here; it already happened on the tool call, which
+kiro-cli prompts for because `background_run` is not in the shipped
+`allowedTools`. `cwd` defaults to the slot's project directory, relative paths
+join it, and a non-directory or a path `is_sensitive_write_path` protects is refused:
+a write-protected leaf too, because the sandbox seals those read-only by path and a
+working directory opened before the seal would sit under it. The service then
+registers a host run (it delivers the outcome itself, see Settling), refuses with 503
+`background_run_not_saved` (dropping the run, nothing spawned) when the run's
+admission checkpoint does not save (`RunHandle.persistence_error`, retried): a
+run no store holds would be gone after a restart, and its command with it. It then spawns
+`/bin/sh -c <wrapper> kirocrew-background <command> <watchdog secs> <cap> <record>
+<sleep> <head>` through
+`sandboxed_spawn_argv_async` at the operator's `agent.sandbox` tier
+(`sandbox.configured_sandbox_mode`, so `strict` and `cc` hide what they hide from the
+chat's own shell), never below `standard` — under `off` the chat shell's isolation is
+kiro-cli's own sandbox, which a gateway-side spawn cannot use — and raised by a
+governance `sandbox.min_level` floor, then `create_subprocess_limited` in its own
+session. The spawn also carries the credential mask of the harness the calling chat
+runs on (`adapter_hidden_credential_dirs` for the live session's backend, else the
+configured one), so a command started from an enforced harness cannot read what that
+harness's own shell has masked; the adapter's own re-exposed files (codex's
+`~/.aws/config`) are not carried, so the mask is at least as tight. A host without a POSIX
+shell (Windows), or where `sandbox.credential_mask_applies` says the spawn would come
+back unwrapped (no sandbox backend), refuses with `background_run_unsupported` before
+any run exists.
+Capacity is reserved before the first await, so concurrent starts cannot all pass
+one cap check. The working directory is opened no-follow, re-checked against
+`is_sensitive_write_path` on the descriptor's real path, and entered with `chdir_fd`, so a
+directory swapped after the handler validated its name cannot redirect the
+command. A cwd that is, or sits beneath, a directory the spawn masks (the tier's
+list through `sandbox.path_within_tier_mask`, plus the harness mask) is refused
+with `background_run_cwd_invalid`, by name before any run exists and again on the
+descriptor: the command enters its cwd before the launcher mounts the masks, so a
+relative open from inside a masked directory would read through the mask. Only the command's subshell gets back the `PATH` that the pinned-directory
+spawn screens for the launcher's own lookup; the wrapper's own `sleep` and `head`
+are absolute paths from `platform_compat.trusted_system_bin`, so no `PATH` entry the
+command can write supplies what runs before its record exists or bounds its log, and
+a host without them refuses. Once the process exists, every later setup failure
+(an unreadable start identity, a failed record write, cancellation) stops it and
+drops the run, so no command runs without a supervisor and a record; a start
+cancelled mid-spawn drops its run the same way before the cancel propagates. The wrapper
+holds the command itself until `record.json` exists (at most `_HANDSHAKE_SECS`,
+then it exits 125 without running it), so a gateway that dies between the spawn and
+that write leaves nothing running that the next boot could not adopt. A spawn that
+dies before its identity is read keeps none: its run settles from its exit status,
+and no signal can then reach whatever reuses its pid. A lost reply after the POST
+reached the gateway (`_post`'s `transport_error`) makes the tool report the outcome
+as unknown and point at `workflow_list`, never a refusal the agent would retry into
+a second copy of the command.
+
+**Output and exit status.** The gateway creates
+`<data home>/background/<run_id>/output.log` and `exit_status` itself (`O_EXCL`,
+no-follow) and hands the child their descriptors: stdout and stderr go to the log,
+never a pipe out of the sandbox. The status file arrives as the wrapper's stdin
+and moves to fd 3 (dash takes only one-digit fds), the log moves to fd 4, and both
+are closed for the command, which the wrapper evaluates in a subshell that waits for
+the jobs it backgrounds. The command's stdout and stderr reach the log through
+`head -c MAX_OUTPUT_BYTES+1`, so the log stays bounded even while no gateway
+watches: past the cap `head` exits and the command's next write meets SIGPIPE.
+`head` writes the log in blocks, so a running command's last lines can lag in the
+file until it ends. On a stop's SIGTERM `head` ignores the signal and drains, and
+the wrapper waits for it before dying by that signal, so the reported tail of a
+stopped or timed-out command is complete; only a command that outlives SIGTERM
+until the SIGKILL loses what `head` still held. The
+wrapper then appends the exit status as one line. Both files survive the gateway, which is what makes
+re-adoption possible.
+
+A command the gateway watched to its end settles from the wrapper's own exit
+status, which the command cannot write: the file then only carries the watchdog's
+mark. The file is read only for a command that ended while no gateway watched, and
+then its last whole line counts, since every write appends and the wrapper's line
+comes last. That copy is only as trustworthy as the command's sandbox: on Linux a
+same-uid process can reopen the wrapper's descriptor through `/proc/<pid>/fd` and
+kill the wrapper before it writes, so an unwatched success is the one result a
+command can forge. It gains nothing a plain `exit 0` does not; the deadline, the
+cap and the sweeps never read the file. The same reopen reaches the wrapper's log
+descriptor, and the sandbox launcher's stdio, past `head`: this is the Linux
+sandbox's standing property (no PID namespace, so the host's `/proc` is visible
+and any same-uid open file can be reopened), not one this feature adds, and an
+agent that means to fill the disk has its own workspace to do it in. `record.json` beside them holds
+the command (credential-redacted, like the run's name and source, by
+`_redact_command`, after folding backslash-newline continuations: the baseline
+redactors, which already cover a URL's userinfo, plus the shell shapes they leave
+intact: assignments to a name ending in a secret word in any case
+(`PGPASSWORD=...`, `db_pass=...`), password and token flags, and
+`-u user:password`, each value replaced as one whole shell word so a quoted or
+backslash-escaped secret holding spaces goes with it), cwd, deadline, pid, the pid's `platform_compat.process_start_time`
+identity, each file's `st_dev:st_ino`, and the command's systemd scope when it has
+one; the gateway reads the log and the
+status only through a no-follow open whose identity, file type and link count
+match, so a swapped or linked file is never read. The sandbox launcher file stays
+in gateway memory and is never read back from disk, and the record keeps no session
+key: the leaf is agent-readable and a session key authorizes internal calls, so
+`reconcile` takes the owner back from the run's own handle.
+
+`background` is a sealed crew-home leaf (`sandbox._CREW_READONLY_LEAVES`,
+precreated and no-follow like `subagents`, and write-protected for the file tools
+in `security._WRITE_PROTECTED_HOME_PATHS`): an agent and its commands can read a
+run's log, but no sandboxed process can write a record, an exit status or a log,
+so a forged record cannot aim the gateway's kill at another process.
+
+**Settling.** A supervisor task, bound to the run with `bind_task`, waits for the
+process and checks the deadline and the log size every poll. Exactly one terminal
+event is produced per command:
+
+| Outcome | Run status | Trigger |
+|---|---|---|
+| `exited`, code 0 | `finished` | the command exited |
+| `exited`, code ≠ 0 | `failed` | the command exited |
+| `timed_out` | `failed` | the deadline passed (default 1 hour, `MIN_TIMEOUT_SECS`..`MAX_TIMEOUT_SECS`), the watchdog fired, or the exit status was written after the deadline |
+| `output_limit` | `failed` | the log passed `MAX_OUTPUT_BYTES`, at a poll or when the command exited |
+| `stopped` | `cancelled` | `workflow_cancel` cancelled the supervisor |
+| `interrupted` | `failed` | re-adoption found the process gone with no exit status |
+
+A cancel that lands once the command has ended cannot strand its run: settlement
+(and the stop-then-settle arm) runs to completion under the cancel, which is
+re-raised after. Settlement publishes the result to the run, then delivers it to
+the chat through the service's `deliver`, which the gateway wires to
+`workflow_inject.deliver_command_outcome`: it posts the card through the same bound
+injection a workflow's `on_done` uses (a card already in the slot is skipped), wakes
+the chat with a prompt that names the run id unless the slot already holds that
+prompt queued or as a turn's user row, then saves the slot (`flush_slot_now`) and
+returns True only once the transcript carries the card and the wake (the user row,
+or the entry in `queued_prompts`). A wake queued in a busy chat is otherwise saved
+by a write that is started, not awaited, so this read is what makes the
+acknowledgement durable. The record is marked settled only once `deliver` returns
+True and the run's eviction hold is released and saved: the service sets
+`RunHandle.delivery_pending` on the run at admission (saved before anything spawns),
+so neither an admission at the run cap nor a restart's load-time eviction can drop a
+run whose outcome is undelivered, and a run that is gone counts as undelivered.
+`reconcile` releases the hold of any command run no unsettled record will deliver
+(a gateway that died between the hold and the record). Settling is the delivery's
+acknowledgement, so the run's durable result plus
+an unsettled record means "published, not yet delivered". A delivery the chat
+refuses (`inject_bound_workflow_result` returns False, as when the chat closes
+mid-delivery), that is not yet saved, or that raises is asked again
+`_DELIVERY_ATTEMPTS` times. A crash, a delivery still refused, or a failed record
+write in between leaves a record `reconcile` finds unsettled beside a run that
+already carries a reported `result` (`_already_published`), and it delivers that
+result again before marking the record: the card is not posted twice, and a chat
+whose card came back without its wake is woken again. A boot-time
+delivery first waits for the open-tab restore (`workflow_inject.await_open_tabs`,
+bounded by `_OPEN_TABS_WAIT_SECS`), so it reaches the chat's own tab rather than a
+fallback slot no agent watches. A report that fails leaves both
+unsettled, and the next boot re-adopts and reports once. A report the registry
+accepted but whose terminal checkpoint did not save (`RunHandle.persistence_error`,
+retried `_SETTLE_WRITE_ATTEMPTS` times) also leaves the record unsettled: a restart
+restores that run without the result, so the next boot reports it again from the
+exit status rather than losing it. The slot and the launcher
+file are released whatever fails. The log stops one byte past the cap, which is how an
+exit at the cap still reads as over it; settling cuts it to `MAX_OUTPUT_BYTES`,
+and `output_bytes` reports the size the log reached.
+
+Every stop kills the command's process group: SIGTERM, a grace period, then
+SIGKILL. The leader opened its own session, so its recorded pid is the group id,
+and the leader signal addresses that id through `platform_compat.kill_process_group`
+rather than a group re-resolved from the pid at signal time, which a stranger may
+by then hold. When the leader exits, members it left in its group (a job started by an
+inner shell that has already returned) are stopped the same way before the run
+settles, through `platform_compat.kill_process_group`; the group counts as the
+command's while its leader still carries the recorded start identity on the
+recorded boot, or, once the leader is gone, only if this gateway saw the leader
+alive (`_seen_alive`): a pid is never reused while a group carries it, so a group
+watched to its leader's exit is still the command's, but one whose leader died
+while no gateway watched may have emptied and been re-made under the same id, and
+is never signalled. The record keeps the kernel boot id on Linux, where a start
+identity counts only from boot, so nothing from an earlier boot is ever treated as
+alive or signalled.
+
+A descendant that leaves the group (`setsid`, a double fork) is reached through
+the command's systemd scope instead. When the sandbox wrapped the spawn in one
+(`cgroup_scope_argv`, Linux with cgroup v2 delegation), the service waits up to
+`_SCOPE_JOIN_SECS` for the process to enter it and records its unified-cgroup
+path, accepted only as a `.scope` directly under this instance's
+`sandbox._agents_slice_name()` slice. Every stop and every post-exit sweep then
+writes `cgroup.kill`, or on a kernel without it stops the scope unit through
+`session_scope_reap._systemctl_stop`, the agent-scope reaper's own stop (the
+scope's members are read with its `_read_cgroup_procs` too). Where no scope exists (macOS,
+Linux without delegation) such a descendant outlives the run, exactly as one
+started with `setsid nohup` from the agent's own `execute_bash` does. It inherits
+the pipe to `head`, not the log, so it cannot grow the log past the cap, and while
+it holds that pipe open the run stays open with it, bounded by the deadline.
+
+The run's `result` carries the outcome, exit code, the duration to when the
+command ended (not to when a later gateway reported it), the configured timeout
+that the timeout wording names, the last
+`TAIL_LINES` of output (at most `TAIL_MAX_CHARS`), the output size and the
+log path. The tail is redacted before it is cut, since a cut can drop a private
+key's header and keep its body; a read window (`_TAIL_READ_BYTES`) that opens
+inside a key, past its header, drops the body up to the key's end marker as well. `workflow_inject._summarize` renders a command run with the ordinary
+completion header, so the chat shows the same card, followed by that outcome and
+tail; the auto-turn prompt tells the agent to continue the work that was waiting
+on it. A chat may hold `MAX_RUNNING_PER_SESSION` running commands and the host
+`MAX_RUNNING_TOTAL`.
+
+**Restart.** Gateway shutdown (`begin_shutdown` on `on_shutdown`, `stop` on
+`on_cleanup`) cancels the supervisors without killing their commands, and any
+delivery still in flight, which leaves its record for the next boot to deliver; the
+store demotes each still-running run to `failed` on the next load as it does for
+any host run. While a supervisor tracks a command, the command's leader pid is in
+`session_pid.register_protected_pid`'s set, which `_collect_active_pids` hands to
+both the orphan sweep and the agent-scope reaper (`session_scope_reap`), so a
+re-adopted command whose launcher is now init's child, or whose scope predates the
+gateway's boot, is neither's to kill; the first such sweep runs a full cleanup
+interval after boot, by when `reconcile` has re-tracked it. The gateway constructs the service with `admitting=False`, so a
+`background_run` call before re-adoption finishes gets 503
+`background_run_unavailable` rather than a cap check that has not yet counted the
+commands being re-adopted. `reconcile` opens admission once it has walked every
+record: a record that fails to re-adopt is logged and its command stopped, never
+left running untracked; when the records cannot be listed at all it raises,
+admission stays closed, and `reconcile_at_boot` retries it (`_RECONCILE_ATTEMPTS`).
+Once every attempt has failed, `background_run` answers 503
+`background_run_restore_failed`, which says a gateway restart is needed, instead of
+the transient refusal. The first pass runs before `WorkflowService` is published
+(`reconcile_before_admission`), so no run is admitted first: a restored command's
+run is terminal until `rebind` reopens it, and an admitted run evicts the oldest
+terminal handle, which would leave `reconcile` no run to report to. Only a pass that
+could not list the records hands over to `reconcile_at_boot` after publication.
+`reconcile` walks every unsettled `record.json`:
+
+- the pid is alive and its start identity still matches: `rebind` reopens the run
+  before `reconcile` returns, and a supervisor watches the process by identity
+  (it is no longer the gateway's child), checking its deadline before the first
+  poll, so a command that ran past it while no gateway watched stops at boot;
+- the process is gone and `exit_status` exists: the run is reopened and settled
+  with that code, as `timed_out` when the status was written after the deadline
+  or is the watchdog's mark;
+- the process is gone with no exit status: the run is reopened and reported
+  `interrupted`;
+- the run already carries a reported `result`: the result is delivered again
+  (see Settling) and the record is settled once the chat takes it; a record whose
+  command ended more than `_RETENTION_SECS` ago is settled undelivered instead, its
+  hold released, so a chat that always refuses cannot keep a folder or a run forever
+  (the outcome stays in the run);
+- no durable run exists (a private-memory session, or an evicted record): the
+  process is stopped and the record is settled, so nothing runs unowned.
+
+While no gateway watches, the wrapper's own watchdog holds the deadline: a
+background `sleep` of the timeout plus `_WATCHDOG_MARGIN_SECS` that, if the
+command is still running, writes the timeout mark to the status file, then
+SIGTERMs the wrapper's process group (its own session) and SIGKILLs it after the
+grace period. The margin lets a live gateway always stop the command first; on a
+normal exit the wrapper kills the watchdog. Like the group kill it bounds only
+what stays in the group; the scope above covers the rest where one exists.
+
+Every signal to a re-adopted pid re-confirms its start identity first, so a
+recycled pid never reaches another process group. On Linux the child sits in its
+own `cgroup_scope_argv` scope and survives a service restart; without cgroup
+delegation it dies with the service and takes the `interrupted` path. Settled
+folders past seven days are pruned at boot and after every settle.
 
 ## Audit (SEL)
 

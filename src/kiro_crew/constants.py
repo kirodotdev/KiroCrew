@@ -1726,3 +1726,10 @@ WAIT_TOOL_MAX_SECS = 1800
 # takes at startup, so that graph lands once per session per server.
 # ``validation`` re-exports it, so every other reader is unaffected.
 MAX_SHORT_STRING = 500  # names, IDs, categories
+
+# ``background_run`` bounds, read by the tool schema in ``validation.py`` and
+# enforced again by ``background_commands``, so the schema and gateway agree.
+BACKGROUND_RUN_MAX_COMMAND_CHARS = 8000
+BACKGROUND_RUN_DEFAULT_TIMEOUT_SECS = 3600
+BACKGROUND_RUN_MIN_TIMEOUT_SECS = 10
+BACKGROUND_RUN_MAX_TIMEOUT_SECS = 7 * 86400

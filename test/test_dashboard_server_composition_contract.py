@@ -449,6 +449,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.apps.event_bus": "build_broadcast_fn",
     "kiro_crew.apps.execution": "builtin_app_agents builtin_app_mcp_servers builtin_app_names",
     "kiro_crew.apps.spawn_sdk": "build_spawn_impl",
+    "kiro_crew.background_commands": "BackgroundCommandService",
     "kiro_crew.config": "live",
     "kiro_crew.config.live": "ConfigChange",
     "kiro_crew.config.resolution": "DEGRADED_WHOLE_CONFIG",
@@ -471,14 +472,16 @@ _LAZY_IMPORTS = {
     "kiro_crew.dashboard.handlers.updates": "apply_log_level_from_config",
     "kiro_crew.dashboard.handlers.webapp_preview": "register_webapp_preview_routes",
     "kiro_crew.dashboard.handlers.workflows": (
-        "api_workflow_author api_workflow_definition_get api_workflow_definition_run "
-        "api_workflow_definition_update api_workflow_definitions "
+        "api_workflow_author api_workflow_background_run api_workflow_definition_get "
+        "api_workflow_definition_run api_workflow_definition_update api_workflow_definitions "
         "api_workflow_definitions_create api_workflow_run api_workflow_run_cancel "
         "api_workflow_run_get api_workflow_run_intent api_workflow_run_promote "
         "api_workflow_run_rerun api_workflow_runs"
     ),
     "kiro_crew.dashboard.handlers_system": "_get_owner_hash _get_static_system_info",
-    "kiro_crew.dashboard.workflow_inject": "inject_bound_workflow_result",
+    "kiro_crew.dashboard.workflow_inject": (
+        "await_open_tabs deliver_command_outcome inject_bound_workflow_result"
+    ),
     "kiro_crew.decisions": "local_runtime",
     "kiro_crew.diag.recorder": "_DiagRecorder get_recorder",
     "kiro_crew.history_index_worker": "SessionIndexWorkerSupervisor",
@@ -510,7 +513,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 79
+    assert len(expected) == 83
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:
@@ -1693,8 +1696,8 @@ def _routes(app: web.Application) -> list[tuple[str, str, str]]:
 #: SHA-256 of the MCP route table's ``"<method> <path> <handler>"`` rows in
 #: registration order, and their count. The table is shared by both entrypoints, so a
 #: route added to it on purpose updates these with it.
-_MCP_TABLE_ROWS = 264
-_MCP_TABLE_DIGEST = "974ec48a0f98b7f705c87200b06d9bd127c0c3f76f9063544361551d6d0dc773"
+_MCP_TABLE_ROWS = 265
+_MCP_TABLE_DIGEST = "6925a58fd6d85287a27a99f42603cb967367f666ecac850c4933077edc71c231"
 
 
 def test_the_mcp_route_table_keeps_its_rows_and_order() -> None:
@@ -2438,7 +2441,9 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
 ) -> None:
     """The workflow service's callbacks: a run event is broadcast with its session, a
     finished run's result opens an agent turn whose prompt names the run and its
-    status, and a workflow nudge goes through the shared authorization chokepoint."""
+    status, and a workflow nudge goes through the shared authorization chokepoint.
+    The background command service is published beside it, reconciled, and handed
+    the delivery that wakes a chat when its command ends."""
     created: dict[str, Any] = {}
 
     async def _create(**kwargs: Any) -> Any:
@@ -2446,14 +2451,36 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
         return types.SimpleNamespace(timeout_secs=kwargs["timeout_secs"], registry=MagicMock())
 
     monkeypatch.setattr("kiro_crew.workflows.service.WorkflowService.create", _create)
+    background = MagicMock()
+    # Reconciled before the service is published, so nothing is admitted first;
+    # a pass that could not list the records hands over to the retry task.
+    at_reconcile: list[Any] = []
+    background.reconcile_before_admission = AsyncMock(
+        side_effect=lambda: at_reconcile.append(
+            (state.workflow_service, state.background_commands, state.workflow_startup_status)
+        )
+        or False
+    )
+    background.reconcile_at_boot = AsyncMock()
+    background_factory = MagicMock(return_value=background)
+    monkeypatch.setattr(
+        "kiro_crew.background_commands.BackgroundCommandService", background_factory
+    )
     slot = MagicMock()
     slot.enqueue_or_run_prompt.return_value = True
 
-    async def _inject(state_: Any, run_id: str, snapshot: dict, *, on_injected: Any) -> None:
+    async def _inject(state_: Any, run_id: str, snapshot: dict, *, on_injected: Any) -> bool:
         on_injected(slot, snapshot)
         on_injected(None, snapshot)
+        return True
 
     monkeypatch.setattr("kiro_crew.dashboard.workflow_inject.inject_bound_workflow_result", _inject)
+
+    async def _deliver(state_: Any, run_id: str, snapshot: dict, *, prompt: str, wake: Any) -> bool:
+        wake(slot)
+        return True
+
+    monkeypatch.setattr("kiro_crew.dashboard.workflow_inject.deliver_command_outcome", _deliver)
     loader = MagicMock()
     loader.load.side_effect = OSError("config unreadable")
     monkeypatch.setattr(server, "KiroCrewConfig", loader)
@@ -2465,6 +2492,7 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     await server._initialize_workflow_service(state)
     assert state.workflow_startup_status == "ready"
     assert created["timeout_secs"] is None and created["concurrency"] == 4
+    assert state.background_commands is background
     state.workflow_service.registry.get.return_value = types.SimpleNamespace(session_key="s1")
     created["on_event"]("run-1", {"kind": "step"})
     state.broadcast_ws.assert_called_once_with(
@@ -2480,6 +2508,16 @@ async def test_the_workflow_service_hooks_redact_announce_and_authorize(
     assert prompt.startswith("[Workflow `nightly` finished: done] Its result was just posted")
     state.push_slots_update.assert_called_once_with()
     assert state._background_tasks == set()
+    background.reconcile_before_admission.assert_awaited_once_with()
+    [(service_then, background_then, status_then)] = at_reconcile
+    assert service_then is not state.workflow_service
+    assert background_then is not background and status_then != "ready"
+    background.reconcile_at_boot.assert_awaited_once_with()
+
+    deliver = background_factory.call_args.kwargs["deliver"]
+    assert await deliver("wf_000002", {"name": "make test", "status": "finished"})
+    prompt = slot.enqueue_or_run_prompt.call_args.args[0]
+    assert prompt.startswith("[Background command `make test` (wf_000002) finished] Its outcome")
 
     authorize = AsyncMock(return_value=(None, "loop refused", 403))
     monkeypatch.setattr(server, "authorize_and_add_nudge", authorize)
