@@ -8259,11 +8259,16 @@ def delegated_workspace_exposes_sealed_target(
             ),
             None,
         )
+        # The install directory refuses only a workspace at or inside it, so the advice
+        # for that target is to move the workspace out of it; every other target also
+        # refuses a workspace that contains it.
+        remedy = f"Choose a workspace that does not contain '{target}'."
         if named is None and target in install_targets:
             named = (
                 "Kiro Crew install directory",
                 "the agent could change the code the gateway runs on its next start",
             )
+            remedy = f"Choose a workspace outside '{target}'."
         if named is not None:
             what, consequence = named
         else:
@@ -8275,7 +8280,7 @@ def delegated_workspace_exposes_sealed_target(
             f"workspace '{os.fspath(work_dir)}' overlaps the {what} "
             f"'{target}' ({how}); on this platform the spawn is delegated to kiro-cli's "
             f"internal sandbox, which treats the workspace as writable, so {consequence}. "
-            f"Choose a workspace that does not contain '{target}'."
+            f"{remedy}"
         )
 
     def _norm(path: str) -> str:

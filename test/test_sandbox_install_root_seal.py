@@ -253,6 +253,10 @@ def test_a_delegated_workspace_inside_the_install_root_is_refused(install_dir: P
         reason = sandbox.delegated_workspace_exposes_sealed_target(workspace)
         assert reason is not None, workspace
         assert "install directory" in reason
+        # The workspace sits at or inside the install directory, so the advice is to
+        # move it outside, not to pick one that does not contain it.
+        assert f"Choose a workspace outside '{install_dir}'." in reason
+        assert "does not contain" not in reason
 
 
 def test_a_delegated_sibling_workspace_is_allowed(install_dir: Path, tmp_path: Path) -> None:
