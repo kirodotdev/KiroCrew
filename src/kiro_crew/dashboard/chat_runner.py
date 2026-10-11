@@ -17779,6 +17779,16 @@ async def _run_chat(
         # must stay owed, so the debt correctly stays armed (GPT 6.1 F1).
         _stop_reason = STOP_REASON_CANCELLED
         await _persist_partial_reply(_cancel_reason)
+        if _cancel_reason != STOP_REASON_CANCELLED and slot.is_closing:
+            # Closing the chat cut this turn off: one tab, the bulk archive or
+            # ``close_target``, each of which fences the slot with ``begin_close``
+            # before it cancels. Land the row a restart lands, so the chat reopened
+            # from history reads as interrupted and offers Resume.
+            from kiro_crew.dashboard.slot_persistence.turn_marker import (
+                record_close_interruption,
+            )
+
+            record_close_interruption(slot)
     except AcpAuthRequired as exc:
         # The signed-out CLI is discovered HERE, not by a probe: this is the
         # authoritative logout signal now that readiness is latched at boot.
