@@ -2802,6 +2802,23 @@ def _fold_line_breaks(text: str) -> str:
     )
 
 
+@dataclass(frozen=True)
+class PendingSlot:
+    """A new slot :meth:`DashboardState.prepare_slot` built and nothing has registered.
+
+    The shared-state writes its birth owes (the user-session count, the
+    restricted and ephemeral key sets, the Slack thread index) are carried here
+    and applied by :meth:`DashboardState.publish_slot`, so a slot that is never
+    published leaves none of them behind.
+    """
+
+    slot: _ChatSlot
+    counts_user_session: bool
+    restricted: bool
+    ephemeral: bool
+    slack_index_ts: str
+
+
 class _ChatSlot:
     """Independent chat session that runs server-side."""
 
@@ -7962,6 +7979,48 @@ class DashboardState:
         binding applied later would hydrate against the wrong key and leave a
         channel-born tab looking unlinked.
         """
+        existing, pending = self.prepare_slot(
+            name,
+            agent=agent,
+            workspace=workspace,
+            model=model,
+            mode=mode,
+            memory_mode=memory_mode,
+            ephemeral=ephemeral,
+            app=app,
+            linked_session_key=linked_session_key,
+            channel_origin=channel_origin,
+            origin=origin,
+            count_user_session=count_user_session,
+        )
+        if existing is not None:
+            return existing
+        assert pending is not None
+        return self.publish_slot(pending)
+
+    def prepare_slot(
+        self,
+        name: str | None = None,
+        agent: str = "",
+        workspace: str = "default",
+        model: str = "",
+        mode: str = "",
+        memory_mode: str | None = None,
+        ephemeral: bool | None = None,
+        app: str = "",
+        linked_session_key: str = "",
+        channel_origin: bool = False,
+        origin: str | None = None,
+        *,
+        count_user_session: bool = False,
+    ) -> tuple[_ChatSlot | None, PendingSlot | None]:
+        """Build what ``get_or_create_slot`` would register, without registering it.
+
+        Returns ``(existing, None)`` for a slot already open under *name*, or
+        ``(None, pending)`` for a new one that no request can reach yet:
+        nothing here touches the registry, its indexes or any client. Every
+        write to shared state is :meth:`publish_slot`'s.
+        """
         existing, creation = _registry_for(self).prepare_creation(
             self,
             name,
@@ -7982,7 +8041,7 @@ class DashboardState:
                 raise ValueError(
                     f"slot {existing.key} is still being built; retry once it is ready"
                 )
-            return existing
+            return existing, None
         assert creation is not None
         name = creation.key
         # Refuse to MINT on a key that is under construction. The existing-branch
@@ -8043,32 +8102,31 @@ class DashboardState:
         # SlotOrigin.USER), so a caller that forgets to declare loses
         # visibility instead of leaking — the direction this has to fail in.
         slot._origin = origin or (SlotOrigin.APP if app else "")
-        if minted_new and count_user_session and slot._origin == SlotOrigin.USER:
-            # Count only genuine, newly-minted user chats toward the survey's
-            # "new user" window (session_pulse_counter). `minted_new` excludes
-            # restore/rehydrate (which passes the persisted key as name) and
-            # get-existing, so a restart never re-counts already-seen sessions.
-            # `count_user_session` carries the human-started signal: only the
-            # request-layer paths a person actually drives (chat-send
-            # auto-create, new-chat tab, fork) opt in, so agent-minted USER
-            # slots (the session-control create verb) do not satisfy the
-            # survey gate on their own. The
-            # origin conjunct stays as the invariant floor: a caller can never
-            # count a non-USER slot, flag or not. Best-effort:
-            # the helper swallows its own I/O errors and never raises into
-            # slot creation.
-            #
-            # Off the loop, because this method is synchronous and every
-            # request-layer birth runs it on the gateway loop -- the counter's
-            # read + mkdir + tempfile write + replace would stall it on slow
-            # storage. The offload is the counter's, not this allocation's: this
-            # block must not become a suspension point, or callers could observe
-            # a half-configured slot.
-            increment_user_session_count_off_loop()
-        if memory_mode and memory_mode != "persistent":
-            self._restricted_keys.add(f"dashboard:{name}")
-        if ephemeral:
-            self._ephemeral_keys.add(f"dashboard:{name}")
+        # Count only genuine, newly-minted user chats toward the survey's
+        # "new user" window (session_pulse_counter). `minted_new` excludes
+        # restore/rehydrate (which passes the persisted key as name) and
+        # get-existing, so a restart never re-counts already-seen sessions.
+        # `count_user_session` carries the human-started signal: only the
+        # request-layer paths a person actually drives (chat-send
+        # auto-create, new-chat tab, fork) opt in, so agent-minted USER
+        # slots (the session-control create verb) do not satisfy the
+        # survey gate on their own. The
+        # origin conjunct stays as the invariant floor: a caller can never
+        # count a non-USER slot, flag or not. Best-effort:
+        # the helper swallows its own I/O errors and never raises into
+        # slot creation.
+        #
+        # Off the loop, because this method is synchronous and every
+        # request-layer birth runs it on the gateway loop -- the counter's
+        # read + mkdir + tempfile write + replace would stall it on slow
+        # storage. The offload is the counter's, not this allocation's: this
+        # block must not become a suspension point, or callers could observe
+        # a half-configured slot.
+        # The count itself happens in publish_slot, so a slot never published is
+        # never counted.
+        counts_user_session = bool(
+            minted_new and count_user_session and slot._origin == SlotOrigin.USER
+        )
         # Hydrate only a complete, genuine Slack link. Other transports still
         # write their namespaced origin id through the legacy channel field;
         # those are projected separately via ``links`` and must never make the
@@ -8107,6 +8165,7 @@ class DashboardState:
                 if isinstance(resolved, str) and is_channel_session_key(resolved):
                     slot.linked_session_key = resolved
                     self.note_crew_log_class(slot)
+        slack_index_ts = ""
         try:
             if self.sessions:
                 from kiro_crew.dashboard.chat_utils import effective_session_key
@@ -8146,9 +8205,35 @@ class DashboardState:
                     if _ts:
                         _self_ref = _safe_key(canonical_key(_ts)) == name
                     if _ts and not slot.linked_session_key and not _self_ref:
-                        self._slack_to_slot[_ts] = name
+                        slack_index_ts = _ts
         except Exception:
             pass
+        return None, PendingSlot(
+            slot,
+            counts_user_session=counts_user_session,
+            restricted=bool(memory_mode and memory_mode != "persistent"),
+            ephemeral=bool(ephemeral),
+            slack_index_ts=slack_index_ts,
+        )
+
+    def publish_slot(self, pending: PendingSlot) -> _ChatSlot:
+        """Register a slot :meth:`prepare_slot` built, with every index, sync and push.
+
+        Synchronous, so the registration and its indexes land together. Raises
+        ValueError when another slot was registered under the key meanwhile.
+        """
+        slot = pending.slot
+        name = slot.key
+        if _registry_for(self).has_slot(self, name):
+            raise ValueError(f"slot {name} was opened while it was being built; retry")
+        if pending.counts_user_session:
+            increment_user_session_count_off_loop()
+        if pending.restricted:
+            self._restricted_keys.add(f"dashboard:{name}")
+        if pending.ephemeral:
+            self._ephemeral_keys.add(f"dashboard:{name}")
+        if pending.slack_index_ts:
+            self._slack_to_slot[pending.slack_index_ts] = name
         _registry_for(self).put_slot(self, name, slot)
         # Publish the updated key set to SessionManager and the surface
         # registry NOW, not just on the HTTP slot endpoints. Slots born here

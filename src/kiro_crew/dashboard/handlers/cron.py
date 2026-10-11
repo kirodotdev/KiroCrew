@@ -51,6 +51,7 @@ from kiro_crew.dashboard.handlers._shared import (
     require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.handlers.source_providers import is_owner_dashboard_request
+from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
 from kiro_crew.dashboard.slot_ownership import app_holds_gateway_key
 from kiro_crew.dashboard.state import DashboardState, SlotOrigin, note_crew_log_class
 from kiro_crew.executors import discovery_executor
@@ -2053,6 +2054,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             {"error": "this job's chat tab is unavailable", "code": "cron_slot_unavailable"},
             status=409,
         )
+    # A dashboard create of this key still building it: wait (bounded) so the
+    # tab opened below is its slot, as when the create registered up front.
+    await wait_for_pending_create(state, slot_name)
     jobs = state.crons.list_jobs(include_disabled=True)
     job = next((j for j in jobs if j.id == job_id), None)
     if job:
@@ -2081,6 +2085,9 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             else []
         )
         if history:
+            # A create of this key can begin during the read above: wait again,
+            # with nothing suspending between this wait and the open.
+            await wait_for_pending_create(state, slot_name)
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             if not slot.linked_session_key:
                 slot.linked_session_key = session_key
@@ -2125,6 +2132,8 @@ async def api_cron_to_chat(request: web.Request) -> web.Response:
             )
             if not notif:
                 return web.json_response({"error": "job not found"}, status=404)
+            # The same window, after the read above: wait again before the open.
+            await wait_for_pending_create(state, slot_name)
             slot = state.get_or_create_slot(name=slot_name, agent="", origin=SlotOrigin.CRON)
             body = notif.get("body", "")
             if body:

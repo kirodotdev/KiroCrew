@@ -142,6 +142,95 @@ carrying `instance_id` or `adopt_remote_slot` is refused with
 crew and opened here through its window. A slot already on disk with
 `executor: "remote"` still loads.
 
+A `POST /api/chat/slots` that is refused or fails leaves no tab behind. For an
+owner create, the member assignment's resolution and member identity check run
+once before anything is built (`_check_new_slot_assignment`), so the common
+refusal builds nothing. Otherwise the create builds its slot privately
+(`DashboardState.prepare_slot`) and reserves the key with the same
+`_slots_under_construction` mark the import path holds across its unregistered
+tail: no other create can open a slot under the key, and every by-name route
+answers as it does for a missing slot. An async opener that is not a create
+(a send, a cron result, a workflow fallback, an OpenAI-compatible call, a
+resume) first waits for the pending create (`wait_for_pending_create`, bounded
+at 30 s, which folds the key it is given as the registry does), then opens the slot the create published or the free key, as it did
+when the create registered up front. A channel thread is surfaced on the
+reconciler's next pass. `PendingSlotCreate` (`dashboard/slot_create_transaction.py`) publishes
+the slot with its indexes (`DashboardState.publish_slot`) only after the last
+step that can refuse, under the session-switch lock on the owner path, and
+before the slot-push suspension flushes. Leaving the create before that (a
+refusal, an exception or a cancellation) drops the private slot, releases the
+key, and puts back by compare-and-set only the binding writes made under the
+reserved key's own session. A new slot asked for a folder publishes UNFILED,
+and is then filed as a separate step through the ordinary folder-move path
+(`chat_folders.file_slot_into_folder`, the body of
+`PATCH /api/chat/slots/{slot}/folder`) with that path's authorization, claim,
+un-hide, audit and errors. The filing runs after every lock the create holds is
+released and before the slot-push suspension flushes, so the one coalesced
+frame shows the slot filed when the filing succeeds. A refused create writes
+nothing to the folder. A filing the move path refuses leaves the slot
+published and unfiled, and the create still answers 200 with the slot, whose
+`folder_id` is empty: a new slot publishes with no folder and only a successful
+filing sets one. The gateway logs the refusal's cause. The filing
+files the create's OWN slot object: right before the dispatch the create checks
+that the key still maps to it, and leaves it unfiled when a delete plus a
+same-key open replaced it during the birth save. The
+move path re-checks the object after its un-hide await and its save refuses a
+replaced object at the locked commit, so a replacement during the move also
+leaves the slot unfiled. The refusals that pass the create's preflight and
+can still refuse the filing are a folder deleted meanwhile, the move path's
+ownership checks refusing the caller, and a replaced slot.
+Consumers compare the answered `folder_id` with the folder they asked for:
+`ScriptContext.open_session` returns the key and logs one WARNING, the dashboard
+client's `createChatSlot` logs one warning and returns the slot, and the Issue
+Radar and Auto Improvement session hooks record the folder the answer names
+(empty when unfiled). Tags and a
+project the newborn inherits from the folder are read before publication and
+stay when the filing is refused. A filed create is not atomic: that is a
+non-goal. A closing slot owns its key until its close settles
+(`close_holds_key`): from before its pop until its archive commits or it is put
+back in place. Every close path takes it: the dashboard close (`close_slot`),
+the idle sweep, the Spec Builder delete and orphan recovery. A create of a held
+key is refused with 409 `slot_under_construction` (`refuse_create_while_closing`),
+checked on the folded name before the registry is read, so a slot still
+registered before its pop is refused exactly as a popped one is. No client
+retries it on its own: the caller creates again once the close settles. A close whose archive failed therefore puts its own slot back, as
+before this change, and its unsaved rows stay on the periodic flush's retry.
+The hold is released on every exit, cancellation included. No transcript is deleted: a refusal after the
+member pin can leave a metadata-only transcript with no title, which History
+does not list. Creates of one name run one at a time behind a bounded per-name
+wait (`acquire_slot_create_name`), so the second sees the slot published or
+absent. An app caller's ownership is judged before that wait, and the gate
+records which principal each create acts for: an app never waits behind
+another principal's create of the name (`name_held_by_another`), and gets the
+same 404, at once, as for a slot it may not use. The create's own
+session-switch and tag-lock waits are bounded by the same 30 s budget. Inherited
+folder tags are filtered again, and the slot published, under the tag-write
+lock (taken inside the session-switch lock, never the reverse), so a tag
+deleted while the create waited is not published.
+
+The opener-wait rule: every path that opens a slot by a key a caller names
+awaits `wait_for_pending_create(state, key)` before the open, or has a named
+fallback around it (a `try` that catches the "still being built" ValueError),
+or runs after a close's hold on the key, or is reached only from openers that
+do. `test_every_opener_of_a_named_key_waits_for_a_pending_create`
+in `test/test_slot_create_publish_on_commit.py` finds, from the source tree,
+every named `get_or_create_slot`, `_rehydrate_slot_from_history` and
+`_bind_cron_slot` call and every direct `_slots[k] = ...` write, sync and async,
+checks that the wait or the fallback comes before the open in the function
+body, and fails on one that has neither and is not named, with its reason, in
+`_OPENERS_THAT_DO_NOT_WAIT`: the two boot restores (they run before the
+dashboard serves a create), the task-review opener (its key carries a fresh
+token), the registry's own write, and import (it mints its key and holds it
+under its own mark). A synchronous opener cannot wait, so it needs the
+fallback: the channel reconciler skips the key and surfaces it on its next
+pass, and the cron injector keeps the run in the `cron:{id}` transcript, which
+the next bind hydrates. The cron run-start bind (`ensure_cron_slot`) waits and
+then falls back the same way past the bound. The wait is bounded at 30 s, and that bound is the residual: an
+opener can stand up to 30 s behind a create that hangs in a step it cannot
+time out (the member pin and the selection write run to completion, because a
+timeout would leave the write landing after the create gave the key back),
+then proceeds and meets that refusal. Bounding those two steps is tracked in #18540.
+
 Cross-boundary calls that were observable on `SessionManager` route back through
 the facade, and patchable module dependencies are resolved through injected
 call-time functions. Persistence remains owned by the existing `SessionMap`

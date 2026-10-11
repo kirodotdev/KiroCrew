@@ -1554,6 +1554,11 @@ async def rehydrate_slot_from_history_async(
     if not state.conversation_log:
         return None
     slot_name = _normalize_slot_key(slot_name)
+    from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
+
+    # A dashboard create of this key still building it: wait (bounded) for it
+    # to publish or give up, so the check below sees its slot or the free key.
+    await wait_for_pending_create(state, slot_name)
     if slot_name in state._slots:
         return state._slots[slot_name]
     history_key = slot_transcript_key(slot_name)
@@ -1594,6 +1599,11 @@ async def rehydrate_slot_from_history_async(
         _read_mcp_app_claims,
         session_key_for(slot_name, str(meta.get("linked_session_key") or "")),
     )
+    # A create can begin during the reads above, after the wait at the top: wait
+    # again after the last await, so nothing suspends between this and the build.
+    await wait_for_pending_create(state, slot_name)
+    if slot_name in state._slots:
+        return state._slots[slot_name]
     # Tab-close race. The user can click ✕ while the read above is in flight.
     # The close pops the slot and records a tombstone synchronously on the loop,
     # but persists the ``closed`` flag only after its own awaits — so the
@@ -2278,8 +2288,11 @@ def _save_slot_to_history(
     slot refuse a stale queue snapshot or a replaced slot, as the full save
     does. Only the periodic flush passes it, because it re-runs a refused pass
     on its next tick. The forced route saves (tag, folder, pin, transfer) keep
-    committing their merge unconditionally, so none of them can newly report an
-    acknowledged edit as refused.
+    committing their merge over a stale queue snapshot, so none of them can
+    newly report an acknowledged edit as refused. A forced save that names its
+    slot with ``expected_slot_name`` is still refused when the map holds a
+    different object under that name: its edit was made on a slot that is no
+    longer registered, and the replacement shares the transcript.
 
     The session file is modeled as **frozen prefix + live window**:
 
@@ -2434,8 +2447,18 @@ def _save_slot_to_history(
                 # unconditionally, as it does on main: its callers ignore a
                 # refused save, so a refusal would leave an open-shaped line
                 # that a restart resurrects.
+                # A caller that names its slot (``expected_slot_name``) is refused
+                # on a replaced slot here too: a same-key replacement shares the
+                # transcript, so committing would write this slot's metadata onto
+                # it. The stale-queue refusal stays the periodic flush's alone.
                 refusal_under_lock=(
-                    _refusal_under_lock if refuse_stale_empty_merge and not closed else None
+                    _refusal_under_lock
+                    if refuse_stale_empty_merge and not closed
+                    else (
+                        (lambda _meta: _replaced_refusal())
+                        if expected_slot_name is not None and not closed
+                        else None
+                    )
                 ),
                 # A route save (tag, folder, pin, transfer) is not refused, but
                 # an older queue snapshot must not overwrite a newer committed

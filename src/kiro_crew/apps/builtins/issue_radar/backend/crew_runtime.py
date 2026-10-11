@@ -53,6 +53,7 @@ from kiro_crew.atomic_write import atomic_write, read_json_or
 from kiro_crew.dashboard.chat_persistence import rehydrate_slot_from_history_async
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.chat_utils import slot_history_key
+from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
 from kiro_crew.safety_override import safety_override
 
 from . import crew_store, github_client, provider, store
@@ -727,6 +728,9 @@ async def ensure_crew_session(state: Any, owner: str, repo: str, crew: dict[str,
     operator's last word.
     """
     slot_key = _slot_key(crew)
+    # A dashboard create of this key that has not published yet: wait (bounded)
+    # for its slot, as every opener of a named key does.
+    await wait_for_pending_create(state, slot_key)
     slot = state.get_or_create_slot(
         name=slot_key,
         agent=str(crew.get("agent") or "kirocrew"),

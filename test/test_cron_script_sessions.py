@@ -13,6 +13,7 @@ from __future__ import annotations
 import gc
 import io
 import json
+import logging
 import urllib.error
 from types import SimpleNamespace
 
@@ -175,6 +176,42 @@ class TestOpenSession:
         assert _FAKE_KEY not in sent["name"]
         assert sent["name"].endswith(" run")
         assert sent["title"] == sent["name"]
+
+    def test_a_refused_filing_returns_the_key_and_logs_one_warning(
+        self, ctx, gateway, caplog: pytest.LogCaptureFixture
+    ):
+        """The session opened unfiled: the key comes back and one WARNING names the folder.
+
+        The gateway answers 200 with an empty ``folder_id``. Mutation pin: drop
+        the ``folder_id`` comparison and no WARNING is logged.
+        """
+        gateway.answers[("POST", "/api/chat/slots")] = {"key": "chat-79", "folder_id": ""}
+
+        with caplog.at_level(logging.WARNING, logger=cron_script.__name__):
+            assert ctx.open_session("Nightly", folder_id="f9") == "chat-79"
+
+        warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+        assert len(warnings) == 1
+        assert "chat-79" in warnings[0].getMessage()
+        assert "f9" in warnings[0].getMessage()
+
+    def test_an_unfoldered_open_logs_no_warning(
+        self, ctx, gateway, caplog: pytest.LogCaptureFixture
+    ):
+        gateway.answers[("POST", "/api/chat/slots")] = {"key": "chat-81", "folder_id": ""}
+
+        with caplog.at_level(logging.WARNING, logger=cron_script.__name__):
+            assert ctx.open_session("Nightly") == "chat-81"
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
+
+    def test_a_filed_session_logs_no_warning(self, ctx, gateway, caplog: pytest.LogCaptureFixture):
+        gateway.answers[("POST", "/api/chat/slots")] = {"key": "chat-80", "folder_id": "f9"}
+
+        with caplog.at_level(logging.WARNING, logger=cron_script.__name__):
+            assert ctx.open_session("Nightly", folder_id="f9") == "chat-80"
+
+        assert not [r for r in caplog.records if r.levelno == logging.WARNING]
 
 
 class TestSendToSession:

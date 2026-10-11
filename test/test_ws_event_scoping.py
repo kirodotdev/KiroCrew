@@ -2623,7 +2623,8 @@ class TestUntaggedOriginIsNotUser:
         pinning one of them everywhere is what got the resume path wrong.
         """
         src = _chat_handler_source()
-        creates = src.count("state.get_or_create_slot(")
+        # ``prepare_slot`` is the create route's private build of the same slot.
+        creates = src.count("state.get_or_create_slot(") + src.count("state.prepare_slot(")
         from_request = src.count("origin=request_slot_origin(")
         # A resume constructs from the metadata codec's keywords, whose ``origin``
         # is the persisted conversation's (pinned behaviourally below, by

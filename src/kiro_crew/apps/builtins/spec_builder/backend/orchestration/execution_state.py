@@ -182,6 +182,9 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
         if not quiesced:
             raise RuntimeError("orphaned loop disappeared during cleanup")
 
+    # circular import: dashboard.server imports this app's modules.
+    from kiro_crew.dashboard.slot_create_transaction import close_holds_key
+
     captured_slots: dict[str, Any] = {}
     for slot_key in orphaned:
         slot = state.get_slot(slot_key)
@@ -201,21 +204,24 @@ async def _remove_orphaned_executions_with_service(state: Any, service: Any) -> 
             ),
             "orphaned",
         )
-        archived = await _teardown_worker_slot(
-            state,
-            observed_name,
-            only_slot=slot,
-            require_archive=True,
-        )
-        if captured_task is not None and not captured_task.done():
-            # The bounded teardown can time out on a provider that suppresses
-            # cancellation. Keep the slot addressable for another recovery
-            # attempt and refuse Create while that task can still edit files.
-            try:
-                state._slots[slot_key] = slot
-            except Exception:
-                logger.warning("could not restore a still-running orphan slot %s", slot_key)
-            raise RuntimeError("orphaned worker is still running")
+        # The key stays this close's through the put-back below, so no create
+        # takes it in between (close_holds_key).
+        with close_holds_key(state, slot_key):
+            archived = await _teardown_worker_slot(
+                state,
+                observed_name,
+                only_slot=slot,
+                require_archive=True,
+            )
+            if captured_task is not None and not captured_task.done():
+                # The bounded teardown can time out on a provider that suppresses
+                # cancellation. Keep the slot addressable for another recovery
+                # attempt and refuse Create while that task can still edit files.
+                try:
+                    state._slots[slot_key] = slot
+                except Exception:
+                    logger.warning("could not restore a still-running orphan slot %s", slot_key)
+                raise RuntimeError("orphaned worker is still running")
         if not archived or state.get_slot(slot_key) is not None:
             raise RuntimeError("orphaned worker could not be archived")
 

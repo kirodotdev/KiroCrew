@@ -40,6 +40,7 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.slot_create_transaction import wait_for_pending_create
 from kiro_crew.dashboard.state import DashboardState, request_slot_origin
 from kiro_crew.external_text import redact_external_text
 from kiro_crew.members import MemberSlugError
@@ -1229,6 +1230,10 @@ async def api_member_thread(request: web.Request) -> web.Response:
         # Resolve before publication, then re-check: another opener can create
         # the slot while path validation waits; that slot is kept and bound to
         # the same workspace below (both openers derive it from one config).
+        # A dashboard create of this key can begin during that await too: wait
+        # (bounded) here, with no await between this and the open, so the
+        # re-check finds its slot or the key free.
+        await wait_for_pending_create(state, slot_key)
         slot = state._slots.get(slot_key)
         if slot is None:
             minted = True
