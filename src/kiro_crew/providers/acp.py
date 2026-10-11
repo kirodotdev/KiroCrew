@@ -459,6 +459,7 @@ class AcpProvider(LLMProvider):
         extra_env: dict[str, str] | None = None,
         acp_backend: str = "",
         effort_per_model: dict[str, str] | None = None,
+        unbound_effort: str = "",
         effort_defaults: object = None,
         tool_search: bool | None = None,
         tool_search_min_pct: object = None,
@@ -559,6 +560,11 @@ class AcpProvider(LLMProvider):
         # this via a workspace cli.json overlay read at spawn; the claude
         # backend applies it live via session/set_config_option (no overlay).
         self._effort_per_model: dict[str, str] = dict(effort_per_model or {})
+        # A level requested while no model is pinned: there is no id to key it
+        # under until the backend names the model it chose, so it is held here
+        # and bound to that model on every (re)start (``_bind_unbound_effort``).
+        self._unbound_effort: str = unbound_effort or ""
+        self._unbound_effort_drop_logged: bool = False
         self._effort_defaults = effort_defaults
         # The spelling the factory keyed ``effort_per_model`` under.
         self._configured_model: str = model or ""
@@ -679,6 +685,69 @@ class AcpProvider(LLMProvider):
         else:
             model = str(getattr(client, "_resolved_model_id", "") or "").strip()
         return "" if model == DEFAULT_MODEL else model
+
+    @property
+    def _effort_model(self) -> str:
+        """The model id every effort read and write of this session keys on.
+
+        The pinned model when one is pinned. With nothing pinned the client
+        records ``""`` or the ``auto`` sentinel, which no effort level can be
+        keyed under, so the id the backend reported serving stands in once it
+        is known; until then the client's own value is returned unchanged.
+        """
+        model = self._client._model
+        if model and model != DEFAULT_MODEL:
+            return model
+        return self.served_model or model
+
+    async def _bind_unbound_effort(self) -> None:
+        """Key a level requested with nothing pinned to the model now serving.
+
+        Runs on every (re)start once the session is ready and before the
+        initial effort push, because only then has the backend named the model
+        it chose. A level already stored for that model wins, as a live change
+        does. The kiro family reads effort from the spawn-time overlay, which
+        could not be keyed before the spawn, so the level is pushed live there
+        through :meth:`change_effort`, which also writes the overlay for the
+        next spawn. A level the serving model does not take is logged and left
+        unapplied.
+        """
+        level = self._unbound_effort
+        if not level:
+            return
+        pinned = self._client._model
+        if pinned and pinned != DEFAULT_MODEL:
+            return
+        model = self.served_model
+        inserted = bool(model) and model not in self._effort_per_model
+        if inserted:
+            self._effort_per_model[model] = level
+        if model and self._resolve_effort():
+            if inserted and self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+                try:
+                    await self.change_effort(self._effort_per_model[model])
+                except Exception:
+                    logger.warning(
+                        "ACP unpinned effort apply failed (backend=%s model=%s effort=%s)",
+                        self._client.backend,
+                        model,
+                        level,
+                        exc_info=True,
+                    )
+            return
+        if inserted:
+            self._effort_per_model.pop(model, None)
+        # Once per provider: a pooled or restarted session repeats the same fact.
+        if self._unbound_effort_drop_logged:
+            return
+        self._unbound_effort_drop_logged = True
+        logger.warning(
+            "reasoning effort '%s' will not be applied (session %s) — model '%s' "
+            "does not support effort configuration",
+            level,
+            self._owning_session_key() or "?",
+            model or "auto",
+        )
 
     @property
     def agent_version(self) -> str:
@@ -1801,7 +1870,7 @@ class AcpProvider(LLMProvider):
             return self._client.supports_config_option(
                 effort_config_option_id(self._client.backend)
             )
-        return model_supports_effort(self._client._model)
+        return model_supports_effort(self._effort_model)
 
     def _resolve_effort(self) -> str | None:
         """Resolve effort for the current model via the shared priority chain.
@@ -1822,7 +1891,7 @@ class AcpProvider(LLMProvider):
         # whose ceiling is ``xhigh`` is this harness's ``xhigh`` -- and a filter
         # that ran first would drop the very level the live push applied.
         return resolve_effort_for_model(
-            self._client._model,
+            self._effort_model,
             slot_overrides=self._effort_per_model,
             defaults=self._effort_defaults,
             levels=self._advertised_effort_levels(),
@@ -1846,7 +1915,7 @@ class AcpProvider(LLMProvider):
         """
         if self._client.backend not in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
             return True
-        model = self._client._model
+        model = self._effort_model
         level = self._resolve_effort()
         if not model or not level:
             return True
@@ -2033,7 +2102,7 @@ class AcpProvider(LLMProvider):
         model does not support effort, or when this harness is in neither set and
         so has no effort channel at all.
         """
-        model = self._client._model
+        model = self._effort_model
         if not self.supports_effort():
             logger.info(
                 "change_effort skipped — no effort level applies to this session (backend=%s model=%s)",
@@ -2141,6 +2210,9 @@ class AcpProvider(LLMProvider):
                 "ACP effort live push failed (model=%s effort=%s) — rolled back", model, level
             )
             raise
+        if self._unbound_effort:
+            # Unpinned: the next restart binds the level picked last.
+            self._unbound_effort = level
         logger.info(
             "ACP effort live-changed: model=%s effort=%s backend=%s",
             model,
@@ -2182,7 +2254,7 @@ class AcpProvider(LLMProvider):
         without one, the level of the model left is pushed live but never stored.
         """
         overrides = self._effort_per_model
-        carried = overrides.get(self._client._model, "")
+        carried = overrides.get(self._effort_model, "")
         await self._client.set_model(model)
         try:
             own = overrides.get(self._client._model) or overrides.get(model, "")
@@ -2219,7 +2291,10 @@ class AcpProvider(LLMProvider):
         neither the file nor this map, so the caller commits no slot value and
         resets nothing.
         """
-        model = self._client._model
+        model = self._effort_model
+        # Cleared to the default: a level held for an unpinned start must not
+        # be bound again by the next restart.
+        self._unbound_effort = ""
         if not self.supports_effort():
             return False
         cleared = self._effort_per_model.pop(model, None)
@@ -2316,6 +2391,7 @@ class AcpProvider(LLMProvider):
                 level = self._effort_per_model.pop(self._configured_model)
                 self._effort_per_model.setdefault(running, level)
 
+        await self._bind_unbound_effort()
         await self._apply_initial_effort()
 
     async def _note_zero_tool_servers(self) -> None:
