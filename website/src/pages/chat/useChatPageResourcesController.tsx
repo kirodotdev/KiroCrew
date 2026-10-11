@@ -48,6 +48,7 @@ import {
 } from '../../utils/pullRequestLinks'
 import type { ResizeInfo } from '../../utils/resizeImage'
 import { errMessage } from '../../utils/thunkError'
+import { pinSlotSuccession, releaseSlotSuccession, resolveSlotSuccession } from '../../utils/slotSuccession'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import { fetchDashboardConfig } from '../../api/dashboardConfigQuery'
 import {
@@ -703,6 +704,10 @@ export function useChatPageResourcesController({
     const controller = new AbortController()
     registerComposerUpload(requestSlot, controller)
     let completedPaths: string[] = []
+    // A memory-mode switch can retire `requestSlot` while this upload runs;
+    // the pin keeps its succession edge alive so the completion lands in the
+    // replacement instead of the deleted slot's draft.
+    pinSlotSuccession(requestSlot)
     try {
       const res = await api.uploadFiles(files, controller.signal)
       if (res.error) {
@@ -721,10 +726,15 @@ export function useChatPageResourcesController({
         setUploadError(i18nT('pages.chatPage.upload_failed_check_file_type_and_size_max_50_mb'))
       }
     } finally {
+      // The slot that is alive now: the replacement, when a memory-mode switch
+      // retired `requestSlot` -- which also handed it this upload's hold and
+      // controller.
+      const landing = resolveSlotSuccession(requestSlot)
       // Drop only THIS request's controller: the registry keeps Cancel offered
       // while a sibling upload of the slot is still running.
-      unregisterComposerUpload(requestSlot, controller)
-      finishComposerAttachment(requestSlot, completedPaths)
+      unregisterComposerUpload(landing, controller)
+      finishComposerAttachment(landing, completedPaths)
+      releaseSlotSuccession(requestSlot)
       // Unchanged from main, and still wrong for concurrent uploads: the first
       // request to settle clears the shared flag while a sibling runs. Left
       // alone deliberately -- the cancel control reads the registry, not this.
