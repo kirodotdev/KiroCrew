@@ -2515,6 +2515,10 @@ class AcpProvider(LLMProvider):
             tool_output=e.tool_output,
             tool_output_digest=e.tool_output_digest,
             tool_output_bytes=e.tool_output_bytes,
+            # The parser's word that `tool_output` is a head cut. Dropping it
+            # resets the flag to False, and the chat runner's banner echo check
+            # then reads a cut result as whole evidence that the phrase is absent.
+            tool_output_truncated=e.tool_output_truncated,
             # The fingerprints the credential card traces a source by. Dropping
             # them leaves every credential in the reply with no source.
             tool_output_credentials=e.tool_output_credentials,

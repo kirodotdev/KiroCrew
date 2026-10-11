@@ -751,8 +751,6 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
-    slot._steer_user_origin.pop(message, None)
-    slot._steer_channel_origin.pop(message, None)
     slot._steer_admissions.pop(message, None)
     # Same reason as `sendId` above, and why this is NOT held for the requeue the way
     # the attachments below are: the row persisted below carries the receipt, so a
@@ -769,6 +767,16 @@ async def steer_into_running_turn(
     # turn that ends without the echo still requeues the text.
     if not still_registered:
         slot._steer_attachment_meta.pop(message, None)
+        # Held while the steer is still pending, like the attachments: the
+        # transport ack is not consumption. The running turn reads the origin when
+        # the consumption echo settles the steer (which releases it), and the
+        # teardown requeue reads and releases it for a steer the turn never
+        # consumed. The channel mark is held in the same lockstep: the requeue
+        # reads the two records together, and a channel human's steer released
+        # from one map but not the other would requeue as a dashboard human's
+        # turn, with the dashboard-only authority a channel turn never carries.
+        slot._steer_user_origin.pop(message, None)
+        slot._steer_channel_origin.pop(message, None)
 
     ts = datetime.now(timezone.utc).isoformat()
     # Cut the in-flight text segment at the steer boundary BEFORE persisting the

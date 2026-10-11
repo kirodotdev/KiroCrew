@@ -514,6 +514,40 @@ class TestDashboardRunnerHonoursTheSignal:
         assert is_turn_interrupted(slot.messages) is False
 
     @pytest.mark.asyncio
+    async def test_a_banner_only_tail_after_the_quiet_end_keeps_the_quiet_end(
+        self, tmp_path, monkeypatch
+    ):
+        """A provider's ``You have N weighted tokens left`` banner arriving after
+        ``nothing_to_do`` is activity after the terminal, not a turn with no
+        answer. The banner stays out of the transcript, and the sanctioned quiet
+        end stands: no provider-artifact stop reason, no continuation queued, no
+        notice card, and the turn is not read as interrupted."""
+        from kiro_crew.dashboard.chat_utils import RecoveryProvenance
+        from kiro_crew.dashboard.state import is_turn_interrupted
+
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("banner-after-quiet-end")
+        slot._titled = True
+        events = [
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="Patrol: checked the board."),
+            _core_call("nothing_to_do", "tc-quiet"),
+            _result(
+                session_directive.encode("nothing_to_do", {}, "Quiet end requested."), "tc-quiet"
+            ),
+            AcpEvent(kind=EVENT_TEXT_CHUNK, text="You have 8154 weighted tokens left"),
+            AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+        ]
+        queue_calls = await _drive_turn(state, slot, events, monkeypatch)
+        assert queue_calls == [], "a quiet end queued a banner recovery"
+        assert slot._posttoken_retry_used is False
+        assert slot._last_stop_reason != RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT.value
+        notices = [m for m in slot.messages if m.get("role") == "notice"]
+        assert notices == [], notices
+        assistant = [m.get("content") for m in slot.messages if m.get("role") == "assistant"]
+        assert assistant == ["Patrol: checked the board."]
+        assert is_turn_interrupted(slot.messages) is False
+
+    @pytest.mark.asyncio
     async def test_the_stamp_stays_on_this_turn_s_row(self, tmp_path, monkeypatch):
         """A transcript-preserving reset can hand a later turn a tool_call_id an
         earlier turn already used. The ``ends_turn`` stamp must land only on the

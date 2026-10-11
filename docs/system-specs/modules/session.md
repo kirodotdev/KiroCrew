@@ -1749,6 +1749,103 @@ an overrun to `timeout` and an exception to `error`. A Stop or shutdown that
 arrives while that bounded window is open waits for it to settle, and the turn
 then ends with the timeout error rather than a plain cancellation.
 
+### Provider-budget banner suppression
+
+Some model backends emit their private context-budget reminder as answer text.
+Dashboard chat recognizes only the exact leading grammar `You have <count>
+weighted tokens left` (a plain or comma-grouped count), ending at a line break,
+at the end of the text, or glued directly to an uppercase letter
+(`chat_utils.strip_provider_budget_banner`). The glued form is the observed
+provider shape: the banner fused to the reply's first word with no separator. A
+lowercase continuation, punctuation before glued text, quoted, embedded,
+suffixed and mid-text mentions are not recognized.
+
+Recognition proves the shape, not who wrote the bytes, so classification is
+separate (`chat_utils.classify_provider_budget_banner`) and runs in a fixed
+order. The checks that keep the text visible come first and hold on every turn
+kind, typed provider recovery included: a typed transient retry preserves a
+repeated answer, an explicit model-capacity or token-budget request from the
+session's own human keeps the bytes it asked for, and a banner whose phrase
+(`You have <count> weighted tokens left`, the same count) appears in a tool
+result delivered to the model this turn stays visible as a possible echo of
+that result. Only then do the strips apply. Typed provider recovery (below)
+carries host-minted provenance and may remove the prefix while preserving any
+answer after it. An ordinary turn removes only a banner-only final tail after
+that turn already delivered visible model output and only while the echo
+evidence is whole (below). A banner before real answer
+text, glued or line-separated, and a banner-only answer with no other evidence
+stay visible: an ordinary turn cannot prove they are not an echo the user asked
+for.
+
+The tool-result text is the text the runner recorded on this turn's own tool
+rows (`meta.output`: the redacted result, at most its first 8,000 characters),
+so a phrase in a tool result from an earlier turn is not seen. A result whose
+row text is not the whole result is marked by the parser that built the text
+(`AcpEvent.tool_output_truncated`, set by the dispatch terminal-frame builder,
+the client's streaming update parser and the kiro-cli session-file read-back,
+the last of which also bounds each part before the join): the display bound cut
+it, or a `Json` item's stdout-only display left out another output field the
+tool returned (stderr; the envelope's `exit_status` string is a status, not
+output). The ACP provider's event translation forwards the mark and the turn
+remembers that any result it delivered was not whole. The turn then treats its
+echo evidence as incomplete: the phrase may sit past the cut or in the field
+the row never shows, so an ordinary turn keeps a banner-only tail visible
+instead of stripping it. The typed-recovery strip does not read that
+mark; its ownership rests on the recovery's provenance.
+
+The capacity-topic gate reads the turn's own payload when it is not runner- or
+app-authored, plus the text of every steer this turn positively consumed that
+this session's human typed. A runner- or app-authored payload, a recovery's own
+continuation text among them, contributes nothing, and cancelled-turn preambles,
+app context and policy text are never part of what it reads. A message another
+session injected (`session_send`, with its provenance envelope) or a scheduled
+job delivered is the turn's own payload and is read like typed text: such a
+message that names a capacity topic keeps a banner visible, which is the
+pre-suppression behaviour and loses nothing. The per-steer origin record
+(`_ChatSlot._steer_user_origin`) is held past the steer RPC's acknowledgement
+while the steer is still pending, because the acknowledgement precedes the
+consumption echo. The turn reads the record when the echo arrives, and
+`_settle_consumed_steers` then releases it; a steer the turn never consumed is
+released by the turn-end requeue, which reads the same record for the requeued
+entry's `directive_user_origin`. The channel mark (`_steer_channel_origin`) is
+held and released in the same lockstep: the requeue reads the two as a pair, so
+a channel human's acknowledged, unconsumed steer re-enters the queue as a channel
+turn, never as a dashboard human's turn with the dashboard-only authority a
+channel turn does not carry.
+
+A banner-only turn sets the structural stop reason `provider_budget_artifact`
+and recovers once with the post-token CONTINUE instruction on the same live
+conversation. An applied terminal directive (`nothing_to_do`) outranks that: a
+banner arriving after it is activity after the sanctioned quiet end, so the
+banner stays out of the transcript but no stop reason, continuation or notice
+follows, and the quiet end stands as a landed turn. A banner-only segment persists no row, so the turn's file chips
+never land on an earlier turn's answer; a regeneration whose prior answers are
+still pending persists its selector row so those answers survive. Otherwise an
+empty assistant frame clears the streamed banner before the segment boundary can
+finalize or speak it. The continuation is queued only while tool approval stays
+interactive: YOLO, session trust and scoped unattended trust downgrade it to a
+notice asking for an explicit Continue, and the queue drain re-checks that
+boundary (`_drop_unauthorized_provider_recovery`) so a trust grant racing the
+enqueue cannot authorize it. The drain reads the boundary only when such an
+entry is queued, so a drain with no banner recovery to judge checks no scoped
+grant. The queued entry carries
+`RecoveryProvenance.PROVIDER_BUDGET_ARTIFACT`; the post-token transient retry
+carries `RecoveryProvenance.TRANSIENT_RETRY` for the same text. Every requeue
+within the current recovery episode carries its recognized tag forward; a
+producer that starts a new episode omits it, and an intentional ownership change
+stamps the replacement tag explicitly. A requeue remains in that episode while
+no output has been delivered (`_turn_emitted` is false), or, for refusal
+fallback, while no tool has fired (`_turn_tool_calls == 0`); delivered output or
+a fired tool starts a new episode. Queue drain copies the tag onto the persisted
+inject row, and `_run_chat` reads that row as the sole recovery owner: only
+provider-budget provenance may strip banner text. The provider-budget entry
+arms the continuation replay record and is purged by the same Stop-generation,
+rebind and user-intervention check as the promise-only and compaction
+continuations. A Stop-hook continuation queues behind it. The one-shot
+allowance is shared with the transient retry, so a repeated banner ends in a
+notice instead of a loop. The tag value equals the stop reason so producer and
+consumer cannot drift.
+
 ### Interrupted-turn context restore
 
 kiro-cli appends a prompt to `<sid>.jsonl` only once the model has answered

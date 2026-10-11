@@ -2721,6 +2721,32 @@ def _mcp_content_text(payload: dict[str, Any]) -> str | None:
 UNSERIALISABLE_SIBLING_VALUE = "[[value omitted: nested too deeply to serialise]]"
 
 
+#: Fields of a ``Json`` result item that describe the run rather than carry its
+#: output. kiro-cli's shell envelope spells the exit code as a string
+#: (``"exit status: 0"``), so a text test alone would read every shell result
+#: as holding text its stdout display left out.
+_JSON_RESULT_STATUS_FIELDS = frozenset({"exit_status", "exit_code", "status", "returncode"})
+
+
+def _json_result_omits_text(payload: dict[str, Any]) -> bool:
+    """True when a ``Json`` result item carries text the ``stdout`` selection drops.
+
+    The display text of a ``Json`` item with a non-empty ``stdout`` is that
+    field alone, so a tool that also returned ``stderr`` (or any other
+    output-bearing string field) has text the dashboard row never shows. A
+    reader of the row text as evidence of the whole result, such as the chat
+    runner's echo check for a banner-shaped answer, needs to know the evidence
+    is partial. Status fields (``exit_status``) are not output.
+    """
+    return any(
+        key != "stdout"
+        and key not in _JSON_RESULT_STATUS_FIELDS
+        and isinstance(value, str)
+        and bool(value.strip())
+        for key, value in payload.items()
+    )
+
+
 def _dumps_degraded(payload: Any, **kwargs: Any) -> str:
     """``json.dumps`` that degrades to readable text instead of raising.
 
@@ -3037,6 +3063,9 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
     # it IS this defect class, and it cannot be reconstructed afterwards, so
     # the final head cut is the one bound.
     output_parts: list[str] = []
+    # Set when a ``Json`` item's display text (stdout) leaves out another text
+    # field the tool returned: the result text is then not whole.
+    fields_omitted = False
     # Path 1: content blocks (mid-stream).
     content = update.get("content")
     if isinstance(content, list):
@@ -3060,6 +3089,11 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                     if isinstance(j, dict):
                         if "stdout" in j and j.get("stdout"):
                             output_parts.append(str(j["stdout"]))
+                            # The display text keeps stdout alone. Another text
+                            # field the tool returned (stderr) is then not in
+                            # ``tool_output``, so a reader of that text as
+                            # evidence of the whole result must know it is not.
+                            fields_omitted = fields_omitted or _json_result_omits_text(j)
                         else:
                             _mcp_text = _mcp_content_text(j)
                             if _mcp_text is not None:
@@ -3139,6 +3173,13 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
         tool_output=final_output,
         tool_output_digest=tool_output_digest,
         tool_output_bytes=tool_output_bytes,
+        # Measured against the redacted text the cut was applied to: a re-attached
+        # tail marker or re-injected App marker can lengthen ``final_output``
+        # without restoring the text the cut removed. A stdout-only display of a
+        # result that also carried stderr is not whole either.
+        tool_output_truncated=(
+            fields_omitted or len(_redacted) > session_directive.MAX_TOOL_RESULT_CHARS
+        ),
         # Only a result the redactor changed can hold a credential worth a
         # fingerprint, so an ordinary result pays nothing extra.
         tool_output_credentials=tool_output_fingerprints(joined) if _redacted != joined else (),

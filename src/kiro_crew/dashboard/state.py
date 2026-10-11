@@ -4140,7 +4140,10 @@ class _ChatSlot:
         # that persists its own row stamps the id directly and drops this entry.
         self._steer_send_ids: dict[str, str] = {}
         # Whether an in-flight steer was typed by the session's OWN human, keyed by
-        # the same message text as the two maps above and kept in the same LOCKSTEP.
+        # the same message text as the two maps above. Unlike them it is held past
+        # the steer RPC's acknowledgement while the steer is still pending: the
+        # running turn reads it when the consumption echo settles the steer, to
+        # extend the turn's user authority, and that settle releases it.
         # The requeue reads it to decide `directive_user_origin`, which exempts a
         # queue entry from the drain's LINKED drop. That exemption exists because
         # "the author typed into the session's own surface" -- true of the composer,

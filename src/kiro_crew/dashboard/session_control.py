@@ -7492,10 +7492,11 @@ async def send_to_target(
         # directly, the cancellation unwinds THROUGH the RPC and skips that
         # coroutine's single reconciliation tail, while the bytes may already have
         # reached kiro-cli: the turn then runs text no `slot.append` recorded, and
-        # `_steer_delivery_ids` / `_steer_send_ids` / `_steer_user_origin` /
-        # `_steer_admissions` are never popped. Nothing else pops them --
-        # `_settle_consumed_steers` clears only the attachment and decision-strip
-        # maps, and `_requeue_unconsumed_steers` returns early once settling emptied
+        # `_steer_delivery_ids` / `_steer_send_ids` / `_steer_admissions` are never
+        # popped. Nothing else pops them -- `_settle_consumed_steers` clears the
+        # attachment, decision-strip, possibly-delivered, user-origin and
+        # channel-origin maps and nothing else, and
+        # `_requeue_unconsumed_steers` returns early once settling emptied
         # `_pending_steers`. The surviving `_steer_delivery_ids` entry then refuses
         # this exact text on that slot forever (the one-per-text guard reads that
         # dict) and `retained_steer_count` never falls back below
