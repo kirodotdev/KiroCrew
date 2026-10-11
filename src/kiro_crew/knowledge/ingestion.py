@@ -31,7 +31,7 @@ from .dedup import PERSISTENT_SOURCE_TYPES, dedup_document
 from .embedder import embedder_signature, floats_to_bytes
 from .extractor import EntityExtractor
 from .readers import FileReader
-from .store import AUTO_ADDED_PROP, KnowledgeStore
+from .store import AUTO_ADDED_PROP, MAX_ENTITY_ALIAS_LEN, MAX_ENTITY_ALIASES, KnowledgeStore
 
 #: Per-task depth of :meth:`IngestionPipeline.ingestion_in_flight` holds, so a
 #: nested entry by a current holder is a no-op instead of a second acquisition.
@@ -71,15 +71,32 @@ logger = logging.getLogger(__name__)
 #: ``FileReader.SUPPORTED`` -- that set is the folder-scan gate, so an extension
 #: listed here but absent there never reaches this dispatch at all.
 CODE_EXTS = {
-    '.py', '.java', '.ts', '.js', '.rs', '.go', '.rb', '.c', '.cpp', '.h',
-    '.sh', '.ps1', '.psm1', '.php', '.cs', '.kt', '.kts', '.swift', '.scala',
+    ".py",
+    ".java",
+    ".ts",
+    ".js",
+    ".rs",
+    ".go",
+    ".rb",
+    ".c",
+    ".cpp",
+    ".h",
+    ".sh",
+    ".ps1",
+    ".psm1",
+    ".php",
+    ".cs",
+    ".kt",
+    ".kts",
+    ".swift",
+    ".scala",
 }
 
-MARKDOWN_EXTS = {'.md', '.docx'}
+MARKDOWN_EXTS = {".md", ".docx"}
 
 #: ``ingestion_jobs.status`` for a write the pre-ingest gate refused because the
 #: exact content is already in the Library. Terminal, like 'completed'.
-DUPLICATE_JOB_STATUS = 'skipped_duplicate'
+DUPLICATE_JOB_STATUS = "skipped_duplicate"
 
 DEFAULT_MAX_INGEST_FILE_MB = 100.0
 _MB = 1024 * 1024
@@ -144,6 +161,7 @@ def get_embed_rate_limiter() -> EmbedRateLimiter:
     global _embed_rate_limiter
     try:
         from kiro_crew.config.loader import KiroCrewConfig
+
         rate = max(0, int(KiroCrewConfig.load().knowledge.embed_rate_limit))
     except Exception:
         rate = 0
@@ -199,6 +217,7 @@ def _max_ingest_file_mb() -> float:
     # config.loader imports knowledge.doc_links, so a top-level import here
     # would create an import cycle.
     from kiro_crew.config.loader import KiroCrewConfig  # circular import
+
     try:
         return KiroCrewConfig.load().knowledge.max_ingest_file_mb
     except Exception:
@@ -394,10 +413,10 @@ def _import_chunk_budget() -> int:
 
 def _run_chunker(chunker: HeadingAwareChunker, ext: str, text: str, uri: str) -> list[dict]:
     """Dispatch to the right chunker. CPU-bound -- run via asyncio.to_thread."""
-    if ext == '.pptx':
+    if ext == ".pptx":
         return chunker.chunk_slides(text)
     if ext in CODE_EXTS:
-        return chunker.chunk_code(text, language=ext.lstrip('.'))
+        return chunker.chunk_code(text, language=ext.lstrip("."))
     if ext in MARKDOWN_EXTS:
         return chunker.chunk_markdown(text)
     return chunker.chunk(text, source_uri=uri)
@@ -446,10 +465,70 @@ def _coerce_chunk_param(value: object, default: int, minimum: int) -> int:
 
 def _job_status(processed: int, total: int) -> str:
     if processed == 0 and total > 0:
-        return 'failed'
+        return "failed"
     if processed < total:
-        return 'partial'
-    return 'completed'
+        return "partial"
+    return "completed"
+
+
+def _coerce_aliases(raw: object, exclude: str) -> list[str] | None:
+    """Sanitize and bound a raw aliases value from LLM extraction output.
+
+    Returns a non-empty list of redacted alias strings, or ``None`` when the
+    result would be empty (so the caller can pass ``aliases=None`` to
+    ``add_entity`` and leave the column as its ``DEFAULT '[]'``).
+
+    ``exclude`` is the entity's canonical name: the name itself is never
+    stored as its own alias, but the check is a safety net — with bare
+    canonicals the name should not appear in the list anyway.
+
+    Cap is applied to the count of VALID accepted aliases, NOT to the raw
+    input position.  A raw list like ``[None, None, ..., None, "Music Bank"]``
+    with 11 elements correctly keeps ``"Music Bank"`` rather than discarding it
+    because invalid entries consumed the first 10 slots.
+    """
+    if not isinstance(raw, list):
+        return None
+
+    accepted: list[str] = []
+    accepted_cf: set[str] = set()
+    exclude_cf = exclude.casefold()
+    overflow = 0
+
+    for a in raw:
+        if not isinstance(a, str):
+            continue
+        stripped = a.strip()
+        if not stripped:
+            continue
+        # Redact the FULL stripped alias before truncating: a credential URL
+        # cut mid-token (e.g. before the terminating `@host`) would defeat
+        # redaction if truncation preceded it.
+        redacted = _redact(stripped) or stripped
+        truncated = redacted[:MAX_ENTITY_ALIAS_LEN]
+        if not truncated:
+            continue
+        cf = truncated.casefold()
+        # Reject if casefold-equivalent to entity's canonical name.
+        if cf == exclude_cf:
+            continue
+        # Casefold dedupe within this call.
+        if cf in accepted_cf:
+            continue
+        if len(accepted) >= MAX_ENTITY_ALIASES:
+            overflow += 1
+            continue
+        accepted.append(truncated)
+        accepted_cf.add(cf)
+
+    if overflow > 0:
+        logger.warning(
+            "_coerce_aliases: %d alias(es) discarded (limit %d) for entity %r",
+            overflow,
+            MAX_ENTITY_ALIASES,
+            exclude,
+        )
+    return accepted or None
 
 
 def _first_line_title(content: str) -> str:
@@ -477,9 +556,15 @@ def _summary_shaped(value: object) -> bool:
 class IngestionPipeline:
     """Orchestrates: read file -> chunk -> extract entities -> store."""
 
-    def __init__(self, store: KnowledgeStore, extractor: EntityExtractor,
-                 chunker: HeadingAwareChunker, reader: FileReader, embedder=None,
-                 dedup_enabled: bool = True):
+    def __init__(
+        self,
+        store: KnowledgeStore,
+        extractor: EntityExtractor,
+        chunker: HeadingAwareChunker,
+        reader: FileReader,
+        embedder=None,
+        dedup_enabled: bool = True,
+    ):
         self.store = store
         self.extractor = extractor
         self.chunker = chunker
@@ -554,12 +639,20 @@ class IngestionPipeline:
         event loop. The ingest paths fold it into the duplicate-gate hop, just
         ahead of the gate's own transaction.
         """
-        return [row['id'] for row in self.store.db.execute(
-            "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+        return [
+            row["id"]
+            for row in self.store.db.execute(
+                "SELECT id FROM items WHERE source_id = ?", (source_id,)
+            ).fetchall()
+        ]
 
-    def _skip_as_duplicate(self, content_hash: str, source_id: str | None,
-                           old_item_ids: list[str] | None = None,
-                           on_duplicate: Callable[[str], None] | None = None) -> str | None:
+    def _skip_as_duplicate(
+        self,
+        content_hash: str,
+        source_id: str | None,
+        old_item_ids: list[str] | None = None,
+        on_duplicate: Callable[[str], None] | None = None,
+    ) -> str | None:
         """Terminal job id when this exact document is already in the Library.
 
         Returns ``None`` when the write should proceed.
@@ -598,8 +691,7 @@ class IngestionPipeline:
         # Cheap unlocked probe: "not a duplicate" is the overwhelmingly common
         # answer, and taking the write lock to learn it would serialize every
         # ingest behind every other one.
-        if not self.store.find_doc_by_content_hash(
-                content_hash, exclude_source_id=source_id):
+        if not self.store.find_doc_by_content_hash(content_hash, exclude_source_id=source_id):
             return None
 
         # Everything below is ONE write transaction, and that is load-bearing.
@@ -611,8 +703,7 @@ class IngestionPipeline:
         # its only surviving items are deleted, and the content is unrecoverable.
         self.store.db.execute("BEGIN IMMEDIATE")
         try:
-            holder = self.store.find_doc_by_content_hash(
-                content_hash, exclude_source_id=source_id)
+            holder = self.store.find_doc_by_content_hash(content_hash, exclude_source_id=source_id)
             if not holder:
                 # Vanished between the probe and the lock: fall through to a
                 # normal ingest instead of deduping against something gone.
@@ -622,8 +713,7 @@ class IngestionPipeline:
                 self.store.db.execute("COMMIT")
                 return None
             if old_item_ids:
-                self.store.delete_items_batch_in_txn(
-                    list(old_item_ids), owner_source_id=source_id)
+                self.store.delete_items_batch_in_txn(list(old_item_ids), owner_source_id=source_id)
             # This source HAS a copy of the document -- it just does not need a second
             # physical one. Under "one document, many locations" that has to be recorded,
             # or the copy is invisible to the reference count: deleting the holder would
@@ -632,8 +722,9 @@ class IngestionPipeline:
             # Attaching costs nothing and makes the refusal safe.
             if source_id:
                 for row in self.store.db.execute(
-                        "SELECT id FROM items WHERE content_hash = ? AND source_id = ?",
-                        (content_hash, holder.get("source_id"))).fetchall():
+                    "SELECT id FROM items WHERE content_hash = ? AND source_id = ?",
+                    (content_hash, holder.get("source_id")),
+                ).fetchall():
                     self.store.add_source_location_in_txn(row["id"], source_id)
             job_id = uuid4().hex[:12]
             now = datetime.now().isoformat()
@@ -641,7 +732,8 @@ class IngestionPipeline:
                 "INSERT INTO ingestion_jobs (id, source_id, status, items_total, "
                 "items_processed, created_at, updated_at) "
                 f"VALUES (?, ?, '{DUPLICATE_JOB_STATUS}', 0, 0, ?, ?)",
-                (job_id, source_id, now, now))
+                (job_id, source_id, now, now),
+            )
             # The caller's terminal state row, written INSIDE this transaction.
             # After the COMMIT is too late: the row may not exist yet (a first-time
             # aggregate document), and a `delete_source_cascade` landing in the gap
@@ -670,7 +762,9 @@ class IngestionPipeline:
             self.store.reload_graph()
         logger.info(
             "Skipping ingest: identical content already in source %r (%s)",
-            holder.get("source_name"), holder.get("source_type"))
+            holder.get("source_name"),
+            holder.get("source_type"),
+        )
         return job_id
 
     def _source_is_auto_added(self, source_id: str) -> bool:
@@ -683,7 +777,8 @@ class IngestionPipeline:
         """
         try:
             row = self.store.db.execute(
-                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
         except Exception:
             return False
         if not row or not row["properties"]:
@@ -715,7 +810,8 @@ class IngestionPipeline:
         if not source_id or holder_type in PERSISTENT_SOURCE_TYPES:
             return False
         row = self.store.db.execute(
-            "SELECT source_type FROM sources WHERE id = ?", (source_id,)).fetchone()
+            "SELECT source_type FROM sources WHERE id = ?", (source_id,)
+        ).fetchone()
         return bool(row) and str(row["source_type"] or "") in PERSISTENT_SOURCE_TYPES
 
     def _maybe_dedup(self, source_id: str, content_hash: str = "") -> None:
@@ -730,8 +826,7 @@ class IngestionPipeline:
         if not self._dedup_enabled:
             return
         try:
-            dedup_document(self.store, source_id, content_hash=content_hash or None,
-                           apply=True)
+            dedup_document(self.store, source_id, content_hash=content_hash or None, apply=True)
         except Exception:
             logger.debug("Post-ingest dedup skipped", exc_info=True)
 
@@ -879,9 +974,14 @@ class IngestionPipeline:
             try:
                 return await self._ingest_file_impl(
                     budget_token=budget_token,
-                    path=path, on_progress=on_progress, original_name=original_name,
-                    namespace=namespace, source_id=source_id, old_item_ids=old_item_ids,
-                    on_committed=on_committed, on_duplicate=on_duplicate,
+                    path=path,
+                    on_progress=on_progress,
+                    original_name=original_name,
+                    namespace=namespace,
+                    source_id=source_id,
+                    old_item_ids=old_item_ids,
+                    on_committed=on_committed,
+                    on_duplicate=on_duplicate,
                     embed_priority=embed_priority,
                 )
             finally:
@@ -926,8 +1026,10 @@ class IngestionPipeline:
         resolved = await asyncio.to_thread(lambda: str(p.resolve()))
         if is_sensitive_path(path) or is_sensitive_path(resolved):
             sel().log_tool_invocation(
-                session_key="ingestion", agent="knowledge-ingest",
-                tool_name="knowledge.ingest_denied", outcome="denied",
+                session_key="ingestion",
+                agent="knowledge-ingest",
+                tool_name="knowledge.ingest_denied",
+                outcome="denied",
                 resources=f"source_id={source_id} file={log_name} reason=sensitive_path",
             )
             raise PermissionError(f"Refusing to ingest sensitive path: {log_name}")
@@ -957,22 +1059,28 @@ class IngestionPipeline:
                 "Skipping oversized file for source_id=%s (%.1f MB > "
                 "knowledge.max_ingest_file_mb=%g MB); raise "
                 "knowledge.max_ingest_file_mb in config to ingest it",
-                source_id or "(new)", file_size / _MB, limit_mb,
+                source_id or "(new)",
+                file_size / _MB,
+                limit_mb,
             )
             sel().log_tool_invocation(
-                session_key="ingestion", agent="knowledge-ingest",
-                tool_name="knowledge.ingest_denied", outcome="denied",
-                resources=(f"source_id={source_id} file={log_name} "
-                           f"reason=oversized size_mb={file_size / _MB:.1f} limit_mb={limit_mb:g}"),
+                session_key="ingestion",
+                agent="knowledge-ingest",
+                tool_name="knowledge.ingest_denied",
+                outcome="denied",
+                resources=(
+                    f"source_id={source_id} file={log_name} "
+                    f"reason=oversized size_mb={file_size / _MB:.1f} limit_mb={limit_mb:g}"
+                ),
             )
             raise FileTooLargeError(msg)
 
         # 1. Read (offloaded: readers do synchronous whole-file parsing -- pdfplumber,
         # python-docx, etc. -- which must not block the event loop on a large file)
         if on_progress:
-            on_progress('reading', 0, 1)
+            on_progress("reading", 0, 1)
         text, meta = await asyncio.to_thread(self.reader.read, path)
-        if meta.get('format') == 'error':
+        if meta.get("format") == "error":
             raise RuntimeError(f"Failed to read {path}: {meta.get('error')}")
 
         # Content the user never explicitly chose to index gets its secrets scrubbed
@@ -1005,7 +1113,9 @@ class IngestionPipeline:
             props: dict[str, object] = {}
             src_row = await asyncio.to_thread(
                 lambda: self.store.db.execute(
-                    "SELECT uri, properties FROM sources WHERE id = ?", (source_id,)).fetchone())
+                    "SELECT uri, properties FROM sources WHERE id = ?", (source_id,)
+                ).fetchone()
+            )
             uri = src_row["uri"] if src_row else display_name
             props = json.loads(src_row["properties"] or "{}") if src_row else {}
         else:
@@ -1013,18 +1123,26 @@ class IngestionPipeline:
             uri = str(p.resolve())
             existing = await asyncio.to_thread(self.store.get_source_by_uri, uri)
             if existing:
-                props = json.loads(existing.get('properties', '{}')) if isinstance(existing.get('properties'), str) else existing.get('properties', {})
-                if props.get('content_hash') == content_hash:
+                props = (
+                    json.loads(existing.get("properties", "{}"))
+                    if isinstance(existing.get("properties"), str)
+                    else existing.get("properties", {})
+                )
+                if props.get("content_hash") == content_hash:
                     return None
-                source_id = existing['id']
+                source_id = existing["id"]
                 resolve_old_group = True
             else:
                 props = {}
-                source_id = await asyncio.to_thread(functools.partial(
-                    self.store.add_source,
-                    name=display_name, source_type='local_file', uri=uri,
-                    properties={'content_hash': content_hash, **meta},
-                ))
+                source_id = await asyncio.to_thread(
+                    functools.partial(
+                        self.store.add_source,
+                        name=display_name,
+                        source_type="local_file",
+                        uri=uri,
+                        properties={"content_hash": content_hash, **meta},
+                    )
+                )
 
         # 3. Job record
         # One hop for the whole gate: it resolves the pre-existing item group
@@ -1034,8 +1152,10 @@ class IngestionPipeline:
         # of blocking SQLite on a large library.
         def _gate() -> tuple[str | None, list[str]]:
             ids = self._resolve_old_item_ids(source_id) if resolve_old_group else _old_item_ids
-            return self._skip_as_duplicate(
-                content_hash, source_id, ids, on_duplicate=on_duplicate), ids
+            return (
+                self._skip_as_duplicate(content_hash, source_id, ids, on_duplicate=on_duplicate),
+                ids,
+            )
 
         dupe_job, _old_item_ids = await run_to_completion(_gate)
         if dupe_job:
@@ -1051,7 +1171,8 @@ class IngestionPipeline:
         def _insert_job() -> None:
             self.store.db.execute(
                 "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) VALUES (?, ?, 'processing', ?, ?)",
-                (job_id, source_id, now, now))
+                (job_id, source_id, now, now),
+            )
             self.store.db.commit()
 
         await run_to_completion(_insert_job)
@@ -1064,12 +1185,22 @@ class IngestionPipeline:
         # on the way out and re-raise; callers keep seeing the original error.
         try:
             return await self._ingest_file_body(
-                job_id=job_id, source_id=source_id, props=props, meta=meta,
-                ext=ext, text=text, uri=uri, content_hash=content_hash,
-                display_name=display_name, namespace=namespace,
+                job_id=job_id,
+                source_id=source_id,
+                props=props,
+                meta=meta,
+                ext=ext,
+                text=text,
+                uri=uri,
+                content_hash=content_hash,
+                display_name=display_name,
+                namespace=namespace,
                 old_item_ids=old_item_ids,
-                _old_item_ids=_old_item_ids, path=path, on_progress=on_progress,
-                embed_priority=embed_priority, on_committed=on_committed,
+                _old_item_ids=_old_item_ids,
+                path=path,
+                on_progress=on_progress,
+                embed_priority=embed_priority,
+                on_committed=on_committed,
                 budget_token=budget_token,
             )
         except Exception:
@@ -1083,9 +1214,11 @@ class IngestionPipeline:
                 def _mark_failed() -> None:
                     self.store.db.execute(
                         "UPDATE ingestion_jobs SET status = 'failed', updated_at = ? WHERE id = ?",
-                        (datetime.now().isoformat(), job_id))
+                        (datetime.now().isoformat(), job_id),
+                    )
                     self.store.db.execute(
-                        "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                        "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,)
+                    )
                     self.store.db.commit()
 
                 await run_to_completion(_mark_failed)
@@ -1093,11 +1226,27 @@ class IngestionPipeline:
                 logger.warning("failed to mark ingestion job %s failed", job_id, exc_info=True)
             raise
 
-    async def _ingest_file_body(self, *, job_id, source_id, props, meta, ext, text,
-                                uri, content_hash, display_name, namespace,
-                                old_item_ids, _old_item_ids, path,
-                                on_progress, embed_priority,
-                                on_committed=None, budget_token=None) -> str | None:
+    async def _ingest_file_body(
+        self,
+        *,
+        job_id,
+        source_id,
+        props,
+        meta,
+        ext,
+        text,
+        uri,
+        content_hash,
+        display_name,
+        namespace,
+        old_item_ids,
+        _old_item_ids,
+        path,
+        on_progress,
+        embed_priority,
+        on_committed=None,
+        budget_token=None,
+    ) -> str | None:
         """Chunk/extract/store/finalize — split out so ingest_file can mark the
         pre-inserted job row 'failed' on ANY exception in one place."""
         # 4. Chunk (use per-source chunk size if configured)
@@ -1118,13 +1267,14 @@ class IngestionPipeline:
 
         def _set_total() -> None:
             self.store.db.execute(
-                "UPDATE ingestion_jobs SET items_total = ? WHERE id = ?", (total, job_id))
+                "UPDATE ingestion_jobs SET items_total = ? WHERE id = ?", (total, job_id)
+            )
             self.store.db.commit()
 
         await asyncio.to_thread(_set_total)
 
         # 5. Extract all chunks in batch via pool
-        chunk_contents = [chunk['content'] for chunk in chunks]
+        chunk_contents = [chunk["content"] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
 
         # What THIS call wrote, collected at the write itself rather than
@@ -1137,16 +1287,16 @@ class IngestionPipeline:
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
-                extraction['summary'] = _redact(extraction.get('summary'))
-                for ent in extraction.get('entities', []):
-                    ent['name'] = _redact(ent.get('name')) or ''
-                    ent['description'] = _redact(ent.get('description'))
+                extraction["summary"] = _redact(extraction.get("summary"))
+                for ent in extraction.get("entities", []):
+                    ent["name"] = _redact(ent.get("name")) or ""
+                    ent["description"] = _redact(ent.get("description"))
                 item_title = (
-                    _redact(extraction.get('title'))
-                    or _first_line_title(chunk['content'])
+                    _redact(extraction.get("title"))
+                    or _first_line_title(chunk["content"])
                     or f"{Path(display_name).stem} chunk {i}"
                 )
-                item_tags = ['content_type:markdown'] if is_markdown else None
+                item_tags = ["content_type:markdown"] if is_markdown else None
 
                 # add_item opens its own BEGIN/COMMIT and add_source_location
                 # commits on the same autocommit connection, so on the loop each
@@ -1171,20 +1321,21 @@ class IngestionPipeline:
                 def _write_chunk() -> str:
                     new_id = self.store.add_item(
                         title=item_title,
-                        content=chunk['content'],
-                        item_type=extraction.get('category', 'document'),
+                        content=chunk["content"],
+                        item_type=extraction.get("category", "document"),
                         source_id=source_id,
-                        chunk_index=chunk.get('chunk_index', i),
-                        summary=extraction.get('summary'),
+                        chunk_index=chunk.get("chunk_index", i),
+                        summary=extraction.get("summary"),
                         namespace=namespace,
                         tags=item_tags,
                         content_hash=content_hash,
                     )
                     created_item_ids.append(new_id)
                     self.store.add_source_location(
-                        item_id=new_id, source_id=source_id,
+                        item_id=new_id,
+                        source_id=source_id,
                         chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
-                        section_title=chunk.get('section_title'),
+                        section_title=chunk.get("section_title"),
                     )
                     return new_id
 
@@ -1199,15 +1350,15 @@ class IngestionPipeline:
                 await self._embed_item(
                     item_id,
                     item_title,
-                    extraction.get('summary'),
-                    chunk['content'],
+                    extraction.get("summary"),
+                    chunk["content"],
                     embed_priority=embed_priority,
                 )
                 processed += 1
             except Exception:
                 logger.exception("Failed to process chunk %d of %s", i, path)
             if on_progress:
-                on_progress('extracting', i + 1, total)
+                on_progress("extracting", i + 1, total)
 
         # 6. Finalize
         now = datetime.now().isoformat()
@@ -1236,8 +1387,11 @@ class IngestionPipeline:
                 # whatever they committed since. revise_source_properties
                 # documents the serialization.
                 self.store.merge_source_properties(
-                    source_id, set_keys={'content_hash': content_hash, **meta},
-                    sync_status='synced', last_synced=now)
+                    source_id,
+                    set_keys={"content_hash": content_hash, **meta},
+                    sync_status="synced",
+                    last_synced=now,
+                )
             elif processed < total:
                 # Partial failure: remove only items created during THIS ingestion
                 # call, taken from the write itself -- a before/after re-read of
@@ -1252,10 +1406,13 @@ class IngestionPipeline:
                 # empty group, which the doc-state recovery paths treat as "re-
                 # attempt", so the next scan restores a complete copy.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self.store.db.execute(
+                    "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,)
+                )
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-                (_job_status(processed, total), processed, now, job_id))
+                (_job_status(processed, total), processed, now, job_id),
+            )
             self.store.db.commit()
 
         await run_to_completion(_finalize)
@@ -1282,10 +1439,15 @@ class IngestionPipeline:
         self._import_budget.settle(budget_token, total)
         return job_id
 
-    async def ingest_text(self, text: str, title: str, source_type: str = 'manual',
-                          source_id: str | None = None,
-                          old_item_ids: list[str] | None = None,
-                          on_duplicate: Callable[[str], None] | None = None) -> str | None:
+    async def ingest_text(
+        self,
+        text: str,
+        title: str,
+        source_type: str = "manual",
+        source_id: str | None = None,
+        old_item_ids: list[str] | None = None,
+        on_duplicate: Callable[[str], None] | None = None,
+    ) -> str | None:
         """Ingest raw text (dashboard drop, chat, or a shared aggregate source).
 
         Without ``source_id`` the source is found-or-created by a
@@ -1317,8 +1479,12 @@ class IngestionPipeline:
             budget_token = await self._enter_import_budget(True)
             try:
                 return await self._ingest_text_impl(
-                    text, title, source_type=source_type, source_id=source_id,
-                    old_item_ids=old_item_ids, on_duplicate=on_duplicate,
+                    text,
+                    title,
+                    source_type=source_type,
+                    source_id=source_id,
+                    old_item_ids=old_item_ids,
+                    on_duplicate=on_duplicate,
                     budget_token=budget_token,
                 )
             finally:
@@ -1327,11 +1493,16 @@ class IngestionPipeline:
                 # consumes the token so this release is a no-op there. See ingest_file.
                 self._import_budget.release(budget_token)
 
-    async def _ingest_text_impl(self, text: str, title: str, source_type: str = 'manual',
-                                source_id: str | None = None,
-                                old_item_ids: list[str] | None = None,
-                                on_duplicate: Callable[[str], None] | None = None,
-                                budget_token: int | None = None) -> str | None:
+    async def _ingest_text_impl(
+        self,
+        text: str,
+        title: str,
+        source_type: str = "manual",
+        source_id: str | None = None,
+        old_item_ids: list[str] | None = None,
+        on_duplicate: Callable[[str], None] | None = None,
+        budget_token: int | None = None,
+    ) -> str | None:
         content_hash = hashlib.sha256(text.encode()).hexdigest()
 
         # Resolve the source and the prior item ids this call should replace.
@@ -1344,17 +1515,25 @@ class IngestionPipeline:
             uri = f"{source_type}://{content_hash[:16]}"
             existing = await asyncio.to_thread(self.store.get_source_by_uri, uri)
             if existing:
-                props = json.loads(existing.get('properties', '{}')) if isinstance(existing.get('properties'), str) else existing.get('properties', {})
-                if props.get('content_hash') == content_hash:
+                props = (
+                    json.loads(existing.get("properties", "{}"))
+                    if isinstance(existing.get("properties"), str)
+                    else existing.get("properties", {})
+                )
+                if props.get("content_hash") == content_hash:
                     return None  # unchanged
-                source_id = existing['id']
+                source_id = existing["id"]
                 resolve_old_group = True
             else:
-                source_id = await asyncio.to_thread(functools.partial(
-                    self.store.add_source,
-                    name=title, source_type=source_type, uri=uri,
-                    properties={'content_hash': content_hash},
-                ))
+                source_id = await asyncio.to_thread(
+                    functools.partial(
+                        self.store.add_source,
+                        name=title,
+                        source_type=source_type,
+                        uri=uri,
+                        properties={"content_hash": content_hash},
+                    )
+                )
         elif old_item_ids is None:
             # Existing source, replace-all (single-text / remote-sync source).
             resolve_old_group = True
@@ -1366,8 +1545,10 @@ class IngestionPipeline:
         # of blocking SQLite on a large library.
         def _gate() -> tuple[str | None, list[str]]:
             ids = self._resolve_old_item_ids(source_id) if resolve_old_group else _old_item_ids
-            return self._skip_as_duplicate(
-                content_hash, source_id, ids, on_duplicate=on_duplicate), ids
+            return (
+                self._skip_as_duplicate(content_hash, source_id, ids, on_duplicate=on_duplicate),
+                ids,
+            )
 
         dupe_job, _old_item_ids = await run_to_completion(_gate)
         if dupe_job:
@@ -1382,7 +1563,8 @@ class IngestionPipeline:
         def _insert_job() -> None:
             self.store.db.execute(
                 "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) VALUES (?, ?, 'processing', ?, ?)",
-                (job_id, source_id, now, now))
+                (job_id, source_id, now, now),
+            )
             self.store.db.commit()
 
         await run_to_completion(_insert_job)
@@ -1390,7 +1572,7 @@ class IngestionPipeline:
         chunks = await asyncio.to_thread(self.chunker.chunk, text)
         total = len(chunks)
 
-        chunk_contents = [chunk['content'] for chunk in chunks]
+        chunk_contents = [chunk["content"] for chunk in chunks]
         extractions = await self.extractor.extract_batch(chunk_contents)
 
         # What THIS call wrote, collected at the write itself rather than
@@ -1404,10 +1586,10 @@ class IngestionPipeline:
         processed = 0
         for i, (chunk, extraction) in enumerate(zip(chunks, extractions)):
             try:
-                extraction['summary'] = _redact(extraction.get('summary'))
-                for ent in extraction.get('entities', []):
-                    ent['name'] = _redact(ent.get('name')) or ''
-                    ent['description'] = _redact(ent.get('description'))
+                extraction["summary"] = _redact(extraction.get("summary"))
+                for ent in extraction.get("entities", []):
+                    ent["name"] = _redact(ent.get("name")) or ""
+                    ent["description"] = _redact(ent.get("description"))
 
                 # ONE uncancellable unit, for both reasons spelled out in
                 # _ingest_file_body: a cancellation must not be able to land
@@ -1416,19 +1598,20 @@ class IngestionPipeline:
                 # leaves the item nameable by the partial-failure rollback.
                 def _write_chunk() -> str:
                     new_id = self.store.add_item(
-                        title=chunk.get('section_title') or f"{title} chunk {i}",
-                        content=chunk['content'],
-                        item_type=extraction.get('category', 'document'),
+                        title=chunk.get("section_title") or f"{title} chunk {i}",
+                        content=chunk["content"],
+                        item_type=extraction.get("category", "document"),
                         source_id=source_id,
-                        chunk_index=chunk.get('chunk_index', i),
-                        summary=extraction.get('summary'),
+                        chunk_index=chunk.get("chunk_index", i),
+                        summary=extraction.get("summary"),
                         content_hash=content_hash,
                     )
                     created_item_ids.append(new_id)
                     self.store.add_source_location(
-                        item_id=new_id, source_id=source_id,
+                        item_id=new_id,
+                        source_id=source_id,
                         chunk_range=f"{chunk.get('line_start', 0)}-{chunk.get('line_end', 0)}",
-                        section_title=chunk.get('section_title'),
+                        section_title=chunk.get("section_title"),
                     )
                     return new_id
 
@@ -1442,9 +1625,9 @@ class IngestionPipeline:
                 await asyncio.to_thread(self._store_entities, extraction, item_id)
                 await self._embed_item(
                     item_id,
-                    chunk.get('section_title') or f"{title} chunk {i}",
-                    extraction.get('summary'),
-                    chunk['content'],
+                    chunk.get("section_title") or f"{title} chunk {i}",
+                    extraction.get("summary"),
+                    chunk["content"],
                 )
                 processed += 1
             except Exception:
@@ -1462,7 +1645,9 @@ class IngestionPipeline:
             # write-lock contention.
             if processed == total:
                 self.store.delete_items_batch(_old_item_ids, owner_source_id=source_id)
-                self.store.db.execute("UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,))
+                self.store.db.execute(
+                    "UPDATE sources SET sync_status = 'synced' WHERE id = ?", (source_id,)
+                )
                 self.store.update_source(source_id, last_synced=now)
             elif processed < total:
                 # Partial failure: remove only items created during THIS call so we
@@ -1474,10 +1659,13 @@ class IngestionPipeline:
                 # duplicate-gate attacher, or that attacher keeps a truncated
                 # document its unchanged hash never lets a rescan repair.
                 self.store.delete_items_batch(list(created_item_ids))
-                self.store.db.execute("UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,))
+                self.store.db.execute(
+                    "UPDATE sources SET sync_status = 'error' WHERE id = ?", (source_id,)
+                )
             self.store.db.execute(
                 "UPDATE ingestion_jobs SET status = ?, items_total = ?, items_processed = ?, updated_at = ? WHERE id = ?",
-                (_job_status(processed, total), total, processed, now, job_id))
+                (_job_status(processed, total), total, processed, now, job_id),
+            )
             self.store.db.commit()
 
         await run_to_completion(_finalize)
@@ -1506,38 +1694,199 @@ class IngestionPipeline:
         return job_id
 
     def get_job_status(self, job_id: str) -> dict | None:
-        row = self.store.db.execute("SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)).fetchone()
+        row = self.store.db.execute(
+            "SELECT * FROM ingestion_jobs WHERE id = ?", (job_id,)
+        ).fetchone()
         return dict(row) if row else None
 
     def _store_entities(self, extraction: dict, item_id: str):
-        """Deduplicate and store entities, mentions, and relations."""
+        """Deduplicate and store entities, mentions, and relations.
+
+        Conservative lexical resolution (A-prime):
+        ------------------------------------------
+        Two lookup passes to find an existing entity before creating a new row:
+
+        Pass 1 — ``find_entity(name)`` (single call, covers canonical + alias):
+            ``find_entity`` performs exact → case-insensitive → alias scan.
+            * Canonical hit (candidate name casefold == name casefold): reuse
+              without a type guard.  Same canonical name means the same
+              real-world entity regardless of how the LLM typed it; a type guard
+              here would create a duplicate row on every re-ingest because there
+              is no ``UNIQUE(name)`` constraint and no merge path.
+            * Alias hit (candidate name differs from name): apply a type-conflict
+              guard.  A mismatch signals different real-world entities sharing an
+              alias; the incoming entity gets a new row.  Covers KO→EN where the
+              Korean entity already carries the English name as an alias.
+
+        Pass 2 — Alias fallback via ``find_entity_by_canonical_name(alias)``:
+            Called for each extracted alias.  Reuses only when found AND entity
+            types do not conflict.  Covers EN→KO: the English entity is stored
+            first; later Korean extraction matches the English name as an alias.
+
+        Safety invariants preserved across all passes:
+          - Alias-to-alias matches are never sufficient on their own.
+          - Only one of: (incoming name == existing canonical) or
+            (incoming name ∈ existing aliases) or
+            (incoming alias == existing canonical) triggers reuse.
+          - Transitive alias chains cannot merge unrelated entities.
+          - Entity-type conflicts in alias hits always produce a new entity
+            (not a silent merge); both passes normalise missing/empty types to
+            ``'concept'`` before comparing.
+
+        Enrichment is scoped to the match type to prevent transitive merges:
+          - Canonical match: enrich with incoming ``aliases`` only (``name``
+            is always dropped by ``add_entity_aliases`` because it equals the
+            canonical and wastes a lock acquisition per entity)
+          - Alias hit (Pass 1) or Pass 2: enrich only with ``[name]`` or nothing
+            (adding the incoming entity's own aliases enables transitive
+            collisions where a later canonical ``DC`` entity incorrectly reuses
+            a city entity that carries ``DC`` as an alias)
+        """
         entity_map: dict[str, str] = {}  # name -> entity_id
-        for ent in extraction.get('entities', []):
-            name = ent.get('name', '').strip()
+        for ent in extraction.get("entities", []):
+            name = ent.get("name", "").strip()
             if not name:
                 continue
-            existing = self.store.find_entity(name)
+
+            # _coerce_aliases handles null / non-list / non-string alias values
+            # from LLM output safely (returns None when nothing valid survives).
+            aliases = _coerce_aliases(ent.get("aliases", []), name) or []
+
+            existing = None
+            resolution_tier = 0
+
+            # Primary lookup: find_entity performs exact → case-insensitive →
+            # alias scan in one call.  When the returned candidate's canonical
+            # name matches `name` (casefold), this is a canonical hit and we
+            # reuse without a type guard (same name == same real-world entity;
+            # rejecting on type mismatch would create a duplicate row on every
+            # re-ingest because there is no UNIQUE(name) constraint and no merge
+            # path).  When the candidate's canonical differs from `name`, the hit
+            # was alias-based (name-to-existing-alias): apply the type-conflict
+            # guard to prevent silent corruption of mentions and relations.
+            candidate = self.store.find_entity(name)
+            if candidate:
+                if candidate.get("name", "").casefold() == name.casefold():
+                    # Canonical hit — no type guard.
+                    existing = candidate
+                    resolution_tier = 1
+                else:
+                    # Alias hit — apply type-conflict guard.
+                    existing_type = candidate.get("entity_type") or "concept"
+                    new_type = ent.get("type") or "concept"
+                    if existing_type != new_type:
+                        logger.debug(
+                            "entity type conflict in Tier 2: rejecting "
+                            "%r (%s) for incoming %r (%s)",
+                            candidate.get("name"),
+                            existing_type,
+                            name,
+                            new_type,
+                        )
+                    else:
+                        existing = candidate
+                        resolution_tier = 2
+
+            if not existing:
+                # Tier 3: alias fallback — incoming alias == existing canonical.
+                # An alias may resolve an existing entity ONLY when that alias
+                # exactly denotes the existing entity's canonical name (casefold).
+                # Uses find_entity_by_canonical_name (casefold-consistent) rather
+                # than find_entity (SQLite LOWER), to match the same normalization
+                # used in Tier 1 and in the guard comparison below.
+                # Alias-to-alias and entity-type-conflicting matches are blocked.
+                for alias in aliases:
+                    candidate = self.store.find_entity_by_canonical_name(alias)
+                    if candidate:
+                        existing_type = candidate.get("entity_type") or "concept"
+                        new_type = ent.get("type") or "concept"
+                        if existing_type != new_type:
+                            # F1 fix: reject on entity_type conflict to prevent
+                            # silent corruption of mentions/relations on the wrong node.
+                            logger.debug(
+                                "entity type conflict in Tier 3: rejecting "
+                                "%r (%s) for incoming %r (%s)",
+                                candidate.get("name"),
+                                existing_type,
+                                name,
+                                new_type,
+                            )
+                            continue
+                        existing = candidate
+                        resolution_tier = 3
+                        break
+
             if existing:
-                eid = existing['id']
+                eid = existing["id"]
+                # Tier-scoped enrichment:
+                #   Tier 1 (canonical match): enrich with all new aliases — the
+                #     incoming name IS the canonical so it matches; adding its
+                #     aliases is always safe.
+                #   Alias hit in Pass 1 (name-to-existing-alias): do NOT enrich
+                #     — the incoming name is already in the existing entity's alias
+                #     set, and adding the incoming entity's own aliases (e.g. "DC"
+                #     for "Washington") would enable transitive merges where a later
+                #     canonical "DC" entity incorrectly reuses the city entity.
+                #   Pass 2 (alias-to-canonical): enrich with the incoming name only
+                #     — the alias matched the existing canonical, so teaching the
+                #     entity that its canonical can also be spelled as the incoming
+                #     name is safe; adding the incoming entity's own aliases is not,
+                #     for the same transitive-merge reason as the alias hit case.
+                if resolution_tier == 1:
+                    # Canonical match: enrich with incoming aliases only.
+                    # 'name' is always dropped by add_entity_aliases (it equals
+                    # the canonical name), so including it wastes a lock
+                    # acquisition per entity.
+                    enrich_aliases = aliases
+                elif resolution_tier == 3:
+                    # Pass 2 alias-to-canonical: the incoming entity's own name is
+                    # a new alias for the existing entity.  Route it through
+                    # _coerce_aliases (strip, redact, truncate, in-call dedupe) so
+                    # add_entity_aliases receives a pre-sanitized list and the
+                    # per-call sanitise loop in the store is not duplicating work.
+                    enrich_aliases = _coerce_aliases([name], existing["name"]) or []
+                else:
+                    # Alias hit in Pass 1: no enrichment
+                    enrich_aliases = []
+
+                if enrich_aliases:
+                    # Enrichment is best-effort: only the entity row is
+                    # committed at this point (add_mention runs after this
+                    # block).  Any exception here (invariant violation,
+                    # transient lock timeout, DB error) is logged at warning
+                    # and skipped so that alias enrichment never causes the
+                    # containing document to be rolled back or deleted.
+                    try:
+                        self.store.add_entity_aliases(eid, enrich_aliases)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "add_entity_aliases skipped for entity %r (%s): %s",
+                            name,
+                            eid,
+                            exc,
+                        )
             else:
                 eid = self.store.add_entity(
                     name=name,
-                    entity_type=ent.get('type', 'concept'),
-                    description=ent.get('description'),
+                    entity_type=ent.get("type", "concept"),
+                    description=ent.get("description"),
+                    aliases=aliases or None,
                 )
-            entity_map[name] = eid
-            self.store.add_mention(item_id, eid, context=ent.get('description'))
 
-        for rel in extraction.get('relations', []):
-            src_name = rel.get('source', '').strip()
-            tgt_name = rel.get('target', '').strip()
+            entity_map[name] = eid
+            self.store.add_mention(item_id, eid, context=ent.get("description"))
+
+        for rel in extraction.get("relations", []):
+            src_name = rel.get("source", "").strip()
+            tgt_name = rel.get("target", "").strip()
             src_id = entity_map.get(src_name)
             tgt_id = entity_map.get(tgt_name)
             if src_id and tgt_id:
                 self.store.add_entity_relation(
-                    source_id=src_id, target_id=tgt_id,
-                    relation_type=_redact(rel.get('type', 'uses')) or 'uses',
-                    description=_redact(rel.get('description')),
+                    source_id=src_id,
+                    target_id=tgt_id,
+                    relation_type=_redact(rel.get("type", "uses")) or "uses",
+                    description=_redact(rel.get("description")),
                     source_item_id=item_id,
                 )
 
@@ -1583,9 +1932,7 @@ class IngestionPipeline:
         if embed_priority == PRIORITY_NORMAL:
             # Preserve the established attended-call contract for lightweight
             # embedders that do not expose scheduling; bulk is an explicit opt-in.
-            embed_call = functools.partial(
-                self.embedder.embed_for_item, title, summary, content
-            )
+            embed_call = functools.partial(self.embedder.embed_for_item, title, summary, content)
         else:
             embed_call = functools.partial(
                 self.embedder.embed_for_item,
@@ -1602,7 +1949,8 @@ class IngestionPipeline:
             def _stamp() -> None:
                 self.store.db.execute(
                     "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? WHERE id = ?",
-                    (blob, sig, stamped_at, item_id))
+                    (blob, sig, stamped_at, item_id),
+                )
                 self.store.db.commit()
 
             # A dropped stamp is safe in the one direction that matters: the
@@ -1617,7 +1965,9 @@ class IngestionPipeline:
         rows = await asyncio.to_thread(
             lambda: self.store.db.execute(
                 "SELECT summary FROM items WHERE source_id = ? AND summary IS NOT NULL AND summary != '' ORDER BY chunk_index",
-                (source_id,)).fetchall())
+                (source_id,),
+            ).fetchall()
+        )
         if not rows:
             return
         chunk_summaries = "\n".join(r["summary"] for r in rows)
@@ -1645,7 +1995,8 @@ class IngestionPipeline:
                 def _store_summary() -> None:
                     self.store.db.execute(
                         "UPDATE sources SET summary_topic = ?, summary_themes = ? WHERE id = ?",
-                        (topic, themes, source_id))
+                        (topic, themes, source_id),
+                    )
                     self.store.db.commit()
 
                 await asyncio.to_thread(_store_summary)
@@ -1676,9 +2027,7 @@ def _heartbeat_rebuild_job(store, job_id: str, now_iso: str) -> None:
     WORKER thread's own connection (per-thread ``threading.local``), so this is
     safe to run off-loop; the loop awaits it serially.
     """
-    store.db.execute(
-        "UPDATE ingestion_jobs SET updated_at = ? WHERE id = ?", (now_iso, job_id)
-    )
+    store.db.execute("UPDATE ingestion_jobs SET updated_at = ? WHERE id = ?", (now_iso, job_id))
     store.db.commit()
 
 
@@ -1693,7 +2042,8 @@ def _write_item_embedding(store, item_id: str, blob: bytes, sig: str, now_iso: s
     cur = store.db.execute(
         "UPDATE items SET embedding = ?, embedding_sig = ?, embedded_at = ? "
         "WHERE id = ? AND (updated_at IS NULL OR updated_at <= ?)",
-        (blob, sig, now_iso, item_id, snap))
+        (blob, sig, now_iso, item_id, snap),
+    )
     store.db.commit()
     return bool(cur.rowcount)
 
@@ -1703,8 +2053,7 @@ def _stamp_embed_attempt(store, item_id: str, now_iso: str) -> None:
     the item is retried, but backs the watcher off it). Offloaded like the other
     per-item writes so it never blocks the event loop.
     """
-    store.db.execute(
-        "UPDATE items SET embedded_at = ? WHERE id = ?", (now_iso, item_id))
+    store.db.execute("UPDATE items SET embedded_at = ? WHERE id = ?", (now_iso, item_id))
     store.db.commit()
 
 
@@ -1718,11 +2067,12 @@ def _init_rebuild_total(store, count_where: str, params_tail: tuple, job_id: str
     connection.
     """
     total = store.db.execute(
-        f"SELECT COUNT(*) AS c FROM items WHERE {count_where}",  # noqa: S608
-        params_tail).fetchone()["c"]
+        f"SELECT COUNT(*) AS c FROM items WHERE {count_where}", params_tail  # noqa: S608
+    ).fetchone()["c"]
     store.db.execute(
         "UPDATE ingestion_jobs SET items_total = ?, updated_at = ? WHERE id = ?",
-        (total, datetime.now().isoformat(), job_id))
+        (total, datetime.now().isoformat(), job_id),
+    )
     store.db.commit()
 
 
@@ -1731,7 +2081,8 @@ def _fetch_rebuild_page(store, page_where: str, params_tail: tuple, last_id: str
     return store.db.execute(
         f"SELECT id, title, summary, content, updated_at FROM items WHERE {page_where} "  # noqa: S608
         "ORDER BY id LIMIT ?",
-        (*params_tail, last_id, _REBUILD_BATCH_SIZE)).fetchall()
+        (*params_tail, last_id, _REBUILD_BATCH_SIZE),
+    ).fetchall()
 
 
 def _commit_rebuild_progress(store, job_id: str | None, processed: int, failed: int) -> None:
@@ -1740,7 +2091,8 @@ def _commit_rebuild_progress(store, job_id: str | None, processed: int, failed: 
         store.db.execute(
             "UPDATE ingestion_jobs SET items_processed = ?, items_failed = ?, "
             "updated_at = ? WHERE id = ?",
-            (processed, failed, datetime.now().isoformat(), job_id))
+            (processed, failed, datetime.now().isoformat(), job_id),
+        )
     store.db.commit()
 
 
@@ -1755,7 +2107,8 @@ def _select_active_rebuild_job(store, *, now: datetime | None = None):
     return store.db.execute(
         "SELECT id FROM ingestion_jobs WHERE source_id IS NULL AND status = 'processing' "
         "AND updated_at > ? ORDER BY created_at DESC LIMIT 1",
-        (fresh,)).fetchone()
+        (fresh,),
+    ).fetchone()
 
 
 def start_rebuild_job(store, *, now: datetime | None = None) -> str | None:
@@ -1783,12 +2136,14 @@ def start_rebuild_job(store, *, now: datetime | None = None) -> str | None:
             "UPDATE ingestion_jobs SET status = 'abandoned', "
             "error = 'abandoned: updated_at past staleness window', updated_at = ? "
             "WHERE source_id IS NULL AND status = 'processing' AND updated_at <= ?",
-            (ts, fresh))
+            (ts, fresh),
+        )
         job_id = uuid4().hex[:12]
         store.db.execute(
             "INSERT INTO ingestion_jobs (id, source_id, status, created_at, updated_at) "
             "VALUES (?, NULL, 'processing', ?, ?)",
-            (job_id, ts, ts))
+            (job_id, ts, ts),
+        )
         store.db.execute("COMMIT")
         return job_id
     except Exception:
@@ -1808,11 +2163,13 @@ def count_stale_items(store, sig: str, *, now: datetime | None = None) -> int:
         "SELECT COUNT(*) AS c FROM items WHERE status = 'active' "
         "AND (embedding_sig IS NULL OR embedding_sig != ?) "
         "AND (embedded_at IS NULL OR embedded_at < ?)",
-        (sig, cutoff)).fetchone()["c"]
+        (sig, cutoff),
+    ).fetchone()["c"]
 
 
-def _embed_row_paced(embedder, title, summary, content, priority: int,
-                     pace: bool) -> "tuple[list[float] | None, float]":
+def _embed_row_paced(
+    embedder, title, summary, content, priority: int, pace: bool
+) -> "tuple[list[float] | None, float]":
     """Embed one row and derive its pace delay, both on the worker thread.
 
     Runs via ``run_in_executor`` — the inference is the CPU floor, and the
@@ -1833,8 +2190,9 @@ def _embed_row_paced(embedder, title, summary, content, priority: int,
     return vec, delay
 
 
-async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
-                             force: bool = False, pace: bool = True) -> int:
+async def rebuild_embeddings(
+    store, embedder, *, job_id: str | None = None, force: bool = False, pace: bool = True
+) -> int:
     """Re-embed active items in place, stamping the current embedding signature.
 
     Sig-gated by default: only items whose stored ``embedding_sig`` differs from the
@@ -1891,8 +2249,7 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
     while True:
         # OFFLOADED: page reads can block behind a concurrent writer's
         # busy_timeout; keep every DB touch in this loop off the event loop.
-        rows = await asyncio.to_thread(
-            _fetch_rebuild_page, store, page_where, params_tail, last_id)
+        rows = await asyncio.to_thread(_fetch_rebuild_page, store, page_where, params_tail, last_id)
         if not rows:
             break
         for row in rows:
@@ -1906,8 +2263,11 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
                 functools.partial(
                     _embed_row_paced,
                     embedder,
-                    row["title"], row["summary"], row["content"],
-                    priority, pace,
+                    row["title"],
+                    row["summary"],
+                    row["content"],
+                    priority,
+                    pace,
                 ),
             )
             if delay > 0:
@@ -1936,7 +2296,13 @@ async def rebuild_embeddings(store, embedder, *, job_id: str | None = None,
                 # updated_at at read time.
                 snap = row["updated_at"]
                 landed = await asyncio.to_thread(
-                    _write_item_embedding, store, row["id"], floats_to_bytes(vec), sig, now_iso, snap
+                    _write_item_embedding,
+                    store,
+                    row["id"],
+                    floats_to_bytes(vec),
+                    sig,
+                    now_iso,
+                    snap,
                 )
                 if landed:
                     processed += 1

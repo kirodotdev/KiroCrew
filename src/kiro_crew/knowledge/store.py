@@ -175,8 +175,9 @@ class IngestionGate:
                     break
             if self._maintenance:
                 logger.warning(
-                    "Knowledge maintenance skipped: another maintenance window "
-                    "held for %.0fs", timeout)
+                    "Knowledge maintenance skipped: another maintenance window " "held for %.0fs",
+                    timeout,
+                )
                 yield False
                 return
             self._maintenance = True
@@ -188,8 +189,10 @@ class IngestionGate:
                 self._maintenance = False
                 self._cond.notify_all()
                 logger.warning(
-                    "Knowledge maintenance skipped: %d ingestion(s) still in flight "
-                    "after %.0fs", self._ingesting, timeout)
+                    "Knowledge maintenance skipped: %d ingestion(s) still in flight " "after %.0fs",
+                    self._ingesting,
+                    timeout,
+                )
                 yield False
                 return
         try:
@@ -248,8 +251,9 @@ def is_auto_registered(props: dict) -> bool:
     while on the auto-added marker it would retire a folder the user added by hand.
     Every writer in-tree stores a real boolean, so nothing legitimate is excluded.
     """
-    return (props.get(AUTO_ADDED_PROP) is True
-            and props.get(AUTO_REGISTRATION_RETIRED_PROP) is not True)
+    return (
+        props.get(AUTO_ADDED_PROP) is True and props.get(AUTO_REGISTRATION_RETIRED_PROP) is not True
+    )
 
 
 # Source types whose scan walks a directory tree, and therefore the only ones
@@ -313,6 +317,18 @@ _ON_LOOP_DB_GUARD = OnLoopDBGuard(
 FTS_INDEX_VERSION = 1
 
 
+# ---------------------------------------------------------------------------
+# Public constants for entity alias bounds.
+# Imported by ingestion.py so the limit is defined in exactly one place.
+# ---------------------------------------------------------------------------
+
+#: Maximum number of aliases stored per entity.
+MAX_ENTITY_ALIASES = 10
+
+#: Maximum character length of a single alias value (after strip + redact).
+MAX_ENTITY_ALIAS_LEN = 200
+
+
 class KnowledgeBundleError(ValueError):
     """A bundle value would commit a corrupt JSON column.
 
@@ -326,8 +342,9 @@ class KnowledgeBundleError(ValueError):
     """
 
 
-def _validated_json_column(value: object, *, field: str, default: str,
-                           shape: type, shape_name: str) -> tuple[str, Any]:
+def _validated_json_column(
+    value: object, *, field: str, default: str, shape: type, shape_name: str
+) -> tuple[str, Any]:
     """Return ``(text, parsed)`` to bind for a store JSON column, or raise.
 
     ``None`` (and an absent key, which callers pass as ``None``) falls back
@@ -365,14 +382,16 @@ def _validated_json_column(value: object, *, field: str, default: str,
 def _validated_properties(value: object) -> str:
     """``sources.properties``: JSON text parsing to an object, or NULL."""
     text, _ = _validated_json_column(
-        value, field="sources.properties", default="{}", shape=dict, shape_name="object")
+        value, field="sources.properties", default="{}", shape=dict, shape_name="object"
+    )
     return text
 
 
 def _validated_aliases(value: object) -> str:
     """``entities.aliases``: JSON text parsing to an array of strings, or NULL."""
     text, parsed = _validated_json_column(
-        value, field="entities.aliases", default="[]", shape=list, shape_name="array")
+        value, field="entities.aliases", default="[]", shape=list, shape_name="array"
+    )
     if not all(isinstance(alias, str) for alias in parsed):
         raise KnowledgeBundleError("'entities.aliases' must be a JSON array of strings")
     return text
@@ -510,9 +529,7 @@ _MAX_ITEM_ID_CHARS = 128
 _MAX_SQL_PARAMS = 400
 
 
-def _sql_param_chunks(
-    values: set[str] | list[str], reserve: int = 0
-) -> Iterator[tuple[str, ...]]:
+def _sql_param_chunks(values: set[str] | list[str], reserve: int = 0) -> Iterator[tuple[str, ...]]:
     """*values* in bind-sized tuples, one ``IN`` list each; empty input yields nothing.
 
     *reserve* is how many binds that statement spends on its OWN fixed parameters -- a
@@ -522,7 +539,7 @@ def _sql_param_chunks(
     width = max(1, _MAX_SQL_PARAMS - reserve)
     ordered = list(values)
     for start in range(0, len(ordered), width):
-        yield tuple(ordered[start:start + width])
+        yield tuple(ordered[start : start + width])
 
 
 def _bundle_item_group(value: object) -> list[str]:
@@ -613,9 +630,7 @@ class _EdgeView:
                 ]
         else:
             snapshot = [
-                (u, v, attrs)
-                for u, targets in self._fwd.items()
-                for v, attrs in targets.items()
+                (u, v, attrs) for u, targets in self._fwd.items() for v, attrs in targets.items()
             ]
         yield from snapshot
 
@@ -1210,8 +1225,7 @@ class KnowledgeStore:
         # column is guaranteed to exist: on a pre-existing DB the DDL block's
         # CREATE TABLE IF NOT EXISTS is a no-op and the column is added by the ALTER
         # above; IF NOT EXISTS keeps it idempotent for fresh DBs too.
-        self.db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
+        self.db.execute("CREATE INDEX IF NOT EXISTS idx_items_content_hash ON items(content_hash)")
         # source_locations predates being an identity table: pre-existing DBs have
         # neither the (item_id, source_id) uniqueness nor any index. De-duplicate
         # first so the unique index can be created, then add both lookup indexes.
@@ -1220,7 +1234,8 @@ class KnowledgeStore:
         # are impossible, and the scan would run on every open for nothing.
         has_unique = self.db.execute(
             "SELECT 1 FROM sqlite_schema WHERE type = 'index' "
-            "AND name = 'idx_source_locations_item_source'").fetchone()
+            "AND name = 'idx_source_locations_item_source'"
+        ).fetchone()
         if has_unique is None:
             self.db.execute("""
                 DELETE FROM source_locations WHERE id NOT IN (
@@ -1229,13 +1244,16 @@ class KnowledgeStore:
             """)
             self.db.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_source_locations_item_source "
-                "ON source_locations(item_id, source_id)")
+                "ON source_locations(item_id, source_id)"
+            )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_source_locations_item_id "
-            "ON source_locations(item_id)")
+            "ON source_locations(item_id)"
+        )
         self.db.execute(
             "CREATE INDEX IF NOT EXISTS idx_source_locations_source_id "
-            "ON source_locations(source_id)")
+            "ON source_locations(source_id)"
+        )
         job_cols = {r[1] for r in self.db.execute("PRAGMA table_info(ingestion_jobs)").fetchall()}
         if "items_failed" not in job_cols:
             self.db.execute("ALTER TABLE ingestion_jobs ADD COLUMN items_failed INTEGER DEFAULT 0")
@@ -1293,8 +1311,7 @@ class KnowledgeStore:
         # never escapes ASCII, and `_without_sync_status` re-serializes on every
         # insert and update), but a row imported by an early `import_bundle` --
         # which stored properties text verbatim -- can still hold one.
-        blob_copies = self.db.execute(
-            "SELECT id, properties, sync_status FROM sources").fetchall()
+        blob_copies = self.db.execute("SELECT id, properties, sync_status FROM sources").fetchall()
         for row in blob_copies:
             try:
                 props = json.loads(row["properties"] or "{}")
@@ -1307,15 +1324,21 @@ class KnowledgeStore:
             if not isinstance(props, dict) or "sync_status" not in props:
                 continue
             copied = props["sync_status"]
-            if (row["sync_status"] == "pending" and isinstance(copied, str)
-                    and copied != "pending" and copied in self._INITIAL_SYNC_STATUSES):
+            if (
+                row["sync_status"] == "pending"
+                and isinstance(copied, str)
+                and copied != "pending"
+                and copied in self._INITIAL_SYNC_STATUSES
+            ):
                 self.db.execute(
                     "UPDATE sources SET sync_status = ? "
                     "WHERE id = ? AND sync_status = 'pending' AND properties = ?",
-                    (copied, row["id"], row["properties"]))
+                    (copied, row["id"], row["properties"]),
+                )
             self.db.execute(
                 "UPDATE sources SET properties = ? WHERE id = ? AND properties = ?",
-                (_without_sync_status(row["properties"]), row["id"], row["properties"]))
+                (_without_sync_status(row["properties"]), row["id"], row["properties"]),
+            )
         if "summary_topic" not in src_cols:
             self.db.execute("ALTER TABLE sources ADD COLUMN summary_topic TEXT")
         if "summary_themes" not in src_cols:
@@ -1323,16 +1346,17 @@ class KnowledgeStore:
         # Backfill columns on the document-state tables. Each table itself is
         # created by ``_init_schema``, which runs first on every construction, so
         # only the per-column ALTERs belong here.
-        ffs_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(folder_file_state)").fetchall()}
+        ffs_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(folder_file_state)").fetchall()
+        }
         if "status" not in ffs_cols:
             self.db.execute(
-                "ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'")
+                "ALTER TABLE folder_file_state ADD COLUMN status TEXT DEFAULT 'pending'"
+            )
         if "error_message" not in ffs_cols:
             self.db.execute("ALTER TABLE folder_file_state ADD COLUMN error_message TEXT")
         if "merged_into_source_id" not in ffs_cols:
-            self.db.execute(
-                "ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE folder_file_state ADD COLUMN merged_into_source_id TEXT")
         # The extracted-text hash, in the same domain as items.content_hash --
         # see _OWNERSHIP_HASH_COL. Deliberately NOT backfilled: it can only be
         # derived from a row's own items, and a legacy row that owns nothing has
@@ -1351,20 +1375,21 @@ class KnowledgeStore:
         # source exists.
         if "attempts" not in ffs_cols:
             self.db.execute(
-                "ALTER TABLE folder_file_state "
-                "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+                "ALTER TABLE folder_file_state " "ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0"
+            )
         # artifact_item_state -- per-artifact item-group tracking for the
         # aggregate "Artifacts" KB source, keyed by artifact slug.
-        ais_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(artifact_item_state)").fetchall()}
+        ais_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(artifact_item_state)").fetchall()
+        }
         if "name" not in ais_cols:
             self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN name TEXT")
         if "status" not in ais_cols:
             self.db.execute(
-                "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+                "ALTER TABLE artifact_item_state ADD COLUMN status TEXT DEFAULT 'active'"
+            )
         if "merged_into_source_id" not in ais_cols:
-            self.db.execute(
-                "ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN merged_into_source_id TEXT")
         # The artifact kind AS INGESTED. Reconcile needs it to tell an
         # artifact whose kind changed while sync was off (stale chunks, must
         # be reaped) from one the user merely excluded by narrowing
@@ -1375,22 +1400,20 @@ class KnowledgeStore:
             self.db.execute("ALTER TABLE artifact_item_state ADD COLUMN kind TEXT")
         # agent_item_state -- per-document item-group tracking for the aggregate
         # "Auto-added" KB source the agent writes to.
-        agent_cols = {r[1] for r in self.db.execute(
-            "PRAGMA table_info(agent_item_state)").fetchall()}
+        agent_cols = {
+            r[1] for r in self.db.execute("PRAGMA table_info(agent_item_state)").fetchall()
+        }
         if "status" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN status TEXT DEFAULT 'active'")
         if "merged_into_source_id" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN merged_into_source_id TEXT")
         # The document's own REDACTED locator, attached to agent-source search
         # hits so a citation names where the document came from instead of the
         # aggregate's control uri. Legacy rows carry NULL, which citation
         # enrichment treats as "unknown" and falls back to agent://; the next
         # add of that document backfills it.
         if "source_uri" not in agent_cols:
-            self.db.execute(
-                "ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
+            self.db.execute("ALTER TABLE agent_item_state ADD COLUMN source_uri TEXT")
         # The orphan sweep is NOT here any more -- see `reclaim_orphans`. The
         # constructor runs on the event loop before the socket binds, and the
         # sweep is data-scaled and writer-locked, so on a large store it
@@ -1491,7 +1514,8 @@ class KnowledgeStore:
         # data-scaled sweep, so the post-bind sweep cannot stall the loop for
         # the duration the pre-bind one did.
         orphan_ids = [
-            row[0] for row in self.db.execute(f"SELECT id FROM sources WHERE {orphan_pred}").fetchall()
+            row[0]
+            for row in self.db.execute(f"SELECT id FROM sources WHERE {orphan_pred}").fetchall()
         ]
         for offset in range(0, len(orphan_ids), _RECLAIM_CHUNK):
             chunk = orphan_ids[offset : offset + _RECLAIM_CHUNK]
@@ -1499,8 +1523,12 @@ class KnowledgeStore:
             still_orphan = f"SELECT id FROM sources WHERE id IN ({marks}) AND {orphan_pred}"
             self.db.execute("BEGIN IMMEDIATE")
             try:
-                self.db.execute(f"DELETE FROM source_locations WHERE source_id IN ({still_orphan})", chunk)
-                self.db.execute(f"DELETE FROM ingestion_jobs WHERE source_id IN ({still_orphan})", chunk)
+                self.db.execute(
+                    f"DELETE FROM source_locations WHERE source_id IN ({still_orphan})", chunk
+                )
+                self.db.execute(
+                    f"DELETE FROM ingestion_jobs WHERE source_id IN ({still_orphan})", chunk
+                )
                 self.db.execute(f"DELETE FROM sources WHERE id IN ({still_orphan})", chunk)
                 self.db.execute("COMMIT")
             except Exception:
@@ -1508,7 +1536,9 @@ class KnowledgeStore:
                 raise
         self.db.execute("BEGIN IMMEDIATE")
         try:
-            self.db.execute("DELETE FROM entity_relations WHERE source_id NOT IN (SELECT id FROM entities) OR target_id NOT IN (SELECT id FROM entities)")
+            self.db.execute(
+                "DELETE FROM entity_relations WHERE source_id NOT IN (SELECT id FROM entities) OR target_id NOT IN (SELECT id FROM entities)"
+            )
             self._prune_orphan_entities()
             self.db.execute("COMMIT")
         except Exception:
@@ -1541,8 +1571,8 @@ class KnowledgeStore:
         """
         ids_owned: set[str] = set()
         for row in self.db.execute(
-                "SELECT item_ids FROM agent_item_state WHERE source_id = ?",
-                (source_id,)).fetchall():
+            "SELECT item_ids FROM agent_item_state WHERE source_id = ?", (source_id,)
+        ).fetchall():
             raw = row["item_ids"]
             if raw in (None, ""):
                 continue
@@ -1640,9 +1670,9 @@ class KnowledgeStore:
             """
             out: dict[str, str] = {}
             for row in self.db.execute(
-                    "SELECT content_hash, started_at FROM agent_ingest_intent "
-                    "WHERE source_id = ?",
-                    (source_id,)).fetchall():
+                "SELECT content_hash, started_at FROM agent_ingest_intent " "WHERE source_id = ?",
+                (source_id,),
+            ).fetchall():
                 h = row["content_hash"]
                 if not h:
                     continue
@@ -1699,9 +1729,10 @@ class KnowledgeStore:
                 key_col = _DOC_STATE_KEY_COL[table]
                 hash_col = _OWNERSHIP_HASH_COL[table]
                 for row in self.db.execute(
-                        f"SELECT {key_col} AS k, {hash_col} AS h, "  # noqa: S608
-                        f"item_ids FROM {table} WHERE status = ?",
-                        (healthy,)).fetchall():
+                    f"SELECT {key_col} AS k, {hash_col} AS h, "  # noqa: S608
+                    f"item_ids FROM {table} WHERE status = ?",
+                    (healthy,),
+                ).fetchall():
                     raw = row["item_ids"]
                     if raw in (None, ""):
                         # Empty group: the row still claims its content hash, so
@@ -1718,8 +1749,7 @@ class KnowledgeStore:
                             # A row whose JSON group is an empty list claims its
                             # hash for the same reason as a NULL/'' group.
                             claimed.add(row["h"])
-                        protect_ids.update(
-                            i for i in parsed if isinstance(i, str))
+                        protect_ids.update(i for i in parsed if isinstance(i, str))
             # ``deduped`` agent rows are NOT ``active`` so the loop above skips
             # them, but a ``deduped`` row is exactly the reassignment-refusal case:
             # it owns no items yet records that this slug's content is accounted
@@ -1727,9 +1757,10 @@ class KnowledgeStore:
             # content so the sweep never deletes an unowned sole copy of it on
             # bare marker evidence.
             for row in self.db.execute(
-                    "SELECT content_hash AS h FROM agent_item_state "
-                    "WHERE source_id = ? AND status = 'deduped'",
-                    (source_id,)).fetchall():
+                "SELECT content_hash AS h FROM agent_item_state "
+                "WHERE source_id = ? AND status = 'deduped'",
+                (source_id,),
+            ).fetchall():
                 if row["h"]:
                     claimed.add(row["h"])
             if not protect_ids:
@@ -1737,13 +1768,16 @@ class KnowledgeStore:
             live: set[str] = set(claimed)
             ids = list(protect_ids)
             for off in range(0, len(ids), _RECLAIM_CHUNK):
-                batch = ids[off:off + _RECLAIM_CHUNK]
+                batch = ids[off : off + _RECLAIM_CHUNK]
                 live.update(
-                    r["content_hash"] for r in self.db.execute(
+                    r["content_hash"]
+                    for r in self.db.execute(
                         f"SELECT content_hash FROM items "  # noqa: S608
                         f"WHERE id IN ({','.join('?' * len(batch))})",
-                        batch).fetchall()
-                    if r["content_hash"])
+                        batch,
+                    ).fetchall()
+                    if r["content_hash"]
+                )
             return live
 
         ingesting = _ingesting_hashes()
@@ -1765,11 +1799,14 @@ class KnowledgeStore:
         # a row or marker written between the read and the delete still protects
         # its items.
         residue = [
-            row["id"] for row in self.db.execute(
+            row["id"]
+            for row in self.db.execute(
                 "SELECT id, content_hash, created_at FROM items "
                 "WHERE source_id = ? AND status = 'active'",
-                (source_id,)).fetchall()
-            if row["id"] not in owned and row["content_hash"] in ingesting
+                (source_id,),
+            ).fetchall()
+            if row["id"] not in owned
+            and row["content_hash"] in ingesting
             and row["content_hash"] not in live_owned
             and (row["created_at"] or "") >= ingesting[row["content_hash"]]
         ]
@@ -1778,7 +1815,7 @@ class KnowledgeStore:
         removed = 0
         acted_hashes: set[str] = set()
         for offset in range(0, len(residue), _RECLAIM_CHUNK):
-            chunk = residue[offset:offset + _RECLAIM_CHUNK]
+            chunk = residue[offset : offset + _RECLAIM_CHUNK]
             self.db.execute("BEGIN IMMEDIATE")
             try:
                 # Re-read ownership under the lock: an ingest that committed its
@@ -1815,11 +1852,14 @@ class KnowledgeStore:
                         f"SELECT id, content_hash, created_at FROM items "  # noqa: S608
                         f"WHERE source_id = ? AND status = 'active' "
                         f"AND id IN ({','.join('?' * len(chunk))})",
-                        (source_id, *chunk)).fetchall()
+                        (source_id, *chunk),
+                    ).fetchall()
                 }
                 still_residue = [
-                    i for i in chunk
-                    if i in present_now and i not in owned_now
+                    i
+                    for i in chunk
+                    if i in present_now
+                    and i not in owned_now
                     and present_now[i][0] in ingesting_now
                     and present_now[i][0] not in live_now
                     and present_now[i][1] >= ingesting_now[present_now[i][0]]
@@ -1828,11 +1868,9 @@ class KnowledgeStore:
                     # owner_source_id => an item another source co-holds is
                     # detached to that holder, only a truly single-held item is
                     # destroyed. Same semantics the live delete paths use.
-                    self.delete_items_batch_in_txn(
-                        still_residue, owner_source_id=source_id)
+                    self.delete_items_batch_in_txn(still_residue, owner_source_id=source_id)
                     removed += len(still_residue)
-                    acted_hashes.update(
-                        present_now[i][0] for i in still_residue)
+                    acted_hashes.update(present_now[i][0] for i in still_residue)
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")
@@ -1861,11 +1899,13 @@ class KnowledgeStore:
                         # gap); nothing to retire.
                         continue
                     remaining = [
-                        r["id"] for r in self.db.execute(
+                        r["id"]
+                        for r in self.db.execute(
                             "SELECT id, created_at FROM items "
                             "WHERE source_id = ? AND status = 'active' "
                             "AND content_hash = ?",
-                            (source_id, h)).fetchall()
+                            (source_id, h),
+                        ).fetchall()
                         if (owned_final is None or r["id"] not in owned_final)
                         and (r["created_at"] or "") >= started
                     ]
@@ -1873,7 +1913,8 @@ class KnowledgeStore:
                         self.db.execute(
                             "DELETE FROM agent_ingest_intent "
                             "WHERE source_id = ? AND content_hash = ?",
-                            (source_id, h))
+                            (source_id, h),
+                        )
                 self.db.execute("COMMIT")
             except Exception:
                 self.db.execute("ROLLBACK")
@@ -1882,7 +1923,9 @@ class KnowledgeStore:
             self.reload_graph()
             logger.info(
                 "knowledge: reclaimed %d orphaned item(s) in the agent aggregate "
-                "source left by an interrupted ingest", removed)
+                "source left by an interrupted ingest",
+                removed,
+            )
         return removed
 
     def _prune_orphan_entities(self) -> None:
@@ -1916,9 +1959,11 @@ class KnowledgeStore:
         """
         if not content_hash:
             return None
-        sql = ("SELECT i.source_id, s.source_type, s.name AS source_name "
-               "FROM items i JOIN sources s ON s.id = i.source_id "
-               "WHERE i.content_hash = ?")
+        sql = (
+            "SELECT i.source_id, s.source_type, s.name AS source_name "
+            "FROM items i JOIN sources s ON s.id = i.source_id "
+            "WHERE i.content_hash = ?"
+        )
         params: list[str] = [content_hash]
         if exclude_source_id:
             sql += " AND i.source_id != ?"
@@ -2036,9 +2081,19 @@ class KnowledgeStore:
             # True over a half-rebuilt graph.
             self._graph_loaded = True
 
-    def add_item(self, title, content, item_type, source_id=None, chunk_index=0,
-                 summary=None, tags=None, embedding=None, namespace="default",
-                 content_hash=None) -> str:
+    def add_item(
+        self,
+        title,
+        content,
+        item_type,
+        source_id=None,
+        chunk_index=0,
+        summary=None,
+        tags=None,
+        embedding=None,
+        namespace="default",
+        content_hash=None,
+    ) -> str:
         item_id = str(uuid4())
         now = datetime.now().isoformat()
         tags_json = json.dumps(tags or [])
@@ -2047,9 +2102,26 @@ class KnowledgeStore:
             self.db.execute(
                 "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, title, content, item_type, source_id, chunk_index, namespace, summary, tags_json, embedding, content_hash, now, now))
+                (
+                    item_id,
+                    title,
+                    content,
+                    item_type,
+                    source_id,
+                    chunk_index,
+                    namespace,
+                    summary,
+                    tags_json,
+                    embedding,
+                    content_hash,
+                    now,
+                    now,
+                ),
+            )
             # Sync FTS: get the rowid of the inserted item
-            rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[0]
+            rowid = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item_id,)).fetchone()[
+                0
+            ]
             self._fts_index(rowid, title, content, tags_json)
             self.db.execute("COMMIT")
         except Exception:
@@ -2069,7 +2141,17 @@ class KnowledgeStore:
             d["embedding"] = base64.b64encode(raw).decode("ascii")
         return d
 
-    _ITEM_COLUMNS = {"title", "content", "item_type", "summary", "tags", "embedding", "status", "namespace", "updated_at"}
+    _ITEM_COLUMNS = {
+        "title",
+        "content",
+        "item_type",
+        "summary",
+        "tags",
+        "embedding",
+        "status",
+        "namespace",
+        "updated_at",
+    }
 
     def update_item(self, item_id, **fields):
         if not fields:
@@ -2100,13 +2182,15 @@ class KnowledgeStore:
             self.db.execute(f"UPDATE items SET {cols} WHERE id = ?", (*vals, item_id))  # noqa: S608
             # Sync FTS: delete with OLD values, insert with NEW values
             if old_row:
-                self._fts_unindex(old_row["rowid"], old_row["title"],
-                                  old_row["content"], old_row["tags"])
+                self._fts_unindex(
+                    old_row["rowid"], old_row["title"], old_row["content"], old_row["tags"]
+                )
                 new_row = self.db.execute(
                     "SELECT title, content, tags FROM items WHERE id = ?", (item_id,)
                 ).fetchone()
-                self._fts_index(old_row["rowid"], new_row["title"],
-                                new_row["content"], new_row["tags"])
+                self._fts_index(
+                    old_row["rowid"], new_row["title"], new_row["content"], new_row["tags"]
+                )
             self.db.execute("COMMIT")
         except Exception:
             self.db.execute("ROLLBACK")
@@ -2114,7 +2198,9 @@ class KnowledgeStore:
 
     def _delete_item_cascade(self, item_id):
         """Delete item and its dependents without commit/graph reload (for batch use)."""
-        row = self.db.execute("SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)).fetchone()
+        row = self.db.execute(
+            "SELECT rowid, title, content, tags FROM items WHERE id = ?", (item_id,)
+        ).fetchone()
         if row:
             self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
         self.db.execute("DELETE FROM source_locations WHERE item_id = ?", (item_id,))
@@ -2155,8 +2241,7 @@ class KnowledgeStore:
         which is visible and recoverable, whereas a cross-wired group destroys
         content on the next delete.
         """
-        row = self.db.execute(
-            "SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
+        row = self.db.execute("SELECT content_hash FROM items WHERE id = ?", (item_id,)).fetchone()
         content_hash = row["content_hash"] if row else None
         if not content_hash:
             return
@@ -2164,16 +2249,19 @@ class KnowledgeStore:
         for table, healthy in _DOC_STATE_TABLES:
             hash_col = _OWNERSHIP_HASH_COL[table]
             for st in self.db.execute(
-                    f"SELECT rowid, item_ids FROM {table} "  # noqa: S608
-                    f"WHERE source_id = ? AND {hash_col} = ?",
-                    (new_source_id, content_hash)).fetchall():
+                f"SELECT rowid, item_ids FROM {table} "  # noqa: S608
+                f"WHERE source_id = ? AND {hash_col} = ?",
+                (new_source_id, content_hash),
+            ).fetchall():
                 matches.append((table, healthy, st))
         if len(matches) != 1:
             if matches:
                 logger.warning(
                     "Not adopting item into source %s: %d documents there share this "
                     "content, so the hash does not say which one owns it",
-                    new_source_id, len(matches))
+                    new_source_id,
+                    len(matches),
+                )
             return
         table, healthy, st = matches[0]
         try:
@@ -2185,7 +2273,8 @@ class KnowledgeStore:
             self.db.execute(
                 f"UPDATE {table} SET item_ids = ?, status = ?, "  # noqa: S608
                 "merged_into_source_id = NULL WHERE rowid = ?",
-                (json.dumps(ids), healthy, st["rowid"]))
+                (json.dumps(ids), healthy, st["rowid"]),
+            )
 
     def detach_source_location_by_hash(self, source_id: str, content_hash: str) -> int:
         """Drop this source's CLAIM on a document it has no copy of.
@@ -2220,22 +2309,32 @@ class KnowledgeStore:
             hit = self.db.execute(
                 f"SELECT COUNT(*) AS n FROM {table} "  # noqa: S608
                 f"WHERE source_id = ? AND {hash_col} = ?",
-                (source_id, content_hash)).fetchone()
+                (source_id, content_hash),
+            ).fetchone()
             claimants += int(hit["n"] or 0) if hit else 0
         if claimants > 1:
             logger.warning(
                 "Keeping source %s's claim: %d documents there share this content, so "
-                "releasing it could strand one of them", source_id, claimants)
+                "releasing it could strand one of them",
+                source_id,
+                claimants,
+            )
             return 0
         cur = self.db.execute(
             "DELETE FROM source_locations WHERE source_id = ? AND item_id IN "
             "(SELECT id FROM items WHERE content_hash = ?)",
-            (source_id, content_hash))
+            (source_id, content_hash),
+        )
         return cur.rowcount or 0
 
-    def release_stale_claim(self, source_id: str, prev_hash: str | None,
-                            new_hash: str, prev_item_ids: list[str],
-                            prev_text_hash: str | None = None) -> int:
+    def release_stale_claim(
+        self,
+        source_id: str,
+        prev_hash: str | None,
+        new_hash: str,
+        prev_item_ids: list[str],
+        prev_text_hash: str | None = None,
+    ) -> int:
         """Release a claim made for content this source does not have.
 
         A source that lost a dedup owns no items but IS a location of the winner's,
@@ -2260,8 +2359,7 @@ class KnowledgeStore:
         """
         if prev_item_ids or not prev_hash or prev_hash == new_hash:
             return 0
-        return self.detach_source_location_by_hash(
-            source_id, prev_text_hash or prev_hash)
+        return self.detach_source_location_by_hash(source_id, prev_text_hash or prev_hash)
 
     def delete_items_batch(self, item_ids: list[str], owner_source_id: str | None = None):
         """Delete multiple items in a single transaction with one graph reload.
@@ -2285,8 +2383,7 @@ class KnowledgeStore:
             raise
         self._load_graph()
 
-    def delete_items_batch_in_txn(self, item_ids: list[str],
-                                  owner_source_id: str | None = None):
+    def delete_items_batch_in_txn(self, item_ids: list[str], owner_source_id: str | None = None):
         """The body of :meth:`delete_items_batch`, for a caller already in a write txn.
 
         Same semantics, minus the transaction and the graph reload, so a caller
@@ -2298,15 +2395,14 @@ class KnowledgeStore:
         """
         for item_id in item_ids:
             if owner_source_id:
-                others = self.sources_holding_item(
-                    item_id, exclude_source_id=owner_source_id)
+                others = self.sources_holding_item(item_id, exclude_source_id=owner_source_id)
                 if others:
                     self.reassign_item_source(item_id, others[0])
                     self._adopt_reassigned_item(item_id, others[0])
                     self.db.execute(
-                        "DELETE FROM source_locations "
-                        "WHERE item_id = ? AND source_id = ?",
-                        (item_id, owner_source_id))
+                        "DELETE FROM source_locations " "WHERE item_id = ? AND source_id = ?",
+                        (item_id, owner_source_id),
+                    )
                     continue
             self._delete_item_cascade(item_id)
         self._prune_orphan_entities()
@@ -2360,7 +2456,8 @@ class KnowledgeStore:
         row = self.db.execute(
             f"SELECT item_ids FROM {table} "  # noqa: S608
             f"WHERE source_id = ? AND {key_col} = ?",
-            (source_id, key)).fetchone()
+            (source_id, key),
+        ).fetchone()
         if not row:
             return []
         raw = row["item_ids"]
@@ -2370,16 +2467,20 @@ class KnowledgeStore:
             ids = json.loads(raw)
         except (TypeError, ValueError) as exc:
             raise RuntimeError(
-                f"{table} item_ids unreadable for {key!r} in source {source_id} "
-                f"({exc})") from exc
+                f"{table} item_ids unreadable for {key!r} in source {source_id} " f"({exc})"
+            ) from exc
         if not isinstance(ids, list) or not ids:
             return []
         # Bounded by chunker.MAX_CHUNKS_PER_FILE, so the bind count cannot reach
         # SQLITE_MAX_VARIABLE_NUMBER.
         placeholders = ",".join("?" for _ in ids)
-        return [r["id"] for r in self.db.execute(
-            f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
-            (*ids, source_id)).fetchall()]
+        return [
+            r["id"]
+            for r in self.db.execute(
+                f"SELECT id FROM items WHERE id IN ({placeholders}) AND source_id = ?",  # noqa: S608,E501
+                (*ids, source_id),
+            ).fetchall()
+        ]
 
     def delete_source_cascade(self, source_id):
         """Delete a source and all its items in a single transaction (batch SQL).
@@ -2395,8 +2496,12 @@ class KnowledgeStore:
             # ownership moves to one of those sources and only this source's location
             # row is dropped; the item, its text, embedding, FTS row and graph edges
             # are untouched. Only items this source solely holds are destroyed.
-            owned = [r["id"] for r in self.db.execute(
-                "SELECT id FROM items WHERE source_id = ?", (source_id,)).fetchall()]
+            owned = [
+                r["id"]
+                for r in self.db.execute(
+                    "SELECT id FROM items WHERE source_id = ?", (source_id,)
+                ).fetchall()
+            ]
             doomed: list[str] = []
             for item_id in owned:
                 others = self.sources_holding_item(item_id, exclude_source_id=source_id)
@@ -2420,15 +2525,19 @@ class KnowledgeStore:
                 # FTS is external-content, so the old column values must be handed to
                 # the 'delete' command BEFORE the rows go -- and only for the rows going.
                 for row in self.db.execute(
-                        f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
-                        doomed).fetchall():
-                    self._fts_unindex(row["rowid"], row["title"],
-                                      row["content"], row["tags"])
+                    f"SELECT rowid, title, content, tags FROM items WHERE id IN ({q})",  # noqa: S608
+                    doomed,
+                ).fetchall():
+                    self._fts_unindex(row["rowid"], row["title"], row["content"], row["tags"])
                 self.db.execute(
-                    f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed)  # noqa: S608
-                self.db.execute(f"DELETE FROM mentions WHERE item_id IN ({q})", doomed)  # noqa: S608
+                    f"DELETE FROM source_locations WHERE item_id IN ({q})", doomed
+                )  # noqa: S608
                 self.db.execute(
-                    f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed)  # noqa: S608
+                    f"DELETE FROM mentions WHERE item_id IN ({q})", doomed
+                )  # noqa: S608
+                self.db.execute(
+                    f"DELETE FROM entity_relations WHERE source_item_id IN ({q})", doomed
+                )  # noqa: S608
                 self.db.execute(f"DELETE FROM items WHERE id IN ({q})", doomed)  # noqa: S608
 
             # Documents that deferred to this source need their marker cleared, or the
@@ -2440,13 +2549,19 @@ class KnowledgeStore:
             for table, healthy in _DOC_STATE_TABLES:
                 deferred = self.db.execute(
                     f"SELECT source_id, content_hash, rowid FROM {table} "  # noqa: S608
-                    "WHERE merged_into_source_id = ?", (source_id,)).fetchall()
+                    "WHERE merged_into_source_id = ?",
+                    (source_id,),
+                ).fetchall()
                 for row in deferred:
                     adopted: list[str] = []
                     if row["content_hash"]:
-                        adopted = [r["id"] for r in self.db.execute(
-                            "SELECT id FROM items WHERE source_id = ? AND content_hash = ?",
-                            (row["source_id"], row["content_hash"])).fetchall()]
+                        adopted = [
+                            r["id"]
+                            for r in self.db.execute(
+                                "SELECT id FROM items WHERE source_id = ? AND content_hash = ?",
+                                (row["source_id"], row["content_hash"]),
+                            ).fetchall()
+                        ]
                     if adopted:
                         # The document is present and owned here now: adopt the items
                         # rather than re-ingesting. Its own items, so no foreign group.
@@ -2455,13 +2570,16 @@ class KnowledgeStore:
                         self.db.execute(
                             f"UPDATE {table} SET merged_into_source_id = NULL, "  # noqa: S608
                             "status = ?, item_ids = ? WHERE rowid = ?",
-                            (healthy, json.dumps(adopted), row["rowid"]))
+                            (healthy, json.dumps(adopted), row["rowid"]),
+                        )
                     elif table == "folder_file_state":
                         # Scan-driven: clearing the marker to 'pending' makes the next
                         # walk re-ingest the file, which is the whole point of reviving.
                         self.db.execute(
                             "UPDATE folder_file_state SET merged_into_source_id = NULL, "
-                            "status = 'pending' WHERE rowid = ?", (row["rowid"],))
+                            "status = 'pending' WHERE rowid = ?",
+                            (row["rowid"],),
+                        )
                     else:
                         # Push-driven with no scanner to revive it, and the content is
                         # genuinely gone -- so the row keeps its 'deduped' status and
@@ -2470,7 +2588,9 @@ class KnowledgeStore:
                         # content the Library does not actually hold.
                         self.db.execute(
                             f"UPDATE {table} SET merged_into_source_id = NULL "  # noqa: S608
-                            "WHERE rowid = ?", (row["rowid"],))
+                            "WHERE rowid = ?",
+                            (row["rowid"],),
+                        )
             self.db.execute("DELETE FROM ingestion_jobs WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM folder_file_state WHERE source_id = ?", (source_id,))
             self.db.execute("DELETE FROM artifact_item_state WHERE source_id = ?", (source_id,))
@@ -2527,7 +2647,8 @@ class KnowledgeStore:
                 logger.warning(
                     "knowledge: FTS index migration could not take the writer lock; "
                     "serving the legacy index for now and retrying on the next read",
-                    exc_info=True)
+                    exc_info=True,
+                )
                 return
             self._fts_index_current = True
 
@@ -2543,55 +2664,64 @@ class KnowledgeStore:
             self.db.execute(
                 "UPDATE sources SET properties = ? "
                 "WHERE id = ? AND properties = ? AND sync_status = 'paused'",
-                (_without_sync_status(json.dumps(retired)), row["id"],
-                 row["properties"]))
+                (_without_sync_status(json.dumps(retired)), row["id"], row["properties"]),
+            )
         else:
             self.db.execute(
                 "UPDATE sources SET sync_status = 'pending_confirmation', "
                 "properties = ? WHERE id = ? AND properties = ? AND sync_status = ?",
-                (_without_sync_status(json.dumps(retired)), row["id"],
-                 row["properties"], row["sync_status"]))
+                (
+                    _without_sync_status(json.dumps(retired)),
+                    row["id"],
+                    row["properties"],
+                    row["sync_status"],
+                ),
+            )
             logger.info(
                 "Knowledge source %s was registered automatically by a feature that "
                 "no longer exists; it now needs confirmation before it is scanned "
-                "again", row["id"],
+                "again",
+                row["id"],
             )
 
     def retire_auto_registered_folder(self, source_id: str) -> bool:
         """Retire ONE auto-registered walking source by id. True when it moved.
 
-Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
-        the one funnel every scan goes through. Retiring at scan time rather than at
-        store open is what makes the coverage complete AND keeps the write off the
-        startup path: a row can arrive at any moment -- :meth:`import_bundle` restores
-        a bundle's source rows verbatim, so a bundle from an install that had
-        auto-registration enabled re-creates one while the gateway is already up --
-        and this takes the write lock, which a constructor-time caller could be
-        holding the event loop for.
+        Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
+                the one funnel every scan goes through. Retiring at scan time rather than at
+                store open is what makes the coverage complete AND keeps the write off the
+                startup path: a row can arrive at any moment -- :meth:`import_bundle` restores
+                a bundle's source rows verbatim, so a bundle from an install that had
+                auto-registration enabled re-creates one while the gateway is already up --
+                and this takes the write lock, which a constructor-time caller could be
+                holding the event loop for.
 
-        Synchronous and takes the write lock, so callers on the event loop hand it to
-        ``asyncio.to_thread``. False means nothing moved -- not a candidate, or the
-        lock was unavailable -- and the sweep refuses to scan the row either way.
+                Synchronous and takes the write lock, so callers on the event loop hand it to
+                ``asyncio.to_thread``. False means nothing moved -- not a candidate, or the
+                lock was unavailable -- and the sweep refuses to scan the row either way.
         """
         try:
             self.db.execute("BEGIN IMMEDIATE")
         except sqlite3.OperationalError:
             logger.warning(
                 "Could not take the write lock to retire knowledge source %s; the "
-                "sweep skips it and the next sweep retries", source_id, exc_info=True)
+                "sweep skips it and the next sweep retries",
+                source_id,
+                exc_info=True,
+            )
             return False
         try:
             row = self.db.execute(
                 "SELECT id, properties, sync_status, source_type FROM sources WHERE id = ?",
-                (source_id,)).fetchone()
+                (source_id,),
+            ).fetchone()
             moved = False
             if row and row["source_type"] in _WALKING_SOURCE_TYPES:
                 try:
                     props = json.loads(row["properties"] or "{}")
                 except (ValueError, TypeError, RecursionError):
                     props = None
-                if (isinstance(props, dict)
-                        and is_auto_registered(props)):
+                if isinstance(props, dict) and is_auto_registered(props):
                     self._retire_one_in_txn(row, props)
                     moved = True
             self.db.execute("COMMIT")
@@ -2600,10 +2730,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
 
-    def merge_source_properties(self, source_id: str, *, set_keys: dict | None = None,
-                                remove_keys: tuple[str, ...] = (),
-                                sync_status: str | None = None,
-                                last_synced: str | None = None) -> dict | None:
+    def merge_source_properties(
+        self,
+        source_id: str,
+        *,
+        set_keys: dict | None = None,
+        remove_keys: tuple[str, ...] = (),
+        sync_status: str | None = None,
+        last_synced: str | None = None,
+    ) -> dict | None:
         """Apply a key delta to one source's ``properties``, in ONE write-locked take.
 
         Returns the properties as persisted, or None when the row is gone.
@@ -2613,6 +2748,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         which this is the fixed-delta form of. The transaction shape and its
         reasons are documented there.
         """
+
         def revise(props: dict) -> str | None:
             for key in remove_keys:
                 props.pop(key, None)
@@ -2621,9 +2757,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
         return self.revise_source_properties(source_id, revise, last_synced=last_synced)
 
-    def revise_source_properties(self, source_id: str,
-                                 revise: Callable[[dict], str | None], *,
-                                 last_synced: str | None = None) -> dict | None:
+    def revise_source_properties(
+        self,
+        source_id: str,
+        revise: Callable[[dict], str | None],
+        *,
+        last_synced: str | None = None,
+    ) -> dict | None:
         """Rewrite one source's ``properties`` from its CURRENT blob, in ONE
         write-locked take.
 
@@ -2665,7 +2805,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
-                "SELECT properties FROM sources WHERE id = ?", (source_id,)).fetchone()
+                "SELECT properties FROM sources WHERE id = ?", (source_id,)
+            ).fetchone()
             if row is None:
                 self.db.execute("COMMIT")
                 return None
@@ -2687,7 +2828,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 params.append(last_synced)
             cur = self.db.execute(
                 f"UPDATE sources SET {', '.join(sets)} WHERE id = ? AND properties = ?",  # noqa: S608
-                (*params, source_id, row["properties"]))
+                (*params, source_id, row["properties"]),
+            )
             self.db.execute("COMMIT")
             return props if cur.rowcount > 0 else None
         except Exception:
@@ -2715,7 +2857,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         if rows:
             logger.info(
                 "knowledge: re-indexing %d item(s) for FTS index format v%d "
-                "(CJK-segmented terms)", rows, FTS_INDEX_VERSION)
+                "(CJK-segmented terms)",
+                rows,
+                FTS_INDEX_VERSION,
+            )
         # IMMEDIATE so the writer lock is held for the whole rebuild: that is what
         # stops a concurrent writer from reading the old representation and then
         # writing terms the migrated index cannot match.
@@ -2734,7 +2879,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 batch = self.db.execute(
                     "SELECT rowid, title, content, tags FROM items "
                     "WHERE rowid > ? ORDER BY rowid LIMIT ?",
-                    (last, self._FTS_REBUILD_BATCH)).fetchall()
+                    (last, self._FTS_REBUILD_BATCH),
+                ).fetchall()
                 if not batch:
                     break
                 for row in batch:
@@ -2808,7 +2954,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         """
         self.db.execute(
             "INSERT INTO items_fts (rowid, title, content, tags) VALUES (?, ?, ?, ?)",
-            (rowid, *self._fts_terms(title, content, tags)))
+            (rowid, *self._fts_terms(title, content, tags)),
+        )
 
     def _fts_unindex(self, rowid, title, content, tags) -> None:
         """Remove one item's row from ``items_fts``.
@@ -2826,7 +2973,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(
             "INSERT INTO items_fts (items_fts, rowid, title, content, tags) "
             "VALUES ('delete', ?, ?, ?, ?)",
-            (rowid, *self._fts_terms(title, content, tags)))
+            (rowid, *self._fts_terms(title, content, tags)),
+        )
 
     def search_items_fts(self, query, limit=10, offset=0) -> list:
         self.ensure_fts_index_current()
@@ -2838,7 +2986,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 "SELECT i.*, fts.rank FROM items_fts fts "
                 "JOIN items i ON i.rowid = fts.rowid "
                 "WHERE items_fts MATCH ? ORDER BY fts.rank LIMIT ? OFFSET ?",
-                (safe, limit, offset)).fetchall()
+                (safe, limit, offset),
+            ).fetchall()
         except sqlite3.OperationalError:
             return []
         return [self._serialize_item(r) for r in rows]
@@ -2862,7 +3011,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(
             "INSERT INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (eid, name, entity_type, description, json.dumps(aliases or []), now, now))
+            (eid, name, entity_type, description, json.dumps(aliases or []), now, now),
+        )
         # Hold ``_graph_lock`` across BOTH the commit and the in-memory add, as one
         # critical section. ``_load_graph`` -- which every delete / merge /
         # import path runs after its own COMMIT -- takes this same lock for its whole
@@ -2877,57 +3027,239 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self._graph.add_node(eid, name=name, entity_type=entity_type)
         return eid
 
+    def find_entity_by_canonical_name(self, name: str) -> dict | None:
+        """Canonical-only lookup: exact name match then casefold name match.
+
+        Deliberately does NOT scan aliases.  This is the primary lookup in the
+        conservative lexical resolution path: an incoming entity name must only
+        reuse an existing entity when it literally matches that entity's own
+        canonical name (casefold comparison).  Letting the primary lookup hit an
+        alias would mean an incoming name that matches another entity's alias is
+        silently treated as the same entity, bypassing the alias fallback's
+        canonical-equality guard and opening alias-to-alias merges.
+        """
+        row = self.db.execute("SELECT * FROM entities WHERE name = ?", (name,)).fetchone()
+        if row:
+            return dict(row)
+        row = self.db.execute(
+            "SELECT * FROM entities WHERE name = ?", (name.casefold(),)
+        ).fetchone()
+        if row:
+            return dict(row)
+        # Full casefold comparison (handles e.g. German ß -> ss).
+        for row in self.db.execute("SELECT * FROM entities"):
+            if row["name"].casefold() == name.casefold():
+                return dict(row)
+        return None
+
+    def add_entity_aliases(self, entity_id: str, new_aliases: list[str]) -> None:
+        """Atomically enrich an entity with additional alias spellings.
+
+        Contract
+        --------
+        Transaction:
+            BEGIN IMMEDIATE -> always COMMIT on success (even without UPDATE).
+            Exception -> ROLLBACK.
+
+        Validation:
+            entity must exist; NOT FOUND -> raise (concurrency/invariant violation,
+            not a no-op: the caller just resolved this id and its disappearance is
+            unexpected).
+            persisted aliases must be list[str] with all-string elements;
+            anything else -> raise (invariant violation, not silent repair).
+
+        Caller contract:
+            Callers (ingestion._coerce_aliases / _store_entities) MUST redact,
+            strip and coarse-dedupe the list before passing it here.
+            add_entity_aliases only enforces the structural invariants the
+            store alone can check (because they require a DB read):
+
+            1. truncate to MAX_ENTITY_ALIAS_LEN (safety guard against malformed
+               input slipping through; all current callers already cap via
+               _coerce_aliases, so this is a belt-and-suspenders check)
+            2. reject if empty after truncation
+            3. reject if casefold-equivalent to entity's canonical name
+            4. casefold-dedupe against already-accepted aliases in THIS call
+               plus existing persisted aliases (caller cannot know these)
+
+        Cap policy (total = existing + new, NOT raw input position):
+            remaining_capacity = MAX_ENTITY_ALIASES - len(existing_aliases)
+            if existing_aliases already >= MAX -> COMMIT and return silently
+            (normal saturation, not an invariant violation; the entity is
+            already maximally enriched and no new aliases can be stored)
+            valid aliases accepted up to remaining_capacity; further valid aliases
+            are counted as overflow.
+            overflow > 0 -> logger.warning once per call.
+
+        Mutation:
+            UPDATE only when aliases actually changed (set difference).
+            Persists original surviving spelling (first occurrence wins).
+            Alias-only mutation does NOT require a graph reload.
+        """
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT name, aliases FROM entities WHERE id = ?", (entity_id,)
+            ).fetchone()
+            if row is None:
+                raise ValueError(
+                    f"add_entity_aliases: entity {entity_id!r} not found "
+                    "(concurrency or invariant violation)"
+                )
+
+            canonical = row["name"]
+
+            # Validate persisted aliases
+            raw_persisted = row["aliases"]
+            if raw_persisted:
+                try:
+                    persisted = json.loads(raw_persisted)
+                except (ValueError, TypeError):
+                    raise ValueError(
+                        f"add_entity_aliases: entity {entity_id!r} has unparseable "
+                        f"aliases column (invariant violation): {raw_persisted!r}"
+                    )
+            else:
+                persisted = []
+            if not isinstance(persisted, list):
+                raise ValueError(
+                    f"add_entity_aliases: entity {entity_id!r} aliases is not a list "
+                    f"(invariant violation): {persisted!r}"
+                )
+            if not all(isinstance(a, str) for a in persisted):
+                raise ValueError(
+                    f"add_entity_aliases: entity {entity_id!r} aliases contains "
+                    f"non-string elements (invariant violation): {persisted!r}"
+                )
+
+            # remaining_capacity may be zero when the entity is already saturated.
+            # Do NOT early-return: let new_aliases flow through the loop so every
+            # discarded alias is counted and the overflow warning fires exactly once
+            # (AUTOSDE rule a-bound-bounds-every-field-it-retains).
+            remaining_capacity = max(0, MAX_ENTITY_ALIASES - len(persisted))
+
+            # Build casefold lookup for existing aliases (for dedupe)
+            existing_casefolded = {a.casefold() for a in persisted}
+            canonical_cf = canonical.casefold()
+
+            accepted: list[str] = []
+            accepted_cf: set[str] = set()
+            overflow = 0
+
+            for alias in new_aliases:
+                # Callers (ingestion._coerce_aliases / _store_entities) are
+                # responsible for redacting, stripping and deduping the incoming
+                # list before this call.  The store only enforces the structural
+                # invariants it alone can check: length cap, canonical-name
+                # exclusion, and dedupe against *persisted* aliases (which the
+                # caller cannot know without a DB read).
+                truncated = alias[:MAX_ENTITY_ALIAS_LEN]
+                if not truncated:
+                    continue
+                cf = truncated.casefold()
+                # Reject if casefold-equivalent to entity's canonical name.
+                if cf == canonical_cf:
+                    continue
+                # Reject if already in persisted aliases (casefold).
+                if cf in existing_casefolded:
+                    continue
+                # Reject if already accepted in this call (casefold).
+                if cf in accepted_cf:
+                    continue
+                # Apply remaining-capacity cap.
+                if len(accepted) >= remaining_capacity:
+                    overflow += 1
+                    continue
+                accepted.append(truncated)
+                accepted_cf.add(cf)
+
+            if overflow > 0:
+                logger.warning(
+                    "add_entity_aliases: %d alias(es) discarded for entity %r "
+                    "(MAX_ENTITY_ALIASES=%d reached)",
+                    overflow,
+                    canonical,
+                    MAX_ENTITY_ALIASES,
+                )
+
+            if accepted:
+                merged = persisted + accepted
+                self.db.execute(
+                    "UPDATE entities SET aliases = ?, updated_at = ? WHERE id = ?",
+                    (json.dumps(merged), datetime.now().isoformat(), entity_id),
+                )
+
+            self.db.execute("COMMIT")
+        except Exception:
+            self.db.execute("ROLLBACK")
+            raise
+
     def find_entity(self, name):
         row = self.db.execute("SELECT * FROM entities WHERE name = ?", (name,)).fetchone()
         if row:
             return dict(row)
-        row = self.db.execute("SELECT * FROM entities WHERE LOWER(name) = LOWER(?)", (name,)).fetchone()
+        row = self.db.execute(
+            "SELECT * FROM entities WHERE LOWER(name) = LOWER(?)", (name,)
+        ).fetchone()
         if row:
             return dict(row)
+        name_cf = name.casefold()
         for row in self.db.execute("SELECT * FROM entities"):
             aliases = json.loads(row["aliases"]) if row["aliases"] else []
-            if any(a.lower() == name.lower() for a in aliases):
+            if any(isinstance(a, str) and a.casefold() == name_cf for a in aliases):
                 return dict(row)
         return None
 
     def merge_entities(self, keep_id, merge_id):
-        self.db.execute("UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id))
-        self.db.execute("UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id))
+        self.db.execute(
+            "UPDATE entity_relations SET source_id = ? WHERE source_id = ?", (keep_id, merge_id)
+        )
+        self.db.execute(
+            "UPDATE entity_relations SET target_id = ? WHERE target_id = ?", (keep_id, merge_id)
+        )
         # Remove self-loops created by the merge
         self.db.execute(
-            "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?",
-            (keep_id, keep_id))
+            "DELETE FROM entity_relations WHERE source_id = ? AND target_id = ?", (keep_id, keep_id)
+        )
         # Delete mentions that would conflict, then update the rest
         self.db.execute(
             "DELETE FROM mentions WHERE entity_id = ? AND item_id IN (SELECT item_id FROM mentions WHERE entity_id = ?)",
-            (merge_id, keep_id))
-        self.db.execute("UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id))
+            (merge_id, keep_id),
+        )
+        self.db.execute(
+            "UPDATE mentions SET entity_id = ? WHERE entity_id = ?", (keep_id, merge_id)
+        )
         self.db.execute("DELETE FROM entities WHERE id = ?", (merge_id,))
         self.db.commit()
         self._load_graph()
 
-    def add_entity_relation(self, source_id, target_id, relation_type,
-                            description=None, weight=1.0, source_item_id=None) -> str:
+    def add_entity_relation(
+        self, source_id, target_id, relation_type, description=None, weight=1.0, source_item_id=None
+    ) -> str:
         rid = str(uuid4())
         now = datetime.now().isoformat()
         self.db.execute(
             "INSERT INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (rid, source_id, target_id, relation_type, description, weight, source_item_id, now))
+            (rid, source_id, target_id, relation_type, description, weight, source_item_id, now),
+        )
         # Hold ``_graph_lock`` across commit + add, one critical section -- see
         # add_entity. This closes the delete-then-restore race: a source deletion
         # whose rebuild+swap would otherwise land between this commit and this add
         # cannot interleave, so this edge is never re-injected after its row is gone.
         with self._graph_lock:
             self.db.commit()
-            self._graph.add_edge(source_id, target_id, id=rid, relation_type=relation_type, weight=weight)
+            self._graph.add_edge(
+                source_id, target_id, id=rid, relation_type=relation_type, weight=weight
+            )
         return rid
 
     def add_mention(self, item_id, entity_id, context=None):
         now = datetime.now().isoformat()
         self.db.execute(
             "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) VALUES (?, ?, ?, ?)",
-            (item_id, entity_id, context, now))
+            (item_id, entity_id, context, now),
+        )
         self.db.commit()
 
     # States a sources row may legitimately START in: the DURABLE ones, which a
@@ -2974,8 +3306,17 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(
             "INSERT INTO sources (id, name, source_type, uri, properties, sync_status, "
             "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (sid, name, source_type, uri, json.dumps(stored),
-             self._initial_sync_status(properties), now, now))
+            (
+                sid,
+                name,
+                source_type,
+                uri,
+                json.dumps(stored),
+                self._initial_sync_status(properties),
+                now,
+                now,
+            ),
+        )
         self.db.commit()
         return sid
 
@@ -2983,7 +3324,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         row = self.db.execute("SELECT * FROM sources WHERE uri = ?", (uri,)).fetchone()
         return dict(row) if row else None
 
-    _SOURCE_COLUMNS = {"name", "source_type", "uri", "properties", "last_synced", "sync_status", "updated_at"}
+    _SOURCE_COLUMNS = {
+        "name",
+        "source_type",
+        "uri",
+        "properties",
+        "last_synced",
+        "sync_status",
+        "updated_at",
+    }
 
     def update_source(self, source_id, **fields):
         """Write *fields* to a sources row.
@@ -3024,7 +3373,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         self.db.execute(sql, params)
         self.db.commit()
 
-    def add_source_location(self, item_id, source_id, chunk_range=None, section_title=None, anchor=None):
+    def add_source_location(
+        self, item_id, source_id, chunk_range=None, section_title=None, anchor=None
+    ):
         """Record that *source_id* holds *item_id*, at an optional position within it.
 
         ``OR IGNORE`` against ``UNIQUE (item_id, source_id)``: a document reachable
@@ -3033,12 +3384,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         the first is deleted -- see ``sources_holding_item``.
         """
         self.add_source_location_in_txn(
-            item_id, source_id, chunk_range=chunk_range,
-            section_title=section_title, anchor=anchor)
+            item_id, source_id, chunk_range=chunk_range, section_title=section_title, anchor=anchor
+        )
         self.db.commit()
 
-    def add_source_location_in_txn(self, item_id, source_id, chunk_range=None,
-                                   section_title=None, anchor=None):
+    def add_source_location_in_txn(
+        self, item_id, source_id, chunk_range=None, section_title=None, anchor=None
+    ):
         """:meth:`add_source_location` without the commit, for a caller in a write txn.
 
         The connection runs in autocommit mode, so ``db.commit()`` inside an
@@ -3051,7 +3403,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             "INSERT OR IGNORE INTO source_locations "
             "(id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (lid, item_id, source_id, chunk_range, section_title, anchor, now))
+            (lid, item_id, source_id, chunk_range, section_title, anchor, now),
+        )
 
     def sources_holding_item(self, item_id: str, exclude_source_id: str | None = None) -> list[str]:
         """Ids of EXISTING sources that hold *item_id*, optionally excluding one.
@@ -3060,8 +3413,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         comes back empty. Joins ``sources`` so a location row left pointing at an
         already-deleted source cannot keep a dead item alive.
         """
-        sql = ("SELECT sl.source_id FROM source_locations sl "
-               "JOIN sources s ON s.id = sl.source_id WHERE sl.item_id = ?")
+        sql = (
+            "SELECT sl.source_id FROM source_locations sl "
+            "JOIN sources s ON s.id = sl.source_id WHERE sl.item_id = ?"
+        )
         params: list[str] = [item_id]
         if exclude_source_id:
             sql += " AND sl.source_id != ?"
@@ -3076,8 +3431,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         only here, and only when the owning source is being deleted while another
         source still holds the document.
         """
-        self.db.execute("UPDATE items SET source_id = ? WHERE id = ?",
-                        (new_source_id, item_id))
+        self.db.execute("UPDATE items SET source_id = ? WHERE id = ?", (new_source_id, item_id))
 
     def get_neighbors(self, entity_id, depth=1) -> list:
         # Pin one graph reference for the whole traversal. ``_load_graph``
@@ -3104,7 +3458,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         result = []
         for nid in visited:
             data = graph.nodes.get(nid, {})
-            result.append({"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")})
+            result.append(
+                {"id": nid, "name": data.get("name"), "entity_type": data.get("entity_type")}
+            )
         return result
 
     def get_entity_subgraph(self, entity_id, depth=2) -> dict | None:
@@ -3139,7 +3495,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         edges = []
         for u, v, data in graph.edges(data=True):
             if u in visited and v in visited:
-                edges.append({"source": u, "target": v, "type": data.get("relation_type"), "weight": data.get("weight")})
+                edges.append(
+                    {
+                        "source": u,
+                        "target": v,
+                        "type": data.get("relation_type"),
+                        "weight": data.get("weight"),
+                    }
+                )
         return {"nodes": nodes, "edges": edges}
 
     def aggregate_stats(self) -> ContentStats:
@@ -3230,7 +3593,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         item = self.get_item(item_id)
         if not item:
             return {}
-        mentions = self.db.execute("SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)).fetchall()
+        mentions = self.db.execute(
+            "SELECT entity_id FROM mentions WHERE item_id = ?", (item_id,)
+        ).fetchall()
         entity_ids = [m["entity_id"] for m in mentions]
         entity_id_set = set(entity_ids)
         entities = []
@@ -3242,7 +3607,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         seen_ids = set()
         for eid in entity_ids:
             for row in self.db.execute(
-                    "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)):
+                "SELECT * FROM entity_relations WHERE source_id = ? OR target_id = ?", (eid, eid)
+            ):
                 r = dict(row)
                 if r["id"] in seen_ids:
                     continue
@@ -3258,11 +3624,16 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     continue
                 seen_ids.add(r["id"])
                 relations.append(r)
-        locations = [dict(r) for r in self.db.execute(
-            "SELECT * FROM source_locations WHERE item_id = ?", (item_id,))]
-        mentions = [dict(r) for r in self.db.execute(
-            "SELECT * FROM mentions WHERE item_id = ?", (item_id,))]
-        source_ids = {sid for sid in (item.get("source_id"), *(loc["source_id"] for loc in locations)) if sid}
+        locations = [
+            dict(r)
+            for r in self.db.execute("SELECT * FROM source_locations WHERE item_id = ?", (item_id,))
+        ]
+        mentions = [
+            dict(r) for r in self.db.execute("SELECT * FROM mentions WHERE item_id = ?", (item_id,))
+        ]
+        source_ids = {
+            sid for sid in (item.get("source_id"), *(loc["source_id"] for loc in locations)) if sid
+        }
         sources = []
         for sid in source_ids:
             row = self.db.execute("SELECT * FROM sources WHERE id = ?", (sid,)).fetchone()
@@ -3279,23 +3650,37 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
 
     def export_all(self, namespace: str | None = None) -> dict:
         if namespace:
-            items = [self._serialize_item(r) for r in self.db.execute(
-                "SELECT * FROM items WHERE namespace = ?", (namespace,))]
+            items = [
+                self._serialize_item(r)
+                for r in self.db.execute("SELECT * FROM items WHERE namespace = ?", (namespace,))
+            ]
             item_ids = {i["id"] for i in items}
         else:
             items = [self._serialize_item(r) for r in self.db.execute("SELECT * FROM items")]
             item_ids = None
         if item_ids is not None:
             items_subq = "SELECT id FROM items WHERE namespace = ?"
-            relations = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM entity_relations WHERE source_item_id IS NULL OR source_item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
-            source_locations = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM source_locations WHERE item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
-            mentions = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM mentions WHERE item_id IN ({items_subq})",  # noqa: S608
-                (namespace,))]
+            relations = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM entity_relations WHERE source_item_id IS NULL OR source_item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
+            source_locations = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM source_locations WHERE item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
+            mentions = [
+                dict(r)
+                for r in self.db.execute(
+                    f"SELECT * FROM mentions WHERE item_id IN ({items_subq})",  # noqa: S608
+                    (namespace,),
+                )
+            ]
         else:
             relations = [dict(r) for r in self.db.execute("SELECT * FROM entity_relations")]
             source_locations = [dict(r) for r in self.db.execute("SELECT * FROM source_locations")]
@@ -3310,16 +3695,22 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         # actually carried, and to the ones filed under the row's own source, which is
         # the same pair the accepting pass checks.
         exported_owner: dict[str, object] = {
-            row["id"]: row.get("source_id") for row in items
-            if isinstance(row, dict) and isinstance(row.get("id"), str)}
+            row["id"]: row.get("source_id")
+            for row in items
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
         state_tables: dict[str, list[dict]] = {}
         for table in BUNDLE_STATE_KEY_COL:
-            rows = [dict(r) for r in self.db.execute(
-                f"SELECT * FROM {table}")]  # noqa: S608 -- table from a module constant
+            rows = [
+                dict(r) for r in self.db.execute(f"SELECT * FROM {table}")
+            ]  # noqa: S608 -- table from a module constant
             kept: list[dict] = []
             for row in rows:
-                group = [item for item in _bundle_item_group(row.get("item_ids"))
-                         if exported_owner.get(item) == row.get("source_id")]
+                group = [
+                    item
+                    for item in _bundle_item_group(row.get("item_ids"))
+                    if exported_owner.get(item) == row.get("source_id")
+                ]
                 if not group:
                     continue
                 row["item_ids"] = json.dumps(group)
@@ -3387,8 +3778,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 return None
             mapped = source_id_map.get(raw) if isinstance(raw, str) else None
             if mapped is None:
-                raise KnowledgeBundleError(
-                    f"'{field}' names a source this bundle does not carry")
+                raise KnowledgeBundleError(f"'{field}' names a source this bundle does not carry")
             return mapped
 
         self.db.execute("BEGIN IMMEDIATE")
@@ -3424,8 +3814,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 claimed_uri = src.get("uri")
                 for label, value in (("id", claimed_id), ("uri", claimed_uri)):
                     if not isinstance(value, str) or not value:
-                        raise KnowledgeBundleError(
-                            f"'sources.{label}' must be a non-empty string")
+                        raise KnowledgeBundleError(f"'sources.{label}' must be a non-empty string")
                     # A lone surrogate is a ``str`` SQLite cannot encode, and the
                     # ``UnicodeEncodeError`` it raises at bind time sits outside every
                     # arm the import endpoint catches, so it surfaces as a 500 rather
@@ -3435,7 +3824,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         value.encode("utf-8")
                     except UnicodeEncodeError:
                         raise KnowledgeBundleError(
-                            f"'sources.{label}' must be valid UTF-8 text") from None
+                            f"'sources.{label}' must be valid UTF-8 text"
+                        ) from None
                 # ``name`` and ``source_type`` are the schema's other NOT NULL columns on
                 # this table. An explicit JSON null in either is a constraint violation
                 # at insert time, and a suppressed insert is far worse than a loud one:
@@ -3453,7 +3843,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                         value.encode("utf-8")
                     except UnicodeEncodeError:
                         raise KnowledgeBundleError(
-                            f"'sources.{label}' must be valid UTF-8 text") from None
+                            f"'sources.{label}' must be valid UTF-8 text"
+                        ) from None
                 # ``created_at`` is the last NOT NULL column a bundle supplies (a missing
                 # key falls back to the import clock, but an explicit null does not, and
                 # ``updated_at`` is always written from the clock). Validated here so no
@@ -3462,19 +3853,20 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 claimed_created = src.get("created_at", now)
                 if not isinstance(claimed_created, str) or not claimed_created:
                     raise KnowledgeBundleError(
-                        "'sources.created_at' must be a non-empty string when present")
+                        "'sources.created_at' must be a non-empty string when present"
+                    )
                 try:
                     claimed_created.encode("utf-8")
                 except UnicodeEncodeError:
                     raise KnowledgeBundleError(
-                        "'sources.created_at' must be valid UTF-8 text") from None
+                        "'sources.created_at' must be valid UTF-8 text"
+                    ) from None
                 # One id may name only one uri. ``sources.id`` is a PRIMARY KEY, so no
                 # export produces two entries sharing one; accepting them would let the
                 # later entry overwrite the earlier one's place in the map and file the
                 # bundle's items under a source that was never named for them.
                 if claimed_uris.setdefault(claimed_id, claimed_uri) != claimed_uri:
-                    raise KnowledgeBundleError(
-                        "'sources' repeats an id under two different uris")
+                    raise KnowledgeBundleError("'sources' repeats an id under two different uris")
                 restored = src.get("sync_status")
                 if not isinstance(restored, str) or not restored:
                     restored = json.loads(props_text or "{}").get("sync_status")
@@ -3489,17 +3881,18 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 # uses, so the row keeps its items and its properties and waits behind
                 # the same Confirm control. Aggregate and single-file sources are
                 # unaffected: they walk nothing.
-                if (src.get("source_type") in _WALKING_SOURCE_TYPES
-                        and restored != "paused"):
+                if src.get("source_type") in _WALKING_SOURCE_TYPES and restored != "paused":
                     restored = "pending_confirmation"
                 # Resolve by uri first, because the uri is the source's identity
                 # across stores while the id is local to whichever store minted it.
                 local = self.db.execute(
-                    "SELECT id FROM sources WHERE uri = ?", (src["uri"],)).fetchone()
+                    "SELECT id FROM sources WHERE uri = ?", (src["uri"],)
+                ).fetchone()
                 if local is None:
                     target_id = src["id"]
-                    if self.db.execute("SELECT 1 FROM sources WHERE id = ?",
-                                       (target_id,)).fetchone():
+                    if self.db.execute(
+                        "SELECT 1 FROM sources WHERE id = ?", (target_id,)
+                    ).fetchone():
                         # The uri is absent but its id is already taken by a source
                         # holding a DIFFERENT uri. Reusing that id would file this
                         # bundle's documents under an unrelated source and skipping
@@ -3521,12 +3914,20 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     self.db.execute(
                         "INSERT INTO sources (id, name, source_type, uri, properties, "
                         "sync_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                        (target_id, src["name"], src["source_type"], src["uri"],
-                         _without_sync_status(props_text),
-                         self._initial_status_or_default(restored),
-                         src.get("created_at", now), now))
+                        (
+                            target_id,
+                            src["name"],
+                            src["source_type"],
+                            src["uri"],
+                            _without_sync_status(props_text),
+                            self._initial_status_or_default(restored),
+                            src.get("created_at", now),
+                            now,
+                        ),
+                    )
                     local = self.db.execute(
-                        "SELECT id FROM sources WHERE uri = ?", (src["uri"],)).fetchone()
+                        "SELECT id FROM sources WHERE uri = ?", (src["uri"],)
+                    ).fetchone()
                 if local is not None:
                     source_id_map[claimed_id] = local["id"]
             # Decided BEFORE the items go in, because an item that arrives and then
@@ -3534,8 +3935,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             # exists to remove.
             self._bundle_membership_ids(bundle)
             self._bundle_group_bounds(bundle)
-            blocked_items, withheld_account = self._bundle_blocked_items(
-                bundle, source_id_map)
+            blocked_items, withheld_account = self._bundle_blocked_items(bundle, source_id_map)
             # The ids this import actually INSERTED. Ownership is granted over these
             # alone: an id the bundle ships that already exists here was skipped by
             # ``INSERT OR IGNORE``, so the row in the store is local content, and
@@ -3566,29 +3966,50 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, embedding_sig, status, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                    (item["id"], item["title"], item["content"], item["item_type"],
-                     # Through the map: the exporting store's source id is not this
-                     # store's, and an item left pointing at the bundle's id is
-                     # refused by the foreign key, which loses the whole import.
-                     _source_fk(item.get("source_id"), "items.source_id"),
-                     item.get("chunk_index", 0), item.get("namespace", "default"), item.get("summary"),
-                     item.get("tags", "[]"), raw_emb, _validated_embedding_sig(item.get("embedding_sig")),
-                     item.get("status", "active"),
-                     item.get("created_at", now), now))
+                    (
+                        item["id"],
+                        item["title"],
+                        item["content"],
+                        item["item_type"],
+                        # Through the map: the exporting store's source id is not this
+                        # store's, and an item left pointing at the bundle's id is
+                        # refused by the foreign key, which loses the whole import.
+                        _source_fk(item.get("source_id"), "items.source_id"),
+                        item.get("chunk_index", 0),
+                        item.get("namespace", "default"),
+                        item.get("summary"),
+                        item.get("tags", "[]"),
+                        raw_emb,
+                        _validated_embedding_sig(item.get("embedding_sig")),
+                        item.get("status", "active"),
+                        item.get("created_at", now),
+                        now,
+                    ),
+                )
                 if cursor.rowcount > 0:
                     items_imported += 1
                     inserted_items.add(item["id"])
-                    row = self.db.execute("SELECT rowid FROM items WHERE id = ?", (item["id"],)).fetchone()
+                    row = self.db.execute(
+                        "SELECT rowid FROM items WHERE id = ?", (item["id"],)
+                    ).fetchone()
                     if row:
-                        self._fts_index(row[0], item["title"], item["content"],
-                                        item.get("tags", "[]"))
+                        self._fts_index(
+                            row[0], item["title"], item["content"], item.get("tags", "[]")
+                        )
             for ent in bundle.get("entities", []):
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entities (id, name, entity_type, description, aliases, created_at, updated_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (ent["id"], ent["name"], ent["entity_type"], ent.get("description"),
-                     _validated_aliases(ent.get("aliases")),
-                     ent.get("created_at", now), now))
+                    (
+                        ent["id"],
+                        ent["name"],
+                        ent["entity_type"],
+                        ent.get("description"),
+                        _validated_aliases(ent.get("aliases")),
+                        ent.get("created_at", now),
+                        now,
+                    ),
+                )
                 if cursor.rowcount > 0:
                     entities_created += 1
                     inserted_entities.add(ent["id"])
@@ -3608,9 +4029,17 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 cursor = self.db.execute(
                     "INSERT OR IGNORE INTO entity_relations (id, source_id, target_id, relation_type, description, weight, source_item_id, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (rel["id"], rel["source_id"], rel["target_id"], rel["relation_type"],
-                     rel.get("description"), rel.get("weight", 1.0), rel.get("source_item_id"),
-                     rel.get("created_at", now)))
+                    (
+                        rel["id"],
+                        rel["source_id"],
+                        rel["target_id"],
+                        rel["relation_type"],
+                        rel.get("description"),
+                        rel.get("weight", 1.0),
+                        rel.get("source_item_id"),
+                        rel.get("created_at", now),
+                    ),
+                )
                 if cursor.rowcount > 0:
                     relations_rebuilt += 1
             for loc in bundle.get("source_locations", []):
@@ -3619,10 +4048,16 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 self.db.execute(
                     "INSERT OR IGNORE INTO source_locations (id, item_id, source_id, chunk_range, section_title, anchor, created_at) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (loc["id"], loc["item_id"],
-                     _source_fk(loc["source_id"], "source_locations.source_id"),
-                     loc.get("chunk_range"),
-                     loc.get("section_title"), loc.get("anchor"), loc.get("created_at", now)))
+                    (
+                        loc["id"],
+                        loc["item_id"],
+                        _source_fk(loc["source_id"], "source_locations.source_id"),
+                        loc.get("chunk_range"),
+                        loc.get("section_title"),
+                        loc.get("anchor"),
+                        loc.get("created_at", now),
+                    ),
+                )
             for m in bundle.get("mentions", []):
                 entity_ref = m.get("entity_id")
                 if isinstance(entity_ref, str):
@@ -3634,9 +4069,11 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 self.db.execute(
                     "INSERT OR IGNORE INTO mentions (item_id, entity_id, context, created_at) "
                     "VALUES (?, ?, ?, ?)",
-                    (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)))
+                    (m["item_id"], m["entity_id"], m.get("context"), m.get("created_at", now)),
+                )
             state_rows_imported, dropped_state_rows = self._import_bundle_state(
-                bundle, source_id_map, inserted_items, now)
+                bundle, source_id_map, inserted_items, now
+            )
             withheld_account.extend(dropped_state_rows)
             # An entity is only reachable through a mention or a relation, and both skip
             # a withheld item -- so an entity the bundle referenced ONLY from rows that
@@ -3653,7 +4090,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     "SELECT 1 FROM mentions WHERE entity_id = ? UNION ALL "
                     "SELECT 1 FROM entity_relations WHERE source_id = ? OR target_id = ? "
                     "LIMIT 1",
-                    (entity_id, entity_id, entity_id)).fetchone()
+                    (entity_id, entity_id, entity_id),
+                ).fetchone()
                 if still_referenced:
                     continue
                 self.db.execute("DELETE FROM entities WHERE id = ?", (entity_id,))
@@ -3663,17 +4101,20 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             self.db.execute("ROLLBACK")
             raise
         self._load_graph()
-        return {"items_imported": items_imported, "entities_created": entities_created,
-                "relations_rebuilt": relations_rebuilt,
-                "ownership_rows_imported": state_rows_imported,
-                # Withheld items are the one silent outcome here: a document this store
-                # already holds under the same key contributes nothing and lowers
-                # ``items_imported`` with no way for the caller to tell why.
-                "items_withheld": len(blocked_items),
-                # Every id held back is accounted for here by reason and by the document
-                # or id it belongs to, so a caller can say WHICH content did not arrive
-                # instead of only how much.
-                "withheld": withheld_account}
+        return {
+            "items_imported": items_imported,
+            "entities_created": entities_created,
+            "relations_rebuilt": relations_rebuilt,
+            "ownership_rows_imported": state_rows_imported,
+            # Withheld items are the one silent outcome here: a document this store
+            # already holds under the same key contributes nothing and lowers
+            # ``items_imported`` with no way for the caller to tell why.
+            "items_withheld": len(blocked_items),
+            # Every id held back is accounted for here by reason and by the document
+            # or id it belongs to, so a caller can say WHICH content did not arrive
+            # instead of only how much.
+            "withheld": withheld_account,
+        }
 
     def _bundle_group_bounds(self, bundle: dict) -> None:
         """Refuse a bundle whose ownership group exceeds a named bound.
@@ -3704,12 +4145,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 if len(parsed) > _MAX_ITEM_GROUP_MEMBERS:
                     raise KnowledgeBundleError(
                         f"{table}.item_ids names {len(parsed)} items, over the "
-                        f"{_MAX_ITEM_GROUP_MEMBERS} bound")
+                        f"{_MAX_ITEM_GROUP_MEMBERS} bound"
+                    )
                 for entry in parsed:
                     if isinstance(entry, str) and len(entry) > _MAX_ITEM_ID_CHARS:
                         raise KnowledgeBundleError(
                             f"{table}.item_ids holds a {len(entry)}-character id, over "
-                            f"the {_MAX_ITEM_ID_CHARS} bound")
+                            f"the {_MAX_ITEM_ID_CHARS} bound"
+                        )
 
     def _bundle_membership_ids(self, bundle: dict) -> None:
         """Refuse a bundle whose row identifiers cannot be hashed or matched.
@@ -3727,13 +4170,12 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         halves of it: the entity insert binds it AND the created set holds it.
         """
         for field, rows, col in (
-                ("items.id", bundle.get("items", []), "id"),
-                ("entities.id", bundle.get("entities", []), "id"),
-                ("relations.source_item_id",
-                 bundle.get("relations", []), "source_item_id"),
-                ("source_locations.item_id",
-                 bundle.get("source_locations", []), "item_id"),
-                ("mentions.item_id", bundle.get("mentions", []), "item_id")):
+            ("items.id", bundle.get("items", []), "id"),
+            ("entities.id", bundle.get("entities", []), "id"),
+            ("relations.source_item_id", bundle.get("relations", []), "source_item_id"),
+            ("source_locations.item_id", bundle.get("source_locations", []), "item_id"),
+            ("mentions.item_id", bundle.get("mentions", []), "item_id"),
+        ):
             if not isinstance(rows, list):
                 continue
             for row in rows:
@@ -3741,8 +4183,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     continue
                 value = row.get(col)
                 if value is not None and not isinstance(value, str):
-                    raise KnowledgeBundleError(
-                        f"'{field}' must be a string when present")
+                    raise KnowledgeBundleError(f"'{field}' must be a string when present")
         # One id may name only one item. ``item_source`` is keyed on it, so a repeat
         # silently overwrites the earlier row's mapped source -- and because the
         # withheld set holds the ID rather than the row, a collision resolved against
@@ -3799,7 +4240,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         for item in bundle.get("items", []):
             if isinstance(item, dict) and isinstance(item.get("id"), str):
                 raw = item.get("source_id")
-                mapped = (source_id_map.get(raw) if isinstance(raw, str) else None)
+                mapped = source_id_map.get(raw) if isinstance(raw, str) else None
                 item_source[item["id"]] = mapped
         groups: list[set[str]] = []
         colliding: list[tuple[str, str, str, set[str], set[str]]] = []
@@ -3831,12 +4272,18 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 held = self.db.execute(
                     f"SELECT item_ids FROM {table} "  # noqa: S608
                     f"WHERE source_id = ? AND {key_col} = ?",
-                    (target_source, key)).fetchone()
-                if held is not None and self._state_row_owns_items(
-                        held["item_ids"], target_source):
-                    colliding.append((
-                        table, target_source, key, group,
-                        set(_bundle_item_group(held["item_ids"]))))
+                    (target_source, key),
+                ).fetchone()
+                if held is not None and self._state_row_owns_items(held["item_ids"], target_source):
+                    colliding.append(
+                        (
+                            table,
+                            target_source,
+                            key,
+                            group,
+                            set(_bundle_item_group(held["item_ids"])),
+                        )
+                    )
         seen: Counter[str] = Counter()
         for group in groups:
             seen.update(group)
@@ -3855,15 +4302,23 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             # the accepting pass.
             if group & local_group:
                 continue
-            document = {item_id for item_id in group
-                        if item_id not in shared
-                        and item_source.get(item_id) == target_source}
+            document = {
+                item_id
+                for item_id in group
+                if item_id not in shared and item_source.get(item_id) == target_source
+            }
             if not document:
                 continue
             blocked |= document
-            withheld.append({"reason": "document_key_held_locally", "table": table,
-                             "source_id": target_source, "key": key,
-                             "items": str(len(document))})
+            withheld.append(
+                {
+                    "reason": "document_key_held_locally",
+                    "table": table,
+                    "source_id": target_source,
+                    "key": key,
+                    "items": str(len(document)),
+                }
+            )
         # An id a local row claims must not be handed to an import, with one exception
         # for the document the bundle is restoring; see :meth:`_contested_claims`. An id
         # that already exists here is outside it either way: ``INSERT OR IGNORE`` leaves
@@ -3872,8 +4327,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         contested = self._contested_claims(bundle, source_id_map, set(item_source))
         _present, absent = self._items_exist(contested)
         for item_id in sorted(absent - blocked):
-            withheld.append({"reason": "item_id_claimed_by_another_document",
-                             "item_id": item_id})
+            withheld.append({"reason": "item_id_claimed_by_another_document", "item_id": item_id})
         return blocked | absent, withheld
 
     def _contested_claims(
@@ -3955,8 +4409,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             for params in _sql_param_chunks(sources):
                 placeholders = ", ".join("?" * len(params))
                 for row in self.db.execute(
-                        f"SELECT source_id, {key_col} AS row_key, item_ids "  # noqa: S608
-                        f"FROM {table} WHERE source_id IN ({placeholders})", params):
+                    f"SELECT source_id, {key_col} AS row_key, item_ids "  # noqa: S608
+                    f"FROM {table} WHERE source_id IN ({placeholders})",
+                    params,
+                ):
                     overlap = set(_bundle_item_group(row["item_ids"])) & shipped
                     if not overlap:
                         continue
@@ -3966,7 +4422,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # lets such a row vouch for ids it never claimed, handing them to
                     # whatever unrelated local row holds a stale claim on them.
                     contested |= overlap - restored_groups.get(
-                        (table, row["source_id"], row["row_key"]), set())
+                        (table, row["source_id"], row["row_key"]), set()
+                    )
         return contested
 
     def _items_exist(self, item_ids: set[str]) -> tuple[set[str], set[str]]:
@@ -3979,14 +4436,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         for chunk in _sql_param_chunks(item_ids):
             placeholders = ", ".join("?" * len(chunk))
             present.update(
-                row["id"] for row in self.db.execute(
-                    f"SELECT id FROM items WHERE id IN ({placeholders})",  # noqa: S608
-                    chunk))
+                row["id"]
+                for row in self.db.execute(
+                    f"SELECT id FROM items WHERE id IN ({placeholders})", chunk  # noqa: S608
+                )
+            )
         return present, item_ids - present
 
     def _import_bundle_state(
-        self, bundle: dict, source_id_map: dict[str, str],
-        inserted_items: set[str], now: str
+        self, bundle: dict, source_id_map: dict[str, str], inserted_items: set[str], now: str
     ) -> tuple[int, list[dict[str, str]]]:
         """Restore per-document ownership rows for the items this bundle brought.
 
@@ -4056,8 +4514,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     continue
                 raw_source = row.get("source_id")
                 # A non-string source id would be an unhashable dictionary key.
-                target_source = (source_id_map.get(raw_source)
-                                 if isinstance(raw_source, str) else None)
+                target_source = (
+                    source_id_map.get(raw_source) if isinstance(raw_source, str) else None
+                )
                 key = _bundle_state_text(f"{table}.{key_col}", row.get(key_col))
                 if not key:
                     continue
@@ -4069,20 +4528,29 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # unowned-arrival path does; the handler redacts these fields by name.
                     stranded = sorted(set(group) & inserted_items)
                     if isinstance(raw_source, str) and stranded:
-                        dropped.append({"reason": "ownership_row_source_undeclared",
-                                        "table": table, "source_id": raw_source,
-                                        "key": key, "items": ",".join(stranded)})
+                        dropped.append(
+                            {
+                                "reason": "ownership_row_source_undeclared",
+                                "table": table,
+                                "source_id": raw_source,
+                                "key": key,
+                                "items": ",".join(stranded),
+                            }
+                        )
                     continue
                 if not group:
                     continue
                 existing = self.db.execute(
                     f"SELECT {_OWNERSHIP_HASH_COL[table]} AS owned_hash, item_ids "  # noqa: S608
                     f"FROM {table} WHERE source_id = ? AND {key_col} = ?",
-                    (target_source, key)).fetchone()
-                local_group = (_bundle_item_group(existing["item_ids"])
-                               if existing is not None else [])
+                    (target_source, key),
+                ).fetchone()
+                local_group = (
+                    _bundle_item_group(existing["item_ids"]) if existing is not None else []
+                )
                 live = existing is not None and self._state_row_owns_items(
-                    existing["item_ids"], target_source)
+                    existing["item_ids"], target_source
+                )
                 if live and not set(local_group) & set(group):
                     # A live local row sharing NO id with the bundle's group is a
                     # DIFFERENT document holding this key, and the blocking pass does not
@@ -4096,9 +4564,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # names the key that held them back.
                     stranded = sorted(set(group) & inserted_items)
                     if stranded:
-                        dropped.append({"reason": "ownership_row_key_held_locally",
-                                        "table": table, "source_id": target_source,
-                                        "key": key, "items": ",".join(stranded)})
+                        dropped.append(
+                            {
+                                "reason": "ownership_row_key_held_locally",
+                                "table": table,
+                                "source_id": target_source,
+                                "key": key,
+                                "items": ",".join(stranded),
+                            }
+                        )
                     continue
                 # A live local row whose group OVERLAPS the bundle's is THIS document
                 # already here, so its group is the base the arriving ids join and its
@@ -4109,8 +4583,7 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 # that nothing here hands it. Ownership covers the first; the second is
                 # local content or absent content, and claiming either would let a
                 # foreign document replace or delete something this store owns.
-                arriving = [item for item in group
-                            if item in inserted_items and item not in base]
+                arriving = [item for item in group if item in inserted_items and item not in base]
                 absent = sorted(set(group) - inserted_items - set(base))
                 if absent:
                     # An export this store writes prunes the group to what it carries, so
@@ -4119,9 +4592,15 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # stay out of the group -- partial ownership would name items another
                     # document holds -- and the caller is told which document and which
                     # ids, because their content is here unowned and nothing else says so.
-                    dropped.append({"reason": "ownership_row_names_absent_items",
-                                    "table": table, "source_id": target_source,
-                                    "key": key, "items": ",".join(absent)})
+                    dropped.append(
+                        {
+                            "reason": "ownership_row_names_absent_items",
+                            "table": table,
+                            "source_id": target_source,
+                            "key": key,
+                            "items": ",".join(absent),
+                        }
+                    )
                 if not arriving:
                     # Nothing this import wrote, so there is no ownership to record: the
                     # row would either restate the base or claim local content.
@@ -4141,10 +4620,13 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 for chunk in _sql_param_chunks(arriving, reserve=1):
                     placeholders = ", ".join("?" * len(chunk))
                     held.update(
-                        r["id"] for r in self.db.execute(
+                        r["id"]
+                        for r in self.db.execute(
                             "SELECT id FROM items WHERE source_id = ? "  # noqa: S608
                             f"AND id IN ({placeholders})",
-                            (target_source, *chunk)).fetchall())
+                            (target_source, *chunk),
+                        ).fetchall()
+                    )
                 if held != set(arriving):
                     continue
                 if merging:
@@ -4156,7 +4638,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     self.db.execute(
                         f"UPDATE {table} SET item_ids = ? "  # noqa: S608
                         f"WHERE source_id = ? AND {key_col} = ?",
-                        (json.dumps([*base, *arriving]), target_source, key))
+                        (json.dumps([*base, *arriving]), target_source, key),
+                    )
                     claimed_ids.update(arriving)
                     restored += 1
                     continue
@@ -4168,11 +4651,9 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                     # claim behind under a hash no row names any more means a later
                     # deletion of the holder reassigns an item here and finds nothing to
                     # adopt it into.
-                    self.detach_source_location_by_hash(
-                        target_source, existing["owned_hash"] or "")
+                    self.detach_source_location_by_hash(target_source, existing["owned_hash"] or "")
                 columns = ("source_id", key_col, "item_ids", "status", *carried)
-                values: list[Any] = [
-                    target_source, key, json.dumps(arriving), live_status]
+                values: list[Any] = [target_source, key, json.dumps(arriving), live_status]
                 for col in carried:
                     value = row.get(col)
                     if col in _BUNDLE_STATE_REQUIRED_COLS and not isinstance(value, str):
@@ -4181,7 +4662,8 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
                 self.db.execute(
                     f"INSERT OR REPLACE INTO {table} ({', '.join(columns)}) "  # noqa: S608
                     f"VALUES ({', '.join('?' * len(columns))})",
-                    values)
+                    values,
+                )
                 claimed_ids.update(group)
                 restored += 1
         return restored, dropped
@@ -4201,8 +4683,10 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
             for params in _sql_param_chunks(source_ids):
                 placeholders = ", ".join("?" * len(params))
                 for row in self.db.execute(
-                        f"SELECT item_ids FROM {table} "  # noqa: S608
-                        f"WHERE source_id IN ({placeholders})", params):
+                    f"SELECT item_ids FROM {table} "  # noqa: S608
+                    f"WHERE source_id IN ({placeholders})",
+                    params,
+                ):
                     claimed.update(_bundle_item_group(row["item_ids"]))
         return claimed
 
@@ -4230,10 +4714,14 @@ Called by ``FolderWatcher.scan_source`` when it refuses such a row, which is
         # the first chunk that finds one answers.
         for chunk in _sql_param_chunks(group, reserve=1):
             placeholders = ", ".join("?" * len(chunk))
-            if self.db.execute(
+            if (
+                self.db.execute(
                     f"SELECT 1 FROM items WHERE source_id = ? "  # noqa: S608
                     f"AND id IN ({placeholders}) LIMIT 1",
-                    (source_id, *chunk)).fetchone() is not None:
+                    (source_id, *chunk),
+                ).fetchone()
+                is not None
+            ):
                 return True
         return False
 
