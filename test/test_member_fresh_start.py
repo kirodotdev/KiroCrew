@@ -243,7 +243,7 @@ class TestOrder:
 class TestResetPersists:
     """A cleared Fresh start folds ``reset_at`` into the member's event log, so
     the Earlier-conversation boundary survives a reload instead of living only
-    in the page's React state (#16339, on top of #18797)."""
+    in the page's React state."""
 
     @pytest.mark.asyncio
     async def test_a_cleared_reset_is_folded_into_the_roster_projection(self, tmp_path, fast_waits):

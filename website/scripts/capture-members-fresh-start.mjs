@@ -6,11 +6,11 @@
  * conversation and reads idle (the `idle` capture frame); the fresh-start
  * route answers a reset time after all of it. Every frame asserts its state
  * before it is written, at 1280px and 320px: the header has no button and
- * the quiet link sits under the crewmate's name in the Profile card's head
- * (#16339, on top of #18797's row-in-tab placement). A last frame reloads
- * the page from a roster whose row already carries `reset_at` (what the
- * member event log folds a cleared reset into) and asserts the fold is
- * drawn from that alone, with no fresh-start call in the session.
+ * the quiet link sits under the crewmate's name in the Profile card's head.
+ * A last frame reloads the page from a roster whose row already carries
+ * `reset_at` (what the member event log folds a cleared reset into) and
+ * asserts the fold is drawn from that alone, with no fresh-start call in
+ * the session.
  *
  * Usage (two shells, from website/):
  *   npx vite --host 127.0.0.1 --port 6835 --strictPort
