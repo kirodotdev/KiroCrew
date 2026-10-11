@@ -527,6 +527,9 @@ async def _retry_failed_run(state: "DashboardState", agent_id: str, old: Any) ->
         # Like model and the context groups: a retry must run at the SAME
         # effort as the run it replaces, or it is a different experiment.
         reasoning_effort=old.reasoning_effort,
+        # And on the same backend: a retry on the default harness would be a
+        # different experiment, and a quiet one.
+        backend=getattr(old, "backend", None),
         approval_mode=old.approval_mode or None,
         silent=old.silent,
         # A retry must see the SAME context scope as the run it replaces —

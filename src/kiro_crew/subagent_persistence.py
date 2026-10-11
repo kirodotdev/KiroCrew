@@ -634,6 +634,7 @@ def create_agent_folder(
     memory_mode="persistent",
     app="",
     execution_context=None,
+    backend=None,
 ) -> Path:
     from kiro_crew.execution_context import ExecutionContext, execution_for_store
 
@@ -666,6 +667,9 @@ def create_agent_folder(
         "last_tool": "",
         "context_groups": context_groups,
         "delegation": dict(delegation or {}),
+        # The per-spawn backend, so a continuation after a restart resumes the
+        # conversation on the harness that holds it. Absent = the default.
+        **({"backend": backend} if isinstance(backend, str) else {}),
         "execution_context": execution.to_record(),
         "memory_store": execution.store.legacy_name,
         "memory_mode": execution.memory_mode,

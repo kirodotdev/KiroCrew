@@ -147,13 +147,21 @@ def select_provider_backend(
     session_key: str | None,
     member_backend: str,
     configured_default: str,
+    backend_override: str | None = None,
 ) -> str:
     """The per-session half of the ONE backend-selection gate (H3/H13).
 
-    Precedence: the member-DM auto-route, then the configured default. The
-    member arm goes through :func:`resolve_selected_backend` — the same
-    governance/selectability gate the persisted field crosses, so a denied or
-    unknown value degrades to kiro and the member thread runs as plain chat.
+    Precedence: the caller's explicit backend (``backend_override``, a
+    sub-agent spawned with ``spawn_run(backend=...)``), then the member-DM
+    auto-route, then the configured default. ``None`` is no override, so the
+    lower tiers decide exactly as before; ``""`` is Kiro's own id, not "unset".
+
+    The override and member arms go through :func:`resolve_selected_backend` —
+    the same governance/selectability gate the persisted field crosses, so a
+    denied or unknown value degrades to kiro with the reason in the log. The
+    spawn endpoint refuses an unselectable backend up front; this gate is what
+    still holds when governance narrows the set between the refusal check and
+    the cold start.
 
     Lives here rather than inline in ``create_provider_factory`` so the
     factory body stays a single selection CALL with no branching of its own:
@@ -162,6 +170,15 @@ def select_provider_backend(
     """
     from kiro_crew.acp_backends import resolve_selected_backend
 
+    if backend_override is not None:
+        backend = resolve_selected_backend(backend_override)
+        logger.info(
+            "session %s: backend override %r resolved to acp_backend=%r",
+            session_key,
+            backend_override,
+            backend,
+        )
+        return backend
     if is_member_session_key(session_key):
         backend = resolve_selected_backend(member_backend)
         logger.info(

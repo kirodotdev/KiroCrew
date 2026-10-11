@@ -1422,6 +1422,7 @@ class _PumpMixin(ManagerComponent):
                 max_turns=info.max_turns,
                 context_groups=_context_groups_field(info),
                 delegation=info.delegation,
+                backend=info.backend,
                 memory_store=info.memory_store,
                 execution_context=info.execution_context,
                 memory_mode=info.memory_mode,

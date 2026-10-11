@@ -1211,7 +1211,7 @@ class TestVerdictOffTheEventLoop:
         cfg = KiroCrewConfig(agent=AgentConfig())
         seen: list[object] = []
 
-        def _recording_drop(model, effort, agent="", *, crew_agent=None):
+        def _recording_drop(model, effort, agent="", *, crew_agent=None, backend=None):
             seen.append(threading.current_thread())
             return "recorded-drop"
 
