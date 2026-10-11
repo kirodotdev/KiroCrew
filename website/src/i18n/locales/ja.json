@@ -6549,7 +6549,8 @@
       "trigger": "トリガー"
     },
     "exportSessionItem": {
-      "export_to_file": "ファイルにエクスポート",
+      "export_json": "インポート用にエクスポート (JSON)",
+      "export_markdown": "読みやすい Markdown でエクスポート",
       "exported": "エクスポートしました",
       "failed": "失敗",
       "not_saved_to_disk": "セッションはディスクに保存されていません",

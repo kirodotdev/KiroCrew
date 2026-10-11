@@ -6759,7 +6759,8 @@
       "trigger": "Disparador"
     },
     "exportSessionItem": {
-      "export_to_file": "Exportar a un archivo",
+      "export_json": "Exportar para importar (JSON)",
+      "export_markdown": "Exportar como Markdown legible",
       "exported": "Exportado",
       "failed": "Falló",
       "not_saved_to_disk": "sesión no guardada en disco",

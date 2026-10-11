@@ -6654,7 +6654,8 @@
       "trigger": "ট্রিগার"
     },
     "exportSessionItem": {
-      "export_to_file": "একটি ফাইলে এক্সপোর্ট করুন",
+      "export_json": "ইমপোর্টের জন্য এক্সপোর্ট করো (JSON)",
+      "export_markdown": "পঠনযোগ্য Markdown হিসেবে এক্সপোর্ট করো",
       "exported": "এক্সপোর্ট হয়েছে",
       "failed": "ব্যর্থ",
       "not_saved_to_disk": "সেশন ডিস্কে সংরক্ষিত নয়",

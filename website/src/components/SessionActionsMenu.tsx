@@ -121,7 +121,7 @@ export function collapseGroups<T>(groups: (T | false | null | undefined)[][]): T
  * with dividers auto-collapsing between them):
  *   [informational]  MCP servers ▸  (header only)
  *   [tab modifiers]  Rename · Mark read/unread · Pin · Move to folder ▸ · Tags…
- *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export to a file · Connected surfaces
+ *   [nav / access]   Reveal in sidebar (header only) · Crew board (conductors only) · Copy link · Send a copy ▸ · Export for import (JSON) · Export as readable Markdown · Connected surfaces
  *   [colour]         colour swatches
  *   [close]          Close session
  */
@@ -355,11 +355,23 @@ export default function SessionActionsMenu({
       // The same act with the live hop removed: a tunnel needs both machines up
       // and reachable at once, a file does not. Adjacent to the submenu above
       // so the two read as one choice about where the copy goes.
+      //
+      // Two rows, one per format. The JSON row keeps its original position as
+      // the established export: this change adds a format, it does not re-rank
+      // the existing one, and the Markdown row sits directly below it and
+      // directly above the Install row that reads the JSON file back.
       <ExportSessionItem
         key="export-file"
         slotKey={slotKey}
         Item={Item}
         memoryMode={slot?.memory_mode}
+      />,
+      <ExportSessionItem
+        key="export-file-md"
+        slotKey={slotKey}
+        Item={Item}
+        memoryMode={slot?.memory_mode}
+        format="md"
       />,
       // The reverse direction, and the reason it is here rather than in a global
       // menu: the file this reads is the file the row above writes, and a user

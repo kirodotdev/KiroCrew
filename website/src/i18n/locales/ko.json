@@ -6549,7 +6549,8 @@
       "trigger": "트리거"
     },
     "exportSessionItem": {
-      "export_to_file": "파일로 내보내기",
+      "export_json": "가져오기용으로 내보내기 (JSON)",
+      "export_markdown": "읽기 쉬운 Markdown으로 내보내기",
       "exported": "내보냈습니다",
       "failed": "실패",
       "not_saved_to_disk": "세션이 디스크에 저장되지 않음",

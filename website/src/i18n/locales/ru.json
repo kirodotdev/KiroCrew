@@ -6864,7 +6864,8 @@
       "trigger": "Триггер"
     },
     "exportSessionItem": {
-      "export_to_file": "Экспортировать в файл",
+      "export_json": "Экспортировать для импорта (JSON)",
+      "export_markdown": "Экспортировать как читаемый Markdown",
       "exported": "Экспортировано",
       "failed": "Ошибка",
       "not_saved_to_disk": "сеанс не сохранён на диск",

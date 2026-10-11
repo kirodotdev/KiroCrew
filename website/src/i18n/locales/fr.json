@@ -6759,7 +6759,8 @@
       "trigger": "Déclencheur"
     },
     "exportSessionItem": {
-      "export_to_file": "Exporter vers un fichier",
+      "export_json": "Exporter pour l'import (JSON)",
+      "export_markdown": "Exporter en Markdown lisible",
       "exported": "Exporté",
       "failed": "Échec",
       "not_saved_to_disk": "session non enregistrée sur le disque",
