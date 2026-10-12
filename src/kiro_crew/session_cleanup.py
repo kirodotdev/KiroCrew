@@ -637,7 +637,16 @@ class SessionCleanup:
                 # summary that published the whole unclaimed population without it
                 # cannot tell "nothing to reclaim" from "candidates are sitting
                 # here and the budget is withholding them".
-                self._deps.logger.warning(
+                #
+                # WARNING only when the pass acted or is withholding an action: a
+                # kill, a would-be kill, or a retracted record. A population that is
+                # all permanently withheld (long-lived tool work, app backends) or
+                # all "not mine to retract" reads the same every tick, and at
+                # WARNING it was a line per tick for the gateway's life. The
+                # counter above still carries every field on every pass.
+                acted = reading.killed or reading.would_kill or reading.forgotten
+                self._deps.logger.log(
+                    logging.WARNING if acted else logging.DEBUG,
                     "Runtime reconcile: unowned_alive=%d owned_dead=%d "
                     "(killed %d, would_kill %d, retracted %d)",
                     reading.unowned_alive,

@@ -1140,6 +1140,51 @@ def test_a_retraction_that_was_ours_and_did_not_land_is_still_warned_about(
     assert warnings, "a retraction this pass owed and did not land stays a warning"
 
 
+def _dead_summary_levels(forget: Any, caplog: pytest.LogCaptureFixture) -> list[int]:
+    """Run one pass over two dead records answered by *forget*; the summary's levels."""
+    reconciler = rr.RuntimeReconciler(
+        slice_pids=lambda: set(),
+        recorded_pids=lambda: {7811, 7812},
+        is_alive=lambda pid: False,
+        identity_of=lambda pid: None,
+        kill_tree=lambda pid, expected=None: 0,
+        forget=forget,
+        notify_dead=lambda pid: None,
+    )
+    with caplog.at_level(logging.DEBUG, logger="kiro_crew.runtime_reconcile"):
+        reading = reconciler.run_once()
+    assert reading.owned_dead == 2, "both records are counted dead whatever the answer"
+    return [r.levelno for r in caplog.records if "records named processes" in r.getMessage()]
+
+
+def test_a_dead_count_that_is_all_not_mine_is_summarised_below_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """MUTATION TARGET: the dead-direction summary's level in the steady state.
+
+    Records nobody here can retract are the same reading every tick. Summarised at
+    WARNING, the gateway log carried that line every five minutes forever.
+    """
+    levels = _dead_summary_levels(lambda pid: "not-mine", caplog)
+    assert levels == [logging.DEBUG], f"the steady state is a debug line; got {levels}"
+
+
+def test_a_dead_count_with_a_retraction_is_summarised_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The other side: a pass that retracted a record changed state, so it warns."""
+    levels = _dead_summary_levels(lambda pid: "retracted" if pid == 7811 else "not-mine", caplog)
+    assert levels == [logging.WARNING], f"a retraction is worth a warning; got {levels}"
+
+
+def test_a_dead_count_with_a_failed_retraction_is_summarised_at_warning(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A retraction this pass owed and could not make keeps the summary at WARNING."""
+    levels = _dead_summary_levels(lambda pid: "failed" if pid == 7811 else "not-mine", caplog)
+    assert levels == [logging.WARNING], f"a failed retraction is worth a warning; got {levels}"
+
+
 # ── the reconcile hook's refusal ledger: warn once, re-arm on recovery ─────────
 
 
@@ -1389,3 +1434,49 @@ def test_a_failing_scope_reap_hook_warns_rate_limited_and_re_arms(
         clock[0] += 1.0
         asyncio.run(cleanup._reap_agent_scopes_hook())
         assert warnings() == 3
+
+
+def _session_summary_levels(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    reading: Any,
+    name: str,
+) -> list[int]:
+    """Drive one hook tick returning *reading*; the levels of its summary line."""
+    logger = logging.getLogger(f"test.reconcile.summary.{name}")
+    cleanup = _cleanup_with_clock([0.0], logger=logger)
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        _drive_reconcile(cleanup, monkeypatch, reading)
+    return [
+        r.levelno for r in caplog.records if "Runtime reconcile: unowned_alive" in r.getMessage()
+    ]
+
+
+def test_a_steady_reading_is_summarised_below_warning(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """MUTATION TARGET: the hook's summary level when the pass did nothing.
+
+    A permanently withheld unowned population and dead records nobody here can
+    retract read the same every tick; at WARNING that was one line per tick for
+    the gateway's life.
+    """
+    reading = rr.ReconcileReading(unowned_alive=20, owned_dead=10)
+    levels = _session_summary_levels(monkeypatch, caplog, reading, "steady")
+    assert levels == [logging.DEBUG], f"the steady state is a debug line; got {levels}"
+
+
+@pytest.mark.parametrize(
+    "acted",
+    [{"killed": 1}, {"would_kill": 1}, {"forgotten": 1}],
+    ids=["killed", "would_kill", "retracted"],
+)
+def test_a_reading_that_acted_is_summarised_at_warning(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    acted: dict[str, int],
+) -> None:
+    """A kill, a withheld kill or a retraction keeps the summary at WARNING."""
+    reading = rr.ReconcileReading(unowned_alive=20, owned_dead=10, **acted)
+    levels = _session_summary_levels(monkeypatch, caplog, reading, next(iter(acted)))
+    assert levels == [logging.WARNING], f"{acted} is worth a warning; got {levels}"

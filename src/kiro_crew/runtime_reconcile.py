@@ -963,6 +963,7 @@ class RuntimeReconciler:
     def _reconcile_dead(self, recorded: set[int]) -> tuple[int, int]:
         dead = 0
         forgotten = 0
+        failed = 0
         for pid in sorted(recorded):
             try:
                 if self._is_alive(pid) and not self._is_stranger(pid):
@@ -981,6 +982,7 @@ class RuntimeReconciler:
                     # A retraction that was this pass's to make and did not land.
                     # Counting it would report work that did not happen; the stale
                     # entry is re-detected and re-pruned on the next pass.
+                    failed += 1
                     logger.warning(
                         "runtime_reconcile: the record for pid=%s could not be retracted", pid
                     )
@@ -1014,7 +1016,14 @@ class RuntimeReconciler:
                 logger.debug("runtime_reconcile: could not notify for pid=%s", pid, exc_info=True)
         self._prune_notified(recorded)
         if dead:
-            logger.warning(
+            # WARNING only when this pass changed something or owed a change it
+            # could not make. A dead count made entirely of "not-mine" records is
+            # the same reading every tick for the gateway's life (there is no row
+            # here to remove), so at WARNING it is two lines per cleanup tick
+            # forever; the count still reaches the metric on every pass.
+            level = logging.WARNING if forgotten or failed else logging.DEBUG
+            logger.log(
+                level,
                 "runtime_reconcile owned_dead=%d forgotten=%d: records named processes "
                 "that are gone or whose pid now belongs to a stranger",
                 dead,
