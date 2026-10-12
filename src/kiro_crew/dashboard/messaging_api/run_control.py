@@ -20,6 +20,7 @@ if TYPE_CHECKING:
         _COLLECTED_ID_MAX_LEN,
         _COLLECTED_IDS_CAP,
         _IDENTITY_LESS_RUN_CONTROL,
+        _RESERVED_RUN_IDS,
         DISMISSAL_FAILED,
         DISMISSAL_LOG_ABSENT,
         DISMISSAL_LOG_COMMITTED,
@@ -173,6 +174,10 @@ async def _spawn_scope_refusal(
         return None  # the dashboard owner's own surface
     caller = request.headers.get("X-Session-Key", "")
     state = request.app["state"]
+    if state.subagents:
+        from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+        await get_remote_subagent_service(state).ensure_restored()
     run_id = request.match_info["agent_id"]
     info = state.subagents.get(run_id) if state.subagents else None
     queued: QueuedRun | None = None
@@ -247,6 +252,75 @@ def _native_child_refusal(state: "DashboardState", conversation_id: str) -> str 
     return None
 
 
+# The verbs that start a NEW run from an old one; neither carries approval_floor.
+_FLOOR_RELAUNCHES = frozenset({"retry", "continuation"})
+
+
+async def _remote_run_operation_refusal(
+    state: "DashboardState", run_id: str, operation: str
+) -> web.Response | None:
+    """Refuse local-only lifecycle verbs for a peer-owned run.
+
+    Remote runs intentionally have no continuable conversation yet. A typed
+    conflict is safer than letting their local shadow id reach a local session,
+    steer, or retry path that happens to use the same identifier shape.
+    """
+    from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+    await get_remote_subagent_service(state).ensure_restored()
+    getter = getattr(state.subagents, "get", None)
+    info = getter(run_id) if callable(getter) else None
+    if getattr(info, "executor", "local") == "remote":
+        # This hub's shadow of a run on a peer. It records the floor the run was
+        # placed under, but the run is the peer's, so the answer is the remote
+        # one rather than the floor refusal a peer gives for its own record.
+        return web.json_response(
+            {
+                "error": f"remote subagent runs do not support {operation}",
+                "code": "remote_operation_unsupported",
+            },
+            status=409,
+        )
+    if info is not None:
+        floor = getattr(info, "approval_floor", "")
+    elif operation in _FLOOR_RELAUNCHES:
+        # A registry that lacks the run (a restart clears it) still lets a cold
+        # continuation resume it from disk. The floor is persisted in the
+        # same state write as the session id that resume needs, so a resumable
+        # run always says whether it ran under one; an unreadable record has no
+        # session id either, so nothing could resume it.
+        try:
+            record = await asyncio.to_thread(read_state, run_id)
+        except Exception:  # noqa: BLE001 - an unread floor must not loosen a relaunch
+            logger.warning("Could not read run %s before a %s", run_id, operation, exc_info=True)
+            return web.json_response(
+                {
+                    "error": f"run {run_id}'s record could not be read; try again",
+                    "code": "run_record_unavailable",
+                },
+                status=503,
+            )
+        floor = str((record or {}).get("approval_floor") or "")
+    else:
+        return None
+    if operation in _FLOOR_RELAUNCHES and floor == "interactive":
+        # A remote hub placed this run under its own approval floor. A retry or
+        # continuation starts a NEW run, and neither path carries the floor, so
+        # the replacement would run on this gateway's grants instead of asking
+        # the hub's person. The hub owns that decision: it can place a new run.
+        return web.json_response(
+            {
+                "error": (
+                    f"run {run_id} runs under a remote hub's approval floor; "
+                    f"{operation} would start it without one"
+                ),
+                "code": "approval_floor_relaunch_unsupported",
+            },
+            status=409,
+        )
+    return None
+
+
 async def api_spawn_steer(request: web.Request) -> web.Response:
     """POST /api/spawn/{agent_id}/steer — inject into a RUNNING run's turn.
 
@@ -276,6 +350,9 @@ async def api_spawn_steer(request: web.Request) -> web.Response:
             {"error": "mode must be 'interrupt' or 'follow_up'", "code": "invalid_mode"},
             status=400,
         )
+    remote_refusal = await _remote_run_operation_refusal(state, agent_id, "steering")
+    if remote_refusal is not None:
+        return remote_refusal
     if mode == "follow_up":
         ok, detail = await state.subagents.follow_up_run(agent_id, message)
     else:
@@ -329,6 +406,9 @@ async def api_spawn_release(request: web.Request) -> web.Response:
             status=503,
         )
     conv_id = request.match_info["agent_id"]
+    remote_refusal = await _remote_run_operation_refusal(state, conv_id, "release")
+    if remote_refusal is not None:
+        return remote_refusal
     if state.subagents.get(conv_id) is None:
         try:
             queued = await _queued_lookup(request, state, conv_id)
@@ -484,6 +564,9 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
             {"error": "native subagents run inside the parent turn and cannot be retried"},
             status=400,
         )
+    remote_refusal = await _remote_run_operation_refusal(state, agent_id, "retry")
+    if remote_refusal is not None:
+        return remote_refusal
     old = state.subagents.get(agent_id)
     if not old:
         try:
@@ -763,6 +846,10 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             return web.json_response({"ok": True, "cancelled": True})
         return web.json_response({"error": "not found"}, status=404)
     manager = state.subagents
+    if manager is not None:
+        from kiro_crew.dashboard.remote_subagents import get_remote_subagent_service
+
+        await get_remote_subagent_service(state).ensure_restored()
     info = manager.get(agent_id) if manager is not None else None
     if manager is not None and info is None:
         # Not a registered run: a spawn the gate is still holding, or a
@@ -784,6 +871,20 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             # It started (or another stop ended it) between the read and the
             # cancel: whatever it is now, the paths below answer for it.
             info = manager.get(agent_id)
+    if info is None:
+        # A caller-chosen run id still reserved by an admission in flight (its
+        # spawn is awaiting project warming, say) is neither running nor absent.
+        # A 404 here reads as "never started" to a remote hub withdrawing a spawn
+        # whose answer it lost, and it would drop the run the admission is about
+        # to start. A typed conflict keeps the hub's record until it can tell.
+        if agent_id in _RESERVED_RUN_IDS:
+            return web.json_response(
+                {
+                    "error": f"run {agent_id} is still being admitted; ask again",
+                    "code": "spawn_admission_pending",
+                },
+                status=409,
+            )
     if manager is None or info is None:
         # A card the durable replay rebuilt has no manager entry -- after a
         # gateway restart that is every finished run -- so a flat 404 made those
@@ -848,7 +949,23 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             resources=f"persisted run {agent_id}",
         )
         return web.json_response({"ok": True, "cancelled": False, "dismissed": True})
-    cancelled = await manager.cancel(agent_id)
+    if getattr(info, "executor", "local") == "remote" and not info.done:
+        from kiro_crew.dashboard.remote_subagents import (
+            RemoteSubagentError,
+            get_remote_subagent_service,
+        )
+
+        try:
+            remote_cancelled = await get_remote_subagent_service(state).cancel(info)
+        except RemoteSubagentError as exc:
+            return web.json_response({"error": str(exc), "code": exc.code}, status=exc.status)
+        return web.json_response({"ok": True, "cancelled": remote_cancelled})
+    # A FINISHED remote run has nothing left to stop on its crew, so it takes the
+    # local settle path below instead of a peer call that a disconnected or
+    # pruned peer would answer with an error, blocking the dismissal.
+    cancelled = (
+        False if getattr(info, "executor", "local") == "remote" else await manager.cancel(agent_id)
+    )
     if not cancelled:
         settlement = await manager.settle_before_delete(agent_id)
         if settlement == "pending":

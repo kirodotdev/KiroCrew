@@ -367,6 +367,50 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
         return "subagent spawn denied: governance evaluation failed (fail-closed)"
 
 
+def _vet_remote_placement_governance(
+    parent_session_key: str, app: str = "", *, agent: str = ""
+) -> str | None:
+    """Return a denial reason if governance forbids placing a child on a remote crew.
+
+    Resolved like :func:`_vet_spawn_governance` -- against the PARENT surface's
+    ceiling ∩ profile, with the calling app's own profile when *app* is set --
+    and failing closed the same way. *agent* is the agent the parent runs as
+    (not the requested child), so a profile bound to it narrows this decision as
+    it narrows the parent's own tool gate.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        gate = governance_permits(
+            "capabilities.remote_spawn",
+            "",
+            session_key=parent_session_key,
+            agent=agent,
+            app=app,
+            fail_closed=True,
+        )
+        if not getattr(gate, "permitted", False):
+            return getattr(gate, "reason", "remote sub-agent placement disabled by policy")
+        return None
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        try:
+            from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+            audit_governance_degraded(
+                "subagent_spawn",
+                session_key=parent_session_key,
+                scope="capabilities.remote_spawn",
+                failed_closed=True,
+            )
+        except Exception:
+            logger.debug("governance degrade audit unavailable", exc_info=True)
+        return "remote sub-agent placement denied: governance evaluation failed (fail-closed)"
+
+
 def spawn_allowlist(spec: Mapping[str, Any]) -> tuple[str, ...] | None:
     """The ``toolsSettings.subagent.availableAgents`` globs *spec* declares.
 

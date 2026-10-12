@@ -1714,3 +1714,50 @@ def test_a_kas_task_step_stops_when_a_switch_leaves_its_session_stale(monkeypatc
     monkeypatch.setattr(spec_hooks, "hook_projection_stale", fake_stale)
     rejected, gate, _informational = _task_step(ACP_BACKEND_KAS, monkeypatch, switch_to="b")
     assert rejected == [] and gate == []
+
+
+# ── kiro-cli states no toolId: its own name still reaches a spec matcher ──
+
+
+@pytest.mark.parametrize("stated", ["shell", "execute_bash"])
+def test_a_kiro_cli_shell_call_meets_an_execute_bash_spec_matcher(tmp_path, monkeypatch, stated):
+    """A floored kiro-cli run fires the base spec's PreToolUse hooks itself. kiro-cli
+    names the call ``shell`` (or ``execute_bash``) and sends no ``toolId``; an
+    ``execute_bash`` deny must still meet it. The payload keeps naming the call as
+    the chat loop does."""
+    ran = _gate_runs(
+        tmp_path, monkeypatch, "execute_bash", "ls -la", tool_identity=stated, native_aliases=True
+    )
+    assert ran == ["ls -la"], "the execute_bash deny must run for a kiro-cli shell call"
+
+
+def test_a_local_kiro_cli_shell_call_keeps_todays_matching(tmp_path, monkeypatch):
+    """Only a floored run asks for kiro-cli's aliases: on every other turn a
+    ``shell`` call meets the matchers it met before, so saved hooks and their
+    auto-approvals do not change on gateways that never place remote runs."""
+    assert _gate_runs(tmp_path, monkeypatch, "execute_bash", "ls -la", tool_identity="shell") == []
+    assert _gate_runs(tmp_path, monkeypatch, "shell", "ls -la", tool_identity="shell")
+
+
+def test_a_name_outside_kiro_clis_vocabulary_keeps_the_title_fallback():
+    from kiro_crew.hook_runtime.hook_dispatch import pre_tool_match_names
+
+    assert spec_hooks.native_tool_match_names("Bash") is None
+    assert pre_tool_match_names("ls", tool_identity="Bash")[1] is None
+
+
+def test_a_stated_kas_id_still_wins_over_the_tool_identity():
+    from kiro_crew.hook_runtime.hook_dispatch import pre_tool_match_names
+
+    every, spec = pre_tool_match_names("ls", tool_identity="shell", harness_tool_id="run_command")
+    assert spec is not None and spec[0] == "execute_bash" and "run_command" in spec
+    assert "ls" in every
+
+
+def test_without_a_harness_id_the_native_names_join_the_match_set_only():
+    from kiro_crew.hook_runtime.hook_dispatch import pre_tool_match_names
+
+    every, spec = pre_tool_match_names("ls -la", tool_identity="shell", native_aliases=True)
+    assert spec is None, "a call with no harness id keeps its title fallback"
+    assert "execute_bash" in every and every[0] == "ls -la"
+    assert "execute_bash" not in pre_tool_match_names("ls -la", tool_identity="shell")[0]

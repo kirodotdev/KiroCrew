@@ -432,8 +432,10 @@ the side session in a shape where that surface cannot reach a write — kiro-cli
 through the derived spec above, KAS through the same spec taken over the wire,
 claude and goose through the session shapes below. KAS receives `<agent>--readonly` as a
 projected custom agent (`acp/kas_agents` puts it in `customAgents`), and the
-derivation empties its `permissions` block with the other grants, so every KAS
-tool call raises `session/request_permission` (measured on kiro-cli 2.29.0,
+derivation empties its `permissions` block of every `allow` with the other grants,
+keeping only the base's own `deny` and `ask` rules (`narrowed_agent_permissions`,
+as `govern_spec`'s `inherit_narrowing`), so every KAS tool call that no such
+rule refuses raises `session/request_permission` (measured on kiro-cli 2.29.0,
 `--agent-engine v3`). A main-chat `allow_always` does not carry over: KAS keeps
 it for its own session only, so a side session on the same process asks again
 (measured the same way). On KAS the gate proves the same calls as on
