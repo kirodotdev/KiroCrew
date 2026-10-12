@@ -64,9 +64,12 @@ export interface EarlierHistoryWalkOptions {
   farmIsMeasured: (index: number) => boolean
   /** Rows currently in the list; zero means "not loaded yet", never "short". */
   itemCount: number
+  /** History sits past the BOTTOM (the top-down layout), so "near the history
+   *  edge" is measured from there. Omitted means the default, history on top. */
+  historyAtBottom?: boolean
 }
 
-export function useEarlierHistoryWalk({ scrollerRef, sessionId, earlier, getFollow, getMountedIndices, farmIsMeasured, itemCount }: EarlierHistoryWalkOptions): void {
+export function useEarlierHistoryWalk({ scrollerRef, sessionId, earlier, getFollow, getMountedIndices, farmIsMeasured, itemCount, historyAtBottom = false }: EarlierHistoryWalkOptions): void {
   // Everything the poll reads lives in refs so the interval and the input
   // listeners do not re-arm on ordinary renders: a budget or a "last input"
   // stamp re-created by a render is an authorization nobody gestured for.
@@ -80,6 +83,8 @@ export function useEarlierHistoryWalk({ scrollerRef, sessionId, earlier, getFoll
   farmIsMeasuredRef.current = farmIsMeasured
   const itemCountRef = useRef(itemCount)
   itemCountRef.current = itemCount
+  const historyAtBottomRef = useRef(historyAtBottom)
+  historyAtBottomRef.current = historyAtBottom
 
   const lastRealInputAtRef = useRef(0)
   const pagesSinceInputRef = useRef(0)
@@ -144,7 +149,9 @@ export function useEarlierHistoryWalk({ scrollerRef, sessionId, earlier, getFoll
       // scroller that cannot scroll, so a reader who wants more refills it.
       if (!shouldContinueOlderWalk({
         sawRealInput: sawInput,
-        nearTop: el.scrollTop <= el.clientHeight,
+        nearTop: historyAtBottomRef.current
+          ? el.scrollHeight - el.scrollTop - el.clientHeight <= el.clientHeight
+          : el.scrollTop <= el.clientHeight,
         walking: lastLandingAtRef.current > lastRealInputAtRef.current,
         pagesSinceInput: pagesSinceInputRef.current,
       })) return

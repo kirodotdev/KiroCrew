@@ -1766,6 +1766,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.top-down-chat-newest-first",
+    "label": "Top-down chat (newest first)",
+    "labelKey": "pages.settings.chatPanel.top_down_layout",
+    "hint": "Put the message box at the top and show the newest turn directly under it, so you read near the top of the screen. Each turn still reads prompt first, then reply. Turns off Pin the latest turn.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.topic-tags",
     "label": "Topic tags",
     "labelKey": "pages.settings.chatPanel.topic_tags",

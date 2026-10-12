@@ -6385,6 +6385,7 @@
       }
     },
     "chatPage": {
+      "scroll_to_latest": "Scroll to latest",
       "turn_minimap": "Navigate conversation turns",
       "turn_minimap_active": "{{position}}: {{prompt}}",
       "turn_minimap_landmark": "Conversation turns",
@@ -8699,6 +8700,8 @@
         "opt_in_split_the_chat_into_resizable_session_pan": "Opt-in: split the chat into resizable session panes ({{mod}}+D). Experimental.",
         "dim_inactive_panes": "Dim Inactive Panes",
         "dim_inactive_panes_desc": "In split view, fade every pane that does not have keyboard focus. When off, all panes stay at full brightness and the accent border marks the focused one.",
+        "top_down_layout": "Top-down chat (newest first)",
+        "top_down_layout_desc": "Put the message box at the top and show the newest turn directly under it, so you read near the top of the screen. Each turn still reads prompt first, then reply. Turns off Pin the latest turn.",
         "search_models": "Search models…",
         "selectable_models": "Selectable Models",
         "selectable_models_description": "Choose which advertised models appear in Chat model pickers. Auto and an active session model always remain visible.",

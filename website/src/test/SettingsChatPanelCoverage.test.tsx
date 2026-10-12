@@ -425,6 +425,20 @@ describe('ChatPanel — Composer', () => {
 })
 
 describe('ChatPanel — Messages', () => {
+  it('stores Top-down chat locally when flipped on', async () => {
+    wrap()
+    fireEvent.click(await screen.findByRole('switch', { name: 'Top-down chat (newest first)' }))
+    await waitFor(() => expect(storedChat().topDownLayout).toBe(true))
+  })
+
+  it('greys out Pin the latest turn only while Top-down chat is on', async () => {
+    wrap()
+    const pin = await screen.findByRole('switch', { name: 'Pin the latest turn' })
+    expect(pin).not.toHaveAttribute('aria-disabled', 'true')
+    fireEvent.click(screen.getByRole('switch', { name: 'Top-down chat (newest first)' }))
+    await waitFor(() =>
+      expect(screen.getByRole('switch', { name: 'Pin the latest turn' })).toHaveAttribute('aria-disabled', 'true'))
+  })
   it('stores the text streaming style from the button group', async () => {
     wrap()
     const group = await screen.findByRole('radiogroup', { name: 'Text Streaming Style' })

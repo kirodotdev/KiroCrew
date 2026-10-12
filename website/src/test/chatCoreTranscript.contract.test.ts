@@ -53,7 +53,7 @@ describe('chat-core transcript contract', () => {
   })
 
   it('each host partitions the height/anchor caches under its own prefix', () => {
-    expect(HOSTS.ChatPane).toContain('sessionId: `pane:${slotKey}`')
+    expect(HOSTS.ChatPane).toContain('sessionId: topDown ? `pane:${slotKey}:topdown` : `pane:${slotKey}`')
     expect(HOSTS.SideChat).toContain('sessionId: `side:${slot}`')
     expect(HOSTS.ChatEmbed).toContain('sessionId: `embed:${slotKey}`')
   })
@@ -79,6 +79,11 @@ describe('chat-core transcript contract', () => {
     expect(src).toContain("from './rowKeys'")
     // The page's overlay-header band is the page's; hosts must not reserve it.
     expect(src).toContain('headerSpacer={false}')
+    // A top-follow mount tells the shell where its live edge is, so a side-panel
+    // slide holds a reader at scrollTop 0. It places its own paging bar, so it
+    // does not hand the shell `historyAtBottom`, which would swap the slots again.
+    expect(src).toContain('liveEdgeAtTop={topDown}')
+    expect(src).not.toContain('historyAtBottom={')
     // Rows are the same measured, indexed blocks the page mounts.
     expect(src).toContain('if (!vi.mounted) return null')
     expect(src).toContain('ref={virt.measureRef(vi.index)}')

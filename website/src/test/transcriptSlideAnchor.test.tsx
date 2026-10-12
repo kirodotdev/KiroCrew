@@ -29,20 +29,20 @@ const fireAll = () => { for (const o of [...observers]) o.callback([], o as unkn
 let layoutTop: Record<string, number> = {}
 const HEIGHT = 60
 
-function Shell() {
+function Shell({ historyAtBottom = false, liveEdgeAtTop }: { historyAtBottom?: boolean; liveEdgeAtTop?: boolean }) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
   const topSentinelRef = useRef<HTMLDivElement | null>(null)
   const bottomSentinelRef = useRef<HTMLDivElement | null>(null)
   return (
-    <TranscriptScrollShell scrollerRef={scrollerRef} onScroll={() => {}} loadingOlder={false}
+    <TranscriptScrollShell scrollerRef={scrollerRef} onScroll={() => {}} loadingOlder={false} historyAtBottom={historyAtBottom} liveEdgeAtTop={liveEdgeAtTop}
       virt={{ topSentinelRef, bottomSentinelRef, offsetBefore: 0, offsetAfter: 0 }}>
       <div data-display-index="0"><p data-b="a">above the line</p><p data-b="b">the line the reader is on</p><p data-b="c">below</p></div>
     </TranscriptScrollShell>
   )
 }
 
-function mount(scrollTop: number) {
-  const utils = render(<Shell />)
+function mount(scrollTop: number, historyAtBottom = false, liveEdgeAtTop?: boolean) {
+  const utils = render(<Shell historyAtBottom={historyAtBottom} liveEdgeAtTop={liveEdgeAtTop} />)
   const sc = utils.container.querySelector<HTMLDivElement>('.chat-container')!
   Object.defineProperty(sc, 'clientHeight', { configurable: true, value: 600 })
   Object.defineProperty(sc, 'scrollHeight', { configurable: true, value: 5000 })
@@ -91,6 +91,47 @@ describe('transcript slide anchor', () => {
     act(() => { vi.advanceTimersByTime(1000) })
     expect(sc.hasAttribute('data-slide-anchor')).toBe(false)
     expect(readingPositionHeld(sc)).toBe(false)
+  })
+
+  it('top-down layout: a reader at the top, where the newest turn is, stays at scrollTop 0 through the slide', () => {
+    layoutTop = { a: 0, b: 150, c: 210 }
+    const { sc } = mount(0, true)
+    const end = beginPanelSlide()
+    expect(sc.hasAttribute('data-slide-anchor')).toBe(false)
+    expect(readingPositionHeld(sc)).toBe(false)
+    // The column rewraps 80px taller above the 30% line, and the browser's
+    // own anchoring moved the scroller: the hold writes it back to 0.
+    layoutTop = { a: 0, b: 230, c: 290 }
+    sc.scrollTop = 80
+    act(() => { fireAll() })
+    expect(sc.scrollTop).toBe(0)
+    act(() => { end() })
+    sc.scrollTop = 40
+    act(() => { vi.advanceTimersByTime(16) })
+    expect(sc.scrollTop).toBe(0)
+    act(() => { vi.advanceTimersByTime(1000) })
+  })
+
+  it('top-down split pane: a host that places its own paging bar holds the top reader with liveEdgeAtTop alone', () => {
+    layoutTop = { a: 0, b: 150, c: 210 }
+    const { sc } = mount(0, false, true)
+    const end = beginPanelSlide()
+    expect(sc.hasAttribute('data-slide-anchor')).toBe(false)
+    layoutTop = { a: 0, b: 230, c: 290 }
+    sc.scrollTop = 80
+    act(() => { fireAll() })
+    expect(sc.scrollTop).toBe(0)
+    act(() => { end(); vi.advanceTimersByTime(1000) })
+  })
+
+  it('top-down layout: a reader scrolled into history keeps the block anchor', () => {
+    const { sc, line } = mount(1000, true)
+    const end = beginPanelSlide()
+    expect(sc.hasAttribute('data-slide-anchor')).toBe(true)
+    layoutTop = { a: 1000, b: 1230, c: 1290 }
+    act(() => { fireAll() })
+    expect(line.getBoundingClientRect().top).toBe(150)
+    act(() => { end(); vi.advanceTimersByTime(1000) })
   })
 
   it('stays out of the way at the bottom: the transcript follows the bottom there', () => {
