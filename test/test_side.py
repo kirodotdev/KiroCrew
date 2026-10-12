@@ -695,8 +695,11 @@ async def test_side_reply_drops_a_quoted_directive_marker_line(tmp_path, monkeyp
     state.sessions.get_or_create = _fake_get_or_create
     state.sessions.release = MagicMock()
 
-    async def _fake_stream(provider, message, **kwargs):
-        return f"Result:\n{quoted}\nDone."
+    async def _fake_stream(provider, message, *, on_chunk=None, **kwargs):
+        # The text the stream reports is the text it returns, as stream_and_collect does.
+        text = f"Result:\n{quoted}\nDone."
+        on_chunk(text)
+        return text
 
     monkeypatch.setattr("kiro_crew.dashboard.handlers.side.stream_and_collect", _fake_stream)
 

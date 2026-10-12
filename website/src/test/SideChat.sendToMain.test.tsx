@@ -95,6 +95,55 @@ describe('SideChat send to main chat', () => {
     expect(screen.queryByTestId('side-chat-send-to-main')).not.toBeInTheDocument()
   })
 
+  it('offers the text rows above a tool call when the turn ended on that call', () => {
+    // A turn can write text, make a tool call, and write nothing after it: the
+    // tail is then the tool row, and the answer is the text above the pill.
+    const store = storeWith({
+      messages: [
+        { role: 'user' as const, content: 'q', ts: '2026-05-20T00:00:00Z', run_id: 'r1' },
+        { role: 'assistant' as const, content: 'The limiter lives in rate.py.', ts: '2026-05-20T00:00:01Z', run_id: 'r1' },
+        { role: 'tool' as const, content: '🔧 Read rate.py', ts: '2026-05-20T00:00:02Z', run_id: 'r1', meta: { tool_call_id: 'c1', kind: 'read', purpose: '', input_preview: 'rate.py' } },
+      ],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    fireEvent.click(screen.getByTestId('side-chat-send-to-main'))
+    expect(store.getState().chat.mainComposerAppend).toEqual({ slot: SLOT, text: 'The limiter lives in rate.py.' })
+  })
+
+  it('walks past a steer chip spliced between the text rows of the run', () => {
+    // A steer lands as a `user` row with `steer: true` above the last answer
+    // row of its run. It is an injection into the turn, not the question that
+    // started it, so the hand-off keeps walking and stages the text above it.
+    const store = storeWith({
+      messages: [
+        { role: 'user' as const, content: 'q', ts: '2026-05-20T00:00:00Z', run_id: 'r1' },
+        { role: 'assistant' as const, content: 'The limiter lives in rate.py.', ts: '2026-05-20T00:00:01Z', run_id: 'r1' },
+        { role: 'tool' as const, content: '🔧 Read rate.py', ts: '2026-05-20T00:00:02Z', run_id: 'r1', meta: { tool_call_id: 'c1', kind: 'read', purpose: '', input_preview: 'rate.py' } },
+        { role: 'user' as const, content: 'only the token bucket', ts: '2026-05-20T00:00:03Z', run_id: 'r1', steer: true },
+        { role: 'assistant' as const, content: 'It is a token bucket, 50/s.', ts: '2026-05-20T00:00:04Z', run_id: 'r1' },
+      ],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    fireEvent.click(screen.getByTestId('side-chat-send-to-main'))
+    expect(store.getState().chat.mainComposerAppend).toEqual({
+      slot: SLOT,
+      text: 'The limiter lives in rate.py.\n\nIt is a token bucket, 50/s.',
+    })
+  })
+
+  it('is hidden while a turn that is on a tool call is still running', () => {
+    const store = storeWith({
+      streaming: true,
+      messages: [
+        { role: 'user' as const, content: 'q', ts: '2026-05-20T00:00:00Z', run_id: 'r1' },
+        { role: 'assistant' as const, content: 'Let me check.', ts: '2026-05-20T00:00:01Z', run_id: 'r1' },
+        { role: 'tool' as const, content: '🔧 Read rate.py', ts: '2026-05-20T00:00:02Z', run_id: 'r1', meta: { tool_call_id: 'c1', kind: 'read', purpose: '', input_preview: 'rate.py' } },
+      ],
+    })
+    renderWithProviders(<SideChat slot={SLOT} />, { store })
+    expect(screen.queryByTestId('side-chat-send-to-main')).not.toBeInTheDocument()
+  })
+
   it('is hidden when the last answer is an error', () => {
     const store = createTestStore({
       chat: {

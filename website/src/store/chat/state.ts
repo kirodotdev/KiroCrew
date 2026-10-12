@@ -92,7 +92,11 @@ export interface WorkflowRunProgress {
 }
 
 export interface SideMessage {
-  role: 'user' | 'assistant'
+  /** `tool` is a tool attempt the side turn made, drawn where it happened in
+   *  the reply (`🔧 <title>`), or the hidden `🚫` sibling that marks one as
+   *  refused. Never stored server-side: like every side row it lives in this
+   *  client only. */
+  role: 'user' | 'assistant' | 'tool'
   content: string
   ts: string
   run_id?: string
@@ -100,6 +104,9 @@ export interface SideMessage {
    *  restore read. A streaming answer has none until its final frame lands. */
   id?: string
   is_error?: boolean
+  /** A tool row's per-call fields (`tool_call_id`, `kind`, `purpose`,
+   *  `input_preview`), redacted by the server. */
+  meta?: Record<string, string>
   /** Injected into a turn that was already running, not asked from idle. */
   steer?: boolean
   /** A finished answer's blocked-link records, raw from its final frame or the
