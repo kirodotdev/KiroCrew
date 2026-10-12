@@ -15,7 +15,7 @@
  * The chat SidePanel has two standing entries here: the crewmate's generated
  * Dashboard and the workspace-scoped Files browser. Side Chat remains dynamic.
  * Profile owns Notes, Schedules, driven Sessions and browser-local Goals.
- * Configuration still writes through CrewEditorDialog.
+ * Configuration still writes through CrewEditorModal.
  *
  * Identity is the exact CREW NAME, never the slug: slugification is lossy
  * (`Oncall` and `oncall` share a slug and therefore one thread directory),
@@ -104,8 +104,8 @@ export {
 // splits out of the main App chunk — it is only needed once the identity pill
 // opens the modal, and keeping it eager pushed App over its bundle budget. The
 // hook stays eager: it is called every render to drive the pill's open state.
-const CrewEditorDialog = lazy(() => import('../../components/crew/CrewEditorDialog'))
-// A tiny NON-lazy fallback shown while the CrewEditorDialog chunk downloads on a
+const CrewEditorModal = lazy(() => import('../../components/crew/CrewEditorModal'))
+// A tiny NON-lazy fallback shown while the CrewEditorModal chunk downloads on a
 // cold-cache first open, so the pill click gives immediate feedback instead of
 // rendering nothing until the chunk lands. Deliberately plain (no Radix dialog)
 // so it stays out of the lazy split's purpose — keeping the editor's code off the
@@ -138,7 +138,7 @@ function CrewEditorChunkLoading() {
  *  (one write path, several front doors); this page's card also asks for the
  *  crewmate's first greeting.
  *  Editing an existing crewmate also happens IN this page now (CREW-18688): the
- *  Profile card's edit controls open `CrewEditorDialog` as a modal, driven by the
+ *  Profile card's edit controls open `CrewEditorModal` as a modal, driven by the
  *  shared `useCrewEditor` state machine — the SAME editor the crew manager
  *  mounts, so there is still one write path, reached from two surfaces. */
 
@@ -234,7 +234,7 @@ export default function MembersPage() {
 
   // CREW-18688: editing a bot opens the crew editor as a MODAL on this page,
   // instead of navigating to /capabilities?tab=crews. The editor's whole
-  // state machine lives in useCrewEditor; CrewEditorDialog renders it. The
+  // state machine lives in useCrewEditor; CrewEditorModal renders it. The
   // identity pill in the thread header sets `editingCrew`, which drives the hook.
   const [editingCrew, setEditingCrew] = useState('')
   // The profile card (crewmate-panel IA): a floating hover card centred over the
@@ -923,7 +923,7 @@ export default function MembersPage() {
           because the hook's own loading dialog lives inside the lazy chunk. When no
           edit is requested the fallback is null, so a closed dialog renders nothing. */}
       <Suspense fallback={editingCrew ? <CrewEditorChunkLoading /> : null}>
-        <CrewEditorDialog ctl={crewEditor} />
+        <CrewEditorModal ctl={crewEditor} />
       </Suspense>
     </div>
     </RunInTerminalScope.Provider>

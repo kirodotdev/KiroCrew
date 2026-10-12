@@ -8,7 +8,7 @@
  * page. The invariant-dense logic that makes editing correct (the stale-write
  * epoch guard, the serialized template-switch chain, avatar staging, the
  * discard question) must not be re-implemented per surface, so it lives here
- * once and `CrewEditorDialog` renders it. Today the ONLY consumer is
+ * once and `CrewEditorNextDialog` renders it. Today the ONLY consumer is
  * `MembersPage` (the in-place Crewmates modal); folding `KiroCrewAgentsPage`'s
  * own inline edit sheet onto this hook/dialog is the committed follow-up, after
  * which both surfaces share this one state machine.
@@ -64,7 +64,7 @@ import { type TemplateProvenance } from '../../lib/templateSource'
  *  select shows this as a real option; the backend normalizes it back to ''.
  *  Same value as KiroCrewAgentsPage's export; defined here so the hook (and the
  *  dialog that consumes it) never import back into the page — that would close
- *  a cycle (page -> CrewEditorDialog -> useCrewEditor -> page). */
+ *  a cycle (page -> CrewEditorNextDialog -> useCrewEditor -> page). */
 export const INHERIT_MODEL = 'auto'
 
 /** How long a schedule-draft discard confirm stays fully locked while the
@@ -142,7 +142,7 @@ export interface UseCrewEditorArgs {
 }
 
 /**
- * Everything `CrewEditorDialog` needs. Grouped loosely by the section of the
+ * Everything `CrewEditorNextDialog` needs. Grouped loosely by the section of the
  * dialog that reads it; kept flat because a dialog this size reads most of it.
  */
 export interface CrewEditorController {
@@ -219,7 +219,8 @@ export interface CrewEditorController {
   capabilityManaged: boolean
   capabilityReadFailed: boolean
   capabilityLoading: boolean
-  setCapabilityDirty: (v: boolean) => void
+  setChildDirty: (key: string, dirty: boolean) => void
+  childDirtyHandlers: Record<string, (dirty: boolean) => void>
   setCapabilityBusy: (v: boolean) => void
   /** Set by the template pane when it holds unsaved typed input in one of its
    *  own nested dialogs (the publish-copy name); folded into dirtyPanes so the
@@ -506,7 +507,38 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   const closeAvatarBuilder = useCallback(() => setAvatarBuilderOpen(false), [])
 
   // ── Capabilities pane ──
-  const [capabilityDirty, setCapabilityDirty] = useState(false)
+  // Each nested child editor (approvals, each memory doc, the memory records
+  // editor) publishes its dirty state under its OWN key. A single shared
+  // boolean let one child's "clean" report clear another's unsaved draft
+  // (saving Preferences dropped Projects' dirty guard), so Cancel/nav saw no
+  // dirty panes and closed without confirming — losing the other draft. Keyed,
+  // `capabilityDirty` is the logical OR: true while ANY child is dirty.
+  const [childDirty, setChildDirtySet] = useState<Set<string>>(new Set())
+  const capabilityDirty = childDirty.size > 0
+  const setChildDirty = useCallback((key: string, dirty: boolean) => {
+    setChildDirtySet(prev => {
+      if (dirty === prev.has(key)) return prev
+      const next = new Set(prev)
+      if (dirty) next.add(key)
+      else next.delete(key)
+      return next
+    })
+  }, [])
+  // Stable per-key dirty handlers. Child editors (approvals, each memory doc,
+  // the memory records editor) take an `onDirtyChange` callback; passing an
+  // inline `d => setChildDirty(key, d)` recreates the identity every render, so
+  // a child whose dirty effect re-runs on prop change (MemoryRecordsEditor)
+  // republishes and loops forever. One memoized callback per fixed key keeps
+  // the identity stable across renders.
+  const childDirtyHandlers = useMemo(() => {
+    const make = (key: string) => (dirty: boolean) => setChildDirty(key, dirty)
+    return {
+      approvals: make('approvals'),
+      'memory-preferences': make('memory-preferences'),
+      'memory-projects': make('memory-projects'),
+      'memory-records': make('memory-records'),
+    } as Record<string, (dirty: boolean) => void>
+  }, [setChildDirty])
   const [capabilityBusy, setCapabilityBusy] = useState(false)
   const [templateDirty, setTemplateDirty] = useState(false)
   const capabilityQuery = useQuery({
@@ -515,7 +547,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     enabled: !!editing,
     retry: false,
   })
-  useEffect(() => { setCapabilityDirty(false); setCapabilityBusy(false) }, [editing])
+  useEffect(() => { setChildDirtySet(new Set()); setCapabilityBusy(false) }, [editing])
   useEffect(() => { setTemplateDirty(false) }, [editing])
   const capabilityManaged = capabilityQuery.data?.mode === 'inherited'
   const capabilityReadFailed = capabilityQuery.isError && !(capabilityQuery.error instanceof ApiError && [404, 405, 501].includes(capabilityQuery.error.status))
@@ -1051,7 +1083,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     capabilityManaged,
     capabilityReadFailed,
     capabilityLoading,
-    setCapabilityDirty,    setCapabilityBusy,
+    setChildDirty,    childDirtyHandlers,    setCapabilityBusy,
     setTemplateDirty,
     onCapabilitiesSaved,
     templateSwitchError,

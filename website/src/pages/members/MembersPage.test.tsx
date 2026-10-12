@@ -157,7 +157,7 @@ vi.mock('../chat/ActivityViewer', () => ({ default: () => null }))
 // The crew editor is exercised by its own suite. Here we only need to prove the
 // thread-header pencil OPENS it in place (CREW-18688) — a route change no more —
 // so a probe renders the crew it was pointed at.
-vi.mock('../../components/crew/CrewEditorDialog', () => ({
+vi.mock('../../components/crew/CrewEditorModal', () => ({
   default: ({ ctl }: { ctl: { editing: string } }) =>
     ctl.editing ? <div data-testid="crew-editor-dialog-open">{ctl.editing}</div> : null,
 }))
