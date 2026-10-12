@@ -1783,17 +1783,25 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     """The sweep's deps source: cache read, refreshed in place when absent/expired.
 
     Runs in a worker thread (the caller wraps it in ``asyncio.to_thread``).
-    GitHub-only, like the /deps route: other providers have no dependency fetch
-    yet, and for them this stays a plain cache read (normally None). A refresh
-    failure of any kind keeps whatever the cache held — stale beats wrong, and
-    an unknown reading can never fire the unlock (see ``detect_unblocks``).
+    GitHub-only by design: the crew sweep acts on GitHub issues alone (the PR's
+    "crew signals GitHub-only" non-goal), so a non-GitHub provider returns None
+    here — an unknown reading that ``detect_unblocks`` can never turn into a
+    spurious unlock. The GitLab deps cache is written by the /deps route for the
+    Graph tab's DISPLAY only; the sweep must not read it, because that cache can
+    legitimately be edgeless (an idle blocked issue past the /links fetch cap, or
+    one whose single /links call failed) and an edgeless graph reads as zero open
+    blockers — which would fire a false 1→0 unlock on a still-blocked issue. A
+    refresh failure keeps whatever the cache held — stale beats wrong, equally
+    unable to fire the unlock (see ``detect_unblocks``).
     """
+    if key.provider != "github":
+        return None
     cached = store.read_deps_cache(key.owner, key.repo, scope)
     fresh_enough = (
         isinstance(cached, dict)
         and (time.time() - float(cached.get("fetched_at") or 0)) < store.DEPS_CACHE_TTL_SEC
     )
-    if fresh_enough or key.provider != "github":
+    if fresh_enough:
         return cached
 
     # An ABSENT issues cache is unknown scope, not an empty repo: building the

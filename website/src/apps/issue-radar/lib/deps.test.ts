@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import type { DepEdge, DepsResponse, Issue, PullRequest } from '../api'
 import {
-  buildNodes, layoutGraph, readySet, tracePath, lineage, edgeKey, LAYOUT,
+  buildNodes, layoutGraph, readySet, tracePath, lineage, edgeKey, LAYOUT, resolveLifecycle,
   reduceInferred, componentOf, componentModel, satisfiedBlockers,
   frontierReady, frontierWaiting, openItems, defaultRoot,
   type GraphNode,
@@ -79,6 +79,120 @@ describe('deps.buildNodes — state derivation', () => {
     }]
     const nodes = buildNodes(deps, issues, [], new Set())
     expect(nodes.get(5191)!.title).toBe('LIVE TITLE')
+  })
+
+  it('resolves an issue node by the issue list even when an MR shares its number (GitLab)', () => {
+    // GitLab numbers issues and MRs independently: issue #5 blocks issue #6,
+    // and an unrelated MR !5 is already merged. The issue must not inherit
+    // the MR's merged lifecycle, or #6 would read as unblocked.
+    const deps: DepsResponse = {
+      schema: 1,
+      edges: [{ blocker: 5, blocked: 6, source: 'native' }],
+      nodes: {
+        '5': { kind: 'issue', state: 'open', title: 'issue five' },
+        '6': { kind: 'issue', state: 'open', title: 'issue six' },
+      },
+    }
+    const issues: Issue[] = [
+      { number: 5, title: 'issue five', url: '', labels: [], comments: 0, updated_at: '' },
+      { number: 6, title: 'issue six', url: '', labels: [], comments: 0, updated_at: '' },
+    ]
+    const pulls: PullRequest[] = [{
+      number: 5, title: 'MR five', url: '', state: 'closed', draft: false,
+      labels: [], updated_at: '', merged_at: '2026-08-23T01:00:00Z',
+    }]
+    const nodes = buildNodes(deps, issues, pulls, new Set(), 'gitlab')
+    expect(nodes.get(5)!.kind).toBe('issue')
+    expect(nodes.get(5)!.title).toBe('issue five')
+    expect(nodes.get(5)!.lifecycle).toBe('open')
+    expect(nodes.get(6)!.state).toBe('hold')
+  })
+
+  it('trusts a GitLab issue node even when the issue row is not loaded (closed blocker)', () => {
+    // The open-issue list does not carry a CLOSED blocker, so with no issue row
+    // the only live row for #5 is the unrelated open MR !5. The payload says #5
+    // is a closed issue; that must win, so #6 reads ready, not hold-on-an-MR.
+    const deps: DepsResponse = {
+      schema: 1,
+      edges: [{ blocker: 5, blocked: 6, source: 'native' }],
+      nodes: {
+        '5': { kind: 'issue', state: 'closed', title: 'issue five (closed)' },
+        '6': { kind: 'issue', state: 'open', title: 'issue six' },
+      },
+    }
+    const issues: Issue[] = [
+      { number: 6, title: 'issue six', url: '', labels: [], comments: 0, updated_at: '' },
+    ]
+    const pulls: PullRequest[] = [{
+      number: 5, title: 'MR five', url: '', state: 'open', draft: false,
+      labels: [], updated_at: '', merged_at: null,
+    }]
+    const nodes = buildNodes(deps, issues, pulls, new Set(), 'gitlab')
+    expect(nodes.get(5)!.kind).toBe('issue')
+    expect(nodes.get(5)!.lifecycle).toBe('closed')
+    expect(nodes.get(6)!.state).toBe('ready')
+    // Same inputs on GitHub (shared number space): the live PR row wins.
+    const gh = buildNodes(deps, issues, pulls, new Set(), 'github')
+    expect(gh.get(5)!.kind).toBe('pull')
+    expect(gh.get(6)!.state).toBe('hold')
+  })
+
+  it('exposes the shared resolver so the detail pane agrees with the graph', () => {
+    const deps: DepsResponse = {
+      schema: 1,
+      edges: [],
+      nodes: { '5': { kind: 'issue', state: 'closed', title: 'issue five' } },
+    }
+    const pulls = new Map<number, PullRequest>([[5, {
+      number: 5, title: 'MR five', url: '', state: 'closed', draft: false,
+      labels: [], updated_at: '', merged_at: '2026-08-23T01:00:00Z',
+    }]])
+    const onGitLab = resolveLifecycle(5, deps, new Map(), pulls, 'gitlab')
+    expect(onGitLab).toMatchObject({ kind: 'issue', lifecycle: 'closed', title: 'issue five' })
+    const onGitHub = resolveLifecycle(5, deps, new Map(), pulls, 'github')
+    expect(onGitHub).toMatchObject({ kind: 'pull', lifecycle: 'merged', title: 'MR five' })
+  })
+
+  it('resolves a pull node by the PR list even when an issue shares its number', () => {
+    const deps: DepsResponse = {
+      schema: 1,
+      edges: [],
+      nodes: { '7': { kind: 'pull', state: 'open', title: 'MR seven' } },
+    }
+    const issues: Issue[] = [
+      { number: 7, title: 'issue seven', url: '', labels: [], comments: 0, updated_at: '' },
+    ]
+    const pulls: PullRequest[] = [{
+      number: 7, title: 'MR seven', url: '', state: 'open', draft: false,
+      labels: [], updated_at: '', merged_at: null,
+    }]
+    const nodes = buildNodes(deps, issues, pulls, new Set(), 'gitlab')
+    expect(nodes.get(7)!.kind).toBe('pull')
+    expect(nodes.get(7)!.title).toBe('MR seven')
+  })
+
+  it('lets a live PR row correct a GitHub node the backend stamped kind=issue', () => {
+    // On GitHub a node whose summary lookup failed is stored as
+    // {kind: 'issue', state: 'open'}; the number space is shared, so the
+    // PR row (no issue row exists) must still win and unblock its dependent.
+    const deps: DepsResponse = {
+      schema: 1,
+      edges: [{ blocker: 8, blocked: 9, source: 'native' }],
+      nodes: {
+        '8': { kind: 'issue', state: 'open', title: '' },
+        '9': { kind: 'issue', state: 'open', title: 'dependent' },
+      },
+    }
+    const pulls: PullRequest[] = [{
+      number: 8, title: 'the real PR', url: '', state: 'closed', draft: false,
+      labels: [], updated_at: '', merged_at: '2026-08-23T01:00:00Z',
+    }]
+    const nodes = buildNodes(deps, [], pulls, new Set(), 'github')
+    expect(nodes.get(8)!.kind).toBe('pull')
+    expect(nodes.get(8)!.lifecycle).toBe('merged')
+    expect(nodes.get(9)!.state).toBe('ready')
+    // The provider defaults to the shared-space behaviour when omitted.
+    expect(buildNodes(deps, [], pulls, new Set()).get(8)!.kind).toBe('pull')
   })
 
   it('assigns topological layers (0 = unblocked source)', () => {

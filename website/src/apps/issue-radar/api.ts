@@ -963,6 +963,32 @@ export interface ApiError {
   error: string
 }
 
+/** Thrown by `deps` on a non-2xx answer. `code` is the route's own
+ * classification (`deps_auth_required`, `deps_fetch_failed`,
+ * `deps_issue_scope_unavailable`, or '' when the body carried none, e.g. a 404
+ * from a build without the route), so the Graph tab can say what happened in
+ * the user's language and keep the server's raw sentence as secondary detail. */
+export class DepsFetchError extends Error {
+  readonly code: string
+  readonly status: number
+  constructor(message: string, code: string, status: number) {
+    super(message)
+    this.name = 'DepsFetchError'
+    this.code = code
+    this.status = status
+  }
+
+  static async fromResponse(r: Response): Promise<DepsFetchError> {
+    let body: (ApiError & { code?: string }) | null = null
+    try {
+      body = (await r.json()) as ApiError & { code?: string }
+    } catch {
+      body = null
+    }
+    return new DepsFetchError(body?.error || `HTTP ${r.status}`, body?.code || '', r.status)
+  }
+}
+
 /** Thrown by `putSettings` on a 409. Carries the settings the server currently
  * holds, so the caller can re-apply its edit on top instead of losing it. */
 export class SettingsConflictError extends Error {
@@ -2202,7 +2228,7 @@ export const issueRadarApi = {
   deps: async (ref: RepoRef): Promise<DepsResponse> => {
     const q = new URLSearchParams(repoQuery(ref))
     const r = await fetch(`${API}/deps?${q.toString()}`, { credentials: 'same-origin' })
-    if (!r.ok) throw new Error(await parseErrorBody(r))
+    if (!r.ok) throw await DepsFetchError.fromResponse(r)
     return r.json()
   },
 }

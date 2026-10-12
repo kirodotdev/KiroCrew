@@ -12,15 +12,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
-import type { DepsResponse } from '../api'
+import { DepsFetchError, type DepsResponse } from '../api'
 
 const openRef = vi.hoisted(() => vi.fn())
 const depsFn = vi.hoisted(() => vi.fn())
 const roCallbacks = vi.hoisted(() => ({ current: [] as Array<(entries: unknown[]) => void> }))
+const activeRef = vi.hoisted(() => ({
+  current: { owner: 'zzq', repo: 'fabric', provider: 'github', host: 'github.com' },
+}))
 
 vi.mock('../context', () => ({
   useIssueRadar: () => ({
-    active: { owner: 'zzq', repo: 'fabric', provider: 'github', host: 'github.com' },
+    active: activeRef.current,
     issues: [
       { number: 10, title: 'dependent issue', state: 'open' },
       { number: 20, title: 'ready issue', state: 'open' },
@@ -77,6 +80,7 @@ async function frontierReady() {
 }
 
 beforeEach(() => {
+  activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'github', host: 'github.com' }
   // jsdom reports zero-size boxes; the shell reads its width to pick the narrow
   // branch, so a wide default keeps the tab full-width. The narrow test drives
   // the ResizeObserver callback with a small width instead.
@@ -123,15 +127,88 @@ describe('GraphView states', () => {
     await waitFor(() =>
       expect(screen.getByText(/Dependency data unavailable/i)).toBeInTheDocument(),
     )
+    // No route code: the generic line stays, the raw message is detail underneath.
+    expect(screen.getByText(/deps route may not be enabled/i)).toBeInTheDocument()
+    expect(screen.getByText('zzq boom')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: /RETRY/i }))
     await frontierReady()
     expect(depsFn).toHaveBeenCalledTimes(2)
+  })
+
+  it('maps a GitLab majority-link-failure to an outage next step, not a sign-in prompt', async () => {
+    // GitLab is the one forge whose "most issues" wording is backed by a real
+    // majority-failure rule in gitlab_queries.fetch_dependency_edges.
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'gitlab', host: 'gitlab.example.com' }
+    depsFn.mockRejectedValue(
+      new DepsFetchError('gitlab issue links unavailable for zzq/fabric: 7 of 10 /links calls failed', 'deps_fetch_failed', 502),
+    )
+    renderView()
+    await waitFor(() =>
+      expect(screen.getByText(/Dependency data unavailable/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/GitLab didn't answer for most issues/)).toBeInTheDocument()
+    expect(screen.queryByText(/not signed in/i)).not.toBeInTheDocument()
+    expect(screen.getByText(/7 of 10 \/links calls failed/)).toBeInTheDocument()
+    expect(screen.queryByText(/deps route may not be enabled/i)).not.toBeInTheDocument()
+  })
+
+  it('keeps GitHub on the generic blurb for a fetch failure, with no "most issues" claim', async () => {
+    // A GitHub edge fetch is one GraphQL call that raises on any single failure,
+    // so GitHub keeps the generic unavailable blurb it showed before this change
+    // (the detail still carries the raw error underneath).
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'github', host: 'github.com' }
+    depsFn.mockRejectedValue(
+      new DepsFetchError('github graphql error for zzq/fabric', 'deps_fetch_failed', 502),
+    )
+    renderView()
+    await waitFor(() =>
+      expect(screen.getByText(/Dependency data unavailable/i)).toBeInTheDocument(),
+    )
+    expect(screen.getByText(/deps route may not be enabled/i)).toBeInTheDocument()
+    expect(screen.queryByText(/most issues/i)).not.toBeInTheDocument()
+    expect(screen.getByText('github graphql error for zzq/fabric')).toBeInTheDocument()
+  })
+
+  it('tells an unauthenticated user to sign in and shows the auth command at body weight', async () => {
+    depsFn.mockRejectedValue(
+      new DepsFetchError('the `glab` CLI is not authenticated for gitlab.example.com — run `glab auth login --hostname gitlab.example.com`', 'deps_auth_required', 502),
+    )
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'gitlab', host: 'gitlab.example.com' }
+    renderView()
+    await waitFor(() =>
+      expect(screen.getByText(/not signed in to the GitLab CLI \(glab\)/)).toBeInTheDocument(),
+    )
+    // The exact command is the raw detail, shown at body weight (text-text, not muted).
+    const detail = screen.getByText(/glab auth login --hostname gitlab.example.com/)
+    expect(detail.className).toContain('text-text')
+    expect(detail.className).not.toContain('text-muted')
+  })
+
+  it('names the issue-scope cause when the route says the open-issue list is unavailable', async () => {
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'gitlab', host: 'gitlab.example.com' }
+    depsFn.mockRejectedValue(new DepsFetchError('open issues unavailable', 'deps_issue_scope_unavailable', 502))
+    renderView()
+    await waitFor(() => expect(screen.getByText(/Open the Issues tab to cache it/)).toBeInTheDocument())
+    // The raw error travels as the detail line, so an actual fetch error (e.g. a
+    // 500) is visible rather than hidden behind a flat "not cached" claim.
+    expect(screen.getByText('open issues unavailable')).toBeInTheDocument()
   })
 
   it('renders the empty board when the repo has no edges', async () => {
     depsFn.mockResolvedValue({ schema: 1, edges: [], nodes: {} })
     renderView()
     await waitFor(() => expect(screen.getByText(/No dependencies yet/i)).toBeInTheDocument())
+    // GitHub repo: the hint names the gh command.
+    expect(screen.getByText(/gh issue edit --add-blocked-by/)).toBeInTheDocument()
+  })
+
+  it('tells a GitLab project about Linked items, not the gh command', async () => {
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'gitlab', host: 'gitlab.example.test' }
+    depsFn.mockResolvedValue({ schema: 1, edges: [], nodes: {} })
+    renderView()
+    await waitFor(() => expect(screen.getByText(/No dependencies yet/i)).toBeInTheDocument())
+    expect(screen.getByText(/Linked items/)).toBeInTheDocument()
+    expect(screen.queryByText(/gh issue edit/)).not.toBeInTheDocument()
   })
 })
 
@@ -172,6 +249,37 @@ describe('GraphView FRONTIER', () => {
     await waitFor(() => expect(screen.getByRole('img')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: /Refresh dependency data/i }))
     await waitFor(() => expect(depsFn.mock.calls.length).toBeGreaterThan(1))
+  })
+
+  it('keeps the cached graph but surfaces an ErrorNotice when a refresh fails', async () => {
+    // A nonempty graph is cached, then a refresh 502s. hasGraph keeps the graph
+    // and skips EmptyBoard, so the failure would be invisible without the banner.
+    activeRef.current = { owner: 'zzq', repo: 'fabric', provider: 'gitlab', host: 'gitlab.example.com' }
+    depsFn
+      .mockResolvedValueOnce(fixture())
+      .mockRejectedValueOnce(
+        new DepsFetchError('gitlab issue links unavailable: 7 of 10 /links calls failed', 'deps_fetch_failed', 502),
+      )
+    renderView()
+    await frontierReady()
+    // Graph is drawn: a FRONTIER row from the fixture is present.
+    expect(screen.getByRole('button', { name: /IS-10/ })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /Refresh dependency data/i }))
+    // The banner's bold lead says the graph shown is the last good copy (never
+    // the empty-board "could not be loaded" line), the coded cause is named, the
+    // server detail is shown, and the graph row is STILL there.
+    await waitFor(() =>
+      expect(screen.getByText(/last loaded graph/i)).toBeInTheDocument(),
+    )
+    // The failure text (lead + backend-derived cause + raw detail) renders THROUGH
+    // the shared ErrorNotice (role="alert"), not a bare paragraph — the
+    // errors-use-error-notice contract. Reverting to a <p> fails this.
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/last loaded graph/i)
+    expect(alert).toHaveTextContent(/didn't answer for most issues/i)
+    expect(alert).toHaveTextContent(/7 of 10 .*calls failed/i)
+    expect(screen.queryByText(/could not be loaded/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /IS-10/ })).toBeInTheDocument()
   })
 })
 

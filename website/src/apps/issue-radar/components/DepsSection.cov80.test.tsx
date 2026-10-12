@@ -52,7 +52,7 @@ function renderFor(number: number) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
     <QueryClientProvider client={qc}>
-      <DepsSection number={number} />
+      <DepsSection number={number} kind="issue" />
     </QueryClientProvider>,
   )
 }
