@@ -545,16 +545,42 @@ class RouteTest(unittest.IsolatedAsyncioTestCase):
 
     # non-github provider
 
-    async def test_non_github_provider_answers_200_empty(self):
-        # Even if a GitLab repo somehow had crew records on disk, the route must
-        # answer items:[] — crews are a GitHub-only feature.
+    async def test_gitlab_provider_folds_its_crew_records(self):
+        # A GitLab repo's crews live in the same provider-neutral store, so the
+        # route folds them exactly as it folds a GitHub repo's. Answering a
+        # designed-empty list here would hide a crew that is really running.
         crew = _crew(self.root)
         _step(self.root, crew["id"], 5109, "claimed", "claim", "claimed")
         resp = await self._get(provider="gitlab", host="gitlab.com")
         self.assertEqual(resp.status, 200)
         body = _payload(resp)
-        self.assertEqual(body["items"], [])
+        self.assertEqual([it["number"] for it in body["items"]], [5109])
+        self.assertEqual(body["items"][0]["phase"], "claimed")
         self.assertEqual(body["provider"], "gitlab")
+
+    def _seed_number_collision(self) -> None:
+        # Issue #42 and a pull/MR numbered 42 both sit in the list caches.
+        store.write_issues_cache(
+            OWNER, REPO, [{"number": 42, "title": "the issue title"}], root=self.root, state="open"
+        )
+        store.write_pulls_cache(
+            OWNER, REPO, [{"number": 42, "title": "an unrelated MR"}], root=self.root, state="open"
+        )
+        crew = _crew(self.root)
+        _step(self.root, crew["id"], 42, "claimed", "claim", "claimed")
+
+    async def test_gitlab_lane_keeps_its_issue_title_when_an_mr_shares_the_number(self):
+        # GitLab numbers issues and merge requests separately, so MR !42 says
+        # nothing about issue #42 and must not relabel its lane.
+        self._seed_number_collision()
+        body = _payload(await self._get(provider="gitlab", host="gitlab.com"))
+        self.assertEqual(body["items"][0]["title"], "the issue title")
+
+    async def test_github_lane_still_prefers_the_pull_title_on_a_shared_number(self):
+        # GitHub shares one sequence, so the pull title is the same item's and wins.
+        self._seed_number_collision()
+        body = _payload(await self._get())
+        self.assertEqual(body["items"][0]["title"], "an unrelated MR")
 
     # populated
 
