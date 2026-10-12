@@ -134,14 +134,23 @@ export interface ChatConfig {
    *  turn (#23462): the first arms and shows "Esc again to stop". Default false,
    *  so a client with no stored choice keeps the single-press stop (#22315). */
   doubleEscapeToStop: boolean
-  /** Move the transcript to the bottom when you send (#25754). Default true.
+  /** Move the transcript to the new turn when you send (#25754): the bottom edge
+   *  in the default layout, the top edge with `topDownLayout` on. Default true.
    *  When false a send leaves the view where it is; following a streaming reply
-   *  while you are already at the bottom is unchanged. */
+   *  while you are already at the live edge is unchanged. */
   scrollOnSend: boolean
   /** Fade split-view panes that do not hold keyboard focus. Default true. When
    *  false every pane stays at full brightness; the focused pane's accent
    *  border still marks where keyboard input goes. */
   dimInactivePanes: boolean
+  /** Opt in to the top-down chat layout: the composer sits at the top of the
+   *  pane and turns run newest first below it, so the reply being written is
+   *  directly under the input instead of at the bottom edge of the screen. Each
+   *  turn still reads top to bottom (prompt, then reply). Default false: it
+   *  moves the composer and reverses the reading order of every chat, so it is
+   *  the user's call rather than something a client with no stored config
+   *  inherits. */
+  topDownLayout: boolean
   /** Font size in px for the conversation surface — what the user reads and
    *  writes: message text, inline and block code, tables, follow-up chips and
    *  the composer — clamped to [MIN_MESSAGE_FONT_SIZE, MAX_MESSAGE_FONT_SIZE].
@@ -169,7 +178,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', widenTables: false, tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, pinLastPrompt: true, hideEmptyFolderBody: false, countSubfolderContents: false, sidebarClickOpensTab: false, spellcheck: true, arrowKeyPromptHistory: true, inlineMarkdown: false, optimizeBeforeSend: false, showOptimizePrompt: true, showFullPastes: false, toolCallsStartExpanded: false, doubleClickToEdit: false, doubleEscapeToStop: false, scrollOnSend: true, dimInactivePanes: true, topDownLayout: false, minimapSide: 'left', messageFontSize: DEFAULT_MESSAGE_FONT_SIZE, fullTitlesOnScroll: false, needsMeHoverCard: true, sessionTitleLines: 1, sessionPreviewLines: 1 }
 
 const clampMessageFontSize = (n: number): number =>
   Math.max(MIN_MESSAGE_FONT_SIZE, Math.min(MAX_MESSAGE_FONT_SIZE, Math.round(n)))
@@ -238,6 +247,8 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.doubleEscapeToStop !== 'boolean') cfg.doubleEscapeToStop = false
     if (typeof cfg.scrollOnSend !== 'boolean') cfg.scrollOnSend = true
     if (typeof cfg.dimInactivePanes !== 'boolean') cfg.dimInactivePanes = true
+    // Coerced, not trusted: a stored truthy string must not move the composer.
+    if (typeof cfg.topDownLayout !== 'boolean') cfg.topDownLayout = false
     if (cfg.minimapSide !== 'left' && cfg.minimapSide !== 'right') cfg.minimapSide = 'left'
     cfg.messageFontSize = typeof cfg.messageFontSize === 'number' ? clampMessageFontSize(cfg.messageFontSize) : DEFAULT_MESSAGE_FONT_SIZE
     return cfg

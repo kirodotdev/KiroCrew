@@ -401,6 +401,23 @@ between separately encoded response fields without changing response bytes.
 
 ### The dashboard transcript window (frontend)
 
+This section describes the default layout, where the live edge is the bottom
+and older history loads at the top. The opt-in top-down layout
+(`ChatConfig.topDownLayout`, #32085) runs on the chat page and in split panes
+with `followEdge: 'top'`. There the newest turn block starts at row 0, prompt
+first, and the live reply streams at that block's last row (`headBlockEnd` in
+`orderTurnsNewestFirst.ts`). The live edge is scrollTop 0, follow sticks to the
+top edge, and older pages land at the bottom of the scroller. The layout has its
+own session id (`<slot>:topdown` on the chat page, `pane:<slot>:topdown` in a
+pane) and its own height scope (`<slot>:tables1:topdown:w<bucket>` on the chat
+page, `<slot>:tables1:pane:topdown:w<bucket>` in a pane), so a layout switch is
+a session switch. In that layout the only edge pin is scrollTop 0. A change of
+row height above a reader who left the live edge goes through the measured
+residual in `measurement.ts`, and so does a change of the leading chrome, which
+the shell wraps in `leadingRef`. A change of the composer dock's height changes
+the scroller's top padding instead, and `TranscriptScrollShell.tsx` moves
+scrollTop by the same amount before paint.
+
 The dashboard renders the rows these pages return through one windowing hook,
 `website/src/hooks/virtualizer/useVirtualChat.ts`. The chat page, every
 `VirtualTranscript` host and the artifacts gallery use it. It is a projection

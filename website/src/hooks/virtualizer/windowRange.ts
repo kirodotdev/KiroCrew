@@ -23,6 +23,7 @@ import {
   expandWindowDown,
   expandWindowUp,
   getOffset as getOffsetFn,
+  historyEdgeRange,
   indexAtWithLiveRows,
   initialWindow,
   jumpIsNear,
@@ -193,7 +194,7 @@ export function useTailAppendMount<T>(ctx: {
   resolveWindowRange: (next: WindowRange) => WindowRange
   scrollerRef: RefObject<HTMLDivElement | null>
   shift: Pick<ShiftCapture, 'shiftStageRef'>
-  follow: Pick<FollowState, 'stickRef'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef'>
 }): void {
   const { items, getKey, itemCount, overscan, sessionId, windowRange, setWindowRange, resolveWindowRange } = ctx
   const tailKey = itemCount > 0 ? getKey(items[itemCount - 1], itemCount - 1) : null
@@ -205,6 +206,9 @@ export function useTailAppendMount<T>(ctx: {
     prev !== null &&
     prev.session === sessionId &&
     prev.count > 0 &&
+    // A TOP live edge follows the head: a tail append there is an older page
+    // landing below the reader, which no pin chases (see followEdge).
+    ctx.follow.followEdge === 'bottom' &&
     ctx.follow.stickRef.current &&
     // Defence in depth: the prepend re-base arms only for a released reader.
     ctx.shift.shiftStageRef.current !== 'awaiting-rebase' &&
@@ -284,11 +288,11 @@ export function useWindowOperations<T>(ctx: {
   /** What the committed spacers were rendered from (see PaintedHeights). */
   paintedHeightsRef: Ref<PaintedHeights | null>
   view: Pick<WindowState, 'setWindowRange' | 'windowRangeRef'>
-  follow: Pick<FollowState, 'stickRef'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef'>
 }): WindowOperations {
   const { overscan, getH, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef } = ctx
   const { setWindowRange, windowRangeRef } = ctx.view
-  const { stickRef } = ctx.follow
+  const { followEdge, stickRef } = ctx.follow
 
   // Written by every recomputeWindow entry; read only by the coverage
   // watchdog's yield check (see VIEWPORT_COVERAGE_YIELD_MS).
@@ -324,7 +328,14 @@ export function useWindowOperations<T>(ctx: {
       next = { start: 0, end: 0 }
     } else if (idx) {
       const overscanN = Math.max(0, Math.floor(overscan))
-      if (stickRef.current) {
+      if (stickRef.current && followEdge === 'top') {
+        // FOLLOWING at the TOP edge: the same consistency argument as the tail
+        // branch below, at the head. The reader is at 0, so derive the window
+        // from the tree's own head rather than from a live scrollTop that may
+        // carry a re-engage-band offset in DOM coordinates.
+        const lastVisible = idx.indexAt(Math.max(0, el.clientHeight))
+        next = { start: 0, end: Math.min(count, lastVisible + 1 + overscanN) }
+      } else if (stickRef.current) {
         // FOLLOWING = reading the tail, so derive the window from the tree's
         // OWN tail instead of mapping scrollTop through it. During streaming
         // the bottom pin writes scrollTop against live DOM geometry while the
@@ -395,7 +406,7 @@ export function useWindowOperations<T>(ctx: {
     // which cannot strand an anchor when this recompute's own update is merged
     // away to a no-op.
     setWindowRange((prev) => mergeWindowRange(prev, next, grow))
-  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, stickRef, setWindowRange])
+  }, [getH, overscan, scrollerRef, leadingOffset, itemsRef, heightIndexRef, elIndexRef, paintedHeightsRef, stickRef, followEdge, setWindowRange])
 
   // Each step lands on a LATER frame: a frame callback requested from this
   // task runs before this frame paints, so the step waits for the callback
@@ -567,6 +578,7 @@ export function useWindowEdgeTriggers<T>(ctx: {
   overscan: number
   prefetchStartIndex: number | undefined
   sessionId: string
+  followEdge: 'top' | 'bottom'
   scrollerRef: RefObject<HTMLDivElement | null>
   scrollerEl: HTMLDivElement | null
   topSentinelRef: RefObject<HTMLDivElement>
@@ -577,10 +589,23 @@ export function useWindowEdgeTriggers<T>(ctx: {
   ops: Pick<WindowOperations, 'leadingCapRef'>
 }): void {
   const {
-    windowRange, itemCount, overscan, prefetchStartIndex, sessionId,
+    itemCount, overscan, sessionId, followEdge,
     scrollerRef, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange,
   } = ctx
   const { leadingCapRef } = ctx.ops
+  // The crossing below is written in HISTORY-EDGE coordinates (see
+  // historyEdgeRange): `windowRange.start` is how far the window's
+  // history-side bound is from the history edge, and the lead is counted from
+  // that edge too. For the default orientation both are the plain values. With
+  // the live edge at the top, history loads at the END, so the window's end
+  // travelling DOWN past the caller's row reads here as `start` travelling up
+  // to the lead -- one rule, and the landing and viewport-growth arguments
+  // below hold unchanged, mirrored.
+  const windowRange = historyEdgeRange(ctx.windowRange, itemCount, followEdge)
+  const prefetchStartIndex =
+    followEdge === 'top' && ctx.prefetchStartIndex !== undefined
+      ? Math.max(0, itemCount - 1 - ctx.prefetchStartIndex)
+      : ctx.prefetchStartIndex
 
   // ---- Row-count prefetch: fire the older-history fetch EARLY ----
   // The sentinel below still exists as the backstop (a fast fling can outrun
@@ -647,7 +672,11 @@ export function useWindowEdgeTriggers<T>(ctx: {
     if (typeof IntersectionObserver === 'undefined') return
 
     // TWO observers: `rootMargin` is per-observer, and the two sentinels race
-    // different things (network fetch vs local window expansion).
+    // different things (network fetch vs local window expansion). The fetch
+    // rides the HISTORY edge's sentinel: the top one by default, the bottom one
+    // when the live edge is the top and older pages load at the end. Each
+    // sentinel always expands the window toward its own end.
+    const historyAtBottom = followEdge === 'top'
     const ioTop = new IntersectionObserver(
       (entries) => {
         for (const entry of entries) {
@@ -661,10 +690,10 @@ export function useWindowEdgeTriggers<T>(ctx: {
           // A staged landing widens by its current step, not the overscan.
           const cap = leadingCapRef.current
           setWindowRange((prev) => expandWindowUp(prev, cap === null ? overscan : Math.max(1, Math.min(overscan, cap))))
-          onTopReachedRef.current?.()
+          if (!historyAtBottom) onTopReachedRef.current?.()
         }
       },
-      { root, rootMargin: `${OLDER_PREFETCH_MARGIN_PX}px 0px` },
+      { root, rootMargin: `${historyAtBottom ? WINDOW_EXPAND_MARGIN_PX : OLDER_PREFETCH_MARGIN_PX}px 0px` },
     )
     const ioBottom = new IntersectionObserver(
       (entries) => {
@@ -672,13 +701,14 @@ export function useWindowEdgeTriggers<T>(ctx: {
           if (!entry.isIntersecting) continue
           if (entry.target !== bottomSentinelRef.current) continue
           setWindowRange((prev) => expandWindowDown(prev, itemsRef.current.length, overscan))
+          if (historyAtBottom) onTopReachedRef.current?.()
         }
       },
-      { root, rootMargin: `${WINDOW_EXPAND_MARGIN_PX}px 0px` },
+      { root, rootMargin: `${historyAtBottom ? OLDER_PREFETCH_MARGIN_PX : WINDOW_EXPAND_MARGIN_PX}px 0px` },
     )
 
     if (topSentinelRef.current) ioTop.observe(topSentinelRef.current)
     if (bottomSentinelRef.current) ioBottom.observe(bottomSentinelRef.current)
     return () => { ioTop.disconnect(); ioBottom.disconnect() }
-  }, [overscan, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, leadingCapRef])
+  }, [overscan, followEdge, scrollerEl, topSentinelRef, bottomSentinelRef, onTopReachedRef, itemsRef, setWindowRange, leadingCapRef])
 }

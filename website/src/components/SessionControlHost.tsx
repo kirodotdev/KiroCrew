@@ -28,6 +28,7 @@ import ErrorNotice from './ErrorNotice'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { AppApiProvider } from '../app-sdk'
 import { i18nT } from '../i18n/t'
+import { anchoredPopupBox } from '../lib/pickerMenu'
 import type { ResolvedSessionControl } from '../hooks/useSessionControls'
 import { withBase } from '@/lib/basePath'
 
@@ -55,6 +56,10 @@ export interface SessionControlHostProps {
   session: SessionControlContext
   anchorRect: DOMRect | null
   onClose: () => void
+  /** Open below the chip instead of above it, capped to the room below: the
+   *  top-down chat layout puts the composer at the top of the window, where
+   *  there is no room above. */
+  openBelow?: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -123,6 +128,7 @@ export default function SessionControlHost({
   session,
   anchorRect,
   onClose,
+  openBelow = false,
 }: SessionControlHostProps) {
   const [resetKey, setResetKey] = useState(0)
   const popRef = useRef<HTMLDivElement>(null)
@@ -227,7 +233,9 @@ export default function SessionControlHost({
   // width, which is an invalid CSS length rather than a narrow popover.
   const width = Math.max(0, Math.min(340, window.innerWidth - 16))
   const left = Math.max(8, Math.min(anchorRect.left, window.innerWidth - width - 8))
-  const bottom = window.innerHeight - anchorRect.top + 6
+  // Below: 6px under the chip, never taller than the room left under it (less
+  // an 8px margin), and scrolling inside that cap instead of clipping.
+  const vertical = anchoredPopupBox(anchorRect, openBelow, 6)
 
   return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions -- stopPropagation only: the dialog is a container that isolates global chords from the control inside it, so there is no gesture here to mirror with a keyboard equivalent. The control's own interactive elements carry their own handlers and are unaffected.
@@ -238,8 +246,8 @@ export default function SessionControlHost({
         label: control.label,
         appName: control.appDisplayName,
       })}
-      className="fixed z-[9999] animate-slide-up rounded-lg bg-bg-elevated border border-border shadow-lg overflow-hidden"
-      style={{ bottom, left, width }}
+      className={`fixed z-[9999] animate-slide-up rounded-lg bg-bg-elevated border border-border shadow-lg ${openBelow ? 'overflow-x-hidden overflow-y-auto' : 'overflow-hidden'}`}
+      style={{ ...vertical, left, width }}
       onKeyDown={e => {
         // Global chat-jump chords are deliberately NOT input-gated for digits
         // (`useKeyboardShortcuts.ts:763`, "Digits keep firing in inputs"), and a

@@ -1,5 +1,6 @@
 // Shared geometry + bottom-up ordering for the anchored input pickers
-// ($skill → SkillPickerMenu, @file → FilePickerMenu, /command → SlashCommandMenu).
+// ($skill → SkillPickerMenu, @file → FilePickerMenu, /command → SlashCommandMenu),
+// and anchoredPopupBox for the composer popups whose side the layout fixes.
 //
 // Centralizing the two drift-prone pieces here keeps the three menus in
 // lockstep — otherwise they diverge on above/below math, bottom-up population,
@@ -96,6 +97,30 @@ export function menuGeometry(
     width: rect.width,
     maxHeight: Math.max(minSensibleHeight, Math.min(MENU_MAX_HEIGHT, available)),
   }
+}
+
+/** Margin (px) a downward popup keeps from the viewport's bottom edge. */
+const VIEWPORT_MARGIN = 8
+
+/** The vertical half of a fixed popup's style: `top` plus a height cap when it
+ *  opens below its anchor, `bottom` when it opens above. */
+export type AnchoredPopupBox = { top: number; maxHeight: number } | { bottom: number }
+
+/**
+ * Place a fixed-position popup on a side of its anchor that the CALLER picks,
+ * for the composer popups whose side follows the chat layout and not the room
+ * (`menuGeometry` above chooses by room). `openBelow` (the top-down layout):
+ * `top` is `gap` under the anchor, and `maxHeight` is the room left under it
+ * less an 8px margin, floored at 0, so the popup scrolls inside the window.
+ * Otherwise `bottom` pins the popup's bottom edge `gap` above the anchor and it
+ * grows upward, as on main; a caller with an upward cap keeps its own. The side
+ * is never chosen by room, so with the layout setting off each popup opens
+ * exactly where it does on main.
+ */
+export function anchoredPopupBox(rect: Pick<DOMRect, 'top' | 'bottom'>, openBelow: boolean, gap: number): AnchoredPopupBox {
+  return openBelow
+    ? { top: rect.bottom + gap, maxHeight: Math.max(0, window.innerHeight - rect.bottom - gap - VIEWPORT_MARGIN) }
+    : { bottom: window.innerHeight - rect.top + gap }
 }
 
 /**

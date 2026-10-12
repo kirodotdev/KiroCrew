@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect, useMemo } from 'react'
+import { useState, useRef, useCallback, useEffect, useLayoutEffect, useMemo } from 'react'
 import { crewApprovalDecidableHere, crewModeRoot, crewRootOf, runsCrewMode } from '../lib/crewMode'
 import CrewApprovalCards, { MateApprovalCards } from './crew/CrewApprovalCards'
 import MateWorkerQuestions from './crew/MateWorkerQuestions'
@@ -56,6 +56,7 @@ import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { selectionCapabilitiesFailed } from '../lib/effort'
 import { isUnpinnedModel } from '../lib/jevRoute'
 import { useQueuedMessageActions } from '../hooks/useQueuedMessageActions'
+import { useIsMobile } from '../hooks/useIsMobile'
 import { useAppSelector, useAppDispatch, store } from '../store'
 import { PANE_HYDRATE_LIMIT, selectSlotMessages, selectSlotStreamState, selectComposerBusy, hydrateSlotMessages, clearSlotHydrated, holdHydratedSlotPane, appendSlotMessage, loadOlderMessages, loadOlderSlotMessages, stageToMainComposer, pendingQuestionFor } from '../store/chatSlice'
 import { deriveFollowUpOptions } from '../app-sdk/protocol'
@@ -86,7 +87,7 @@ import { ChatPaneAgentMenu, ChatPaneModelMenu } from './ChatPanePickerMenus'
 import { useChatPaneSend } from './useChatPaneSend'
 import { useChatPaneStop, useChatPaneRunSync } from './useChatPaneTurnControl'
 import { useChatPaneContinue } from './useChatPaneContinue'
-import { useChatPaneRenderers, ChatPaneAboveRows } from './ChatPaneTranscript'
+import { useChatPaneRenderers, ChatPaneAboveRows, ChatPaneOpenFullLink } from './ChatPaneTranscript'
 import { slotRowByKey } from '../store/slotIndex'
 import { useMarkTranscriptShown } from '../hooks/useAckCronNotesInView'
 
@@ -515,12 +516,35 @@ export default function ChatPane({
   // agent runs where the question scrolls away while the answer streams; a DM
   // with a colleague has short turns, the user's bubble is one row back, and
   // under the floating glass header (#18325) a second floating card read as
-  // clutter. Ordinary chats and split panes keep it.
-  const pinOn = chatConfig.pinLastPrompt && !crewmate
+  // clutter. Ordinary chats and split panes keep it. Off in the top-down
+  // layout too, which gives the top fold to the composer. Phones keep the
+  // bottom composer, as on the main chat page. So does a crewmate's chat (the
+  // Members page DM): its unread landing (useUnreadLanding) reads the bottom
+  // geometry, the plain `pane:<slot>` anchor and chronological rows.
+  const isMobile = useIsMobile()
+  const topDown = chatConfig.topDownLayout && !isMobile && !crewmate
+  const pinOn = chatConfig.pinLastPrompt && !crewmate && !topDown
   useEffect(() => {
     pin.pinEnabledRef.current = pinOn
     if (!pinOn) setPinned(null)
   }, [pinOn, pin.pinEnabledRef, setPinned])
+  // Top-down layout: the dock root is positioned in the pane root, and the
+  // pane's own title row sits in flow above the scroller, so the dock's top
+  // edge is the scroller's top in the pane (its `offsetTop`, measured: the
+  // row's height follows its font and controls) plus `topInset`. The title
+  // row resizing resizes the flex-1 scroller under it, so one observer on the
+  // scroller catches it. 0 in the bottom layout, which never reads it.
+  const [scrollerTop, setScrollerTop] = useState(0)
+  useLayoutEffect(() => {
+    const sc = scrollerRef.current
+    if (!topDown || !sc) { setScrollerTop(0); return }
+    const measure = () => setScrollerTop(sc.offsetTop)
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(measure)
+    ro.observe(sc)
+    return () => ro.disconnect()
+  }, [topDown])
   // The transcript row whose bubble the banner is standing in for. The list
   // hides it (ts-keyed, index fallback — see ChatMessageList.hiddenRow);
   // memoised so the memo'd list does not re-render on every pane render.
@@ -758,6 +782,79 @@ export default function ChatPane({
     slot: slotKey, surface: 'pane', currentSlot: currentPaneSlot, restore: restorePaneSend, merge: mergePaneSends, disabled: !!crewmate,
   })
 
+  /* The working indicator. Inside the scroll container, after the last
+     message (above the newest turn in the top-down layout), so it reads as
+     "the reply is coming" exactly where the reply will land. Stop/regenerate
+     chrome stays page-level: the pane derives the indicator's inputs from its
+     own per-slot stream state.
+     A crewmate's chat draws a typing bubble (three dots in the crewmate's own
+     bubble) with its current step as the one-line caption under it, mounted
+     for the whole live turn so nothing moves while steps come and go (#18238,
+     #19997); the chat page's ghost-pose carousel is NOT mounted beside it, or
+     two things would move at once. Keyed by the slot: the caption holds each
+     step briefly (useHeldActivity), and the Members page rebinds this one pane
+     to another crewmate without remounting it, so without the key B's chat
+     would open on A's held step. A new key is a fresh mount: B's reading at
+     once.
+     Every other pane — a split pane of an ordinary chat — shows the same
+     indicator the full chat page shows (the ghost-pose carousel,
+     theme-swappable via themeBranding): a running turn was otherwise
+     invisible between tool steps. */
+  const paneFooter = (
+    <>
+    {crewmate
+      ? crewmateTyping && (
+        <CrewmateLiveActivity
+          key={slotKey}
+          // Before the answering turn runs there is no live reading
+          // to name (the slot's status record is the last turn's),
+          // so the caption says it is working on it.
+          // The gateway preparing the warm catch-up says so; the
+          // finished message then lands where the bubble was.
+          activity={crewmateLive ? liveActivity : preparing && !awaitingReply ? preparingActivity : AWAITING_REPLY_ACTIVITY}
+          streamingText={messages[messages.length - 1]?.role === 'streaming' && streamState === 'streaming'}
+          streamTick={
+            messages[messages.length - 1]?.role === 'streaming'
+              ? (messages[messages.length - 1]?.content.length ?? 0)
+              : 0
+          }
+        />
+      )
+      : (
+        <>
+        <ChatFooter
+          statusLabel={paneEnvironmentStart}
+          running={running || !!paneSlot?.running || preparing}
+          stopping={stopUnderWay}
+          state={streamState}
+          lastRole={messages[messages.length - 1]?.role ?? ''}
+          streamTick={
+            messages[messages.length - 1]?.role === 'streaming'
+              ? (messages[messages.length - 1]?.content.length ?? 0)
+              : 0
+          }
+          // Not while only preparing a catch-up: that is no turn to stop.
+          activityKey={(running || paneSlot?.running) && (transcriptLoaded || paneSentTurn) ? transcriptActivityKey(messages) : undefined}
+          sentHere={turnSentHere(messages)}
+          browserSessionKey={slotKey}
+          waitingOnUser={!!paneSlot?.pending_approval || !!paneSlot?.needs_input}
+        />
+        {preparing && !crewmateLive && (
+          <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
+            {preparingCaption}
+          </div>
+        )}
+        </>
+      )}
+    </>
+  )
+  // The link to the full session points at older history, so it sits at the
+  // history end: last in the leading slot in the bottom layout, as on main,
+  // and after the oldest row (`belowRows`) in the top-down layout.
+  const openFullLink = (
+    <ChatPaneOpenFullLink slotKey={slotKey} activeSlot={activeSlot} messages={messages} warmHasMore={warmHasMore} pagesPane={pagesPane} onOpenFull={onOpenFull} />
+  )
+
   return (
     <SlotProvider slotId={slotKey}>
       <div
@@ -951,7 +1048,7 @@ export default function ChatPane({
             onFolderOpen={onFolderOpen}
             onArtifactOpen={onArtifactOpen}
             transcript={{
-              sessionId: `pane:${slotKey}`,
+              sessionId: topDown ? `pane:${slotKey}:topdown` : `pane:${slotKey}`,
               scrollerRef,
               onScroll: onScrollPin,
               onAtBottomChange: setIsAtBottom,
@@ -961,7 +1058,13 @@ export default function ChatPane({
               // dock floats over the scroller's bottom edge, so the scroller
               // pays for that strip too, plus the same clearance ChatPage keeps
               // between its last line and the glass.
-              scrollerStyle: { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0 },
+              // Top-down: the dock floats over the scroller's TOP edge, at
+              // `topInset` inside it, so the top padding pays `topInset` once
+              // plus the covered strip and the clearance, and the bottom keeps
+              // only the clearance.
+              scrollerStyle: topDown
+                ? { paddingTop: topInset + dockH + DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX, minHeight: 0 }
+                : { paddingTop: 12 + topInset, paddingBottom: dockH + DOCK_CLEARANCE_PX, minHeight: 0 },
               // handOff off, like the list's own notices (see `handOff` above).
               earlier: pagesActiveSlot
                 ? { hasMore: activeHasMore, loading: loadingOlder, failed: olderFailed, onLoad: loadOlder, handOff: false }
@@ -969,75 +1072,16 @@ export default function ChatPane({
                   ? { hasMore: true, loading: paneLoadingOlder, failed: paneOlderFailed, onLoad: loadOlderPane, handOff: false }
                   : undefined,
               aboveRows: (
-                <ChatPaneAboveRows slotKey={slotKey} activeSlot={activeSlot} messages={messages} paneMessages={paneMessages} crewmate={crewmate} crewmateLive={crewmateLive} running={running} slotDetailFailed={slotDetailFailed} refetchSlotDetail={refetchSlotDetail} hideEmptyHint={hideEmptyHint} crewmateQuietUnproven={crewmateQuietUnproven} onOpenCrewWorkLog={onOpenCrewWorkLog} warmHasMore={warmHasMore} pagesPane={pagesPane} onOpenFull={onOpenFull} />
-              ),
-              belowRows: (
-                /* The working indicator. Inside the scroll container, after the
-                   last message, so it reads as "the reply is coming" exactly where
-                   the reply will land. Stop/regenerate chrome stays page-level: the
-                   pane derives the indicator's inputs from its own per-slot stream
-                   state.
-                   A crewmate's chat draws a typing bubble (three dots in the
-                   crewmate's own bubble) with its current step as the one-line
-                   caption under it, mounted for the whole live turn so nothing
-                   moves while steps come and go (#18238, #19997); the chat page's
-                   ghost-pose carousel is NOT mounted beside it, or two things
-                   would move at once. Keyed by the slot: the caption holds each
-                   step briefly (useHeldActivity), and the Members page rebinds
-                   this one pane to another crewmate without remounting it, so
-                   without the key B's chat would open on A's held step. A new key
-                   is a fresh mount: B's reading at once.
-                   Every other pane — a split pane of an ordinary chat — shows the
-                   same indicator the full chat page shows (the ghost-pose
-                   carousel, theme-swappable via themeBranding): a running turn
-                   was otherwise invisible between tool steps. */
                 <>
-                {crewmate
-                  ? crewmateTyping && (
-                    <CrewmateLiveActivity
-                      key={slotKey}
-                      // Before the answering turn runs there is no live reading
-                      // to name (the slot's status record is the last turn's),
-                      // so the caption says it is working on it.
-                      // The gateway preparing the warm catch-up says so; the
-                      // finished message then lands where the bubble was.
-                      activity={crewmateLive ? liveActivity : preparing && !awaitingReply ? preparingActivity : AWAITING_REPLY_ACTIVITY}
-                      streamingText={messages[messages.length - 1]?.role === 'streaming' && streamState === 'streaming'}
-                      streamTick={
-                        messages[messages.length - 1]?.role === 'streaming'
-                          ? (messages[messages.length - 1]?.content.length ?? 0)
-                          : 0
-                      }
-                    />
-                  )
-                  : (
-                    <>
-                    <ChatFooter
-                      statusLabel={paneEnvironmentStart}
-                      running={running || !!paneSlot?.running || preparing}
-                      stopping={stopUnderWay}
-                      state={streamState}
-                      lastRole={messages[messages.length - 1]?.role ?? ''}
-                      streamTick={
-                        messages[messages.length - 1]?.role === 'streaming'
-                          ? (messages[messages.length - 1]?.content.length ?? 0)
-                          : 0
-                      }
-                      // Not while only preparing a catch-up: that is no turn to stop.
-                      activityKey={(running || paneSlot?.running) && (transcriptLoaded || paneSentTurn) ? transcriptActivityKey(messages) : undefined}
-                      sentHere={turnSentHere(messages)}
-                      browserSessionKey={slotKey}
-                      waitingOnUser={!!paneSlot?.pending_approval || !!paneSlot?.needs_input}
-                    />
-                    {preparing && !crewmateLive && (
-                      <div className="px-4 text-[12px] text-muted" data-testid="chat-pane-preparing-catch-up" role="status">
-                        {preparingCaption}
-                      </div>
-                    )}
-                    </>
-                  )}
+                <ChatPaneAboveRows messages={messages} paneMessages={paneMessages} crewmate={crewmate} crewmateLive={crewmateLive} running={running} slotDetailFailed={slotDetailFailed} refetchSlotDetail={refetchSlotDetail} hideEmptyHint={hideEmptyHint} crewmateQuietUnproven={crewmateQuietUnproven} onOpenCrewWorkLog={onOpenCrewWorkLog} />
+                {!topDown && openFullLink}
+                {/* Top-down layout: the working indicator sits between the
+                    composer and the newest turn, where that turn's reply is. */}
+                {topDown && paneFooter}
                 </>
               ),
+              belowRows: topDown ? openFullLink : paneFooter,
+              ...(topDown ? { order: 'newest-first' as const } : null),
             }}
           />
         </ChatProjectDirCtx.Provider>
@@ -1061,8 +1105,15 @@ export default function ChatPane({
             No z-index on purpose: the dock paints over the scroller because
             it follows it in DOM order. `right: dockGutter` keeps the
             scrollbar column clear. */}
-        <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root">
-        <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} unreadCount={unreadCount} />
+        {/* Top-down layout: the same box floats over the scroller's TOP edge
+            instead (`top: scrollerTop + topInset`, see scrollerTop), still
+            after the scroller in DOM order so it still paints over it; the
+            scroller pays the covered strip as top padding, and the jump pill
+            hangs under the box and points up. */}
+        <div ref={dockRef} className={topDown ? 'absolute left-0 pointer-events-none' : 'absolute left-0 bottom-0 pointer-events-none'} style={topDown ? { right: dockGutter, top: scrollerTop + topInset } : { right: dockGutter }} data-testid="composer-dock-root">
+        {topDown
+          ? <JumpToBottomButton direction="up" visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} unreadCount={unreadCount} />
+          : <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={scrollToBottom} unreadCount={unreadCount} />}
 
         <div className="dock-inert" data-testid="composer-status-stack">
         {!crewmate && <SubagentProgressBar slot={slotKey} />}
@@ -1320,6 +1371,9 @@ export default function ChatPane({
           onAgentClick={!agentLocked && !runsCrewMode(paneSlot?.agent, paneSlot?.agent_kind, paneSlot?.crew_mode_agent)
             && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
+          // The top-down dock sits at the top of the pane: the composer's own
+          // popups open downward there, like the agent and model menus.
+          openBelow={topDown}
           approvalMode={displayMode}
           followUpOptions={followUpOptions}
           followUpPicked={followUpPicked}
@@ -1395,9 +1449,11 @@ export default function ChatPane({
         </div>
         </div>
 
-        <ChatPaneAgentMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
+        {/* Top-down layout: the dock sits at the top of the pane, so the
+            pickers open below their chips. */}
+        <ChatPaneAgentMenu paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} openBelow={topDown} />
 
-        <ChatPaneModelMenu slotKey={slotKey} paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} />
+        <ChatPaneModelMenu slotKey={slotKey} paneSlot={paneSlot} models={pickerModels} actions={pickerActions} navigate={navigate} openBelow={topDown} />
 
       </div>
     </SlotProvider>

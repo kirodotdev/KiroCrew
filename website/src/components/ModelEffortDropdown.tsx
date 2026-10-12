@@ -12,6 +12,7 @@ import { routeModelPickerKeys } from './modelPickerKeyRouting'
 import { useImeGuard } from '../hooks/useImeGuard'
 import { useScrollEdgesY } from '../hooks/useScrollEdges'
 import { i18nT } from '../i18n/t'
+import { anchoredPopupBox } from '../lib/pickerMenu'
 
 /** Bottom fade for a model list whose last visible row would otherwise be cut
  *  mid-line by whatever sits under it -- the list ends at the effort block's
@@ -26,6 +27,9 @@ export const MORE_BELOW_MASK =
 
 interface Props {
   anchorRect: DOMRect
+  /** Open below the chip instead of above it: the top-down chat layout puts
+   *  the composer at the top of the window, where there is no room above. */
+  openBelow?: boolean
   dropdownRef: React.Ref<HTMLDivElement>
   inputRef: React.Ref<HTMLInputElement>
   models: ModelItem[]
@@ -108,7 +112,7 @@ interface Props {
 const WIDTH = 340
 /** Model picker with reasoning effort embedded below the searchable model list. */
 export default function ModelEffortDropdown({
-  anchorRect, dropdownRef, inputRef, models, activeModel, onSelectModel,
+  anchorRect, openBelow = false, dropdownRef, inputRef, models, activeModel, onSelectModel,
   filter, setFilter, onClose, hasEffort, effortOffOnAuto = false, slot, currentEffort, onListKeyDown, onSetDefault, onManageModels,
   modelVisibilityError = false, onRetryModelVisibility,
   defaultEffort = '', effortLevelsOverride, onPinToAgent, agentName = '', pinModelName = '',
@@ -125,7 +129,9 @@ export default function ModelEffortDropdown({
   // Right-align the dropdown to the button's right edge (clamped to viewport).
   const width = Math.min(WIDTH, window.innerWidth - 16)
   const left = Math.max(8, Math.min(anchorRect.right - width, window.innerWidth - width - 8))
-  const maxHeight = Math.max(0, anchorRect.top - 12)
+  // The helper caps the room below; opening upward keeps this picker's own cap, the room above the chip.
+  const vertical = anchoredPopupBox(anchorRect, openBelow, 4)
+  const maxHeight = 'maxHeight' in vertical ? vertical.maxHeight : Math.max(0, anchorRect.top - 12)
 
   return (
     // The dialog delegates list navigation from its filter and option rows, but
@@ -139,7 +145,7 @@ export default function ModelEffortDropdown({
       tabIndex={-1}
       onKeyDown={event => routeModelPickerKeys(event, ime.claimKey, onListKeyDown)}
       className="fixed z-[9999] flex flex-col bg-bg-elevated border border-border rounded-xl shadow-xl overflow-hidden animate-slide-up"
-      style={{ width, maxHeight, bottom: window.innerHeight - anchorRect.top + 4, left }}
+      style={{ width, ...vertical, maxHeight, left }}
     >
           {/* Body column scrolls once the cap (space above the chip) drops
               below the fixed rows' own height, so the effort block is reached

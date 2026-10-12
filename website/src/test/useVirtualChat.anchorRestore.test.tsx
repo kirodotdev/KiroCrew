@@ -14,7 +14,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { type RefObject } from 'react'
+import { useLayoutEffect, type RefObject } from 'react'
 
 import { useVirtualChat } from '../hooks/virtualizer/useVirtualChat'
 import {
@@ -359,6 +359,76 @@ describe('useVirtualChat: reading-position save on scroll settle', () => {
     // The cancelled timer must not fire later against the new session.
     act(() => { vi.advanceTimersByTime(500) })
     expect(loadScrollAnchor('sess-flush')).toEqual({ key: 'm5', top: -90 })
+  })
+
+  it('flushes the outgoing top-edge anchor when the incoming session follows the bottom edge', () => {
+    const { el, state, view, ref } = mountWith(
+      'sess-flush-top',
+      { scrollTop: 0, scrollHeight: 5000, clientHeight: 400 },
+      mkItems(50),
+      { followEdge: 'top' },
+    )
+    attachRows(view, state, [45, 46, 47, 48, 49])
+
+    // The reader moves from the top live edge to the history end. The session
+    // switches before the save timer fires, and the incoming session changes
+    // the live edge to the bottom in the same render. The outgoing geometry is
+    // at the incoming bottom edge, but it is away from its own top edge.
+    act(() => {
+      el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }))
+      state.scrollTop = 4600
+      el.dispatchEvent(new Event('scroll'))
+    })
+    act(() => {
+      view.rerender({
+        items: mkItems(10), sessionId: 'sess-flush-bottom', getKey,
+        externalScrollerRef: ref, followEdge: 'bottom',
+      })
+    })
+
+    expect(loadScrollAnchor('sess-flush-top')).toEqual({ key: 'm46', top: 0 })
+  })
+
+  it('replaces a save started by the outgoing listener after a session-switch render', () => {
+    const incomingSession = 'sess-listener-incoming'
+    const { el, state } = makeScroller({ scrollTop: 0, scrollHeight: 5000, clientHeight: 400 })
+    const ref: RefObject<HTMLDivElement | null> = { current: el }
+    const view = renderHook(
+      (props: UseVirtualChatOptions<Item>) => {
+        const result = useVirtualChat<Item>(props)
+        // A layout effect runs after the session ref changes but before the old
+        // passive scroll listener is removed. This models a browser scroll in
+        // the commit-to-passive-effect window.
+        useLayoutEffect(() => {
+          if (props.sessionId !== incomingSession) return
+          el.dispatchEvent(new WheelEvent('wheel', { deltaY: 100 }))
+          state.scrollTop = 4600
+          el.dispatchEvent(new Event('scroll'))
+        }, [props.sessionId])
+        return result
+      },
+      {
+        initialProps: {
+          items: mkItems(50), sessionId: 'sess-listener-outgoing', getKey,
+          externalScrollerRef: ref, followEdge: 'top',
+        },
+      },
+    )
+    attachRows(view, state, [45, 46, 47, 48, 49])
+    // Let the initial listener's mount-time save settle before the switch.
+    act(() => { vi.advanceTimersByTime(250) })
+
+    act(() => {
+      view.rerender({
+        items: mkItems(50), sessionId: incomingSession, getKey,
+        externalScrollerRef: ref, followEdge: 'bottom',
+      })
+    })
+    act(() => { vi.advanceTimersByTime(250) })
+
+    // The current bottom-edge listener must replace the old top-edge save.
+    // At scrollTop 4600 the incoming session is at its bottom, so no anchor remains.
+    expect(loadScrollAnchor(incomingSession)).toBeNull()
   })
 
   it('flush at switch clears the outgoing anchor when leaving at the bottom', () => {

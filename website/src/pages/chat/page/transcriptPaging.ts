@@ -125,6 +125,12 @@ interface TranscriptPagingOptions {
   prefetchStartIndex: number | undefined
   stableAnchorId: (it: DisplayItem, index: number) => string
   virtualKey: (it: DisplayItem, i: number) => string
+  /** The top-down layout: rows are newest block first, the live edge is
+   *  scrollTop 0 and older history loads at the bottom. */
+  topDown?: boolean
+  /** Index of the last row of the newest turn block (`useTranscriptRows`):
+   *  where the live reply streams. Defaults to the last row. */
+  headBlockEnd?: number
 }
 
 /**
@@ -139,6 +145,7 @@ export function useTranscriptPaging({
   dispatch, activeSlot, slotRunning, slotHasMore, scrollerRef, canMeasure, scrollerWidthBucket, vGetFollowRef, vScrollerElRef, lastRealInputAtRef, sentinelPagesSinceInputRef, walkPagesSinceInputRef,
   walkLastInputAtRef, vScrollToBottomRef, vFarmIsMeasuredRef, earlierBarInViewRef, mountIndexRef, estimateRowTopRef, displayItemsRef, setPinExpanded, setPinned, updatePinnedPrompt, isStreaming,
   setRefusedPress, renderedDisplayItems, anchorAltId, prefetchStartIndex, stableAnchorId, virtualKey,
+  topDown = false, headBlockEnd = renderedDisplayItems.length - 1,
 }: TranscriptPagingOptions) {
   // (Sticky widget detection removed — widgets now unmount with the
   // window like any other item. See useVirtualChat call below for the
@@ -262,7 +269,17 @@ export function useTranscriptPaging({
     getStableId: stableAnchorId,
     getAltId: anchorAltId,
     prefetchStartIndex,
-    sessionId: activeSlot ?? '__no_slot__',
+    // The layout is part of the entry identity: flipping it reverses every row
+    // index in one commit at equal count, which in-place would read as row
+    // churn to shift compensation, and the saved anchor was taken in the other
+    // order. A distinct id makes the flip a session switch with its own saved
+    // reading position. The `:` keeps the slot as the first segment, which is
+    // how storageGc attributes the anchor key to its session. Heights use a
+    // distinct layout partition because their positional tree must not survive
+    // reversing every row at equal count.
+    sessionId: topDown ? `${activeSlot ?? '__no_slot__'}:topdown` : (activeSlot ?? '__no_slot__'),
+    // Top-down: the live edge is scrollTop 0 and history pages from the bottom.
+    followEdge: topDown ? 'top' : 'bottom',
     // Width-bucketed height scope: measured row heights are only valid for
     // the width they were measured at. Breakout tables use the full pane, so
     // the uncapped 16px buckets re-measure desktop resizes as well as phones.
@@ -270,7 +287,7 @@ export function useTranscriptPaging({
     // storageGc reads the owning session as the segment before the first ':'
     // (and deletes a session's keys at that delimiter): a scope joined with
     // any other separator is orphaned on every boot and missed on delete.
-    heightScopeKey: `${activeSlot ?? '__no_slot__'}:tables1:w${scrollerWidthBucket}`,
+    heightScopeKey: `${activeSlot ?? '__no_slot__'}:tables1:${topDown ? 'topdown:' : ''}w${scrollerWidthBucket}`,
     canMeasure,
     estimatedHeight: 100,
     // Overscan tradeoff (experimental):
@@ -303,8 +320,10 @@ export function useTranscriptPaging({
     // streaming message has already finished). Passing its index lets the
     // virtualizer track that one row's growth every RO tick instead of
     // debouncing it into a stale-then-jump spacer (see the `streamingIndex`
-    // option's doc and useVirtualChat.spacerLurch.test.tsx).
-    streamingIndex: isStreaming && renderedDisplayItems.length > 0 ? renderedDisplayItems.length - 1 : undefined,
+    // option's doc and useVirtualChat.spacerLurch.test.tsx). In the top-down
+    // layout that row is the last row of the NEWEST block, `headBlockEnd`,
+    // which equals `length - 1` in the chronological order.
+    streamingIndex: isStreaming && renderedDisplayItems.length > 0 ? headBlockEnd : undefined,
     // `slotRunning`, not `isStreaming`: a turn spends much of its life in tool
     // calls with no streaming row named, and follow has to keep working there.
     runActive: !!slotRunning,
@@ -460,7 +479,11 @@ export function useTranscriptPaging({
       // which is what "reader-initiated" has to mean.
       if (!shouldContinueOlderWalk({
         sawRealInput: Date.now() - lastRealInputAtRef.current <= REAL_GESTURE_AUTH_MS,
-        nearTop: el2.scrollTop <= el2.clientHeight,
+        // History sits past the BOTTOM in the top-down layout, so "near the
+        // history edge" is measured from there.
+        nearTop: topDown
+          ? el2.scrollHeight - el2.scrollTop - el2.clientHeight <= el2.clientHeight
+          : el2.scrollTop <= el2.clientHeight,
         walking,
         pagesSinceInput: walkPagesSinceInputRef.current,
       })) return
@@ -502,7 +525,7 @@ export function useTranscriptPaging({
       el?.removeEventListener('pointerdown', noteInput)
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- listeners re-arm on these triggers only; handlers read refs
-  }, [slotHasMore, dispatch, virt.scrollerRef])
+  }, [slotHasMore, dispatch, virt.scrollerRef, topDown])
 
   // The sticky in-flight spinner is only meaningful where pages LAND — at the
   // top of the loaded transcript. `loadingOlder` is now true for the whole
@@ -521,13 +544,16 @@ export function useTranscriptPaging({
       if (raf) cancelAnimationFrame(raf)
       raf = requestAnimationFrame(() => {
         raf = 0
-        setSpinnerNearTop(el.scrollTop < el.clientHeight * 1.5)
+        // Top-down: pages land at the bottom, so "near" means near that edge.
+        setSpinnerNearTop(topDown
+          ? el.scrollHeight - el.scrollTop - el.clientHeight < el.clientHeight * 1.5
+          : el.scrollTop < el.clientHeight * 1.5)
       })
     }
     onScroll()
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => { el.removeEventListener('scroll', onScroll); if (raf) cancelAnimationFrame(raf) }
-  }, [virt.scrollerRef, activeSlot])
+  }, [virt.scrollerRef, activeSlot, topDown])
 
   // A failed older-page fetch PARKS pagination: the top sentinel is already
   // inside the viewport, so no new crossing ever fires and automatic paging
@@ -545,9 +571,10 @@ export function useTranscriptPaging({
     let prevTop = el.scrollTop
     const onScroll = () => {
       const st = el.scrollTop
-      const up = st < prevTop
+      // Toward history: up in the chronological layout, down in the top-down one.
+      const towardHistory = topDown ? st > prevTop : st < prevTop
       prevTop = st
-      if (!up) return
+      if (!towardHistory) return
       const chat = store.getState().chat
       if (!chat.slotOlderError || chat.loadingOlder || !chat.slotHasMore) return
       const now = Date.now()
@@ -558,7 +585,7 @@ export function useTranscriptPaging({
     }
     el.addEventListener('scroll', onScroll, { passive: true })
     return () => el.removeEventListener('scroll', onScroll)
-  }, [dispatch, activeSlot, virt.scrollerRef])
+  }, [dispatch, activeSlot, virt.scrollerRef, topDown])
   // No "load more" pagination indicator with virtualization — the
   // windowing engine swaps mounted/placeholder automatically.
 

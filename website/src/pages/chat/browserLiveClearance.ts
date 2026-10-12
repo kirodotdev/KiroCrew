@@ -3,7 +3,10 @@
  *
  * The chat transcript scrolls UNDER an absolute overlay: the title row and the
  * pinned-prompt banner (`ChatTitleOverlay`, marked `data-transcript-top-overlay`,
- * and the banner's own `data-testid="pinned-prompt"`). When the person takes
+ * and the banner's own `data-testid="pinned-prompt"`). In the top-down layout
+ * the composer dock floats over the transcript's top edge too, below the title
+ * row, so its root (`ComposerDockView`) carries the same marker there; the
+ * bottom dock covers the bottom edge and carries none. When the person takes
  * over, the card grows and takes focus, and its header (who is in control,
  * the address, Hand back) can end up under that overlay. This measures how far
  * the header's top edge sits under the overlay's lowest edge and scrolls the
@@ -11,7 +14,8 @@
  *
  * Measured from layout, never from the banner's internals, so the banner stays
  * untouched apart from two marker attributes: one on the overlay root, one on the
- * banner's band.
+ * banner's band. The lowest marked edge wins, so in top-down the dock's bottom
+ * is the edge the header clears.
  *
  * While the person holds the browser the pinned-prompt banner also steps aside
  * (`holdPinnedPromptAside`): it pins the prompt that scrolled away, which during
@@ -21,12 +25,23 @@
 
 export const TOP_OVERLAY_ATTR = 'data-transcript-top-overlay'
 
+/** The marker's value on an overlay whose height changes while it is mounted
+ *  (the top-down composer dock, as its status stack and input grow). A card in
+ *  control clears it again on each change. The title row's value is ''. */
+export const TOP_OVERLAY_GROWS = 'grows'
+
 /** Space kept between the overlay's lower edge and the card's top, in px. */
 export const CLEARANCE_GAP_PX = 8
 
-/** The overlay's elements (the title row's root and the pinned-prompt card). */
+/** The overlay's elements (the title row's root, the pinned-prompt card, and in
+ *  the top-down layout the composer dock's root). */
 export function topOverlays(): HTMLElement[] {
   return [...document.querySelectorAll<HTMLElement>(`[${TOP_OVERLAY_ATTR}], [data-testid="pinned-prompt"]`)]
+}
+
+/** The marked overlays whose height changes while mounted (`TOP_OVERLAY_GROWS`). */
+export function growingTopOverlays(): HTMLElement[] {
+  return [...document.querySelectorAll<HTMLElement>(`[${TOP_OVERLAY_ATTR}="${TOP_OVERLAY_GROWS}"]`)]
 }
 
 /** The overlay's lowest edge on screen, or null when there is none. */

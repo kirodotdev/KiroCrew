@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect } from 'react'
 import { OverlayPortal } from './overlayRoot'
 import { EyeOff, Ghost, Loader2, Undo2, VenetianMask } from 'lucide-react'
 import { Glass } from './Glass'
+import { anchoredPopupBox, type AnchoredPopupBox } from '../lib/pickerMenu'
 
 import { i18nT } from '../i18n/t'
 import { uiLocation } from '../uiLocations/uiLocation'
@@ -15,15 +16,19 @@ interface MemoryModeChipProps {
   switching?: boolean
   /** An optimize must settle first: the chip is inert and says why. */
   disabled?: boolean
+  /** Open the popover below the chip, capped to the room below: the top-down
+   *  chat layout puts the composer at the top of the window, where there is
+   *  no room above. Defaults to false. */
+  openBelow?: boolean
 }
 
 const GAP = 6
 const EDGE = 8
 
 /** Memory-mode chooser chip: opens an incognito/temporary popover, or offers the way back when one is active. */
-export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, disabled = false }: MemoryModeChipProps) {
+export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, disabled = false, openBelow = false }: MemoryModeChipProps) {
   const [open, setOpen] = useState(false)
-  const [pos, setPos] = useState<{ bottom: number; left: number } | null>(null)
+  const [pos, setPos] = useState<(AnchoredPopupBox & { left: number }) | null>(null)
   const btnRef = useRef<HTMLButtonElement>(null)
   const popRef = useRef<HTMLDivElement>(null)
 
@@ -49,6 +54,7 @@ export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, di
   }, [open])
 
   // Opens UPWARD (never over the composer): bottom edge GAP above the chip, centred and clamped to the viewport.
+  // With `openBelow`, GAP under the chip instead, capped to the room below.
   useLayoutEffect(() => {
     if (!open) { setPos(null); return }
     const b = btnRef.current?.getBoundingClientRect()
@@ -56,10 +62,9 @@ export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, di
     if (!b || !p) return
     const w = p.offsetWidth
     const vw = window.innerWidth
-    const bottom = window.innerHeight - b.top + GAP
     const left = Math.min(Math.max(EDGE, b.left + b.width / 2 - w / 2), Math.max(EDGE, vw - EDGE - w))
-    setPos({ bottom, left })
-  }, [open])
+    setPos({ ...anchoredPopupBox(b, openBelow, GAP), left })
+  }, [open, openBelow])
 
   const currentMode = (memoryMode ?? 'persistent') as MemoryMode
   // A non-persistent memory mode is the ephemeral state; the trigger
@@ -106,9 +111,9 @@ export function MemoryModeChip({ memoryMode, onSwitchMode, switching = false, di
         <div
           ref={popRef}
           data-testid="memory-mode-popover"
-          className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl p-2 flex flex-col sm:flex-row gap-2 max-w-[calc(100vw-16px)]"
+          className={`fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl p-2 flex flex-col sm:flex-row gap-2 max-w-[calc(100vw-16px)]${openBelow ? ' overflow-y-auto' : ''}`}
           // Hidden for the one layout pass before it is measured, so it never flashes at 0,0.
-          style={pos ? { bottom: pos.bottom, left: pos.left } : { bottom: 0, left: 0, visibility: 'hidden' }}
+          style={pos ?? { bottom: 0, left: 0, visibility: 'hidden' }}
         >
           {([
             { key: 'incognito' as const, Icon: EyeOff, label: i18nT('components.welcomeView.incognito'), desc: i18nT('components.welcomeView.incognito_desc'), tile: 'bg-warn-subtle text-warn-text' },

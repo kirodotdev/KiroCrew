@@ -92,6 +92,8 @@ interface TranscriptPinsOptions {
   editSeqRef: MutableRefObject<number>
   renderedDisplayItems: DisplayItem[]
   renderedTranscript: { messages: ChatMessage[]; displayItems: DisplayItem[]; }
+  /** The top-down layout: turns are drawn newest first. */
+  topDown?: boolean
 }
 
 /**
@@ -104,7 +106,7 @@ interface TranscriptPinsOptions {
 export function useTranscriptPins({
   embedded, dispatch, isMobile, activeSlot, messages, messagesRef, slotRunning, splitMode, crewWindow, slotHasMore, slotOldestIndex, cursorIsForActiveSlot, loadingOlder, activeViewIsBoundedPage,
   isWelcomeState, activeSlotRemoteBound, scrollerRef, search, navToDisplayIndex, pinnedJumpChrome, scrollToPinnedPrompt, setHighlightTs, splitFeatureEnabled, regenerating, setEditLast, editSeqRef,
-  renderedDisplayItems, renderedTranscript,
+  renderedDisplayItems, renderedTranscript, topDown = false,
 }: TranscriptPinsOptions) {
   // Search, pins, tool focus, and deep links navigate the rows the virtualizer
   // actually renders, including post-defer MCP App coalescing.
@@ -116,8 +118,10 @@ export function useTranscriptPins({
   const navigateToTurn = useCallback((displayIndex: number, opts?: { instant?: boolean }) => {
     // instant: used by the minimap's drag-scrub — a smooth glide would lag the
     // pointer and queue easings on every marker crossing.
-    navToDisplayIndex(displayIndex, { behavior: opts?.instant ? 'auto' : 'smooth', align: 'start', offset: -24 })
-  }, [navToDisplayIndex])
+    // Top-down: the composer dock covers the scroller's top edge, and
+    // pinnedJumpChrome then measures what the turn must clear.
+    navToDisplayIndex(displayIndex, { behavior: opts?.instant ? 'auto' : 'smooth', align: 'start', offset: topDown ? -pinnedJumpChrome() : -24 })
+  }, [navToDisplayIndex, topDown, pinnedJumpChrome])
 
   // The transcript renders the deferred `renderedTranscript` snapshot; while a
   // history page lands, live indexes lead the rows on screen. The minimap's
@@ -128,13 +132,23 @@ export function useTranscriptPins({
   // landing history page by one deferred commit -- deliberate, and harmless for
   // a side panel.
   const chatNav = useChatNavigation(renderedTranscript.messages, messageToDisplayIdx)
+  // The turns in screen order, as the minimap draws them: newest first in the
+  // top-down layout. Each section's display index already points into the
+  // reordered rows, so only the list order flips.
+  const screenNavSections = useMemo(
+    () => (topDown ? chatNav.sections.slice().reverse() : chatNav.sections),
+    [chatNav.sections, topDown],
+  )
   // Alt+↑ / Alt+↓ step through the same turns by way of the pinned-prompt jump.
   // Single chat only: split view draws its sessions as panes, a crew window
   // covers this transcript, and an embedded chat is not the page the keyboard
   // drives.
   const turnStepAnnouncement = useTurnStepper({
     active: !embedded && !(splitMode && splitFeatureEnabled) && !crewWindow && !isWelcomeState && !!activeSlot,
-    turns: chatNav.sections,
+    // Screen order, so Alt+↑ still steps toward the turn drawn above.
+    // `newestFirst` keeps the announced number counting from the oldest turn.
+    turns: screenNavSections,
+    newestFirst: topDown,
     windowed: slotHasMore && cursorIsForActiveSlot,
     scrollerRef,
     landingInset: pinnedJumpChrome,
@@ -375,7 +389,7 @@ export function useTranscriptPins({
   const messageToDisplayIdxRef = useRef(messageToDisplayIdx)
   messageToDisplayIdxRef.current = messageToDisplayIdx
   return {
-    messageToDisplayIdx, navigateToTurn, chatNav, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
+    messageToDisplayIdx, navigateToTurn, chatNav, screenNavSections, turnStepAnnouncement, chatPins, chatPinsLoading, isPinned, setPendingPinnedJump, handleEditLastRequest, handleJumpToPinnedMessage, handleJumpToQuote,
     handleJumpToPin, handleTogglePinForMessage, handleUnpinById, pinError, pinStatus, dismissPinStatus, messageToDisplayIdxRef,
   }
 }

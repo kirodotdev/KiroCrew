@@ -18,7 +18,7 @@ const VIEWPORT = 600
 
 interface Geometry { scrollHeight: number; scrollTop: number; barInView: boolean }
 
-function Harness({ sessionId, earlier, geom, follow, measured, mountedIndices, itemCount, elRef }: {
+function Harness({ sessionId, earlier, geom, follow, measured, mountedIndices, itemCount, elRef, historyAtBottom }: {
   sessionId: string
   earlier: EarlierWalkSource | undefined
   geom: Geometry
@@ -27,6 +27,7 @@ function Harness({ sessionId, earlier, geom, follow, measured, mountedIndices, i
   mountedIndices: readonly number[]
   itemCount: number
   elRef: MutableRefObject<HTMLDivElement | null>
+  historyAtBottom?: boolean
 }) {
   const ref = useRef<HTMLDivElement | null>(null)
   // jsdom has no layout: the scroller's geometry is pinned on the element so
@@ -53,6 +54,7 @@ function Harness({ sessionId, earlier, geom, follow, measured, mountedIndices, i
     getMountedIndices: () => mountedIndices,
     farmIsMeasured: measured,
     itemCount,
+    historyAtBottom,
   })
   return (
     <div ref={bind}>
@@ -135,6 +137,29 @@ describe('useEarlierHistoryWalk', () => {
     gestureAndSettle(el)
     ticks()
     expect(loadThreadB).toHaveBeenCalledTimes(1)
+  })
+
+  it('with history at the bottom (top-down layout), pages near the history end and not at scrollTop 0', () => {
+    // Newest-first rows put the oldest loaded turn and the bar at the END of
+    // the scroller, so "near the history edge" is measured from the bottom.
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-10-23T00:00:00Z'))
+    const atLiveEdge = mount({ historyAtBottom: true })
+    gestureAndSettle(atLiveEdge.elRef.current!)
+    ticks(3)
+    expect(atLiveEdge.onLoad).not.toHaveBeenCalled()
+
+    const nearEnd = { ...TALL, scrollTop: TALL.scrollHeight - VIEWPORT - 100 }
+    const atHistoryEnd = mount({ historyAtBottom: true, geom: nearEnd })
+    gestureAndSettle(atHistoryEnd.elRef.current!)
+    ticks()
+    expect(atHistoryEnd.onLoad).toHaveBeenCalledTimes(1)
+
+    // The same position in the default layout is far from its history edge.
+    const bottomLayout = mount({ geom: nearEnd })
+    gestureAndSettle(bottomLayout.elRef.current!)
+    ticks(3)
+    expect(bottomLayout.onLoad).not.toHaveBeenCalled()
   })
 
   it('never pages a bottom-followed reader', () => {

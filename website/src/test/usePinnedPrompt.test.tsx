@@ -1,5 +1,5 @@
 import { act, renderHook } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import type { ChatMessage } from '../types'
 import type { DisplayItem } from '../pages/chat/types'
@@ -51,8 +51,8 @@ function flushFrame(at: number) {
 }
 
 const message = (role: string, content: string, ts: string): ChatMessage => ({ role, content, cls: '', ts })
-const single = (idx: number, role: string, content: string): DisplayItem => ({
-  kind: 'single', idx, msg: message(role, content, `2026-09-08T00:00:0${idx}.000Z`),
+const single = (idx: number, role: string, content: string, meta?: ChatMessage['meta']): DisplayItem => ({
+  kind: 'single', idx, msg: { ...message(role, content, `2026-09-08T00:00:0${idx}.000Z`), meta },
 })
 
 function mountGeometry(rowCount: number) {
@@ -88,9 +88,9 @@ function mountGeometry(rowCount: number) {
   return { scroller, fold, card, rows, get scrollTop() { return scrollTop } }
 }
 
-function renderPin(requiresMountedHandoff = false) {
+function renderPin(requiresMountedHandoff = false, liveEdgeAtTop = false) {
   const scrollerRef = { current: null as HTMLDivElement | null }
-  const hook = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff }))
+  const hook = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff, liveEdgeAtTop }))
   return { ...hook, scrollerRef }
 }
 
@@ -332,6 +332,30 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     expect(h.result.current.pinned).toBeNull()
   })
 
+  it.each([
+    { liveEdgeAtTop: true, expectedAnchor: 1 },
+    { liveEdgeAtTop: false, expectedAnchor: 0 },
+  ])('chooses the correct in-place jump anchor for consecutive prompts (liveEdgeAtTop=$liveEdgeAtTop)', ({ liveEdgeAtTop, expectedAnchor }) => {
+    const h = renderPin(true, liveEdgeAtTop)
+    const g = mountGeometry(3)
+    const items: DisplayItem[] = [
+      single(0, 'user', 'steer prompt', { steer: true }),
+      single(1, 'user', 'original prompt'),
+      single(2, 'assistant', 'reply'),
+    ]
+    const mountIndex = vi.fn(() => false)
+
+    wire(h, g, items)
+    act(() => {
+      h.result.current.jumpToPinnedPromptInPlace(1, {
+        mountIndex,
+        estimateRowTop: () => null,
+      })
+    })
+
+    expect(mountIndex).toHaveBeenCalledWith(expectedAnchor, { unionOnly: true })
+  })
+
   it('glides the in-place jump to the target row minus the banner chrome, then converges', () => {
     const h = renderPin()
     const g = mountGeometry(5)
@@ -358,6 +382,19 @@ describe('usePinnedPrompt (shared pinned-prompt geometry)', () => {
     flushFrame(900)
     expect(g.scrollTop).toBe(102)
     expect(frames).toHaveLength(0)
+  })
+
+  it('top-down layout: the landing clears the composer dock the scroller pads for, not a banner', () => {
+    const scroller = document.createElement('div')
+    scroller.style.paddingTop = '212px'
+    document.body.appendChild(scroller)
+    onTestFinished(() => scroller.remove())
+    const scrollerRef = { current: scroller as HTMLDivElement | null }
+    const top = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true, liveEdgeAtTop: true }))
+    expect(top.result.current.pinnedJumpChrome()).toBe(212 + 24)
+    const bottom = renderHook(() => usePinnedPrompt({ scrollerRef, requiresMountedHandoff: true }))
+    // No fold mounted: the default 48px fold plus banner travel and slack.
+    expect(bottom.result.current.pinnedJumpChrome()).not.toBe(212 + 24)
   })
 
   it('aborts the in-place glide on user scroll intent', () => {

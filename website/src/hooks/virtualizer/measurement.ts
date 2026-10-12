@@ -324,6 +324,7 @@ export function useRowMeasurement<T>(ctx: {
   elIndexRef: Ref<Map<Element, number>>
   resizeObserverRef: Ref<ResizeObserver | null>
   trailingRef: RefObject<HTMLDivElement>
+  leadingRef: RefObject<HTMLDivElement>
   heightIndexRef: Ref<HeightIndex | null>
   canMeasure?: () => boolean
   windowRangeRef: Ref<WindowRange>
@@ -334,7 +335,7 @@ export function useRowMeasurement<T>(ctx: {
 }): RowMeasurement {
   const {
     itemsRef, getKeyRef, streamingIndexRef, eagerFirstMeasureRef, elIndexRef, resizeObserverRef,
-    trailingRef, heightIndexRef, windowRangeRef, canMeasure, scrollerRef,
+    trailingRef, leadingRef, heightIndexRef, windowRangeRef, canMeasure, scrollerRef,
   } = ctx
   const { graceIndexRef } = ctx.grace
   const { scheduleHeightSync } = ctx.sync
@@ -510,6 +511,14 @@ export function useRowMeasurement<T>(ctx: {
     // bottom is waiting to see, and no engine carries anyone down to it (see
     // the observer in observers.ts).
     let trailingChromeResized = false
+    // True when the leading-chrome wrapper resized: the footer, preparing
+    // caption and survey the shell renders BEFORE the rows in the top-down
+    // layout (it mounts the wrapper only there). Like the trailing wrapper it
+    // feeds no height into the cache. Its change moves every row, so it only
+    // admits the fire to the residual below, which measures how far the
+    // reader's row actually moved: on an engine with no scroll anchoring that
+    // is the whole change, on Chromium only what native anchoring left undone.
+    let leadingChromeResized = false
     // True when the SCROLLER's own box resized (the observer watches it
     // alongside the rows). Chrome around the transcript changes the viewport
     // height with no scroll event and no row resize — the composer autosizes
@@ -614,6 +623,10 @@ export function useRowMeasurement<T>(ctx: {
         if (prevCh > 0 && el.clientHeight > prevCh) continue
         if (composerExplainsViewportChange()) continue
         viewportResized = true
+        continue
+      }
+      if (leadingRef.current !== null && entry.target === leadingRef.current) {
+        leadingChromeResized = true
         continue
       }
       if (trailingRef.current !== null && entry.target === trailingRef.current) {
@@ -757,7 +770,12 @@ export function useRowMeasurement<T>(ctx: {
     //
     // Only a row that is no longer mounted stands this down (see the record's
     // doc for why the reader's own input cannot make the record stale).
-    if (anchor && genuineResize && elIndexRef.current.has(anchor.node)) {
+    //
+    // Leading chrome takes this same path, not a write of its own height
+    // delta: the residual is measured after layout, so it never adds to what
+    // Chromium's anchoring already applied. The compensation then writes it
+    // only for a released reader outside a slide hold (compensateAboveFold).
+    if (anchor && (genuineResize || leadingChromeResized) && elIndexRef.current.has(anchor.node)) {
       const nowTop = anchor.node.getBoundingClientRect().top - foldTop
       const wantedTop = anchor.prevTop - anchorOwnReprice
       aboveFoldReprice += nowTop - wantedTop
@@ -775,7 +793,7 @@ export function useRowMeasurement<T>(ctx: {
     // This fire classified the layout at the scroller's current width.
     recordWidthRef.current = el.clientWidth
     return { genuineResize, firstMount, viewportResized, tailRowResized, trailingChromeResized, streamingRowResized, aboveFoldReprice }
-  }, [elIndexRef, itemsRef, measurementIndex, streamingIndexRef, graceIndexRef, trailingRef, lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef])
+  }, [elIndexRef, itemsRef, measurementIndex, streamingIndexRef, graceIndexRef, trailingRef, leadingRef, lastScrollClientHRef, lastReaderScrollAtRef, lastHardInputAtRef])
 
   // ---- measureRef: per-item ref callback (memoized per index) ----
   //

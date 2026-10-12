@@ -5,7 +5,7 @@
 import { render, screen } from '@testing-library/react'
 import React, { createRef, type ReactNode } from 'react'
 import type { ChatMessage } from '../types'
-import type { TurnItem } from '../pages/chat/types'
+import type { DisplayItem, TurnItem } from '../pages/chat/types'
 
 vi.mock('../pages/chat/AssistantMessage', () => ({
   default: (props: { content: string }) => <div data-testid="assistant-message">{props.content}</div>,
@@ -15,6 +15,9 @@ vi.mock('../pages/chat/UserMessage', () => ({
 }))
 vi.mock('../components/MarkdownRenderer', () => ({
   default: ({ content }: { content: string }) => <span>{content}</span>,
+}))
+vi.mock('../pages/chat/NudgeCard', () => ({
+  default: ({ message }: { message: ChatMessage }) => <div data-testid="nudge-message">{message.content}</div>,
 }))
 vi.mock('../pages/chat/TurnBlock', () => ({
   default: ({ turn, renderItem }: {
@@ -67,6 +70,82 @@ describe('ChatMessageList transcript mount', () => {
       .toBeGreaterThan(0)
     // The handle reaches the scroll control.
     expect(typeof ref.current?.scrollToBottom).toBe('function')
+  })
+
+  it('puts a split-pane nudge and its reply in the newest top-down turn', () => {
+    const messages = [
+      msg('user', 'q1', '2026-01-01T00:00:01Z'),
+      msg('assistant', 'a1', '2026-01-01T00:00:02Z'),
+      msg('nudge', 'n1', '2026-01-01T00:00:03Z'),
+      msg('assistant', 'a2', '2026-01-01T00:00:04Z'),
+    ]
+    const { container } = render(
+      <ChatMessageList
+        messages={messages}
+        running={false}
+        transcript={{ sessionId: 'test:nudge-newest-first', order: 'newest-first' }}
+      />,
+    )
+    const rows = [...container.querySelectorAll<HTMLElement>('[data-display-index]')]
+      .map((row) => row.textContent)
+    expect(rows).toEqual(['n1', 'a2', 'q1', 'a1'])
+  })
+
+  it('keeps the headless oldest top-down turn mounted when an older page grows its head', () => {
+    // The headless turn is drawn last in newest-first order. Its key must stay
+    // the chronological tail key: a lead key renames the row on each landing,
+    // so React remounts it (a new DOM node) and its height cache entry is lost.
+    const headless = [
+      msg('assistant', 'h1', '2026-01-01T00:00:03Z'),
+      msg('tool', 't1', '2026-01-01T00:00:04Z'),
+      msg('assistant', 'h2', '2026-01-01T00:00:05Z'),
+    ]
+    const newest = [msg('user', 'q2', '2026-01-01T00:00:06Z'), msg('assistant', 'a2', '2026-01-01T00:00:07Z')]
+    const olderPage = [msg('assistant', 'h0', '2026-01-01T00:00:01Z'), msg('tool', 't0', '2026-01-01T00:00:02Z')]
+    const transcript = { sessionId: 'test:headless-newest-first', order: 'newest-first' as const }
+    const headlessRow = (root: HTMLElement) => {
+      const rows = [...root.querySelectorAll<HTMLElement>('[data-display-index]')]
+      expect(rows.map((r) => r.textContent)).toEqual(['q2', 'a2', expect.stringContaining('h2')])
+      return rows[2]
+    }
+    const { container, rerender } = render(
+      <ChatMessageList messages={[...headless, ...newest]} running={false} transcript={transcript} />,
+    )
+    const before = headlessRow(container)
+    expect(before.textContent).not.toContain('h0')
+    rerender(<ChatMessageList messages={[...olderPage, ...headless, ...newest]} running={false} transcript={transcript} />)
+    const after = headlessRow(container)
+    expect(after.textContent).toContain('h0')
+    expect(after).toBe(before)
+  })
+
+  it('keeps the chronological nudge grouping when newest-first is off', () => {
+    const onDisplayItems = vi.fn()
+    const messages = [
+      msg('user', 'q1', '2026-01-01T00:00:01Z'),
+      msg('assistant', 'a1', '2026-01-01T00:00:02Z'),
+      msg('nudge', 'n1', '2026-01-01T00:00:03Z'),
+      msg('assistant', 'a2', '2026-01-01T00:00:04Z'),
+    ]
+    render(
+      <ChatMessageList
+        messages={messages}
+        running={false}
+        onDisplayItems={onDisplayItems}
+        transcript={{ sessionId: 'test:nudge-chronological' }}
+      />,
+    )
+    const items = onDisplayItems.mock.calls.at(-1)![0] as DisplayItem[]
+    expect(items).toHaveLength(2)
+    expect(items[0]).toMatchObject({ kind: 'single', msg: { content: 'q1' } })
+    expect(items[1]).toMatchObject({
+      kind: 'turn',
+      items: [
+        { kind: 'single', msg: { content: 'a1' } },
+        { kind: 'single', msg: { content: 'n1' } },
+        { kind: 'single', msg: { content: 'a2' } },
+      ],
+    })
   })
 
   it('hides the pinned row by identity inside the virtualized mount', () => {

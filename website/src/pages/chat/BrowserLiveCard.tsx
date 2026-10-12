@@ -14,7 +14,7 @@ import { browserStageStore, stageTurnId, useBrowserStage } from '../../hooks/use
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useLanguageGeneration } from '../../i18n/useLanguageGeneration'
 import type { BrowserLiveCanvasHandle } from './BrowserLiveCardCanvas'
-import { clearTopOverlay, holdPinnedPromptAside } from './browserLiveClearance'
+import { clearTopOverlay, growingTopOverlays, holdPinnedPromptAside } from './browserLiveClearance'
 import { BrowserLiveAllowView, BrowserLiveDoneRow, BrowserLiveLiveView, BrowserLiveStagedRow, hostOf } from './BrowserLiveCardViews'
 import BrowserLiveSheet from './BrowserLiveSheet'
 
@@ -151,7 +151,13 @@ function BrowserLiveCard({ sessionKey, anchorKey, anchorTs, running, goTo, polic
     const clear = () => { if (rootRef.current) clearTopOverlay(rootRef.current) }
     const raf = requestAnimationFrame(clear)
     const settle = setTimeout(clear, GROW_SETTLE_MS)
-    return () => { cancelAnimationFrame(raf); clearTimeout(settle); releaseAside() }
+    // An overlay that grows while the person holds the browser (the top-down
+    // composer dock) would cover the header again: clear it on each change.
+    // The bottom layout has no such overlay, so nothing is observed there.
+    const growing = growingTopOverlays()
+    const ro = growing.length && typeof ResizeObserver !== 'undefined' ? new ResizeObserver(clear) : null
+    for (const el of growing) ro?.observe(el)
+    return () => { cancelAnimationFrame(raf); clearTimeout(settle); ro?.disconnect(); releaseAside() }
   }, [inControl])
 
   const claim = useCallback(() => { void browserLiveStore.claim(sessionKey) }, [sessionKey])

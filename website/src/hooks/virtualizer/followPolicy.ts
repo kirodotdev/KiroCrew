@@ -31,19 +31,31 @@ import { attachUserScrollIntent, type ScrollIntentDirection } from '../../utils/
 import {
   SCROLL_SETTLE_MS,
   SELF_SCROLL_EPSILON,
+  atBottomEpsilon,
   bottomTarget,
   distanceFromBottom,
   evaluateAutoPin,
   followAnchorMode,
+  followTarget,
   isEngineClampBelowWrite,
   isSelfScroll,
   pinSuppressedNow,
   resolveUserScrollStick,
   scrollerCollapsed,
   scrollIntentPending,
+  type FollowEdge,
   type ScrollGeom,
 } from './FollowController'
-import { bottomPinWindow, computeJumpWindow, getOffset as getOffsetFn, tailWindow, type HeightGetter, type WindowRange } from './WindowCalculator'
+import {
+  bottomPinWindow,
+  computeJumpWindow,
+  getOffset as getOffsetFn,
+  headPinWindow,
+  liveWindow,
+  tailWindow,
+  type HeightGetter,
+  type WindowRange,
+} from './WindowCalculator'
 import type { ScrollToIndexOptions } from './types'
 import type { ReadingPositionEntry } from './readingPosition'
 import type { ResizeBatch } from './measurement'
@@ -64,6 +76,10 @@ type SetWindowRange = (next: WindowRange | ((prev: WindowRange) => WindowRange))
 
 /** The follow state every other owner reads and, at named sites, writes. */
 export interface FollowState {
+  /** Which end is the live edge (see UseVirtualChatOptions.followEdge). Fixed
+   *  for the hook's lifetime in practice; every owner that moves the reader on
+   *  follow's behalf reads its target through it. */
+  followEdge: FollowEdge
   stickRef: Ref<boolean>
   lastWriteTopRef: Ref<number>
   /** Target of the last programmatic write, whatever its accounting. Only
@@ -78,6 +94,10 @@ export interface FollowState {
    *  A tap, a scrollbar grab or a zero-delta wheel names none and moves nothing. */
   lastDirectionalInputAtRef: Ref<number>
   lastUpwardInputAtRef: Ref<number>
+  /** DOWNWARD-only sibling of lastUpwardInputAtRef. With the live edge at the
+   *  top, a downward input is the one that leaves it, so it is what the held
+   *  pin waits on there (see pinAuto). */
+  lastDownwardInputAtRef: Ref<number>
   lastGrabInputAtRef: Ref<number>
   lastScrollEventAtRef: Ref<number>
   lastScrollClientHRef: Ref<number>
@@ -99,7 +119,7 @@ export interface FollowState {
   noteHardInput: (dir?: ScrollIntentDirection, px?: number, el?: HTMLElement | null) => void
 }
 
-export function useFollowState(followOutput: boolean): FollowState {
+export function useFollowState(followOutput: boolean, followEdge: FollowEdge = 'bottom'): FollowState {
   // ---- Follow / stick-to-bottom state (see FollowController) ----
   //
   // `stickRef`: should the viewport stay pinned to the bottom. Turned OFF only
@@ -155,6 +175,7 @@ export function useFollowState(followOutput: boolean): FollowState {
   // during streaming, and a content-shrink clamp inside its settle window must
   // keep follow armed rather than releasing the reader who asked for the end.
   const lastUpwardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  const lastDownwardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // A pointer landing on the SCROLLBAR (the intent listener's `grab`): a scroll
   // is about to happen and nothing names its direction until the first drag
   // movement scrolls. Held like an upward input until that scroll event (see
@@ -335,10 +356,24 @@ export function useFollowState(followOutput: boolean): FollowState {
     // directionless grab or a downward input must not disable the clamp
     // guard (see lastUpwardInputAtRef).
     if (dir === 'up') lastUpwardInputAtRef.current = now
+    if (dir === 'down') lastDownwardInputAtRef.current = now
     if (dir === 'up' || dir === 'down') lastDirectionalInputAtRef.current = now
     // A scrollbar grab arms its own hold (see lastGrabInputAtRef); it is still
     // directionless for the clamp guard above.
     if (dir === 'grab') lastGrabInputAtRef.current = now
+    // TOP EDGE: the same wall, at scrollTop 0. A released reader already at
+    // the top who scrolls up raises no scroll event, so the input is the only
+    // evidence they asked for the live edge. Nothing but their own move can
+    // put a reader at 0 (see resolveUserScrollStick's top rules), so the
+    // upward input there is the whole test.
+    if (followEdge === 'top') {
+      if (dir === 'up' && el && followOutput && !stickRef.current && el.scrollTop <= atBottomEpsilon()) {
+        stickRef.current = true
+        lastWriteTopRef.current = el.scrollTop
+        lastWriteClientHRef.current = el.clientHeight
+      }
+      return
+    }
     // THE RE-ENGAGE THE SCROLL HANDLER CANNOT SEE. A released reader the
     // growth clamped flush is at the scroller's maximum: dragging on raises no
     // scroll event, so `onFollowScroll` never runs again for this gesture and
@@ -371,7 +406,7 @@ export function useFollowState(followOutput: boolean): FollowState {
         lastWriteClientHRef.current = el.clientHeight
       }
     }
-  }, [followOutput])
+  }, [followOutput, followEdge])
 
   // ---- The single chokepoint for programmatic scroll writes ----
   //
@@ -485,6 +520,7 @@ export function useFollowState(followOutput: boolean): FollowState {
   )
 
   return {
+    followEdge,
     stickRef,
     lastWriteTopRef,
     lastProgrammaticTopRef,
@@ -495,6 +531,7 @@ export function useFollowState(followOutput: boolean): FollowState {
     lastUserScrollAtRef,
     lastHardInputAtRef,
     lastUpwardInputAtRef,
+    lastDownwardInputAtRef,
     lastGrabInputAtRef,
     lastScrollEventAtRef,
     lastScrollClientHRef,
@@ -546,6 +583,7 @@ export function usePinning<T>(ctx: {
   const getHRef = useRef(getH)
   getHRef.current = getH
   const {
+    followEdge,
     stickRef,
     lastWriteTopRef,
     lastWriteClientHRef,
@@ -554,6 +592,7 @@ export function usePinning<T>(ctx: {
     lastUserScrollAtRef,
     lastHardInputAtRef,
     lastUpwardInputAtRef,
+    lastDownwardInputAtRef,
     lastGrabInputAtRef,
     lastScrollEventAtRef,
     lastScrollClientHRef,
@@ -650,10 +689,13 @@ export function usePinning<T>(ctx: {
     // scrolls (see scheduleHeldPinRetry). Downward and directionless input is
     // NOT held: a wheel-down at the end, a click on a message, a finger that
     // landed and lifted move nothing and must not stop a reply from being
-    // followed (the regression the resting rule fixes).
+    // followed (the regression the resting rule fixes). With the live edge at
+    // the TOP the input that leaves it is a DOWNWARD one, so that is the
+    // direction held there.
     const now = performance.now()
+    const awayInputAt = followEdge === 'top' ? lastDownwardInputAtRef.current : lastUpwardInputAtRef.current
     const heldFor = Math.max(
-      scrollIntentPending(now, lastUpwardInputAtRef.current, lastScrollEventAtRef.current, SCROLL_SETTLE_MS),
+      scrollIntentPending(now, awayInputAt, lastScrollEventAtRef.current, SCROLL_SETTLE_MS),
       scrollIntentPending(now, lastGrabInputAtRef.current, lastScrollEventAtRef.current, SCROLL_SETTLE_MS),
     )
     if (heldFor > 0) {
@@ -661,8 +703,9 @@ export function usePinning<T>(ctx: {
       return
     }
     const geom = { scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+    // The shrink allowance chases a moving bottom; the top target does not move.
     const viewportShrink =
-      lastWriteClientHRef.current >= 0 ? lastWriteClientHRef.current - geom.clientHeight : 0
+      followEdge === 'bottom' && lastWriteClientHRef.current >= 0 ? lastWriteClientHRef.current - geom.clientHeight : 0
     const result = evaluateAutoPin({
       stick: stickRef.current,
       geom,
@@ -676,6 +719,7 @@ export function usePinning<T>(ctx: {
       // against the box our reference was a bottom for, never the box the
       // animation just applied.
       viewportShrink,
+      edge: followEdge,
     })
     const wasStick = stickRef.current
     stickRef.current = result.stick
@@ -691,19 +735,19 @@ export function usePinning<T>(ctx: {
   }, [
     scrollerRef, writeScrollTop, releaseFollowBaseline,
     smoothPinActiveRef, lastWriteClientHRef, stickRef, lastWriteTopRef, runActiveRef, settleGateRef,
-    lastUpwardInputAtRef, lastGrabInputAtRef, lastScrollEventAtRef, scheduleHeldPinRetry,
+    lastUpwardInputAtRef, lastDownwardInputAtRef, lastGrabInputAtRef, lastScrollEventAtRef, scheduleHeldPinRetry, followEdge,
   ])
   pinAutoRef.current = pinAuto
 
-  // Forced pin: explicit jump-to-bottom (slot entry, scrollToBottom API,
-  // jump-to-latest pill). Always lands at the bottom and (re-)arms follow.
+  // Forced pin: explicit jump to the live edge (slot entry, scrollToBottom API,
+  // jump-to-latest pill). Always lands at the edge and (re-)arms follow.
   const forcePin = useCallback(() => {
     const el = scrollerRef.current
     if (!el) return
     stickRef.current = followOutput
-    const target = bottomTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight })
+    const target = followTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }, followEdge)
     writeScrollTop(el, target, 'auto', 'pin', 'forcepin')
-  }, [followOutput, scrollerRef, writeScrollTop, stickRef])
+  }, [followOutput, followEdge, scrollerRef, writeScrollTop, stickRef])
 
   // FOLLOWED reader under a height commit: re-target the bottom PRE-PAINT in the
   // same commit that repriced the tree. The height-sync anchor consumer calls
@@ -719,8 +763,9 @@ export function usePinning<T>(ctx: {
     // trigger and delivers the clamp's scroll event a frame later, after the
     // tail has grown back; adopting the clamped position as the reference here,
     // before any early return, makes that late event a self-scroll (see
-    // isEngineClampBelowWrite).
-    if (isEngineClampBelowWrite({
+    // isEngineClampBelowWrite). The rule chases a clamp to a moving bottom; at
+    // the TOP edge the target is 0 and a shrink cannot clamp a reader there.
+    if (followEdge === 'bottom' && isEngineClampBelowWrite({
       stick: stickRef.current,
       geom: el,
       lastWriteTop: lastWriteTopRef.current,
@@ -762,8 +807,9 @@ export function usePinning<T>(ctx: {
     // short way above it. `pinSuppressedNow` cannot catch this: the hardware
     // intent listeners are on the SCROLLER, and a keystroke in the composer
     // never reaches them. Growth (composer collapsing, keyboard closing) still
-    // pins: that space is being given back.
-    if (lastWriteClientHRef.current >= 0 && geom.clientHeight < lastWriteClientHRef.current) return
+    // pins: that space is being given back. At the TOP edge the shrink moves
+    // nothing (the target is 0), so the guard does not apply.
+    if (followEdge === 'bottom' && lastWriteClientHRef.current >= 0 && geom.clientHeight < lastWriteClientHRef.current) return
     // Delegate to the same predicate the post-paint pin uses instead of
     // hand-rolling a second gate here: this branch is the pre-paint half of one
     // decision, and a private copy of it is how the idle rule (`runActive`)
@@ -774,6 +820,7 @@ export function usePinning<T>(ctx: {
       lastWriteTop: lastWriteTopRef.current,
       runActive: runActiveRef.current,
       restoreGate: settleGateRef.current,
+      edge: followEdge,
     })
     const wasStick = stickRef.current
     stickRef.current = decision.stick
@@ -781,7 +828,7 @@ export function usePinning<T>(ctx: {
     if (!decision.pin) return
     if (Math.abs(el.scrollTop - decision.target) > 0.5) writeScrollTop(el, decision.target, 'auto', 'pin', 'prepin')
   }, [
-    writeScrollTop, releaseFollowBaseline,
+    writeScrollTop, releaseFollowBaseline, followEdge,
     stickRef, lastHardInputAtRef, pinCascadeUntilRef, lastWriteClientHRef, lastWriteTopRef, runActiveRef, settleGateRef,
     lastUpwardInputAtRef, smoothPinActiveRef,
   ])
@@ -881,8 +928,9 @@ export function usePinning<T>(ctx: {
       // a pin whose target was clamped by the browser (a shrinking
       // scrollHeight can leave scrollTop short of the requested value
       // forever, which would otherwise leak the listeners).
-      const bottomAnchored =
-        geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
+      const bottomAnchored = followEdge === 'top'
+        ? geom.scrollTop <= SELF_SCROLL_EPSILON
+        : geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
       if (isSelfScroll(el.scrollTop, lastWriteTopRef.current) || bottomAnchored) {
         smoothPinActiveRef.current = false
         detachSmoothAbort()
@@ -892,18 +940,24 @@ export function usePinning<T>(ctx: {
         // has landed, correct the shortfall instantly.
         pinAuto()
       }
-      // If the user grabs the page mid-animation and scrolls up,
-      // scrollTop moves backward. Normal forward animation progress
-      // always increases scrollTop toward the target.
-      else if (el.scrollTop < prevSmoothTopRef.current - 1) {
+      // If the user grabs the page mid-animation and scrolls AWAY from the
+      // edge, scrollTop moves backward against the glide. Normal animation
+      // progress always moves it toward the target: up toward 0 for the top
+      // edge, down toward the bottom otherwise.
+      else if (
+        followEdge === 'top'
+          ? el.scrollTop > prevSmoothTopRef.current + 1
+          : el.scrollTop < prevSmoothTopRef.current - 1
+      ) {
         smoothPinActiveRef.current = false
         lastUserScrollAtRef.current = performance.now()
         lastHardInputAtRef.current = lastUserScrollAtRef.current
         // The grab is the reader's hand on the scroller: it opens a gesture.
         lastReaderScrollAtRef.current = lastUserScrollAtRef.current
         // scrollTop moving backward against the animation IS a confirmed
-        // upward gesture, so it also arms the clamp-release stamp.
-        lastUpwardInputAtRef.current = lastUserScrollAtRef.current
+        // gesture away from the edge, so it also arms that direction's stamp.
+        if (followEdge === 'top') lastDownwardInputAtRef.current = lastUserScrollAtRef.current
+        else lastUpwardInputAtRef.current = lastUserScrollAtRef.current
         stickRef.current = false
         detachSmoothAbort()
       }
@@ -918,8 +972,11 @@ export function usePinning<T>(ctx: {
       // the 100px `atBottom` UI band. resolveUserScrollStick's bottom-epsilon
       // branch is what keeps `stick` armed across the clamp; widening this to
       // the 100px band would erase the only evidence evaluateAutoPin has of a
-      // real 3-100px scroll-up.
+      // real 3-100px scroll-up. A scrollTop of 0 is never a clamp's doing at
+      // the TOP edge (a shrink lowers the maximum, not the minimum), so the
+      // absorption below does not apply there.
       const clampedAtBottom =
+        followEdge === 'bottom' &&
         geom.scrollHeight - (geom.scrollTop + geom.clientHeight) <= SELF_SCROLL_EPSILON
       const wasStick = stickRef.current
       stickRef.current = resolveUserScrollStick({
@@ -957,6 +1014,7 @@ export function usePinning<T>(ctx: {
         // directionless input leaves the clamp guard in place.
         upwardInputWithinSettle:
           performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
+        edge: followEdge,
       })
       if (wasStick && !stickRef.current) releaseFollowBaseline(el)
       const layoutClamp = stickRef.current && clampedAtBottom
@@ -1031,14 +1089,30 @@ export function usePinning<T>(ctx: {
     el.style.overflowAnchor = followAnchorMode(stickRef.current)
     lastScrollClientHRef.current = el.clientHeight
   }, [
-    followOutput, pinAuto, detachSmoothAbort, releaseFollowBaseline,
+    followOutput, followEdge, pinAuto, detachSmoothAbort, releaseFollowBaseline,
     smoothPinActiveRef, lastWriteTopRef, prevSmoothTopRef, lastUserScrollAtRef, lastHardInputAtRef,
-    lastUpwardInputAtRef, lastScrollEventAtRef, stickRef, lastObservedTopRef, lastScrollClientHRef, lastWriteClientHRef,
+    lastUpwardInputAtRef, lastDownwardInputAtRef, lastScrollEventAtRef, stickRef, lastObservedTopRef, lastScrollClientHRef, lastWriteClientHRef,
     viewportGrowthAccumRef, readerTravelAccumRef, readerIntentAccumRef, gestureStartGapRef, lastReaderScrollAtRef,
   ])
 
   const followResizeBatch = useCallback((batch: ResizeBatch) => {
     const { genuineResize, tailRowResized, firstMount, viewportResized, trailingChromeResized } = batch
+    // TOP EDGE. Growth anywhere lands at or below a reader at scrollTop 0, so
+    // no resize moves their target and the tail-row rules below have nothing
+    // to follow. A follower only needs the 0-check (they may sit in the
+    // re-engage band, where native anchoring can carry them off 0), under the
+    // same settle gate; a released reader is the shift compensation's.
+    if (followEdge === 'top') {
+      if (!stickRef.current) return
+      if (!(genuineResize || firstMount || viewportResized || trailingChromeResized)) return
+      const now = performance.now()
+      if (pinSuppressedNow(now, lastUserScrollAtRef.current, pinCascadeUntilRef.current, SCROLL_SETTLE_MS)) {
+        pinCascadeUntilRef.current = now + SCROLL_SETTLE_MS
+        return
+      }
+      pinAuto()
+      return
+    }
     // Follow streaming/widget growth — but only while the user is NOT
     // actively scrolling. A widget that re-measures mid-fling must not yank
     // the user to the bottom (which would also unmount the rows they were
@@ -1116,7 +1190,7 @@ export function usePinning<T>(ctx: {
         pinAuto()
       }
     }
-  }, [pinAuto, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef, smoothPinActiveRef])
+  }, [pinAuto, followEdge, stickRef, lastUserScrollAtRef, pinCascadeUntilRef, scrollerRef, lastWriteTopRef, lastWriteClientHRef, smoothPinActiveRef])
 
   // ---- scrollToIndex / scrollToBottom imperative APIs ----
 
@@ -1165,13 +1239,17 @@ export function usePinning<T>(ctx: {
       if (restoreOwnsPosition()) return
       // Explicit navigation owns the position from here (utils/panelSlide).
       releaseReadingPosition(el)
-      // Mount the tail so the bottom items have real heights, then force-pin.
-      // The tail covers the viewport (bottomPinWindow): a bare overscan-sized
-      // tail unmounted the rows on screen and showed the spacer's placeholder
-      // bars for the frames until the pin's scroll remounted them. Prices are
-      // read through a ref so this callback keeps its identity across a
-      // session or height-scope change (the surface contract).
-      setWindowRange(bottomPinWindow(count, overscan, getHRef.current, el.clientHeight))
+      // Mount the live-edge window so its rows have real heights, then
+      // force-pin: the tail for a bottom follower, the head for the top edge.
+      // The window covers the viewport (bottomPinWindow, headPinWindow): a bare
+      // overscan-sized window unmounted the rows on screen and showed the
+      // spacer's placeholder bars for the frames until the pin's scroll
+      // remounted them. Prices are read through a ref so this callback keeps
+      // its identity across a session or height-scope change (the surface
+      // contract).
+      setWindowRange(followEdge === 'top'
+        ? headPinWindow(count, overscan, getHRef.current, el.clientHeight)
+        : bottomPinWindow(count, overscan, getHRef.current, el.clientHeight))
       // Arm follow immediately so a streaming chunk that lands between now and
       // the rAF is also followed.
       stickRef.current = followOutput
@@ -1179,7 +1257,7 @@ export function usePinning<T>(ctx: {
         // Re-checked at APPLY time, not only at decision time: the gate can go up
         // in the frame between the two, which is exactly the race above.
         if (restoreOwnsPosition()) return
-        const target = bottomTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight })
+        const target = followTarget({ scrollTop: el.scrollTop, scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }, followEdge)
         stickRef.current = followOutput
         writeScrollTop(el, target, b, 'pin', 'bottom')
       }
@@ -1202,7 +1280,7 @@ export function usePinning<T>(ctx: {
         requestAnimationFrame(settle)
       })
     },
-    [overscan, followOutput, scrollerRef, writeScrollTop, restoreOwnsPosition, itemsRef, setWindowRange, stickRef],
+    [overscan, followOutput, followEdge, scrollerRef, writeScrollTop, restoreOwnsPosition, itemsRef, setWindowRange, stickRef],
   )
 
   return { pinAuto, forcePin, scrollToBottom, scrollToIndex, onFollowScroll, cancelHeldPinRetry, prePaintRepin, followResizeBatch }
@@ -1219,18 +1297,21 @@ export function useFollowPlacementPins<T>(ctx: {
   itemsRef: Ref<T[]>
   getKeyRef: Ref<(item: T, index: number) => string>
   setWindowRange: SetWindowRange
-  follow: Pick<FollowState, 'stickRef' | 'lastHardInputAtRef' | 'pinCascadeUntilRef' | 'writeScrollTop'>
+  follow: Pick<FollowState, 'followEdge' | 'stickRef' | 'lastHardInputAtRef' | 'pinCascadeUntilRef' | 'writeScrollTop'>
   pinning: Pick<Pinning, 'pinAuto' | 'forcePin'>
 }): void {
   const { itemCount, overscan, sessionId, scrollerRef, leadingOffset, itemsRef, getKeyRef, setWindowRange } = ctx
-  const { stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
+  const { followEdge, stickRef, lastHardInputAtRef, pinCascadeUntilRef, writeScrollTop } = ctx.follow
   const { pinAuto, forcePin } = ctx.pinning
 
   // ---- Leading chrome: content ABOVE the list inside the scroller ----
-  // The rows and the scroller's own box are observed; what sits between the
-  // scroll origin and the first row is not -- a paging bar that mounts once the
-  // server reports unloaded history, a header band the host renders above the
-  // rows. That chrome mounting or resizing moves every row by its height with
+  // The rows and the scroller's own box are observed. In the top-down layout
+  // the shell also wraps its leading slot in `leadingRef`, whose resizes reach
+  // the measured residual for a released reader (measurement.ts). In the
+  // bottom layout what sits between the scroll origin and the first row is
+  // not observed -- a paging bar that mounts once the server reports unloaded
+  // history, a header band the host renders above the rows. That chrome
+  // mounting or resizing moves every row by its height with
   // no ResizeObserver seeing it and no scroll event: on Chromium native scroll
   // anchoring silently carries a bottom-pinned reader through it, on WebKit
   // (no anchoring) the reader is left the chrome's height short of the end.
@@ -1255,6 +1336,14 @@ export function useFollowPlacementPins<T>(ctx: {
     // Same settle gate as the pre-paint pin: a gesture in flight outranks this
     // correction, and the post-paint RO pin still covers a parked reader.
     if (pinSuppressedNow(performance.now(), lastHardInputAtRef.current, pinCascadeUntilRef.current, SCROLL_SETTLE_MS)) return
+    // TOP EDGE: leading chrome sits between the follower and the newest row,
+    // and pinAuto's race guard would read an anchoring shift through it as the
+    // reader leaving. Leading chrome changing is not the reader, so re-write 0
+    // directly.
+    if (followEdge === 'top') {
+      if (el.scrollTop > 0) forcePin()
+      return
+    }
     pinAuto()
   })
   const prevItemCountRef = useRef(itemCount)
@@ -1264,6 +1353,9 @@ export function useFollowPlacementPins<T>(ctx: {
   // bulk hydration REPLACE (thin optimistic list swapped for the full
   // conversation): a prepend keeps the tail item, a replace does not.
   const prevTailKeyRef = useRef<{ session: string; key: string } | null>(null)
+  // Head identity of the previous commit, the top edge's counterpart: with the
+  // newest rows at index 0, a replaced head under bulk growth is hydration.
+  const prevHeadKeyRef = useRef<{ session: string; key: string } | null>(null)
   useLayoutEffect(() => {
     const el = scrollerRef.current
     if (!el) return
@@ -1273,7 +1365,48 @@ export function useFollowPlacementPins<T>(ctx: {
     const tailKey = tail !== undefined ? getKeyRef.current(tail, itemCount - 1) : null
     const prevTail = prevTailKeyRef.current
     prevTailKeyRef.current = tailKey !== null ? { session: sessionId, key: tailKey } : null
+    const head = itemCount > 0 ? itemsRef.current[0] : undefined
+    const headKey = head !== undefined ? getKeyRef.current(head, 0) : null
+    const prevHead = prevHeadKeyRef.current
+    prevHeadKeyRef.current = headKey !== null ? { session: sessionId, key: headKey } : null
     if (growth <= 0) return
+    // TOP EDGE. The bottom rules below read growth through the TAIL, which is
+    // the history end here: a new turn at the head leaves the tail unchanged
+    // and would be misread as a bulk prepend (window shifted, pinned to the
+    // bottom), and an older page landing at the end changes the tail and
+    // would be misread as hydration. So the top edge has its own branch,
+    // keyed on the HEAD:
+    //   - released reader: nothing. Rows inserted above them are the shift
+    //     compensation's to hold (TRIGGER 1 for a head insert), rows appended
+    //     at the end are below them and invisible.
+    //   - follower: write 0, pre-paint, whenever they are off it. At exactly 0 the new
+    //     head rows push everything down with no browser fight; inside the
+    //     re-engage band native anchoring would carry the reader past the new
+    //     rows, so the write is what keeps them in view. A forced pin, not
+    //     pinAuto: the anchoring shift reads as the reader leaving to its race
+    //     guard.
+    //   - follower, bulk growth with a REPLACED head: hydration, the head-side
+    //     twin of the tail rule below. Remount the head window first.
+    if (followEdge === 'top') {
+      if (!stickRef.current) return
+      const headReplaced = !(prevHead !== null && prevHead.session === sessionId && prevHead.key === headKey)
+      if (growth > overscan + 1 && headReplaced) setWindowRange(liveWindow(itemCount, overscan, 'top'))
+      // Hardware input arrives before the browser's scroll event. Do not let
+      // this automatic growth pin cancel a gesture whose scrollTop move has
+      // landed but whose event has not yet released follow.
+      const growthPinSuppressed = () => pinSuppressedNow(
+        performance.now(),
+        lastHardInputAtRef.current,
+        pinCascadeUntilRef.current,
+        SCROLL_SETTLE_MS,
+      )
+      if (!growthPinSuppressed() && el.scrollTop > 0) forcePin()
+      const id = requestAnimationFrame(() => {
+        if (!el.isConnected || !stickRef.current || growthPinSuppressed()) return
+        if (el.scrollTop > 0) forcePin()
+      })
+      return () => cancelAnimationFrame(id)
+    }
     // BULK growth while followed is history hydration, not streaming: the
     // slot-detail fetch resolving and REPLACING a thin optimistic list (e.g.
     // a lone WS streaming bubble that landed before the fetch — it consumed

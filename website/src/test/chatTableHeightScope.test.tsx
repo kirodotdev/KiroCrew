@@ -112,6 +112,7 @@ afterEach(() => {
 it.each([
   ['chat-1-1', 'chat-1-1:tables1'],
   ['pane:chat-1-1', 'chat-1-1:tables1:pane'],
+  ['pane:chat-1-1:topdown', 'chat-1-1:tables1:pane:topdown'],
   ['side:chat-1-1', 'chat-1-1:tables1:side'],
   ['embed:chat-1-1', 'chat-1-1:tables1:embed'],
 ])('keeps %s anchor identity while rescoping desktop widths above the prose cap', (sessionId, scope) => {
@@ -155,12 +156,17 @@ type Host = typeof HOSTS[number]
 
 /** Shared scopes come from the real component; the main page's unchanged
  *  template is read from source to avoid mounting the whole dashboard. */
-function productionScope(host: Host, slot: string): string {
-  if (host !== 'ChatPage') return sharedScope(host === 'VirtualTranscript' ? slot : `${host}:${slot}`)
+function productionScope(host: Host, slot: string, topDown = false): string {
+  if (host !== 'ChatPage') {
+    const sessionId = host === 'VirtualTranscript' ? slot : `${host}:${slot}${topDown ? ':topdown' : ''}`
+    return sharedScope(sessionId)
+  }
   const source = chatPageSource()
   const template = /heightScopeKey: `\$\{activeSlot \?\? '__no_slot__'\}([^`]*)`/.exec(source)
   expect(template, 'ChatPage heightScopeKey template').not.toBeNull()
-  return slot + template![1].replace('${scrollerWidthBucket}', '1216')
+  return slot + template![1]
+    .replace("${topDown ? 'topdown:' : ''}", topDown ? 'topdown:' : '')
+    .replace('${scrollerWidthBucket}', '1216')
 }
 
 function persistHeight(scope: string, height = 120): void {
@@ -169,6 +175,14 @@ function persistHeight(scope: string, height = 120): void {
   cache.flush()
   expect(localStorage.getItem(`vc_heights_${scope}`)).not.toBeNull()
 }
+
+it('keeps bottom-layout scope keys byte-identical', () => {
+  expect(productionScope('ChatPage', 'chat-1-1')).toBe('chat-1-1:tables1:w1216')
+  expect(productionScope('VirtualTranscript', 'chat-1-1')).toBe('chat-1-1:tables1:w1216')
+  expect(productionScope('pane', 'chat-1-1')).toBe('chat-1-1:tables1:pane:w1216')
+  expect(productionScope('side', 'chat-1-1')).toBe('chat-1-1:tables1:side:w1216')
+  expect(productionScope('embed', 'chat-1-1')).toBe('chat-1-1:tables1:embed:w1216')
+})
 
 it.each(HOSTS)('%s retains live raw-slot heights across startup GC', host => {
   const scope = productionScope(host, 'chat-1-1')
@@ -194,6 +208,26 @@ it('partitions main, pane, side and embed heights for the same raw slot', () => 
   expect(gcOrphanedStorage(new Set(['chat-1-1']))).toBe(0)
   scopes.forEach((scope, i) => expect(new HeightCache(scope).peek('row-a')).toBe(100 + i))
   expect(gcOrphanedStorage(new Set())).toBe(4)
+  scopes.forEach(scope => expect(localStorage.getItem(`vc_heights_${scope}`)).toBeNull())
+})
+
+it('retains top-down height scopes with the raw slot and removes them with the slot', () => {
+  const scopes = [
+    productionScope('ChatPage', 'chat-1-1', true),
+    productionScope('pane', 'chat-1-1', true),
+    productionScope('side', 'chat-1-1', true),
+    productionScope('embed', 'chat-1-1', true),
+  ]
+  expect(scopes).toEqual([
+    'chat-1-1:tables1:topdown:w1216',
+    'chat-1-1:tables1:pane:topdown:w1216',
+    'chat-1-1:tables1:side:topdown:w1216',
+    'chat-1-1:tables1:embed:topdown:w1216',
+  ])
+  scopes.forEach((scope, index) => persistHeight(scope, 200 + index))
+  expect(gcOrphanedStorage(new Set(['chat-1-1']))).toBe(0)
+  scopes.forEach((scope, index) => expect(new HeightCache(scope).peek('row-a')).toBe(200 + index))
+  expect(gcOrphanedStorage(new Set())).toBe(scopes.length)
   scopes.forEach(scope => expect(localStorage.getItem(`vc_heights_${scope}`)).toBeNull())
 })
 

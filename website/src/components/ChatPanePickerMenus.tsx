@@ -14,6 +14,7 @@ import { legacyCodexEffort } from '../hooks/useInteractiveModels'
 import { jevRouteShownModel } from '../lib/jevRoute'
 import { i18nT } from '../i18n/t'
 import { sessionMemoryTag } from '../lib/agentMemorySource'
+import { anchoredPopupBox } from '../lib/pickerMenu'
 import { acpBackendName } from '../api/acpBackend'
 import type { NavigateFunction } from 'react-router-dom'
 import type { RootState } from '../store'
@@ -36,9 +37,12 @@ type MenuProps = {
   models: ReturnType<typeof useChatPanePickerModels>
   actions: ReturnType<typeof useChatPanePickerActions>
   navigate: NavigateFunction
+  /** Open below the chip instead of above it: the top-down chat layout puts
+   *  the composer at the top of the pane, where there is no room above. */
+  openBelow?: boolean
 }
 
-export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<MenuProps, 'slotKey'>) {
+export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate, openBelow = false }: Omit<MenuProps, 'slotKey'>) {
   const { agentDD, agentBtnRect, paneAgentName, defaultAgent, installedAgents, agentChoices, toggleDefaultAgent, defaultAgentFailed } = models
   const { onAgentListKeyDown, switchAgent } = actions
   return (
@@ -53,8 +57,8 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
           aria-label={i18nT('components.chatPane.agent_list')}
           tabIndex={-1}
           onKeyDown={onAgentListKeyDown}
-          className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up"
-          style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}
+          className={`fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up${openBelow ? ' overflow-y-auto' : ''}`}
+          style={{ ...anchoredPopupBox(agentBtnRect, openBelow, 4), left: Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)) }}
         >
           <div className="px-1.5 pt-1.5 pb-1">
             <input
@@ -71,7 +75,7 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
               className={ddInputCls}
             />
           </div>
-          <div role="listbox" aria-label={i18nT('components.chatPane.agent_list')} className="overflow-y-auto max-h-[280px]">
+          <div role="listbox" aria-label={i18nT('components.chatPane.agent_list')} className="overflow-y-auto max-h-[280px]" style={openBelow ? { minHeight: 96 } : undefined}>
             <AgentDropdownList agents={agentDD.filtered} activeAgent={paneAgentName} activeKind={paneSlot?.agent_kind} defaultAgent={defaultAgent} onSelect={(name, kind) => { switchAgent(name, kind); agentDD.setOpen(false) }} />
           </div>
           {/* The default for new sessions is a template; a crewmate's chat offers no such write. */}
@@ -83,7 +87,7 @@ export function ChatPaneAgentMenu({ paneSlot, models, actions, navigate }: Omit<
   )
 }
 
-export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate }: MenuProps) {
+export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate, openBelow = false }: MenuProps) {
   const { modelDD, modelBtnRect, hiddenModelsQ, selectionCapabilitiesQ, ownModelsQuery, ownModelsFailed, attachModelList, modelListEdges, shownModel, modelPickerConfigured, effortSupported, codexPairModels, defaultEffort, effortLevelsOverride, effortAutoNote } = models
   const { modelDialogIme, onModelListKeyDown, switchModel } = actions
   return (
@@ -105,8 +109,9 @@ export function ChatPaneModelMenu({ slotKey, paneSlot, models, actions, navigate
              model list shrinks first, floored at about two rows so a chip
              that sits high in a short pane never opens a picker with no
              model in it; once the cap drops below the fixed rows' own height
-             the body column scrolls instead of clipping the effort block. */
-          style={(() => { const left = Math.max(8, Math.min(modelBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - modelBtnRect.top + 4, left, maxHeight: Math.max(0, modelBtnRect.top - 12) } })()}
+             the body column scrolls instead of clipping the effort block.
+             With `openBelow` the cap is the space below the chip instead. */
+          style={(() => { const left = Math.max(8, Math.min(modelBtnRect.left, window.innerWidth - 348)); const box = anchoredPopupBox(modelBtnRect, openBelow, 4); return 'maxHeight' in box ? { ...box, left } : { ...box, left, maxHeight: Math.max(0, modelBtnRect.top - 12) } })()}
         >
          <div className="flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto">
           <div className="shrink-0 px-1.5 pt-1.5 pb-1">

@@ -55,4 +55,42 @@ describe('rowKeys', () => {
     expect(uniqueRowKeys(rows, key, () => 'same')).toEqual(['same', 'same~#1'])
     expect(uniqueRowKeys(rows, key, () => undefined)).toEqual(['row-a', 'row-b'])
   })
+
+  describe('with a chrono map (rows drawn newest block first)', () => {
+    const q2 = turn([single(msg('q2', 'user')), single(msg('a2'))])
+    const headlessBefore = turn([single(msg('h1')), single(msg('h2'))])
+    const headlessAfter = turn([single(msg('h0')), single(msg('h1')), single(msg('h2'))])
+
+    it('tail-keys the headless oldest turn drawn last, across a landing that grows its head', () => {
+      const before = uniqueRowKeys([q2, headlessBefore], key, undefined, [1, 0])
+      const after = uniqueRowKeys([q2, headlessAfter], key, undefined, [1, 0])
+      expect(before).toEqual(['row-q2', 'hlt-h2'])
+      expect(after).toEqual(before)
+    })
+
+    it('gives each row its chronological key, written at its drawn index', () => {
+      const chronological = uniqueRowKeys([headlessAfter, q2], key)
+      expect(uniqueRowKeys([q2, headlessAfter], key, undefined, [1, 0])).toEqual([chronological[1], chronological[0]])
+    })
+
+    it('runs the tie-break chronologically, so a newer collider drawn first takes the suffix', () => {
+      const older = single(msg('d', 'user'))
+      const newer = single(msg('d', 'user'))
+      expect(uniqueRowKeys([older, newer], key)).toEqual(['row-d', 'row-d~#1'])
+      expect(uniqueRowKeys([newer, older], key, undefined, [1, 0])).toEqual(['row-d~#1', 'row-d'])
+    })
+
+    it('passes the drawn index to a preferred key', () => {
+      const seen: number[] = []
+      uniqueRowKeys([q2, headlessAfter], key, (_it, i) => { seen.push(i); return undefined }, [1, 0])
+      expect(seen).toEqual([1, 0])
+    })
+
+    it('falls back to list order for a map that is not a permutation of the rows', () => {
+      const plain = uniqueRowKeys([q2, headlessAfter], key)
+      for (const bad of [[0, 0], [1], [0, 2], [0.5, 1], [-1, 0]]) {
+        expect(uniqueRowKeys([q2, headlessAfter], key, undefined, bad)).toEqual(plain)
+      }
+    })
+  })
 })

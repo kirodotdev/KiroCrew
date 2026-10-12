@@ -69,10 +69,10 @@ const message = (role: string, content: string, ts: string): ChatMessage => ({
   ts,
 })
 
-const single = (idx: number, role: string, content: string): DisplayItem => ({
+const single = (idx: number, role: string, content: string, meta?: ChatMessage['meta']): DisplayItem => ({
   kind: 'single',
   idx,
-  msg: message(role, content, `2026-08-30T00:00:0${idx}.000Z`),
+  msg: { ...message(role, content, `2026-08-30T00:00:0${idx}.000Z`), meta },
 })
 
 function mountGeometry(rowCount: number) {
@@ -122,6 +122,7 @@ function mountGeometry(rowCount: number) {
 function renderEarly(
   mountIndex: (index: number) => boolean = () => false,
   estimateRowTop: (index: number) => number | null = () => null,
+  topDown = false,
 ) {
   const vGetFollowRef = { current: () => false }
   const slotRunningRef = { current: false }
@@ -139,6 +140,7 @@ function renderEarly(
     slotRunningRef,
     vGetFollowRef,
     vScrollToBottomRef,
+    topDown,
   }))
   return { ...hook, vGetFollowRef, mountIndexRef, estimateRowTopRef, scrollerRef, vScrollToBottomRef, scrollToDisplayIndex }
 }
@@ -210,6 +212,29 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     expect(frames).toHaveLength(1)
     flushFrame(16)
     expect(result.current.pinned?.idx).toBe(0)
+  })
+
+  it.each([
+    { topDown: true, expectedAnchor: 1 },
+    { topDown: false, expectedAnchor: 0 },
+  ])('chooses the correct jump anchor for consecutive prompts (topDown=$topDown)', ({ topDown, expectedAnchor }) => {
+    const h = renderEarly(() => false, () => null, topDown)
+    const geometry = mountGeometry(3)
+    const items: DisplayItem[] = [
+      single(0, 'user', 'steer prompt', { steer: true }),
+      single(1, 'user', 'original prompt'),
+      single(2, 'assistant', 'reply'),
+    ]
+
+    act(() => {
+      h.scrollerRef.current = geometry.scroller
+      h.result.current.pinFoldRef.current = geometry.fold
+      h.result.current.pinCardRef.current = geometry.card
+      h.result.current.displayItemsRef.current = items
+      h.result.current.scrollToPinnedPrompt(1)
+    })
+
+    expect(h.mountIndexRef.current).toHaveBeenCalledWith(expectedAnchor, { unionOnly: true })
   })
 
   it('glides a near pinned jump after the unioned rows measure, then converges on the landing', () => {

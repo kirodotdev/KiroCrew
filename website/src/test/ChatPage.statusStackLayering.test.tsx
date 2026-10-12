@@ -39,8 +39,10 @@ const CHAT_PAGE = [
     .map(f => SRC(`pages/${f}`)),
 ].join('\n')
 
-/** The dock root: the one positioned box that floats over the scroller. */
-const DOCK = /<div ref=\{dockRef\} className="([^"]*)" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/.exec(CHAT_PAGE)
+/** The dock root: the one positioned box that floats over the scroller. Its
+ *  className has two branches, the opt-in top-down layout (`[1]`, anchored to
+ *  the scroller's top edge) and the default bottom layout (`[2]`). */
+const DOCK = /<div ref=\{dockRef\} className=\{topDown \? '([^']*)' : '([^']*)'\} style=\{topDown \? \{ right: dockGutter, top: dockTop \} : \{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/.exec(CHAT_PAGE)
 /** The composer's own layer. A bar at or above it would paint over the input box,
  *  and QueueStack's -OVERLAP fuse would surface ON TOP of the composer. */
 const COMPOSER_Z = /<div ref=\{inputAreaRef\} className="relative z-(\d+) dock-inert">/.exec(CHAT_PAGE)
@@ -104,16 +106,20 @@ describe('composer dock layering', () => {
   it('floats the dock root with z-index auto, so it forms no stacking context either', () => {
     // It MUST be positioned (that is what makes it float over the scroller), so
     // the only thing keeping it from becoming a context is the absent z-index.
-    expect(DOCK![1]).toMatch(/\babsolute\b/)
-    expect(DOCK![1]).toMatch(/\bbottom-0\b/)
-    expect(DOCK![1]).not.toMatch(/\bz-\[?\d/)
+    // Both layouts: the top-down branch only moves the anchor edge.
+    for (const cls of [DOCK![1], DOCK![2]]) {
+      expect(cls).toMatch(/\babsolute\b/)
+      expect(cls).not.toMatch(/\bz-\[?\d/)
+    }
+    expect(DOCK![2]).toMatch(/\bbottom-0\b/)
+    expect(DOCK![1]).not.toMatch(/\bbottom-0\b/)
   })
 
   it('lets input fall through the dock root and only the control boxes catch it', () => {
     // The root and both wrapper boxes span the pane's full width; only their
     // children — each its own content column — catch input, so the empty
     // width beside the column scrolls the transcript beneath.
-    expect(DOCK![1]).toMatch(/\bpointer-events-none\b/)
+    for (const cls of [DOCK![1], DOCK![2]]) expect(cls).toMatch(/\bpointer-events-none\b/)
     expect(STACK![1]).toMatch(/\bdock-inert\b/)
     expect(STACK![1]).not.toMatch(/\bpointer-events-auto\b/)
     expect(CHAT_PAGE).toMatch(/<div ref=\{inputAreaRef\} className="relative z-\d+ dock-inert">/)

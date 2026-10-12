@@ -469,6 +469,50 @@ describe('TurnNavigationMinimap', () => {
   })
 })
 
+describe('TurnNavigationMinimap in the top-down layout (turns newest first)', () => {
+  // Screen order: marker i is turn `count - i`, so the top marker is the newest turn.
+  const newestFirst = (count: number) => Array.from({ length: count }, (_, i) => section(`t${count - i}`, i * 3 + 1, `Prompt ${count - i}`, ''))
+
+  async function renderRail(count: number, windowed = false) {
+    const scroller = buildScroller()
+    render(<TurnNavigationMinimap items={newestFirst(count)} scrollerRef={{ current: scroller }} onNavigate={vi.fn()} windowed={windowed} newestFirst />)
+    const button = await screen.findByRole('button')
+    button.getBoundingClientRect = () => rect(100, 300, 8, 40)
+    act(() => button.focus())
+    return button
+  }
+
+  it('labels the top marker as the newest turn and the bottom marker as turn 1', async () => {
+    const button = await renderRail(12)
+    fireEvent.keyDown(button, { key: 'Home' })
+    expect(button.getAttribute('aria-label')).toBe('Turn 12 of 12: Prompt 12')
+    // The active title, its one neighbour (the turn below it) and the meta row.
+    expect(screen.getByRole('tooltip').textContent).toBe('#12Prompt 12#11Prompt 11Turn 12 of 12')
+    fireEvent.keyDown(button, { key: 'End' })
+    expect(button.getAttribute('aria-label')).toBe('Turn 1 of 12: Prompt 1')
+    expect(screen.getByRole('tooltip').textContent).toBe('#2Prompt 2#1Prompt 1Turn 1 of 12')
+  })
+
+  it('counts loaded turns from the oldest loaded one on a windowed rail', async () => {
+    const button = await renderRail(12, true)
+    fireEvent.keyDown(button, { key: 'Home' })
+    expect(button.getAttribute('aria-label')).toBe('Turn 12 of 12 loaded: Prompt 12')
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toBe('Turn 12 of 12 loaded')
+    fireEvent.keyDown(button, { key: 'End' })
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toBe('Turn 1 of 12 loaded')
+  })
+
+  it("a bucketed marker's meta row names its span oldest turn first", async () => {
+    const button = await renderRail(89)
+    // Bucket 0 of 89 turns over 44 body ticks covers the two newest turns.
+    fireEvent.keyDown(button, { key: 'Home' })
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toBe('Turns 88\u201389 of 89')
+    expect(screen.getByRole('tooltip').textContent).toContain('#89Prompt 89')
+    fireEvent.keyDown(button, { key: 'End' })
+    expect(screen.getByTestId('turn-navigation-preview-meta').textContent).toBe('Turn 1 of 89')
+  })
+})
+
 /** A top-level assistant table as index.css lets it paint into the row's
  *  gutters: the real wrapper chain under a mounted row, stopping 40px from
  *  each pane edge (the pane is 0..1100) — the band the rail keeps. */

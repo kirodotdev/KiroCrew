@@ -14,9 +14,10 @@ import { createTestStore, renderHookWithProviders, renderWithProviders } from '.
  * the chat page's stepper (useTurnStepper) picks the turn from a transcript's
  * mounted rows, then hands its display index to the pinned-prompt jump.
  *
- * The scroller is a layout-less DOM with hand-set rects, ten 100px rows, and a
- * reading line 120px below its top. The jump is a mock that moves nothing, so a
- * step that follows another reads the turn the previous one landed on.
+ * The scroller is a layout-less DOM with hand-set rects, ten 100px rows (twelve
+ * in the top-down cases), and a reading line 120px below its top. The jump is a
+ * mock that moves nothing, so a step that follows another reads the turn the
+ * previous one landed on.
  */
 
 const LINE = 120
@@ -45,11 +46,19 @@ function setRect(el: HTMLElement, top: number, height: number) {
   })
 }
 
-/** Mount the transcript scrolled `offset` px down and wire both hooks to it. */
-function setup({ offset, active = true, setHighlightTs }: { offset: number; active?: boolean; setHighlightTs?: (update: string | null | ((current: string | null) => string | null)) => void }) {
+/** Mount the transcript (`rows` rows, ten by default) scrolled `offset` px down and wire both hooks to it. */
+function setup({ offset, active = true, setHighlightTs, turns = TURNS, rows = 10, windowed = false, newestFirst }: {
+  offset: number
+  active?: boolean
+  setHighlightTs?: (update: string | null | ((current: string | null) => string | null)) => void
+  turns?: readonly ChatSection[]
+  rows?: number
+  windowed?: boolean
+  newestFirst?: boolean
+}) {
   const scroller = document.createElement('div')
   setRect(scroller, 0, 600)
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < rows; i++) {
     const row = document.createElement('div')
     row.setAttribute('data-display-index', String(i))
     setRect(row, i * ROW_H - offset, ROW_H)
@@ -65,7 +74,7 @@ function setup({ offset, active = true, setHighlightTs }: { offset: number; acti
   })
   const hook = renderHookWithProviders(() => {
     useKeyboardShortcuts({ onToggleShortcutsModal: () => {}, onNewChat: () => {} })
-    return useTurnStepper({ active, turns: TURNS, windowed: false, scrollerRef, landingInset: () => LINE, jump, setHighlightTs })
+    return useTurnStepper({ active, turns, windowed, newestFirst, scrollerRef, landingInset: () => LINE, jump, setHighlightTs })
   }, { store })
   return { hook, jump, scroller }
 }
@@ -194,6 +203,41 @@ describe('Alt+↑ / Alt+↓ step through the turns of the open chat', () => {
     const { jump } = setup({ offset: 300, active: false })
     expect(press('ArrowDown')).toBe(false)
     expect(jump).not.toHaveBeenCalled()
+  })
+})
+
+describe('Alt+↑ / Alt+↓ in the top-down layout (turns drawn newest first)', () => {
+  // Twelve one-row turns in screen order: the newest prompt (turn 12) is row 0
+  // at the top, the oldest (turn 1) is row 11 at the bottom.
+  const SCREEN_ORDER: ChatSection[] = Array.from({ length: 12 }, (_, displayIdx) => {
+    const n = 12 - displayIdx
+    return { id: `turn-${n}`, label: `prompt ${n}`, prompt: `prompt ${n}`, response: '', msgIdx: n - 1, displayIdx }
+  })
+
+  it('numbers each turn from the oldest, as the bottom layout does', () => {
+    // Row 1 sits on the reading line, so Alt+↑ lands on the newest turn at the top.
+    const top = setup({ offset: ROW_H - LINE, turns: SCREEN_ORDER, rows: 12, newestFirst: true })
+    press('ArrowUp')
+    expect(jumpedTo(top.jump)).toEqual([0])
+    expect(top.hook.result.current).toBe('Turn 12 of 12: prompt 12')
+    top.hook.unmount()
+
+    // Row 10 sits on the reading line, so Alt+↓ lands on the oldest turn at the bottom.
+    const bottom = setup({ offset: 10 * ROW_H - LINE, turns: SCREEN_ORDER, rows: 12, newestFirst: true })
+    press('ArrowDown')
+    expect(jumpedTo(bottom.jump)).toEqual([11])
+    expect(bottom.hook.result.current).toBe('Turn 1 of 12: prompt 1')
+  })
+
+  it('counts loaded turns from the oldest loaded one while older history is not loaded', () => {
+    const top = setup({ offset: ROW_H - LINE, turns: SCREEN_ORDER, rows: 12, newestFirst: true, windowed: true })
+    press('ArrowUp')
+    expect(top.hook.result.current).toBe('Turn 12 of 12 loaded: prompt 12')
+    top.hook.unmount()
+
+    const bottom = setup({ offset: 10 * ROW_H - LINE, turns: SCREEN_ORDER, rows: 12, newestFirst: true, windowed: true })
+    press('ArrowDown')
+    expect(bottom.hook.result.current).toBe('Turn 1 of 12 loaded: prompt 1')
   })
 })
 
