@@ -2961,8 +2961,14 @@
           "empty_board": "PLACA SIN POBLAR",
           "empty_title": "Aún no hay dependencias",
           "empty_blurb": "Este repositorio no tiene aristas de dependencia que dibujar. Define una dependencia nativa con gh issue edit --add-blocked-by, o Issue Radar las inferirá de las referencias cruzadas en la próxima sincronización.",
+          "empty_blurb_gitlab": "Este proyecto no tiene enlaces de bloqueo que dibujar. Marca una incidencia como bloqueada por otra en sus elementos vinculados (GitLab Premium o Ultimate) y luego reintenta.",
           "empty_unavailable_title": "Datos de dependencias no disponibles",
           "empty_unavailable_blurb": "No se pudo cargar el grafo. Puede que la ruta deps aún no esté habilitada para este repositorio. Reintenta cuando lo esté.",
+          "empty_unavailable_auth_gitlab": "No has iniciado sesión en la CLI de GitLab (glab) en este host. Ejecuta el comando de abajo y vuelve a intentarlo.",
+          "empty_unavailable_cli_missing_gitlab": "La CLI de GitLab (glab) no está instalada en este host. Instálala, inicia sesión con glab y vuelve a intentarlo.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab no respondió para la mayoría de las incidencias (una interrupción o un límite de tasa). Espera un momento y vuelve a intentarlo.",
+          "empty_unavailable_issue_scope": "El grafo de dependencias necesita la lista de incidencias abiertas, que aún no está disponible. Abre la pestaña Incidencias para almacenarla en caché, o revisa el error de abajo, y vuelve a intentarlo.",
+          "refresh_failed_stale_graph": "Mostrando el último gráfico cargado; la actualización más reciente falló.",
           "retry": "REINTENTAR"
         },
         "groupReviewsView": {

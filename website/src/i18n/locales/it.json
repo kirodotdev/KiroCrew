@@ -2961,8 +2961,14 @@
           "empty_board": "SCHEDA NON POPOLATA",
           "empty_title": "Ancora nessuna dipendenza",
           "empty_blurb": "Questo repository non ha archi di dipendenza da disegnare. Imposta una dipendenza nativa con gh issue edit --add-blocked-by, oppure Issue Radar le dedurrà dai riferimenti incrociati alla prossima sincronizzazione.",
+          "empty_blurb_gitlab": "Questo progetto non ha collegamenti bloccanti da disegnare. Segna una issue come bloccata da un’altra nei suoi elementi collegati (GitLab Premium o Ultimate), poi riprova.",
           "empty_unavailable_title": "Dati delle dipendenze non disponibili",
           "empty_unavailable_blurb": "Impossibile caricare il grafo. La route deps potrebbe non essere ancora attiva per questo repository. Riprova quando lo sarà.",
+          "empty_unavailable_auth_gitlab": "Non hai effettuato l'accesso alla CLI di GitLab (glab) su questo host. Esegui il comando qui sotto, poi riprova.",
+          "empty_unavailable_cli_missing_gitlab": "La CLI di GitLab (glab) non è installata su questo host. Installala, accedi con glab e riprova.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab non ha risposto per la maggior parte delle issue (un'interruzione o un limite di frequenza). Attendi un momento, poi riprova.",
+          "empty_unavailable_issue_scope": "Il grafo delle dipendenze ha bisogno dell’elenco delle issue aperte, che non è ancora disponibile. Apri la scheda Issue per metterlo in cache, oppure controlla l’errore qui sotto, poi riprova.",
+          "refresh_failed_stale_graph": "Mostra l'ultimo grafico caricato; l'aggiornamento più recente non è riuscito.",
           "retry": "RIPROVA"
         },
         "groupReviewsView": {

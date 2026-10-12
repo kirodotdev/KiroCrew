@@ -2915,8 +2915,14 @@
           "empty_board": "未実装ボード",
           "empty_title": "依存関係はまだありません",
           "empty_blurb": "このリポジトリには描画できる依存エッジがありません。gh issue edit --add-blocked-by でネイティブ依存を設定するか、次回同期時に Issue Radar が相互参照から推定します。",
+          "empty_blurb_gitlab": "このプロジェクトには描画できるブロック関係のリンクがありません。関連アイテムで Issue を別の Issue にブロックされているとマークしてから（GitLab Premium または Ultimate）、再試行してください。",
           "empty_unavailable_title": "依存データを取得できません",
           "empty_unavailable_blurb": "依存グラフを読み込めませんでした。このリポジトリで deps ルートが未有効の可能性があります。利用可能になったら再試行してください。",
+          "empty_unavailable_auth_gitlab": "このホストで GitLab CLI (glab) にサインインしていません。下のコマンドを実行してから再試行してください。",
+          "empty_unavailable_cli_missing_gitlab": "この端末に GitLab CLI (glab) がインストールされていません。インストールして glab でサインインしてから再試行してください。",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab がほとんどの Issue に応答しませんでした（障害またはレート制限）。少し待ってから再試行してください。",
+          "empty_unavailable_issue_scope": "依存関係グラフにはオープンな Issue の一覧が必要ですが、まだ利用できません。Issue タブを開いてキャッシュするか、下のエラーを確認してから、再試行してください。",
+          "refresh_failed_stale_graph": "最後に読み込んだグラフを表示しています。直近の更新は失敗しました。",
           "retry": "再試行"
         },
         "groupReviewsView": {

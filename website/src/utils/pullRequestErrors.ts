@@ -9,6 +9,18 @@
  * refusal reads the same everywhere instead of only on the surface that
  * happened to be fixed first.
  */
+
+/** True for the one sign-in command shape the gateway builds from its own
+ * allowlisted host: `gh auth login --hostname <host>` or `glab auth login
+ * --hostname <host>`, one host token and nothing after it. Every surface that
+ * renders a `loginCommand` as copyable accepts it only through this check (the
+ * PR-mutation envelope below and Issue Radar's coded error envelope in
+ * `apps/issue-radar/apiTypes.ts`), so a provider-controlled body cannot
+ * smuggle arbitrary text into the command. */
+export function isHostScopedLoginCommand(value: unknown): value is string {
+  return typeof value === 'string' && /^(?:gh|glab) auth login --hostname \S+$/.test(value)
+}
+
 export function pullRequestErrorDetails(error: unknown): {
   message: string
   /** The command to run: `gh auth login`, `glab auth login`, or `<gh|glab> auth login --hostname <host>` for a GitHub Enterprise or self-managed GitLab host. */
@@ -35,11 +47,7 @@ export function pullRequestErrorDetails(error: unknown): {
       loginCommand?: unknown
     }
     if (typeof payload.error === 'string') message = payload.error
-    if (
-      typeof payload.loginCommand === 'string'
-      && (payload.loginCommand.startsWith('glab auth login --hostname ')
-        || payload.loginCommand.startsWith('gh auth login --hostname '))
-    ) {
+    if (isHostScopedLoginCommand(payload.loginCommand)) {
       hostScoped = payload.loginCommand
     }
     confirmationRequired = payload.confirmationRequired === true

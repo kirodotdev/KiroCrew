@@ -2915,8 +2915,14 @@
           "empty_board": "빈 보드",
           "empty_title": "아직 의존성이 없습니다",
           "empty_blurb": "이 저장소에는 그릴 의존성 간선이 없습니다. gh issue edit --add-blocked-by로 네이티브 의존성을 설정하거나, 다음 동기화 때 Issue Radar가 상호 참조에서 추론합니다.",
+          "empty_blurb_gitlab": "이 프로젝트에는 그릴 차단 링크가 없습니다. 연결된 항목에서 이슈를 다른 이슈에 의해 차단됨으로 표시한 뒤(GitLab Premium 또는 Ultimate) 다시 시도하세요.",
           "empty_unavailable_title": "의존성 데이터를 사용할 수 없음",
           "empty_unavailable_blurb": "그래프를 불러오지 못했습니다. 이 저장소에서 deps 라우트가 아직 활성화되지 않았을 수 있습니다. 활성화 후 다시 시도하세요.",
+          "empty_unavailable_auth_gitlab": "이 호스트에서 GitLab CLI (glab)에 로그인되어 있지 않습니다. 아래 명령을 실행한 뒤 다시 시도하세요.",
+          "empty_unavailable_cli_missing_gitlab": "이 호스트에 GitLab CLI(glab)가 설치되어 있지 않습니다. 설치한 뒤 glab으로 로그인하고 다시 시도하세요.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab이 대부분의 이슈에 응답하지 않았습니다(장애 또는 속도 제한). 잠시 기다린 뒤 다시 시도하세요.",
+          "empty_unavailable_issue_scope": "종속성 그래프에는 열린 이슈 목록이 필요하지만 아직 사용할 수 없습니다. 이슈 탭을 열어 캐시하거나 아래 오류를 확인한 뒤 다시 시도하세요.",
+          "refresh_failed_stale_graph": "마지막으로 불러온 그래프를 표시 중입니다. 최근 새로 고침이 실패했습니다.",
           "retry": "다시 시도"
         },
         "groupReviewsView": {

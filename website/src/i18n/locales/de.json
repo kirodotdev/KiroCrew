@@ -2983,8 +2983,14 @@
           "empty_board": "UNBESTÜCKTE PLATINE",
           "empty_title": "Noch keine Abhängigkeiten",
           "empty_blurb": "Dieses Repository hat keine zeichenbaren Abhängigkeitskanten. Setze eine native Abhängigkeit mit gh issue edit --add-blocked-by, oder Issue Radar leitet Kanten beim nächsten Sync aus Querverweisen ab.",
+          "empty_blurb_gitlab": "Dieses Projekt hat keine blockierenden Verknüpfungen zum Zeichnen. Markiere ein Issue unter „Verknüpfte Elemente“ als von einem anderen blockiert (GitLab Premium oder Ultimate) und versuche es dann erneut.",
           "empty_unavailable_title": "Abhängigkeitsdaten nicht verfügbar",
           "empty_unavailable_blurb": "Der Abhängigkeitsgraph konnte nicht geladen werden. Die deps-Route ist für dieses Repository womöglich noch nicht aktiv. Danach erneut versuchen.",
+          "empty_unavailable_auth_gitlab": "Du bist auf diesem Host nicht bei der GitLab CLI (glab) angemeldet. Führe den Befehl unten aus und versuche es erneut.",
+          "empty_unavailable_cli_missing_gitlab": "Die GitLab-CLI (glab) ist auf diesem Host nicht installiert. Installiere sie, melde dich mit glab an und versuche es erneut.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab hat für die meisten Issues nicht geantwortet (Ausfall oder Rate-Limit). Warte einen Moment und versuche es erneut.",
+          "empty_unavailable_issue_scope": "Der Abhängigkeitsgraph braucht die Liste offener Issues, die noch nicht verfügbar ist. Öffne den Tab „Issues“, um sie zwischenzuspeichern, oder sieh dir den Fehler unten an, und versuche es erneut.",
+          "refresh_failed_stale_graph": "Der zuletzt geladene Graph wird angezeigt; die jüngste Aktualisierung ist fehlgeschlagen.",
           "retry": "ERNEUT VERSUCHEN"
         },
         "groupReviewsView": {
