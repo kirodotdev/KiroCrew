@@ -94,8 +94,8 @@ export interface CrewFabricItem {
 }
 
 /** `GET /crew/fabric` response. `phases` is the phase enum IN ORDER, served by
- * the fold so a drawing's columns cannot disagree with the ledger. A non-GitHub
- * provider, or a repo with no crews, answers `items: []` at HTTP 200 — and this
+ * the fold so a drawing's columns cannot disagree with the ledger. A repo with
+ * no crews answers `items: []` at HTTP 200 — and this
  * client SYNTHESIZES the same shape for a 404/500/parse failure. */
 export interface CrewFabricResponse {
   schema: number

@@ -155,7 +155,9 @@ def _fold_one_item(
     }
 
 
-def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict[int, str]:
+def _fabric_title_hints(
+    owner: str, repo: str, root: Path | None = None, *, include_pull_titles: bool = True
+) -> dict[int, str]:
     """``number -> issue/PR title``, seeded from the issues and pulls list caches.
 
     The crew ledger records no title — a work item is ``number`` + ``phase`` — so
@@ -170,6 +172,10 @@ def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict
     are read first and pulls layered on top: a work item that has become a PR is
     keyed by the ISSUE number it was claimed under, and the PR title is the more
     specific label for that lane once one exists, so it wins on a collision.
+
+    *include_pull_titles* is False for a forge whose issues and merge requests
+    number independently (GitLab: issue #42 and MR !42 are unrelated), where a
+    number-keyed pull title would relabel an issue lane with an unrelated MR.
 
     Never raises: each cache read already tolerates an absent/torn/stale-schema
     file by returning ``None`` (treated as empty here), so a repo with no caches
@@ -196,7 +202,12 @@ def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict
     # a 500 for a failed title lookup contradicts the degradation this join already
     # promises everywhere else, where a number with no cached title simply renders as
     # its id. Broad on purpose: any unreadable cache means "no hints from that cache".
-    for reader in (store.read_issues_cache, store.read_pulls_cache):
+    readers = (
+        (store.read_issues_cache, store.read_pulls_cache)
+        if include_pull_titles
+        else (store.read_issues_cache,)
+    )
+    for reader in readers:
         for state in ("open", "closed"):
             try:
                 _absorb(reader(owner, repo, root, state=state))
@@ -212,7 +223,9 @@ def _fabric_title_hints(owner: str, repo: str, root: Path | None = None) -> dict
     return hints
 
 
-def fold_fabric(owner: str, repo: str, root: Path | None = None) -> list[dict[str, Any]]:
+def fold_fabric(
+    owner: str, repo: str, root: Path | None = None, *, include_pull_titles: bool = True
+) -> list[dict[str, Any]]:
     """Every crew work item in this repo, folded into a fabric lane, newest first.
 
     ONE pass over the repo's crews, each read from its folded ledger: the item
@@ -227,7 +240,7 @@ def fold_fabric(owner: str, repo: str, root: Path | None = None) -> list[dict[st
     """
     # Real issue/PR titles from the list caches Issue Radar already keeps — one
     # read per cache for the WHOLE fold, not per lane.
-    title_hints = _fabric_title_hints(owner, repo, root)
+    title_hints = _fabric_title_hints(owner, repo, root, include_pull_titles=include_pull_titles)
 
     items: list[dict[str, Any]] = []
     for crew in list_crews(owner, repo, root, include_retired=True):
