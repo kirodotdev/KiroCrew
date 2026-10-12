@@ -400,6 +400,7 @@
     "k_run_a_command": "コマンドを実行",
     "open_command_bar": "Command Bar を開く",
     "focus_mode": "フォーカスモード",
+    "focus_mode_on_announce": "フォーカスモードがオンになりました。{{chord}} を押すとオフになります。",
     "focus_mode_title": "フォーカスモード · Alt+Shift+M",
     "focus_mode_title_mac": "フォーカスモード · ⌥⇧M",
     "connect_your_phone": "スマホを接続",

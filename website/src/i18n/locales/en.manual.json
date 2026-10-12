@@ -361,6 +361,7 @@
     "k_run_a_command": "Run a command",
     "open_command_bar": "Open Command Bar",
     "focus_mode": "Focus mode",
+    "focus_mode_on_announce": "Focus mode on. Press {{chord}} to turn it off.",
     "focus_mode_title": "Focus mode · Alt+Shift+M",
     "focus_mode_title_mac": "Focus mode · ⌥⇧M",
     "connect_your_phone": "Connect your phone",

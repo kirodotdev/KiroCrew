@@ -939,6 +939,14 @@ The View submenu's **Toggle Focus Mode** flips focus mode from the native menu,
 which is the way out that stays visible once focus mode has hidden the
 dashboard's own top-bar toggle; it is a plain item (no check mark, no
 accelerator) because the state and its rebindable chord live in the renderer.
+While focus mode hides the top bar and the nav rail they are `inert` and
+`aria-hidden`: off screen, out of the Tab order and out of the accessibility
+tree together, so a keyboard or screen-reader user never lands on an invisible
+control. Hovering an edge still peeks them; the keyboard path to a header or
+rail control is to leave focus mode first, with the toggle chord (Alt+Shift+M
+by default, rebindable on the shortcuts page) or this View menu item. While
+keyboard shortcuts are switched off the chord is dead, so the hidden chrome
+is not made inert and Tab still reveals it.
 When a remote crew is connected, the instance switcher shares the same bounded
 left region as the menu: it is a single trigger naming the crew on screen (see
 InstanceTabBar's SwitcherMenu), not a row of per-crew tabs, so it costs constant

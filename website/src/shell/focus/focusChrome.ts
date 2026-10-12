@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type HTMLAttributes } from 'react'
 import { useFocusMode, useFocusChromeVisible, setFocusChromeVisible, setFocusModeEnabled, focusModeEnabled } from '../../hooks/useFocusMode'
 import { useHoverIntent } from '../../hooks/useHoverIntent'
 import { railWidthFor } from '../../hooks/useRailWidth'
@@ -6,6 +6,29 @@ import { computeHeaderDragGaps, type DragGap } from '../../lib/dragGaps'
 import { isEmbeddedPane } from '../../lib/embedded'
 import { isMacElectron } from '../../lib/electron'
 import { setNativeFocusChrome, subscribeNativeFocusModeToggle } from '../platform/electronBridge'
+
+/**
+ * Attributes for a chrome surface (top bar, nav rail) while focus mode has slid
+ * it off screen. Both surfaces stay MOUNTED while hidden (unmounting the header
+ * would tear down the popovers it owns), so a transform and `pointer-events:
+ * none` only hide them from sighted pointer users: the regions stayed in the
+ * accessibility tree and every control in them stayed a Tab stop, so a keyboard
+ * or screen-reader user landed on invisible controls. `inert` takes the subtree
+ * out of the focus order and the accessibility tree together; `aria-hidden`
+ * doubles it for assistive tech on a browser without `inert`, where
+ * pointer-events-none remains the floor. Both lift as soon as the peek shows the
+ * surface again, so a peeked header is fully reachable. The keyboard route back
+ * while nothing is peeked is the focus-mode toggle chord or the native View menu
+ * item, not a Tab into a hidden bar: `useHoverIntent`'s `surfaceProps.onFocus`
+ * (Tab-to-reveal) can never fire on an inert surface. It stays bound for the
+ * blur-to-close half, which still runs while the surface is shown.
+ *
+ * React 18 has no typed `inert` prop, so the string attribute rides through a
+ * typed spread, the same way the notification sheet and crew profile panel do it.
+ */
+export function hiddenChromeProps(hidden: boolean): HTMLAttributes<HTMLElement> {
+  return (hidden ? { inert: '', 'aria-hidden': true } : {}) as HTMLAttributes<HTMLElement>
+}
 
 /**
  * Focus mode's chrome: the top bar and the nav rail as edge-summoned overlays
@@ -151,6 +174,24 @@ export function useFocusChrome({ isMobile, navCollapsed, activeInstanceId, topRe
   // and must not disagree: the native macOS traffic lights (AppKit views painted
   // at a window coordinate) and the injected 42px window-drag bar.
   const topChromeShown = topPeek.open || headerPopoverOpen
+  // Focus must leave a surface BEFORE it turns inert. The focus-mode toggle
+  // lives in the header, so the click that hides the header happens with focus
+  // on it; a pointer peek can close while a header or rail control has focus
+  // too. An inert subtree drops its focused element to <body>: the next Tab
+  // restarts from the top of the document and a screen reader announces
+  // nothing. So when a surface hides while it holds focus, focus moves to the
+  // main landmark instead (`#main-content`, the skip link's target, which
+  // carries tabIndex={-1} for exactly this kind of programmatic focus). A layout
+  // effect so it lands before the browser's focus fixup for inert runs.
+  useLayoutEffect(() => {
+    if (!focusActive) return
+    const active = document.activeElement
+    if (!active || active === document.body) return
+    const hidden = (!topChromeShown && topPeekSurface.current?.contains(active))
+      || (!railPeek.open && railPeekSurface.current?.contains(active))
+    if (!hidden) return
+    document.getElementById('main-content')?.focus()
+  }, [focusActive, topChromeShown, railPeek.open])
   // An embedded pane cannot reach the host window's chrome itself: it is a
   // cross-origin iframe with no preload, so the native traffic lights and the
   // injected drag bar are unreachable from here. Relay the state up and let the

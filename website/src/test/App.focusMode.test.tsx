@@ -206,12 +206,270 @@ describe('focus mode — shell layout', () => {
     // Hidden chrome must not eat clicks aimed at the content beneath it.
     expect(header.style.pointerEvents).toBe('none')
 
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
     expect(rail.style.transform).toBe('translateX(calc(-100% - 12px))')
     expect(rail.style.pointerEvents).toBe('none')
 
     expect(screen.getByTestId('focus-peek-top')).toBeTruthy()
     expect(screen.getByTestId('focus-peek-rail')).toBeTruthy()
+  })
+
+  // Sliding the chrome off screen hides it from sighted pointer users only: a
+  // mounted header with `transform` and `pointer-events: none` is still in the
+  // accessibility tree and every control in it is still a Tab stop, so a keyboard
+  // or screen-reader user lands on invisible controls. The hidden surfaces must
+  // be `inert` (focus order + a11y tree) and `aria-hidden` (the floor where
+  // `inert` is unsupported), and both must lift the moment a peek shows them.
+  it('takes hidden chrome out of the Tab order and the a11y tree, and restores it on peek', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    const header = document.querySelector('header.topbar') as HTMLElement
+    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+
+    // Docked: ordinary chrome, nothing hidden from anyone.
+    expect(header.hasAttribute('inert')).toBe(false)
+    expect(header.hasAttribute('aria-hidden')).toBe(false)
+    expect(rail.hasAttribute('inert')).toBe(false)
+    expect(rail.hasAttribute('aria-hidden')).toBe(false)
+
+    await act(async () => { fireEvent.click(toggle) })
+    // Hidden: off screen for the eye AND for the focus order and assistive tech.
+    expect(header.style.transform).toBe('translateY(-100%)')
+    expect(header.getAttribute('inert')).toBe('')
+    expect(header.getAttribute('aria-hidden')).toBe('true')
+    expect(rail.getAttribute('inert')).toBe('')
+    expect(rail.getAttribute('aria-hidden')).toBe('true')
+
+    // Peek the header: it comes back for everyone; the rail stays hidden.
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(screen.getByTestId('focus-peek-top'))
+      act(() => { vi.advanceTimersByTime(150) })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(header.style.transform).toBe('translateY(0)')
+    expect(header.hasAttribute('inert')).toBe(false)
+    expect(header.hasAttribute('aria-hidden')).toBe(false)
+    expect(rail.getAttribute('inert')).toBe('')
+    expect(rail.getAttribute('aria-hidden')).toBe('true')
+
+    // Peek the rail: one overlay at a time, so the header goes back to hidden
+    // and the rail is the reachable one.
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(screen.getByTestId('focus-peek-rail'))
+      act(() => { vi.advanceTimersByTime(150) })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(rail.style.transform).toBe('translateX(0)')
+    expect(rail.hasAttribute('inert')).toBe(false)
+    expect(rail.hasAttribute('aria-hidden')).toBe(false)
+    expect(header.getAttribute('inert')).toBe('')
+    expect(header.getAttribute('aria-hidden')).toBe('true')
+
+    // Off again: both surfaces dock and nothing is hidden.
+    await act(async () => { fireEvent.click(screen.getByTestId('focus-mode-toggle')) })
+    expect(header.hasAttribute('inert')).toBe(false)
+    expect(header.hasAttribute('aria-hidden')).toBe(false)
+    expect(rail.hasAttribute('inert')).toBe(false)
+    expect(rail.hasAttribute('aria-hidden')).toBe(false)
+  })
+
+  // The toggle that hides the header lives IN the header, so the click that
+  // turns focus mode on happens with focus on an element that is about to turn
+  // inert. Left alone, the browser drops that focus to <body>: the next Tab
+  // restarts from the top of the page and a screen reader hears nothing. Focus
+  // must be handed to the main landmark instead, and the same holds when a
+  // pointer peek closes while a header control has focus.
+  it('hands focus to the main landmark when the chrome hides while holding it', async () => {
+    // The first-run chapters (AgentImportFlow) own focus while they are open:
+    // their heading effect re-focuses the <h1> on every re-render, which is
+    // correct for a modal flow but would mask where the shell sends focus.
+    // Mark onboarding done so the shell is the only focus mover here.
+    localStorage.setItem('mc-onboarded', '1')
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    const main = document.getElementById('main-content') as HTMLElement
+    expect(main.tabIndex).toBe(-1)
+    // A programmatic focus target, like the tabIndex={-1} page headings: no
+    // accent ring around the whole window when focus is handed to it.
+    expect(main.classList.contains('outline-hidden')).toBe(true)
+
+    toggle.focus()
+    expect(document.activeElement).toBe(toggle)
+    await act(async () => { fireEvent.click(toggle) })
+    const header = document.querySelector('header.topbar') as HTMLElement
+    expect(header.getAttribute('inert')).toBe('')
+    expect(document.activeElement).toBe(main)
+
+    // Pointer path: peek the header, put focus on one of its controls, then
+    // let the positional close (a mousemove below the header band) hide it.
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(screen.getByTestId('focus-peek-top'))
+      act(() => { vi.advanceTimersByTime(150) })
+      expect(header.hasAttribute('inert')).toBe(false)
+      toggle.focus()
+      expect(document.activeElement).toBe(toggle)
+
+      fireEvent.mouseMove(document, { clientX: 500, clientY: 500 })
+      act(() => { vi.advanceTimersByTime(300) })
+      expect(header.getAttribute('inert')).toBe('')
+      expect(document.activeElement).toBe(main)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  // The connection capsule's role="status" region is the only screen-reader
+  // carrier of the gateway going offline, and it sits inside the header that is
+  // now aria-hidden while focus mode hides it. A stand-in region outside the
+  // header carries the same message for exactly that interval, and only then,
+  // so a change is never announced twice.
+  it('keeps the gateway status announced from outside the hidden header', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    expect(screen.queryByTestId('focus-gateway-status')).toBeNull()
+
+    await act(async () => { fireEvent.click(toggle) })
+    const header = document.querySelector('header.topbar') as HTMLElement
+    expect(header.getAttribute('aria-hidden')).toBe('true')
+    const standIn = screen.getByTestId('focus-gateway-status')
+    expect(standIn.getAttribute('role')).toBe('status')
+    expect(header.contains(standIn)).toBe(false)
+    // Same words as the capsule's own region, so the two never disagree.
+    const inHeader = header.querySelector('[aria-expanded] [role="status"]') as HTMLElement
+    expect(inHeader).toBeTruthy()
+    expect(standIn.textContent).not.toBe('')
+    expect(standIn.textContent).toBe(inHeader.textContent)
+
+    // Header peeked back: its own region is reachable again and the stand-in
+    // leaves, so a status change speaks once.
+    vi.useFakeTimers()
+    try {
+      fireEvent.mouseEnter(screen.getByTestId('focus-peek-top'))
+      act(() => { vi.advanceTimersByTime(150) })
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(header.hasAttribute('aria-hidden')).toBe(false)
+    expect(screen.queryByTestId('focus-gateway-status')).toBeNull()
+  })
+
+  // With the header inert the toggle chord is the only keyboard route out of
+  // focus mode, and nothing used to say so: the chord lived in the toggle's
+  // `title` only. A permanently mounted live region outside the header speaks
+  // the LIVE binding when focus mode turns on, and the toggle declares the same
+  // chord as `aria-keyshortcuts`. A rebound or unbound shortcut must change both.
+  it('announces the live chord that turns focus mode off, and declares it on the toggle', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    const announce = screen.getByTestId('focus-mode-announce')
+    const header = document.querySelector('header.topbar') as HTMLElement
+    expect(announce.getAttribute('role')).toBe('status')
+    expect(header.contains(announce)).toBe(false)
+    expect(announce.textContent).toBe('')
+    // ARIA spelling, not the display glyphs: a screen reader has names for these.
+    expect(toggle.getAttribute('aria-keyshortcuts')).toBe('Alt+Shift+M')
+
+    await act(async () => { fireEvent.click(toggle) })
+    expect(announce.textContent).toBe('Focus mode on. Press Alt+Shift+M to turn it off.')
+
+    await act(async () => { fireEvent.click(screen.getByTestId('focus-mode-toggle')) })
+    expect(announce.textContent).toBe('')
+  })
+
+  it('speaks a rebound chord, and says nothing about a chord when it is unbound', async () => {
+    localStorage.setItem('mc-shortcut-overrides', JSON.stringify({ 'toggle-focus-mode': { key: 'f', mod: true, shift: true } }))
+    const { unmount } = renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    expect(toggle.getAttribute('aria-keyshortcuts')).toBe('Control+Shift+F')
+    await act(async () => { fireEvent.click(toggle) })
+    expect(screen.getByTestId('focus-mode-announce').textContent).toBe('Focus mode on. Press Control+Shift+F to turn it off.')
+    unmount()
+    __resetFocusMode()
+
+    // Unbound. No product surface can write this today (the overrides store has
+    // no writer until the Settings > Keyboard UI exists), so the carriers stay
+    // silent rather than name a chord that does nothing or a page the inert
+    // chrome cannot reach.
+    localStorage.setItem('mc-shortcut-overrides', JSON.stringify({ 'toggle-focus-mode': null }))
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle2 = await screen.findByTestId('focus-mode-toggle')
+    expect(toggle2.hasAttribute('aria-keyshortcuts')).toBe(false)
+    await act(async () => { fireEvent.click(toggle2) })
+    expect(screen.getByTestId('focus-mode-announce').textContent).toBe('')
+    // No chord can bring the chrome back, so it stays reachable (not inert).
+    expect((document.querySelector('header.topbar') as HTMLElement).hasAttribute('inert')).toBe(false)
+    expect((document.querySelector('nav.focus-chrome-rail') as HTMLElement).hasAttribute('inert')).toBe(false)
+  })
+
+  // Shortcuts switched off globally: the keydown handler never reaches the
+  // focus-mode chord, so naming it would point at a dead key, and an inert
+  // header would leave a keyboard user no way out. Same as unbound.
+  it('neither names the chord nor makes the chrome inert while shortcuts are off', async () => {
+    localStorage.setItem('mc-keyboard-shortcuts', '0')
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    expect(toggle.hasAttribute('aria-keyshortcuts')).toBe(false)
+    await act(async () => { fireEvent.click(toggle, { detail: 0 }) })
+    expect(focusModeEnabled()).toBe(true)
+    expect(screen.getByTestId('focus-mode-announce').textContent).toBe('')
+    expect(screen.queryByText(/Focus mode on\./)).toBeNull()
+    const header = document.querySelector('header.topbar') as HTMLElement
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
+    expect(header.hasAttribute('inert')).toBe(false)
+    expect(header.hasAttribute('aria-hidden')).toBe(false)
+    expect(rail.hasAttribute('inert')).toBe(false)
+    // The header is not aria-hidden, so its capsule's own status region is live
+    // and the stand-in would announce every gateway change twice.
+    expect(screen.queryByTestId('focus-gateway-status')).toBeNull()
+
+    // Switching shortcuts back on (the Settings toggle fires the event) restores
+    // the chord and the inert chrome without a reload.
+    localStorage.setItem('mc-keyboard-shortcuts', '1')
+    await act(async () => { window.dispatchEvent(new Event('mc-keyboard-shortcuts-changed')) })
+    expect(screen.getByTestId('focus-mode-toggle').getAttribute('aria-keyshortcuts')).toBe('Alt+Shift+M')
+    expect(header.getAttribute('inert')).toBe('')
+    expect(rail.getAttribute('inert')).toBe('')
+    expect(screen.getByTestId('focus-gateway-status')).toBeTruthy()
+  })
+
+  // A sighted keyboard user who pressed Enter on the toggle saw the chrome vanish
+  // and nothing else: the chord was only in the toggle's hover title. For THAT
+  // activation (a keyboard click has detail 0) the shared shell notice shows the
+  // sentence in display spelling; a pointer click (detail 1) shows nothing, since
+  // a pointer user can hover an edge. The notice is not aria-hidden (its dismiss
+  // button must announce itself), and the sr-only region stays the spoken
+  // carrier. The card leaves on the shared notice's own 6s timer or its dismiss.
+  it('shows the exit chord in the shell notice for a keyboard activation only', async () => {
+    renderWithProviders(<App />, { route: '/chat' })
+    const toggle = await screen.findByTestId('focus-mode-toggle')
+    const notice = () => screen.queryByText('Focus mode on. Press Alt + Shift + M to turn it off.')
+    expect(notice()).toBeNull()
+
+    // Pointer: no card.
+    await act(async () => { fireEvent.click(toggle, { detail: 1 }) })
+    expect(focusModeEnabled()).toBe(true)
+    expect(notice()).toBeNull()
+    await act(async () => { fireEvent.click(screen.getByTestId('focus-mode-toggle'), { detail: 1 }) })
+    expect(focusModeEnabled()).toBe(false)
+
+    // Keyboard (Enter/Space synthesise a click with detail 0): the card, in the
+    // product's display spelling, not the ARIA one the live region uses.
+    await act(async () => { fireEvent.click(screen.getByTestId('focus-mode-toggle'), { detail: 0 }) })
+    const card = notice()
+    expect(card).toBeTruthy()
+    const cardRoot = card!.closest('[role="status"]') as HTMLElement
+    expect(cardRoot).toBeTruthy()
+    expect(cardRoot.getAttribute('aria-hidden')).toBeNull()
+    expect((document.querySelector('header.topbar') as HTMLElement).contains(cardRoot)).toBe(false)
+    expect(screen.getByTestId('focus-mode-announce').textContent).toBe('Focus mode on. Press Alt+Shift+M to turn it off.')
+    // Its dismiss is a named, reachable button.
+    const dismiss = cardRoot.querySelector('button[aria-label]') as HTMLElement
+    expect(dismiss).toBeTruthy()
   })
 
   it('reserves the native caption strip in focus mode, from CSS alone', () => {
@@ -334,7 +592,7 @@ describe('focus mode — shell layout', () => {
     const toggle = await screen.findByTestId('focus-mode-toggle')
     await act(async () => { fireEvent.click(toggle) })
 
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
     const header = document.querySelector('header.topbar') as HTMLElement
     expect(rail.style.transform).toBe('translateX(calc(-100% - 12px))')
 
@@ -375,7 +633,7 @@ describe('focus mode — shell layout', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTestId('focus-mode-toggle')
     await act(async () => { fireEvent.click(toggle) })
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
 
     vi.useFakeTimers()
     try {
@@ -424,7 +682,7 @@ describe('focus mode — shell layout', () => {
     renderWithProviders(<App />, { route: '/chat' })
     const toggle = await screen.findByTestId('focus-mode-toggle')
     await act(async () => { fireEvent.click(toggle) })
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
 
     vi.useFakeTimers()
     try {
@@ -449,7 +707,7 @@ describe('focus mode — shell layout', () => {
     await act(async () => { fireEvent.click(toggle) })
 
     const strip = screen.getByTestId('focus-peek-rail')
-    const rail = screen.getByRole('navigation', { name: 'Main navigation' })
+    const rail = document.querySelector('nav.focus-chrome-rail') as HTMLElement
 
     // Fake timers are installed HERE, not at the top of the test: testing
     // library's `findBy*` polls on real timers, so faking them before the render

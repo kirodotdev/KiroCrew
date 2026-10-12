@@ -413,6 +413,7 @@
     "k_run_a_command": "Befehl ausfuehren",
     "open_command_bar": "Command Bar oeffnen",
     "focus_mode": "Fokusmodus",
+    "focus_mode_on_announce": "Fokusmodus an. Drück {{chord}}, um ihn auszuschalten.",
     "focus_mode_title": "Fokusmodus · Alt+Umschalt+M",
     "focus_mode_title_mac": "Fokusmodus · ⌥⇧M",
     "connect_your_phone": "Telefon verbinden",

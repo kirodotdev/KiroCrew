@@ -426,6 +426,7 @@
     "k_run_a_command": "Executer une commande",
     "open_command_bar": "Ouvrir Command Bar",
     "focus_mode": "Mode concentration",
+    "focus_mode_on_announce": "Mode concentration activé. Appuie sur {{chord}} pour le désactiver.",
     "focus_mode_title": "Mode concentration · Alt+Maj+M",
     "focus_mode_title_mac": "Mode concentration · ⌥⇧M",
     "connect_your_phone": "Connecter votre téléphone",

@@ -400,6 +400,7 @@
     "k_run_a_command": "运行命令",
     "open_command_bar": "打开 Command Bar",
     "focus_mode": "专注模式",
+    "focus_mode_on_announce": "专注模式已开启。按 {{chord}} 可关闭。",
     "focus_mode_title": "专注模式 · Alt+Shift+M",
     "focus_mode_title_mac": "专注模式 · ⌥⇧M",
     "connect_your_phone": "连接手机",

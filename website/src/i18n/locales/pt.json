@@ -426,6 +426,7 @@
     "k_run_a_command": "Executar um comando",
     "open_command_bar": "Abrir o Command Bar",
     "focus_mode": "Modo de foco",
+    "focus_mode_on_announce": "Modo de foco ativado. Pressione {{chord}} para desativá-lo.",
     "focus_mode_title": "Modo de foco · Alt+Shift+M",
     "focus_mode_title_mac": "Modo de foco · ⌥⇧M",
     "connect_your_phone": "Conectar seu telefone",

@@ -17,6 +17,7 @@ import { RailBrandToggle, RailCommunityLinks } from './railChrome'
 import { appPathname } from '../../lib/basePath'
 import { MOBILE_NAV_WIDTH, type AppShell } from '../appShell'
 import { NavItem, NavBadge } from './navRow'
+import { hiddenChromeProps } from '../focus/focusChrome'
 
 /**
  * The main navigation: the desktop rail, and the phone nav drawer with its scrim,
@@ -27,7 +28,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
   const {
     updateAvailable, terminalEnabled, terminalPoppedOut, bottomTerminalOpen, mobileConnectOpen,
     setMobileConnectOpen, hasRenderableMobileConnect, activeSlotProject, navigate, branding, botName, avatar,
-    isMobile, focusActive, railPeek, railPeekSurface, mobileNavMounted, mobileNavX, mobileNavPanelRef,
+    isMobile, focusActive, focusChromeInert, railPeek, railPeekSurface, mobileNavMounted, mobileNavX, mobileNavPanelRef,
     mobileNavScrimRef, mobileNavScrim, closeMobileNavDrawer, advertisedNavItems, sortedAppGroup,
     activeAppDragId, appDndSensors, handleAppDragStart, handleAppDragEnd, handleAppDragCancel, APPS_NAV_LIMIT,
     appsExpanded, toggleAppsExpanded, slotOwners, appBadges, discoverBadges, railAppBadges, railAppRunStates,
@@ -430,6 +431,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
               : { gridArea: 'nav', width: 'auto' }}
             role="navigation"
             aria-label={i18nT('app.main_navigation')}
+            {...hiddenChromeProps(focusActive && !railPeek.open && focusChromeInert)}
             {...(focusActive ? railPeek.surfaceProps : {})}
           >
             {navBody}

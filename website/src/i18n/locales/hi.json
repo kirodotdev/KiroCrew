@@ -413,6 +413,7 @@
     "k_run_a_command": "कमांड चलाएं",
     "open_command_bar": "Command Bar खोलें",
     "focus_mode": "फ़ोकस मोड",
+    "focus_mode_on_announce": "फ़ोकस मोड चालू है। इसे बंद करने के लिए {{chord}} दबाओ।",
     "focus_mode_title": "फ़ोकस मोड · Alt+Shift+M",
     "focus_mode_title_mac": "फ़ोकस मोड · ⌥⇧M",
     "connect_your_phone": "फ़ोन कनेक्ट करें",
