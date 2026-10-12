@@ -55,7 +55,7 @@ from kiro_crew import _facade_mirror
 from kiro_crew.apps.manager import is_app_enabled  # noqa: F401
 from kiro_crew.atomic_write import atomic_write, read_json_or
 
-from . import crew_store, github_client, provider, store
+from . import crew_store, github_client, gitlab_queries, provider, store
 from .crew_runtime_session import is_live
 from .crew_runtime_supervision import wake_crew, watchdog_cycle
 
@@ -228,25 +228,21 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     """The sweep's deps source: cache read, refreshed in place when absent/expired.
 
     Runs in a worker thread (the caller wraps it in ``asyncio.to_thread``).
-    GitHub-only by design: the crew sweep acts on GitHub issues alone (the PR's
-    "crew signals GitHub-only" non-goal), so a non-GitHub provider returns None
-    here — an unknown reading that ``detect_unblocks`` can never turn into a
-    spurious unlock. The GitLab deps cache is written by the /deps route for the
-    Graph tab's DISPLAY only; the sweep must not read it, because that cache can
-    legitimately be edgeless (an idle blocked issue past the /links fetch cap, or
-    one whose single /links call failed) and an edgeless graph reads as zero open
-    blockers — which would fire a false 1→0 unlock on a still-blocked issue. A
-    refresh failure keeps whatever the cache held — stale beats wrong, equally
-    unable to fire the unlock (see ``detect_unblocks``).
+    GitHub and GitLab refresh, dispatching exactly as the /deps route does; any
+    other provider has no dependency fetch yet, and for it this stays a plain
+    cache read (normally None). A refresh failure of any kind keeps whatever the
+    cache held — stale beats wrong, and an unknown reading can never fire the
+    unlock (see ``detect_unblocks``). A GitLab graph can be edgeless for a node
+    whose own ``/links`` were never read (fetch cap, or a failed call); the fetcher
+    marks such a node ``blockers_unknown`` and ``_open_blocker_count`` reads it as
+    unknown, so that edgeless shape never fires a false 1→0 unlock either.
     """
-    if key.provider != "github":
-        return None
     cached = store.read_deps_cache(key.owner, key.repo, scope)
     fresh_enough = (
         isinstance(cached, dict)
         and (time.time() - float(cached.get("fetched_at") or 0)) < store.DEPS_CACHE_TTL_SEC
     )
-    if fresh_enough:
+    if fresh_enough or key.provider not in (provider.GITHUB, provider.GITLAB):
         return cached
 
     # An ABSENT issues cache is unknown scope, not an empty repo: building the
@@ -263,8 +259,15 @@ def _read_or_refresh_deps(key: provider.RepoKey, scope) -> dict[str, Any] | None
     if open_issues is None:
         return cached
     try:
-        hints: dict[int, dict] = {}
-        edges, nodes = github_client.fetch_dependency_edges(key.owner, key.repo, open_issues, hints)
+        if key.provider == provider.GITLAB:
+            edges, nodes = gitlab_queries.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, host=key.host
+            )
+        else:
+            hints: dict[int, dict] = {}
+            edges, nodes = github_client.fetch_dependency_edges(
+                key.owner, key.repo, open_issues, hints
+            )
         store.write_deps_cache(
             key.owner, key.repo, edges, nodes, root=scope, fetched_at=fetch_started
         )
@@ -291,7 +294,10 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
       * the count of blockers whose node state is neither ``closed`` nor
         ``merged``.
     A blocker with no node entry is treated as still-open (conservative: better to
-    keep an item blocked than to fire a spurious unlock on a missing node).
+    keep an item blocked than to fire a spurious unlock on a missing node). An
+    item whose own node carries ``blockers_unknown`` (GitLab: its ``/links`` were
+    never read, so its edges may be missing) is unknown too — its edge count says
+    nothing about its real blockers.
     """
     if not isinstance(deps, dict):
         return None
@@ -301,6 +307,9 @@ def _open_blocker_count(deps: dict[str, Any] | None, number: Any) -> int | None:
     raw_nodes = deps.get("nodes")
     nodes: dict[str, Any] = raw_nodes if isinstance(raw_nodes, dict) else {}
     if not isinstance(edges, list):
+        return None
+    own = nodes.get(str(number))
+    if isinstance(own, dict) and own.get("blockers_unknown") is True:
         return None
     open_count = 0
     for edge in edges:

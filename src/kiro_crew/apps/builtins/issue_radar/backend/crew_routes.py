@@ -1201,11 +1201,10 @@ async def _handle_crew_pause(request: web.Request) -> web.Response:
 def _fabric_page(owner: str, repo: str, root: Any) -> dict[str, Any]:
     """The ``items`` half of ``GET /crew/fabric``, computed in ONE off-loop call.
 
-    The provider gate is NOT here — it is the route's, because a non-GitHub repo
-    still answers 200 with an empty list and this helper is only reached once the
-    repo is known to be crew-bearing. Kept parallel to ``_crews_page`` /
-    ``_crew_page``: one off-loop hop that reads every crew's items and the ledger,
-    rather than a hop per crew.
+    No provider gate: the fold reads the crew store, which keys and persists a
+    GitLab repo's crews exactly like a GitHub repo's. Kept parallel to
+    ``_crews_page`` / ``_crew_page``: one off-loop hop that reads every crew's
+    items and the ledger, rather than a hop per crew.
     """
     return {
         "schema": crew_store.FABRIC_SCHEMA,
@@ -1223,20 +1222,18 @@ async def _handle_crew_fabric(request: web.Request) -> web.Response:
     is not in ``_AGENT_REACHABLE``, so ``_agent_gate`` refuses an internal-secret
     caller).
 
-    Non-GitHub providers answer ``items: []`` at HTTP 200, not an error: crews are a
-    GitHub-only feature today, so a GitLab repo simply has no crews to fold, and the
-    frontend renders the same designed empty state it renders for a GitHub repo that
-    never ran one. A repo with no crews answers the same way, from the fold itself.
+    Every provider folds from the crew store, which is provider-neutral: a GitLab
+    repo's crews are keyed and persisted exactly like a GitHub repo's, so the
+    fold needs no forge call and no per-provider branch. A repo with no crews
+    answers ``items: []`` at HTTP 200 from the fold itself, and the frontend
+    renders its designed empty state.
     """
     key, early = await _query_preamble(request)
     if early is not None:
         return early
-    if key.is_github:
-        page = await asyncio.to_thread(
-            partial(_fabric_page, key.owner, key.repo, routes._scope(key))
-        )
-    else:
-        page = {"schema": crew_store.FABRIC_SCHEMA, "phases": list(crew_store.SPINE_PHASES), "items": []}
+    page = await asyncio.to_thread(
+        partial(_fabric_page, key.owner, key.repo, routes._scope(key))
+    )
     return web.json_response(
         {**routes._identity(key), "generated_at": store._now_iso(), **page}
     )

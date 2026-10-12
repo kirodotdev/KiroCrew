@@ -1657,5 +1657,135 @@ class TestAccountScope(unittest.TestCase):
         self.assertEqual((key.owner, key.repo), ("", ""))
 
 
+class TestCrewWriteParity(unittest.TestCase):
+    """The two write calls the crew runtime's GitHub shape needs on GitLab:
+    editing the claim note in place and opening a merge request. Both exist for
+    parity-by-contract (no backend caller today), so the contract itself is what
+    is pinned: path, verb, JSON body on stdin, GitHub-shaped return, refusals."""
+
+    def _capture(self, fn, response):
+        seen: dict = {}
+
+        def fake_api(path, **kwargs):
+            seen["path"] = path
+            seen.update(kwargs)
+            return response
+
+        with mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api):
+            out = fn()
+        return seen, out
+
+    # update_issue_comment
+
+    def test_update_issue_comment_puts_the_note_under_its_issue(self):
+        seen, out = self._capture(
+            lambda: gitlab_client.update_issue_comment(
+                "grp", "proj", 777, "  claimed: still working  ", number=42, host="gitlab.com"
+            ),
+            {"id": 777, "updated_at": "2026-10-12T20:00:00Z", "created_at": "2026-10-01T00:00:00Z"},
+        )
+        self.assertEqual(seen["path"], "projects/grp%2Fproj/issues/42/notes/777")
+        self.assertEqual(seen["method"], "PUT")
+        self.assertEqual(seen["body"], {"body": "claimed: still working"})
+        self.assertEqual(seen["host"], "gitlab.com")
+        # updated_at, never created_at: an edited note's created_at is the ORIGINAL
+        # post time and would read a fresh heartbeat as days stale.
+        self.assertEqual(out, {"id": 777, "url": None, "updated_at": "2026-10-12T20:00:00Z"})
+
+    def test_update_issue_comment_coerces_both_ids_to_int(self):
+        seen, _ = self._capture(
+            lambda: gitlab_client.update_issue_comment(
+                "grp", "proj", "777", "x", number="42", host="gitlab.com"  # type: ignore[arg-type]
+            ),
+            {"id": 777},
+        )
+        self.assertEqual(seen["path"], "projects/grp%2Fproj/issues/42/notes/777")
+
+    def test_update_issue_comment_refuses_a_path_segment_in_an_id(self):
+        with mock.patch.object(gitlab_client, "_glab_api") as api:
+            with self.assertRaises(ValueError):
+                gitlab_client.update_issue_comment(
+                    "grp", "proj", "777/../x", "x", number=42, host="gitlab.com"  # type: ignore[arg-type]
+                )
+        api.assert_not_called()
+
+    def test_update_issue_comment_refuses_an_empty_body(self):
+        with mock.patch.object(gitlab_client, "_glab_api") as api:
+            with self.assertRaises(gitlab_client.ProviderCliError):
+                gitlab_client.update_issue_comment("g", "p", 1, "   ", number=2, host="gitlab.com")
+        api.assert_not_called()
+
+    def test_update_issue_comment_requires_the_issue_number_by_keyword(self):
+        # The GitHub shape has no issue number; a caller written against it must
+        # fail loudly here rather than address the wrong note.
+        sig = inspect.signature(gitlab_client.update_issue_comment)
+        self.assertEqual(sig.parameters["number"].kind, inspect.Parameter.KEYWORD_ONLY)
+        self.assertIs(sig.parameters["number"].default, inspect.Parameter.empty)
+        with self.assertRaises(TypeError):
+            gitlab_client.update_issue_comment("g", "p", 1, "x", host="gitlab.com")  # type: ignore[call-arg]
+
+    # create_pull_request
+
+    def test_create_pull_request_posts_a_merge_request_with_prose_in_the_body(self):
+        seen, out = self._capture(
+            lambda: gitlab_client.create_pull_request(
+                "grp", "proj", "crew/fix-42", "main", "  fix: the thing  ",
+                "--help\nbody line", host="gitlab.com",
+            ),
+            {"iid": 9, "web_url": "https://gitlab.com/grp/proj/-/merge_requests/9",
+             "draft": False, "state": "opened"},
+        )
+        self.assertEqual(seen["path"], "projects/grp%2Fproj/merge_requests")
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(
+            seen["body"],
+            {"source_branch": "crew/fix-42", "target_branch": "main",
+             "title": "fix: the thing", "description": "--help\nbody line"},
+        )
+        self.assertEqual(out["number"], 9)
+        self.assertEqual(out["url"], out["html_url"])
+        self.assertEqual(out["state"], "opened")
+        self.assertFalse(out["draft"])
+
+    def test_create_pull_request_marks_a_draft_in_the_title_once(self):
+        seen, _ = self._capture(
+            lambda: gitlab_client.create_pull_request(
+                "g", "p", "h", "b", "Draft: already", draft=True, host="gitlab.com"
+            ),
+            {"iid": 1, "draft": True},
+        )
+        self.assertEqual(seen["body"]["title"], "Draft: already")
+        seen, _ = self._capture(
+            lambda: gitlab_client.create_pull_request(
+                "g", "p", "h", "b", "plain", draft=True, host="gitlab.com"
+            ),
+            {"iid": 1, "draft": True},
+        )
+        self.assertEqual(seen["body"]["title"], "Draft: plain")
+        self.assertNotIn("draft", seen["body"])  # GitLab has no such field
+
+    def test_create_pull_request_refuses_missing_title_or_branches(self):
+        for args in (("h", "b", ""), ("", "b", "t"), ("h", "", "t"), ("h", "b", "Draft:"), ("h", "b", " draft:  ")):
+            with self.subTest(args=args), mock.patch.object(gitlab_client, "_glab_api") as api:
+                with self.assertRaises(gitlab_client.ProviderCliError):
+                    gitlab_client.create_pull_request("g", "p", *args, host="gitlab.com")
+                api.assert_not_called()
+
+    def test_positional_shape_matches_github(self):
+        # Routes pass positionals by position; a disagreement here is a silently
+        # misassigned argument. ``number`` on the GitLab note edit is keyword-only
+        # and therefore outside this comparison on purpose.
+        def positional(module, name):
+            return [
+                p.name
+                for p in inspect.signature(getattr(module, name)).parameters.values()
+                if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+            ]
+
+        for name in ("update_issue_comment", "create_pull_request"):
+            with self.subTest(name=name):
+                self.assertEqual(positional(github_client, name), positional(gitlab_client, name))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
