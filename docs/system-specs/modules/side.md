@@ -788,6 +788,18 @@ memo on the second pass and eats the user's punctuation).
 because the IME defect was in the WIRING and a hook test cannot see it. A
 source-level guard fails if this file re-grows a local copy of any of them.
 
+The transcript is the shared `app-sdk/ChatMessageList`, and `SideChat` takes two
+of the host's openers as props — `onFileOpen` and `onArtifactOpen`, the ones
+`SidePanel` already hands `ActivityViewer` for its Git and Artifacts tabs — and
+passes them straight through, so a path chip or an artifact link in a side reply
+opens a tab of the panel the side chat sits in, as the same chip and link do in
+the main transcript. Capability by omission, like every other host seam here: a
+host that passes neither gets `MarkdownRenderer`'s own fallbacks (a path chip
+reveals the file in the OS file manager, or copies the path on a remote
+dashboard; a path link stays a plain link; an artifact link navigates away).
+`website/src/test/SideChat.fileOpen.test.tsx` pins both the wired and the
+unwired behaviour.
+
 ### `store/chat/side.ts` — Side State
 
 `website/src/store/chat/side.ts` owns the side reducers; `chatSlice.ts` composes
