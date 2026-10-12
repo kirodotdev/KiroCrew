@@ -24,6 +24,7 @@ if TYPE_CHECKING:
         logger,
         set_pending_consumed_hook,
         set_pending_staged_hook,
+        set_update_auto_applied_hook,
     )
 
 
@@ -60,7 +61,7 @@ def _pending_skill_notification(info: dict) -> tuple[str, str, str, list[dict[st
     )
     if triggers:
         lines.append(f"\n**Triggers:** {triggers}")
-    if info.get("has_scripts"):
+    if info.get("has_scripts") is True:
         lines.append("\n_Bundles executable scripts — review them before approving._")
     body = "\n".join(lines)
     # Deep-link straight at the candidate, not just the tab: the
@@ -135,6 +136,7 @@ def _auto_create_consolidator(
             auto_min_tool_calls=_scfg.auto_min_tool_calls,
             auto_similarity_threshold=_scfg.auto_similarity_threshold,
             approval_required=_scfg.approval_required,
+            auto_apply_updates=_scfg.auto_apply_updates,
             max_auto_skills=_scfg.max_auto_skills,
             stale_after_days=_scfg.stale_after_days,
             archive_after_days=_scfg.archive_after_days,
@@ -244,5 +246,54 @@ def _register_pending_skill_hooks(state: DashboardState) -> None:
                 logger.debug("pending-skill notification resolve failed", exc_info=True)
 
         set_pending_consumed_hook(_on_pending_skill_consumed)
+
+        def _on_update_auto_applied(info: dict) -> None:
+            # An update applied without review never had a staged notification
+            # (staging suppresses it on the unattended path), so this is the one
+            # record the operator sees that a live skill changed. Same thread
+            # contract as the hooks above.
+            try:
+                target = str(info.get("target") or info.get("name") or "skill")
+                version = info.get("new_version")
+                description = str(info.get("description") or "").strip()
+                head = f"**{target}** auto-updated to v{version}."
+                if description:
+                    head = f"**{target}** — {description}\n\nAuto-updated to v{version}."
+                body = (
+                    head + "\n\nApplied without review because skill approval is disabled "
+                    "and update auto-apply is enabled; the previous version remains "
+                    "available in version history."
+                )
+                payload = {
+                    "slug": str(info.get("slug") or ""),
+                    "target": target,
+                    "new_version": version,
+                }
+
+                def _emit() -> None:
+                    try:
+                        state.notify(
+                            "skills",
+                            "Skill auto-updated",
+                            body,
+                            meta=payload,
+                            url="/capabilities?tab=skills",
+                        )
+                        state.broadcast_ws("skills.pending_changed", payload)
+                    except Exception:
+                        logger.debug("auto-applied-update notification failed", exc_info=True)
+
+                loop = state.serving_loop
+                if loop is not None and not loop.is_closed():
+                    try:
+                        loop.call_soon_threadsafe(_emit)
+                    except RuntimeError:  # pragma: no cover - loop closing
+                        pass
+                else:
+                    _emit()
+            except Exception:
+                logger.debug("auto-applied-update notification failed", exc_info=True)
+
+        set_update_auto_applied_hook(_on_update_auto_applied)
     except Exception:
         logger.debug("Could not register pending-skill staged hook", exc_info=True)

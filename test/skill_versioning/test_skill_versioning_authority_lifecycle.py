@@ -9,6 +9,7 @@ stuck claim never freezes the lifecycle.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import errno
 import json
@@ -756,6 +757,65 @@ def test_operator_retire_moves_verified_idle_authority_and_restores_by_name_muta
     )
     assert skills_mod._auto_skill_promotion_ruled_out() is True
     assert loader.set_pinned("auto/after-retire", True) is True
+
+
+def test_authority_retire_cli_holds_the_gateway_lock(monkeypatch, tmp_path, capsys):
+    from kiro_crew import cli
+
+    events: list[object] = []
+    retired_root = tmp_path / "auto-skill-private.stale-token"
+    retired_record = tmp_path / "auto-skill-private-authority.json.stale-token"
+    retired_quarantine = tmp_path / ".quarantine.stale-token"
+
+    class HeldGatewayLock:
+        def __init__(self, home):
+            events.append(("constructed", home))
+
+        def __enter__(self):
+            events.append("entered")
+            return self
+
+        def __exit__(self, *_exc):
+            events.append("exited")
+
+    def retire():
+        events.append("retired")
+        return retired_root, retired_record, (retired_quarantine,)
+
+    monkeypatch.setattr(cli, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "GatewayLock", HeldGatewayLock)
+    monkeypatch.setattr(cli, "retire_auto_skill_private_authority", retire)
+
+    cli._skills_cmd(argparse.Namespace(skills_action="authority-retire"))
+
+    assert events == [("constructed", tmp_path), "entered", "retired", "exited"]
+    output = capsys.readouterr().out
+    assert str(retired_root) in output
+    assert str(retired_record) in output
+    assert f"quarantine: {retired_quarantine}" in output
+    assert "moved aside with the root" in output
+
+
+def test_authority_retire_cli_reports_a_root_retired_without_a_record(
+    monkeypatch,
+    tmp_path,
+    capsys,
+):
+    from kiro_crew import cli
+
+    retired_root = tmp_path / "auto-skill-private.stale-token"
+    monkeypatch.setattr(cli, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(cli, "GatewayLock", lambda _home: contextlib.nullcontext())
+    monkeypatch.setattr(
+        cli, "retire_auto_skill_private_authority", lambda: (retired_root, None, ())
+    )
+
+    cli._skills_cmd(argparse.Namespace(skills_action="authority-retire"))
+
+    output = capsys.readouterr().out
+    assert str(retired_root) in output
+    assert "record: (none present)" in output
+    assert "quarantine: (none present)" in output
 
 
 # ── Retirement on a host where no process can promote ──

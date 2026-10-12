@@ -19,7 +19,7 @@ from kiro_crew.dashboard.handlers.prompts_paths import _plain_stem_ok
 from kiro_crew.dashboard.handlers.prompts_skill_edits import _SKILL_WRITE_LOCK
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.executors import discovery_executor
-from kiro_crew.skills import PendingApprovalRefused
+from kiro_crew.skills import PendingApprovalRefused, PendingDismissalRefused
 
 from ._shared import _get_skills
 
@@ -323,7 +323,29 @@ async def api_skill_pending_dismiss(request: web.Request) -> web.Response:
         return web.json_response({"error": "invalid slug"}, status=400)
     try:
         ok = await asyncio.get_running_loop().run_in_executor(
-            discovery_executor(), skills.dismiss_pending_skill, slug
+            discovery_executor(), skills.dismiss_pending_skill_checked, slug
+        )
+    except PendingDismissalRefused as e:
+        # The candidate is still staged: answering 404 would tell the operator
+        # it was dismissed elsewhere while the reason sat only in the gateway log.
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name="api_skill_pending_dismiss",
+            tool_kind="skill",
+            outcome="rejected",
+            metadata={"slug": slug, "reason": e.reason},
+        )
+        return web.json_response(
+            {
+                "error": f"dismissal refused: {e.detail}",
+                "code": "pending_dismissal_refused",
+                "reason": e.reason,
+                "detail": e.detail,
+                "hint": e.hint,
+            },
+            status=409,
         )
     except Exception:
         _sel().log_tool_invocation(
