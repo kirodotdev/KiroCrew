@@ -41,6 +41,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.request_priority import owner_start_priority
 from kiro_crew.dashboard.side_context import build_side_message
 from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
+from kiro_crew.dashboard.side_segment_redactor import _SegmentRedactor
 from kiro_crew.dashboard.side_state import (
     MAX_SIDE_QUEUE,
     STEER_CONSUMED,
@@ -63,13 +64,20 @@ from kiro_crew.llm_helpers import (
     ToolApprovalPolicy,
     stream_and_collect,
 )
-from kiro_crew.security import StreamRedactor, redact
+from kiro_crew.security import redact, redact_and_truncate
 from kiro_crew.sel import sel
 from kiro_crew.shared_crew.admission_gate import actor_budget
 from kiro_crew.shared_crew.turn_gate import capacity_note, initiated_by, run_admitted
 from kiro_crew.start_priority import StartPriority
 
 logger = logging.getLogger(__name__)
+
+#: Cap on a tool row's ``input_preview`` and ``purpose`` in the side stream. The
+#: row is an ephemeral preview the pill folds at 800 characters, not the main
+#: transcript's audit record (``chat_utils._MAX_TOOL_FIELD``, 1 MB): the audit
+#: trail of a side turn's tool calls is SEL's tool-invocation row (title and
+#: kind, written by ``stream_and_collect``), never the panel.
+_SIDE_TOOL_PREVIEW_CHARS = 2_000
 
 _MAX_QUESTION_BYTES = 32_768
 
@@ -406,13 +414,19 @@ async def _run_side_turn(
     # The prompt envelope is built below, once the harness is known: the boundary
     # it states (read-only allowance vs. no tools) follows the approval policy
     # the turn will actually run under.
-    chunks: list[str] = []
-    # Rolling-buffer redactor for the live side stream. broadcast_side_result
-    # already redacts each frame, but per-frame redaction alone misses a secret
-    # split across streaming chunk boundaries; StreamRedactor withholds a
-    # trailing credential-class run until it's confirmed safe. Mirrors
-    # chat_runner._wsred so /side has the same protection as the main chat.
-    _wsred = StreamRedactor()
+    # Redaction for the live side stream. broadcast_side_result already redacts
+    # each frame, but per-frame redaction alone misses a secret split across
+    # streaming chunk boundaries (the StreamRedactor inside withholds a trailing
+    # credential-class run until it's confirmed safe, as chat_runner._wsred
+    # does) or across a tool row, which splits the reply into rows: every row is
+    # redacted with the whole reply as its context.
+    _redactor = _SegmentRedactor()
+    drawn_tool_ids: set[str] = set()
+
+    def _emit(text: str) -> None:
+        """Broadcast a live delta."""
+        if text:
+            _broadcast(role="assistant", content=text)
 
     def _broadcast(**frame: Any) -> None:
         """Broadcast one of this run's frames while its sidecar is still the slot's.
@@ -426,10 +440,76 @@ async def _run_side_turn(
             broadcast_side_result(state, slot_key=slot.key, run_id=run_id, **frame)
 
     def _on_chunk(text: str) -> None:
-        chunks.append(text)
-        safe = _wsred.feed(text)
-        if safe:
-            _broadcast(role="assistant", content=safe)
+        _emit(_redactor.feed(text))
+
+    def _on_tool_call(event: Any, approved: bool) -> None:
+        """Draw a tool attempt where it happened in the reply.
+
+        ``event`` is the ``LLMEvent`` ``stream_and_collect`` reports. The row is
+        a ``🔧 <title>``, shaped as the main chat's (``chat_runner._tool_meta``
+        / ``_tool_call_ws_payload``) so the shared transcript draws it with the
+        same pill; a refused attempt also gets the hidden ``🚫`` sibling the
+        transcript reads as "blocked". Every field is LLM-authored:
+        ``broadcast_side_result`` redacts each one. kiro-cli reports an attempt
+        as a tool-call event and then asks permission for it, so a refusal can
+        arrive for a row already drawn: that adds the sibling alone.
+
+        The text row ends at every tool row, the ``🚫`` sibling included: the
+        client starts a new text row under each, so the server closes one there
+        too, or a delta that landed between a row and its sibling would be drawn
+        twice by the terminal frame. The row is settled with a whole-text pass
+        (see ``_SegmentRedactor``) the way the terminal frame settles the last
+        row; the run the stream redactor still withholds is neither flushed nor
+        settled, and is drawn under the row once the text after the call has
+        proven it safe.
+        """
+        if slot._side is not side_at_start:
+            return
+        title = event.title or event.tool_name or "tool"
+        call_id = event.tool_call_id or ""
+
+        def _close_row() -> None:
+            # The frame replaces the row's streamed deltas and is sent only
+            # when the whole-text pass rewrites them.
+            settled = _redactor.close_row()
+            if settled is not None:
+                _broadcast(
+                    role="assistant",
+                    content=settled,
+                    settle=True,
+                )
+
+        if call_id and call_id in drawn_tool_ids:
+            if not approved:
+                _close_row()
+                _broadcast(
+                    role="tool",
+                    content=f"🚫 {title}",
+                    meta={"tool_call_id": call_id},
+                )
+            return
+        _close_row()
+        if call_id:
+            drawn_tool_ids.add(call_id)
+        # Redacted whole, then cut: a cut inside a credential leaves a prefix no
+        # pattern matches (``postgres://user:pass`` without its ``@host``).
+        preview = redact_and_truncate(event.tool_input or "", _SIDE_TOOL_PREVIEW_CHARS)
+        meta = {
+            "tool_call_id": call_id,
+            "kind": event.tool_kind or "",
+            "purpose": redact_and_truncate(event.tool_purpose or "", _SIDE_TOOL_PREVIEW_CHARS),
+            "input_preview": preview,
+        }
+        content = f"🔧 {title}"
+        if preview and preview != title:
+            content += f"\n{preview}"
+        _broadcast(role="tool", content=content, meta=meta)
+        if not approved:
+            _broadcast(
+                role="tool",
+                content=f"🚫 {title}",
+                meta={"tool_call_id": call_id},
+            )
 
     def _on_steer_consumed(snapshot: str) -> None:
         """Settle the steers this echo proves the backend injected.
@@ -755,7 +835,7 @@ async def _run_side_turn(
             cfg=cfg,
         )
         try:
-            response_text = await stream_and_collect(
+            returned_text = await stream_and_collect(
                 provider,
                 message,
                 # Reads-mode semantics with reject as the fallback on a harness in
@@ -775,20 +855,25 @@ async def _run_side_turn(
                 app=slot._app or "",
                 on_chunk=_on_chunk,
                 on_steer_consumed=_on_steer_consumed,
+                on_tool_call=_on_tool_call,
             )
-            # Redact the assembled text before it is stored/broadcast as the
-            # terminal frame (which replaces the streamed deltas). Never trust
-            # LLM output on an external surface. redact() applies BOTH passes —
+            # The reply as stored and as the terminal frame carries it (that
+            # frame replaces the streamed deltas) is the redactor's pass over
+            # the text it saw chunk by chunk, not redact() over the text
+            # stream_and_collect returns: the two differ only where the stream
+            # redactor dropped an over-long value, which the batch patterns
+            # could not judge and must not get back. Never trust LLM output on
+            # an external surface. redact() applies BOTH passes —
             # redact_exfiltration_urls() then redact_credentials() (security.py)
             # — so exfil URLs and credentials are both scrubbed here.
-            response_text = redact(response_text)
+            response_text = _redactor.reply()
         except PromptBusyExhaustedError:
             logger.warning(
                 "Side turn aborted (prompt busy exhausted): slot=%s run_id=%s",
                 slot.key,
                 run_id,
             )
-            response_text = redact("".join(chunks))
+            response_text = _redactor.reply()
             notice = "(side conversation interrupted — please retry)"
             # The partial answer stays in the history the model is handed; the
             # notice is stored after it, so a panel restored from ``GET .../side``
@@ -802,11 +887,15 @@ async def _run_side_turn(
                     partial_message_id = slot._side.append_assistant(response_text, run_id=run_id)
                 message_id = slot._side.append_assistant(notice, run_id=run_id, is_error=True)
             if partial_message_id:
+                # A tool row split the partial answer: the frame settles the row
+                # below the last tool row, as the success path's does.
+                split = bool(_redactor.rows)
                 _broadcast(
                     role="assistant",
-                    content=response_text,
+                    content=_redactor.finish() if split else response_text,
                     final=True,
                     message_id=partial_message_id,
+                    reply=response_text if split else "",
                 )
             _broadcast(
                 role="assistant",
@@ -817,7 +906,7 @@ async def _run_side_turn(
             )
             return
 
-        if not response_text:
+        if not returned_text:
             # The returned text, not the streamed chunks: a prompt-busy retry starts
             # its text over, so chunks from an earlier attempt can stand beside an
             # empty answer.
@@ -846,12 +935,25 @@ async def _run_side_turn(
         if slot._side is not None and slot._side.open and slot._side.last_run_id == run_id:
             message_id = slot._side.append_assistant(response_text, run_id=run_id)
 
+        # The terminal frame replaces what the client streamed for the row it
+        # lands on. With no tool row that row holds the whole reply, and the
+        # frame carries the whole redacted text as before. A tool row split the
+        # reply into rows, and the frame then carries only the last row's text:
+        # the whole reply redacted in one pass (so a pattern that spans a tool
+        # row is matched whole), past what the rows above show. A turn that ran
+        # tools but wrote nothing keeps the fallback sentence above.
+        final_text = response_text
+        whole_reply = ""
+        if _redactor.rows and returned_text:
+            final_text = _redactor.finish()
+            whole_reply = response_text
         _broadcast(
             role="assistant",
-            content=response_text,
+            content=final_text,
             ts=time.time(),
             final=True,
             message_id=message_id,
+            reply=whole_reply,
         )
     except asyncio.CancelledError:
         # A stop request (``api_side_stop``) cancels this task. The terminal
