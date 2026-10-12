@@ -1102,6 +1102,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # Depth 2 keeps HEAD^1 (the merge commit's first parent) so the
+          # wait-discipline ratchet can compare touched files against their
+          # base-commit counts -- identical to the Linux backend-test job.
+          fetch-depth: 2
 
       - uses: ./.github/actions/setup-windows-tests
 
