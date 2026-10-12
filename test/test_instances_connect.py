@@ -707,6 +707,21 @@ class TestStartupRevive:
             await release.wait()  # simulate a hung SSH connect that never returns
 
         monkeypatch.setattr(server, "_revive_intended_instances", _blocking_revive)
+        # Startup also restores in-flight remote subagent runs in the background.
+        # Held open here so the task count below does not depend on whether that
+        # restore happened to finish before the assertion.
+        import kiro_crew.dashboard.remote_subagents as remote_subagents
+
+        restore_started = asyncio.Event()
+
+        class _RestoreDouble:
+            async def ensure_restored(self):
+                restore_started.set()
+                await release.wait()
+
+        monkeypatch.setattr(
+            remote_subagents, "get_remote_subagent_service", lambda _state: _RestoreDouble()
+        )
         # The hook schedules the sequencer, which re-takes the hop holds off the
         # boot path and THEN awaits the revive above.
 
@@ -737,9 +752,11 @@ class TestStartupRevive:
         # measures. So by the time the handler returns it must NOT have run yet.
         assert armed == [], "the hop re-take ran on the boot path"
 
-        # Revive was scheduled as a tracked background task, not awaited.
-        assert len(state._background_tasks) == 1
+        # Revive and the remote-subagent restore were scheduled as tracked
+        # background tasks, not awaited.
+        assert len(state._background_tasks) == 2
         await await_until(started, what="the background revive starting")  # it did start in the bg
+        await await_until(restore_started, what="the remote-subagent restore")
 
         # ...but it ran BEFORE the revive, which is the ordering that matters: revive
         # reconnects instances that allocate ports, and a lease whose hold is not yet

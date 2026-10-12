@@ -310,7 +310,9 @@ def _inherited_member_agent(selection_kind: str, template_id: str, project_dir: 
     return template_id
 
 
-def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") -> str | None:
+def _vet_spawn_governance(
+    parent_session_key: str, agent: str, app: str = "", *, parent_agent: str = ""
+) -> str | None:
     """Return a denial reason if governance forbids spawning, else None.
 
     ``app`` binds the calling app's OWN profile (precedence #1 in
@@ -318,6 +320,11 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
     contained by a profile written for that app, which is skipped entirely when
     the app identity is not threaded here — the Level-2 (PROFILE) half of the
     check would then never run and only the policy ceiling would apply.
+
+    *parent_agent* is the agent the PARENT runs as (not the requested child
+    *agent*): a profile bound to it narrows this decision as it narrows the
+    parent's own tool gate. A caller that knows it passes it; one that does not
+    leaves it empty, which selects no agent-bound profile.
 
     Two checks against the parent surface's ceiling ∩ profile:
     1. ``capabilities.spawn`` must be enabled.
@@ -333,7 +340,9 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
         from kiro_crew.platform.governance_profiles import governance_permits
 
         # Gate enabled?  (item ignored when no inner scope — checks ``enabled``.)
-        gate = governance_permits("capabilities.spawn", "", session_key=parent_session_key, app=app)
+        gate = governance_permits(
+            "capabilities.spawn", "", session_key=parent_session_key, agent=parent_agent, app=app
+        )
         if not getattr(gate, "permitted", True):
             return getattr(gate, "reason", "spawn capability disabled")
         # Agent-scope check (capabilities.spawn.scopes.agents).
@@ -342,6 +351,7 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
                 "capabilities.spawn",
                 f"agents:{agent}",
                 session_key=parent_session_key,
+                agent=parent_agent,
                 app=app,
             )
             if not getattr(scoped, "permitted", True):
@@ -365,6 +375,50 @@ def _vet_spawn_governance(parent_session_key: str, agent: str, app: str = "") ->
         except Exception:
             logger.debug("governance degrade audit unavailable", exc_info=True)
         return "subagent spawn denied: governance evaluation failed (fail-closed)"
+
+
+def _vet_remote_placement_governance(
+    parent_session_key: str, app: str = "", *, agent: str = ""
+) -> str | None:
+    """Return a denial reason if governance forbids placing a child on a remote crew.
+
+    Resolved like :func:`_vet_spawn_governance` -- against the PARENT surface's
+    ceiling ∩ profile, with the calling app's own profile when *app* is set --
+    and failing closed the same way. *agent* is the agent the parent runs as
+    (not the requested child), so a profile bound to it narrows this decision as
+    it narrows the parent's own tool gate.
+    """
+    from kiro_crew.platform.context import PlatformCompositionError
+
+    try:
+        from kiro_crew.platform.governance_profiles import governance_permits
+
+        gate = governance_permits(
+            "capabilities.remote_spawn",
+            "",
+            session_key=parent_session_key,
+            agent=agent,
+            app=app,
+            fail_closed=True,
+        )
+        if not getattr(gate, "permitted", False):
+            return getattr(gate, "reason", "remote sub-agent placement disabled by policy")
+        return None
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        try:
+            from kiro_crew.platform.governance_profiles import audit_governance_degraded
+
+            audit_governance_degraded(
+                "subagent_spawn",
+                session_key=parent_session_key,
+                scope="capabilities.remote_spawn",
+                failed_closed=True,
+            )
+        except Exception:
+            logger.debug("governance degrade audit unavailable", exc_info=True)
+        return "remote sub-agent placement denied: governance evaluation failed (fail-closed)"
 
 
 def spawn_allowlist(spec: Mapping[str, Any]) -> tuple[str, ...] | None:

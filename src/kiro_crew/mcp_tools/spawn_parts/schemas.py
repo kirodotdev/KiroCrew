@@ -332,7 +332,24 @@ def schemas(*, names_only: bool = False) -> list[dict[str, Any]]:
                             "(.kiro/steering, AGENTS.md, CLAUDE.md) to resolve against this directory. "
                             "Must be under a configured subagent_cwd_allowed_roots entry "
                             "(default: [~/workspace, ~/workspaces, ~/workplace, "
-                            "~/workplaces]). Applies to all tasks in a batch spawn."
+                            "~/workplaces]). Applies to all tasks in a batch spawn. "
+                            "With executor='remote' it is a path on that crew, checked "
+                            "against the crew's own allowed roots."
+                        ),
+                    },
+                    "executor": {
+                        "type": "string",
+                        "enum": ["local", "remote"],
+                        "description": (
+                            "Execution placement. Default 'local'. Use 'remote' to run on a "
+                            "connected remote crew so its CPU and memory carry the agent."
+                        ),
+                    },
+                    "instance_id": {
+                        "type": "string",
+                        "description": (
+                            "Optional registered remote crew id. With executor='remote', omit "
+                            "it to pick the least-loaded connected crew automatically."
                         ),
                     },
                     "model": {

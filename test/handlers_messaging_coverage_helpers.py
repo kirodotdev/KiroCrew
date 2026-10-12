@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from aiohttp import web
 
@@ -89,3 +90,58 @@ def _state(**kw: Any) -> Any:
     for key, val in kw.items():
         setattr(state, key, val)
     return state
+
+
+def _info(**kw: Any) -> Any:
+    """A SubagentInfo double with defaults for every field the handlers read."""
+    base: dict[str, Any] = {
+        "id": "a1",
+        "task": "do it",
+        "done": False,
+        "error": "",
+        "error_code": "",
+        "result": "",
+        "result_path": "",
+        "started": 1_700_000_000.0,
+        "elapsed": 0.0,
+        "credits": 0.0,
+        "turns": 2,
+        "last_tool": "fs_read",
+        "parent_session_key": "dashboard:chat-1",
+        "agent": "kirocrew",
+        # The retry path reuses this alongside the context triple: a retry must
+        # not widen a delegated run to the global store.
+        "memory_store": "",
+        "crew": "",
+        "user_stopped": False,
+        "outcome": "",
+        "max_turns": 0,
+        "cwd": "",
+        "model": "",
+        "reasoning_effort": "",
+        "approval_mode": "",
+        "silent": False,
+        "delegation": {},
+        "_raw_task": "",
+        "include_memory": True,
+        "include_lessons": True,
+        "include_project": True,
+    }
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _mgr(**kw: Any) -> Any:
+    mgr = MagicMock()
+    mgr.max_concurrent = 4
+    mgr.all_agents = []
+    mgr._agents = {}
+    mgr._tasks = {}
+    mgr.get.return_value = None
+    mgr.settle_before_delete = AsyncMock(return_value="delivered")
+    for key, val in kw.items():
+        setattr(mgr, key, val)
+    return mgr
+
+
+# ── api_spawn ──

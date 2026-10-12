@@ -273,6 +273,10 @@ class QueuedRun:
     reason_detail: str = ""
     resuming: str = ""
     state: str = ""
+    #: The working directory the run will start in. Internal: the queued-run
+    #: listing does not serialize it; a crew's snapshot pruning reads it so a
+    #: queued run's tree is not deleted before the run starts.
+    cwd: str = ""
 
 
 class QueuedReadUnavailable(Exception):

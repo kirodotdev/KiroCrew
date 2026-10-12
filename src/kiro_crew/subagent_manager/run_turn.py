@@ -74,6 +74,7 @@ if TYPE_CHECKING:
         evict_completed_agents,
         extract_options,
         fire_tool_hooks,
+        floored_spec_hooks,
         hook_gate_kwargs,
         invalidate_stale_kas_session,
         is_registered_agent_name,
@@ -265,6 +266,18 @@ async def _run_inner_impl(
                 source="subagent",
                 resources=f"subagent_id={info.id}",
             )
+    if info.approval_floor == "interactive" and parent_policy == "auto":
+        # The spawner's floor outranks every local auto fallback above: a
+        # remote hub whose parent is not auto keeps this run's tools
+        # behind approval even on a gateway that would auto-approve them.
+        parent_policy = ""
+        sel().log_api_access(
+            caller=f"subagent:{info.id}",
+            operation="subagent.approval_floor_applied",
+            outcome="ok",
+            source="subagent",
+            resources=f"subagent_id={info.id}",
+        )
     # Admission captured both memory identity and this invocation's persona
     # before any asynchronous work. A continuation's explicit override is
     # effective only for this turn; its next continuation keeps its lineage.
@@ -313,6 +326,13 @@ async def _run_inner_impl(
         ),
     )
     turn_execution = replace(execution, template_id=agent)
+    floor_base = ""
+    floor_source: dict[str, Any] | None = None
+    floor_project: str | None = None
+    if info.approval_floor == "interactive":
+        floor_base = agent or "kirocrew"
+        agent, floor_source, floor_project = await self._floored_agent(info, agent, effective_cwd)
+        turn_execution = replace(execution, template_id=agent)
     extra_kwargs: dict[str, Any] = {
         "crew_agent": execution.selection_name if kind == "member" else "",
     }
@@ -813,6 +833,11 @@ async def _run_inner_impl(
         cleanup_cwd = str(getattr(info, "_session_cwd", ""))
         if cleanup_cwd:
             state_update["cwd"] = cleanup_cwd
+        if info.approval_floor:
+            # Same write as session_id, so a run a cold continuation can find
+            # always records the hub floor it ran under (run_control refuses
+            # to relaunch it after a restart forgets the in-memory record).
+            state_update["approval_floor"] = info.approval_floor
         # Same off-loop, drained write as the PID record above.
         # This one also carries `keep`, the field the two remaining
         # on-loop writers (promote / release) contend for -- taking the
@@ -870,6 +895,12 @@ async def _run_inner_impl(
     # On such a backend PreToolUse hooks gate each permission request below;
     # the KAS projection turns every call they cover into one.
     _spec = await turn_spec_hooks(client, agent)
+    if floor_base:
+        # The derived spec carries no hooks, so the template's PreToolUse
+        # denies are fired here, before the hub's person is asked.
+        _spec = await floored_spec_hooks(
+            floor_base, effective_cwd, floor_source, project_source=floor_project
+        )
     # The run's permission ladder. Imported here because this body runs on
     # the facade's globals (bind_component_globals), not this module's.
     from kiro_crew import tool_permission
@@ -1464,6 +1495,11 @@ async def _run_inner_impl(
             # A mid-run mode switch runs a different agent, so ITS spec hooks gate
             # the permission requests that follow, not the previous agent's. An
             # unnamed switch falls back to the agent the session recorded for it.
+            if floor_base:
+                # Another agent brings its own backend grants, which the
+                # derived spec emptied; the floor cannot follow the switch.
+                info.error_code = "approval_floor_unenforceable"
+                raise RuntimeError("spawn refused: an approval-floored run cannot switch agents")
             _spec = await turn_spec_hooks(client, event.text or "")
             _policy = _policy_for(_spec)
             await refuse_stale_switch(client, event.text or "")

@@ -206,7 +206,9 @@ _NEW_OWNER_DEFS: dict[str, tuple[str, ...]] = {
 #: in), all keyword defaults, so every pre-split caller still fits.
 #: ``run_script_hook`` and ``_hook_subprocess_env`` take a trailing
 #: ``acp_session_id=None`` keyword, so their callers fit too.
-_BASE_SHAPE_DIGEST = "7e872cdc83e52010926255562ce45a06080de990bd7ddae5ead63d497ad9c6e2"
+#: Then ``pre_tool_match_names`` and ``permission_pre_tool_block`` gained a keyword
+#: ``native_aliases`` default (a kiro-cli alias table also names the hook), the same.
+_BASE_SHAPE_DIGEST = "6e96d01b12ade348f0c29948b282bd2018210d95cdf0c92997e11a1b32237a43"
 
 #: Definitions that stay in the facade file, each because a guard, a contract or the
 #: ``compose`` ordering reads it there. The reason per entry is in
