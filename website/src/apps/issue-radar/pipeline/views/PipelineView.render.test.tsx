@@ -141,13 +141,13 @@ function fabric(items: CrewFabricItem[], generatedAt: string | null = T(4)): Cre
   }
 }
 
-function renderView() {
+function renderView(repo: RepoRef = { owner: 'acme', repo: 'widget' }) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false, gcTime: 0 } },
   })
   return render(
     <QueryClientProvider client={qc}>
-      <PipelineView repo={{ owner: "acme", repo: "widget" }} />
+      <PipelineView repo={repo} />
     </QueryClientProvider>,
   )
 }
@@ -155,9 +155,12 @@ function renderView() {
 /** Mount, wait for the board to actually populate (a lane row, not just the
  * repo-picker button in the chrome), then report the observed track width so the
  * wide/narrow branch is exercised. */
-async function mountBoard(items: CrewFabricItem[], opts: { width?: number; generatedAt?: string | null } = {}) {
+async function mountBoard(
+  items: CrewFabricItem[],
+  opts: { width?: number; generatedAt?: string | null; repo?: RepoRef } = {},
+) {
   crewFabric.mockResolvedValue(fabric(items, opts.generatedAt ?? T(4)))
-  const utils = renderView()
+  const utils = renderView(opts.repo)
   // Wait for the FIRST lane to render — the board has left its loading skeleton
   // and the ColumnHeader (the element the ResizeObserver is attached to) is
   // mounted, so an emit below reaches a live observer.
@@ -215,6 +218,24 @@ describe('PipelineView — populated board', () => {
 
     // The board meta strip counts the items it drew.
     expect(screen.getByText('WORK ITEMS').nextElementSibling?.textContent).toBe('3')
+  })
+
+  it('writes a GitLab merge request as !N, because #N there is a different issue', async () => {
+    await mountBoard(
+      [item({ number: 42, crew_id: 'crew-a', phase: 'implementing', pr_number: 17, title: 'zzq gitlab' })],
+      { repo: { owner: 'acme', repo: 'widget', provider: 'gitlab', host: 'gitlab.example.com' } },
+    )
+    const lane = laneFor(42)
+    expect(within(lane).getByText('!17')).toBeTruthy()
+    expect(within(lane).queryByText('#17')).toBeNull()
+    // The legend under the board names the same sigil and noun as the pill.
+    expect(screen.getByText("A !N pill is the item's MR; a lane with no MR shows no !N pill.")).toBeTruthy()
+  })
+
+  it('keeps the GitHub legend in #N / PR terms', async () => {
+    await mountBoard([item({ number: 42, crew_id: 'crew-a', phase: 'implementing', pr_number: 17, title: 'zzq github' })])
+    expect(within(laneFor(42)).getByText('#17')).toBeTruthy()
+    expect(screen.getByText("A #N pill is the item's PR; a lane with no PR shows no #N pill.")).toBeTruthy()
   })
 })
 
