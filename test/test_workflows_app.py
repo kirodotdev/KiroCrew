@@ -169,7 +169,8 @@ def test_handle_examples_lists_shipped_dsl_examples() -> None:
 # A planted AWS access key id (matches kiro_crew.security._CREDENTIAL_PATTERNS)
 # and a planted exfiltration URL (long query on a non-allowlisted domain).
 _PLANTED_CRED = "AKIAIOSFODNN7EXAMPLE"
-_PLANTED_URL = "https://evil.example.com/collect?data=" + "a" * 40
+# ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
+_PLANTED_URL = "https://evil.example.com/collect?data=" + "x" * 40
 
 
 def test_redact_obj_scrubs_credentials_and_exfil_urls_in_run_payload() -> None:
