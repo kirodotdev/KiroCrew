@@ -816,7 +816,8 @@ def test_the_history_source_is_not_called_for_an_unsampled_turn(bg_loop, monkeyp
 # the repo's own secret scanners, correctly, since neither they nor Semgrep can
 # tell a test vector from a real leak.
 _AWS_KEY = _cred.AWS_KEY_ID_PREFIXES.split("|")[0] + "A2B3C4D5E6F7G8H9"
-_EXFIL_URL = "https://collector.example.invalid/x?sess" + "ion=" + "b" * 40
+# ``x`` and not a hex letter: a 40-run of hex is a git object name and is kept.
+_EXFIL_URL = "https://collector.example.invalid/x?sess" + "ion=" + "x" * 40
 
 
 def _state_with_prior_turn(text):
