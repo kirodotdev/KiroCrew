@@ -3,13 +3,15 @@
 Directory links (a symlink or a junction), ``pin_directory``, file locks under
 contention, the no-replace directory publish, the lock-file opens (one that
 never truncates, the shared create-or-open, and the sweep's delete-sharing
-open), and the extended-length path prefix fold. A topic of the
-``test_platform_compat`` family; see ``test_platform_compat.py``.
+open), the extended-length path prefix fold, and the identity-bound Windows
+delete. A topic of the ``test_platform_compat`` family; see
+``test_platform_compat.py``.
 """
 
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import re
 import shutil
@@ -885,3 +887,340 @@ class TestOpenLockFileForSweep:
         with pytest.raises(OSError):
             pc.open_lock_file_for_sweep(r"C:\agents\alias.lock")
         assert closed == [0x1234]
+
+
+#: ``FILE_INFO_BY_HANDLE_CLASS`` values ``unlink_path_if_identity`` passes to
+#: ``SetFileInformationByHandle``.
+_FILE_BASIC_INFO = 0
+_FILE_DISPOSITION_INFO = 4
+#: ``FILE_ATTRIBUTE_ARCHIVE``: an ordinary attribute bit that must survive the
+#: READONLY clear.
+_FILE_ATTRIBUTE_ARCHIVE = 0x00000020
+_HELD_FD = 202
+_EXPECTED_IDENTITY = (77, b"F128" + bytes(range(16)))
+#: The access right each ``SetFileInformationByHandle`` class needs on the handle;
+#: Windows refuses the call when the handle was opened without it.
+_REQUIRED_ACCESS = {
+    _FILE_BASIC_INFO: pc._WIN_FILE_WRITE_ATTRIBUTES,
+    _FILE_DISPOSITION_INFO: pc._WIN_DELETE,
+}
+
+
+class _NtOsView:
+    """``os`` as the Windows branch of the platform_compat family sees it.
+
+    Patched through the facade, so only the family's ``os`` global is replaced:
+    the host's ``os.name`` and ``os.fstat`` stay real for everything else.
+    """
+
+    name = "nt"
+
+    def __init__(self, attributes: int):
+        self._attributes = attributes
+        self.closed: list[int] = []
+
+    def fstat(self, fd):
+        assert fd == _HELD_FD
+        return types.SimpleNamespace(st_file_attributes=self._attributes)
+
+    def close(self, fd):
+        self.closed.append(fd)
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+def _native_windows_unlink_seams(monkeypatch, *, attributes, identity, results=None):
+    """Drive the native branch on this host: every Win32 call is recorded, not made."""
+    opened: list[tuple[str, int]] = []
+    calls: list[tuple[int, int | None]] = []
+    outcomes = dict(results or {})
+
+    def open_entry(path, *, access=pc._WIN_GENERIC_READ, deny_write=False):
+        opened.append((os.fspath(path), access))
+        return _HELD_FD
+
+    def set_file_information(_handle, info_class, info, _size):
+        payload = getattr(info, "_obj", None)
+        calls.append((info_class, getattr(payload, "FileAttributes", None)))
+        if not opened or not opened[-1][1] & _REQUIRED_ACCESS[info_class]:
+            return False
+        return outcomes.get(info_class, True)
+
+    kernel = types.SimpleNamespace(SetFileInformationByHandle=set_file_information)
+    os_view = _NtOsView(attributes)
+    monkeypatch.setattr(pc, "IS_WINDOWS", True)
+    monkeypatch.setattr(pc, "os", os_view)
+    monkeypatch.setattr(pc, "_win_open_without_following", open_entry)
+    monkeypatch.setattr(pc, "_windows_file_identity", lambda _fd: identity)
+    monkeypatch.setattr(
+        pc, "msvcrt", types.SimpleNamespace(get_osfhandle=lambda _fd: 0x4242), raising=False
+    )
+    monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+    return types.SimpleNamespace(opened=opened, calls=calls, os=os_view)
+
+
+def _native_entry(tmp_path: Path, kind: str) -> Path:
+    path = tmp_path / f"native-{kind}"
+    if kind == "directory":
+        path.mkdir()
+    else:
+        path.write_bytes(b"entry")
+    return path
+
+
+def _native_identity(path: Path):
+    fd = pc.open_path_no_reparse(path)
+    try:
+        identity = pc.opened_file_identity(fd)
+    finally:
+        os.close(fd)
+    if identity is None or not identity[1].startswith(b"F128"):
+        pytest.skip("this volume reports no full 128-bit FileIdInfo")
+    return identity
+
+
+class TestOpenPathNoReparse:
+    """``open_path_no_reparse``: the Windows entry handle the identity-bound delete holds."""
+
+    def test_windows_opens_the_entry_itself_through_the_no_follow_opener(self, monkeypatch):
+        seams = _native_windows_unlink_seams(monkeypatch, attributes=0, identity=_EXPECTED_IDENTITY)
+
+        assert pc.open_path_no_reparse(r"C:\skill\entry") == _HELD_FD
+        assert seams.opened == [(r"C:\skill\entry", pc._WIN_GENERIC_READ)]
+
+    def test_non_windows_refuses_without_opening(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda *_a, **_k: pytest.fail("a POSIX host must not open the entry"),
+        )
+
+        with pytest.raises(OSError) as refused:
+            pc.open_path_no_reparse("/skill/entry")
+        assert refused.value.errno == errno.ENOTSUP
+
+
+def _simulated_identity(fd: int) -> tuple[int, bytes]:
+    """A full-``FileIdInfo``-shaped identity for a POSIX descriptor, as a simulated
+    Windows host reads one: the device plus a 16-byte digest of the inode."""
+    opened = os.fstat(fd)
+    digest = hashlib.sha256(f"{opened.st_dev}:{opened.st_ino}".encode("ascii")).digest()
+    return opened.st_dev, b"F128" + digest[:16]
+
+
+@pytest.mark.skipif(pc.IS_WINDOWS, reason="the POSIX stand-in a simulated Windows host reaches")
+class TestSimulatedWindowsEntryBranch:
+    """The ``os.name != "nt"`` stand-in of the two entry helpers.
+
+    Only a simulated Windows host (``IS_WINDOWS`` patched on POSIX) reaches it; the
+    claim and dismissal suites of the next part run through it, and these cases pin
+    it with real entries.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _simulated_windows(self, _floor_monkeypatch):
+        _floor_monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        _floor_monkeypatch.setattr(pc, "opened_file_identity", _simulated_identity)
+
+    @staticmethod
+    def _identity(path: Path) -> tuple[int, bytes]:
+        fd = pc.open_path_no_reparse(path)
+        try:
+            return _simulated_identity(fd)
+        finally:
+            os.close(fd)
+
+    def test_the_entry_opens_without_following(self, tmp_path):
+        entry = tmp_path / "entry"
+        entry.write_bytes(b"entry")
+
+        fd = pc.open_path_no_reparse(entry)
+        try:
+            assert os.path.samestat(os.fstat(fd), os.stat(entry))
+        finally:
+            os.close(fd)
+
+    @pytest.mark.parametrize("entry_kind", ["file", "directory"])
+    def test_a_matching_entry_is_removed(self, tmp_path, entry_kind):
+        path = _native_entry(tmp_path, entry_kind)
+
+        assert pc.unlink_path_if_identity(
+            path, self._identity(path), directory=entry_kind == "directory"
+        )
+        assert not os.path.lexists(path)
+
+    @pytest.mark.skipif(not hasattr(os, "O_PATH"), reason="opening a link itself needs O_PATH")
+    def test_a_matching_link_is_unlinked_and_its_target_kept(self, tmp_path):
+        target = tmp_path / "target"
+        target.mkdir()
+        (target / "keep.txt").write_text("keep", encoding="utf-8")
+        link = tmp_path / "link"
+        pc.symlink_or_junction(target, link)
+
+        assert pc.unlink_path_if_identity(link, self._identity(link), directory=True)
+        assert not os.path.lexists(link)
+        assert (target / "keep.txt").read_text(encoding="utf-8") == "keep"
+
+    def test_another_objects_identity_leaves_the_entry(self, tmp_path):
+        path = _native_entry(tmp_path, "file")
+        other = _native_entry(tmp_path, "directory")
+
+        assert not pc.unlink_path_if_identity(path, self._identity(other), directory=False)
+        assert path.read_bytes() == b"entry"
+
+    def test_a_missing_entry_is_refused(self, tmp_path):
+        path = _native_entry(tmp_path, "file")
+        identity = self._identity(path)
+        path.unlink()
+
+        assert not pc.unlink_path_if_identity(path, identity, directory=False)
+
+    def test_a_removal_the_host_refuses_leaves_the_entry(self, tmp_path):
+        path = _native_entry(tmp_path, "directory")
+        (path / "occupant").write_bytes(b"x")
+
+        assert not pc.unlink_path_if_identity(path, self._identity(path), directory=True)
+        assert (path / "occupant").read_bytes() == b"x"
+
+
+class TestUnlinkPathIfIdentity:
+    """``unlink_path_if_identity``: delete one Windows entry only while it is the object identified.
+
+    The native branch runs here with its Win32 calls recorded; the
+    ``native_windows`` cases make the real calls on CI's Windows job.
+    """
+
+    def test_matching_identity_deletes_through_the_held_handle(self, monkeypatch):
+        seams = _native_windows_unlink_seams(monkeypatch, attributes=0, identity=_EXPECTED_IDENTITY)
+
+        assert pc.unlink_path_if_identity(r"C:\skill\entry", _EXPECTED_IDENTITY, directory=False)
+        assert seams.opened == [
+            (
+                r"C:\skill\entry",
+                pc._WIN_GENERIC_READ | pc._WIN_DELETE | pc._WIN_FILE_WRITE_ATTRIBUTES,
+            )
+        ]
+        assert seams.calls == [(_FILE_DISPOSITION_INFO, None)]
+        assert seams.os.closed == [_HELD_FD]
+
+    def test_mismatched_identity_leaves_the_entry(self, monkeypatch):
+        seams = _native_windows_unlink_seams(
+            monkeypatch, attributes=0, identity=(77, b"F128" + bytes(16))
+        )
+
+        assert not pc.unlink_path_if_identity(
+            r"C:\skill\entry", _EXPECTED_IDENTITY, directory=False
+        )
+        assert seams.calls == []
+        assert seams.os.closed == [_HELD_FD]
+
+    @pytest.mark.parametrize(
+        ("attributes", "directory"),
+        [(0x00000010, False), (0, True)],  # FILE_ATTRIBUTE_DIRECTORY
+        ids=["directory-for-a-file", "file-for-a-directory"],
+    )
+    def test_a_file_directory_mismatch_leaves_the_entry(self, monkeypatch, attributes, directory):
+        seams = _native_windows_unlink_seams(
+            monkeypatch, attributes=attributes, identity=_EXPECTED_IDENTITY
+        )
+
+        assert not pc.unlink_path_if_identity(
+            r"C:\skill\entry", _EXPECTED_IDENTITY, directory=directory
+        )
+        assert seams.calls == []
+
+    @pytest.mark.parametrize(
+        ("attributes", "cleared"),
+        [
+            (pc._WIN_FILE_ATTRIBUTE_READONLY | _FILE_ATTRIBUTE_ARCHIVE, _FILE_ATTRIBUTE_ARCHIVE),
+            (pc._WIN_FILE_ATTRIBUTE_READONLY, pc._WIN_FILE_ATTRIBUTE_NORMAL),
+        ],
+        ids=["other-bits-kept", "readonly-only-becomes-normal"],
+    )
+    def test_readonly_is_cleared_on_the_held_handle_before_the_delete(
+        self, monkeypatch, attributes, cleared
+    ):
+        seams = _native_windows_unlink_seams(
+            monkeypatch, attributes=attributes, identity=_EXPECTED_IDENTITY
+        )
+
+        assert pc.unlink_path_if_identity(r"C:\skill\entry", _EXPECTED_IDENTITY, directory=False)
+        assert seams.calls == [(_FILE_BASIC_INFO, cleared), (_FILE_DISPOSITION_INFO, None)]
+
+    def test_a_refused_readonly_clear_leaves_the_entry(self, monkeypatch):
+        seams = _native_windows_unlink_seams(
+            monkeypatch,
+            attributes=pc._WIN_FILE_ATTRIBUTE_READONLY,
+            identity=_EXPECTED_IDENTITY,
+            results={_FILE_BASIC_INFO: False},
+        )
+
+        assert not pc.unlink_path_if_identity(
+            r"C:\skill\entry", _EXPECTED_IDENTITY, directory=False
+        )
+        assert seams.calls == [(_FILE_BASIC_INFO, pc._WIN_FILE_ATTRIBUTE_NORMAL)]
+
+    @pytest.mark.parametrize(
+        "expected",
+        [
+            (77, b"F064" + bytes(8)),
+            (77, b"F128" + bytes(8)),
+            ("77", b"F128" + bytes(16)),
+            (77, "F128" + "0" * 16),
+            (77,),
+        ],
+        ids=["legacy-64-bit-index", "short-identifier", "text-volume", "text-identifier", "single"],
+    )
+    def test_an_expected_identity_that_is_not_full_fileidinfo_is_refused_unopened(
+        self, monkeypatch, expected
+    ):
+        seams = _native_windows_unlink_seams(monkeypatch, attributes=0, identity=_EXPECTED_IDENTITY)
+
+        assert not pc.unlink_path_if_identity(r"C:\skill\entry", expected, directory=False)
+        assert seams.opened == []
+
+    def test_non_windows_refuses_without_opening(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        monkeypatch.setattr(
+            pc,
+            "_win_open_without_following",
+            lambda *_a, **_k: pytest.fail("a POSIX host must not open the entry"),
+        )
+
+        assert not pc.unlink_path_if_identity("/skill/entry", _EXPECTED_IDENTITY, directory=False)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows FileIdInfo delete")
+    @pytest.mark.parametrize("entry_kind", ["file", "directory"])
+    def test_native_windows_matching_identity_deletes(self, tmp_path, entry_kind):
+        path = _native_entry(tmp_path, entry_kind)
+
+        assert pc.unlink_path_if_identity(
+            path, _native_identity(path), directory=entry_kind == "directory"
+        )
+        assert not os.path.lexists(path)
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows FileIdInfo delete")
+    def test_native_windows_another_objects_identity_leaves_the_entry(self, tmp_path):
+        path = _native_entry(tmp_path, "file")
+        other = tmp_path / "other-file"
+        other.write_bytes(b"other")
+
+        assert not pc.unlink_path_if_identity(path, _native_identity(other), directory=False)
+        assert path.read_bytes() == b"entry"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows FileIdInfo delete")
+    def test_native_windows_kind_mismatch_leaves_the_entry(self, tmp_path):
+        path = _native_entry(tmp_path, "file")
+
+        assert not pc.unlink_path_if_identity(path, _native_identity(path), directory=True)
+        assert path.read_bytes() == b"entry"
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="native Windows FileIdInfo delete")
+    def test_native_windows_readonly_file_is_deleted(self, tmp_path):
+        path = _native_entry(tmp_path, "file")
+        path.chmod(stat.S_IREAD)
+
+        assert pc.unlink_path_if_identity(path, _native_identity(path), directory=False)
+        assert not os.path.lexists(path)
