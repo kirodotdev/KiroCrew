@@ -840,10 +840,16 @@ async def _finish_subagent_cron_or_notify(
         # stagger gate) have no SubagentInfo in `running` yet — a
         # sibling completing while the rest of the wave is still
         # queued must not reset the parent out from under them.
+        # `running` is local-only, so a live remote child is checked
+        # separately: its result must not land in a reset session.
         still_running = self.subagent_mgr and (
             any(
                 a.parent_session_key == parent_key and a.id != info.id
                 for a in self.subagent_mgr.running
+            )
+            or any(
+                a.parent_session_key == parent_key and a.id != info.id and not a.done
+                for a in getattr(self.subagent_mgr, "external_agents", ())
             )
             or await _subagent_queued_count(self.subagent_mgr, parent_key) > 0
         )

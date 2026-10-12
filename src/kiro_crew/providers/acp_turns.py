@@ -132,6 +132,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         # it before the evidence text, and the sub-agent run loop yields
         # its lane slot (``waiting_input`` WaitRecord) on it.
         status=e.status,
+        # Set by the subagent ladder, never by the backend; forwarded so the
+        # field-parity sweep holds and a copy cannot lose a floor.
+        approval_floor=e.approval_floor,
     )
 
 

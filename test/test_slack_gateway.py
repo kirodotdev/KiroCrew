@@ -1286,6 +1286,9 @@ class TestShutdown:
         state = MagicMock()
         state._slots = {"s1": SimpleNamespace(task=turn)}
         state.close_all_ws = AsyncMock()
+        # A bare MagicMock would answer ``remote_subagents`` with a mock whose
+        # ``close()`` is not awaitable; this gateway runs no remote executor.
+        state.remote_subagents = None
         orch.dashboard_state = state
         return orch
 

@@ -546,6 +546,27 @@ def build_subagent_snapshot(a: Any, *, now: float | None = None) -> dict:
     return data
 
 
+def live_remote_snapshot_frames(subagents: Any) -> list[dict]:
+    """Reconnect ``subagent_snapshot`` frames for the remote runs still running.
+
+    Without them a refresh during a remote run drops its card and its stop
+    control until the run ends. ``child_session`` is the key the live spawn
+    frame carried for the run. A record that cannot be framed is skipped, as
+    the local replay loops do.
+    """
+    frames: list[dict] = []
+    for a in getattr(subagents, "external_agents", None) or ():
+        if a.done:
+            continue
+        try:
+            data = build_subagent_snapshot(a)
+            data["child_session"] = f"remote:{a.instance_id}:{a.remote_id}"
+        except Exception:
+            continue
+        frames.append({"type": "subagent_snapshot", "data": data})
+    return frames
+
+
 def _audit_grant_quietly(app: str, event: str) -> None:
     """Record a WS grant made on a path that bypasses the broadcast chokepoint.
 
@@ -1487,6 +1508,10 @@ async def _serve_ws(
                                     )
                                 except Exception:
                                     pass
+                            # Live remote runs: ``running`` is this host's own
+                            # runs only (it sizes local capacity), and the done
+                            # loop below skips unfinished records.
+                            _replay.extend(live_remote_snapshot_frames(state.subagents))
                             # Done events for completed subagents so
                             # reconnecting clients can transition stale cards.
                             for a in state.subagents.all_agents:

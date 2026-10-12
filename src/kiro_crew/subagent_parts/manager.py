@@ -26,6 +26,7 @@ from kiro_crew.subagent_parts import admission_surface as _admission_surface
 from kiro_crew.subagent_parts import cancellation_surface as _cancellation_surface
 from kiro_crew.subagent_parts import config_surface as _config_surface
 from kiro_crew.subagent_parts import continuation_surface as _continuation_surface
+from kiro_crew.subagent_parts import external_surface as _external_surface
 from kiro_crew.subagent_parts import monitor_surface as _monitor_surface
 from kiro_crew.subagent_parts import run_surface as _run_surface
 from kiro_crew.subagent_parts import terminal_surface as _terminal_surface
@@ -54,6 +55,7 @@ if TYPE_CHECKING:
         Callable,
         ClaimPoint,
         ContextBuilder,
+        ExternalPlacement,
         KiroCrewConfig,
         LLMEvent,
         MemoryWait,
@@ -99,6 +101,7 @@ class SubagentManager:
     _result_ttl_secs: int
     _subagent_queue_max_wait_secs: int
     _global_approval_mode: str
+    _external_placement: ExternalPlacement | None
 
     _COMPONENT_TYPES = {
         "_monitor": OrphanStallMonitor,
@@ -286,6 +289,12 @@ class SubagentManager:
         self._last_spawn_ts: float = 0.0  # monotonic time of the last actual start (stagger gate)
         self.hook_store: Any = None  # Optional ScriptHookStore, set by server.py
         self._agents: dict[str, SubagentInfo] = {}
+        # Remote shadow records are deliberately separate from ``_agents``.
+        # They participate in inventory, parent pending-work and wave settlement,
+        # but never in this host's process count, memory sizing, reaper or task
+        # queue. Their execution lifecycle is owned by RemoteSubagentService.
+        self._external_agents: dict[str, SubagentInfo] = {}
+        self._external_placement = None
         # Continuable conversations: session_key ("subagent:<conv-id>") →
         # last-used ``time.monotonic()`` reading. Drives the reaper's idle-TTL
         # sweep. Rebuilt from state.json (keep=True runs) on the reaper's first
@@ -843,13 +852,23 @@ class SubagentManager:
 
     @property
     def running(self) -> list[SubagentInfo]:
-        """Return currently running (not done) subagents."""
+        """Return locally executing (not done) subagents.
+
+        Remote runs are excluded because this property feeds host capacity,
+        process liveness and adaptive-memory accounting. Use ``all_agents`` or
+        ``external_agents`` for placement-neutral inventory.
+        """
         return [a for a in self._agents.values() if not a.done]
 
     @property
+    def external_agents(self) -> list[SubagentInfo]:
+        """Return remote shadow records without charging local capacity."""
+        return list(self._external_agents.values())
+
+    @property
     def all_agents(self) -> list[SubagentInfo]:
-        """Return all tracked subagents (running and done)."""
-        return list(self._agents.values())
+        """Return every tracked local and remote subagent."""
+        return [*self._agents.values(), *self._external_agents.values()]
 
     @property
     def count(self) -> int:
@@ -974,6 +993,7 @@ class SubagentManager:
     _spawn_terminal_report = _terminal_surface._spawn_terminal_report
     _await_report = staticmethod(_terminal_surface._await_report)
     settle_before_delete = _terminal_surface.settle_before_delete
+    _settle_external_before_delete = _terminal_surface._settle_external_before_delete
     _release_slot = _terminal_surface._release_slot
     _force_reap = _terminal_surface._force_reap
     _reap_once = _terminal_surface._reap_once
@@ -998,6 +1018,15 @@ class SubagentManager:
     _announce_digest_flush = _terminal_surface._announce_digest_flush
     settle_queued_delivery = _terminal_surface.settle_queued_delivery
     _settle_digest_holds = _terminal_surface._settle_digest_holds
+    _external_ids_in = _terminal_surface._external_ids_in
+    _notify_external_delivered = _terminal_surface._notify_external_delivered
+
+    # subagent_parts/external_surface.py
+    register_external = _external_surface.register_external
+    report_external = _external_surface.report_external
+    forget_external = _external_surface.forget_external
+    bind_external_placement = _external_surface.bind_external_placement
+    cancel_external = _external_surface.cancel_external
     _write_tombstone = staticmethod(_terminal_surface._write_tombstone)
 
     # subagent_parts/run_surface.py
