@@ -1,6 +1,7 @@
 import type React from 'react'
 import { Folder, FolderPlus, Check, ChevronRight } from 'lucide-react'
 import type { ChatFolder } from '../types'
+import FolderGlyph from './FolderGlyph'
 import { orderFoldersWithPaths, type FolderSortMode } from '../utils/folderTree'
 import { offlineMenuRow, offlineProps } from '../utils/offline'
 import { useConnected } from '../hooks/useConnected'
@@ -116,7 +117,11 @@ export function FolderPickerItems({ folders, onPick, currentFolderId, rootLabel 
       </Item>
       {ordered.map(({ folder: f, depth, path }) => (
         <Item key={f.id} title={path} style={depth > 0 ? { paddingLeft: `${12 + depth * 16}px` } : undefined} {...offlineMenuRow(connected, verb, path, () => onPick(f.id))}>
-          <Folder size={13} className="text-accent shrink-0" />
+          {/* The folder's own mark, as the sidebar row draws it: its emoji icon
+              when it has one, else the lucide folder tinted by its palette
+              color. A plain accent glyph here made every destination look the
+              same and broke the visual match with the sidebar beside it. */}
+          <FolderGlyph color={f.color} icon={f.icon} size={13} className="shrink-0 text-muted" />
           {/* Two nested folders can share a name, and the indent that tells them
               apart is visual only. `title` shows the full path on pointer hover,
               which no browser opens on keyboard focus, so the path rides along
