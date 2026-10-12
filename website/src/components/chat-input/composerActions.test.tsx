@@ -27,13 +27,16 @@ const item: ComposerActionItem = { key: 'snip:insert', appName: 'snip', appLabel
 
 let api: { start: (i: ComposerActionItem) => void; value: string; setValue: (v: string) => void; setBlocks: (b: PasteBlock[]) => void } | null = null
 
-function Host({ items = [item], scope = 's1', initial = '', locked = false }: { items?: ComposerActionItem[]; scope?: string; initial?: string; locked?: boolean }) {
+type Anchor = { left: number; top: number; bottom: number }
+
+function Host({ items = [item], scope = 's1', initial = '', locked = false, anchor = null, openBelow }: { items?: ComposerActionItem[]; scope?: string; initial?: string; locked?: boolean; anchor?: Anchor | null; openBelow?: boolean }) {
   const [value, setValue] = useState(initial)
   const [blocks, setBlocks] = useState<PasteBlock[]>([])
   const actions = useComposerActions({
     items, value, onChange: setValue, pasteBlocks: blocks,
     composerControl: () => ({ focus() {}, getRootElement: () => null, getSelection: () => null, setSelection() {} }),
-    scopeKey: scope, locked, anchor: () => null,
+    scopeKey: scope, locked, anchor: () => anchor,
+    ...(openBelow === undefined ? {} : { openBelow }),
   })
   api = { start: actions.start, value, setValue, setBlocks }
   return <>{actions.popover}<output data-testid="draft">{value}</output></>
@@ -157,6 +160,26 @@ describe('useComposerActions', () => {
     act(() => frames[0].opts.onResize(600))
     // No anchor: the popover sits 96px from the bottom, 8px from the top.
     expect(screen.getByRole('dialog').style.maxHeight).toBe(`${window.innerHeight - 104}px`)
+  })
+
+  it('sits 8px above its anchor by default, capped to the room above', () => {
+    render(<Host anchor={{ left: 40, top: 500, bottom: 560 }} />)
+    act(() => api!.start(item))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.style.top).toBe('')
+    expect(dialog.style.bottom).toBe(`${window.innerHeight - 500 + 8}px`)
+    expect(dialog.style.maxHeight).toBe(`${500 - 16}px`)
+  })
+
+  it('with openBelow sits 8px below its anchor, capped to the room below', () => {
+    // The top-down layout: the composer is near the top, so above has no room.
+    render(<Host anchor={{ left: 40, top: 60, bottom: 140 }} openBelow />)
+    act(() => api!.start(item))
+    act(() => frames[0].opts.onResize(2000))
+    const dialog = screen.getByRole('dialog')
+    expect(dialog.style.bottom).toBe('')
+    expect(dialog.style.top).toBe(`${140 + 8}px`)
+    expect(dialog.style.maxHeight).toBe(`${window.innerHeight - 140 - 16}px`)
   })
 
   it('says what happened when the app fails', () => {

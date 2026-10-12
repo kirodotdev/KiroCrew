@@ -97,6 +97,55 @@ describe('TranscriptScrollShell DOM contract', () => {
     expect(Math.abs(height - 19479.75)).toBeLessThanOrEqual(0.5)
   })
 
+  it('top-down: keeps live chrome before the top sentinel and history chrome after the bottom sentinel', () => {
+    const scrollerRef = ref()
+    const leadingRef = ref()
+    const trailingRef = ref()
+    const topSentinelRef = ref()
+    const bottomSentinelRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef, bottomSentinelRef, leadingRef, trailingRef, offsetBefore: 0, offsetAfter: 0 }}
+        loadingOlder={false}
+        liveEdgeAtTop
+        aboveRows={<div data-testid="slot-live" />}
+        belowRows={<div data-testid="slot-history" />}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    const leading = scrollerRef.current!.querySelector('[data-vc-leading]')
+    const trailing = scrollerRef.current!.querySelector('[data-vc-trailing]')
+    expect(leadingRef.current).toBe(leading)
+    expect(trailingRef.current).toBe(trailing)
+    expect(leading!.contains(screen.getByTestId('slot-live'))).toBe(true)
+    expect(trailing!.contains(screen.getByTestId('slot-history'))).toBe(true)
+    const kids = Array.from(scrollerRef.current!.children)
+    expect(kids.indexOf(leading!)).toBeLessThan(kids.indexOf(topSentinelRef.current!))
+    expect(kids.indexOf(trailing!)).toBeGreaterThan(kids.indexOf(bottomSentinelRef.current!))
+  })
+
+  it('bottom layout: renders no leading wrapper, so the DOM matches the layout without top-down', () => {
+    const scrollerRef = ref()
+    const leadingRef = ref()
+    render(
+      <TranscriptScrollShell
+        scrollerRef={scrollerRef}
+        onScroll={() => {}}
+        virt={{ topSentinelRef: ref(), bottomSentinelRef: ref(), leadingRef, offsetBefore: 0, offsetAfter: 0 }}
+        loadingOlder={false}
+        aboveRows={<div data-testid="slot-above" />}
+      >
+        <div />
+      </TranscriptScrollShell>,
+    )
+    expect(scrollerRef.current!.querySelector('[data-vc-leading]')).toBeNull()
+    expect(leadingRef.current).toBeNull()
+    expect(screen.getByTestId('slot-above').parentElement).toBe(scrollerRef.current)
+  })
+
   it('hands the trailing wrapper to the virtualizer through virt.trailingRef', () => {
     const scrollerRef = ref()
     const trailingRef = ref()
@@ -201,51 +250,48 @@ describe('ChatPage invocation: slot membership and prop threading', () => {
       'onScroll={onScrollPin}',
       'virt={virt}',
       'loadingOlder={loadingOlder}',
-      // A PREFIX, not the whole literal: the style object also carries the
+      // PREFIXES, not the whole literal: the style object also carries the
       // restore-gate visibility flip, so pinning the closing braces would pin the
       // gate's presence into a test about prop THREADING. This still fails on a
-      // duplicated prop and still requires the padding the shell contract needs.
-      'scrollerStyle={{ paddingBottom: dockH + DOCK_CLEARANCE_PX',
+      // duplicated prop and still requires the padding the shell contract needs:
+      // the dock's strip at the bottom by default, at the top in the opt-in
+      // top-down layout.
+      'scrollerStyle={topDown',
+      '? { paddingTop: dockTop + dockH + DOCK_CLEARANCE_PX',
+      ': { paddingBottom: dockH + DOCK_CLEARANCE_PX',
     ]) {
       expect(inv.split(pin).length - 1, pin).toBe(1)
     }
   })
 
-  it('puts each piece of page content INSIDE its slot body — membership, not just source order', () => {
-    // Slice the actual slot fragment bodies. Order-only index checks pass a
-    // mutant that empties belowRows and reparents the footer as a plain child
-    // before the rows; membership + negative assertions do not.
-    const body = (attr: string) => {
-      const start = inv.indexOf(`${attr}={<>`)
-      expect(start, `${attr} fragment opens`).toBeGreaterThan(-1)
-      const end = inv.indexOf('</>}', start)
-      expect(end, `${attr} fragment closes`).toBeGreaterThan(start)
-      return inv.slice(start, end)
-    }
-    const above = body('aboveRows')
-    const below = body('belowRows')
-    // children = everything after the opening tag closes (past both slot
-    // fragments) up to </TranscriptScrollShell>.
-    const childrenRegion = inv.slice(inv.indexOf('</>}', inv.indexOf('belowRows={<>')) + 4)
+  it('keeps page content in named slots and swaps those slots only for top-down', () => {
+    const historyStart = src.indexOf('const historySlot = <>')
+    const liveStart = src.indexOf('const liveSlot = <>', historyStart)
+    const returnStart = src.indexOf('\n\n  return (', liveStart)
+    expect(historyStart).toBeGreaterThan(-1)
+    expect(liveStart).toBeGreaterThan(historyStart)
+    expect(returnStart).toBeGreaterThan(liveStart)
+    const history = src.slice(historyStart, liveStart)
+    const live = src.slice(liveStart, returnStart)
 
-    // aboveRows: the paging bar and its cursor gate — and nothing footer-shaped.
-    expect(above).toContain('slotHasMore && cursorIsForActiveSlot')
-    expect(above).toContain('<EarlierMessagesBar')
-    expect(above).not.toContain('<ChatFooter')
+    expect(history).toContain('slotHasMore && cursorIsForActiveSlot')
+    expect(history).toContain('<EarlierMessagesBar')
+    expect(history).not.toContain('<ChatFooter')
 
-    // belowRows: footer -> survey -> tail spacer, in order, and no paging bar.
-    const iFooter = below.indexOf('<ChatFooter')
-    const iSurvey = below.indexOf('<SessionPulseSurveyCard')
-    const iTail = below.indexOf('height: TRANSCRIPT_TAIL_SPACER_PX')
+    const iFooter = live.indexOf('<ChatFooter')
+    const iSurvey = live.indexOf('<SessionPulseSurveyCard')
+    const iTail = live.indexOf('height: TRANSCRIPT_TAIL_SPACER_PX')
     expect(iFooter).toBeGreaterThan(-1)
     expect(iSurvey).toBeGreaterThan(iFooter)
     expect(iTail).toBeGreaterThan(iSurvey)
-    expect(below).not.toContain('<EarlierMessagesBar')
+    expect(live).not.toContain('<EarlierMessagesBar')
 
-    // The children region carries rows ONLY — reparenting any slot content
-    // there (where it would enter the virtualized row geometry) is a red.
+    expect(inv).toContain('liveEdgeAtTop={topDown}')
+    expect(inv).not.toContain('historyAtBottom')
+    expect(inv).toContain('aboveRows={topDown ? liveSlot : historySlot}')
+    expect(inv).toContain('belowRows={topDown ? historySlot : liveSlot}')
     for (const token of ['<EarlierMessagesBar', '<ChatFooter', '<SessionPulseSurveyCard', 'height: TRANSCRIPT_TAIL_SPACER_PX']) {
-      expect(childrenRegion, `children region must not contain ${token}`).not.toContain(token)
+      expect(inv, `shell children must not contain ${token}`).not.toContain(token)
     }
   })
 })

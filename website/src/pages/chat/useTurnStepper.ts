@@ -10,6 +10,8 @@ export interface UseTurnStepperOptions {
   active: boolean
   /** The transcript's turns in order — the same list the turn minimap draws. */
   turns: readonly ChatSection[]
+  /** True when `turns` is newest first (the top-down layout), so the announced position still counts from the oldest turn. */
+  newestFirst?: boolean
   /** True while older history is not loaded yet, so positions count loaded turns only. */
   windowed: boolean
   /** The transcript scroll container. Rows inside it carry `data-display-index`. */
@@ -20,6 +22,16 @@ export interface UseTurnStepperOptions {
   jump: (displayIdx: number) => void
   /** The jump owner's step flash (`useJumpMark`'s `markStep`): the landed prompt's row flashes the ring a pinned-message jump draws. */
   flash?: (ts: string) => void
+}
+
+/**
+ * The 1-based number a turn list shows for the turn at `index` in screen order.
+ * The oldest turn is turn 1 in both layouts: a list drawn newest first
+ * (`newestFirst`) counts from its far end. Single-sourced here for the stepper's
+ * announcement and every number the turn minimap shows.
+ */
+export function turnNumber(index: number, count: number, newestFirst = false): number {
+  return newestFirst ? count - index : index + 1
 }
 
 function mountedRows(scroller: HTMLElement): MountedRow[] {
@@ -60,12 +72,12 @@ function mountedRows(scroller: HTMLElement): MountedRow[] {
  * past either end that has nowhere to go, so a Mac browser does not scroll a
  * page for it instead.
  */
-export function useTurnStepper({ active, turns, windowed, scrollerRef, landingInset, jump, flash }: UseTurnStepperOptions): string {
+export function useTurnStepper({ active, turns, newestFirst = false, windowed, scrollerRef, landingInset, jump, flash }: UseTurnStepperOptions): string {
   const [announcement, setAnnouncement] = useState('')
   // Read at keypress: registering once per activation keeps the stepper off the
   // per-token rebuild of `turns` while a reply streams.
-  const latest = useRef({ turns, windowed, landingInset, jump, flash })
-  latest.current = { turns, windowed, landingInset, jump, flash }
+  const latest = useRef({ turns, newestFirst, windowed, landingInset, jump, flash })
+  latest.current = { turns, newestFirst, windowed, landingInset, jump, flash }
   // `ChatSection.id` of the turn the last step landed on. By id, not display
   // index, so older history loading in above it does not move the reference.
   const landedRef = useRef<string | null>(null)
@@ -86,7 +98,7 @@ export function useTurnStepper({ active, turns, windowed, scrollerRef, landingIn
     document.addEventListener('wheel', forget, passiveCapture)
     document.addEventListener('touchstart', forget, passiveCapture)
     const unregister = registerTurnStepper((dir) => {
-      const { turns: list, windowed: partial, landingInset: inset, jump: go, flash: highlight } = latest.current
+      const { turns: list, newestFirst: reversed, windowed: partial, landingInset: inset, jump: go, flash: highlight } = latest.current
       const scroller = scrollerRef.current
       if (!scroller || list.length === 0) return false
       const stops = list.map(turn => turn.displayIdx)
@@ -110,7 +122,7 @@ export function useTurnStepper({ active, turns, windowed, scrollerRef, landingIn
       go(turn.displayIdx)
       if (highlight && turn.ts) highlight(turn.ts)
       setAnnouncement(i18nT('pages.chatPage.turn_minimap_active', {
-        position: i18nT(partial ? 'pages.chatPage.turn_minimap_meta_position_windowed' : 'pages.chatPage.turn_minimap_meta_position', { n: n + 1, count: list.length }),
+        position: i18nT(partial ? 'pages.chatPage.turn_minimap_meta_position_windowed' : 'pages.chatPage.turn_minimap_meta_position', { n: turnNumber(n, list.length, reversed), count: list.length }),
         prompt: turn.label,
       }))
       return true

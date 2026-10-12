@@ -354,6 +354,16 @@ reserve the dock's height with a margin, or otherwise clip the transcript so tha
 transcript. Legibility of what sits over the transcript is the glass recipe's job
 (blur and tint), never the scroller's.
 
+The **Top-down chat (newest first)** setting is `chatConfig.topDownLayout`.
+Desktop chat hosts read it, and phones ignore it. With it on, the composer dock
+floats over the scroller's top edge. The scroller reserves this strip with
+`padding-top`, and each compensating `scrollTop` write goes through `holdScrollTop`.
+`pages/chat/ComposerFocusOrder.tsx` places the dock slot first in DOM order, so
+keyboard focus reaches the composer first. The slot uses `order-last` to paint
+after the transcript. In the bottom layout, the slot uses `display: contents`.
+[The decision record](../../docs/decisions/2026-11-16-top-down-chat-follows-the-top-edge-and-keeps-the-jump-to-the-bottom-label.md)
+defines this layout contract.
+
 The welcome hero (`key="welcome-hero"`) is the one box that ENDS above the dock
 (`marginBottom: dockH`, never padding under it): its suggestion cards are
 controls, and a control under the glass is an ambiguous tap. A failed suggestion

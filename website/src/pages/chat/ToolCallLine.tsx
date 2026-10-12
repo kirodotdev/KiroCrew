@@ -51,6 +51,7 @@ import { toolRailColor } from '../../utils/toolRailColor'
 import { useSecondClock } from '../../hooks/useSecondClock'
 import { toolReturned } from '../../utils/toolReturned'
 import { stripToolCallLead } from '../../lib/toolRowContract'
+import { scrollElementToCenter } from '../../utils/searchScroll'
 
 // Lazy so the rarely-shown answers card stays out of the App chunk. A chunk
 // that fails to load shows one block in the card's place, with Try Again and
@@ -767,7 +768,7 @@ function ToolCallLineBody({ message, running: _running, slot, onFileOpen, disclo
       applyExpanded(true)
       setPendingAutoExpand(false)
       setUserChoseOpen(true)
-      requestAnimationFrame(() => containerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }))
+      requestAnimationFrame(() => { if (containerRef.current) scrollElementToCenter(containerRef.current) })
       dispatch(clearFocusToolCallId())
     }
   }, [focused, dispatch, applyExpanded])

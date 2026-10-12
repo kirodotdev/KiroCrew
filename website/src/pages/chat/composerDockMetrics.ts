@@ -27,6 +27,54 @@ import { useCallback, useRef, useState, type RefObject } from 'react'
  */
 export const DOCK_CLEARANCE_PX = 16
 
+/** Top-down layout: the dock hangs from `top` and grows downward, so its
+ *  `max-height` is the pane height left under that offset. A percentage on an
+ *  absolutely positioned box resolves against the pane (its containing block),
+ *  not against the dock's own content. */
+export const topDownDockMaxHeight = (top: number) => `calc(100% - ${top}px)`
+
+/**
+ * A callback ref that marks a `dock-inert` scroll box while it overflows
+ * (`data-overflowing`, read by the `.dock-inert` rule in liquid-glass.css). The
+ * box passes input through, which also drops its own scrollbar as a hit
+ * target, so the mark gives the scrollbar back for exactly that stretch.
+ * Observes the box AND its children: a box held at the dock's cap keeps its
+ * height while its content grows, so only a child resizing, or a child
+ * mounting or unmounting, says that it crossed into overflow. `on` false (the
+ * bottom layout, where the box is not a scroll box) attaches nothing and
+ * leaves no mark.
+ */
+export function useDockOverflowMark(on: boolean) {
+  const stopRef = useRef<(() => void) | null>(null)
+  return useCallback((el: HTMLElement | null) => {
+    stopRef.current?.()
+    stopRef.current = null
+    if (!el) return
+    if (!on || typeof ResizeObserver === 'undefined') { delete el.dataset.overflowing; return }
+    stopRef.current = attachDockOverflowMark(el)
+  }, [on])
+}
+
+/** The observers behind `useDockOverflowMark`, for a host that owns its own
+ *  callback ref (the chat page's status band). Needs `ResizeObserver`; returns
+ *  the function that stops both observers. */
+export function attachDockOverflowMark(el: HTMLElement): () => void {
+  const mark = () => { el.dataset.overflowing = el.scrollHeight > el.clientHeight ? 'true' : 'false' }
+  const ro = new ResizeObserver(mark)
+  ro.observe(el)
+  for (const child of Array.from(el.children)) ro.observe(child)
+  const mo = typeof MutationObserver === 'undefined' ? null : new MutationObserver(records => {
+    for (const r of records) {
+      for (const n of Array.from(r.addedNodes)) if (n instanceof Element) ro.observe(n)
+      for (const n of Array.from(r.removedNodes)) if (n instanceof Element) ro.unobserve(n)
+    }
+    // A removed child resizes nothing that is still observed.
+    mark()
+  })
+  mo?.observe(el, { childList: true })
+  return () => { ro.disconnect(); mo?.disconnect() }
+}
+
 /**
  * The dock's measured height and scrollbar gutter, plus the composer box ref
  * (the quote flight's target).

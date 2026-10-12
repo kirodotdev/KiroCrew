@@ -1,4 +1,4 @@
-import { act, renderHook } from '@testing-library/react'
+import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '../types'
@@ -69,10 +69,10 @@ const message = (role: string, content: string, ts: string): ChatMessage => ({
   ts,
 })
 
-const single = (idx: number, role: string, content: string): DisplayItem => ({
+const single = (idx: number, role: string, content: string, meta?: ChatMessage['meta']): DisplayItem => ({
   kind: 'single',
   idx,
-  msg: message(role, content, `2026-08-30T00:00:0${idx}.000Z`),
+  msg: { ...message(role, content, `2026-08-30T00:00:0${idx}.000Z`), meta },
 })
 
 function mountGeometry(rowCount: number) {
@@ -122,6 +122,7 @@ function mountGeometry(rowCount: number) {
 function renderEarly(
   mountIndex: (index: number) => boolean = () => false,
   estimateRowTop: (index: number) => number | null = () => null,
+  topDown = false,
 ) {
   const vGetFollowRef = { current: () => false }
   const slotRunningRef = { current: false }
@@ -139,6 +140,7 @@ function renderEarly(
     slotRunningRef,
     vGetFollowRef,
     vScrollToBottomRef,
+    topDown,
   }))
   return { ...hook, vGetFollowRef, mountIndexRef, estimateRowTopRef, scrollerRef, vScrollToBottomRef, scrollToDisplayIndex }
 }
@@ -210,6 +212,29 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     expect(frames).toHaveLength(1)
     flushFrame(16)
     expect(result.current.pinned?.idx).toBe(0)
+  })
+
+  it.each([
+    { topDown: true, expectedAnchor: 1 },
+    { topDown: false, expectedAnchor: 0 },
+  ])('chooses the correct jump anchor for consecutive prompts (topDown=$topDown)', ({ topDown, expectedAnchor }) => {
+    const h = renderEarly(() => false, () => null, topDown)
+    const geometry = mountGeometry(3)
+    const items: DisplayItem[] = [
+      single(0, 'user', 'steer prompt', { steer: true }),
+      single(1, 'user', 'original prompt'),
+      single(2, 'assistant', 'reply'),
+    ]
+
+    act(() => {
+      h.scrollerRef.current = geometry.scroller
+      h.result.current.pinFoldRef.current = geometry.fold
+      h.result.current.pinCardRef.current = geometry.card
+      h.result.current.displayItemsRef.current = items
+      h.result.current.scrollToPinnedPrompt(1)
+    })
+
+    expect(h.mountIndexRef.current).toHaveBeenCalledWith(expectedAnchor, { unionOnly: true })
   })
 
   it('glides a near pinned jump after the unioned rows measure, then converges on the landing', () => {
@@ -292,5 +317,68 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     expect(frames).toHaveLength(0)
     // The old far path: an instant scroll through the mounted-row poll.
     expect(far.scrollToDisplayIndex).not.toHaveBeenCalled()
+  })
+})
+
+// happy-dom has no layout, so a real ResizeObserver never fires. This one
+// records what it observes, and a test fires it for one target.
+class BandResizeObserver {
+  static all: BandResizeObserver[] = []
+  readonly targets = new Set<Element>()
+  constructor(readonly cb: ResizeObserverCallback) { BandResizeObserver.all.push(this) }
+  observe(t: Element) { this.targets.add(t) }
+  unobserve(t: Element) { this.targets.delete(t) }
+  disconnect() { this.targets.clear() }
+}
+const bandObserved = (t: Element) => BandResizeObserver.all.some(o => o.targets.has(t))
+const fireBandResize = (t: Element) => { for (const o of BandResizeObserver.all) if (o.targets.has(t)) o.cb([], o as unknown as ResizeObserver) }
+
+// Top-down, the chat page's status band is a `dock-inert` scroll box. At the
+// dock's cap it can hold its floor height while a bar mounts in it, so a mark
+// read from the band's own resizes alone would stay stale.
+describe('useChatPageTranscriptEarlyController top-down status band overflow mark', () => {
+  let realResizeObserver: typeof ResizeObserver
+  beforeEach(() => {
+    realResizeObserver = globalThis.ResizeObserver
+    BandResizeObserver.all = []
+    globalThis.ResizeObserver = BandResizeObserver as unknown as typeof ResizeObserver
+  })
+  afterEach(() => { globalThis.ResizeObserver = realResizeObserver })
+
+  it('re-marks the band when a bar mounts, resizes or unmounts while the band keeps its height', async () => {
+    const { result } = renderEarly(() => false, () => null, true)
+    const band = document.createElement('div')
+    const bar = document.createElement('div')
+    band.appendChild(bar)
+    document.body.appendChild(band)
+    detachedNodes.push(band)
+    const h = { scroll: 11, client: 11 }
+    Object.defineProperty(band, 'scrollHeight', { configurable: true, get: () => h.scroll })
+    Object.defineProperty(band, 'clientHeight', { configurable: true, get: () => h.client })
+
+    act(() => { result.current.composerBandRef(band as HTMLDivElement) })
+    fireBandResize(band)
+    expect(band.dataset.overflowing).toBe('false')
+    // The band holds its 11px floor; only the bar reports its growth.
+    h.scroll = 60
+    fireBandResize(bar)
+    expect(band.dataset.overflowing).toBe('true')
+    // A bar that mounts resizes nothing already observed: the mount re-marks.
+    h.scroll = 11
+    fireBandResize(bar)
+    const queued = document.createElement('div')
+    h.scroll = 90
+    band.appendChild(queued)
+    await waitFor(() => expect(band.dataset.overflowing).toBe('true'))
+    expect(bandObserved(queued)).toBe(true)
+    // So does one that unmounts.
+    h.scroll = 11
+    queued.remove()
+    await waitFor(() => expect(band.dataset.overflowing).toBe('false'))
+    expect(bandObserved(queued)).toBe(false)
+
+    act(() => { result.current.composerBandRef(null) })
+    expect(bandObserved(band)).toBe(false)
+    expect(bandObserved(bar)).toBe(false)
   })
 })

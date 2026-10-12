@@ -32,6 +32,7 @@ const PAGE_FILES = [
     .map((f) => `../pages/${f}`),
 ]
 const PAGE = PAGE_FILES.map((f) => readFileSync(resolve(__dirname, f), 'utf8')).join('\n')
+const FOCUS_ORDER = readFileSync(resolve(__dirname, '../pages/chat/ComposerFocusOrder.tsx'), 'utf8')
 
 // The shell's source may live inline in ChatPage or in extracted components —
 // the net follows the CODE, not the file: assertions are identical either way,
@@ -247,7 +248,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
   // Each of these lines compiles away silently if deleted — the type system
   // accepts a shell that ignores a prop — but the transcript then breaks at
   // runtime (no rows, no follow, no paging). The pins make every seam a test.
-  it('shell renders all three slots in skeleton order and spreads host geometry', () => {
+  it('shell renders all three slots in skeleton order and preserves host geometry', () => {
     const shellOrder = ['{aboveRows}', 'height: Math.round(virt.offsetBefore)', '{children}', 'height: virt.offsetAfter', '{belowRows}']
     let cursor = -1
     for (const a of shellOrder) {
@@ -255,7 +256,7 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
       expect(idx, `out of order or missing: ${a}`).toBeGreaterThan(cursor)
       cursor = idx
     }
-    expect(SHELL).toContain('...scrollerStyle,')
+    expect(SHELL).toContain('...(liveEdgeAtTop ? scrollerStyleWithoutTopPadding : scrollerStyle),')
     // onScroll must be ON THE SCROLLER ELEMENT, not merely present somewhere:
     // relocated onto any other element, follow/pin/paging all die at runtime
     // while a whole-source contain() stays green. Slice the scroller's own
@@ -279,13 +280,13 @@ describe('scroll shell: extraction wiring (the seams the split created)', () => 
 })
 
 describe('scroll shell: floating dock and jump pill', () => {
-  it('follows the scroller with the floating dock root (geometry itself is pinned by dockClearance)', () => {
-    // The dock is the next positioned sibling after the scroller: that DOM order,
-    // not a z-index, is what paints it over the transcript.
-    const shellEnd = SRC.indexOf('<TranscriptScrollShell')
-    const dock = SRC.indexOf('data-testid="composer-dock-root"')
-    expect(shellEnd).toBeGreaterThan(0)
-    expect(dock).toBeGreaterThan(shellEnd)
+  it('keeps the floating dock above the scroller while top-down focus reaches it first', () => {
+    // The top-down branch moves the keyed dock slot before the transcript for
+    // focus. The zero-height flex slot paints last through `order-last`, so the
+    // absolute dock still paints over transcript rows without a z-index.
+    expect(PAGE).toContain('<ComposerFocusOrder')
+    expect(FOCUS_ORDER).toMatch(/topDown \? \[dockSlot, transcriptSlot\] : \[transcriptSlot, dockSlot\]/)
+    expect(FOCUS_ORDER).toMatch(/className=\{topDown \? 'order-last' : 'contents'\}/)
     // No bottom fade under the floating dock: the transcript reads through the
     // glass. Scoped to the page — the shared <EdgeFade side="bottom"> in
     // ChatScrollChrome stays for its other consumers (ChatPane).

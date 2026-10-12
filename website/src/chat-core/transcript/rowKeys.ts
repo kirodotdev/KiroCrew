@@ -187,19 +187,40 @@ export function virtualKeyFor(
  *  string never renders as user-visible text. */
 const DUP_KEY_SUFFIX = '~#'
 
+/** Inverse of a `chrono` map (chronological index -> list index), or null
+ *  when there is none or it is not a permutation of `0..n-1`. A bad map then
+ *  degrades to list order instead of leaving a row with no key. */
+function chronoVisitOrder(chrono: readonly number[] | undefined, n: number): number[] | null {
+  if (!chrono || chrono.length !== n) return null
+  const order = new Array<number>(n).fill(-1)
+  for (let s = 0; s < n; s++) {
+    const c = chrono[s]
+    if (!Number.isInteger(c) || c < 0 || c >= n || order[c] !== -1) return null
+    order[c] = s
+  }
+  return order
+}
+
+/** `chrono` (optional): `chrono[i]` is the chronological index of `items[i]`,
+ *  for a host that draws rows in another order (the top-down layout, see
+ *  `orderTurnsNewestFirst`). The key rule is positional: the headless turn is
+ *  the OLDEST row, the trailing turn the NEWEST. So rows are visited in
+ *  chronological order and `virtualKeyFor` gets the chronological index; each
+ *  key is written at the row's list index. The tie-break then also runs
+ *  chronologically, so a new turn drawn first cannot take the bare key from an
+ *  older collider. Without `chrono` the list order is the chronological order. */
 export function uniqueRowKeys(
   items: readonly DisplayItem[],
   msgKey: (m: ChatMessage) => string,
   preferredKey?: (it: DisplayItem, index: number) => string | undefined,
+  chrono?: readonly number[],
 ): string[] {
+  const n = items.length
+  const order = chronoVisitOrder(chrono, n)
   const seen = new Map<string, number>()
-  return items.map((it, i) => {
-    // A host may know a more durable identity than the generic lead/tail rule.
-    // The override still passes through this function so duplicate-key handling
-    // remains one list-level contract rather than a second host-side pass.
-    const base = preferredKey?.(it, i) ?? virtualKeyFor(it, i, msgKey, i === items.length - 1)
-    const n = seen.get(base)
-    if (n === undefined) {
+  const unique = (base: string): string => {
+    const prior = seen.get(base)
+    if (prior === undefined) {
       seen.set(base, 1)
       return base
     }
@@ -207,7 +228,7 @@ export function uniqueRowKeys(
     // can spell `<base>~#1` (msgKey passes through arbitrary meta), so
     // emitting the suffix unchecked would reintroduce the duplicate this
     // function exists to remove.
-    let count = n
+    let count = prior
     let candidate = `${base}${DUP_KEY_SUFFIX}${count}`
     while (seen.has(candidate)) {
       count++
@@ -216,5 +237,15 @@ export function uniqueRowKeys(
     seen.set(base, count + 1)
     seen.set(candidate, 1)
     return candidate
-  })
+  }
+  const keys: string[] = new Array(n)
+  for (let c = 0; c < n; c++) {
+    const i = order ? order[c] : c
+    const it = items[i]
+    // A host may know a more durable identity than the generic lead/tail rule.
+    // The override still passes through this function so duplicate-key handling
+    // remains one list-level contract rather than a second host-side pass.
+    keys[i] = unique(preferredKey?.(it, i) ?? virtualKeyFor(it, c, msgKey, c === n - 1))
+  }
+  return keys
 }

@@ -33,6 +33,7 @@ import { useModelsAuthRequired } from '../../../providers/modelListHealth'
 import { agentOrDefaultLabel } from '../../../utils/agentLabel'
 import { isUntitledSession, sessionDisplayTitle } from '../../../utils/sessionDisplayTitle'
 import { sessionMemoryTag } from '../../../lib/agentMemorySource'
+import { anchoredPopupBox } from '../../../lib/pickerMenu'
 import { dismissFollowupItem, type FollowupItem } from '../../../store/chatSlice'
 import { usePersistedBool } from '../../../hooks/usePersistedBool'
 import { FOLLOWUP_START_SENDS_KEY } from '../followupStartSends'
@@ -49,6 +50,7 @@ import type { useSessionControlChips } from './sessionControls'
 import { enclosingRepoRootOf, type useComposerChips } from './composerChips'
 import type { useSessionAutomation } from './sessionAutomation'
 import { SELECTION_INERT_ATTR } from '../useSelectionInertOverlays'
+import { TOP_OVERLAY_ATTR, TOP_OVERLAY_GROWS } from '../browserLiveClearance'
 import { legacyCodexEffort } from '../../../hooks/useInteractiveModels'
 import { isUnpinnedModel, jevRouteShownModel } from '../../../lib/jevRoute'
 import ProjectPicker from '../../../components/ProjectPicker'
@@ -77,6 +79,7 @@ import { tryQuickSend } from '../../../lib/quickSend'
 import { i18nT } from '../../../i18n/t'
 import { acpBackendName } from '../../../api/acpBackend'
 import { fmtDateFields, fmtNumber } from '../../../i18n/format'
+import { topDownDockMaxHeight, useDockOverflowMark } from '../composerDockMetrics'
 import { useSlotRunsHere } from '../../../components/sessionEnvironmentHooks'
 import { stagedProjectTurnKey } from '../../../components/chat-input/stagedProject'
 
@@ -330,10 +333,21 @@ interface ComposerDockViewProps {
   /** The steered worker's Crew Mode root (its `crew_root`). Its approvals are
    *  decided on that root's card, and with the root closed the composer is off. */
   steerWorkerRoot?: string
+  /** The top-down chat layout: this dock floats over the TOP edge of the
+   *  transcript scroller instead of the bottom, so the jump pill hangs under
+   *  it pointing up and the agent and model pickers open downward. */
+  topDown?: boolean
+  /** Top-down layout only: the dock root's `top`, in px (the page's overlay
+   *  title band, which the scroller's top padding also pays). */
+  dockTop?: number
 }
 
 /**
- * The floating composer dock, the next positioned sibling after the scroller (that DOM order is what paints it over the transcript), and its contents: the jump-to-bottom pill, the status stack (task, sub-agent and workflow bars, queued messages), the flying quote, and the input area (refused-press notice, history suggestions, knowledge picker, question and follow-up cards, memory-mode and Crew Mode chips, the composer), and the composer toolbar's popovers (the agent and model dropdowns, the project picker, the open app session control).
+ * The floating composer dock and its contents. In the bottom layout it follows
+ * the scroller. In the top-down layout its zero-height keyed slot precedes the
+ * scroller for focus and paints last through flex order. The dock contains the
+ * jump pill, status stack, queued messages, flying quote, input area, composer,
+ * and the composer toolbar popovers.
  *
  * Its body is not re-indented: `ChatPage.statusStackLayering.test.tsx` finds the status stack's end by its closing tag's depth (14 spaces).
  */
@@ -353,7 +367,7 @@ export default function ComposerDockView({
   effortSupported, effortAutoNote = false, ultracode, fastMode, fastUnavailable, modelMarker, pinModelToAgentMut, projectBranch, projectGit, projectGitError, shownModel, cardOwnsRecovery, resumeAfterSignIn, continuable, continuing, handleContinue, interrupted, dockGutter, dockRef,
   endQuoteFlight, flyingQuote, inputAreaRef, isAtBottom, answerQuestionCard, handleCancelQueued, handleEditQueued, handleEditOpenQueued, handleInterruptQueued, handleReorderQueued, keepQuestionAnswer, queuedMessages,
   queuePendingIds, steer, stopTurn, systemDeliveryCount, handleEditLastRequest, composerOptimizing, handleOptimizingChange, memorySwitching, showComposerMemoryChip, switchMemoryMode, composerAbove, typingLock, composerPresence,
-  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '',
+  composerSessionControls, crewModeOffered, crewModeMidChatOffered = false, turnOnCrewMode, turnOffCrewMode, crewModeSwitching = null, agentPickerHidden = false, crewChipPressed = false, agentSwitchLocked = false, steerWorker, steerWorkerRoot = '', topDown = false, dockTop = 0,
 }: ComposerDockViewProps) {
   // A chat on a Session Environment runs in its workspace; see ChatPane.
   const runsHere = useSlotRunsHere(currentSlot && currentSlot.executor !== 'remote' ? currentSlot.key : null)
@@ -403,6 +417,9 @@ export default function ComposerDockView({
   // keyboard, a screen reader and a touch reader all reach it, not only a mouse
   // hovering the title. It says, while a reply runs, when the chip works again.
   const crewModeNote = crewModeOffered && crewModeBusy ? i18nT('components.crewMode.chip_hint_busy') : null
+  // Top-down, the card box above the composer scrolls at the dock's cap: the
+  // mark makes its scrollbar a hit target while it overflows.
+  const precardsRef = useDockOverflowMark(topDown)
   return (
     <>
             {/* Composer dock. Floats over the bottom of the transcript scroller
@@ -413,17 +430,38 @@ export default function ComposerDockView({
                 measured from this box by `dockRef`. No z-index here on purpose:
                 a positioned box with `z-index: auto` forms no stacking context,
                 so SubagentProgressBar's wave chip keeps its `z-[46]` against
-                the theme-experience overlays it was lifted to clear, and the
-                dock still paints over the scroller because it follows it in
-                DOM order. `pointer-events-none` on the root, restored on the
+                the theme-experience overlays it was lifted to clear. In the
+                bottom layout the dock paints over the scroller because it
+                follows the scroller in DOM order. `pointer-events-none` on the
+                root, restored on the
                 CHILDREN of the two wrapper boxes (`dock-inert`, index.css) —
                 each child is its own 900px column, so the two wrappers, which
                 span the pane, never catch a wheel of their own — then the empty
                 width either side of the column lets wheel and touch reach the
                 transcript underneath, as the strip beside an iOS toolbar does.
-                `right: dockGutter` keeps the scrollbar column clear (above). */}
-            <div ref={dockRef} className="absolute left-0 bottom-0 pointer-events-none" style={{ right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }} data-scroll-peek-stop="">
-              <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />
+                `right: dockGutter` keeps the scrollbar column clear (above).
+                Top-down layout: the same box precedes the transcript in DOM
+                order, so Tab reaches the composer before transcript controls.
+                A zero-height flex slot with `order-last` gives the absolute
+                dock the same post-scroller paint order as the bottom dock
+                without making a stacking context. The box floats over the scroller's TOP edge at
+                `top: dockTop` (the title band), the scroller pays the
+                covered strip as top padding, and the jump pill hangs under
+                the box pointing up. There the box is also a marked top
+                overlay (`TOP_OVERLAY_ATTR`), so the browser card's header
+                clearance and frame fit measure its bottom edge. The bottom
+                dock carries no marker. Top-down, the box grows downward past
+                the pane's bottom edge unless capped, so it is a flex column
+                limited to the height left under `dockTop`. An overflow comes
+                out of the status stack first, then out of the cards above the
+                composer (`composer-precards`, which scrolls), and never out of
+                the composer row (`shrink-0`). Flex shrinks items in proportion
+                to flex-shrink times base size, and the input area's flex
+                minimum is 0 there, so the stack's `shrink-[1000]` weight is
+                what makes it reach 0 before the input area gives up height. */}
+            <div ref={dockRef} className={topDown ? 'absolute left-0 flex flex-col pointer-events-none' : 'absolute left-0 bottom-0 pointer-events-none'} style={topDown ? { right: dockGutter, top: dockTop, maxHeight: topDownDockMaxHeight(dockTop) } : { right: dockGutter }} data-testid="composer-dock-root" {...{ [SELECTION_INERT_ATTR]: '' }} data-scroll-peek-stop="" {...(topDown ? { [TOP_OVERLAY_ATTR]: TOP_OVERLAY_GROWS } : null)}>
+              {!topDown && <JumpToBottomButton visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />}
+              {topDown && <JumpToBottomButton direction="up" visible={!isAtBottom && messages.length > 0} onClick={() => scrollBottom(true)} />}
               {/* Status chrome never claims more than half the pane. The dock
                   is anchored to the pane's bottom edge and grows upward, so an
                   opening keyboard — which shrinks the layout viewport — would
@@ -445,7 +483,7 @@ export default function ComposerDockView({
                   the wrapper's contribution to the column unchanged, so the seam
                   still fuses. Layout-neutral when the queue is empty: the pair
                   cancels. */}
-              <div ref={composerBandRef} className="max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert" data-testid="composer-status-stack">
+              <div ref={composerBandRef} className={topDown ? 'max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert shrink-[1000]' : 'max-h-[50svh] overflow-y-auto overscroll-contain pb-[11px] mb-[-11px] dock-inert'} data-testid="composer-status-stack">
               {/* The Kiro sign-in, before a send fails for the lack of one: the
                   gateway decides when a new chat needs it, and the flow inside
                   is the same one Settings renders. In this capped stack so the
@@ -475,7 +513,18 @@ export default function ComposerDockView({
               <QueueStack key={activeSlot} messages={queuedMessages} onCancel={handleCancelQueued} onInterrupt={handleInterruptQueued} onEdit={handleEditQueued} onEditOpen={handleEditOpenQueued} onReorder={handleReorderQueued} pendingIds={queuePendingIds} fuseBelow={followUpOptions.length === 0 && !knowledgeFetch.pendingKnowledge} />
               </div>
               {flyingQuote && <FlyingQuote text={flyingQuote.text} from={flyingQuote.from} targetRef={inputAreaRef} onComplete={endQuoteFlight} />}
-              <div ref={inputAreaRef} className="relative z-10 dock-inert">
+              <div ref={inputAreaRef} className={topDown ? 'relative z-10 dock-inert flex flex-col min-h-0' : 'relative z-10 dock-inert'}>
+              {/* The cards above the composer. Top-down, this box is the part
+                  of the input area that shrinks and scrolls when the dock is
+                  at its cap, and it is `dock-inert` like its parent, so the
+                  empty width beside the card column still reaches the
+                  transcript. In the bottom layout it is `contents`: it makes
+                  no box, and the cards lay out as direct children of the input
+                  area. One element in both layouts, so a layout change does
+                  not remount the cards. The history popup below is `absolute`
+                  against the input area, so this box's overflow does not clip
+                  it. */}
+              <div ref={precardsRef} className={topDown ? 'min-h-0 overflow-y-auto overscroll-contain dock-inert' : 'contents'} data-testid="composer-precards">
               {/* The refused-press answer sits directly above the composer,
                   adjacent to the message-footer controls that raised it, so the
                   press cannot fail silently. Shares the chat column's own
@@ -507,7 +556,7 @@ export default function ComposerDockView({
                 </div>
               )}
               {showHistorySuggestions && (
-                <div className="absolute left-0 right-0 bottom-full mb-1 mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]">
+                <div className={`absolute left-0 right-0 ${topDown ? 'top-full mt-1' : 'bottom-full mb-1'} mx-auto w-full max-w-[760px] border border-border rounded-lg bg-card overflow-hidden animate-scale-in z-50 shadow-lg flex flex-col max-h-[min(300px,40vh)]`}>
                   <div className="px-3.5 py-2.5 border-b border-border shrink-0">
                     <span className="text-[12px] font-semibold text-muted tracking-[.02em]">{i18nT('pages.chatPage.continue_a_previous_chat')}</span>
                   </div>
@@ -590,7 +639,7 @@ export default function ComposerDockView({
                 // The row wraps, so on a phone the chip's note drops under the chip
                 // instead of overlapping it.
                 <div className="relative z-10 mx-auto w-fit max-w-full px-4 pt-2 pb-2 flex flex-wrap items-center justify-center gap-x-2 gap-y-1" data-testid="composer-memory-chip">
-                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} disabled={composerOptimizing} />
+                  <MemoryModeChip memoryMode={currentSlot?.memory_mode ?? 'persistent'} onSwitchMode={switchMemoryMode} switching={memorySwitching} disabled={composerOptimizing} openBelow={topDown} />
                   {(crewModeOffered || crewChipPressed) && (
                     // Busy while a reply runs; disabled while a memory-mode switch is
                     // replacing this session.
@@ -611,10 +660,12 @@ export default function ComposerDockView({
                   cannot answer, stacked above its composer. */}
               {/* The Crew tab's Needs your input shows the same cards, compact. */}
               {crewModeRoot(currentSlot) && activeSlot && <CrewApprovalCards root={activeSlot} />}
+              </div>
               {/* A crew member's composer is the conductor's normal composer: no
                   frame, header or hint. What it does differs only in delivery: a
-                  send is a person steer, and a running turn takes it as a steer. */}
-              <div data-testid={steerWorker !== undefined ? 'crew-steer-composer' : undefined}>
+                  send is a person steer, and a running turn takes it as a steer.
+                  Top-down, this row keeps its full height at the dock's cap. */}
+              <div className={topDown ? 'shrink-0' : undefined} data-testid={steerWorker !== undefined ? 'crew-steer-composer' : undefined}>
               {/* The gate lines sit on the composer's own column (its px-4 and
                   content width), now that no ring frames them. */}
               {activeSlot && (
@@ -765,6 +816,9 @@ export default function ComposerDockView({
                 anchorProjectBtn(rect, trigger)
                 setProjectPickerOpen(o => !o)
               }}
+              // The top-down dock sits at the top of the window: the composer's
+              // own popups open downward there, like the pickers below.
+              openBelow={topDown}
               sessionControls={composerSessionControls}
               composerActions={composerActions}
               onSessionControlClick={(key, rect, trigger) => {
@@ -880,11 +934,11 @@ export default function ComposerDockView({
               // role="listbox"; the dialog is a focus container (tabIndex={-1}),
               // not an interactive widget itself, so this delegation is intentional.
               // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
-              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up" style={(() => { const left = Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)); return { bottom: window.innerHeight - agentBtnRect.top + 4, left } })()}>
+              <div ref={agentDropdownRef} role="dialog" aria-label={i18nT('pages.chatPage.agent_selector')} tabIndex={-1} onKeyDown={onAgentListKeyDown} className={`fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl min-w-[260px] max-w-[340px] flex flex-col p-1 gap-0.5 animate-slide-up${topDown ? ' overflow-y-auto' : ''}`} style={{ ...anchoredPopupBox(agentBtnRect, topDown, 4), left: Math.max(8, Math.min(agentBtnRect.left, window.innerWidth - 348)) }}>
                 <div className="px-1.5 pt-1.5 pb-1">
                   <Input ref={agentInputRef} type="text" aria-label={i18nT('pages.chatPage.filter_agents')} placeholder={i18nT('pages.chatPage.type_to_filter')} value={agentFilter} onChange={e => setAgentFilter(e.target.value)} className="w-full px-2 py-1 text-[13px]" />
                 </div>
-                <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]">
+                <div role="listbox" aria-label={i18nT('pages.chatPage.agent_list')} className="overflow-y-auto max-h-[280px]" style={topDown ? { minHeight: 96 } : undefined}>
                 <AgentDropdownList agents={filteredAgents} activeAgent={activeAgentName} activeKind={currentSlot?.agent_kind} defaultAgent={defaultAgent} onSelect={(name, kind) => { switchAgent(name, kind); setAgentDropdown(false) }} filter={agentFilter} />
                 </div>
                 {/* Embedded chat gets neither half of the default-agent affordance: it has
@@ -900,6 +954,7 @@ export default function ComposerDockView({
             {modelDropdown && modelBtnRect && <OverlayPortal>
               <ModelEffortDropdown
                 anchorRect={modelBtnRect}
+                openBelow={topDown}
                 dropdownRef={modelDropdownRef}
                 inputRef={modelInputRef}
                 onListKeyDown={onModelListKeyDown}
@@ -994,6 +1049,7 @@ export default function ComposerDockView({
                   key={sc.key}
                   control={sc}
                   anchorRect={sessionControlRect}
+                  openBelow={topDown}
                   onClose={() => {
                     setOpenSessionControl(null)
                     refreshSessionControlStatuses()

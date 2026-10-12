@@ -44,6 +44,8 @@ const CHAT_PAGE = [
   ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.tsx?$/.test(f) && !/\.test\./.test(f)).sort()
     .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf8')),
 ].join('\n')
+// The shared keyed order keeps focus order aligned with the chosen layout.
+const FOCUS_ORDER = readFileSync(resolve(__dirname, '../pages/chat/ComposerFocusOrder.tsx'), 'utf8')
 // The dock's measurement and clearance live in one module shared with the
 // pane; the page mounts the box.
 const DOCK = readFileSync(resolve(__dirname, '../pages/chat/composerDockMetrics.ts'), 'utf8')
@@ -63,16 +65,30 @@ const CHAT_PANE_WITH_OWNERS = [CHAT_PANE, ...[
 ].map(f => readFileSync(resolve(__dirname, '../components', f), 'utf8'))].join('\n')
 const WELCOME_VIEW = readFileSync(resolve(__dirname, '../components/WelcomeView.tsx'), 'utf8')
 
+// The page and pane files on their own, for source-order pins.
+const CHAT_PAGE_FILE = readFileSync(resolve(PAGES_DIR, 'ChatPage.tsx'), 'utf8')
+
 const num = (re: RegExp, src: string): number => {
   const m = re.exec(src)
   expect(m, `pattern not found: ${re}`).not.toBeNull()
   return Number(m![1])
 }
 
+/** The dock root is ONE box in both layouts:
+ *  `className={topDown ? '<top>' : '<bottom>'}` and
+ *  `style={topDown ? { <topStyle> } : { <bottomStyle> }}`. */
+const dockRoot = (src: string) => {
+  const m = /<div ref=\{dockRef\} className=\{topDown \? '([^']*)' : '([^']*)'\} style=\{topDown \? \{ ([^}]*) \} : \{ ([^}]*) \}\} data-testid="composer-dock-root"[^>]*>/.exec(src)
+  expect(m, 'the dock root keeps one box with a top-down and a bottom branch').not.toBeNull()
+  return { top: m![1], bottom: m![2], topStyle: m![3], bottomStyle: m![4] }
+}
+
 describe('composer dock clearance', () => {
   it('pads the scroller by the measured dock height plus the px clearance', () => {
-    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{\{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
-    expect(CHAT_PANE).toMatch(/scrollerStyle: \{ paddingTop: 12 \+ topInset, paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
+    // The default (bottom) layout is the ternary's `false` branch in both
+    // hosts: the dock's strip is bottom padding.
+    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{topDown\n\s*\? \{[^\n]*\}\n\s*: \{ paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
+    expect(CHAT_PANE).toMatch(/scrollerStyle: topDown\n\s*\? \{[^\n]*\}\n\s*: \{ paddingTop: 12 \+ topInset, paddingBottom: dockH \+ DOCK_CLEARANCE_PX,/)
     expect(num(/export const DOCK_CLEARANCE_PX = (\d+)/, DOCK)).toBeGreaterThan(0)
     // One clearance for both hosts: neither re-declares its own number.
     for (const src of [CHAT_PAGE, CHAT_PANE_WITH_OWNERS]) expect(src).not.toMatch(/const DOCK_CLEARANCE_PX =/)
@@ -84,7 +100,7 @@ describe('composer dock clearance', () => {
   })
 
   it('measures the dock root from a callback ref through a ResizeObserver', () => {
-    expect(CHAT_PAGE).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/)
+    expect(dockRoot(CHAT_PAGE).bottom.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'bottom-0']))
     // A callback ref, not a `[]` layout effect: the dock sits inside the pane's
     // conditional branch, so a mount-once effect can run before it exists and
     // never measure. The ref fires on every mount/unmount of the box.
@@ -95,7 +111,11 @@ describe('composer dock clearance', () => {
     expect(DOCK).toMatch(hook)
     for (const src of [CHAT_PAGE, CHAT_PANE]) {
       expect(src, 'the host takes dockRef from the shared measurement').toMatch(/const \{ inputAreaRef, dockH, dockGutter, dockRef \} = useComposerDockMetrics\(scrollerRef\)/)
-      expect(src).toMatch(/<div ref=\{dockRef\} className="[^"]*\babsolute\b[^"]*\bbottom-0\b[^"]*" style=\{\{ right: dockGutter \}\} data-testid="composer-dock-root"[^>]*>/)
+      const root = dockRoot(src)
+      expect(root.bottom.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'bottom-0']))
+      expect(root.bottomStyle).toBe('right: dockGutter')
+      // Neither branch puts `dock-inert` on the root (see below).
+      for (const cls of [root.top, root.bottom]) expect(cls.split(/\s+/)).not.toContain('dock-inert')
     }
     // `dock-inert` goes on the two inner wrapper boxes, never on the root: the
     // jump pill is a direct child of the root and its wrapper is a full-width
@@ -104,8 +124,11 @@ describe('composer dock clearance', () => {
     // the rows behind it whenever the pill was showing (#18283 review).
     for (const [src, own] of [[CHAT_PAGE, CHAT_PAGE], [CHAT_PANE, CHAT_PANE_WITH_OWNERS]]) {
       expect(own).not.toMatch(/<div ref=\{dockRef\} className="[^"]*\bdock-inert\b[^"]*"/)
-      expect(src).toMatch(/<div ref=\{inputAreaRef\} className="relative z-10 dock-inert">/)
-      expect(src).toMatch(/className="[^"]*\bdock-inert\b[^"]*" data-testid="composer-status-stack">/)
+      // One input-area box in both layouts; top-down adds only the flex column
+      // that lets its pre-composer cards shrink at the dock's cap.
+      expect(src).toMatch(/<div ref=\{inputAreaRef\} className=\{topDown \? 'relative z-10 dock-inert flex flex-col min-h-0' : 'relative z-10 dock-inert'\}>/)
+      // A literal, or a `{topDown ? '<top-down>' : '<bottom>'}` pair (top-down caps the dock, and the stack yields first).
+      expect(src).toMatch(/className=(?:"[^"]*\bdock-inert\b[^"]*"|\{topDown \? '[^']*\bdock-inert\b[^']*' : '[^']*\bdock-inert\b[^']*'\}) data-testid="composer-status-stack">/)
     }
     // No opaque bottom fade in either host: the transcript scrolls under the glass.
     for (const src of [CHAT_PAGE, CHAT_PANE_WITH_OWNERS]) expect(src).not.toMatch(/<EdgeFade side="bottom"/)
@@ -123,8 +146,11 @@ describe('composer dock clearance', () => {
     // A margin, not padding under the glass: the cards and the Refresh link are
     // controls, and a label blurred under the composer or the memory-mode chip
     // read as a glitch with an ambiguous tap target (maintainer ruling, #15820).
-    expect(CHAT_PAGE).toMatch(/key="welcome-hero"[\s\S]{0,2000}?style=\{\{ marginBottom: dockH \}\}/)
-    expect(CHAT_PAGE).not.toMatch(/key="welcome-hero"[\s\S]{0,2000}?style=\{\{ paddingBottom: dockH \}\}/)
+    // Top-down, the dock floats over the top instead, so the box STARTS below
+    // it (the title band plus the same measurement).
+    expect(CHAT_PAGE).toMatch(/key="welcome-hero"[\s\S]{0,2500}?style=\{topDown \? \{ marginTop: dockTop \+ dockH \} : \{ marginBottom: dockH \}\}/)
+    expect(CHAT_PAGE).not.toMatch(/key="welcome-hero"[\s\S]{0,2500}?style=\{[^\n]*paddingBottom: dockH/)
+    expect(CHAT_PAGE).not.toMatch(/key="welcome-hero"[\s\S]{0,2500}?style=\{[^\n]*paddingTop: dockTop/)
   })
 
   it('isolates the welcome hero so its own z-indexed cards never climb over the dock', () => {
@@ -174,5 +200,76 @@ describe('composer dock clearance', () => {
     const row = /<div className="([^"]*)" data-testid="composer-memory-chip">/.exec(CHAT_PAGE)
     expect(row).not.toBeNull()
     expect(row![1]).not.toMatch(/\bbg-bg\b/)
+  })
+})
+
+/**
+ * The opt-in top-down layout (Settings > Chat > `topDownLayout`) keeps the same
+ * decision with the dock at the other edge: the scroller still runs the full
+ * height of the pane, the dock root is still `absolute` over it, now anchored
+ * to its TOP edge, and the scroller pays for the covered strip with
+ * `padding-top`. Ending the scroller's box at the dock (an in-flow slot above
+ * it, with the dock portalled in) is what the decision rules out.
+ */
+describe('composer dock clearance, top-down layout', () => {
+  it('anchors the same dock root to the top edge and pays for it with top padding', () => {
+    const page = dockRoot(CHAT_PAGE)
+    expect(page.top.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'pointer-events-none']))
+    expect(page.top.split(/\s+/)).not.toContain('bottom-0')
+    expect(page.topStyle).toBe('right: dockGutter, top: dockTop, maxHeight: topDownDockMaxHeight(dockTop)')
+    // The band under the overlay title row: the same condition that mounts the
+    // h-16 header spacer in the bottom layout, which top-down turns off, so the
+    // band is paid once, by the spacer or by the padding.
+    expect(CHAT_PAGE).toMatch(/const dockTop = topDown && !\(titleInTopbar && !workerBreadcrumb\) \? 64 : 0/)
+    expect(CHAT_PAGE).toMatch(/headerSpacer=\{\(!titleInTopbar \|\| workerBreadcrumb\) && !topDown\}/)
+    expect(CHAT_PAGE).toMatch(/scrollerStyle=\{topDown\n\s*\? \{ paddingTop: dockTop \+ dockH \+ DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX,/)
+    expect(CHAT_PAGE).toMatch(/topDown=\{topDown\} dockTop=\{dockTop\}/)
+
+    const pane = dockRoot(CHAT_PANE)
+    expect(pane.top.split(/\s+/)).toEqual(expect.arrayContaining(['absolute', 'pointer-events-none']))
+    expect(pane.top.split(/\s+/)).not.toContain('bottom-0')
+    // The pane's title row is in flow above its scroller, so the root's top is
+    // the scroller's measured top in the pane, plus the host band. The scroller
+    // pays that band once, inside its own box.
+    expect(pane.topStyle).toBe('right: dockGutter, top: scrollerTop + topInset, maxHeight: topDownDockMaxHeight(scrollerTop + topInset)')
+    expect(CHAT_PANE).toMatch(/const measure = \(\) => setScrollerTop\(sc\.offsetTop\)/)
+    expect(CHAT_PANE).toMatch(/scrollerStyle: topDown\n\s*\? \{ paddingTop: topInset \+ dockH \+ DOCK_CLEARANCE_PX, paddingBottom: DOCK_CLEARANCE_PX, minHeight: 0, scrollPaddingTop: topInset \+ dockH \+ DOCK_CLEARANCE_PX, scrollPaddingBottom: DOCK_CLEARANCE_PX \}/)
+  })
+
+  it('keeps focus order and paint order aligned at both dock edges', () => {
+    for (const src of [CHAT_PAGE, CHAT_PANE_WITH_OWNERS]) {
+      expect(src).not.toMatch(/composer-dock-top-slot|chat-pane-top-dock-slot|topDockSlot|placeDock\(|placeComposer\(/)
+    }
+    for (const src of [CHAT_PAGE_FILE, CHAT_PANE]) expect(src).not.toMatch(/createPortal/)
+
+    // Keyed fragments move the existing dock and transcript nodes. The top-down
+    // branch puts the dock first for sequential focus navigation; the bottom
+    // branch keeps the original transcript-then-dock order.
+    expect(FOCUS_ORDER).toMatch(/topDown \? \[dockSlot, transcriptSlot\] : \[transcriptSlot, dockSlot\]/)
+    expect(CHAT_PAGE_FILE).toMatch(/<ComposerFocusOrder\s+topDown=\{topDown\}/)
+    expect(CHAT_PANE).toMatch(/<ComposerFocusOrder\s+topDown=\{topDown\}/)
+
+    // The top-down slot is a zero-height flex item because its dock child is
+    // absolute. `order-last` restores the post-scroller paint order without a
+    // z-index, so dock children keep their existing stacking relationships.
+    expect(FOCUS_ORDER).toMatch(/className=\{topDown \? 'order-last' : 'contents'\}/)
+    for (const root of [dockRoot(CHAT_PAGE), dockRoot(CHAT_PANE)]) {
+      expect(root.top.split(/\s+/)).not.toContain('order-last')
+      expect(root.bottom.split(/\s+/)).not.toContain('order-last')
+      expect(root.top.split(/\s+/).some(c => /^z-/.test(c))).toBe(false)
+      expect(root.bottom.split(/\s+/).some(c => /^z-/.test(c))).toBe(false)
+    }
+  })
+
+  it('keeps a crewmate pane on the bottom layout', () => {
+    // useUnreadLanding (crewmate only) reads the bottom geometry, the plain
+    // `pane:<slot>` anchor and chronological row indexes.
+    expect(CHAT_PANE).toMatch(/const topDown = chatConfig\.topDownLayout && !isMobile && !crewmate\n/)
+  })
+
+  it('keeps a phone on the bottom layout', () => {
+    // The thumb reach and the on-screen keyboard sit at the bottom, so the page
+    // applies the opt-in at the desktop breakpoint only, as the pane does.
+    expect(CHAT_PAGE).toMatch(/const topDown = chatConfig\.topDownLayout && !isMobile\n/)
   })
 })

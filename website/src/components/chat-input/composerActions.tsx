@@ -5,6 +5,7 @@ import { OverlayPortal, useCloseWhenCrewHidden } from '../overlayRoot'
 import ErrorNotice from '../ErrorNotice'
 import { DropdownMenuItem } from '../ui/dropdown-menu'
 import { i18nT } from '../../i18n/t'
+import { anchoredPopupBox } from '../../lib/pickerMenu'
 import { currentTheme } from '../../appFrame/sandboxFrame'
 import { ComposerActionHost, type EndReason } from '../../composerActions/composerActionHost'
 import type { ComposerActionItem } from '../../composerActions/composerActionRegistry'
@@ -35,9 +36,13 @@ type Phase =
   | { kind: 'blocked' }
   | { kind: 'ended'; reason: EndReason }
 
+/** Where the popover hangs from: its left edge, the top it sits above, and
+ *  the bottom it sits below with `openBelow`. */
+type Anchor = { left: number; top: number; bottom: number }
+
 interface Open {
   item: ComposerActionItem
-  anchor: { left: number; top: number } | null
+  anchor: Anchor | null
 }
 
 export interface ComposerActionsOptions {
@@ -52,11 +57,14 @@ export interface ComposerActionsOptions {
   /** The composer is typing-locked (another tab holds the draft): no action
    *  opens, and an open one is cancelled, so its text never lands. */
   locked?: boolean
-  /** Where the popover hangs from: its left edge and the top it sits above. */
-  anchor: () => { left: number; top: number } | null
+  /** Where the popover hangs from. */
+  anchor: () => Anchor | null
+  /** Open below the anchor instead of above it, capped to the room below
+   *  (`ChatInputProps.openBelow`). */
+  openBelow?: boolean
 }
 
-export function useComposerActions({ items, value, onChange, pasteBlocks, composerControl, scopeKey, locked = false, anchor }: ComposerActionsOptions) {
+export function useComposerActions({ items, value, onChange, pasteBlocks, composerControl, scopeKey, locked = false, anchor, openBelow = false }: ComposerActionsOptions) {
   const [open, setOpen] = useState<Open | null>(null)
   const [phase, setPhase] = useState<Phase>({ kind: 'running' })
   const [frameHeight, setFrameHeight] = useState(DEFAULT_FRAME_HEIGHT)
@@ -146,7 +154,7 @@ export function useComposerActions({ items, value, onChange, pasteBlocks, compos
   useEffect(() => () => { frameRef.current?.cancel('cancelled') }, [])
 
   const popover: ReactNode = open ? (
-    <ComposerActionPopover item={open.item} anchor={open.anchor} phase={phase} frameHeight={frameHeight} containerRef={containerRef} onClose={close} />
+    <ComposerActionPopover item={open.item} anchor={open.anchor} openBelow={openBelow} phase={phase} frameHeight={frameHeight} containerRef={containerRef} onClose={close} />
   ) : null
 
   return { start, close, popover, openKey: open?.item.key ?? null }
@@ -167,9 +175,10 @@ function refusalMessage(refused: InsertRefusal, app: string): string {
     : i18nT('components.chatInput.composer_action_would_resolve', { app })
 }
 
-function ComposerActionPopover({ item, anchor, phase, frameHeight, containerRef, onClose }: {
+function ComposerActionPopover({ item, anchor, openBelow, phase, frameHeight, containerRef, onClose }: {
   item: ComposerActionItem
-  anchor: { left: number; top: number } | null
+  anchor: Anchor | null
+  openBelow: boolean
   phase: Phase
   frameHeight: number
   containerRef: React.MutableRefObject<HTMLDivElement | null>
@@ -177,9 +186,12 @@ function ComposerActionPopover({ item, anchor, phase, frameHeight, containerRef,
 }) {
   const width = Math.min(item.width, window.innerWidth - 16)
   const left = Math.max(8, Math.min(anchor?.left ?? 8, window.innerWidth - width - 8))
-  const bottom = anchor ? window.innerHeight - anchor.top + 8 : 96
-  // Never taller than the room above its anchor, so the header and close stay on screen.
-  const maxHeight = Math.max(MIN_FRAME_HEIGHT, window.innerHeight - bottom - 8)
+  // Above: `bottom` from the viewport's bottom edge. Below: `top` from its top edge.
+  // With no anchor, 96px from that edge.
+  const side: { top: number } | { bottom: number } = anchor ? anchoredPopupBox(anchor, openBelow, 8) : openBelow ? { top: 96 } : { bottom: 96 }
+  const offset = 'top' in side ? side.top : side.bottom
+  // Never taller than the room on its side of the anchor, so the header and close stay on screen.
+  const maxHeight = Math.max(MIN_FRAME_HEIGHT, window.innerHeight - offset - 8)
   const title = i18nT('components.chatInput.composer_action_dialog', { title: item.title, app: item.appLabel })
   // Escape from the dashboard closes it; Escape inside the frame arrives as `escape`.
   useEffect(() => {
@@ -201,7 +213,7 @@ function ComposerActionPopover({ item, anchor, phase, frameHeight, containerRef,
         aria-label={title}
         data-composer-action={item.key}
         className="fixed rounded-xl bg-bg-elevated border border-border shadow-xl z-[60] flex flex-col overflow-y-auto animate-slide-up"
-        style={{ left, bottom, width, maxHeight }}
+        style={{ left, ...('top' in side ? { top: offset } : { bottom: offset }), width, maxHeight }}
       >
         <div className="flex items-center gap-2 px-3 py-2 border-b border-border">
           {item.icon ? <AppIcon icon={item.icon} size={14} /> : null}
@@ -293,7 +305,8 @@ const NO_ACTIONS: readonly ComposerActionItem[] = []
 export function useComposerActionMenu({ items, plusBtnRef, composerBoxRef, closeMenu, ...rest }: Omit<ComposerActionsOptions, 'items' | 'anchor'> & {
   items: readonly ComposerActionItem[] | undefined
   plusBtnRef: React.RefObject<HTMLButtonElement | null>
-  /** The composer box: the popover sits above it, so the draft stays in view. */
+  /** The composer box: the popover sits above it (below the box and the "+"
+   *  button with `openBelow`), so the draft stays in view. */
   composerBoxRef?: React.RefObject<HTMLElement | null>
   closeMenu: () => void
 }) {
@@ -305,7 +318,7 @@ export function useComposerActionMenu({ items, plusBtnRef, composerBoxRef, close
       const plus = plusBtnRef.current?.getBoundingClientRect()
       if (!plus) return null
       const box = composerBoxRef?.current?.getBoundingClientRect()
-      return { left: plus.left, top: box ? box.top : plus.top }
+      return { left: plus.left, top: box ? box.top : plus.top, bottom: Math.max(plus.bottom, box ? box.bottom : plus.bottom) }
     },
   })
   const rows = offered.length

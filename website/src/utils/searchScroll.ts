@@ -498,6 +498,48 @@ export function scrollCurrentMatchIntoView(
 }
 
 /**
+ * Pixels at the top of `scroller` that the top-down composer dock covers.
+ *
+ * Top-down transcripts (`TranscriptScrollShell` with `liveEdgeAtTop`) float the
+ * dock over the scroller's top edge and pay for the strip with the scroller's
+ * top padding (dock top + dock height + clearance). The shell marks that layout
+ * with a `[data-vc-leading]` direct child. The answer is that padding, read
+ * live, the same source as `usePinnedPrompt`'s `pinnedJumpChrome`; it is 0 for
+ * every other scroller, so the bottom layout centres exactly as before.
+ */
+export function coveredTopInset(scroller: Element): number {
+  if (typeof getComputedStyle !== 'function') return 0
+  let topDown = false
+  for (const child of Array.from(scroller.children)) {
+    if (child.hasAttribute('data-vc-leading')) { topDown = true; break }
+  }
+  if (!topDown) return 0
+  return Math.max(0, parseFloat(getComputedStyle(scroller).paddingTop) || 0)
+}
+
+/**
+ * `el.scrollIntoView({ block: 'center' })`, except that in a top-down
+ * transcript the element centres in the band below the dock. Outside that
+ * layout this IS the native call, unchanged.
+ */
+export function scrollElementToCenter(el: HTMLElement, behavior: ScrollBehavior = 'smooth'): void {
+  const scroller = el.closest('.chat-container')
+  const inset = scroller ? coveredTopInset(scroller) : 0
+  if (!scroller || inset <= 0) {
+    el.scrollIntoView({ behavior, block: 'center' })
+    return
+  }
+  const box = scroller.getBoundingClientRect()
+  const rect = el.getBoundingClientRect()
+  const band = Math.min(inset, box.height)
+  const top = scroller.scrollTop + (rect.top + rect.height / 2) - (box.top + (band + box.height) / 2)
+  const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight)
+  const clamped = Math.max(0, Math.min(max, top))
+  if (typeof scroller.scrollTo === 'function') scroller.scrollTo({ top: clamped, behavior })
+  else scroller.scrollTop = clamped
+}
+
+/**
  * Scroll so `range` sits at the vertical centre of every scrollable ancestor
  * and of the viewport — what `Element.scrollIntoView({ block: 'center' })` does
  * for an element, which `Range` does not offer. Each scroller is adjusted by
@@ -521,8 +563,10 @@ export function scrollRangeToCenter(range: Range): void {
     const overflowY = getComputedStyle(el).overflowY
     if (overflowY !== 'auto' && overflowY !== 'scroll') continue
     const box = el.getBoundingClientRect()
+    // Centre in the band the top-down dock leaves uncovered (0 elsewhere).
+    const inset = Math.min(coveredTopInset(el), box.height)
     const before = el.scrollTop
-    el.scrollTop = before + (mid - (box.top + box.height / 2))
+    el.scrollTop = before + (mid - (box.top + (inset + box.height) / 2))
     mid -= el.scrollTop - before
   }
   if (typeof window !== 'undefined' && typeof window.scrollBy === 'function') {

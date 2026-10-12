@@ -49,6 +49,36 @@ describe('ConductorModeEffect', () => {
     expect(screen.queryByTestId('conductor-mode-effect')).toBeNull()
   })
 
+  it('measures the dock host column through the dock focus-order wrapper', () => {
+    setReducedMotion(false)
+    // ChatPage nests the dock's host column inside a larger chat scope; the
+    // sweep must keep covering the host column, not the outer scope.
+    const scope = document.createElement('div')
+    scope.setAttribute('data-chat-scope', '')
+    scope.getBoundingClientRect = () => new DOMRect(0, 0, 1000, 900)
+    const pane = document.createElement('div')
+    pane.getBoundingClientRect = () => new DOMRect(25, 40, 640, 480)
+    const dockSlot = document.createElement('div')
+    dockSlot.setAttribute('data-composer-focus-order-slot', '')
+    const dock = document.createElement('div')
+    dock.setAttribute('data-testid', 'composer-dock-root')
+    dockSlot.appendChild(dock)
+    pane.appendChild(dockSlot)
+    scope.appendChild(pane)
+    document.body.appendChild(scope)
+    try {
+      render(<ConductorModeEffect />)
+      act(() => { fireConductorModeEffect(null) })
+      const area = screen.getByTestId('conductor-mode-effect-sweep').parentElement as HTMLElement
+      expect(area.style.left).toBe('25px')
+      expect(area.style.top).toBe('40px')
+      expect(area.style.width).toBe('640px')
+      expect(area.style.height).toBe('480px')
+    } finally {
+      scope.remove()
+    }
+  })
+
   it('glows the Board tab once it is there', () => {
     setReducedMotion(false)
     const tab = document.createElement('button')

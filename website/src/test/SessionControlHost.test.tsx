@@ -256,6 +256,23 @@ describe('SessionControlHost', () => {
     renderHost({ anchorRect: rect({ top: 400 }) })
     const dialog = screen.getByRole('dialog') as HTMLElement
     expect(parseFloat(dialog.style.bottom)).toBe(window.innerHeight - 400 + 6)
+    // Unchanged from the bottom layout: no top, no height cap, no scroller.
+    expect(dialog.style.top).toBe('')
+    expect(dialog.style.maxHeight).toBe('')
+    expect(dialog.className).toContain('overflow-hidden')
+  })
+
+  it('opens below the trigger with openBelow, capped to the room below it', () => {
+    // The top-down chat layout puts the chip near the top of the window, where
+    // a popover opening upward would end above the viewport.
+    renderHost({ anchorRect: rect({ top: 100, bottom: 128 }), openBelow: true })
+    const dialog = screen.getByRole('dialog') as HTMLElement
+    expect(dialog.style.bottom).toBe('')
+    expect(parseFloat(dialog.style.top)).toBe(128 + 6)
+    expect(parseFloat(dialog.style.maxHeight)).toBe(window.innerHeight - 128 - 14)
+    // Scrolls inside the cap instead of clipping the control.
+    expect(dialog.className).toContain('overflow-y-auto')
+    expect(dialog.className.split(' ')).not.toContain('overflow-hidden')
   })
 
   it('never draws wider than the viewport it sits in', () => {
