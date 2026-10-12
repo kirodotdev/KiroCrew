@@ -1728,8 +1728,14 @@
           "empty_board": "UNPOPULATED BOARD",
           "empty_title": "No dependencies yet",
           "empty_blurb": "This repo has no dependency edges to draw. Set a native dependency with gh issue edit --add-blocked-by, or Issue Radar will infer edges from cross-references on the next sync.",
+          "empty_blurb_gitlab": "This project has no blocking links to draw. Mark an issue as blocked by another in its Linked items (GitLab Premium or Ultimate), then retry.",
           "empty_unavailable_title": "Dependency data unavailable",
           "empty_unavailable_blurb": "The dependency graph could not be loaded. The backend deps route may not be enabled yet on this repo. Retry once it is available.",
+          "empty_unavailable_auth_gitlab": "You're not signed in to the GitLab CLI (glab) on this host. Run the command below, then retry.",
+          "empty_unavailable_cli_missing_gitlab": "The GitLab CLI (glab) isn't installed on this host. Install it, sign in with glab, then retry.",
+          "empty_unavailable_fetch_failed_gitlab": "GitLab didn't answer for most issues (an outage or rate limit). Wait a moment, then retry.",
+          "empty_unavailable_issue_scope": "The dependency graph needs the open-issue list, which isn't available yet. Open the Issues tab to cache it, or check the error below, then retry.",
+          "refresh_failed_stale_graph": "Showing the last loaded graph; the most recent refresh failed.",
           "retry": "RETRY"
         },
         "groupReviewsView": {
