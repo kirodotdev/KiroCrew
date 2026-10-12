@@ -32,6 +32,7 @@ steps:
   - Turn on the preview whose title starts with "Mates" (older builds may read "Crew Members" or "Crew Members and Crew Mode"; any of those is the right one). Ignore the Webhooks preview.
   - Still in the Developer section, below the Feature Previews list, find the "Mates" heading and turn on the switch titled "Reply threads on mate chat messages".
   - Open the Mates page. After the preview is on, a "Mates" item appears in the left rail, directly under Sessions; click it.
+  - Click the search box at the top of the mates list (its placeholder reads "Search mates…") and type Nova. A mate you have not chatted with yet is hidden from the list until a search reaches it, so Nova Sky (its card may read "nova-sky" instead of a display name) is not in the list before you type; the Mate and default cards being there is normal.
   - Click the member named Nova Sky (its card may read "nova-sky" instead of a display name; that is the same member) to open its chat.
   - Type exactly "what is one thing you can help me with?" in the message box and send it with Enter. Wait about three seconds and confirm a reply bubble from the mate appeared under your message.
   - Move the mouse over the mate's reply bubble. A small row of icon buttons appears under it; one is titled "Reply in thread" (a speech-bubble icon). Click it.
@@ -42,5 +43,5 @@ expectations:
   - Inside the Thread panel, a bubble containing "tell me more about that" is visible under the quoted mate reply.
   - In the main chat, under the mate's reply bubble that the thread was started on, a footer with a reply count is visible; it reads "1 reply" right after sending, or "2 replies" once the mate has answered in the thread.
   - The main chat does not contain a bubble with "tell me more about that"; that text is only in the Thread panel.
-max_steps: 20
+max_steps: 22
 max_seconds: 480

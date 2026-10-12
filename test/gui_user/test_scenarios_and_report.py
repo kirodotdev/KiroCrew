@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -169,6 +170,46 @@ class TestShippedScenarios:
         assert meta["title"] == "Welcome to KiroCrew"  # brand-ok: verbatim seeded title
         sc = scenarios.load_scenario(SCENARIOS_DIR / "chat-files-side-panel-browse.yaml")
         assert any(meta["title"] in step for step in sc.steps)
+
+    def test_scenarios_search_before_clicking_a_seeded_members_card(self) -> None:
+        # The Mates page lists a mate unasked only once its DM thread
+        # holds a message or the user starred it (rfc-session-template-vs-crewmate,
+        # rule 3); a seeded member's thread is empty at boot, so its card is
+        # reached through the roster search and nothing else. A scenario that
+        # tells the tester to click the card without searching first stalls on a
+        # roster that lists only `default` and Mate, so the search step must come
+        # before the first click, in every scenario that opens that page. The
+        # Capabilities > Mates pane is a different surface: it lists every
+        # config row, so a scenario on it has nothing to search for.
+        checked = 0
+        for path in sorted(SCENARIOS_DIR.glob("*.yaml")):
+            sc = scenarios.load_scenario(path)
+            if not sc.members or not any("Open the Mates page" in step for step in sc.steps):
+                continue
+            labels = list(sc.members) + [
+                " ".join(part.capitalize() for part in m.split("-")) for m in sc.members
+            ]
+            click_at = next(
+                (
+                    i
+                    for i, step in enumerate(sc.steps)
+                    if any(label in step for label in labels)
+                    and re.search(r"\b(click|find)\b", step, re.IGNORECASE)
+                    and "Search mates" not in step
+                ),
+                None,
+            )
+            if click_at is None:
+                continue
+            checked += 1
+            searched = any(
+                "Search mates" in step and any(m.split("-")[0] in step.lower() for m in sc.members)
+                for step in sc.steps[:click_at]
+            )
+            assert (
+                searched
+            ), f"{path.name}: step {click_at + 1} clicks a seeded member's card with no search step before it"
+        assert checked >= 5, f"only {checked} scenarios click a seeded member's card"
 
     def test_rich_seed_artifacts_are_the_ones_the_scenario_reads(self) -> None:
         # The Artifacts scenario names the three artifacts the `rich` seed ships and
