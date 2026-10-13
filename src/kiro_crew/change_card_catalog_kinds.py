@@ -221,6 +221,7 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "knowledge.import_chunk_budget",
         "knowledge.sweep_chunk_budget",
         "monitoring.prefer_structured_arming",
+        "power.on_battery",
         "session.autocompact_pct",
         "session.compact_wait_secs",
         "session.pool_size",

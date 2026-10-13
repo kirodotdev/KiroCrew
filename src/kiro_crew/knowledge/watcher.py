@@ -8,8 +8,16 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from kiro_crew.config.fields import field_default
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.memory_sections import KnowledgeConfig
+from kiro_crew.config.service_sections import (
+    ON_BATTERY_NORMAL,
+    ON_BATTERY_PAUSED,
+    normalize_on_battery,
+)
 from kiro_crew.embeddings import PRIORITY_BULK
+from kiro_crew.platform_compat import POWER_BATTERY, power_source
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.sel import sel
 
@@ -37,6 +45,11 @@ _LARGE_REBUILD_WARN_THRESHOLD = 1000
 # Sweeps the stale-embedding count waits for its covering index before falling
 # back to a full-table count (the post-bind build normally makes it at boot).
 _EMBED_INDEX_GRACE_SWEEPS = 3
+
+# power.on_battery = reduced: a quarter of the sweep's chunk budget, never below
+# the floor, so a small configured budget still makes progress on battery.
+BATTERY_REDUCED_DIVISOR = 4
+BATTERY_REDUCED_FLOOR_CHUNKS = 10
 
 
 class KnowledgeWatcher:
@@ -93,6 +106,23 @@ class KnowledgeWatcher:
         # Global sweep budget: caps total extraction calls across ALL sources in
         # one sweep. Read live so the knob takes effect without a restart.
         sweep_budget = self._sweep_chunk_budget()
+        # power.on_battery may shrink that budget, or skip the sweep, while this
+        # machine runs on battery. Decided ONCE per sweep and latched, so
+        # unplugging midway never aborts work in flight. Only the sweep is
+        # gated: an explicit add ingests through its own path, never this one,
+        # though the rest of a folder past its first paced batch arrives here.
+        battery_budget = self._battery_budget(sweep_budget)
+        if battery_budget is None:
+            logger.info(
+                "On battery and power.on_battery=%s; skipping this sweep "
+                "(sources resume on the first sweep back on mains)", ON_BATTERY_PAUSED,
+            )
+            return
+        if battery_budget != sweep_budget:
+            logger.info(
+                "On battery; sweep chunk budget reduced %d -> %d", sweep_budget, battery_budget,
+            )
+        sweep_budget = battery_budget
         sweep_chunks_used = 0
 
         async def _scan_folder_sources() -> None:
@@ -459,6 +489,35 @@ class KnowledgeWatcher:
         except Exception:
             logger.debug("Could not read sweep_chunk_budget", exc_info=True)
             return 0
+
+    @staticmethod
+    def _on_battery_mode() -> str:
+        """``power.on_battery``, read per sweep so the setting is live."""
+        try:
+            return normalize_on_battery(KiroCrewConfig.load().power.on_battery)
+        except Exception:
+            logger.debug("Could not read power.on_battery", exc_info=True)
+            return ON_BATTERY_NORMAL
+
+    @classmethod
+    def _battery_budget(cls, sweep_budget: int) -> int | None:
+        """The chunk budget this sweep may spend, or ``None`` to skip it.
+
+        *sweep_budget* comes back unchanged unless the mode throttles AND the
+        host reports battery: an unknown power source counts as mains (see
+        ``platform_compat.power_source``). Under ``reduced`` an unbounded sweep
+        (``0``) is bounded by a quarter of the default budget, since 0 means "no
+        ceiling" and carrying it through would make ``reduced`` a no-op.
+        """
+        mode = cls._on_battery_mode()
+        if mode == ON_BATTERY_NORMAL or power_source() != POWER_BATTERY:
+            return sweep_budget
+        if mode == ON_BATTERY_PAUSED:
+            return None
+        base = sweep_budget or field_default(KnowledgeConfig, "sweep_chunk_budget")
+        reduced = max(BATTERY_REDUCED_FLOOR_CHUNKS, base // BATTERY_REDUCED_DIVISOR)
+        # The floor never raises a budget the user set below it.
+        return min(reduced, sweep_budget) if sweep_budget else reduced
 
     async def _maybe_dedup_sweep(self) -> None:
         """Collapse duplicate documents on a cadence.

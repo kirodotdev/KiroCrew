@@ -51,6 +51,7 @@ from kiro_crew.config.sections import (
     SESSION_SORT_MODES,
     TITLE_REFRESH_EVERY_TURNS_MAX,
 )
+from kiro_crew.config.service_sections import ON_BATTERY_MODES
 from kiro_crew.context_management import RESULT_FILE_MAX_BYTES
 from kiro_crew.dashboard.handlers.core_config_models import _validate_role_model
 from kiro_crew.effort import EFFORT_LEVELS
@@ -420,6 +421,8 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "knowledge.sweep_chunk_budget": {"type": "int", "min": 0, "max": SWEEP_CHUNK_BUDGET_MAX},
     "knowledge.import_chunk_budget": {"type": "int", "min": 0, "max": IMPORT_CHUNK_BUDGET_MAX},
     "knowledge.embed_rate_limit": {"type": "int", "min": 0, "max": EMBED_RATE_LIMIT_MAX},
+    # Background work on battery. Explicit adds never run through the sweeps it gates.
+    "power.on_battery": {"type": "enum", "values": list(ON_BATTERY_MODES)},
     "knowledge.extraction_model": {"type": "str"},
     "knowledge.extraction_effort": {"type": "enum", "values": ["", *EFFORT_LEVELS]},
     "knowledge.extraction_pool_size": {

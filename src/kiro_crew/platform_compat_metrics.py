@@ -2,7 +2,7 @@
 
 Resident and peak memory, heap trimming and the malloc arena cap, open descriptors,
 CPU time, one-pass process-subtree samples, and the host's total and available
-memory, CPU load and memory pressure.
+memory, CPU load, memory pressure and power source (mains or battery).
 
 One of the owners ``kiro_crew.platform_compat`` is split into: every name here stays
 readable and patchable as ``kiro_crew.platform_compat.<name>``.
@@ -1355,3 +1355,122 @@ def memory_pressure_level() -> int | None:
 def memory_pressure_name(level: int | None) -> str:
     """``"NORMAL"`` / ``"WARN"`` / ``"CRITICAL"`` for *level*, ``""`` when unknown."""
     return _MEMORY_PRESSURE_NAMES.get(level, "") if level is not None else ""
+
+
+# ---------------------------------------------------------------------------
+# Power source
+# ---------------------------------------------------------------------------
+
+#: What ``power_source`` reports: mains present, running on battery, or not knowable.
+POWER_AC = "ac"
+POWER_BATTERY = "battery"
+POWER_UNKNOWN = "unknown"
+
+_LINUX_POWER_SUPPLY_ROOT = "/sys/class/power_supply"
+
+#: ``SYSTEM_POWER_STATUS.ACLineStatus``: 0 offline, 1 online, 255 unknown.
+_WIN_AC_OFFLINE = 0
+_WIN_AC_ONLINE = 1
+
+
+def _linux_supply_attr(base: str, attr: str) -> str | None:
+    try:
+        with open(os.path.join(base, attr), encoding="utf-8") as fh:
+            return fh.read().strip()
+    except OSError:
+        return None
+
+
+def _linux_power_source(sysfs_root: str = _LINUX_POWER_SUPPLY_ROOT) -> str:
+    """Read the external supplies under *sysfs_root*.
+
+    A host exposes several supplies: an AC brick (``type == "Mains"``), USB-C
+    ports (``type == "USB"``, e.g. ``ucsi-source-psy-*``), the battery itself,
+    and peripheral batteries (``scope == "Device"``). External power is a Mains
+    supply or a USB supply that is not a peripheral's, and ANY online one
+    means wall power, so a USB-C PD charger counts even where the kernel
+    reports it only on the USB-C port. A tree with no external supply at all
+    is unknown, not battery: a desktop whose only supply is a wireless mouse's
+    battery must never read as a laptop on battery. Battery also needs EVERY
+    external supply read offline: one whose state cannot be read may be the
+    charger, so the answer is unknown unless another supply reads online.
+    """
+    try:
+        names = sorted(os.listdir(sysfs_root))
+    except OSError:
+        return POWER_UNKNOWN
+    saw_offline = False
+    saw_unreadable = False
+    for name in names:
+        base = os.path.join(sysfs_root, name)
+        kind = _linux_supply_attr(base, "type")
+        if kind not in ("Mains", "USB"):
+            continue
+        if kind == "USB" and _linux_supply_attr(base, "scope") == "Device":
+            continue
+        online = _linux_supply_attr(base, "online")
+        if online is None:
+            # Not evidence either way; keep looking for an online supply.
+            saw_unreadable = True
+            continue
+        if online == "1":
+            return POWER_AC
+        saw_offline = True
+    return POWER_BATTERY if saw_offline and not saw_unreadable else POWER_UNKNOWN
+
+
+class _SystemPowerStatus(ctypes.Structure):
+    _fields_ = [
+        ("ACLineStatus", ctypes.c_ubyte),
+        ("BatteryFlag", ctypes.c_ubyte),
+        ("BatteryLifePercent", ctypes.c_ubyte),
+        ("SystemStatusFlag", ctypes.c_ubyte),
+        ("BatteryLifeTime", ctypes.c_ulong),
+        ("BatteryFullLifeTime", ctypes.c_ulong),
+    ]
+
+
+def _windows_ac_line_status() -> int | None:
+    """``GetSystemPowerStatus``'s ``ACLineStatus``, or None when the call fails."""
+    try:
+        status = _SystemPowerStatus()
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        if not kernel32.GetSystemPowerStatus(ctypes.byref(status)):
+            return None
+        return int(status.ACLineStatus)
+    except Exception:  # noqa: BLE001 - a power probe never fails its caller
+        logger.debug("GetSystemPowerStatus failed", exc_info=True)
+        return None
+
+
+def _windows_power_source() -> str:
+    line = _windows_ac_line_status()
+    if line == _WIN_AC_ONLINE:
+        return POWER_AC
+    if line == _WIN_AC_OFFLINE:
+        return POWER_BATTERY
+    return POWER_UNKNOWN
+
+
+def power_source() -> str:
+    """``POWER_AC``, ``POWER_BATTERY`` or ``POWER_UNKNOWN`` for this host.
+
+    For deferring OPTIONAL background work while a laptop runs on battery.
+    Three rules make that safe:
+
+    * **Unknown is never battery.** A desktop, a container, a BSD, a kernel
+      that exposes no supplies and a failed probe all answer
+      ``POWER_UNKNOWN``, and every caller MUST treat it as ``POWER_AC``:
+      deferring on an unreadable probe is a silent, permanent work stoppage
+      that looks exactly like "there was nothing to do".
+    * **It never raises.** Probing power is not worth failing a sweep over.
+    * **It is not cached.** The answer changes when a cable moves; callers
+      read it once per unit of work (a sweep), never per item.
+    """
+    if IS_LINUX:
+        return _linux_power_source()
+    if IS_WINDOWS:
+        return _windows_power_source()
+    # macOS (IOKit's providing power type) has no reader until one is verified
+    # on a Mac; unknown keeps it behaving exactly as a host with no policy.
+    return POWER_UNKNOWN

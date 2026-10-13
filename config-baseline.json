@@ -5306,6 +5306,40 @@
       "defaultValue": 2
     },
     {
+      "path": "power",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Power",
+      "help": "What Knowledge Library sweeps do while on battery.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "on_battery": "normal"
+      }
+    },
+    {
+      "path": "power.on_battery",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "On battery",
+      "help": "What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. 'normal' (the default) ignores the power source. 'reduced' cuts each sweep's chunk budget to a quarter, at least 10 chunks and never more than the configured budget. 'paused' skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under 'paused' it waits for mains. A host that cannot report its power source counts as plugged in.",
+      "hasChildren": false,
+      "enumValues": [
+        "normal",
+        "reduced",
+        "paused"
+      ],
+      "defaultValue": "normal"
+    },
+    {
       "path": "resource_limits",
       "kind": "core",
       "type": "object",

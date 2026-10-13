@@ -95,6 +95,7 @@ from kiro_crew.config.section_builders import (
     _build_memory_config,
     _build_messaging_config,
     _build_monitoring_config,
+    _build_power_config,
     _build_publish_config,
     _build_session_summary_config,
     _build_skills_config,
@@ -832,6 +833,7 @@ def build_config(
     telemetry_data = _coerced_section(data, "telemetry", _degraded)
     watchdog_data = _coerced_section(data, "watchdog", _degraded)
     work_ledger_data = _coerced_section(data, "work_ledger", _degraded)
+    power_data = _coerced_section(data, "power", _degraded)
     decisions_data = _coerced_section(data, "decisions", _degraded)
     resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
 
@@ -1051,6 +1053,7 @@ def build_config(
         # silently ignored and the dataclass defaults would always win.
         watchdog=_build_watchdog_config(watchdog_data),
         work_ledger=_build_work_ledger_config(work_ledger_data),
+        power=_build_power_config(power_data),
         resource_limits=ResourceLimitsConfig.from_raw(resource_limits_data),
         telemetry=_build_telemetry_config(telemetry_data),
         memory=_build_memory_config(memory_data),

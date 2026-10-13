@@ -48,7 +48,7 @@ _BASE_IMPORTS = frozenset("""
     DEGRADED_TAILSCALE EFFORT_LEVELS ExternalRegistryConfig FORWARD_DECLARED_ENV_DEFAULT
     HeartbeatConfig InstancesConfig Iterable KnowledgeConfig MANAGED_STUB_FOLLOWERS
     MAX_RUNTIME_CEILING_SECS Mapping McpConfig McpGatewayConfig MemoryConfig MemoryStoreConfig
-    MessagingConfig MonitoringConfig Path PublishConfig SECRET_URI_PREFIX SessionSummaryConfig
+    MessagingConfig MonitoringConfig Path PowerConfig PublishConfig SECRET_URI_PREFIX SessionSummaryConfig
     SkillsConfig TaskRunnerConfig TunnelConfig TypeVar WatchdogConfig WorkLedgerConfig _COLOR_HEX_RE
     _CONNECT_TIMEOUT_CEILING _CU_DEFAULT_ATTACH_SCREENSHOT _CU_DEFAULT_MAX_TREE_DEPTH
     _CU_DEFAULT_MAX_TREE_NODES _CU_DEFAULT_SCREENSHOT_JPEG_QUALITY _CU_DEFAULT_SCREENSHOT_MAX_PX

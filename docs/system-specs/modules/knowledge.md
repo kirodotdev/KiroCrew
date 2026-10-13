@@ -473,6 +473,24 @@ persist bookkeeping, so a rolled-back partial ingest stays retryable — bounded
 the attempted-charge above — instead of being parked behind a recorded hash while
 the superseded document stays searchable.
 
+**On battery.** `power.on_battery` (`normal` | `reduced` | `paused`, default `normal`)
+gates `KnowledgeWatcher._scan`, the background sweep that runs the folder loop, the
+single-file loop, the stale re-embed tail and the scheduled dedup. `_battery_budget`
+decides once per sweep and the decision is latched, so unplugging midway never
+aborts work in flight. `normal`, or any power source other than `POWER_BATTERY`
+(`POWER_UNKNOWN` included, see [platform-compat](../common/platform-compat.md)),
+leaves `sweep_chunk_budget` unchanged, and the power source is read only when the
+mode throttles. On battery, `reduced` spends a quarter of the budget
+(`BATTERY_REDUCED_DIVISOR`), never below `BATTERY_REDUCED_FLOOR_CHUNKS` and never
+above the configured budget; an unbounded budget (0) is bounded by a quarter of the
+default. `paused` returns before the sweep reads anything, and sources resume on
+the first sweep back on mains. An explicit add never runs through `_scan`: uploads,
+the agent's write path and artifacts call `ingest_file` directly, and confirming or
+resuming a folder source calls `FolderWatcher.scan_source` directly, so the policy
+never blocks them. That folder scan is still paced by `folder_ingest_chunk_budget`,
+though: the rest of a folder larger than one batch arrives through `_scan`, so under
+`paused` it waits for mains like any other sweep work.
+
 **Explicit-import chunk ceiling.** Every budget above governs a WATCHER sweep. The
 explicit one-shot import routes reach `IngestionPipeline` directly and no sweep
 counter ever sees them, so they carry their own cross-file ceiling:

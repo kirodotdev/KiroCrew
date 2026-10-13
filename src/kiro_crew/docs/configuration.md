@@ -686,6 +686,12 @@ member-memory sandbox is required.
 |-----|-------------|---------|
 | `work_ledger.max_depth` | How many levels of the work ledger may conduct. Depth 0 is the root conductor, so `2` lets it dispatch one level of conductors whose own items are workers, and `3` lets those conductors dispatch conductors of their own. Accepted range 2-10; a value outside it is refused at load with a warning and the default applies, it is never clamped. Each extra level multiplies sessions (three levels of three items is 27), so raise it only where concurrency is already capped per level. Lowering it leaves open ledgers alone, but new ledgers and new items at the levels it removes are refused. | `2` |
 
+### Power
+
+| Key | Description | Default |
+|-----|-------------|---------|
+| `power.on_battery` | What Knowledge Library background sweeps do while this machine runs on battery; nothing else reads it yet. `normal` ignores the power source; `reduced` cuts each sweep to a quarter of `knowledge.sweep_chunk_budget`, at least 10 chunks and never more than the configured budget; `paused` skips the sweeps until the machine is back on mains. A document you add yourself always ingests; a folder you add ingests its first paced batch at once, and the rest of a large folder arrives with the sweeps, so under `paused` it waits for mains. A host that cannot report its power source counts as plugged in. Read on Linux and Windows; macOS always counts as plugged in for now | `"normal"` |
+
 ### Top level
 
 | Key | Description | Default |

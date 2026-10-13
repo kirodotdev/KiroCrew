@@ -307,6 +307,9 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _linux_available_mib host_total_mib host_available_mib MEMORY_PRESSURE_NORMAL
         MEMORY_PRESSURE_WARN MEMORY_PRESSURE_CRITICAL _MEMORY_PRESSURE_NAMES
         _MEMORY_PRESSURE_SYSCTL memory_pressure_level memory_pressure_name
+        POWER_AC POWER_BATTERY POWER_UNKNOWN _LINUX_POWER_SUPPLY_ROOT _WIN_AC_OFFLINE
+        _WIN_AC_ONLINE _linux_supply_attr _linux_power_source _SystemPowerStatus
+        _windows_ac_line_status _windows_power_source power_source
         """.split()),
 }
 
