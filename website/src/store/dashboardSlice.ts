@@ -1,18 +1,18 @@
 import { safeSetItem } from '../utils/safeStorage'
+import { clearUnreadArrival, holdUnreadArrival, readUnreadArrival } from './unreadArrivalMarker'
 import { newerTs } from '../lib/slotReadRelay'
 import { jsonEqual } from '../utils/structuralEqual'
-import { slotSurfaceKey } from './slotIdentity'
-import { createSlice, createAsyncThunk, createSelector, type PayloadAction } from '@reduxjs/toolkit'
+import { createSlice, createAsyncThunk, type PayloadAction } from '@reduxjs/toolkit'
 import { api } from '../api/client'
 import { streamFlush } from './streamFlush'
 import { ApiError } from '../api/apiError'
 import { isUnsafeKey } from '../utils/sanitize'
 import type { StatusData, ChatSlot, TodoList, McpSessionReport } from '../types'
 import { bumpLastTsOverlay, dropCaughtUpLastTs, pruneLastTsOverlay, slotLastTsOf } from './slotLastTs'
+export { clearUnreadArrival, holdUnreadArrival, readUnreadArrival }
 import type { SessionColorMode, PaletteName, DefaultColorSetting, IntensityName } from '../utils/sessionColors'
-import { isChatPageSurface } from '../utils/channelOrigin'
 import { slotListHoldTest } from '../utils/slotListHold'
-import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, hasUnreadRelayHold, heldOrphanTest, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+import { MANUAL_UNREAD, _relayUnreadToParent, clearSharedUnreadIfCovered, clearUnreadOrphan, drainUnreadKeys, dropQueuedSharedUnreadCoveredBy, forgetUnreadSlots, hasUnreadRelayHold, persistManualSentinels, persistSharedUnread, queueSharedUnread, readCovers, readUnreadOrphan, recordUnreadOrphan, relayUnreadCount, relayUnreadIfHolding, relayedUnreadKeys, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
 
 /** A close tombstone entry (see `applySlots`). */
 interface CloseHold {
@@ -216,7 +216,8 @@ export interface DashboardState {
 }
 
 const safeGet = (key: string, fallback: string) => { try { return localStorage.getItem(key) ?? fallback } catch { return fallback } }
-export { MANUAL_UNREAD, restoreUnreadBadges, restoreUnreadSince } from './dashboard/unread'
+export { MANUAL_UNREAD, orphanedWatermark, restoreUnreadBadges, restoreUnreadSince, watermarkDisprovedBy } from './dashboard/unread'
+export { selectSlotListPending, selectUnreadByMode } from './dashboard/selectors'
 const safeSet = (key: string, value: string) => {
   try { safeSetItem(key, value) } catch { /* QuotaExceededError / SecurityError */ }
   if (key === 'mc-unread-slots') _relayUnreadToParent(value)
@@ -318,6 +319,7 @@ const reconcileSlots = (
   unreadDrainHeld = state.unreadDrainHeld,
   heldKeys = state.slotsHeldKeys,
   holdChannels = state.slotsHoldChannels,
+  previousKeys: Iterable<string> = [],
 ): void => {
   // `countUnreadByMode` deliberately keeps orphan unread keys contributing to
   // the badge, on the premise that a reconcile drains them shortly. Draining on
@@ -331,12 +333,26 @@ const reconcileSlots = (
   // a GET reply too, since it goes through this same path. Deferring the drain
   // is safe: the next complete list drains whatever is genuinely gone.
   const holds = slotListHoldTest({ partial: unreadDrainHeld, heldKeys: heldKeys ?? [], holdChannels })
-  drainUnreadKeys(state, new Set((state.unreadSlots ?? []).filter(key => !liveKeys.has(key) && !holds(key))))
+  const drained = new Set((state.unreadSlots ?? []).filter(key => !liveKeys.has(key) && !holds(key)))
+  drainUnreadKeys(state, drained)
+  // Slot keys are never reused, so a drained slot's per-slot tombstone and
+  // arrival marker name a row that can never come back: they would sit in
+  // localStorage for the tab's lifetime. Bounded to the slots this drain
+  // already names, with no key scan, because this runs on every slots frame.
+  for (const k of drained) { clearUnreadOrphan(k); clearUnreadArrival(k) }
   // Eviction is NOT recoverable, so it is skipped when the caller cannot vouch
   // for the list's freshness: an HTTP reply in flight can be older than the live
   // frames that arrived while it travelled, and would then delete a slot the
   // stream has since created.
   if (!evictStale) return
+  // A retired slot has already left `unreadSlots`, so the drain above never
+  // names it; its shared entry and per-slot keys go when a live-stream list
+  // drops a slot this window had listed. Gated like eviction: a stale reply that
+  // predates a new slot must not strip the tombstone that slot's retire wrote.
+  // Held keys are kept because the session may still exist: a list the gateway
+  // labelled partial names a session it has not restored yet. One deleted while
+  // the list was partial leaves its entry and tombstone behind, lighting no dot.
+  forgetUnreadSlots([...previousKeys].filter(k => !liveKeys.has(k) && !holds(k)))
   // A write stamp for a key the authoritative list has
   // dropped protects nothing, and keeping it would let the record grow for the
   // tab's lifetime. Pruned only when the caller vouches for the list, so an HTTP
@@ -1083,11 +1099,12 @@ const dashboardSlice = createSlice({
       // the sidebar until restoration finishes, and marking it loaded would
       // claim a snapshot arrived when none has.
       if (action.payload.length === 0 && !state.slotsLoaded) return
+      const listedBefore = (state.slots ?? []).map(s => s.key) // row-read: keys this window listed, for per-slot key cleanup
       const rows = retainUnlistedMembers(state, action.payload)
       applySlots(state, rows)
       state.slotsGeneration = (state.slotsGeneration ?? 0) + 1
       state.slotsLoaded = true
-      reconcileSlots(state, new Set(rows.map(s => s.key)))
+      reconcileSlots(state, new Set(rows.map(s => s.key)), true, state.unreadDrainHeld, state.slotsHeldKeys, state.slotsHoldChannels, listedBefore)
     },
     // Sidebar → shortcut and close-landing order feed (see
     // DashboardState.sidebarOrder). The dispatch site diff-guards, so every
@@ -1182,6 +1199,9 @@ const dashboardSlice = createSlice({
       // merely absent from a partial list, it is safe to drain during restart
       // and before the first complete snapshot.
       drainUnreadKeys(state, gone)
+      // A removal is durable, so a retired slot's shared entry and per-slot
+      // keys go too, even before the first snapshot: holds cover absence, never deletion.
+      forgetUnreadSlots([...gone])
       if (gone.size && state.slotsLoaded) {
         for (const key of gone) {
           if (!isUnsafeKey(key) && !state.closingSlots?.[key]) {
@@ -1296,6 +1316,12 @@ const dashboardSlice = createSlice({
         if (wasManual) persistManualSentinels(state.unreadSince)
       }
       persistSharedUnread({}, [action.payload])
+      // The slot's own tombstone and arrival marker go with its shared entry.
+      // Harmless if the delete then fails: the shared entry was dropped here
+      // too, so the tombstone guards nothing, and a missing marker only makes
+      // an in-flight read retire nothing.
+      clearUnreadOrphan(action.payload)
+      clearUnreadArrival(action.payload)
       _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
     },
     updateSlot(state, action: PayloadAction<Partial<ChatSlot> & { key: string }>) {
@@ -1487,8 +1513,16 @@ const dashboardSlice = createSlice({
         // arrival converges. The write is queued, not done here: arrivals
         // coalesce into one write per SHARED_UNREAD_FLUSH_MS, and every read
         // or drain in this window flushes the queue before it touches the
-        // record.
-        queueSharedUnread(slot, effectiveTs ?? '')
+        // record. A slot holding a tombstone writes now instead, so the value
+        // the gateway disproved leaves the record before its tombstone does.
+        const published = effectiveTs ?? ''
+        if (readUnreadOrphan(slot) === undefined) queueSharedUnread(slot, published)
+        else persistSharedUnread({ [slot]: published }, [])
+        // A new message voids any marker a read is holding and the slot's tombstone, so
+        // no waiting read retires and a value the record holds after it shows a dot.
+        // The marker goes first: a retire racing this either sees it gone or is undone here.
+        clearUnreadArrival(slot)
+        clearUnreadOrphan(slot)
         const prev = state.unreadSince[slot]
         // `localTs` is the row's own server ts and guards THIS window only.
         // A row the gateway never saves (a permission row) publishes the
@@ -1558,7 +1592,9 @@ const dashboardSlice = createSlice({
       // watermark survives, and this window adopts it: badge stays lit for
       // the message the relay did not cover.
       const survivor = clearSharedUnreadIfCovered(slot, readTs)
-      if (survivor !== undefined) {
+      // A survivor equal to the slot's tombstone is the watermark the gateway
+      // disproved, so it lights nothing.
+      if (survivor !== undefined && survivor !== readUnreadOrphan(slot)) {
         if (!state.unreadSince) state.unreadSince = {}
         state.unreadSince[slot] = survivor
         if (!state.unreadSlots.includes(slot)) state.unreadSlots.push(slot)
@@ -1570,6 +1606,26 @@ const dashboardSlice = createSlice({
         // deleted key is always a shared message watermark.
         delete state.unreadSince[slot]
       }
+      if (!state.unreadSlots.includes(slot)) return
+      state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
+      _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
+    },
+    /** Retire a saved dot whose watermark the gateway cannot account for (see
+     *  orphanedWatermark). The exact watermark is recorded as a tombstone
+     *  without rewriting the shared record. This window's dot goes only while
+     *  it carries that same watermark, so a manual reminder or a newer local
+     *  watermark stays. */
+    retireSlotUnread(state, action: PayloadAction<{ slot: string; watermark: string; arrival: string }>) {
+      const { slot, watermark, arrival } = action.payload
+      // Check marker ownership around the tombstone write to close either arrival ordering.
+      if (readUnreadArrival(slot) !== arrival) return
+      if (!recordUnreadOrphan(slot, watermark)) return
+      if (readUnreadArrival(slot) !== arrival) {
+        clearUnreadOrphan(slot)
+        return
+      }
+      if (state.unreadSince?.[slot] !== watermark) return
+      delete state.unreadSince[slot]
       if (!state.unreadSlots.includes(slot)) return
       state.unreadSlots = state.unreadSlots.filter(k => k !== slot)
       _relayUnreadToParent(JSON.stringify(relayedUnreadKeys(state)))
@@ -1843,88 +1899,9 @@ const dashboardSlice = createSlice({
   },
 })
 
-export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, setUpdateProgress,
+export const { sseStatus, sseYolo, setYoloDuration, sseConnected, sseDisconnected, sseSlots, sseSlotsPartial, sseSlotListHolds, setSidebarOrder, sseTodoUpdate, sseMcpReportUpdate, touchSlotActivity, setChannelTrusted, sseSlotTitle, sseSlotPatch, addSlotOptimistic, removeSlotOptimistic, releaseCloseHold, awaitCloseOutcome, expireCloseHold, confirmCloseHold, armConfirmedCloseHold, updateSlot, updateSlotFolder, updateSlotPin, updateSlotMuteFlag, setSlotMuteFlagError, triggerRefresh, markSlotUnread, markSlotRead, remoteSlotRead, retireSlotUnread, setUpdateProgress,
   setDesktopUpdateAvailable, sseSlotColor, setSessionDefaultColor, setSessionColorsMode, setSessionColorsPalette, setSessionColorsIntensity, setEnabledAppIds, patchSlotSourceLinks, patchSlotLink, dropSlotLinks, setPinRanks, setPendingPinOrder, setPinOrderError, setManualRanks, setPendingManualOrder, setManualOrderError } = dashboardSlice.actions
 
 export { slotSurfaceKey, slotIsRemoteBound } from './slotIdentity'
-
-/**
- * Count unread slots whose surface matches `mode`. Slots present in
- * `unreadSlots` but missing from `slots` (e.g. deleted but not yet drained)
- * are treated as the default chat surface (`""`) so they keep contributing
- * to the Chat badge rather than vanishing silently.
- *
- * Note — intentional asymmetry with `filterUnreadKeysBySurface` in
- * `surfaces/registry.ts`: that helper drops orphan keys (the sidebar can't
- * display them regardless), whereas this one keeps them so the badge stays
- * stable across the brief race between `removeSlotOptimistic` and
- * `fetchSlots.fulfilled`.
- *
- * The exception is an orphan no reconcile will drain: any orphan while the
- * gateway labels its lists partial, or one the gateway holds (`slotsHeldKeys`, or a
- * channel key under `slotsHoldChannels`). The premise above does not hold for it. Its unread entry is kept so the dot returns with the tab, but
- * it is left out of the badge, which would otherwise count a session the
- * sidebar cannot show.
- */
-function countUnreadByMode(
-  slots: ChatSlot[],
-  unread: string[],
-  mode: string,
-  heldKeys: readonly string[] = [],
-  holdChannels = false,
-  listPartial = false,
-): number {
-  if (unread.length === 0) return 0
-  const surfaceByKey = new Map(slots.map(s => [s.key, slotSurfaceKey(s)]))
-  const isHeldOrphan = heldOrphanTest(new Set(surfaceByKey.keys()), heldKeys, holdChannels, listPartial)
-  // The chat surface ('') counts every slot the chat page renders, legacy
-  // Autopilot slots included (see `isChatPageSurface`).
-  const isChatSurface = mode === ''
-  let count = 0
-  for (const k of unread) {
-    if (isHeldOrphan(k)) continue
-    const sk = surfaceByKey.get(k) ?? ''
-    if (isChatSurface ? isChatPageSurface(sk) : sk === mode) count++
-  }
-  return count
-}
-
-/**
- * Memoized factory for "unread count for slots whose surface === mode".
- * One memo cache per `mode` argument so registry surfaces don't trash each
- * other's memoization. Built-in nav badges should not call this directly —
- * they go through `selectSurfaceBadgeCount(navId)` from `surfaces/registry`,
- * which routes to this factory only when a surface declares `slotMode`.
- */
-type UnreadByModeSelector = (state: { dashboard: DashboardState }) => number
-const _unreadByModeCache = new Map<string, UnreadByModeSelector>()
-export function selectUnreadByMode(mode: string): UnreadByModeSelector {
-  let sel = _unreadByModeCache.get(mode)
-  if (!sel) {
-    sel = createSelector(
-      (state: { dashboard: DashboardState }) => state.dashboard.slots,
-      (state: { dashboard: DashboardState }) => state.dashboard.unreadSlots,
-      (state: { dashboard: DashboardState }) => state.dashboard.slotsHeldKeys,
-      (state: { dashboard: DashboardState }) => state.dashboard.slotsHoldChannels,
-      (state: { dashboard: DashboardState }) => state.dashboard.slotsListPartial,
-      (slots, unread, heldKeys, holdChannels, listPartial) =>
-        countUnreadByMode(slots, unread, mode, heldKeys ?? [], holdChannels === true, listPartial === true),
-    )
-    _unreadByModeCache.set(mode, sel)
-  }
-  return sel
-}
-
-/**
- * True while the page has never seen a slot list and one may still arrive, so a
- * pane with no open session cannot yet tell "no chats" from "chats loading".
- * `slotsGeneration`, not `slotsLoaded`: a socket reconnect resets the latter,
- * and a gateway whose list already landed is not waited on again. A failed
- * fetch with none left in flight ends the wait.
- */
-export const selectSlotListPending = (state: { dashboard: DashboardState }): boolean => {
-  const d = state.dashboard
-  return !d.slotsLoaded && (d.slotsGeneration ?? 0) === 0 && !d.slotsFetchFailed
-}
 
 export default dashboardSlice.reducer
