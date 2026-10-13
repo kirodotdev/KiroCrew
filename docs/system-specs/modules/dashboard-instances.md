@@ -392,10 +392,19 @@ instance lock every writer already holds, so a lock set between a caller's read 
 its write still refuses it. Staging a preview and writing agentic values are not
 structure changes and keep working.
 
-`set_structure_lock` is the only writer of the flag, and
+`set_structure_lock` is the only writer of the flag for a live crewmate, and
 `POST /api/members/{slug}/dashboard/lock` is its only caller: owner-gated, and it
 refuses an internal-secret caller (`human_only`) before anything else, because that
 caller is an MCP server acting for an agent. No MCP tool sets the lock.
+
+Deleting a crewmate (`DELETE /api/agents/{name}`) removes its lock file through
+`structure_lock_removal.remove_structure_lock`, so a later crewmate deriving the same slug does not start
+out locked to the old one's page. The slug comes from the config captured while the
+record existed, and the removal is decided the way the crew-log reclaim is: under
+`memory_store_namespace_lock` and the lock's own guard, and only while no crew in the
+roster on disk still derives that slug. A slug a live crewmate still claims keeps its
+lock. Only the lock file goes; its `.guard` file stays, because another writer may be
+holding it. A crewmate that never locked creates nothing in `crew-panels` on delete.
 
 The lock is a file, `crew-panels/<slug>.dashboard-lock`, and NOT a field of
 `instance.json`: `members/<slug>/` is writable by the crewmate's own sandboxed shell,

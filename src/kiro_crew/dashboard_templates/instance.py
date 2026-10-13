@@ -1634,10 +1634,10 @@ _LOCK_GUARD_SUFFIX: Final[str] = ".dashboard-lock.guard"
 def set_structure_lock(slug: str, locked: bool) -> Instance:
     """Set or clear the person's structure lock on *slug*'s dashboard.
 
-    The only writer of :func:`lock_path`, and reached only from the owner-gated
-    dashboard route: no MCP tool calls it, so an agent can be refused by the lock and
-    can never lift it. The lock is not part of any version, so a rollback cannot
-    restore an old lock state, and it holds for a crewmate that never adopted.
+    The only writer of :func:`lock_path` for a live crewmate, reached only from the
+    owner-gated route: no MCP tool calls it, so an agent can never lift the lock
+    (``structure_lock_removal`` drops a deleted crewmate's). It is not in any version,
+    so a rollback cannot restore it, and it holds for a crewmate that never adopted.
 
     EVERY write here is inside ``crew-panels``. Nothing is created, written or deleted
     under ``members/<slug>/``, a tree the crewmate's shell can redirect, so neither a

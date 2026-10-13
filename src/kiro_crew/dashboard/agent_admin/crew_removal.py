@@ -177,6 +177,37 @@ async def _remove_goal_check_ins(request: web.Request, name: str, cfg: KiroCrewC
         )
 
 
+def _reclaim_deleted_member_dashboard_lock(name: str, cfg: KiroCrewConfig) -> None:
+    """Remove the dashboard structure lock of a member the roster does not hold.
+
+    The lock lives in ``crew-panels/<slug>.dashboard-lock``, outside the member's own
+    tree, so nothing else in this teardown reaches it. Kept, it would lock a later
+    crewmate that derives the same slug to the deleted one's page.
+
+    Resolved and decided exactly as :func:`_reclaim_deleted_member_crew_log` is: the
+    slug from *cfg*, captured while the record still existed, and the removal only
+    while :func:`_member_slug_is_claimed` answers no. Call it while holding
+    ``memory_store_namespace_lock`` for the same reason: a live crewmate's lock is
+    the person's decision, and removing it would let that crewmate's agent change
+    the page. Best-effort and never raises, like the rest of the teardown.
+    """
+    try:
+        from kiro_crew.dashboard_templates import structure_lock_removal
+        from kiro_crew.members import member_slug
+
+        slug = member_slug(name, cfg)
+        removed = structure_lock_removal.remove_structure_lock(
+            slug, still_unclaimed=lambda: not _member_slug_is_claimed(slug)
+        )
+    except Exception:
+        logger.warning(
+            "crew delete: could not remove the dashboard lock of %r", name, exc_info=True
+        )
+        return
+    if removed:
+        logger.info("crew delete: removed the dashboard lock of %r", slug)
+
+
 def _prune_private_copy_of_deleted_crew(crew: str, bound_template: str) -> bool:
     """Remove the private template copy that existed only for a now-deleted crew.
 
@@ -368,6 +399,9 @@ async def api_kirocrew_agent_delete(request: web.Request) -> web.Response:
             # the config captured while the record was still in it, which is what
             # the slug has to be resolved from.
             _reclaim_deleted_member_crew_log(name, cfg)
+            # The person's dashboard structure lock, under the same hold and on the
+            # same slug: it sits in ``crew-panels``, which no other step here reaches.
+            _reclaim_deleted_member_dashboard_lock(name, cfg)
             return retired_store
 
         try:
