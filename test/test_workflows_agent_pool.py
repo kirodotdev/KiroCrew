@@ -91,6 +91,14 @@ class _FakeSessions:
         self.order = getattr(self, "order", [])
         self.order.append("end_children")
 
+    async def run_identity_check(self):
+        # A reused worker's Kiro account check. ``retiring`` holds the keys the
+        # check would flag, the way a sweep flags a session its worker holds.
+        self.identity_checks = getattr(self, "identity_checks", 0) + 1
+
+    def is_retiring(self, key):
+        return key in getattr(self, "retiring", set())
+
     async def destroy(self, key):
         self.destroys = getattr(self, "destroys", 0) + 1
         self.live.pop(key, None)
@@ -576,6 +584,12 @@ class _ClockSessions:
 
     async def reset(self, key):
         self.live.pop(key, None)
+
+    async def run_identity_check(self):
+        return None
+
+    def is_retiring(self, key):
+        return False
 
 
 class _ClockProvider:
@@ -1448,3 +1462,44 @@ async def test_a_reuse_reads_the_delete_delay_again_before_the_conversation_ends
     await worker.reset()
 
     assert provider.order_sink == [("delete_delay", 1800.0), "new_conversation"]
+
+
+@pytest.mark.asyncio
+async def test_a_reused_worker_whose_session_the_account_check_flagged_takes_the_hard_reset():
+    """A worker holds its lease from its first task to its last, so it never acquires again.
+
+    Its reuse therefore runs the Kiro account check itself, and a session the check
+    flagged must not be handed the next task: the cheap path would keep the process,
+    and with it the previous account's credential. The hard reset ends that
+    conversation and re-acquires, which starts a session on the current account.
+    """
+    sessions = _FakeSessions()
+    worker = _WorkflowSessionWorker(
+        sessions, key="wf-pool:run-1:0", agent="kirocrew", model=None, cwd=None
+    )
+    await worker.start()
+    stale = sessions.live["wf-pool:run-1:0"]
+    sessions.retiring = {"wf-pool:run-1:0"}
+
+    await worker.reset()
+
+    assert sessions.identity_checks == 1
+    assert stale.new_conversation_calls == 0, "a flagged session took the cheap reuse path"
+    assert sessions.reset_intents == [True]
+    assert sessions.cold_starts == 2
+    assert worker._provider is sessions.live["wf-pool:run-1:0"]
+    assert worker._provider is not stale
+
+
+@pytest.mark.asyncio
+async def test_every_reuse_runs_the_account_check_and_a_healthy_session_stays_warm():
+    """Eight sequential calls: seven reuses, each with its own check, none of them a hard reset."""
+    sessions = _FakeSessions()
+    agent_fn, pool = build_pooled_agent_fn(sessions, run_id="r-check", max_workers=1)
+    for i in range(8):
+        await agent_fn(f"task-{i}", {})
+    await pool.shutdown()
+
+    assert sessions.identity_checks == 7
+    assert sessions.cold_starts == 1
+    assert sessions.resets == 0

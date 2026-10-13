@@ -164,6 +164,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         current_identity_fingerprint,
         identity_changed_since_probe,
         identity_changed_since_sessions,
+        identity_read_other_than,
         note_absence_swept,
         note_sessions_reconciled,
         read_spawn_identity,

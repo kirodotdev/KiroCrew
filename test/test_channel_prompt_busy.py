@@ -132,6 +132,14 @@ class FakeSessions:
     def release(self, key, **kwargs):
         self.released.append(key)
 
+    async def run_identity_check(self):
+        """The member's Kiro account check before a message; a test sets ``flagged`` itself."""
+        self.identity_checks = getattr(self, "identity_checks", 0) + 1
+
+    def is_retiring(self, key):
+        """Whether the check flagged the session now registered under *key*."""
+        return bool(getattr(self._sessions.get(key), "flagged", False))
+
     def has_session(self, key):
         return key in self._sessions
 
@@ -370,6 +378,101 @@ async def _run_until(agent, ch, sessions, done: asyncio.Event, text: str) -> asy
 async def _wait_for(predicate) -> bool:
     await async_wait_until(predicate, describe=lambda: "predicate not yet true")
     return True
+
+
+@pytest.mark.asyncio
+async def test_a_member_whose_session_the_account_check_flagged_answers_on_a_replacement():
+    """A member keeps its spawn lease until it dies, so it never acquires again.
+
+    After a Kiro account switch the check flags the member's session, because a sweep only
+    flags a session someone holds. The next message must run on a replacement started on the
+    current account, not on the provider the member cached at spawn.
+    """
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    stale_seen: list[str] = []
+    fresh_seen: list[str] = []
+    sessions = FakeSessions(
+        [
+            _text_client("from the flagged provider", seen=stale_seen),
+            _text_client("from the replacement", seen=fresh_seen),
+        ]
+    )
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        sessions._sessions[agent.session_key].flagged = True
+
+        await ch.post("human", "please review this")
+        assert await _wait_for(
+            lambda: any("from the replacement" in m.content for m in ch.messages)
+            and agent.state == "listening"
+        )
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert not stale_seen, f"the message ran on the flagged session's provider: {stale_seen!r}"
+    assert fresh_seen and "please review this" in fresh_seen[0]
+    assert [key for key, _ in sessions.resets] == [agent.session_key]
+    assert sessions.acquires == [agent.session_key, agent.session_key]
+    assert sessions.identity_checks == 1
+
+
+@pytest.mark.asyncio
+async def test_a_listening_member_runs_the_account_check_before_every_message():
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    seen: list[str] = []
+    sessions = FakeSessions([_text_client("answer", seen=seen)])
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        await ch.post("human", "first")
+        assert await _wait_for(lambda: len(seen) == 1 and agent.state == "listening")
+        await ch.post("human", "second")
+        assert await _wait_for(lambda: len(seen) == 2 and agent.state == "listening")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert sessions.identity_checks == 2
+    assert sessions.resets == []
+    assert sessions.acquires == [agent.session_key]
+
+
+@pytest.mark.asyncio
+async def test_a_flagged_member_that_cannot_be_restarted_says_so_and_stops():
+    ch = Channel(id="c1", topic="review")
+    agent = ch.add_agent(role="dev", agent_name="dev")
+    assert agent is not None
+    stale_seen: list[str] = []
+    sessions = FakeSessions(
+        [_text_client("from the flagged provider", seen=stale_seen)],
+        reset_exc=RuntimeError("reset failed"),
+    )
+
+    task = asyncio.create_task(run_channel_agent(agent, ch, sessions))
+    try:
+        assert await _wait_for(lambda: sessions.acquires and agent.state == "listening")
+        sessions._sessions[agent.session_key].flagged = True
+        await ch.post("human", "please review this")
+        assert await _wait_for(lambda: agent.state == "failed")
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    assert not stale_seen, f"the message ran on the flagged session's provider: {stale_seen!r}"
+    assert any(
+        "could not be restarted on the current Kiro account" in m.content for m in ch.messages
+    )
 
 
 @pytest.mark.asyncio

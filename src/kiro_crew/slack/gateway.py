@@ -156,7 +156,6 @@ from kiro_crew.dashboard.chat_persistence import (
 from kiro_crew.dashboard.chat_runner import (
     _auto_approve_reason,
     _resolve_channel_target,
-    _retire_sessions_on_identity_change,
     _run_chat,
     _slot_is_trusted,
     _start_next_queued_turn,

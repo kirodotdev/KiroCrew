@@ -139,6 +139,7 @@ def sessions():
     sm._session_map = None
     sm.try_acquire = AsyncMock(return_value=True)
     sm.has_session = MagicMock(return_value=False)
+    sm.is_retiring = MagicMock(return_value=False)
     sm.release = MagicMock()
     sm.destroy = AsyncMock()
     sm.discard_conversation = AsyncMock()
