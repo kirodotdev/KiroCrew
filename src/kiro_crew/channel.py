@@ -24,6 +24,7 @@ from typing import Any
 from kiro_crew import name_grant, permission_floor
 from kiro_crew.approval_mode_policy import session_mode_permitted
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.channel_account_check import session_after_account_check
 from kiro_crew.channel_shell_base import _offerable_base_binary
 from kiro_crew.config import KiroCrewConfig, live
 from kiro_crew.config.fields import _safe_int
@@ -1041,6 +1042,11 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
+            client = await session_after_account_check(
+                sessions, agent, client, channel, tid, _reset_busy_session
+            )
+            if client is None:
+                break
             if sessions.get_provider(agent.session_key) is not client:
                 # IDENTITY, not presence: a clear-context discard pops this key and shuts the
                 # cached provider down, and a later claim can re-register a DIFFERENT one under it.
@@ -1202,7 +1208,7 @@ def _lost_give_up_text(agent: Any) -> str:
 
 
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
-    """Replace *agent*'s wedged session and return a lease on a cold one.
+    """Replace *agent*'s wedged or account-flagged session and return a lease on a cold one.
 
     ``SessionManager.reset`` pops the registry entry and never awaits its
     semaphore, so resetting while ``run_channel_agent`` still holds the permit

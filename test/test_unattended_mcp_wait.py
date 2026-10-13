@@ -561,6 +561,12 @@ class _WorkflowSessions:
         self.seen.add(key)
         return self.client, is_new, False
 
+    async def run_identity_check(self):
+        return None
+
+    def is_retiring(self, key):
+        return False
+
     def release(self, key, *, cleanup=False):
         return None
 

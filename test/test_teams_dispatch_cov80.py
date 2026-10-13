@@ -19,6 +19,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.session_allocation import SessionClosingError
 from kiro_crew.teams.client import TeamsInbound
 from kiro_crew.teams.transport_dispatch import TeamsDispatcher
@@ -166,6 +167,13 @@ class _Sessions:
     async def try_acquire(self, key) -> bool:
         self.acquired.append(key)
         return self._acquire
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def has_session(self, key) -> bool:
         return self._has_session
@@ -374,6 +382,20 @@ class TestCompactCommand:
         await d.handle_message(_inbound("/compact"))
 
         assert "try `/compact` again shortly" in client.sent[0][1]
+        assert sessions.released == []
+
+    @pytest.mark.asyncio
+    async def test_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        sessions = _Sessions(_Provider(), acquire=False, has_session=True)
+        sessions.retiring = True
+        client = _Client()
+        d = _dispatcher(sessions, client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert client.sent[0][1] == f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"
         assert sessions.released == []
 
     @pytest.mark.asyncio
