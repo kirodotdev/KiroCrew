@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_identity
 from kiro_crew.dashboard import transcript_snapshot
 from kiro_crew.dashboard.chat_persistence import (
     _coerce_requested_mode,
@@ -79,12 +79,14 @@ def _fork_execution_context(
     agent: str,
     recorded_store: str,
     memory_mode: str,
+    agent_kind: str,
 ):
     """Capture the parent's execution without opening learned memory."""
     from kiro_crew.execution_context import (
         ExecutionContext,
         MemoryStoreRef,
         read_session_execution,
+        resolve_member_execution,
     )
     from kiro_crew.memory_stores import UnknownMemoryStore, require_memory_store
 
@@ -96,7 +98,35 @@ def _fork_execution_context(
         )
         if getattr(cfg.memory_stores.get(store), "memory_version", 1) == 2:
             raise UnknownMemoryStore("The fork source's execution identity is unavailable")
-        execution = ExecutionContext(None, MemoryStoreRef(store), "template", agent or "kirocrew")
+        # Record the identity the parent's own turns resolve to with no carrier
+        # (``resolve_session_agent_bindings``): a ``config.agents`` alias on a
+        # slot not stamped ``template`` runs as that crewmate, with its
+        # template, workspace and model pin, so the child gets the same
+        # member-kind record the owner's create writes. Stamping the alias as a
+        # template id instead made the child ask the backend for an agent
+        # called ``default``, which does not exist. Any other name is already a
+        # template (possibly one only the parent's project declares) and is
+        # kept verbatim. The loader's resolver makes the alias-or-template
+        # call, so the fork and the parent's own turns share one rule. Those
+        # turns first map a stored skill-view name back to the agent it was
+        # built from, so the fork does too before asking whether it is an alias.
+        from kiro_crew.session_agent_selection import _source_of_view
+
+        agent = _source_of_view(agent)
+        alias = resolve_agent_identity(cfg, agent, selection_kind=agent_kind)[0]
+        if alias:
+            execution = resolve_member_execution(cfg, alias, validate_memory_files=False)
+            # The V2 refusal above covers the RECORDED store only. A parent
+            # with no recorded store whose crewmate holds private V2 memory
+            # has no carrier to prove it ran on that store, so it is refused
+            # the same way rather than bound to the crewmate's memory.
+            resolved = cfg.memory_stores.get(execution.store.store_id)
+            if getattr(resolved, "memory_version", 1) == 2:
+                raise UnknownMemoryStore("The fork source's execution identity is unavailable")
+        else:
+            execution = ExecutionContext(
+                None, MemoryStoreRef(store), "template", agent or "kirocrew"
+            )
     if recorded_store and (recorded_store or "default") != execution.store.store_id:
         raise UnknownMemoryStore("The fork source's recorded memory binding has changed")
     return execution.with_mode(memory_mode)
@@ -120,19 +150,21 @@ FORK_AUDIT_OPERATION = "chat.slot_fork"
 class ForkSource:
     """A fork parent with its memory identity frozen at the moment it was checked.
 
-    ``identity`` is the six-tuple :func:`fork_slot` re-compares the live slot
+    ``identity`` is the seven-tuple :func:`fork_slot` re-compares the live slot
     against before binding and again before copying, so a parent whose agent,
     store, mode or WORKSPACE moved under the fork is refused rather than copied.
     Workspace is in the tuple because the child is born in ``slot.workspace``
     read live: an agent caller's containment check (``authorize_target``) ran
     against the workspace the source had at the time, and a concurrent owner
     switch of the source (``api_chat_slot_workspace``) would otherwise carry the
-    transcript into a workspace that check never admitted.
+    transcript into a workspace that check never admitted. The slot's
+    ``agent_kind`` closes it because a parent with no execution record forks to
+    the crewmate or the template that stamp selects.
     """
 
     slot: "_ChatSlot"
     execution: Any
-    identity: tuple[str, str, str, str, str, str]
+    identity: tuple[str, str, str, str, str, str, str]
 
 
 class _ForkRefused(Exception):
@@ -239,11 +271,12 @@ async def resolve_fork_source(
         slot.memory_mode,
         slot_history_key(slot),
         str(getattr(slot, "workspace", "default") or "default"),
+        str(getattr(slot, "agent_kind", "") or ""),
     )
 
     try:
         inherited_execution = await asyncio.to_thread(
-            _fork_execution_context, *source_memory_identity[:4]
+            _fork_execution_context, *source_memory_identity[:4], source_memory_identity[6]
         )
     except (OSError, ValueError) as exc:
         return _store_unavailable_response(source_memory_identity[2], exc)
@@ -999,6 +1032,7 @@ async def fork_slot(
             slot.memory_mode,
             slot_history_key(slot),
             str(getattr(slot, "workspace", "default") or "default"),
+            str(getattr(slot, "agent_kind", "") or ""),
         )
 
     try:
@@ -1035,7 +1069,7 @@ async def fork_slot(
             # Bind the frozen identity and strict mode while the child is empty.
             await drained_to_thread(
                 _bind_fork_execution,
-                source_memory_identity[:4],
+                (*source_memory_identity[:4], source_memory_identity[6]),
                 effective_session_key(new_slot),
                 inherited_execution,
             )

@@ -250,10 +250,11 @@ def test_a_source_moved_to_another_workspace_mid_fork_is_refused(tmp_path, monke
     with pytest.raises(sc.SessionControlError) as exc:
         _fork(state, caller, source=peer.key)
     # The containment re-check answers first, with read's own code; the frozen
-    # fork identity (which now carries the workspace) is the backstop behind it.
+    # fork identity (which now carries the workspace and the agent kind) is the
+    # backstop behind it.
     assert exc.value.code == "workspace_mismatch"
     assert set(state._slots) == before, "a refused fork leaves no child behind"
-    assert chat_fork.ForkSource.__dataclass_fields__["identity"].type.count("str") == 6
+    assert chat_fork.ForkSource.__dataclass_fields__["identity"].type.count("str") == 7
 
 
 def test_the_frozen_fork_identity_refuses_a_self_source_that_moved_workspace(tmp_path, monkeypatch):
