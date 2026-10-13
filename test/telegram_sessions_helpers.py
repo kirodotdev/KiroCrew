@@ -245,6 +245,13 @@ class _Sessions:
     async def try_acquire(self, key: str) -> bool:
         return not self.busy
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     async def discard_conversation(self, key: str) -> None:
         return None
 

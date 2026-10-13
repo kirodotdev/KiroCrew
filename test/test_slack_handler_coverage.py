@@ -1253,6 +1253,17 @@ class TestCompactCommand:
         assert expected in _texts(slack)
 
     @pytest.mark.asyncio
+    async def test_flagged_session_says_the_account_changed(self, slack, sessions):
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        sessions.try_acquire = AsyncMock(return_value=False)
+        sessions.has_session.return_value = True
+        sessions.is_retiring.return_value = True
+        await h._handle_compact_command(slack, sessions, "C1", "t1", "msg1", "t1")
+        assert _texts(slack) == mc.COMPACT_ACCOUNT_CHANGED_TEXT
+        sessions.release.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_acquired_but_no_provider(self, slack, sessions):
         sessions.try_acquire = AsyncMock(return_value=True)
         sessions.get_provider = MagicMock(return_value=None)

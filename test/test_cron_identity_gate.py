@@ -1,21 +1,22 @@
-"""A cron fire runs the Kiro account-identity gate before it acquires its session.
+"""A cron fire's session acquire runs the Kiro account-identity gate first.
 
 A cron fire whose sub-agents are still running skips its session reset, and the
 next fire of a ``persistent_session`` job, or of the same ``agent_sequence`` step,
 reuses that live session. After an account switch or a ``kiro-cli logout`` outside
 the dashboard its child still holds the previous account's credential. The
-dashboard retires such a child with a per-turn gate,
-``chat_runner._retire_sessions_on_identity_change``, run before ``get_or_create``.
-The cron path ran no such gate, so on a host where only crons run an agent cron
-kept answering on the previous account. These tests drive the real cron callback
-through the real gate, over a fake prerequisite service and the gateway's own
-session manager, and pin the order: gate first, then acquire. They also pin what
-an unidentifiable account costs a cron fire: nothing. An empty fingerprint that
-does not prove a sign-out (a social login the reader cannot identify) is never
-reconciled and spares nothing, so a fire that swept on it would retire every idle
-session every time; it touches no session instead. A proven sign-out still
-sweeps, once: after that sweep a fire leaves it alone, so a job that brings its
-own key keeps its session and sub-agents for as long as nobody signs in.
+dashboard installs the gate, ``chat_runner._retire_sessions_on_identity_change``,
+on the session manager as the check every acquire runs before it hands a session
+out (``install_acquire_identity_check``), as its unattended caller, so the cron's
+``get_or_create`` retires such a child before it can reuse it. These tests drive
+the real cron callback into a real session manager wired the way the dashboard
+wires it, over a fake prerequisite service, and pin the order: the gate first,
+then the session start. They also pin what an unidentifiable account costs a cron
+fire: nothing. An empty fingerprint that does not prove a sign-out (a social login
+the reader cannot identify) is never reconciled and spares nothing, so a fire that
+swept on it would retire every idle session every time; it touches no session
+instead. A proven sign-out still sweeps, once: after that sweep a fire leaves it
+alone, so a job that brings its own key keeps its session and sub-agents for as
+long as nobody signs in.
 """
 
 from __future__ import annotations
@@ -74,31 +75,69 @@ class _Prerequisites:
         pass
 
 
-def _record_gate_and_acquire(sessions: MagicMock, order: list[str], acquire_error=None) -> None:
-    """Wire the gate's session surface and ``get_or_create`` to log their calls in order."""
+def _kiro_provider(session_key=None, agent=None, channel_id=None, **kwargs):
+    """A provider whose child reads kiro-cli's identity store, as the sweep requires."""
+    provider = MagicMock()
+    provider.start = AsyncMock()
+    provider.shutdown = AsyncMock()
+    provider.memory_mode = kwargs.get("memory_mode", "persistent")
+    provider.is_process_alive = lambda: True
+    provider.has_active_turn = lambda: False
+    provider.runtime_abort_target = lambda: None
+    provider.uses_kiro_identity_store = True
+    return provider
+
+
+def _manager(order: list[str] | None = None):
+    """A real session manager whose session starts are logged into *order*."""
+    from kiro_crew.session import SessionManager
+
+    def _factory(session_key=None, **kwargs):
+        if order is not None:
+            order.append(f"start:{session_key}")
+        return _kiro_provider(session_key, **kwargs)
+
+    return SessionManager(KiroCrewConfig(), provider_factory=_factory)
+
+
+class _ChildTeardown:
+    """``SubagentManager``'s two teardown halves: the runs each parent owns, and every cancel."""
+
+    def __init__(self, owned: dict[str, tuple[str, ...]]) -> None:
+        self._owned = owned
+        self.cancelled: list[tuple[str, ...]] = []
+
+    def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
+        return self._owned.get(parent_session_key, ())
+
+    async def cancel_for_teardown(
+        self, agent_ids, *, parent_session_key: str = "", verb: str = ""
+    ) -> int:
+        self.cancelled.append(tuple(agent_ids))
+        return len(self.cancelled[-1])
+
+
+def _log_the_gate(manager, order: list[str]) -> None:
+    """Log the gate's stamp check and sweep into *order* as they reach *manager*."""
+    flag = manager.flag_identity_stamp_mismatches
+    sweep = manager.retire_kiro_identity_sessions
 
     async def _flag(live: str) -> list[str]:
         order.append("flag")
-        return []
+        return await flag(live)
 
-    async def _retire(fingerprint: str = "", **_kwargs) -> tuple[list[str], bool]:
+    async def _sweep(fingerprint: str = "", **kwargs):
         order.append(f"retire:{fingerprint}")
-        return [], True
+        return await sweep(fingerprint, **kwargs)
 
-    async def _acquire(key: str, **_kwargs):
-        order.append(f"acquire:{key}")
-        if acquire_error is not None:
-            raise acquire_error
-        return MagicMock(), True, False
-
-    sessions.flag_identity_stamp_mismatches = AsyncMock(side_effect=_flag)
-    sessions.retire_kiro_identity_sessions = AsyncMock(side_effect=_retire)
-    sessions.pending_identity_sweep_fingerprint = ""
-    sessions.identity_sweep_waiting_on = ()
-    sessions.get_or_create = AsyncMock(side_effect=_acquire)
+    manager.flag_identity_stamp_mismatches = _flag
+    manager.retire_kiro_identity_sessions = _sweep
 
 
-def _dashboard_state(sessions: MagicMock, prerequisites: _Prerequisites) -> MagicMock:
+def _dashboard_state(manager, prerequisites: _Prerequisites) -> MagicMock:
+    """The dashboard state the gateway holds, with the check installed as the dashboard does."""
+    from kiro_crew.dashboard.chat_runner import install_acquire_identity_check
+
     state = MagicMock()
     state.get_slot = MagicMock(return_value=None)
     state.has_slot = MagicMock(return_value=False)
@@ -106,11 +145,31 @@ def _dashboard_state(sessions: MagicMock, prerequisites: _Prerequisites) -> Magi
     state.kiro_prerequisite_service = prerequisites
     # One session manager, as in production: _init_dashboard and _init_api_server
     # hand the gateway's own to the dashboard.
-    state.sessions = sessions
+    state.sessions = manager
+    install_acquire_identity_check(state)
     return state
 
 
-def _make_gw(prerequisites: _Prerequisites, order: list[str]):
+def _route_acquires(gw, manager, acquire_error: BaseException | None = None) -> list:
+    """Send the cron's ``get_or_create`` to *manager*; the rest of the session surface stays a double.
+
+    Returns the list each provider the cron acquires is appended to. With
+    *acquire_error*, the fire stops right after its acquire.
+    """
+    acquired = []
+
+    async def _acquire(key: str, **kwargs):
+        result = await manager.get_or_create(key, **kwargs)
+        acquired.append(result[0])
+        if acquire_error is not None:
+            raise acquire_error
+        return result
+
+    gw.sessions.get_or_create = AsyncMock(side_effect=_acquire)
+    return acquired
+
+
+def _make_gw(prerequisites: _Prerequisites, manager):
     from kiro_crew.slack.gateway import GatewayOrchestrator
 
     gw = GatewayOrchestrator.__new__(GatewayOrchestrator)
@@ -137,8 +196,7 @@ def _make_gw(prerequisites: _Prerequisites, order: list[str]):
     gw.ctx_builder.build_message = MagicMock(return_value=("full prompt", None))
     gw.ctx_builder.hooks = MagicMock()
     gw._interactive_approval = MagicMock(return_value="cb")
-    _record_gate_and_acquire(gw.sessions, order)
-    gw.dashboard_state = _dashboard_state(gw.sessions, prerequisites)
+    gw.dashboard_state = _dashboard_state(manager, prerequisites)
     return gw
 
 
@@ -181,86 +239,47 @@ def _agent_job(job_id: str) -> CronJob:
     )
 
 
-def _kiro_provider(session_key=None, agent=None, channel_id=None, **kwargs):
-    """A provider whose child reads kiro-cli's identity store, as the sweep requires."""
-    provider = MagicMock()
-    provider.start = AsyncMock()
-    provider.shutdown = AsyncMock()
-    provider.memory_mode = kwargs.get("memory_mode", "persistent")
-    provider.is_process_alive = lambda: True
-    provider.has_active_turn = lambda: False
-    provider.runtime_abort_target = lambda: None
-    provider.uses_kiro_identity_store = True
-    return provider
-
-
-class _ChildTeardown:
-    """``SubagentManager``'s two teardown halves: the runs each parent owns, and every cancel."""
-
-    def __init__(self, owned: dict[str, tuple[str, ...]]) -> None:
-        self._owned = owned
-        self.cancelled: list[tuple[str, ...]] = []
-
-    def snapshot_teardown_children(self, parent_session_key: str) -> tuple[str, ...]:
-        return self._owned.get(parent_session_key, ())
-
-    async def cancel_for_teardown(
-        self, agent_ids, *, parent_session_key: str = "", verb: str = ""
-    ) -> int:
-        self.cancelled.append(tuple(agent_ids))
-        return len(self.cancelled[-1])
-
-
-def _on_real_manager(gw, manager) -> list:
-    """Run the gate's session surface and the cron's acquire on *manager*.
-
-    Returns the list each provider the cron acquires is appended to.
-    """
-    gw.sessions.flag_identity_stamp_mismatches = manager.flag_identity_stamp_mismatches
-    gw.sessions.retire_kiro_identity_sessions = manager.retire_kiro_identity_sessions
-    gw.sessions.pending_identity_sweep_fingerprint = ""
-    gw.sessions.identity_sweep_waiting_on = ()
-    acquired = []
-
-    async def _acquire(key: str, **kwargs):
-        result = await manager.get_or_create(key, **kwargs)
-        acquired.append(result[0])
-        return result
-
-    gw.sessions.get_or_create = AsyncMock(side_effect=_acquire)
-    return acquired
-
-
 @pytest.mark.asyncio
 async def test_a_changed_account_retires_stale_sessions_before_the_cron_acquires() -> None:
     order: list[str] = []
+    manager = _manager(order)
     prerequisites = _Prerequisites(changed=True, live="fp-current")
-    gw = _make_gw(prerequisites, order)
+    gw = _make_gw(prerequisites, manager)
+    _log_the_gate(manager, order)
+    _route_acquires(gw, manager)
 
-    result = await _run_cron(gw, _agent_job("gate"))
+    try:
+        result = await _run_cron(gw, _agent_job("gate"))
 
-    # The sweep ran against the live account BEFORE the session was acquired,
-    # so the stale child is gone when get_or_create looks for one.
-    assert order == ["flag", "retire:fp-current", "acquire:cron:gate"]
-    # A complete sweep reconciles the baseline, so the next fire does not re-sweep.
-    assert prerequisites.reconciled == ["fp-current"]
-    # The run itself still lands.
-    assert _REPLY in result
+        # The sweep ran against the live account BEFORE the session started, so
+        # a stale child is gone when the acquire looks for one.
+        assert order == ["flag", "retire:fp-current", "start:cron:gate"]
+        # A complete sweep reconciles the baseline, so the next fire does not re-sweep.
+        assert prerequisites.reconciled == ["fp-current"]
+        # The run itself still lands.
+        assert _REPLY in result
+    finally:
+        await manager.close_all()
 
 
 @pytest.mark.asyncio
 async def test_an_unchanged_account_acquires_without_a_sweep() -> None:
     order: list[str] = []
+    manager = _manager(order)
     prerequisites = _Prerequisites(changed=False, live="fp-current")
-    gw = _make_gw(prerequisites, order)
+    gw = _make_gw(prerequisites, manager)
+    _log_the_gate(manager, order)
+    _route_acquires(gw, manager)
 
-    result = await _run_cron(gw, _agent_job("steady"))
+    try:
+        result = await _run_cron(gw, _agent_job("steady"))
 
-    # Only the cheap per-turn stamp check runs; nothing is retired.
-    assert order == ["flag", "acquire:cron:steady"]
-    gw.sessions.retire_kiro_identity_sessions.assert_not_awaited()
-    assert prerequisites.reconciled == []
-    assert _REPLY in result
+        # Only the cheap per-turn stamp check runs; nothing is retired.
+        assert order == ["flag", "start:cron:steady"]
+        assert prerequisites.reconciled == []
+        assert _REPLY in result
+    finally:
+        await manager.close_all()
 
 
 @pytest.mark.asyncio
@@ -275,15 +294,15 @@ async def test_a_sequence_step_runs_the_gate_before_its_acquire(monkeypatch) -> 
     monkeypatch.setattr(gateway.live, "snapshot", lambda: cfg)
 
     order: list[str] = []
+    manager = _manager(order)
     prerequisites = _Prerequisites(changed=True, live="fp-current")
     gw = gateway.GatewayOrchestrator.__new__(gateway.GatewayOrchestrator)
     gw.sessions = MagicMock()
-    _record_gate_and_acquire(
-        gw.sessions, order, acquire_error=RuntimeError("stop before the provider")
-    )
     gw.ctx_builder = MagicMock()
     gw.slack = gw.conv_log = gw.subagent_mgr = None
-    gw.dashboard_state = _dashboard_state(gw.sessions, prerequisites)
+    gw.dashboard_state = _dashboard_state(manager, prerequisites)
+    _log_the_gate(manager, order)
+    _route_acquires(gw, manager, acquire_error=RuntimeError("stop before the provider"))
     gw._owner_id = "owner"
     gw._cron_injecting = {}
     gw._no_crons = False
@@ -301,33 +320,32 @@ async def test_a_sequence_step_runs_the_gate_before_its_acquire(monkeypatch) -> 
     monkeypatch.setattr(
         gateway, "_await_cron_fire_time_gate", AsyncMock(return_value=(None, False))
     )
-    await gw._init_cron()
+    try:
+        await gw._init_cron()
 
-    job = CronJob(id="seq", name="sequence", message="task", agent_sequence=["beta", "alpha"])
-    with pytest.raises(RuntimeError, match="stop before the provider"):
-        await callbacks[0](job)
+        job = CronJob(id="seq", name="sequence", message="task", agent_sequence=["beta", "alpha"])
+        with pytest.raises(RuntimeError, match="stop before the provider"):
+            await callbacks[0](job)
 
-    # The step's own acquire, not only the single-agent one, is gated.
-    assert order == ["flag", "retire:fp-current", "acquire:cron:seq:beta"]
+        # The step's own acquire, not only the single-agent one, is gated.
+        assert order == ["flag", "retire:fp-current", "start:cron:seq:beta"]
+    finally:
+        await manager.close_all()
 
 
 @pytest.mark.asyncio
 async def test_a_kept_alive_cron_session_from_the_old_account_is_retired_before_the_cron_acquires() -> (
     None
 ):
-    from kiro_crew.session import SessionManager
-
-    manager = SessionManager(KiroCrewConfig(), provider_factory=_kiro_provider)
+    manager = _manager()
     # The previous fire's session, kept alive past its run while sub-agents
     # finish: started before the account change, idle now.
     stale, _is_new, _resumed = await manager.get_or_create("cron:alive")
     manager.release("cron:alive")
 
     prerequisites = _Prerequisites(changed=True, live="fp-current")
-    gw = _make_gw(prerequisites, [])
-    # The gate's surface and the acquire run on the real manager, so the sweep
-    # sees the live session and the acquire makes the real reuse decision.
-    acquired = _on_real_manager(gw, manager)
+    gw = _make_gw(prerequisites, manager)
+    acquired = _route_acquires(gw, manager)
 
     try:
         result = await _run_cron(gw, _agent_job("alive"))
@@ -342,9 +360,7 @@ async def test_a_kept_alive_cron_session_from_the_old_account_is_retired_before_
 
 @pytest.mark.asyncio
 async def test_an_account_the_gate_cannot_identify_leaves_every_session_alone() -> None:
-    from kiro_crew.session import SessionManager
-
-    manager = SessionManager(KiroCrewConfig(), provider_factory=_kiro_provider)
+    manager = _manager()
     children = _ChildTeardown({"dashboard:parent": ("run-parent",), "cron:alive": ("run-cron",)})
     manager.set_child_teardown_handler(children)
     # An idle dashboard chat whose turn ended with spawn_run children running...
@@ -356,10 +372,10 @@ async def test_an_account_the_gate_cannot_identify_leaves_every_session_alone() 
 
     # Empty without proving a sign-out: a social login the reader cannot identify.
     prerequisites = _Prerequisites(changed=True, live="")
-    gw = _make_gw(prerequisites, [])
-    acquired = _on_real_manager(gw, manager)
+    gw = _make_gw(prerequisites, manager)
+    acquired = _route_acquires(gw, manager)
     sweep = AsyncMock(side_effect=manager.retire_kiro_identity_sessions)
-    gw.sessions.retire_kiro_identity_sessions = sweep
+    manager.retire_kiro_identity_sessions = sweep
 
     try:
         result = await _run_cron(gw, _agent_job("alive"))
@@ -382,34 +398,46 @@ async def test_an_account_the_gate_cannot_identify_leaves_every_session_alone() 
 @pytest.mark.asyncio
 async def test_a_proven_sign_out_still_sweeps_before_the_cron_acquires() -> None:
     order: list[str] = []
+    manager = _manager(order)
     prerequisites = _Prerequisites(changed=True, live="", absence_definitive=True)
-    gw = _make_gw(prerequisites, order)
+    gw = _make_gw(prerequisites, manager)
+    _log_the_gate(manager, order)
+    _route_acquires(gw, manager)
 
-    result = await _run_cron(gw, _agent_job("signed-out"))
+    try:
+        result = await _run_cron(gw, _agent_job("signed-out"))
 
-    # Nobody is signed in, so every child still holding the old credential is
-    # retired, as a dashboard turn would retire it; an empty fingerprint is never
-    # reconciled, so the finished sweep is recorded against this sign-out instead.
-    assert order == ["flag", "retire:", "acquire:cron:signed-out"]
-    assert prerequisites.reconciled == []
-    assert prerequisites.absence_swept == [1]
-    assert _REPLY in result
+        # Nobody is signed in, so every child still holding the old credential is
+        # retired, as a dashboard turn would retire it; an empty fingerprint is never
+        # reconciled, so the finished sweep is recorded against this sign-out instead.
+        assert order == ["flag", "retire:", "start:cron:signed-out"]
+        assert prerequisites.reconciled == []
+        assert prerequisites.absence_swept == [1]
+        assert _REPLY in result
+    finally:
+        await manager.close_all()
 
 
 @pytest.mark.asyncio
 async def test_a_sign_out_an_earlier_sweep_finished_is_left_alone() -> None:
     order: list[str] = []
+    manager = _manager(order)
     prerequisites = _Prerequisites(
         changed=True, live="", absence_definitive=True, already_swept=True
     )
-    gw = _make_gw(prerequisites, order)
+    gw = _make_gw(prerequisites, manager)
+    _log_the_gate(manager, order)
+    _route_acquires(gw, manager)
 
-    result = await _run_cron(gw, _agent_job("after-sign-out"))
+    try:
+        result = await _run_cron(gw, _agent_job("after-sign-out"))
 
-    # Nothing that held the old account is left, so the fire acquires directly.
-    assert order == ["acquire:cron:after-sign-out"]
-    assert prerequisites.absence_swept == []
-    assert _REPLY in result
+        # Nothing that held the old account is left, so the fire starts directly.
+        assert order == ["start:cron:after-sign-out"]
+        assert prerequisites.absence_swept == []
+        assert _REPLY in result
+    finally:
+        await manager.close_all()
 
 
 @pytest.mark.asyncio
@@ -417,23 +445,23 @@ async def test_one_cron_fire_sweeps_a_sign_out_and_later_fires_leave_it_alone(
     tmp_path, sel_private_root
 ) -> None:
     from kiro_crew import kiro_prerequisite as kp
-    from kiro_crew.session import SessionManager
 
-    manager = SessionManager(KiroCrewConfig(), provider_factory=_kiro_provider)
+    manager = _manager()
     children = _ChildTeardown({"cron:keyed": ("run-keyed",)})
     manager.set_child_teardown_handler(children)
     # Nobody is signed in: no kiro-cli store, no API key, an empty Crew vault.
     service = kp.KiroPrerequisiteService(home=tmp_path, environ={}, platform_name="linux")
-    gw = _make_gw(_Prerequisites(changed=True, live=""), [])
+    gw = _make_gw(_Prerequisites(changed=True, live=""), manager)
     gw.dashboard_state.kiro_prerequisite_service = service
-    _on_real_manager(gw, manager)
+    _route_acquires(gw, manager)
     sweep = AsyncMock(side_effect=manager.retire_kiro_identity_sessions)
-    gw.sessions.retire_kiro_identity_sessions = sweep
+    manager.retire_kiro_identity_sessions = sweep
 
     try:
         await _run_cron(gw, _agent_job("first"))
         assert sweep.await_count == 1
-        # A job that brings its own key, kept alive while its sub-agents run.
+        # A job that brings its own key, kept alive while its sub-agents run. Started
+        # here as a fire would start it, so its acquire is checked too.
         keyed, _is_new, _resumed = await manager.get_or_create(
             "cron:keyed", extra_env={"KIRO_API_KEY": "job-key"}
         )
@@ -453,16 +481,14 @@ async def test_one_cron_fire_sweeps_a_sign_out_and_later_fires_leave_it_alone(
 
 @pytest.mark.asyncio
 async def test_a_changed_account_discards_a_pooled_old_account_provider() -> None:
-    from kiro_crew.session import SessionManager
-
-    manager = SessionManager(KiroCrewConfig(), provider_factory=_kiro_provider)
+    manager = _manager()
     # Warmed before the account change, so it holds the previous account.
     pooled = _kiro_provider()
     manager._warm_pool.put_nowait((pooled, 0.0))
 
     prerequisites = _Prerequisites(changed=True, live="fp-current")
-    gw = _make_gw(prerequisites, [])
-    acquired = _on_real_manager(gw, manager)
+    gw = _make_gw(prerequisites, manager)
+    acquired = _route_acquires(gw, manager)
 
     try:
         result = await _run_cron(gw, _agent_job("pool"))

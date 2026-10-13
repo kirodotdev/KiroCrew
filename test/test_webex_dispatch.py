@@ -24,6 +24,7 @@ from webex_dispatch_helpers import (
 )
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.messaging.link import ChannelLink
 from kiro_crew.webex import client as webex_client
 from kiro_crew.webex import transport_dispatch as webex_dispatch
@@ -280,6 +281,22 @@ class TestCommands:
         assert provider.compacted is False
         assert sessions.released == []
         assert any("/compact" in m for (_, m) in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        provider = FakeProvider([])
+        sessions = FakeSessions(provider, acquire=False, has_session=True)
+        sessions.retiring = True
+        client = FakeClient()
+        d = _dispatcher(sessions, FakeCtx(), client)
+
+        await d.handle_message(_inbound("/compact"))
+
+        assert provider.compacted is False
+        assert sessions.released == []
+        assert [m for (_, m) in client.sent] == [f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"]
 
     @pytest.mark.asyncio
     async def test_compact_without_active_session(self) -> None:

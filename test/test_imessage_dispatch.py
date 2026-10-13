@@ -8,6 +8,7 @@ import pytest
 
 from kiro_crew.imessage.client import IMessageInbound
 from kiro_crew.imessage.transport_dispatch import IMessageDispatcher
+from kiro_crew.messaging.commands import COMPACT_ACCOUNT_CHANGED_TEXT
 from kiro_crew.session_allocation import SessionClosingError
 
 HANDLE = "+15551234567"
@@ -87,6 +88,13 @@ class FakeSessions:
             return False
         self.acquired.append(key)
         return True
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     def begin_turn(self, key: str) -> None:
         """The real manager's synchronous pre-dispatch closing gate."""
@@ -274,6 +282,19 @@ class TestCompact:
         sessions.sessions.add(key)
         await dispatcher.handle_message(_inbound("/compact"))
         assert "try /compact again" in client.sent[0]
+        assert sessions.released == []
+
+    @pytest.mark.asyncio
+    async def test_compact_on_a_flagged_session_says_the_account_changed(self) -> None:
+        # The Kiro account check flagged the session without retiring it: try_acquire
+        # refuses it while has_session still answers True, and no reply is running.
+        dispatcher, client, sessions = _dispatcher()
+        key = dispatcher._session_key(HANDLE)
+        sessions.acquire_ok = False
+        sessions.retiring = True
+        sessions.sessions.add(key)
+        await dispatcher.handle_message(_inbound("/compact"))
+        assert client.sent == [f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}"]
         assert sessions.released == []
 
     @pytest.mark.asyncio

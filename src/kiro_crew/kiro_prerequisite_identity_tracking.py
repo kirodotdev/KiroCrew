@@ -6,8 +6,9 @@ Bound into :class:`KiroPrerequisiteService`. Reads ``self._assume_ready``,
 ``self._identity_cache``, ``self._identity_cache_at``,
 ``self._identity_cache_absence_definitive``, ``self._identity_absence_run``,
 ``self._identity_absence_run_swept``, ``self._relocation_logged``,
-``self._session_identity``, ``self._interim_identity_observed`` and
-``self._interim_identity_gen``.
+``self._session_identity``, ``self._interim_identity_observed``,
+``self._interim_identity_gen``, ``self._identity_read_gen``,
+``self._identity_read_run_fingerprint`` and ``self._identity_read_run_start``.
 """
 
 from __future__ import annotations
@@ -158,6 +159,12 @@ async def current_identity_fingerprint(
         # guessing "unchanged" is what keeps a stale account alive.
         logger.warning("Kiro identity fingerprint could not be read", exc_info=True)
         fingerprint, absence_is_definitive = _AUTH_FINGERPRINT_ABSENT, False
+    self._identity_read_gen += 1
+    # identity_read_other_than needs only the latest run of identical reads. A
+    # read that differs from that run begins a new one at its own number.
+    if fingerprint != self._identity_read_run_fingerprint:
+        self._identity_read_run_fingerprint = fingerprint
+        self._identity_read_run_start = self._identity_read_gen
     self._maybe_latch_interim_identity(fingerprint)
     if absence_is_definitive and not self._identity_cache_absence_definitive:
         # A proven sign-out after any other reading starts a new run; see
@@ -303,6 +310,25 @@ async def identity_changed_since_sessions(self: KiroPrerequisiteService) -> tupl
         # completes. See _maybe_latch_interim_identity.
         return (True, live)
     return (live != self._session_identity, live)
+
+
+def identity_read_other_than(
+    self: KiroPrerequisiteService, fingerprint: str, *, since: int
+) -> bool:
+    """Whether a fresh read newer than *since* returned anything but *fingerprint*.
+
+    Only the latest run of identical reads is kept, and the answer is still
+    exact however many reads land after *since*. If the run began at or
+    before ``since + 1``, every read newer than *since* belongs to it. If it
+    began later, the read just before it is also newer than *since* and
+    differs from the run, so some read newer than *since* differs from
+    *fingerprint*, whatever *fingerprint* is.
+    """
+
+    return self._identity_read_gen > since and not (
+        self._identity_read_run_fingerprint == fingerprint
+        and self._identity_read_run_start <= since + 1
+    )
 
 
 def note_sessions_reconciled(
