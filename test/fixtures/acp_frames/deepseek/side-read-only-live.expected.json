@@ -1,0 +1,412 @@
+[
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "file_path": "note.txt"
+        },
+        "title": "read",
+        "tool_call_id": "toolu_side_00",
+        "tool_input": "{\n  \"file_path\": \"note.txt\"\n}",
+        "tool_kind": "other",
+        "wire_title": "read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "note.txt"
+        },
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_00",
+        "tool_input": "{\n  \"file_path\": \"note.txt\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_00",
+        "tool_final": true,
+        "tool_output": "<path>/work/note.txt</path>\n<type>file</type>\n<content>\n1: side-probe-content\n\n(End of file - total 1 lines)\n</content>",
+        "tool_output_bytes": 119,
+        "tool_output_digest": "6594bfce7c44af42ddc891444b0812c00f31ff2f96788986a79e837ec9616007",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "path": ".",
+          "pattern": "side-probe"
+        },
+        "title": "grep",
+        "tool_call_id": "toolu_side_01",
+        "tool_input": "{\n  \"pattern\": \"side-probe\",\n  \"path\": \".\"\n}",
+        "tool_kind": "other",
+        "wire_title": "grep"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "path": ".",
+          "pattern": "side-probe"
+        },
+        "request_id": 1,
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_01",
+        "tool_input": "{\n  \"pattern\": \"side-probe\",\n  \"path\": \".\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_01",
+        "tool_final": true,
+        "tool_output": "Found 1 match\n\n./note.txt\nLine 1: side-probe-content",
+        "tool_output_bytes": 52,
+        "tool_output_digest": "d950466ea3759f51196fafa4e599e451f282473cc3bf94508842445033c8feb5",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "pattern": "*.txt"
+        },
+        "title": "glob",
+        "tool_call_id": "toolu_side_02",
+        "tool_input": "{\n  \"pattern\": \"*.txt\"\n}",
+        "tool_kind": "other",
+        "wire_title": "glob"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "pattern": "*.txt"
+        },
+        "request_id": 2,
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_02",
+        "tool_input": "{\n  \"pattern\": \"*.txt\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_02",
+        "tool_final": true,
+        "tool_output": "note.txt",
+        "tool_output_bytes": 8,
+        "tool_output_digest": "59700155e034d16d95b0e6916ee23373f40422648201778db4b19ad28398ca6f",
+        "tool_status": "completed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "content": "should not land\n",
+          "file_path": "written.txt"
+        },
+        "title": "write",
+        "tool_call_id": "toolu_side_03",
+        "tool_input": "{\n  \"file_path\": \"written.txt\",\n  \"content\": \"should not land\\n\"\n}",
+        "tool_kind": "other",
+        "wire_title": "write"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "content": "should not land\n",
+          "file_path": "written.txt"
+        },
+        "request_id": 3,
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_03",
+        "tool_input": "{\n  \"file_path\": \"written.txt\",\n  \"content\": \"should not land\\n\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_03",
+        "tool_output": "Error: the user rejected tool \"write\"",
+        "tool_output_bytes": 37,
+        "tool_output_digest": "9c4c276f37202e275f342517099cb57e39df1848346bff67389e7ce02f8141b2",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "command": "touch bash-ran.txt",
+          "description": "probe"
+        },
+        "title": "bash",
+        "tool_call_id": "toolu_side_04",
+        "tool_input": "{\n  \"command\": \"touch bash-ran.txt\",\n  \"description\": \"probe\"\n}",
+        "tool_kind": "other",
+        "wire_title": "bash"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "command": "touch bash-ran.txt",
+          "description": "probe"
+        },
+        "request_id": 4,
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_04",
+        "tool_input": "{\n  \"command\": \"touch bash-ran.txt\",\n  \"description\": \"probe\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_04",
+        "tool_output": "Error: the user rejected tool \"bash\"",
+        "tool_output_bytes": 36,
+        "tool_output_digest": "51ec1b90b35e6c1203b5f9ab9ce81026dfbc898d97d431d2476f5cddb4e14bb3",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_call",
+        "raw_tool_params": {
+          "file_path": "note.txt"
+        },
+        "title": "mcp__probe__read",
+        "tool_call_id": "toolu_side_05",
+        "tool_input": "{\n  \"file_path\": \"note.txt\"\n}",
+        "tool_kind": "other",
+        "wire_title": "mcp__probe__read"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call"
+  },
+  {
+    "action": "permission",
+    "events": [
+      {
+        "kind": "permission_request",
+        "mcp_identity_trusted": true,
+        "options": [
+          {
+            "id": "allow-once",
+            "label": "Allow once"
+          },
+          {
+            "id": "reject-once",
+            "label": "Reject"
+          }
+        ],
+        "raw_params_trusted": true,
+        "raw_tool_params": {
+          "file_path": "note.txt"
+        },
+        "request_id": 5,
+        "shell_classified": true,
+        "title": "unknown",
+        "tool_call_id": "toolu_side_05",
+        "tool_input": "{\n  \"file_path\": \"note.txt\"\n}"
+      }
+    ],
+    "frame": "session/request_permission",
+    "recorded_options": {
+      "always": "allow-once",
+      "once": "allow-once",
+      "reject": "reject-once"
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "tool_result",
+        "tool_call_id": "toolu_side_05",
+        "tool_output": "Error: the user rejected tool \"mcp__probe__read\"",
+        "tool_output_bytes": 48,
+        "tool_output_digest": "e25188f31eda5f7a13078085bf12cafc26136511fa104531e090e82cca239719",
+        "tool_status": "failed"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "tool_call_update"
+  }
+]

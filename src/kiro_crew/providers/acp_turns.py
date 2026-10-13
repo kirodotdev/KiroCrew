@@ -89,6 +89,8 @@ def _to_llm_event(e: Any) -> LLMEvent:
         mcp_identity_trusted=e.mcp_identity_trusted,
         mcp_identity_unreadable=e.mcp_identity_unreadable,
         kas_builtin_ids=e.kas_builtin_ids,
+        # Dropping this would refuse every deepseek read on a side turn.
+        deepseek_tool_name=e.deepseek_tool_name,
         server_name=e.server_name,
         oauth_url=e.oauth_url,
         subagents=e.subagents,

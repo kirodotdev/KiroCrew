@@ -73,6 +73,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_GOOSE,
+    ACP_BACKEND_DEEPSEEK,
     ACP_BACKEND_PI,
     ACP_BACKENDS_META_IDENTITY,
 )
@@ -2622,6 +2623,13 @@ def build_permission_event(
             if tool_kind in ("", "other"):
                 tool_kind = "read"
 
+    # dsh's permission frame names only the toolCallId, so which dsh tool a
+    # request is for comes only from the name its preceding tool_call frame
+    # stated. The gate reads it on a READ_ONLY turn alone.
+    _deepseek_tool_name = ""
+    if harness_backend == ACP_BACKEND_DEEPSEEK and harness_tool_name_cache is not None:
+        _deepseek_tool_name = harness_tool_name_cache.get(_ck, "") if tool_call_id else ""
+
     # The agent's stated reason for the call, shown beside the approval. The
     # same agent-authored display text a tool_call frame carries, read the same
     # way: from the params the preceding tool_call cached, else the frame's own.
@@ -2659,6 +2667,7 @@ def build_permission_event(
         spawn_target=_spawn_target,
         harness_tool_id=_harness_tool_id,
         harness_builtin_tool=_harness_builtin_tool,
+        deepseek_tool_name=_deepseek_tool_name,
         tool_purpose=_purpose,
     )
     return event, recorded

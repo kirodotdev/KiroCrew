@@ -1,6 +1,6 @@
 # DeepSeek Harness frame corpus
 
-Six files, all live. Read `../README.md` first for what a fixture is and what
+Seven files, all live. Read `../README.md` first for what a fixture is and what
 the corpus does and does not prove.
 
 | File | Provenance | Frame classes it carries |
@@ -11,6 +11,7 @@ the corpus does and does not prove.
 | `mcp-stdio-rollback-live.jsonl` | live | the same mount with an unstartable command: `session/new` fails WHOLE and names the server |
 | `permission-request-live.jsonl` | live | `tool_call`, the `session/request_permission` the harness sends with Kiro Crew's gate plugin composed, and the `tool_call_update` through `completed` |
 | `tool-call-id-reuse-live.jsonl` | live | the SAME `toolCallId` (`call_0`) across two consecutive turns of one session: `tool_call`, `session/request_permission` and a terminal `tool_call_update` for each, with the first turn's `session/prompt` result between them |
+| `side-read-only-live.jsonl` | live | six calls in one turn with Kiro Crew's gate plugin composed (dsh 0.2.0-rc.2): `read`, `grep`, `glob`, `write`, `bash` and an unknown `mcp__probe__read`, each a `tool_call` naming the tool in `title`, the `session/request_permission` it raised, and its terminal `tool_call_update` (the three reads `completed` on allow-once, the rest `failed` on reject-once). The evidence `ACP_BACKENDS_SIDE_READONLY` admits deepseek on |
 
 ## What the MCP mount captures establish
 

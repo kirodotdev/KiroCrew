@@ -213,6 +213,29 @@ _EXCLUSION_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 }
 
 
+#: DeepSeek Harness read-only built-in -> ``(kiro-cli policy name, target parameter)``.
+#:
+#: dsh's ACP bridge states the dispatched tool's own name as a ``tool_call`` frame's
+#: ``title`` and names nothing else about the call; every MCP tool it serves is
+#: ``mcp__<server>__<tool>``, so a bare name here is its own built-in (recorded live in
+#: ``test/fixtures/acp_frames/deepseek/side-read-only-live.jsonl``). The policy name is
+#: what a rule about the tool is written under. The target parameter is the argument
+#: naming what the tool reads. dsh resolves a missing (``grep``, ``glob``) or
+#: relative one against the session's work dir, which the gate cannot see, so only
+#: an absolute target is proved.
+DEEPSEEK_READ_ONLY_TOOLS: dict[str, tuple[str, str]] = {
+    "read": ("fs_read", "file_path"),
+    "grep": ("grep", "path"),
+    "glob": ("glob", "path"),
+}
+
+
+def deepseek_policy_alias(tool_name: str) -> str:
+    """The kiro-cli policy name of a DeepSeek Harness read built-in, else ``""``."""
+    entry = DEEPSEEK_READ_ONLY_TOOLS.get(tool_name)
+    return entry[0] if entry else ""
+
+
 def policy_aliases(*identities: str) -> tuple[str, ...]:
     """The kiro-cli policy names for whichever of *identities* are KAS tool ids.
 

@@ -1030,6 +1030,12 @@ class AcpEvent:
     #: a permission event and only from that cached stamp; empty on every other
     #: backend and for every other tool.
     harness_builtin_tool: str = ""
+    #: The DeepSeek Harness tool a permission request is for (``read``, ``bash``),
+    #: as the preceding ``tool_call`` frame stated it in ``title``. Set only on a
+    #: deepseek permission event, only from that cached name, and empty when a
+    #: second ``tool_call`` frame named the same id differently in the turn; empty
+    #: on every other backend.
+    deepseek_tool_name: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the

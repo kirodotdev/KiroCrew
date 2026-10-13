@@ -42,6 +42,7 @@ from kiro_crew.acp._dispatch import (
 )
 from kiro_crew.acp.client_timeouts import _SEL_AUDIT_TIMEOUT_SECONDS
 from kiro_crew.acp.types import (
+    ACP_BACKEND_DEEPSEEK,
     EVENT_TOOL_CALL,
     EVENT_TOOL_CALL_UPDATE,
     EVENT_TOOL_RESULT,
@@ -482,7 +483,17 @@ def _extract_tool_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | None
             # getattr for the same reason as _tool_call_unclassified.
             _harness_names = getattr(self, "_tool_call_harness_tool_name", None)
             if _harness_names is not None:
-                _harness_names[tool_call_id] = harness_tool_name(update)
+                _harness_name = harness_tool_name(update)
+                # dsh forwards the provider's tool-call id verbatim, and its
+                # permission frame names only that id. Two calls under one id
+                # in a turn leave the name unknown, so neither is read as the
+                # read tool the other one is.
+                if (
+                    self.backend == ACP_BACKEND_DEEPSEEK
+                    and _harness_names.get(tool_call_id, _harness_name) != _harness_name
+                ):
+                    _harness_name = ""
+                _harness_names[tool_call_id] = _harness_name
             # KAS only (H13): the mark and the refusal it earns are a KAS
             # refusal mode; a first-class harness's frame is never marked.
             if (

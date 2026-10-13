@@ -2505,12 +2505,10 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 
 # Backends on which a Side Chat turn may EXECUTE read-only tools under
 # ``ToolApprovalPolicy.READ_ONLY``. A harness has its own pre-approval surface
-# (claude-agent-acp's ``permissions.allow`` / ``bypassPermissions``, KAS
-# ``permissions`` rules read from its own store) that the host gate cannot see,
-# so a call it pre-approves would run with no READ_ONLY decision and no SEL row.
-# A member therefore starts its side session in a shape where no pre-approval can
-# reach a write, and every call it does not run natively as a read raises a
-# permission request the gate judges:
+# that the host gate cannot see, so a call it pre-approves would run with no
+# READ_ONLY decision and no SEL row. A member starts its side session in a shape
+# where no such pre-approval can reach a write, and every remaining call asks the
+# host gate:
 #
 # * kiro-cli: the session is bound to a derived ``<agent>--readonly`` spec
 #   (``dashboard/side_readonly_spec``) whose emptied grants make every tool call
@@ -2533,6 +2531,8 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 #   (``acp.harness_tool_names.GOOSE_READ_ONLY_BUILTINS``). POSIX hosts only
 #   (``acp.harness.goose.side_home_supported``); elsewhere the turn runs
 #   ``REJECT_ALL``.
+# * deepseek uses Crew's verified gate plugin, which turns stock dsh tool allows
+#   into asks. The owner proof below limits the read grant to stock dsh tools.
 #
 # Off this set the side turn runs ``REJECT_ALL``, the pre-allowance posture, and
 # its footer says tools are unavailable there.
@@ -2576,14 +2576,18 @@ ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD = frozenset({ACP_BACKEND_KIRO})
 # ``session/request_permission``, but through Crew's gate extension rather than the
 # derived spec, and the extension expresses no read-only posture -- it asks about
 # everything and lets the host decide.
-# deepseek is NOT a member, and the tempting part is that its permission vocabulary
-# HAS a read-only posture Crew can select with ``DSH_PERMISSION_MODE``. Selecting it
-# would confine the harness and still not produce a READ_ONLY DECISION anyone can
-# see: that posture is enforced by the harness's own sandbox, which denies rather
-# than asks, so no call reaches the host gate and no SEL row is written. A side turn
-# on it runs ``REJECT_ALL``.
+#
+# deepseek is a member on measurement, and not through ``DSH_PERMISSION_MODE``:
+# that sandbox posture denies instead of asking, so it would produce no READ_ONLY
+# decision and no SEL row. Crew's verified gate plugin instead turns every stock
+# dsh ``tools/pre-execute`` allow into ``ask`` and keeps only harness denies.
+# Captured on dsh 0.2.0-rc.2 with the composed plugin: ``read``, ``grep``,
+# ``glob``, ``write``, ``bash`` and an unknown ``mcp__probe__read`` all asked;
+# rejected writes and commands left no file. The gate may approve only stock
+# dsh-owned ``read``, ``grep`` and ``glob`` calls with absolute targets. Unknown,
+# shadowed, MCP and command tools fail closed.
 ACP_BACKENDS_SIDE_READONLY = frozenset(
-    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE}
+    {ACP_BACKEND_KIRO, ACP_BACKEND_KAS, ACP_BACKEND_CLAUDE, ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK}
 )
 
 # Backends whose process answers ``session/new``, ``session/load`` and
