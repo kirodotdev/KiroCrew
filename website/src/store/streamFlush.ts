@@ -39,7 +39,8 @@ export type StreamFlushSlot = {
 
 export type StreamFlushPayload = {
   slots: StreamFlushSlot[]
-  subagents: { id: string; slot: string; text: string }[]
+  /** `kind` is `'thinking'` for a run of reasoning; absent for answer text. */
+  subagents: { id: string; slot: string; text: string; kind?: 'thinking' }[]
   recency: { key: string; ts: string; settled: boolean }[]
 }
 
