@@ -296,6 +296,17 @@ async def _apply_model(
     if not live:
         return deferred
     if not await self.sessions.try_acquire(target_key):
+        # The acquire's Kiro account check retires a session that holds another
+        # account, and then nothing is live: the next message starts a fresh one,
+        # which takes the stored route preference. A resumed session stores none
+        # and restarts on its own model, so for it the pick changes nothing.
+        if not self.sessions.has_session(target_key):
+            if store_route_preference:
+                return deferred
+            return (
+                f"⚠️ Couldn't switch this conversation to {label} — the resumed "
+                f"session was not changed."
+            )
         return (
             f"✅ Model set to {label}, but a reply is still running — this "
             f"conversation keeps its current model; the switch applies to "

@@ -693,9 +693,18 @@ class SessionAllocationService:
             setter(provider, claim)
 
     async def try_acquire(self, key: str) -> bool:
-        """Acquire only an exact-key idle session; alias folding is intentional absent."""
+        """Acquire only an exact-key idle session; alias folding is intentional absent.
+
+        A session the Kiro account check flagged (``retire_on_identity_change``) is
+        refused, not taken, so the caller never runs on the wrong account's
+        credential. It is not evicted here: the sweep also flags an idle parent it
+        spared because its sub-agents are still running, and an eviction would shut
+        the provider down under them. The next real turn's claim retires it.
+        """
         session = self._sessions.get(key)
         if session is None or session.semaphore.locked():
+            return False
+        if session.retire_on_identity_change:
             return False
         # Idle Semaphore(1).acquire completes without suspending, keeping the
         # locked check and decrement atomic on the event loop.
