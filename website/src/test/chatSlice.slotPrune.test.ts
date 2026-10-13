@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import chatReducer, { deleteSlot } from '../store/chatSlice'
 import notifReducer, { addNotification, fetchNotifications, NOTIFICATIONS_RING_CAP } from '../store/notificationsSlice'
-import { sseSlots, sseConnected, fetchSlots } from '../store/dashboardSlice'
+import { sseSlots, sseSlotsPartial, sseSlotListHolds, sseConnected, fetchSlots } from '../store/dashboardSlice'
 import type { StructuredMonitor } from '../monitoring/automation'
 import type { ChatMessage, ChatSlot, Notification } from '../types'
 import './mockApiClient'
@@ -77,6 +77,57 @@ describe('chatSlice sseSlots reconciliation', () => {
     expect(next.slotHistory).toEqual(['chat-1', 'chat-3'])
   })
 
+  it('keeps background question drafts across partial lists, then evicts them on a complete list', () => {
+    const question = {
+      slot: 'chat-2',
+      ask_id: 'ask-2',
+      questions: [{ question: 'Choose', options: [{ label: 'A' }] }],
+      draftActive: true,
+      draftAnswers: { '0': 'typed answer' },
+    }
+    let state = {
+      ...seeded(['chat-1', 'chat-2']),
+      pendingQuestions: { 'chat-2': question },
+    }
+
+    state = chatReducer(state, sseSlotsPartial(true))
+    state = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(state.pendingQuestions['chat-2']).toEqual(question)
+
+    state = chatReducer(state, sseSlotsPartial(false))
+    state = chatReducer(state, sseSlots([slot('chat-1')]))
+    expect(state.pendingQuestions['chat-2']).toBeUndefined()
+  })
+
+  it('keeps held question drafts on a complete list while evicting other residue', () => {
+    const question = (slotKey: string) => ({
+      slot: slotKey,
+      ask_id: `ask-${slotKey}`,
+      questions: [{ question: 'Choose', options: [{ label: 'A' }] }],
+      draftActive: true,
+      draftAnswers: { '0': 'typed answer' },
+    })
+    let state = {
+      ...seeded(['chat-1', 'chat-2', 'chat-3']),
+      pendingQuestions: { 'chat-2': question('chat-2'), 'chat-3': question('chat-3') },
+    }
+    state = chatReducer(state, sseSlotListHolds({ heldKeys: ['chat-2'], holdChannels: false }))
+
+    state = chatReducer(state, sseSlots([slot('chat-1')]))
+
+    expect(state.pendingQuestions['chat-2']).toEqual(question('chat-2'))
+    expect(state.pendingQuestions['chat-3']).toBeUndefined()
+  })
+
+  it('keeps channel question drafts under a channel-wide hold', () => {
+    let state = seeded(['chat-1', 'slack_1.1'])
+    state = chatReducer(state, sseSlotListHolds({ heldKeys: [], holdChannels: true }))
+
+    state = chatReducer(state, sseSlots([slot('chat-1')]))
+
+    expect(state.slotMessages['slack_1.1']).toBeDefined()
+  })
+
   it('never prunes the active slot even when absent from the list', () => {
     const state = seeded(['chat-1', 'chat-2'], 'chat-2')
     const next = chatReducer(state, sseSlots([slot('chat-1')]))
@@ -123,6 +174,8 @@ describe('chatSlice sseSlots reconciliation', () => {
     let state = seeded(['chat-1', 'chat-2'])
     state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
     state = chatReducer(state, sseConnected())
+    // slotList.ts dispatches the frame's partial label before every slots frame.
+    state = chatReducer(state, sseSlotsPartial(false))
     state = chatReducer(state, sseSlots([]))
     expect(Object.keys(state.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
 
@@ -130,6 +183,19 @@ describe('chatSlice sseSlots reconciliation', () => {
 
     expect(Object.keys(next.slotMessages)).toEqual([])
     expect(next.slotHistory).toEqual([])
+  })
+
+  it('keeps residue when the reconnect refetch lands while the gateway list is partial', () => {
+    let state = seeded(['chat-1', 'chat-2'])
+    state = chatReducer(state, sseSlots([slot('chat-1'), slot('chat-2')]))
+    state = chatReducer(state, sseConnected())
+
+    const held = chatReducer(state, { type: fetchSlots.fulfilled.type, payload: [slot('chat-1')] })
+    expect(Object.keys(held.slotMessages).sort()).toEqual(['chat-1', 'chat-2'])
+
+    let next = chatReducer(held, sseSlotsPartial(false))
+    next = chatReducer(next, sseSlots([slot('chat-1')]))
+    expect(Object.keys(next.slotMessages)).toEqual(['chat-1'])
   })
 
   it('ignores a fetch reply once a live frame has been seen, since the reply may be older', () => {

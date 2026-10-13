@@ -169,7 +169,7 @@ _PATCHED: dict[str, tuple[str, tuple[Callable[[], object], ...]]] = {
         _FACADE,
         (
             _catalog_method("_scan_head_title"),
-            _catalog_method("list_sessions"),
+            _catalog_method("_list_sessions_status"),
             _catalog_method("_iter_message_texts"),
         ),
     ),

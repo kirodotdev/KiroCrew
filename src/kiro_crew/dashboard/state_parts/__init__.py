@@ -25,6 +25,8 @@ kind and identity are what callers, ``MagicMock(spec=...)`` and ``patch.object``
 see, and the slot keeps every field on itself: collaborators own behaviour and the
 initial values of their fields (``init_<x>_fields``), never the storage. Each
 collaborator's docstring lists the slot fields it reads and writes.
+``DashboardState`` binds the slot-list hold rules the same way: their bodies live
+in ``slot_list_hold.py`` and ``dashboard_state.py`` carries one binding line per method.
 
 Where new code goes: a helper of one responsibility goes to the owner named for it
 (the first line of each module's docstring); a new ``_ChatSlot`` or
