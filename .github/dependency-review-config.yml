@@ -74,6 +74,16 @@ allow-dependencies-licenses:
   - pkg:pypi/regex                 # Apache-2.0 AND CNRI-Python — local model env only
   - pkg:pypi/typing-extensions     # PSF-2.0 (GPL id is a mis-detection) — local model env only
 
+  # The optional kc_native extension (native/kc_native/Cargo.lock). Two crates
+  # are flagged for compound expressions whose every part is permissive; both
+  # run only at build time (a pyo3 build script and a proc-macro dependency):
+  # - target-lexicon: Apache-2.0 WITH LLVM-exception. The exception only removes
+  #   obligations. https://github.com/bytecodealliance/target-lexicon/blob/main/LICENSE
+  # - unicode-ident: (MIT OR Apache-2.0) AND Unicode-3.0, the permissive license of
+  #   the Unicode data tables it embeds. https://github.com/dtolnay/unicode-ident/blob/1.0.26/LICENSE-UNICODE
+  - pkg:cargo/target-lexicon       # Apache-2.0 WITH LLVM-exception — build-time only
+  - pkg:cargo/unicode-ident        # (MIT OR Apache-2.0) AND Unicode-3.0 — build-time only
+
   # Example — package ships MIT but GitHub reports "unknown":
   # - pkg:pypi/example-lib            # MIT — see https://github.com/org/example-lib/blob/main/LICENSE
   
