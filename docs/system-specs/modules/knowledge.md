@@ -122,11 +122,11 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/chunker.py` | `HeadingAwareChunker` — text/markdown/code/slide chunking |
 | `knowledge/embedder.py` | `InProcessEmbedder` — embedding in-process via the shared `EmbeddingBackend` (vendored llama-cpp runtime, no server and no HTTP hop); owns `embed_signature` (per-item vector-space identity) |
 | `knowledge/store.py` | `KnowledgeStore` — the import path of the store: the per-thread connection, construction and damaged-file recovery, the ingestion gate, and the class that binds its methods from the `store_parts` owners below |
-| `knowledge/store_parts/entity_graph.py` | entity, relation and mention rows, and the in-memory `SimpleDiGraph`: first load, rebuild-and-swap, neighbourhood reads |
+| `knowledge/store_parts/entity_graph.py` | entity, relation and mention rows, and the in-memory `SimpleDiGraph`: first load, rebuild-and-swap, neighbourhood reads; `clear_item_entity_links` before a re-extraction |
 | `knowledge/store_parts/fulltext_index.py` | `items_fts`: its row writes (`_fts_index` / `_fts_unindex`), its term representation (`FTS_INDEX_VERSION`), the version-gated rebuild, `search_items_fts` |
 | `knowledge/store_parts/source_rows.py` | source rows: registration, the properties blob and its one-status rule, auto-registration retirement |
 | `knowledge/store_parts/item_ownership.py` | which sources hold an item (`source_locations`) and which document row owns it (`_DOC_STATE_TABLES`): adoption, detach, claim release |
-| `knowledge/store_parts/item_rows.py` | item rows and every delete: one item, a batch, a whole source |
+| `knowledge/store_parts/item_rows.py` | item rows and every delete: one item, a batch, a whole source; the failed-extraction mark (`items_with_failed_extraction`, `mark_extraction_failed`, `complete_reextraction`) |
 | `knowledge/store_parts/schema_migrations.py` | the DDL, the per-open column migrations, the search-only indexes and the vector-generation triggers |
 | `knowledge/store_parts/maintenance_sweeps.py` | the post-bind sweeps: orphan sources and entities, interrupted agent-ingest residue |
 | `knowledge/store_parts/content_stats.py` | read-only library statistics (`aggregate_stats`, `get_stats`) |
@@ -136,6 +136,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
 | `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
 | `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
+| `knowledge/ingestion_extraction_failures.py` | Failed extraction calls: `EXTRACTION_INCOMPLETE_PREFIX` / `extraction_incomplete_message` (the job-row error), the per-ingest count, and `reextract_failed_items`, which `IngestionPipeline` binds as its method (see "Failed extraction calls" in §3) |
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
@@ -185,7 +186,8 @@ table's order, and every owner that logs uses the facade's logger name. New hand
 to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pins the family.
 
 `knowledge/ingestion.py` is a mirror facade (`kiro_crew._facade_mirror`) over
-`ingestion_budget.py` and `ingestion_rebuild.py`, lowest layer first. It keeps
+`ingestion_budget.py`, `ingestion_rebuild.py` and `ingestion_extraction_failures.py`,
+lowest layer first. It keeps
 `IngestionPipeline`, the ingestion gate and `handoff_gate_context`, `EmbedRateLimiter`,
 `run_to_completion` and the redaction and chunking helpers the pipeline reads. A patch of
 `kiro_crew.knowledge.ingestion.<name>` reaches every owner that binds the name, so a patch of
@@ -193,7 +195,9 @@ to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pin
 logs does so under the facade's logger name. `ImportChunkBudgetError` carries
 `kiro_crew.knowledge.ingestion` as its `__module__`, so a traceback names it by its import
 path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row work to
-`ingestion_rebuild.py`, and new pipeline work stays in `ingestion.py`;
+`ingestion_rebuild.py`, new failed-extraction work to `ingestion_extraction_failures.py`
+(which reads the facade's `_redact` and `run_to_completion` from `sys.modules` at call
+time), and new pipeline work stays in `ingestion.py`;
 `test/test_ingestion_facade.py` pins the family.
 
 ## Constants
@@ -294,8 +298,8 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - Batched `last_seen` flush/commit and stale-claim release run off the asyncio
   event loop; each flush and its commit stay within one worker hop so they share
   the thread-local SQLite connection.
-- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry).
-- **The committed group is recorded inside the commit hop, and never over a verdict.** `_ingest_file`'s `on_committed` callback turns the `scanning` marker into the `done` row in the pipeline's finalize hop; a write that fails (writer-lock contention) is retried once there under `BEGIN IMMEDIATE`, and a second failure is swallowed so it cannot poison the committed ingest. The scan's own terminal write (`_settle_done`) then lands only while the row is still `scanning`, read and written under one `BEGIN IMMEDIATE` in a `run_to_completion` hop. Once the callback's write lands the row is a `done` row the dedup sweep enumerates, so a collapse may already have deleted the group and marked the row `deduped`; writing the captured ids over that would name deleted items, and the sweep's verdict stands instead.
+- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry). A `done` row whose `error_message` starts with `EXTRACTION_INCOMPLETE_PREFIX` is the one unchanged `done` row a sweep acts on: it re-extracts that file's marked chunks in place, up to `MAX_SCAN_ATTEMPTS` (see "Failed extraction calls" in §3).
+- **The committed group is recorded inside the commit hop, and never over a verdict.** `_ingest_file`'s `on_committed` callback turns the `scanning` marker into the `done` row in the pipeline's finalize hop; a write that fails (writer-lock contention) is retried once there under `BEGIN IMMEDIATE`, and a second failure is swallowed so it cannot poison the committed ingest. The scan's own terminal write (`_settle_done`) then lands only while the row is still `scanning`, read and written under one `BEGIN IMMEDIATE` in a `run_to_completion` hop. Once the callback's write lands the row is a `done` row the dedup sweep enumerates, so a collapse may already have deleted the group and marked the row `deduped`; writing the captured ids over that would name deleted items, and the sweep's verdict stands instead. An extraction-incomplete group is recorded the same way by both writers (`_mark_committed`, `_settle_done`): the row keeps the incomplete reason and the attempt count the `scanning` marker carried.
 - **TOCTOU defense**: `_ingest_file` re-resolves symlinks and re-checks `is_sensitive_path` at ingest time; a block writes `status='failed'` and emits an SEL `knowledge.source.file.ingest_denied` (`outcome="denied"`, `reason=sensitive_path_toctou`) audit event.
 - After a successful scan, each newly ingested/changed file gets a **targeted** cross-source dedup (`dedup_document(..., apply=True)`) — O(k·n) over the k changed files rather than a full O(n²) corpus sweep — so a folder copy collapses any matching one-shot upload.
 - Fuzzy filename matching compares valid ISO dates with their year intact: a numeric date whose span falls wholly inside a valid ISO span is not also parsed as a yearless date, while a numeric date that only partly overlaps an over-matched ISO span keeps its own explicit year. Reports dated a year apart therefore remain distinct even when their embeddings are nearly identical, including date-range filenames such as `04-01-2024_04-30-2024`. Malformed ISO-shaped tokens remain available to the generic numeric-date guard, and genuinely separate numeric dates in the filename still participate in the closest-date comparison.
@@ -606,6 +610,71 @@ Entity extraction (`EntityExtractor`) acquires workers from **workload-isolated*
 
 `_get_sandbox_mode()` reads `agent.sandbox`. An **absent** value resolves to `"auto"`, the intended default: OS-level isolation, deferring to kiro-cli's own internal sandbox on macOS when that is enabled. A **present but unrecognised** value also resolves to `"auto"` (fail-secure), so a config error can never silently disable sandboxing or reach `wrap_argv` as an unknown mode. Knowledge workers honour the same `agent.sandbox` setting as chat/Slack providers (parity), so the default flows through here too.
 
+### Failed extraction calls
+
+A failed call and a chunk with nothing to extract must not look alike: read as the
+same empty payload, a timeout is stored as "no entities" under a `completed` job
+and a `done` folder row, and the unchanged file is never extracted again. So the
+two stay distinct:
+
+- **The extractor marks failures.** `EntityExtractor` returns `_failed_result()`
+  (the empty payload plus `EXTRACTION_FAILED_KEY`; test it with
+  `extraction_failed()`) when the pool raises, when the pool's batch path hands
+  back `""`, or when the reply carries no single extraction payload, and logs a
+  WARNING for the cases the pool did not already log. A blank chunk or a missing
+  pool was never sent, so it stays `_empty_result()`.
+- **Ingestion keeps the chunk, marks it and says so.** A chunk whose extraction
+  failed is still stored and embedded, so its text stays searchable; it counts as
+  processed and does not trigger the partial-failure rollback, which would make
+  the whole document unsearchable over a missing summary. Its item carries
+  `items.extraction_failed_at`, the time of the last failed call (NULL once it has
+  an extraction). Both ingest paths (`ingest_file` and `ingest_text`) log a
+  WARNING and write `entity extraction failed for N of M chunks`
+  (`EXTRACTION_INCOMPLETE_PREFIX`) to the job row's `error`.
+  `ingest_file(on_extraction_failed=)` receives `(failed, total)` inside the
+  finalize hop, before `on_committed`.
+- **The folder watcher re-extracts the marked chunks in place, bounded.** It
+  records that message on the row it writes `done` and keeps the `attempts` the
+  `scanning` marker carried. For a `done` row with that message and
+  `attempts < MAX_SCAN_ATTEMPTS` whose file is unchanged, a sweep does NOT
+  re-ingest the file: `FolderWatcher._reextract_failed_chunks` hands only the
+  marked items (`KnowledgeStore.items_with_failed_extraction`) to
+  `IngestionPipeline.reextract_failed_items`. A chunk that now extracts first
+  drops any mentions and relations a previous, unfinished attempt left
+  (`clear_item_entity_links`; relations have no uniqueness to absorb a repeat),
+  then gets its entities, then its title, type and summary with the mark cleared
+  (`complete_reextraction`, in that order, so a crash between them repeats the
+  work rather than hiding missing entities), then a fresh embedding. Clearing the
+  mark also clears `embedding_sig`, so if that embed does not land (a bulk embed
+  while the model is unloaded writes nothing) the stale-vector sweep re-embeds
+  the chunk later. When any chunk came back, the source's summary
+  (`generate_source_summary`, built from chunk summaries) is rebuilt. A chunk that
+  fails again keeps everything it had and its mark is re-stamped. No other item of
+  the document is read or written, so a retry during an outage can never cost a
+  chunk that extracted, and the row never leaves `done`. A retry waits
+  `REEXTRACT_BACKOFF_SECS` (1 h) after the newest mark, doubling per attempt, so
+  the attempts span an outage instead of three back-to-back sweeps; a retry that
+  raises counts as an attempt. Each retry's calls count against the scan's chunk
+  budget, and a retry that spends it ends the sweep the way an ingest does
+  (`_budget_spent`), so no later file is ingested past it. When nothing is left the message and count clear; otherwise the message
+  names what is left and `attempts` grows. A spent budget leaves the row `done`
+  with its message, skipped by later sweeps; a touch keeps the message, and an
+  edit (new hash) re-ingests the file with a fresh budget. The row is read when
+  the sweep begins and written after the retry's awaits, and a dedup sweep takes
+  no scan lock, so the retry's write and the touch's write go through
+  `_settle_unchanged_done`: like `_settle_done`, it writes only while the row is
+  still the `done` row read (same bytes hash and item ids), under one
+  `BEGIN IMMEDIATE`, so a collapse that landed meanwhile keeps its `deduped`
+  verdict. The retry's item writes need no row guard: a deleted item's mentions
+  and relations fail its foreign key, and its field and mark updates match no
+  row. `reextract_failed_items` holds `ingestion_in_flight()` across the
+  extraction and those writes, as `ingest_file` does, so the deferred orphan
+  sweep never reads an entity between its insert and its mention.
+  Without an extraction pool nothing is re-extracted. Every other caller of `ingest_file` or
+  `ingest_text` (uploads, the single-file watcher, artifacts, the agent's write
+  path, source sync) records the job-row error and the item marks, and does not
+  retry.
+
 ### Pool mechanics
 
 `LLMPool.start()` reads config once off the event loop and spawns all workers; `acquire()` blocks on a semaphore when all workers are busy and transparently replaces a dead worker (`is_alive()` false) on acquire. `send()` is the acquire→send→release convenience; `send_batch()` runs prompts concurrently bounded by pool size. A failed spawn during `start()` tears down all already-started workers. After `knowledge.pool_idle_ttl_secs` (default 300; `0` disables it) of full idleness — no worker checked out — the pool scales to zero, shutting every worker down; the next `acquire()` respawns lazily. A config write reaches a running pool through `reconfigure()`, which adopts the new idle TTL at once and a new pool size at the next idle boundary.
@@ -671,7 +740,7 @@ with user data. Production retrieval still requires the active signature.
 
 **The deferral is only safe because the loop-thread readers offload it.** `get_entity_graph` and `get_full_graph` are `async def` and read `store.graph` on the event loop, so each calls `await asyncio.to_thread(store.ensure_graph_loaded)` before its first `.graph` touch. Without that the deferred scan would run *on the loop* after the bind — where the loop-stall watchdog is armed (`LoopStallWatchdog` is constructed and started after `_start_site`), unlike the pre-bind window, where nothing is armed and nothing is served. `allow_on_loop()` is not available for this: its contract restricts it to constructor-shaped setup paths. The `graph` property still materialises lazily as a backstop, so a reader nobody found is served a correct graph — and flagged by the on-loop guard if it is on the loop — rather than a silently empty one, which is indistinguishable from "this entity has no neighbours". `ensure_graph_loaded` is lock-guarded like `ensure_fts_index_current` so concurrent first-touch readers wait rather than each scanning. The lock is **re-entrant, and `_load_graph` acquires it too, so EVERY rebuild serializes** — not only the first. Guarding the first-touch call site alone was not enough: the mutation sites hold no lock of their own, so a first graph GET racing a source DELETE put two threads through the rebuild at once and the loser's rows survived into a graph whose `_graph_loaded` was then set True — a flag asserting "loaded" over stale data, which is worse than an unloaded graph because the flag stops it ever being rescanned. Serializing the whole rebuild also settles *which* snapshot wins, since the `SELECT`s run after acquisition, so the rebuild that acquires last reads the freshest committed state. There is no ordering to invert against SQLite's writer lock: `_load_graph` is read-only and every remaining caller runs it after its own `COMMIT`, unlike the FTS rebuild, which takes its lock and then `BEGIN IMMEDIATE`.
 
-**A delete marks the graph stale instead of rebuilding it.** `delete_item`, `delete_items_batch`, `delete_source_cascade`, `reclaim_orphans` and `reload_graph` call `mark_graph_stale()` after their `COMMIT`: under `_graph_lock` it publishes an empty `SimpleDiGraph` and clears `_graph_loaded`, so the next reader rebuilds through `ensure_graph_loaded`. A rebuild at every delete held the whole graph (~110 MiB at 59k entities, measured with tracemalloc on a real library) from the boot-time orphan sweep and every artifact sync, whether or not anyone opened the graph. Taking the lock means a rebuild in progress finishes before the flag drops, and a reader already holding the old object keeps it. Because a delete can now unload the graph at any moment, a reader must use the graph `ensure_graph_loaded` returns rather than read `store.graph` again later: `get_full_graph` takes that return value from its worker thread, and `get_entity_graph` runs `get_entity_subgraph` on a worker, so neither reads the property on the event loop. `mark_graph_stale` clears the flag before it publishes the empty graph, and the lock-free fast path returns the graph it read only if the flag is up and that graph is still the published one, so no reader is handed the empty placeholder. `bundle_transfer` import and `add_entity_relation` still rebuild, because they add rows a reader expects to see at once. `test_knowledge_graph_stale.py` pins it.
+**A delete marks the graph stale instead of rebuilding it.** `delete_item`, `delete_items_batch`, `delete_source_cascade`, `clear_item_entity_links` (when it dropped a relation), `reclaim_orphans` and `reload_graph` call `mark_graph_stale()` after their `COMMIT`: under `_graph_lock` it publishes an empty `SimpleDiGraph` and clears `_graph_loaded`, so the next reader rebuilds through `ensure_graph_loaded`. A rebuild at every delete held the whole graph (~110 MiB at 59k entities, measured with tracemalloc on a real library) from the boot-time orphan sweep and every artifact sync, whether or not anyone opened the graph. Taking the lock means a rebuild in progress finishes before the flag drops, and a reader already holding the old object keeps it. Because a delete can now unload the graph at any moment, a reader must use the graph `ensure_graph_loaded` returns rather than read `store.graph` again later: `get_full_graph` takes that return value from its worker thread, and `get_entity_graph` runs `get_entity_subgraph` on a worker, so neither reads the property on the event loop. `mark_graph_stale` clears the flag before it publishes the empty graph, and the lock-free fast path returns the graph it read only if the flag is up and that graph is still the published one, so no reader is handed the empty placeholder. `bundle_transfer` import and `add_entity_relation` still rebuild, because they add rows a reader expects to see at once. `test_knowledge_graph_stale.py` pins it.
 
 **The rebuild publishes a fresh object by reference swap, and multi-step readers pin one reference.** `_load_graph` builds a new `SimpleDiGraph` from the tables and assigns it to `self._graph` in one step, rather than clearing the live object and re-adding row by row. Serialization alone fixed *which* rebuild wins, but an in-place clear-then-repopulate still left the object a reader was holding momentarily empty: a reader iterating `store.graph`, or one that re-read `store.graph` across its own steps (degree ranking, then per-node attribute reads, then edges), could observe the window between the clear and the last insert and return an empty or truncated graph. Building fresh and swapping means the old object is never mutated — a reader holding it sees a complete, consistent old graph until it drops the reference, and the next read sees the complete new one. **The reader contract is therefore: capture `store.graph` once and read through that local for the whole multi-step read** — `get_full_graph`, `get_neighbors` and `get_entity_subgraph` do this, so a swap mid-read cannot mix old and new nodes. Readers hold a plain object reference, not `_graph_lock`, so a rebuild never blocks a reader or vice versa. The two incremental writers (`add_entity`, `add_entity_relation`) commit their row and then apply a single `add_node`/`add_edge` under `_graph_lock`, so a committed add always lands on the currently published graph and is never orphaned onto an object a concurrent swap is about to discard.
 
@@ -850,6 +919,7 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 - **Sensitive paths never ingested** — `FileReader.read`, `FolderWatcher._walk`, `_hash_file`, and `_ingest_file` all gate on `is_sensitive_path()` (with symlink re-resolution at ingest time for TOCTOU).
 - **`.org` and unknown-but-supported extensions are plain text** — only `_DISPATCH` extensions get specialized readers; everything else in `SUPPORTED` flows through `_read_text` → generic chunker.
 - **Pool workers are long-lived and must be sweep-shielded** — any direct `AcpClient` worker that outlives a chat turn (not tracked in `SessionMap`/warm pool) must register its PID via `register_protected_pid`, or the orphan sweep will kill it mid-task.
+- **A failed extraction call is never stored as "found nothing"** — the extractor marks it, ingestion records it on the job row and marks the stored chunk, and a folder file carrying it has only those chunks re-extracted in place, up to `MAX_SCAN_ATTEMPTS` times, never at the cost of a chunk that extracted. `test_knowledge_extraction_failure.py` is the ratchet.
 - **LLM-derived text is redacted before storage and before return** — ingestion redacts extracted text (`ingestion._redact`), and `local_knowledge_search` redacts its assembled output.
 - **FTS query input is parameterized** — user query tokens are always double-quoted literals; the user never injects FTS5 operators.
 - **Embedding-dimension mismatches are skipped, not scored** — vector search excludes incomparable-dimension items so a model swap cannot fill the top-K with all-zero ghosts.
