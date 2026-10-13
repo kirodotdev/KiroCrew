@@ -7,7 +7,7 @@ import ProjectPicker from '../../../../components/ProjectPicker'
 import { ProviderLogo, ProviderHostTag } from '../../components/ProviderBadge'
 import {
   issueRadarApi, DEFAULT_REPO_SETTINGS, SettingsConflictError,
-  type RepoSettings, type RepoLabel, type Issue, type RepoMember, type RepoRef,
+  type RepoSettings, type RepoLabel, type Issue, type RepoMember, type RepoRef, type SourceProvider,
 } from '../../api'
 import { repoWebUrl, userUrlFor, membersUrlFor, providerKeyOf, providerTerms, repoScopeKey, sameRepoRef } from '../../lib/links'
 import { useIssueRadar } from '../../context'
@@ -63,6 +63,11 @@ function roleLabel(role: string): string {
 
 /** Roles that are collaborators but not maintainers — muted rather than accent. */
 const ROLE_MUTED = new Set(['read'])
+
+/** The forges the background CI-failure watch covers; mirrors the backend's
+ * `ci_watch.CI_WATCH_PROVIDERS`. The toggle is shown only for these, because on
+ * any other forge the setting is read by nothing. */
+export const CI_WATCH_PROVIDERS: ReadonlySet<SourceProvider> = new Set<SourceProvider>(['github', 'gitlab'])
 
 /** One repo's settings — full width. Local-only triage preferences that teach
  * Issue Radar how this repo labels its work (which labels mean "needs triage",
@@ -419,17 +424,28 @@ export default function RepoSettings({ repoRef }: { repoRef: RepoRef }) {
         <StatLine>
           {i18nT('apps.issueRadar.views.settings.repoSettings.checks_about_once_a_minute_inside_kirocrew_no_cr')} <code>{terms.cli}</code> {i18nT('apps.issueRadar.views.settings.repoSettings.sign_in_no_extra_credentials_no_webhook', { provider: terms.providerName })}
         </StatLine>
-        {providerKeyOf(repoRef) === 'github' && (
+        {/* The watch covers GitHub and GitLab (backend `ci_watch.CI_WATCH_PROVIDERS`);
+            Azure DevOps has no CI pass, so its toggle would be a setting nothing
+            reads. The copy is in the forge's words: "merge requests" and "GitLab
+            pipeline" on GitLab, "pull requests" and "GitHub Actions" on GitHub. */}
+        {CI_WATCH_PROVIDERS.has(providerKeyOf(repoRef)) && (
           <div className="mt-4 pt-3 border-t border-border">
             <SettingToggle
               on={settings.notify_on_own_pr_ci_failure}
               disabled={!settingsReady}
               onClick={() => update({ notify_on_own_pr_ci_failure: !settings.notify_on_own_pr_ci_failure })}
             >
-              {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_ci_fails_on_my_pull_request', { repo: `${owner}/${repo}` })}
+              {i18nT('apps.issueRadar.views.settings.repoSettings.notify_me_when_ci_fails_on_my_pull_request', {
+                repo: `${owner}/${repo}`,
+                prs: terms.changeRequestPlural,
+              })}
             </SettingToggle>
             <StatLine>
-              {i18nT('apps.issueRadar.views.settings.repoSettings.ci_failure_alerts_read_only_your_own_open_pull_requests')}
+              {i18nT('apps.issueRadar.views.settings.repoSettings.ci_failure_alerts_read_only_your_own_open_pull_requests', {
+                ci: providerKeyOf(repoRef) === 'gitlab' ? 'GitLab pipeline' : 'GitHub Actions',
+                prs: terms.changeRequestPlural,
+                cli: terms.cli,
+              })}
             </StatLine>
           </div>
         )}

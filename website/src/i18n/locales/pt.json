@@ -2846,8 +2846,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quais rótulos indicam que uma issue ainda precisa de triagem. Alimenta a contagem “Sem triagem” da Visão geral e a fila de itens que precisam de atenção.",
             "without_push_access_to": "Sem acesso de push a",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Suas edições são mantidas aqui, mas não serão salvas. Se você acabou de atualizar o Issue Radar, reinicie o backend para que a API de configurações fique disponível.",
-            "notify_me_when_ci_fails_on_my_pull_request": "Avisar-me quando a CI falhar em um dos meus pull requests em {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lê apenas as execuções do GitHub Actions nos seus próprios pull requests abertos, pelo seu login do gh. Silencie ou mude a prioridade em Configurações → Notificações."
+            "notify_me_when_ci_fails_on_my_pull_request": "Avisar-me quando a CI falhar em um dos meus {{prs}} em {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lê apenas as execuções do {{ci}} nos seus próprios {{prs}} abertos, pelo seu login do {{cli}}. Silencie ou mude a prioridade em Configurações → Notificações."
           }
         },
         "tagging": {
@@ -2985,8 +2985,9 @@
           "see_all": "Ver tudo no GitLab"
         },
         "pipelineDashboard": {
-          "github_only": "O pipeline de triagem funciona apenas com repositórios do GitHub",
-          "github_only_hint": "Suas tarefas agendadas leem e escrevem somente no GitHub, portanto este painel não tem dados de pipeline para este repositório."
+          "forge_unsupported": "O pipeline de triagem não está disponível para este repositório",
+          "forge_unsupported_gitlab_hint": "Adicione {{host}} a dashboard.gitlab_hosts em ~/.kiro/crew/config.json para ver este pipeline.",
+          "forge_unsupported_other_hint": "Os jobs agendados do pipeline não rodam contra o host deste repositório, então não há dados de pipeline para mostrar."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Execuções recentes do GitHub Actions nos seus repositórios do GitHub conectados.",

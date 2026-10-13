@@ -48,7 +48,7 @@ def wire_sources(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, P
     usage_dir = tmp_path / "usage-tokens"
     usage_dir.mkdir(parents=True, exist_ok=True)
 
-    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo: cache_dir)
+    monkeypatch.setattr(fold, "_issue_cache_dir", lambda owner, repo, *_forge: cache_dir)
     monkeypatch.setattr(fold, "_usage_dir", lambda: usage_dir)
     # Also pin the workspace resolver so a code path that forgot to thread root=
     # cannot silently read the real workspace.
@@ -989,7 +989,7 @@ def test_l1_excludes_a_pre_stamp_item_rather_than_dressing_it_in_another_repo(
         json.dumps({"title": "acme/alpha's own issue 7", "author": {"login": "someone"}}),
         encoding="utf-8",
     )
-    with mock.patch.object(fold, "_issue_cache_dir", lambda owner, repo: cache):
+    with mock.patch.object(fold, "_issue_cache_dir", lambda owner, repo, *_forge: cache):
         for owner, repo in (("acme", "alpha"), ("nobody", "nothing")):
             _write_queue(tmp_path, [], repo=f"{owner}/{repo}")
             rows = fold.list_step_items("triage", owner=owner, repo=repo, root=tmp_path)

@@ -37,6 +37,7 @@ from kiro_crew.apps.builtins.issue_radar.backend import (
     azure_client,
     github_client,
     gitlab_client,
+    gitlab_client_ci,
     gitlab_transport,
     provider,
     routes,
@@ -1785,6 +1786,150 @@ class TestCrewWriteParity(unittest.TestCase):
         for name in ("update_issue_comment", "create_pull_request"):
             with self.subTest(name=name):
                 self.assertEqual(positional(github_client, name), positional(gitlab_client, name))
+
+
+class TestOwnMrHeads(unittest.TestCase):
+    """``search_viewer_open_mr_heads``: the CI watch's own-MR listing. Pinned: the
+    host allowlist is enforced before any call, the listing is scoped to the
+    token's user and to open MRs, the page bound is honoured, and the rows are the
+    exact shape ``github_client.search_viewer_open_pull_heads`` returns."""
+
+    @staticmethod
+    def _mr(iid: int, author: str, sha: str, title: str = "t") -> dict:
+        return {
+            "iid": iid,
+            "title": title,
+            "web_url": f"https://gitlab.com/grp/proj/-/merge_requests/{iid}",
+            "author": {"username": author},
+            "diff_refs": {"head_sha": sha},
+            "sha": sha,
+        }
+
+    def _run(self, pages, *, viewer="me", host="gitlab.com", allowed=frozenset()):
+        calls: list[str] = []
+        queue = list(pages)
+
+        def fake_api(path, **kwargs):
+            calls.append(path)
+            self.assertEqual(kwargs["host"], host)
+            if path == "user":
+                return {"username": viewer}
+            self.assertFalse(kwargs.get("paginate"))
+            return queue.pop(0) if queue else []
+
+        with (
+            mock.patch.object(gitlab_client, "allowed_hosts", return_value=allowed),
+            mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api),
+        ):
+            out = gitlab_client.search_viewer_open_mr_heads("grp", "proj", host=host)
+        return calls, out
+
+    def test_unlisted_host_is_refused_before_any_call(self):
+        with (
+            mock.patch.object(gitlab_client, "allowed_hosts", return_value=frozenset()),
+            mock.patch.object(gitlab_client, "_glab_api") as api,
+        ):
+            with self.assertRaises(ProviderCliError):
+                gitlab_client.search_viewer_open_mr_heads(
+                    "grp", "proj", host="gitlab.acme.internal"
+                )
+            with self.assertRaises(ProviderCliError):
+                gitlab_client.search_viewer_open_mr_heads("grp", "proj", host="")
+        api.assert_not_called()
+
+    def test_listed_host_is_called_as_given(self):
+        calls, _ = self._run(
+            [[]], host="gitlab.acme.internal", allowed=frozenset({"gitlab.acme.internal"})
+        )
+        self.assertEqual(calls[0], "user")
+        self.assertTrue(calls[1].startswith("projects/grp%2Fproj/merge_requests?"))
+
+    def test_listing_is_scoped_to_the_token_user_and_open_mrs(self):
+        calls, _ = self._run([[]])
+        query = calls[1].split("?", 1)[1].split("&")
+        self.assertIn("scope=created_by_me", query)
+        self.assertIn("state=opened", query)
+        self.assertIn(f"per_page={gitlab_client_ci.CI_SEARCH_PAGE_SIZE}", query)
+        self.assertIn("page=1", query)
+        self.assertEqual(len(calls), 2)  # one user read, one short page
+
+    def test_rows_match_the_github_shape_and_drop_other_authors(self):
+        sha = "a" * 40
+        _, out = self._run(
+            [[self._mr(7, "me", sha, "fix"), self._mr(8, "teammate", "b" * 40), {"iid": 9}]]
+        )
+        self.assertEqual(out["truncated"], [])
+        self.assertEqual(
+            out["pulls"],
+            [
+                {
+                    "owner": "grp",
+                    "repo": "proj",
+                    "number": 7,
+                    "title": "fix",
+                    "url": "https://gitlab.com/grp/proj/-/merge_requests/7",
+                    "head_sha": sha,
+                }
+            ],
+        )
+        # Field-for-field the shape github_client's search returns.
+        self.assertEqual(
+            set(out["pulls"][0]), {"owner", "repo", "number", "title", "url", "head_sha"}
+        )
+        self.assertEqual(set(out), {"pulls", "truncated"})
+
+    def test_a_full_last_page_marks_the_project_truncated(self):
+        full = [self._mr(i, "me", "c" * 40) for i in range(1, gitlab_client_ci.CI_SEARCH_PAGE_SIZE + 1)]
+        calls, out = self._run([full] * (gitlab_client_ci.CI_SEARCH_MAX_PAGES + 2))
+        # The user read plus exactly MAX_PAGES listing pages, never a page more.
+        self.assertEqual(len(calls), 1 + gitlab_client_ci.CI_SEARCH_MAX_PAGES)
+        self.assertEqual(out, {"pulls": [], "truncated": [("grp", "proj")]})
+
+    def test_pages_are_followed_until_a_short_one(self):
+        full = [self._mr(i, "me", "d" * 40) for i in range(1, gitlab_client_ci.CI_SEARCH_PAGE_SIZE + 1)]
+        short = [self._mr(999, "me", "e" * 40)]
+        calls, out = self._run([full, short])
+        self.assertEqual(len(calls), 3)
+        self.assertIn("page=2", calls[2])
+        self.assertEqual(len(out["pulls"]), gitlab_client_ci.CI_SEARCH_PAGE_SIZE + 1)
+        self.assertEqual(out["truncated"], [])
+
+    def test_a_passed_login_skips_the_user_read(self):
+        calls: list[str] = []
+
+        def fake_api(path, **kwargs):
+            calls.append(path)
+            return [self._mr(7, "me", "a" * 40), self._mr(8, "other", "b" * 40)]
+
+        with (
+            mock.patch.object(gitlab_client, "allowed_hosts", return_value=frozenset()),
+            mock.patch.object(gitlab_client, "_glab_api", side_effect=fake_api),
+        ):
+            out = gitlab_client.search_viewer_open_mr_heads(
+                "grp", "proj", host="gitlab.com", login="me"
+            )
+        self.assertNotIn("user", calls)
+        self.assertEqual(len(calls), 1)
+        # The passed login is still what the author filter compares against.
+        self.assertEqual([p["number"] for p in out["pulls"]], [7])
+
+    def test_missing_viewer_raises_rather_than_listing(self):
+        with (
+            mock.patch.object(gitlab_client, "allowed_hosts", return_value=frozenset()),
+            mock.patch.object(gitlab_client, "_glab_api", return_value={}) as api,
+        ):
+            with self.assertRaises(ProviderCliError):
+                gitlab_client.search_viewer_open_mr_heads("grp", "proj", host="gitlab.com")
+        self.assertEqual([c.args[0] for c in api.call_args_list], ["user"])
+
+    def test_malformed_sha_or_iid_is_dropped(self):
+        rows = [
+            {**self._mr(1, "me", "zz"), "diff_refs": {}, "sha": "not-a-sha"},
+            {**self._mr(2, "me", "f" * 40), "iid": "2"},
+            {**self._mr(3, "me", "f" * 40), "iid": True},
+        ]
+        _, out = self._run([rows])
+        self.assertEqual(out["pulls"], [])
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -2722,8 +2722,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "哪些标签表示 issue 仍需分类。它决定概览中的“未分类”计数和待关注队列。",
             "without_push_access_to": "若没有对以下仓库的 push 权限：",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "你的编辑会保留在此处但不会持久化。如果你刚更新了 Issue Radar，请重启后端以启用设置 API。",
-            "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的拉取请求 CI 失败时通知我",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 gh 登录，读取你自己未关闭拉取请求上的 GitHub Actions 运行。可在 设置 → 通知 中将其静音或更改优先级。"
+            "notify_me_when_ci_fails_on_my_pull_request": "当我在 {{repo}} 中的 {{prs}} CI 失败时通知我",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "仅通过你的 {{cli}} 登录，读取你自己未关闭 {{prs}} 上的 {{ci}} 运行。可在 设置 → 通知 中将其静音或更改优先级。"
           }
         },
         "tagging": {
@@ -2851,8 +2851,9 @@
           "see_all": "在 GitLab 上查看全部"
         },
         "pipelineDashboard": {
-          "github_only": "分流流水线仅支持 GitHub 仓库",
-          "github_only_hint": "其定时任务只读写 GitHub，因此此看板没有该仓库的流水线数据。"
+          "forge_unsupported": "分流流水线不适用于此仓库",
+          "forge_unsupported_gitlab_hint": "要查看此流水线，请在 ~/.kiro/crew/config.json 中将 {{host}} 添加到 dashboard.gitlab_hosts。",
+          "forge_unsupported_other_hint": "流水线计划任务不会针对此仓库主机运行，因此没有可显示的流水线数据。"
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "你已连接的 GitHub 仓库中最近的 GitHub Actions 运行。",

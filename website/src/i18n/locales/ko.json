@@ -2810,8 +2810,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "이슈에 아직 트리아지가 필요함을 뜻하는 레이블입니다. 개요의 ‘트리아지 안 됨’ 개수와 확인 필요 대기열을 결정합니다.",
             "without_push_access_to": "다음에 대한 푸시 권한이 없으면:",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "편집 내용은 여기에 유지되지만 영구 저장되지는 않습니다. 방금 Issue Radar를 업데이트했다면 백엔드를 다시 시작해 설정 API를 사용할 수 있게 하세요.",
-            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 풀 리퀘스트에서 CI가 실패하면 알림 받기",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "gh 로그인으로 내가 연 열린 풀 리퀘스트의 GitHub Actions 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다."
+            "notify_me_when_ci_fails_on_my_pull_request": "{{repo}}의 내 {{prs}}에서 CI가 실패하면 알림 받기",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "{{cli}} 로그인으로 내가 연 열린 {{prs}}의 {{ci}} 실행만 읽습니다. 설정 → 알림에서 음소거하거나 우선순위를 바꿀 수 있습니다."
           }
         },
         "tagging": {
@@ -2939,8 +2939,9 @@
           "see_all": "GitLab에서 모두 보기"
         },
         "pipelineDashboard": {
-          "github_only": "분류 파이프라인은 GitHub 저장소만 지원합니다",
-          "github_only_hint": "예약 작업이 GitHub만 읽고 쓰므로 이 보드에는 이 저장소의 파이프라인 데이터가 없습니다."
+          "forge_unsupported": "이 리포지토리에서는 트리아지 파이프라인을 사용할 수 없습니다",
+          "forge_unsupported_gitlab_hint": "이 파이프라인을 보려면 ~/.kiro/crew/config.json의 dashboard.gitlab_hosts에 {{host}}을(를) 추가하세요.",
+          "forge_unsupported_other_hint": "파이프라인의 예약된 작업은 이 리포지토리의 호스트에서 실행되지 않으므로 표시할 파이프라인 데이터가 없습니다."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "연결된 GitHub 저장소의 최근 GitHub Actions 실행입니다.",

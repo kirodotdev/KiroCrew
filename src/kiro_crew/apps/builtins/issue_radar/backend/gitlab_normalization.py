@@ -473,7 +473,11 @@ _PIPELINE_CANCELLABLE_STATES = frozenset(
 )
 _PIPELINE_RETRYABLE_STATES = frozenset({"failed", "canceled", "cancelled"})
 _PIPELINE_FINISHED_STATES = frozenset({"failed", "success", "canceled", "cancelled", "skipped"})
-_PIPELINE_CONCLUSION = {"canceled": "cancelled"}
+# GitLab's finished statuses in GitHub's conclusion vocabulary, which is what every
+# shared consumer compares against: the PR pane's run actions, the CI Runs view and
+# the CI-failure watch all test for "failure" / "cancelled", never "failed" /
+# "canceled". A status not listed here is already spelled the same on both forges.
+_PIPELINE_CONCLUSION = {"canceled": "cancelled", "failed": "failure"}
 
 
 def _norm_pipeline_run(row: dict) -> dict | None:
