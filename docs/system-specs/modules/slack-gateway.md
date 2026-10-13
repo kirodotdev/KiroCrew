@@ -1269,7 +1269,10 @@ The opt-in is `sessions all` / `sessions ended` (DM keyword) and `/<command> ses
 Triggers in-place ACP `/compact` on the current thread's session (`_handle_compact_command`):
 
 1. Refuses when a turn holds the session (`sessions.try_acquire`) or the backend
-   cannot compact (`compact_unsupported_backend`)
+   cannot compact (`compact_unsupported_backend`). A session the Kiro account check
+   flagged is refused too and answered with `COMPACT_ACCOUNT_CHANGED_TEXT`
+   (`sessions.is_retiring`), not the busy text (see [session](session.md),
+   "Account-identity retirement")
 2. Posts "Compacting context…"
 3. Runs `provider.compact()` bounded by `wait_for(..., 120)`, then
    `provider.wait_for_compaction(timeout=sessions.compact_wait_budget_secs())`

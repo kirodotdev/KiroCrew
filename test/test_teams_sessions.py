@@ -618,6 +618,7 @@ class TestRoutingComesFirst:
         acquired: list[str] = []
         sessions.try_acquire = lambda key: _record_and_refuse(acquired, key)  # type: ignore
         sessions.has_session = lambda key: False  # type: ignore
+        sessions.is_retiring = lambda key: False  # type: ignore
         d = _dispatcher(sessions, client, _ConversationLog(_rows("Launch plan")))
 
         await d.handle_message(_inbound("/compact"))

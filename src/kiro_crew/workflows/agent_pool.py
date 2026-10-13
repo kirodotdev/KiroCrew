@@ -181,15 +181,21 @@ class _WorkflowSessionWorker:
         claude ACP both do), which skips the expensive spawn+initialize. If it is
         unavailable or fails, fall back to a hard ``SessionManager.reset`` so a
         reused worker can NEVER carry prior-task context into the next task
-        (correctness over speed on the fallback path)."""
+        (correctness over speed on the fallback path).
+
+        The Kiro account check runs first. The worker holds its session's lease
+        from ``start()`` to ``shutdown()``, so it never acquires again and a sweep
+        only flags that session. A session the check flagged (``is_retiring``)
+        takes the hard reset, whose re-acquire starts one on the current account."""
         if self._memory_scope is not None:
             await self._memory_scope.prepare(self._context_builder, self._key)
         # Lifecycle only; EssentialDelivery owns successful delivery evidence.
         self._is_new = True
         self._resumed = False
+        await self._sessions.run_identity_check()
         prov = self._provider
         new_conv = getattr(prov, "new_conversation", None) if prov is not None else None
-        if new_conv is not None:
+        if new_conv is not None and not self._sessions.is_retiring(self._key):
             # BEFORE ``new_conv()``, not after. The cheap path replaces the CONVERSATION and
             # keeps the process, so the previous conversation's sub-agent runs still have to
             # end -- the process surviving does not give them anywhere to report, and

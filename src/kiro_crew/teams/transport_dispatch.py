@@ -43,6 +43,7 @@ from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import IngestLimits
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
 from kiro_crew.messaging.commands import (
+    COMPACT_ACCOUNT_CHANGED_TEXT,
     YOLO_PHRASING_MARKDOWN,
     compact_unsupported_backend,
     compact_unsupported_reply,
@@ -1865,7 +1866,9 @@ class TeamsDispatcher:
         assert self.client is not None
         session_key = resumed_key or self._session_key(self._identity(inbound))
         if not await self.sessions.try_acquire(session_key):
-            if self.sessions.has_session(session_key):
+            if self.sessions.is_retiring(session_key):
+                await self._reply(inbound, f"ℹ️ {COMPACT_ACCOUNT_CHANGED_TEXT}")
+            elif self.sessions.has_session(session_key):
                 await self._reply(
                     inbound,
                     "⏳ Still working on the previous message — try `/compact` again shortly.",

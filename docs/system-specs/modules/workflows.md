@@ -1158,7 +1158,11 @@ never spawns `kiro-cli` in tests. Two production adapters:
   worker after `provider.new_conversation()` (a fresh `session/new` on the live
   process, skipping spawn and initialize), falling back to a hard
   `SessionManager.reset` if that is unavailable or fails, so a reused worker can
-  never carry prior-task context forward. Dead workers are retired and replaced.
+  never carry prior-task context forward. Before that reuse the worker runs the Kiro
+  account check (`SessionManager.run_identity_check`): it holds its session's lease
+  from its first task to its last, so it never acquires again and a sweep only flags
+  that session. A session the check flagged (`is_retiring`) takes the hard reset, whose
+  re-acquire starts a session on the current account. Dead workers are retired and replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker.
 

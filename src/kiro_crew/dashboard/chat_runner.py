@@ -170,8 +170,11 @@ from kiro_crew.dashboard.chat_title import (
     title_then_refresh,
 )
 from kiro_crew.dashboard.chat_turn.account_identity import (
+    _flag_stamp_mismatches_after_shared_check,
+    _IdentityCheckRead,
     _mark_kiro_signed_out,
     _retire_sessions_on_identity_change,
+    _shared_check_still_covers,
 )
 from kiro_crew.dashboard.chat_turn.acp_recovery import (  # noqa: F401
     _POISON_CANARY_PROMPT,
@@ -1076,6 +1079,58 @@ _RECIPIENT_LOGGED_CAP = 512
 #: dashboard rungs are stubbed through — the rungs below look it up on this
 #: module at call time.
 _name_grant_refusal_off_loop = refusal_for_command_off_loop
+
+
+def install_acquire_identity_check(state: Any) -> None:
+    """Make every session acquire on ``state.sessions`` run the account check first.
+
+    Installs :func:`_retire_sessions_on_identity_change` as the session manager's
+    ``identity_check_before_acquire``, as its unattended caller, so a task step, a
+    workflow agent, a channel turn or ``/compact``, a sub-agent completion or an
+    agent cron run retires a session left on a previous Kiro account before it can
+    reuse one, and an acquire path added later cannot leave the check out. The dashboard chat
+    turn runs the attended check itself and tells its claim so
+    (``identity_checked``). Called once the prerequisite service has seeded its
+    baseline, beside ``spawn_identity_reader``.
+
+    Concurrent acquires share one check. While a sweep stays pending (a channel
+    member holding its lease after a switch can keep it pending for hours), each
+    check re-runs it, and a sweep drains every cold-start permit and empties the warm
+    pool. Run once per acquire, a workflow fan-out would start its sessions one at a
+    time and lose the pool on each. So an acquire that arrives while a check is in
+    flight waits for that check and takes its result, unless an account other than
+    the one that check acted on has been read since: the store now reads another
+    fingerprint, or some read in between returned one (an account switch during the
+    sweep can leave a session that registered late on it, unstamped). The
+    acquire then runs its own check. An empty result is never shared, because an
+    account the reader cannot identify and a sign-out both read empty, and only the
+    acquire's own check can tell them apart. An acquire that takes the result still
+    runs the stamp check itself, because a session can register after the shared
+    sweep scanned the registry.
+    The shared check runs in its own task, so cancelling the acquire that started it
+    does not cancel it under the others.
+    """
+
+    in_flight: asyncio.Task[_IdentityCheckRead | None] | None = None
+
+    async def _check_before_acquire() -> None:
+        nonlocal in_flight
+        joined = in_flight
+        while joined is not None and not joined.done():
+            shared = await asyncio.shield(joined)
+            if shared is not None and await _shared_check_still_covers(state, shared):
+                await _flag_stamp_mismatches_after_shared_check(state, shared.live)
+                return
+            if in_flight is joined:
+                break
+            # Another acquire saw the same mismatch first and started the check that
+            # covers it: wait for that one instead of starting a third.
+            joined = in_flight
+        check = asyncio.create_task(_retire_sessions_on_identity_change(state, unattended=True))
+        in_flight = check
+        await asyncio.shield(check)
+
+    state.sessions.identity_check_before_acquire = _check_before_acquire
 
 
 def _member_capable_backend_names() -> str:

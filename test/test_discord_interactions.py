@@ -766,6 +766,33 @@ class TestModelPicker:
         assert sess._gp.set_models == ["m-fast"]
 
     @pytest.mark.asyncio
+    async def test_a_session_the_account_check_retires_defers_to_the_next_message(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+
+        async def _retire_then_refuse(key: str) -> bool:
+            # The acquire's Kiro account check retired the session: it held another
+            # account, so nothing is live by the time the lease would be taken.
+            sess._has = False
+            return False
+
+        sess.try_acquire = _retire_then_refuse  # type: ignore[method-assign]
+        outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
+
+        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert sess._gp.set_models == []
+
+    @pytest.mark.asyncio
+    async def test_a_session_the_account_check_flags_defers_to_the_next_message(self) -> None:
+        # Flagged, not retired (an idle parent the check spared for its running
+        # sub-agents): refused, yet still registered, and no reply is running.
+        d, _cli, sess = _dispatcher({"u1"})
+        sess.retiring = True
+        outcome = await d._apply_model(d._scope_id("u1", ""), "discord:dm:u1", "m-fast")
+
+        assert outcome == "✅ Model set to m-fast — it applies to your next message."
+        assert sess._gp.set_models == [] and sess.acquired == []
+
+    @pytest.mark.asyncio
     async def test_a_second_press_is_refused_rather_than_applied_twice(self) -> None:
         d, cli, sess = _dispatcher({"u1"})
         sess._gp.models = [{"modelId": "m-fast", "name": "Fast"}]

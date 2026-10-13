@@ -758,8 +758,9 @@ _API_HOOKS = {
 _DASHBOARD_BOOT = tuple("""
     consume_managed_service_launch_environment set_pending_staged_hook
     set_pending_consumed_hook set_global_hook_store register_skill_read_observer
-    wire_session_subagent_probe _wire_tunnel_shutdown _wire_status_delta_sink
-    register_status_delta_sink _precompute_telemetry current_context
+    wire_session_subagent_probe _wire_tunnel_shutdown install_acquire_identity_check
+    _wire_status_delta_sink register_status_delta_sink _precompute_telemetry
+    current_context
     _register_mcp_routes _deferred _deferred setup_spawn_resume_routes
     _deferred_work_ledger _deferred_work_ledger _deferred_work_ledger
     _deferred_work_ledger _deferred_work_ledger _deferred _deferred _deferred _deferred
@@ -827,7 +828,8 @@ _DASHBOARD_ELSEWHERE = tuple("""
     """.split())
 _API_BOOT = tuple("""
     set_global_hook_store register_skill_read_observer wire_session_subagent_probe
-    _precompute_telemetry current_context tailnet_effective_allowed_logins
+    install_acquire_identity_check _precompute_telemetry current_context
+    tailnet_effective_allowed_logins
     tailnet_identity_unknown degraded_config_files build_allowed_origins
     _make_host_validation_middleware _make_csrf_middleware _make_deny_audit_middleware
     warm_auth_singletons warm_sel_singleton make_route_latency_middleware
