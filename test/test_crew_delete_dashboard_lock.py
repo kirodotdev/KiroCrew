@@ -34,9 +34,9 @@ LIVE = "keeper"
 
 
 @pytest.fixture(autouse=True)
-def _isolated_home(tmp_path, monkeypatch):
+def _isolated_home(tmp_path, _floor_monkeypatch):
     """Every test writes into its own data home, never the live one."""
-    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
     reset_degraded_observations()
     service_mod.set_service(None)
     yield
@@ -209,13 +209,12 @@ def test_an_aliased_store_is_refused_and_the_lock_kept(tmp_path, monkeypatch):
     path = _lock(GONE)
     captured = KiroCrewConfig.load()
     _write_roster(home)
-    monkeypatch.setattr(agent_panel.platform_compat, "is_link_or_junction", lambda p: True)
+    with monkeypatch.context() as mp:
+        mp.setattr(agent_panel.platform_compat, "is_link_or_junction", lambda p: True)
+        with pytest.raises(agent_panel.PanelError):
+            instance.remove_structure_lock(GONE, still_unclaimed=lambda: True)
+        agents_mod._reclaim_deleted_member_dashboard_lock(GONE, captured)  # swallowed, logged
 
-    with pytest.raises(agent_panel.PanelError):
-        instance.remove_structure_lock(GONE, still_unclaimed=lambda: True)
-    agents_mod._reclaim_deleted_member_dashboard_lock(GONE, captured)  # swallowed, logged
-
-    monkeypatch.undo()
     assert path.is_file()
 
 
