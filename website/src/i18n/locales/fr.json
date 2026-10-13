@@ -3061,8 +3061,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Quelles étiquettes signifient qu’un ticket nécessite encore un triage. Alimente le compteur « Non triés » de la vue d’ensemble et la file des tickets nécessitant une attention.",
             "without_push_access_to": "Sans accès en écriture à",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Vos modifications sont conservées ici mais ne seront pas persistées. Si vous venez de mettre à jour Issue Radar, redémarrez le backend pour que l’API des paramètres soit disponible.",
-            "notify_me_when_ci_fails_on_my_pull_request": "M’avertir quand la CI échoue sur une de mes pull requests dans {{repo}}",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lit uniquement les exécutions GitHub Actions de tes propres pull requests ouvertes, via ta connexion gh. Coupe-le ou change sa priorité dans Paramètres → Notifications."
+            "notify_me_when_ci_fails_on_my_pull_request": "M’avertir quand la CI échoue sur une de mes {{prs}} dans {{repo}}",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Lit uniquement les exécutions {{ci}} de tes propres {{prs}} ouvertes, via ta connexion {{cli}}. Coupe-le ou change sa priorité dans Paramètres → Notifications."
           }
         },
         "tagging": {
@@ -3200,8 +3200,9 @@
           "see_all": "Tout voir sur GitLab"
         },
         "pipelineDashboard": {
-          "github_only": "Le pipeline de triage fonctionne uniquement avec les dépôts GitHub",
-          "github_only_hint": "Ses tâches planifiées lisent et écrivent uniquement sur GitHub, ce tableau n'a donc aucune donnée de pipeline pour ce dépôt."
+          "forge_unsupported": "Le pipeline de triage n'est pas disponible pour ce dépôt",
+          "forge_unsupported_gitlab_hint": "Ajoute {{host}} à dashboard.gitlab_hosts dans ~/.kiro/crew/config.json pour voir ce pipeline.",
+          "forge_unsupported_other_hint": "Les tâches planifiées du pipeline ne s'exécutent pas sur l'hôte de ce dépôt, il n'y a donc aucune donnée de pipeline à afficher."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Exécutions GitHub Actions récentes dans tes dépôts GitHub connectés.",

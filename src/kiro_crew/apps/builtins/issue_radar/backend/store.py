@@ -188,6 +188,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         logger,
         name_compare_key,
         provider_root,
+        provider_subpath,
         read_ci_watch_record,
         read_ci_watch_state,
         read_config,

@@ -2996,8 +2996,8 @@
             "which_labels_mean_an_issue_still_needs_triage_dr": "Welche Labels bedeuten, dass ein Issue noch triagiert werden muss. Steuert die Zählung „Nicht triagiert“ in der Übersicht und die Warteschlange der Issues, die Aufmerksamkeit brauchen.",
             "without_push_access_to": "Ohne Push-Zugriff auf",
             "your_edits_are_kept_here_but_won_t_persist_if_yo": "Ihre Änderungen bleiben hier erhalten, werden aber nicht dauerhaft gespeichert. Wenn Sie Issue Radar gerade aktualisiert haben, starten Sie das Backend neu, damit die Einstellungs-API verfügbar ist.",
-            "notify_me_when_ci_fails_on_my_pull_request": "Benachrichtige mich, wenn CI bei einem meiner Pull Requests in {{repo}} fehlschlägt",
-            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Liest GitHub Actions-Läufe nur bei deinen eigenen offenen Pull Requests, über deine gh-Anmeldung. Stummschalten oder Priorität ändern unter Einstellungen → Benachrichtigungen."
+            "notify_me_when_ci_fails_on_my_pull_request": "Benachrichtige mich, wenn CI bei einem meiner {{prs}} in {{repo}} fehlschlägt",
+            "ci_failure_alerts_read_only_your_own_open_pull_requests": "Liest {{ci}}-Läufe nur bei deinen eigenen offenen {{prs}}, über deine {{cli}}-Anmeldung. Stummschalten oder Priorität ändern unter Einstellungen → Benachrichtigungen."
           }
         },
         "tagging": {
@@ -3130,8 +3130,9 @@
           "see_all": "Alle auf GitLab ansehen"
         },
         "pipelineDashboard": {
-          "github_only": "Die Triage-Pipeline läuft nur mit GitHub-Repositorys",
-          "github_only_hint": "Ihre geplanten Jobs lesen und schreiben ausschließlich GitHub, daher hat dieses Board keine Pipeline-Daten für dieses Repository."
+          "forge_unsupported": "Die Triage-Pipeline ist für dieses Repository nicht verfügbar",
+          "forge_unsupported_gitlab_hint": "Füge {{host}} in ~/.kiro/crew/config.json zu dashboard.gitlab_hosts hinzu, um diese Pipeline zu sehen.",
+          "forge_unsupported_other_hint": "Die geplanten Jobs der Pipeline laufen nicht gegen den Host dieses Repositorys, daher gibt es keine Pipeline-Daten zum Anzeigen."
         },
         "ciRunsView": {
           "recent_github_actions_runs_in_your_connected_repos": "Neueste GitHub Actions-Läufe in deinen verbundenen GitHub-Repositorys.",

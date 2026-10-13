@@ -756,13 +756,19 @@ class TestGitlabPrActions(unittest.TestCase):
 
     def test_pipeline_conclusion_uses_githubs_spelling(self):
         """The shared UI compares against GitHub's vocabulary; GitLab says
-        "canceled" (one l) where GitHub says "cancelled"."""
+        "canceled" (one l) where GitHub says "cancelled", and "failed" where GitHub
+        says "failure" (the value the CI-failure watch and the run actions test)."""
         rows = [{"id": 1, "status": "canceled", "web_url": None, "created_at": None}]
         with mock.patch.object(gl, "_glab_api", return_value=rows):
             out = gl.list_pr_workflow_runs("g", "p", "abc1234", host="gitlab.com")
         self.assertEqual(out[0]["conclusion"], "cancelled")
         self.assertEqual(out[0]["status"], "completed")
         self.assertTrue(out[0]["rerunnable"])
+        rows = [{"id": 2, "status": "failed", "web_url": None, "created_at": None}]
+        with mock.patch.object(gl, "_glab_api", return_value=rows):
+            out = gl.list_pr_workflow_runs("g", "p", "abc1234", host="gitlab.com")
+        self.assertEqual(out[0]["conclusion"], "failure")
+        self.assertEqual(out[0]["status"], "completed")
 
     def test_retry_reports_what_gitlab_actually_did(self):
         """GitLab's /retry only retries failed+canceled jobs, so a caller asking

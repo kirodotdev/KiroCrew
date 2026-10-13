@@ -104,9 +104,10 @@ async def test_overview_returns_the_folded_pipeline(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_fold(*, recent_hours: int, repo: str | None = None):
+    def fake_fold(*, recent_hours: int, repo: str | None = None, forge=None):
         seen["hours"] = recent_hours
         seen["repo"] = repo
+        seen["forge"] = forge
         return _Row({"steps": [{"step": "scan", "inFlight": 2}]})
 
     monkeypatch.setattr(fold, "fold_pipeline", fake_fold)
@@ -131,7 +132,7 @@ async def test_overview_falls_back_to_the_default_window_for_junk_hours(
     """
     seen: dict[str, Any] = {}
 
-    def fake_fold(*, recent_hours: int, repo: str | None = None):
+    def fake_fold(*, recent_hours: int, repo: str | None = None, forge=None):
         seen["hours"] = recent_hours
         return _Row({"steps": []})
 
@@ -187,7 +188,7 @@ async def test_step_returns_the_items_and_their_count(
 ) -> None:
     seen: dict[str, Any] = {}
 
-    def fake_list(step, *, owner, repo, limit):
+    def fake_list(step, *, owner, repo, limit, forge=None):
         seen.update(step=step, owner=owner, repo=repo, limit=limit)
         return [_Row({"number": 4624}), _Row({"number": 5546})]
 
@@ -409,7 +410,7 @@ async def test_item_sessions_returns_rows_and_the_populated_columns(
     """The column list is what lets the table omit structurally-zero columns."""
     seen: dict[str, Any] = {}
 
-    def fake_list(number, *, repo=None):
+    def fake_list(number, *, repo=None, forge=None):
         seen["number"] = number
         seen["repo"] = repo
         return [
@@ -448,7 +449,7 @@ async def test_item_sessions_requires_a_plain_number(enabled: None) -> None:
 async def test_item_sessions_maps_a_bad_item_to_400_and_a_read_failure_to_503(
     enabled: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    def raise_fold(_number, *, repo=None):
+    def raise_fold(_number, *, repo=None, forge=None):
         raise fold.FoldError("unknown item")
 
     monkeypatch.setattr(fold, "list_item_sessions", raise_fold)
@@ -457,7 +458,7 @@ async def test_item_sessions_maps_a_bad_item_to_400_and_a_read_failure_to_503(
         assert resp.status == 400
         assert (await resp.json())["code"] == "bad_item"
 
-    def raise_os(_number, *, repo=None):
+    def raise_os(_number, *, repo=None, forge=None):
         raise OSError(5, "I/O error", "/home/someone/usage.jsonl")
 
     monkeypatch.setattr(fold, "list_item_sessions", raise_os)
