@@ -35,7 +35,7 @@ from typing import Any, Generator
 
 from kiro_crew.atomic_write import replace_with_retry
 from kiro_crew.config.paths import config_dir
-from kiro_crew.constants import AWS_PROFILE_NAME_RE
+from kiro_crew.constants import AWS_PROFILE_FIRST_CHARS, AWS_PROFILE_NAME_RE
 from kiro_crew.deploy import engine
 from kiro_crew.platform_compat import file_lock, open_lock_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -87,6 +87,16 @@ _NOTE_MAX = 256
 # (stripped before matching, so the anchor is behavior-neutral there).
 _PROFILE_RE = AWS_PROFILE_NAME_RE
 PROFILE_SPEC = FieldSpec(name="profile", type=str, max_len=128, pattern=_PROFILE_RE)
+# What a STORED entry's name may look like: the union of every writer's own
+# charset. The deploy routes write PROFILE_SPEC names; the AWS control app's
+# register route admits ``@`` and ``=`` as well (``aws_consent._PROFILE_RE``,
+# the legacy continuation set the AWS CLI itself accepts). Both are inert in
+# the remediation command once ``shlex.join`` quotes them. Checking a stored
+# name against the narrower request spec would drop a name a shipped writer
+# registered, which is a data-loss shape, not a refusal. Composed from
+# AWS_PROFILE_FIRST_CHARS per the contract in constants.py.
+_STORED_PROFILE_RE = re.compile(rf"^[{AWS_PROFILE_FIRST_CHARS}][{AWS_PROFILE_FIRST_CHARS}@=-]{{0,127}}\Z")
+STORED_PROFILE_SPEC = FieldSpec(name="profile", type=str, max_len=128, pattern=_STORED_PROFILE_RE)
 # Multi-segment to admit GovCloud (us-gov-west-1) alongside standard regions;
 # max_len=32 keeps the backtracking surface negligible.
 _REGION_RE = re.compile(r"^[a-z]{2}(-[a-z]+)+-\d+$")
@@ -155,6 +165,80 @@ def make_entry(name: str, region: str, *, account: str = "", verified_at: str = 
             "account": account, "verified_at": verified_at, "note": note[:_NOTE_MAX]}
 
 
+def _well_formed_entry(raw: Any) -> bool:
+    """True when a stored registry entry's ``name`` and ``region`` pass the
+    field specs its writers enforce (``STORED_PROFILE_SPEC`` / ``REGION_SPEC``).
+
+    The registry file is agent-writable, and a stored entry's name and region
+    flow into ``aws`` argv and into the copyable remediation command exactly
+    like a request's ``profile`` does -- but ``_resolve_profile`` validates only
+    the request parameter, and a request that names no profile is served the
+    registry default unvalidated. Checking here on load is what makes "a deploy
+    only ever runs with a registered profile" also mean a well-formed one. An
+    empty region is admitted: ``make_entry`` fills in the default.
+
+    The stored value itself must pass, not a cleaned copy of it:
+    ``validate_field`` sanitizes a string (control characters, NUL, padding)
+    before matching the pattern and returns the cleaned form, while the entry
+    keeps the raw one. A raw ``"p\\x00"`` that validates as ``"p"`` would still
+    be the string handed to ``aws`` argv, where an embedded NUL raises out of
+    ``subprocess`` as a 500. So an entry is well formed only when validation
+    returns it unchanged.
+    """
+    if not isinstance(raw, dict):
+        return False
+    name = raw.get("name")
+    region = raw.get("region", "")
+    if not isinstance(name, str) or not name or not isinstance(region, str):
+        logger.warning("deploy profile registry: dropping malformed entry %r", str(name)[:40])
+        return False
+    try:
+        clean_name = validate_field(name, STORED_PROFILE_SPEC)
+        clean_region = validate_field(region, REGION_SPEC) if region else ""
+    except ValidationError:
+        clean_name, clean_region = "", None
+    if clean_name != name or clean_region != region:
+        logger.warning("deploy profile registry: dropping malformed entry %r", name[:40])
+        return False
+    return True
+
+
+def _parse_registry(raw: Any) -> dict[str, Any]:
+    """Build the v2 registry from a parsed ``profiles.json``-shaped document.
+
+    Entries that fail :func:`_well_formed_entry` are left out. The default is
+    then settled by WHY it is missing: a default that names no entry at all (a
+    stale pointer) falls back to the first profile, as it always has; a default
+    whose entry was present but dropped as malformed becomes ``""``. Falling
+    back there would silently point a deploy that names no profile at a
+    different account and region, with no error -- a 400 "not configured" is
+    the honest answer, and the warning log names the dropped entry.
+
+    This is a LOAD-time guarantee only: this function never substitutes a
+    profile. A later registry write runs under its own rules -- the AWS
+    control app's unregister route, for one, fills an empty default with the
+    first kept profile -- so the cleared default can be re-pointed by an
+    explicit profile edit afterwards.
+    """
+    entries = [p for p in raw.get("profiles", []) if isinstance(p, dict)]
+    profiles = [
+        make_entry(str(p.get("name", "")), str(p.get("region", "")),
+                   account=str(p.get("account", "")),
+                   verified_at=str(p.get("verified_at", "")),
+                   note=str(p.get("note", "")))
+        for p in entries if _well_formed_entry(p)
+    ][:_MAX_PROFILES]
+    default = str(raw.get("default", ""))
+    if default and not any(p["name"] == default for p in profiles):
+        # str(): the stored name may be a bare number (``123456789012``), which
+        # the loader has always normalized through ``str`` and which fails
+        # _well_formed_entry as a non-string; comparing the raw value would miss
+        # it and fall back to another profile, i.e. another account.
+        default_was_dropped = any(str(p.get("name", "")) == default for p in entries)
+        default = "" if default_was_dropped else (profiles[0]["name"] if profiles else "")
+    return {"version": 2, "profiles": profiles, "default": default}
+
+
 def load_registry() -> dict[str, Any]:
     """Load the profile registry, migrating the legacy v1 single-profile config.
 
@@ -174,41 +258,20 @@ def load_registry() -> dict[str, Any]:
     at once instead of asking each call site to guard a shape it did not parse.
     """
     try:
-        raw = json.loads(_registry_path().read_text(encoding="utf-8"))
-        profiles = [
-            make_entry(str(p.get("name", "")), str(p.get("region", "")),
-                       account=str(p.get("account", "")),
-                       verified_at=str(p.get("verified_at", "")),
-                       note=str(p.get("note", "")))
-            for p in raw.get("profiles", []) if isinstance(p, dict) and p.get("name")
-        ][:_MAX_PROFILES]
-        default = str(raw.get("default", ""))
-        if default and not any(p["name"] == default for p in profiles):
-            default = profiles[0]["name"] if profiles else ""
-        return {"version": 2, "profiles": profiles, "default": default}
+        return _parse_registry(json.loads(_registry_path().read_text(encoding="utf-8")))
     except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     # Legacy app-dir registry migration (apps/deploy-web/data/profiles.json)
     try:
-        raw = json.loads(_legacy_registry_path().read_text(encoding="utf-8"))
-        profiles = [
-            make_entry(str(p.get("name", "")), str(p.get("region", "")),
-                       account=str(p.get("account", "")),
-                       verified_at=str(p.get("verified_at", "")),
-                       note=str(p.get("note", "")))
-            for p in raw.get("profiles", []) if isinstance(p, dict) and p.get("name")
-        ][:_MAX_PROFILES]
-        default = str(raw.get("default", ""))
-        if default and not any(p["name"] == default for p in profiles):
-            default = profiles[0]["name"] if profiles else ""
-        return {"version": 2, "profiles": profiles, "default": default}
+        return _parse_registry(json.loads(_legacy_registry_path().read_text(encoding="utf-8")))
     except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
         pass
     # v1 single-profile migration path (apps/deploy-web/data/config.json)
     try:
         legacy = json.loads(_legacy_config_path().read_text(encoding="utf-8"))
-        name = str(legacy.get("profile", ""))
-        if name:
+        if _well_formed_entry({"name": legacy.get("profile", ""),
+                               "region": legacy.get("region", "")}):
+            name = str(legacy["profile"])
             return {"version": 2, "default": name,
                     "profiles": [make_entry(name, str(legacy.get("region", "")))]}
     except (FileNotFoundError, OSError, json.JSONDecodeError, AttributeError, TypeError):
