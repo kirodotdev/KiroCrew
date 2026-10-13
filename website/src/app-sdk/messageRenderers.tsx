@@ -34,6 +34,7 @@ import SubagentCompletionCard from '../pages/chat/SubagentCompletionCard'
 import NudgeCard from '../pages/chat/NudgeCard'
 import NoticeCard from '../pages/chat/NoticeCard'
 import { SystemNoticeRow, isSystemNoticeRow } from '../pages/chat/CompactionCard'
+import { replyShowsFooter } from '../pages/chat/replyFooter'
 import SkillLoadCard, { isSkillLoadRow } from '../pages/chat/SkillLoadCard'
 import { ErrorCard } from '../pages/chat/ErrorCard'
 import { decisionStripFieldOf } from '../pages/chat/decisionRecord'
@@ -492,11 +493,11 @@ export interface AssistantBubbleOptions {
 
 /**
  * The assistant reply as the SDK draws it, minus the row layout: the footer
- * rule (a finished reply shows its footer once the turn is over — another user
- * or assistant row follows, or nothing follows and the session is idle) and
- * every prop the bubble takes off the message. Exported so a host that places
- * the reply differently (a crewmate's chat draws it as a bordered bubble in a
- * run) renders the SAME bubble rather than a second copy of this logic.
+ * rule (`replyShowsFooter`: a finished reply shows its footer once its turn is
+ * over) and every prop the bubble takes off the message. Exported so a host
+ * that places the reply differently (a crewmate's chat draws it as a bordered
+ * bubble in a run) renders the SAME bubble rather than a second copy of this
+ * logic.
  * Returns null for a say-nothing row (bare U+200B): invisible-only content
  * would draw as an empty bubble.
  */
@@ -528,25 +529,10 @@ export function renderAssistantBubble(
   // Same skip as ChatPage's inline chain — see utils/invisibleText.
   if (isHiddenInvisibleAssistantRow(m)) return null
   const isStreaming = m.role === 'streaming'
-  // The footer belongs to a FINISHED reply. It shows once the turn is over,
-  // which is either because another user or assistant row follows, or
-  // because nothing follows and the session has gone idle.
-  let showFooter = false
-  if (!isStreaming) {
-    let nextRelevant = false
-    for (let j = ctx.index + 1; j < ctx.messages.length; j++) {
-      if (ctx.messages[j].role === 'user') { showFooter = true; nextRelevant = true; break }
-      // A hidden invisible-only row draws nothing, so it cannot host the
-      // footer; pass over it to the row that renders.
-      if (isHiddenInvisibleAssistantRow(ctx.messages[j])) continue
-      // A system-notice row (compaction / session reload) draws a system
-      // card, not a reply, so it cannot end the turn either.
-      if (isSystemNoticeRow(ctx.messages[j])) continue
-      if (ctx.messages[j].role === 'assistant' || ctx.messages[j].role === 'streaming') { nextRelevant = true; break }
-    }
-    if (!nextRelevant) showFooter = !ctx.running
-    if (opts.forceFooter) showFooter = true
-  }
+  // The footer belongs to a FINISHED reply, by the rule every surface shares
+  // (`replyShowsFooter`); a host that groups rows into runs claims it at the
+  // run's end (`forceFooter`).
+  const showFooter = !isStreaming && (opts.forceFooter === true || replyShowsFooter(m, ctx.messages, ctx.index, ctx.running))
   const bubble = (
     <AssistantMessage
       content={m.content}

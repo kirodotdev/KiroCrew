@@ -31,13 +31,13 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from chat_test_helpers import _make_state
+from chat_test_helpers import _make_state, drain_background_tasks
 
 from kiro_crew.acp.types import STOP_REASON_END_TURN, TurnUsage
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _run_chat
 from kiro_crew.dashboard.handlers import usage as usage_mod
-from kiro_crew.testing.wait import await_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 class _FakeSlot:
@@ -560,6 +560,39 @@ class TestStoppedTurnFooter:
         assert _rows(tmp_path) == []
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stop_pressed", [True, False], ids=["stop", "involuntary-cancel"])
+    async def test_an_end_before_dispatch_leaves_the_previous_footer_alone(
+        self, tmp_path, monkeypatch, stop_pressed
+    ) -> None:
+        # A turn ending during pre-prompt preparation (after the client is
+        # published, before dispatch captures the turn's message boundary)
+        # must not attach anything: with the boundary still 0 the attach would
+        # walk back to the PREVIOUS reply and overwrite its recorded footer.
+        # Whatever ended it: the gate is the boundary, not the reason.
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="pre-dispatch-stop-slot")
+        prior_stats = {"elapsed_ms": 5000, "credits": 9.0}
+        slot.append(
+            "assistant", "previous reply", "msg msg-a", meta={"turn_stats": dict(prior_stats)}
+        )
+        slot.append("user", "next question", "msg msg-u")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+
+        async def _end_during_preparation(*args, **kwargs):
+            await _let_the_turn_clock_advance()
+            if stop_pressed:
+                slot._stopping = True
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(chat_runner, "publish_turn_identity", _end_during_preparation)
+
+        await _run_chat(state, slot, "next question")
+
+        previous = next(m for m in slot.messages if m.get("content") == "previous reply")
+        assert previous["meta"]["turn_stats"] == prior_stats
+
+    @pytest.mark.asyncio
     async def test_an_involuntary_cancel_gets_the_footer_too(self, tmp_path, monkeypatch) -> None:
         # A tab close / idle sweep / shutdown / turn-ceiling cancel ("error:
         # cancelled") leaves a reply the user read, just like a Stop press, so
@@ -590,35 +623,659 @@ class TestStoppedTurnFooter:
         assert len(rows) == 1
         assert rows[0]["credits"] == pytest.approx(2.0)
 
+
+class TestErrorEndTurnFooter:
+    """What the abnormal-end seam guarantees around the footer it stamps.
+
+    The stamp itself -- every abnormal end gives its reply the completed-turn
+    footer -- is pinned by ``TestStoppedTurnFooter`` and ``TestAbnormalEndFooter``
+    below. These pin the seam's ordering and its edges: the footer is on the
+    reply before a shutdown's last save, the slot is marked dirty for it, it
+    reaches open clients before a queued recovery runs, it lands on the reply
+    rather than a system notice, it is found in a window at its cap, it is put on
+    once however many ends the turn's teardown reaches, the ceiling's acknowledged
+    stop keeps the completion's figures (first-output latency included), a
+    completion that reported no billing is billed by the arm that cut it, and a
+    failure inside the seam costs its caller nothing. Driven through the real
+    ``_run_chat`` with the REAL ``provider_last_turn_usage``.
+    """
+
+    @staticmethod
+    def _assistant_row(slot, content):
+        rows = [
+            m for m in slot.messages if m.get("role") == "assistant" and m["content"] == content
+        ]
+        assert rows, f"no assistant row {content!r} in {[m.get('role') for m in slot.messages]}"
+        return rows[-1]
+
+    @staticmethod
+    def _assert_cut_reply_footer(slot, credits):
+        partial = TestErrorEndTurnFooter._assistant_row(slot, "partial answer")
+        stats = (partial.get("meta") or {}).get("turn_stats")
+        assert stats is not None, "the reply the turn's end cut short carries no footer"
+        assert stats["credits"] == pytest.approx(credits)
+        assert stats["model"] == "served-model"
+        assert stats["elapsed_ms"] > 0
+        # What streamed is a saved reply, not chunk rows a save drops, and every
+        # card the end appended follows the reply it cut short.
+        assert not [m for m in slot.messages if m.get("role") == "chunk"]
+        at = slot.messages.index(partial)
+        assert all(i > at for i, m in enumerate(slot.messages) if m.get("role") == "error")
+
     @pytest.mark.asyncio
-    async def test_a_stop_before_dispatch_leaves_the_previous_footer_alone(
-        self, tmp_path, monkeypatch
+    @pytest.mark.parametrize("native_stop", ["unacknowledged", "acknowledged"])
+    async def test_the_turn_ceiling_puts_the_footer_on_the_partial_reply(
+        self, tmp_path, monkeypatch, native_stop
     ) -> None:
-        # A Stop landing during pre-prompt preparation (after the client is
-        # published, before dispatch captures the turn's message boundary)
-        # must not attach anything: with the boundary still 0 the attach would
-        # walk back to the PREVIOUS reply and overwrite its recorded footer.
+        # At the ceiling the native agent is sent a stop first, and the task is
+        # cancelled after. An agent that does not answer leaves that cancel to
+        # land on the stream. One that does answer ends the prompt as
+        # ``cancelled``: the completion bills the turn, and the cancel lands on an
+        # await after that and before the completion's own footer attach.
+        from kiro_crew.acp.types import STOP_REASON_CANCELLED
+        from kiro_crew.dashboard import turn_dispatch as td
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
         monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
         monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
-        state, slot, client = _drive_state_and_slot(tmp_path, name="pre-dispatch-stop-slot")
-        prior_stats = {"elapsed_ms": 5000, "credits": 9.0}
-        slot.append(
-            "assistant", "previous reply", "msg msg-a", meta={"turn_stats": dict(prior_stats)}
+        monkeypatch.setattr(
+            td, "resolve_turn_limit", lambda slot=None: (60.0, td.TURN_LIMIT_GLOBAL)
         )
-        slot.append("user", "next question", "msg msg-u")
-        client.last_prompt_stats = _RealStats(credits=0.0)
+        # A hang bound only: the acknowledgement below arrives on a signal, and a
+        # short bound would let a slow host turn the acknowledged stop into an
+        # unanswered one.
+        monkeypatch.setattr(td, "native_cancel_ack_timeout_secs", lambda: 30.0)
+        # The turn's first-output clock reads a fixed 250 ms, so the footer's
+        # ``ttft_ms`` is a value to compare, not a host timing.
+        monkeypatch.setattr(
+            chat_runner,
+            "_turn_clock",
+            lambda slot, t0, **_: chat_runner._FirstVisibleClock(t0, clock=lambda: t0 + 0.25),
+        )
+        # Hold the ceiling's timer and fire it once the reply has streamed: a
+        # wall-clock ceiling short enough for a test races the turn's own setup on
+        # a loaded host and can cut the turn before it streams anything.
+        loop = asyncio.get_running_loop()
+        real_call_later = loop.call_later
+        deadline = []
 
-        async def _stop_during_preparation(*args, **kwargs):
+        def _hold_the_ceiling(delay, callback, *args, **kwargs):
+            if getattr(callback, "__name__", "") == "_on_deadline":
+                deadline.append(callback)
+                return real_call_later(3600, lambda: None)
+            return real_call_later(delay, callback, *args, **kwargs)
+
+        monkeypatch.setattr(loop, "call_later", _hold_the_ceiling)
+        state, slot, client = _drive_state_and_slot(tmp_path, name=f"ceiling-{native_stop}-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        stop_sent = asyncio.Event()
+        # The completion's usage write is shielded from the task cancel and lands
+        # on its own afterwards; the row count waits for it, not for a sleep.
+        real_persist = chat_runner.persist_token_record_async
+        persist_started = asyncio.Event()
+        writes_done = []
+
+        async def _tracked_persist(*args, **kwargs):
+            persist_started.set()
+            try:
+                return await real_persist(*args, **kwargs)
+            finally:
+                writes_done.append(None)
+
+        monkeypatch.setattr(chat_runner, "persist_token_record_async", _tracked_persist)
+
+        async def _cancel_owned_turn(key, owner, *, wait_ack_timeout):
+            stop_sent.set()
+            if native_stop == "unacknowledged":
+                return "timeout"
+            # The prompt's response resolves both the stream's completion and
+            # this acknowledgement: the acknowledgement arrives once the
+            # completion has claimed the turn's row and started writing it.
+            await asyncio.wait_for(persist_started.wait(), timeout=30)
+            return "acked"
+
+        state.sessions.cancel_owned_turn = AsyncMock(side_effect=_cancel_owned_turn)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=4.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
             await _let_the_turn_clock_advance()
-            slot._stopping = True
+            (fire_the_ceiling,) = deadline
+            fire_the_ceiling()
+            await asyncio.wait_for(stop_sent.wait(), timeout=30)
+            if native_stop == "unacknowledged":
+                # The agent never answers the stop: the task cancel is what ends
+                # this wait. The bound only names a hang if that cancel never comes.
+                await asyncio.wait_for(asyncio.Event().wait(), timeout=30)
+            # The live stats move on after the completion reports; the footer
+            # must show what the completion billed, not a second read.
+            client.last_prompt_stats = _RealStats(credits=9.0)
+            yield LLMEvent(
+                kind=EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED, usage=TurnUsage(credits=4.0)
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        with pytest.raises(td.TurnTimeoutError) as raised:
+            await td.bounded_chat_turn(
+                _run_chat(state, slot, "test message"), state=state, slot=slot
+            )
+
+        state.sessions.cancel_owned_turn.assert_awaited_once()
+        expected_outcome = "acked" if native_stop == "acknowledged" else "timeout"
+        assert (
+            raised.value.native_cancel_outcome == expected_outcome
+        ), "the native stop was not answered the way this case sets up"
+        self._assert_cut_reply_footer(slot, 4.0)
+        # An acknowledged stop keeps the footer the completion would have written,
+        # its first-output latency included; a turn the seam bills itself records
+        # none, as a Stop press does (``test_a_stop_before_any_billing...``).
+        stats = self._assistant_row(slot, "partial answer")["meta"]["turn_stats"]
+        if native_stop == "acknowledged":
+            assert (
+                stats.get("ttft_ms") == 250
+            ), "the cut reply's footer lost the completion's ttft_ms"
+        else:
+            assert "ttft_ms" not in stats
+        assert slot.messages[-1]["meta"]["kind"] == td.TURN_TIMEOUT_KIND
+        await async_wait_until(lambda: writes_done)
+        # An acknowledged stop is billed by the completion it produced; an
+        # unanswered one by the seam, under the involuntary-cancel label.
+        billed_by = "cancelled" if native_stop == "acknowledged" else "error: cancelled"
+        assert [r["stop_reason"] for r in _rows(tmp_path)] == [billed_by]
+
+    @pytest.mark.asyncio
+    async def test_a_footer_put_on_after_a_flush_marks_the_slot_dirty(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The periodic flush writes only a dirty slot, and it can run after the
+        # reply row was saved and before the footer goes on it in place: the
+        # footer marks the slot dirty itself, or it stays off disk.
+        from kiro_crew.acp.session_handle import AcpRequestTimeout
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="flushed-footer-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        real_pick = chat_runner._last_reply_row
+        real_send = chat_runner._broadcast_turn_stats
+        dirty_after_stamp = []
+
+        def _flush_ran_first(slot_, *args, **kwargs):
+            slot_._dirty = False
+            return real_pick(slot_, *args, **kwargs)
+
+        def _record_dirty(state_, slot_, row, stats):
+            dirty_after_stamp.append(slot_._dirty)
+            return real_send(state_, slot_, row, stats)
+
+        monkeypatch.setattr(chat_runner, "_last_reply_row", _flush_ran_first)
+        monkeypatch.setattr(chat_runner, "_broadcast_turn_stats", _record_dirty)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.5)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            await _let_the_turn_clock_advance()
+            raise AcpRequestTimeout("session/prompt timed out")
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        self._assert_cut_reply_footer(slot, 2.5)
+        assert dirty_after_stamp == [True], "the footer went on without marking the slot dirty"
+
+    @pytest.mark.asyncio
+    async def test_a_cut_reply_gets_its_footer_in_a_window_at_its_cap(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # At the window's cap every append front-trims a row, so the index the
+        # turn started at stops naming its first row: the footer finds the reply
+        # by the row the turn started after.
+        from kiro_crew.acp.session_handle import AcpRequestTimeout
+        from kiro_crew.dashboard import state as state_mod
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="capped-window-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        cap = 12
+        monkeypatch.setattr(state_mod, "_MAX_SLOT_MESSAGES", cap)
+        while len(slot.messages) < cap:
+            slot.append("assistant", "an earlier reply", "msg msg-a", broadcast=False)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.5)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            await _let_the_turn_clock_advance()
+            raise AcpRequestTimeout("session/prompt timed out")
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        assert len(slot.messages) <= cap
+        self._assert_cut_reply_footer(slot, 2.5)
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_saves_the_partial_reply_with_its_footer(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # While the gateway shuts down, the turn's teardown skips its own save, so
+        # the helper's save is the last write the reply gets: a footer put on
+        # after it is gone when the gateway starts again.
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="shutdown-footer-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        state.sessions.final_drain_started = True
+        saved_footers = []
+        real_save = chat_runner.save_slot_off_loop
+
+        async def _recording_save(state_, slot_, *args, **kwargs):
+            saved_footers.extend(
+                (m.get("meta") or {}).get("turn_stats")
+                for m in slot_.messages
+                if m.get("role") == "assistant" and m.get("content") == "partial answer"
+            )
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        monkeypatch.setattr(chat_runner, "save_slot_off_loop", _recording_save)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            await _let_the_turn_clock_advance()
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(chat_runner, "publish_turn_identity", _stop_during_preparation)
+        client.stream = _stream
+        client.stream_command = _stream
 
-        await _run_chat(state, slot, "next question")
+        await _run_chat(state, slot, "test message")
 
-        previous = next(m for m in slot.messages if m.get("content") == "previous reply")
-        assert previous["meta"]["turn_stats"] == prior_stats
+        assert saved_footers, "the shutdown never saved the partial reply"
+        assert saved_footers[-1] is not None, "the reply was saved at shutdown without its footer"
+        assert saved_footers[-1]["credits"] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_shutdown_saves_a_footer_put_on_a_flushed_segment(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The reply's text was already a row (flushed at the tool call), so the
+        # cut adds no text: the footer alone is new, and it must still be saved.
+        from kiro_crew.providers.base import EVENT_TEXT_CHUNK, EVENT_TOOL_CALL, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="shutdown-segment-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        state.sessions.final_drain_started = True
+        saved_footers = []
+        real_save = chat_runner.save_slot_off_loop
+
+        async def _recording_save(state_, slot_, *args, **kwargs):
+            saved_footers.extend(
+                (m.get("meta") or {}).get("turn_stats")
+                for m in slot_.messages
+                if m.get("role") == "assistant" and m.get("content") == "partial answer"
+            )
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        monkeypatch.setattr(chat_runner, "save_slot_off_loop", _recording_save)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            yield LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read")
+            await _let_the_turn_clock_advance()
+            raise asyncio.CancelledError()
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        assert saved_footers, "the footer put on at shutdown was never saved"
+        assert saved_footers[-1] is not None, "the reply was saved at shutdown without its footer"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("billed", [True, False], ids=["billed", "unbilled"])
+    @pytest.mark.parametrize("late_end", ["error", "cancel"])
+    async def test_an_end_after_the_reply_was_saved_does_not_save_it_twice(
+        self, tmp_path, monkeypatch, late_end, billed
+    ) -> None:
+        # The end-of-turn flush saved the reply and gave it its footer, and the
+        # text it saved stays in the turn's buffer for the legs after it. An
+        # error or a cancel landing after that reaches the seam with the text
+        # still there, and with the completion's figures captured whether or not
+        # it billed.
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name=f"late-{late_end}-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        late = (
+            RuntimeError("context read failed") if late_end == "error" else asyncio.CancelledError()
+        )
+        state.sessions.check_context_usage = MagicMock(side_effect=late)
+        patches = []
+
+        def _record(event, payload, *args, **kwargs):
+            if event == "chat_message_update" and "turn_stats" in (payload.get("meta") or {}):
+                patches.append(payload)
+
+        state.broadcast_ws = MagicMock(side_effect=_record)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="the answer")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason=STOP_REASON_END_TURN,
+                usage=TurnUsage(credits=2.0) if billed else TurnUsage(),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        replies = [m for m in slot.messages if m.get("role") == "assistant"]
+        assert [m["content"] for m in replies] == ["the answer"], "the reply was saved twice"
+        assert (replies[0].get("meta") or {}).get("turn_stats") is not None
+        # The footer the completion put on is the reply's: the late end neither
+        # stamps it again nor sends a patch for it.
+        assert patches == [], "the late end stamped the completed reply's footer again"
+        # A completion that billed wrote the row; otherwise the late end bills
+        # the turn once, under its own label.
+        if billed:
+            expected = STOP_REASON_END_TURN
+        else:
+            expected = "error: terminal" if late_end == "error" else "error: cancelled"
+        assert [r["stop_reason"] for r in _rows(tmp_path)] == [expected]
+
+    @pytest.mark.asyncio
+    async def test_a_failing_reply_save_still_queues_the_recovery(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The helper is best-effort: a recovery arm that calls it still owes its
+        # recovery, so a failure inside it must not turn a stall into an error.
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "_recovery_delay", AsyncMock())
+        state, slot, client = _drive_state_and_slot(tmp_path, name="failing-save-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        real_redact = chat_runner._redact_segment
+        redactions = 0
+
+        def _first_save_fails(slot_, body):
+            nonlocal redactions
+            redactions += 1
+            if redactions == 1:
+                raise RuntimeError("redaction failed")
+            return real_redact(slot_, body)
+
+        monkeypatch.setattr(chat_runner, "_redact_segment", _first_save_fails)
+        attempts = 0
+
+        async def _stream(msg):
+            nonlocal attempts
+            attempts += 1
+            client.last_prompt_stats = _RealStats(credits=1.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"answer {attempts}")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason="stale_recover" if attempts == 1 else STOP_REASON_END_TURN,
+                usage=TurnUsage(credits=1.0),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await drain_background_tasks(state)
+
+        assert attempts == 2, "a failure saving the partial reply cancelled the recovery"
+        assert not [m for m in slot.messages if m.get("content") == "redaction failed"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stop_reason",
+        [
+            "stale_recover",
+            "error: tool stall",
+            "error: compaction failed",
+            "error: connection reset",
+        ],
+        ids=["stale-recover", "tool-stall", "compaction-failed", "connection-lost"],
+    )
+    async def test_a_recovery_arm_bills_a_turn_its_completion_did_not(
+        self, tmp_path, monkeypatch, stop_reason
+    ) -> None:
+        # The completion reported no billing, so it wrote no row; the provider
+        # still holds the turn's credits. The seam bills the turn once, under the
+        # arm's own stop reason, and the footer shows the figure that row records.
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "_recovery_delay", AsyncMock())
+        state, slot, client = _drive_state_and_slot(tmp_path, name="unbilled-arm-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        attempts = 0
+
+        async def _stream(msg):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                client.last_prompt_stats = _RealStats(credits=4.0)
+                yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+                await _let_the_turn_clock_advance()
+                yield LLMEvent(kind=EVENT_COMPLETE, stop_reason=stop_reason, usage=TurnUsage())
+                return
+            client.last_prompt_stats = _RealStats(credits=1.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="recovered answer")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(
+                kind=EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN, usage=TurnUsage(credits=1.0)
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        self._assert_cut_reply_footer(slot, 4.0)
+        await drain_background_tasks(state)
+
+        cut_rows = [r for r in _rows(tmp_path) if r["stop_reason"] == stop_reason]
+        assert [r["credits"] for r in cut_rows] == [pytest.approx(4.0)]
+        recovers = stop_reason != "error: compaction failed"
+        assert len(_rows(tmp_path)) == (2 if recovers else 1)
+
+    @pytest.mark.asyncio
+    async def test_a_cancel_on_the_shutdown_save_still_leaves_the_arm_its_recovery(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The gateway is shutting down and a cancel lands on the helper's save:
+        # the stall arm that called it still posts its card and queues its
+        # recovery, and the turn's usage row is still written.
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="cancelled-save-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        state.sessions.final_drain_started = True
+        real_save = chat_runner.save_slot_off_loop
+        cancelled_saves = 0
+
+        async def _cancel_the_reply_save(state_, slot_, *args, **kwargs):
+            # The helper's save is the one that runs once the reply row exists.
+            nonlocal cancelled_saves
+            if any(m.get("content") == "partial answer" for m in slot_.messages):
+                cancelled_saves += 1
+                raise asyncio.CancelledError()
+            return await real_save(state_, slot_, *args, **kwargs)
+
+        monkeypatch.setattr(chat_runner, "save_slot_off_loop", _cancel_the_reply_save)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(kind=EVENT_COMPLETE, stop_reason="stale_recover", usage=TurnUsage())
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        assert cancelled_saves == 1, "the cancel never reached the helper's save"
+        self._assert_cut_reply_footer(slot, 2.0)
+        cards = [m for m in slot.messages if m.get("role") == "error"]
+        assert cards, "the cancelled save cost the stall arm its card"
+        assert cards[-1]["content"] == "⟳ Recovering a stalled turn…"
+        assert slot._stale_recovery_retries == 1, "the cancelled save cost the arm its recovery"
+        rows = _rows(tmp_path)
+        assert [r["stop_reason"] for r in rows] == ["stale_recover"]
+        assert rows[0]["credits"] == pytest.approx(2.0)
+
+    @pytest.mark.asyncio
+    async def test_a_stall_sends_the_cut_reply_its_footer_before_the_recovery_runs(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The recovery is queued and takes the slot over without a ``chat_done``,
+        # so no refresh reaches the client until it finishes: the footer goes out
+        # on its own patch, while the recovery has not yet started.
+        from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK, LLMEvent
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        monkeypatch.setattr(chat_runner, "_recovery_delay", AsyncMock())
+        state, slot, client = _drive_state_and_slot(tmp_path, name="live-footer-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+        attempts = 0
+        patches = []
+
+        def _record(event, payload, *args, **kwargs):
+            if event == "chat_message_update" and "turn_stats" in (payload.get("meta") or {}):
+                patches.append((attempts, payload))
+
+        state.broadcast_ws = MagicMock(side_effect=_record)
+
+        async def _stream(msg):
+            nonlocal attempts
+            attempts += 1
+            client.last_prompt_stats = _RealStats(credits=3.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text=f"answer {attempts}")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason="stale_recover" if attempts == 1 else STOP_REASON_END_TURN,
+                usage=TurnUsage(credits=3.0),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+        await drain_background_tasks(state)
+
+        assert attempts == 2
+        cut = self._assistant_row(slot, "answer 1")
+        assert patches, "the cut reply's footer was never sent to open clients"
+        sent_at, payload = patches[0]
+        assert sent_at == 1, "the footer went out only after the recovery started"
+        assert payload["slot"] == slot.key
+        assert payload["mid"] == cut["meta"]["mid"]
+        assert payload["meta"]["turn_stats"] == cut["meta"]["turn_stats"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_compaction_puts_the_footer_on_the_reply_not_its_notice(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        # The text was saved at the tool call, and the failed compaction's notice
+        # is the turn's last assistant-role row: the footer belongs on the text.
+        from kiro_crew.acp.types import EVENT_COMPACTION_STATUS
+        from kiro_crew.providers.base import (
+            EVENT_COMPLETE,
+            EVENT_TEXT_CHUNK,
+            EVENT_TOOL_CALL,
+            LLMEvent,
+        )
+
+        monkeypatch.setattr(usage_mod, "_TOKEN_USAGE_DIR", tmp_path)
+        monkeypatch.setattr(chat_runner, "read_turn_model", lambda c: "served-model")
+        state, slot, client = _drive_state_and_slot(tmp_path, name="compaction-notice-slot")
+        client.last_prompt_stats = _RealStats(credits=0.0)
+
+        async def _stream(msg):
+            client.last_prompt_stats = _RealStats(credits=2.0)
+            yield LLMEvent(kind=EVENT_TEXT_CHUNK, text="partial answer")
+            yield LLMEvent(kind=EVENT_TOOL_CALL, title="read_file", tool_kind="read")
+            await _let_the_turn_clock_advance()
+            yield LLMEvent(kind=EVENT_COMPACTION_STATUS, text="failed")
+            yield LLMEvent(
+                kind=EVENT_COMPLETE,
+                stop_reason="error: compaction failed",
+                usage=TurnUsage(credits=2.0),
+            )
+
+        client.stream = _stream
+        client.stream_command = _stream
+
+        await _run_chat(state, slot, "test message")
+
+        notices = [m for m in slot.messages if (m.get("meta") or {}).get("kind") == "compaction"]
+        assert notices, "the failed compaction appended no notice"
+        assert all("turn_stats" not in (m.get("meta") or {}) for m in notices)
+        self._assert_cut_reply_footer(slot, 2.0)
+
+
+def test_the_last_reply_row_passes_over_a_system_notice() -> None:
+    from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("last-reply-row")
+    slot.append("assistant", "earlier turn", "msg msg-a", broadcast=False)
+    boundary = len(slot.messages)
+    _note_reply_row(slot, slot.append("assistant", "the reply", "msg msg-a", broadcast=False))
+    slot.append("tool", "ran a tool", "msg msg-tool", broadcast=False)
+    # Recorded as well, so only the notice rule can pass over it.
+    notice = slot.append(
+        "assistant", "notice", "msg msg-a", meta={"kind": "compaction"}, broadcast=False
+    )
+    _note_reply_row(slot, notice)
+
+    assert chat_runner._last_reply_row(slot, boundary, None)["content"] == "the reply"
+    assert chat_runner._last_reply_row(slot, len(slot.messages), None) is None
+
+
+def test_the_last_reply_row_is_one_the_runner_recorded() -> None:
+    # A workflow completion lands in the window as an assistant row another
+    # writer appended mid-turn: it is newer than the reply, and not the reply.
+    from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
+    from kiro_crew.dashboard.state import _ChatSlot
+
+    slot = _ChatSlot("recorded-reply-row")
+    slot.append("user", "hello", "msg msg-u", broadcast=False)
+    start = chat_runner.row_mid(slot.messages[-1])
+    _note_reply_row(slot, slot.append("assistant", "the reply", "msg msg-a", broadcast=False))
+    slot.append("assistant", "[Workflow completion event]", "msg msg-a", broadcast=False)
+
+    assert chat_runner._last_reply_row(slot, 0, start)["content"] == "the reply"
 
 
 class TestAbnormalEndFooter:
@@ -913,14 +1570,14 @@ class TestAbnormalEndFooter:
             return _s
 
         state, slot, _ = self._wire(tmp_path, monkeypatch, "foreign-complete-slot", _stream)
-        real_attach = chat_runner._attach_owned_turn_stats
+        real_attach = chat_runner._attach_turn_stats
 
         def _inject_then_attach(sl, *args, **kwargs):
             if not self._reply_rows(sl, "workflow result"):
                 sl.append("assistant", "workflow result", "msg msg-a")
             return real_attach(sl, *args, **kwargs)
 
-        monkeypatch.setattr(chat_runner, "_attach_owned_turn_stats", _inject_then_attach)
+        monkeypatch.setattr(chat_runner, "_attach_turn_stats", _inject_then_attach)
         await _run_chat(state, slot, "test message")
 
         (foreign,) = self._reply_rows(slot, "workflow result")

@@ -11,7 +11,7 @@ import time
 import pytest
 
 from kiro_crew.dashboard import chat_runner
-from kiro_crew.dashboard.chat_runner import _attach_owned_turn_stats, _attach_turn_stats
+from kiro_crew.dashboard.chat_runner import _attach_turn_stats
 from kiro_crew.dashboard.handlers import usage
 from kiro_crew.dashboard.state import _ChatSlot
 
@@ -143,27 +143,6 @@ class TestAttachTurnStats:
         assert "turn_stats" not in slot.messages[0].get("meta", {})
         assert slot.messages[1]["meta"]["turn_stats"]["credits"] == 0.5
 
-    def test_reply_mids_skips_a_row_another_writer_appended(self):
-        # A workflow result lands after this turn's reply: with reply_mids the
-        # stats stay on the reply the runner appended.
-        from kiro_crew.dashboard.state import row_mid
-
-        slot = _ChatSlot("test-reply-mids")
-        reply = slot.append("assistant", "this turn", "msg msg-a", broadcast=False)
-        slot.append("assistant", "workflow result", "msg msg-a", broadcast=False)
-        _attach_owned_turn_stats(
-            slot,
-            3000,
-            0.5,
-            0.0,
-            turn_boundary=0,
-            model="",
-            ttft_ms=0,
-            reply_mids=[row_mid(reply)],
-        )
-        assert slot.messages[0]["meta"]["turn_stats"]["credits"] == 0.5
-        assert "turn_stats" not in slot.messages[1].get("meta", {})
-
     def test_boundary_reset_after_clear_attaches_to_confirmation(self):
         # Regression (Codex MEDIUM): a clear-conversation turn empties
         # slot.messages then appends a "Conversation cleared" confirmation.
@@ -198,6 +177,49 @@ class TestAttachTurnStats:
         meta = slot.messages[-1]["meta"]
         assert meta["file_changes"] == [{"path": "/tmp/x"}]
         assert meta["turn_stats"]["elapsed_ms"] == 2000
+
+    def test_lands_on_the_recorded_reply_not_a_row_another_writer_appended(self):
+        # A workflow completion is appended into the shared window by another
+        # writer after this turn's reply: newer, assistant-role, and not the reply.
+        from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
+
+        slot = _ChatSlot("test-recorded-reply")
+        slot.append("user", "hello", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        start = chat_runner.row_mid(slot.messages[-1])
+        reply = slot.append("assistant", "this turn", "msg msg-a", broadcast=False)
+        _note_reply_row(slot, reply)
+        slot.append("assistant", "[Workflow completion event]", "msg msg-a", broadcast=False)
+
+        assert _attach_turn_stats(
+            slot, 3000, 0.5, 0.0, turn_boundary=boundary, turn_start_mid=start
+        )
+        assert reply["meta"]["turn_stats"]["credits"] == 0.5
+        assert "turn_stats" not in slot.messages[-1].get("meta", {})
+
+    def test_a_turn_that_recorded_no_reply_keeps_the_position_rule(self):
+        # A slash command's confirmation is appended as a plain assistant row,
+        # never recorded as a reply: the newest assistant row of the turn takes
+        # the stats, as before.
+        slot = _ChatSlot("test-unrecorded-reply")
+        slot.append("user", "/clear", "msg msg-u", broadcast=False)
+        boundary = len(slot.messages)
+        slot.append("assistant", "🗑️ Conversation cleared.", "msg msg-a", broadcast=False)
+
+        assert _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=boundary)
+        assert slot.messages[-1]["meta"]["turn_stats"]["credits"] == 0.5
+
+    def test_passes_over_a_system_notice_after_the_reply(self):
+        slot = _ChatSlot("test-notice-after-reply")
+        boundary = len(slot.messages)
+        slot.append("assistant", "the reply", "msg msg-a", broadcast=False)
+        slot.append(
+            "assistant", "notice", "msg msg-a", meta={"kind": "compaction"}, broadcast=False
+        )
+
+        assert _attach_turn_stats(slot, 3000, 0.5, 0.0, turn_boundary=boundary)
+        assert slot.messages[-2]["meta"]["turn_stats"]["credits"] == 0.5
+        assert "turn_stats" not in slot.messages[-1]["meta"]
 
 
 class TestTurnStatsTtft:

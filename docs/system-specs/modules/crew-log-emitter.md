@@ -489,13 +489,16 @@ handle-holding caller. The static pin cannot see that case; a retention test cov
 ### A dying turn still records what it produced
 
 The recovery handlers -- cancellation, a signed-out CLI, a dead backend process, an
-exhausted prompt-busy retry, and branches of the generic `AcpError` arm --
-persist the turn's partial reply straight through `slot.append` rather than
-`_flush_segment`, because they purge the chunk rows first and must not broadcast a
-segment. They go through one helper, `_persist_partial_reply`, which writes the body to
-the log as well, marked `interrupted`, BEFORE the turn's closers run, and then writes the
-turn's abnormal-end usage row (`_record_abnormal_turn_usage`) whether or not there was
-partial text. One helper rather than the block inline in each handler, for the reason
+exhausted prompt-busy retry, branches of the generic `AcpError` arm, the generic
+`Exception` arm, and the four arms that complete a turn and return before the
+end-of-turn flush to queue a recovery (a stale turn, a tool stall, a failed
+compaction, a retryable `error:` failure) -- persist the turn's partial reply
+straight through `slot.append` rather than `_flush_segment`, because they purge the
+chunk rows first and must not broadcast a segment. They go through one helper,
+`_persist_partial_reply`, which writes the body to the log as well, marked
+`interrupted`, BEFORE the turn's closers run, then gives the reply its footer, and
+then writes the turn's abnormal-end usage row (`_record_abnormal_turn_usage`)
+whether or not there was partial text. One helper rather than the block inline in each handler, for the reason
 redaction lives at the emitter's boundary: a new handler cannot forget it, and a test asserts that structurally
 rather than per branch, since each branch needs its own error class, retry counter and
 depth to reach. Without the log copy the transcript holds text the user
