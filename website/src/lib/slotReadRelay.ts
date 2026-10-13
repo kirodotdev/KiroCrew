@@ -63,6 +63,36 @@ export const newerTs = (a?: string, b?: string): string | undefined => {
   return pb > pa ? b : a
 }
 
+/** The watermark a read made now carries. */
+export function slotReadWatermark(slot: string, readTs?: string): string | undefined {
+  // Every caller reads the slot on screen, so it has also seen any unsaved row
+  // this window received for it; carry that ts so the read covers it.
+  return newerTs(readTs, unsavedRowTs.get(slot))
+}
+
+/** Relay an already captured watermark without folding in later arrivals. */
+export function relaySlotReadWatermark(slot: string, watermark?: string): void {
+  if (!slot) return
+  const entry = pending.get(slot)
+  if (entry) {
+    entry.again = true  // coalesce into one trailing send at quiet-window end
+    entry.ts = newerTs(entry.ts, watermark)
+    return
+  }
+  sendSlotReadImpl(slot, watermark)
+  pending.set(slot, {
+    again: false,
+    ts: watermark,
+    timer: setTimeout(() => {
+      const e = pending.get(slot)
+      pending.delete(slot)
+      // Trailing edge: a read arrived mid-window; send the coalesced one so
+      // the LAST read of a burst is never dropped.
+      if (e?.again) sendSlotReadImpl(slot, e.ts)
+    }, READ_RELAY_QUIET_MS),
+  })
+}
+
 /** Relay "this slot was read here" to every other open dashboard window.
  *
  *  `readTs` is the read WATERMARK: the newest message timestamp this window
@@ -72,28 +102,7 @@ export const newerTs = (a?: string, b?: string): string | undefined => {
  *  switches away, N+1 badges B, A's relay lands after). A coalesced burst
  *  carries the newest watermark seen during the window. */
 export function emitSlotRead(slot: string, readTs?: string): void {
-  if (!slot) return
-  // Every caller reads the slot on screen, so it has also seen any unsaved row
-  // this window received for it; carry that ts so the read covers it.
-  readTs = newerTs(readTs, unsavedRowTs.get(slot))
-  const entry = pending.get(slot)
-  if (entry) {
-    entry.again = true  // coalesce into one trailing send at quiet-window end
-    entry.ts = newerTs(entry.ts, readTs)
-    return
-  }
-  sendSlotReadImpl(slot, readTs)
-  pending.set(slot, {
-    again: false,
-    ts: readTs,
-    timer: setTimeout(() => {
-      const e = pending.get(slot)
-      pending.delete(slot)
-      // Trailing edge: a read arrived mid-window; send the coalesced one so
-      // the LAST read of a burst is never dropped.
-      if (e?.again) sendSlotReadImpl(slot, e.ts)
-    }, READ_RELAY_QUIET_MS),
-  })
+  relaySlotReadWatermark(slot, slotReadWatermark(slot, readTs))
 }
 
 /** Flush a slot's pending trailing relay NOW (every slot when omitted).
