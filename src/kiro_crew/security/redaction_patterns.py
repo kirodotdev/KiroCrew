@@ -545,7 +545,7 @@ _CREDENTIAL_PREFILTER_AUTHORIZATION_RE = re.compile(r"z(?<=(?i:Authori)z)(?i:ati
 _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE = re.compile(r"Z(?<=(?i:Authori)Z)(?i:ation)")
 
 
-def _might_contain_credential(text: str) -> bool:
+def _might_contain_credential_py(text: str) -> bool:
     """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
 
     A strict superset of `_CREDENTIAL_PATTERNS.search(text) is not None`: it may
@@ -564,6 +564,73 @@ def _might_contain_credential(text: str) -> bool:
         or _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.search(text) is not None
         or _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.search(text) is not None
     )
+
+
+def _native_gate_fingerprint() -> str:
+    """Hash of the gate's definition; the native module is used only when it matches.
+
+    Covers every literal and anchor above plus the Unicode version, because the
+    native gate spells Python's ``\\s`` and case folding out by hand. Any edit
+    here changes the hash and turns the native gate off until it is rebuilt.
+    """
+    import hashlib
+    import unicodedata
+
+    spec = repr(
+        (
+            _CREDENTIAL_PREFILTER_LITERALS,
+            _CREDENTIAL_PREFILTER_GH_RE.pattern,
+            _CREDENTIAL_PREFILTER_TELEGRAM_RE.pattern,
+            _CREDENTIAL_PREFILTER_DISCORD_RE.pattern,
+            _CREDENTIAL_PREFILTER_URI_RE.pattern,
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_RE.pattern,
+            _CREDENTIAL_PREFILTER_AUTHORIZATION_UPPER_RE.pattern,
+            unicodedata.unidata_version,
+        )
+    )
+    return hashlib.sha256(spec.encode()).hexdigest()[:16]
+
+
+def _load_native_gate():  # type: ignore[no-untyped-def]
+    """The optional ``kc_native`` gate, or None (not built, disabled, or out of date)."""
+    import os
+
+    if os.environ.get("KIROCREW_NATIVE_REDACTION", "1") == "0":
+        return None
+    try:
+        import kc_native  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    if getattr(kc_native, "GATE_FINGERPRINT", None) != _native_gate_fingerprint():
+        # Built for another gate definition or Unicode version (the fingerprint
+        # covers unicodedata.unidata_version, so a build matches one CPython
+        # minor's Unicode tables). Safe, but the fast path is off: say so once.
+        import logging
+
+        logging.getLogger(__name__).debug(
+            "kc_native fingerprint does not match this interpreter's credential gate; "
+            "using the Python gate"
+        )
+        return None
+    return kc_native.might_contain_credential
+
+
+_NATIVE_GATE = _load_native_gate()
+
+
+def _might_contain_credential(text: str) -> bool:
+    """Return True if *text* could contain a `_CREDENTIAL_PATTERNS` match.
+
+    Same answer as :func:`_might_contain_credential_py` for every string; uses the
+    native single-pass scan when it is available, else the Python one. A str the
+    native side cannot encode (a lone surrogate) takes the Python path.
+    """
+    if _NATIVE_GATE is not None:
+        try:
+            return _NATIVE_GATE(text)
+        except UnicodeEncodeError:
+            pass
+    return _might_contain_credential_py(text)
 
 
 # Minimum string length at which `_might_contain_credential` is cheaper than the

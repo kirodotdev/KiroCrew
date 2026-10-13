@@ -926,7 +926,11 @@ def test_differential_test_detects_a_too_narrow_prefilter(
     passing because both sides share a defect.
     """
     import kiro_crew.security as security
+    from kiro_crew.security import redaction
 
+    # The anchors below disarm the Python gate; the native gate does not read
+    # them, so switch it off for this control.
+    monkeypatch.setattr(redaction, "_NATIVE_GATE", None)
     monkeypatch.setattr(
         security, "_CREDENTIAL_PREFILTER_LITERALS", ("this-anchor-matches-nothing",)
     )

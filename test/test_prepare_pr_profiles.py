@@ -551,6 +551,10 @@ def test_ci_blocking_scans_are_covered_by_the_floor():
         # added to gates[] by hand -- the tool scan cannot see through this
         # exemption, so keep the reason accurate.
         "node": "diagnostic blob-reconcile step; the gating bundle-size step is in gates[]",
+        # The Native Redaction Gate job's `cargo test` covers only the optional
+        # native/kc_native crate, and a contributor host need not have a Rust
+        # toolchain; the job's pytest half runs through the python exemption.
+        "cargo": "unit tests of the optional native/kc_native crate; no Rust toolchain is required locally",
     }
     # exec replaces the shell; classify its payload, not the shell builtin.
     tools = set(re.findall(r"(?m)^\s*run: (?:exec\s+)?([a-z][a-z0-9_-]+) ", run_text))

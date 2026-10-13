@@ -1,6 +1,6 @@
-//! Native fast path for `kiro_crew.security.redaction._might_contain_credential`.
+//! Native fast path for `kiro_crew.security.redaction_patterns._might_contain_credential`.
 //!
-//! The Python gate runs 21 substring searches plus 5 regex searches over the same
+//! The Python gate runs 21 substring searches plus 6 regex searches over the same
 //! text, one after another. This does the same test in ONE linear-time scan with
 //! the `regex` crate, and releases the GIL while it scans.
 //!
@@ -39,8 +39,8 @@ use regex::bytes::Regex;
 use std::cell::RefCell;
 use std::sync::OnceLock;
 
-/// sha256(repr(gate spec))[:16], computed by `redaction._native_gate_fingerprint()`.
-const GATE_FINGERPRINT: &str = "58fae81fda994ac9";
+/// sha256(repr(gate spec))[:16], computed by `redaction_patterns._native_gate_fingerprint()`.
+const GATE_FINGERPRINT: &str = "e5abd59852daa8cf";
 
 const LITERALS: &[&str] = &[
     "AKIA",
@@ -89,6 +89,9 @@ const SCRATCH_KEEP_MAX: usize = 1 << 20;
 /// stand for the non-ASCII whitespace and the dotted / dotless i.
 fn build(ws_extra: &str, i_extra: &str) -> Regex {
     let mut parts: Vec<String> = LITERALS.iter().map(|l| regex::escape(l)).collect();
+    // The Python gate spells the Telegram, Discord and Authorization anchors as
+    // literal-led look-behinds for `re`'s speed; each accepts exactly the plain
+    // spelling used here, which this crate's `regex` scans in one pass anyway.
     parts.push(r"gh[opsur]_".to_string());
     parts.push(r"[0-9]{6,}:[A-Za-z0-9_\-]{30}".to_string());
     parts.push(r"[MNO][A-Za-z0-9_\-]{22,30}\.".to_string());

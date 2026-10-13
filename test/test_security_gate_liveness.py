@@ -510,7 +510,14 @@ def _url_payload_command(n: int) -> str:
 #:
 #: Raised by 3, from 32,527, for the ``web-push`` leaf in ``paths_lists`` (the Web
 #: Push key and device secrets): the leaf and its two-line reason. No rule changed.
-_PACKAGE_LINE_BUDGET = 32_530
+#:
+#: Raised again, from 32,530, for ``redaction_patterns``' optional native pre-filter: the
+#: loader that accepts ``kc_native`` only when its fingerprint matches the Python gate,
+#: the fingerprint itself, a debug line when a build's fingerprint does not match, and
+#: the dispatcher that falls back to the Python gate (kept verbatim as
+#: ``_might_contain_credential_py``) on a missing, stale, disabled or failing module.
+#: Seventy-one lines. No pattern moved and no pass changed.
+_PACKAGE_LINE_BUDGET = 32_601
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
