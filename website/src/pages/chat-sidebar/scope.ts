@@ -90,10 +90,11 @@ export interface ChatSidebarProps {
    *  bound to middle-click, modifier-click and the row menu's "Open in a session
    *  tab".
    *
-   *  `background` follows the pointer/menu split every browser and editor uses:
-   *  a middle-click or modifier-click QUEUES the session without moving the user
-   *  (that is what makes triaging three rows in a row useful), while the menu
-   *  item is a deliberate "take me there" and opens in the foreground.
+   *  `background` is set only by middle-click, which QUEUES the session without
+   *  moving the user, so several rows can be triaged in a row. Modifier-click
+   *  and the menu item are a deliberate "take me there": they open in the
+   *  foreground and also report the row through `onSelectSlot`, so the host
+   *  leaves Split View as it does on a plain click.
    *
    *  Omitted on surfaces with no tab strip (the embed sessions list, a popped-out
    *  window), and an omitted callback leaves the gestures unbound rather than

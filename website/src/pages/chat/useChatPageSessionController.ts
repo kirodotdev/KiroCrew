@@ -200,10 +200,10 @@ export function useChatPageSessionController({
   // the create's origin number, so a request clicked after it still opens.
   const openSlotInNewTab = useCallback((key: string, opts?: { background?: boolean; requestSeq?: number }) => {
     sessionTabs.openInNewTab(key)
-    // A BACKGROUND open (middle-click, modifier-click) queues the session and
-    // leaves the user where they are — the browser/editor meaning of the
-    // gesture, and the whole point of using it to triage several rows in a row.
-    // The row menu is a deliberate "take me there", so it opens in foreground.
+    // A BACKGROUND open (middle-click) queues the session and leaves the user
+    // where they are, so several rows can be triaged in a row. Modifier-click
+    // and the row menu are a deliberate "take me there", so they open in
+    // foreground.
     if (opts?.background) return
     if (!connectedRef.current) return
     // Foreground open-in-tab is a user gesture on a session reference: the

@@ -3,6 +3,7 @@
  *  text-control classes that the session row, the folder blocks and the lanes all
  *  draw with, and the date-segment label the flat lane and the Older Sessions pane
  *  head their groups with. */
+import { useMemo } from 'react'
 import { ChevronRight } from 'lucide-react'
 import { IS_MAC } from '../../hooks/useKeyboardShortcuts'
 import { i18nT } from '../../i18n/t'
@@ -18,9 +19,26 @@ export function isOpenInTabModifierClick(e: React.MouseEvent): boolean {
   return (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.shiftKey && !e.altKey
 }
 
+/** A session row's foreground open, shared by modifier-click and the row menu's
+ *  open-in-tab item. Both are a selection, so they report it and the host clears
+ *  Split View the way a plain click does. Middle-click stays a background open
+ *  and does not use this. Offline, the host opens the tab but cannot switch to
+ *  it, so the selection is not reported: clearing Split View then would leave
+ *  the old session showing alone. */
+export function useOpenInForegroundTab(
+  open: ((key: string) => void) | undefined,
+  onSelect: ((key: string) => void) | undefined,
+  connected: boolean,
+): ((key: string) => void) | undefined {
+  return useMemo(() => open
+    ? (key: string) => { open(key); if (connected) onSelect?.(key) }
+    : undefined, [open, onSelect, connected])
+}
+
 /** Tab mode for a click on a CREATE control (the header New button, a folder
  *  `+`, an empty-folder row). Cmd/Ctrl-click opens the new chat as a background
- *  tab, the same as on a session row. Cmd/Ctrl+Shift-click opens it as the
+ *  tab. A session row differs: there Cmd/Ctrl-click opens the active tab
+ *  (#19835) and middle-click is the background open. Cmd/Ctrl+Shift-click opens it as the
  *  active tab, the browser's convention for a foreground open, and the only
  *  one-step foreground gesture on a trackpad. Any other click returns false.
  *  See docs/decisions/2026-10-17-sidebar-create-controls-shift-opens-the-active-tab.md. */
