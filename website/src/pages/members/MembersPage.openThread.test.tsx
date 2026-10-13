@@ -468,6 +468,28 @@ describe('MembersPage unread drain', () => {
     )
   })
 
+  it('viewing a thread never asks the gateway about the dot, even one its row cannot cover', async () => {
+    const { store } = await renderPage()
+    fireEvent.click(await rosterRow('oncall'))
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'member-oncall',
+        running: false,
+        messages: 1,
+        last_ts: '2026-09-10T00:00:01Z',
+      }]))
+      store.dispatch(markSlotUnread({
+        slot: 'member-oncall',
+        ts: '2026-09-10T00:00:02Z',
+      }))
+    })
+    await waitFor(() =>
+      expect(store.getState().dashboard.unreadSlots).not.toContain('member-oncall'),
+    )
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.filter(([key, limit]) => key === 'member-oncall' && limit === 1)).toEqual([])
+  })
+
   it('drains ONLY the mounted thread — other slots keep their unread flags', async () => {
     const { store } = await renderPage()
     act(() => {

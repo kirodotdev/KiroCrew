@@ -22,10 +22,12 @@ import { createElement } from 'react'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
+import { api } from '../api/client'
 import { useWebSocket } from '../hooks/useWebSocket'
+import { unreadWatermarkTs } from '../hooks/unreadOnAttention'
 import { store as globalStore } from '../store'
 import chatReducer, { setActiveSlot, clearMessages, switchSlot } from '../store/chatSlice'
-import dashboardReducer, { addSlotOptimistic, removeSlotOptimistic, updateSlot, markSlotRead, markSlotUnread, remoteSlotRead, restoreUnreadSince, restoreUnreadBadges, MANUAL_UNREAD } from '../store/dashboardSlice'
+import dashboardReducer, { addSlotOptimistic, removeSlotOptimistic, updateSlot, markSlotRead, markSlotUnread, remoteSlotRead, restoreUnreadSince, restoreUnreadBadges, sseSlots, MANUAL_UNREAD } from '../store/dashboardSlice'
 import type { ChatSlot } from '../types'
 import { bindSlotReadSender, emitSlotRead, flushSlotRead, _resetSlotReadRelayForTest } from '../lib/slotReadRelay'
 import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
@@ -341,6 +343,281 @@ describe('slot_read over the dashboard socket', () => {
     // apply their conservative default).
     const frames = sentReadFrames(ws).map(f => JSON.parse(f) as { type: string; slot: string; read_ts?: string })
     expect(frames.some(f => f.slot === BACKGROUND && f.read_ts === undefined)).toBe(true)
+  })
+
+  it('opening a session whose dot last_ts covers writes no arrival marker', async () => {
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:05Z' }))
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [{ role: 'assistant', content: 'saved row', cls: '', ts: '2026-01-01T00:00:05Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    const original = Storage.prototype.setItem
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      original.call(this, key, value)
+    })
+    try {
+      await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+      expect(set.mock.calls.some(([key]) => key === 'mc-unread-arrival:' + BACKGROUND)).toBe(false)
+    } finally {
+      set.mockRestore()
+    }
+  })
+
+  it('opening a session whose marker cannot be written retires nothing', async () => {
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [{ role: 'assistant', content: 'saved row', cls: '', ts: '2026-01-01T00:00:05Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    const original = Storage.prototype.setItem
+    const set = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key === 'mc-unread-arrival:' + BACKGROUND) throw new DOMException('quota exceeded', 'QuotaExceededError')
+      original.call(this, key, value)
+    })
+    try {
+      await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+      expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBeNull()
+      expect(restoreUnreadBadges(restoreUnreadSince())).toContain(BACKGROUND)
+    } finally {
+      set.mockRestore()
+    }
+  })
+
+  it('opening an idle session keeps a dot cleared whose watermark names a row the gateway lost', async () => {
+    const { ws } = mount()
+    await act(async () => {})  // the connect-time slot fetch settles first
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    // A watermark newer than any saved row, as one taken from a turn's
+    // unsaved `done` row is.
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+    const read = sentReadFrames(ws).map(f => JSON.parse(f) as { slot: string; read_ts?: string }).find(f => f.slot === BACKGROUND)
+    expect(read?.read_ts).toBe('2026-01-01T00:00:05Z')
+    // The gateway rebroadcasts the read to every owner window, this one too.
+    act(() => { ws.simulateMessage({ type: 'slot_read', data: { slot: BACKGROUND, read_ts: read?.read_ts } }) })
+    expect(dash().unreadSlots).not.toContain(BACKGROUND)
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')[BACKGROUND]).toBe('2026-01-01T00:00:06Z')
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBe('2026-01-01T00:00:06Z')
+    expect(localStorage.getItem('mc-unread-arrival:' + BACKGROUND)).toBeNull()
+    const since = restoreUnreadSince()
+    expect(since[BACKGROUND]).toBeUndefined()
+    expect(restoreUnreadBadges(since)).not.toContain(BACKGROUND)
+  })
+
+  it('opening a session through a coverage hole keeps the saved dot when another window records a row during the load', async () => {
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    const cachedRow = { role: 'assistant', content: 'cached row', cls: '', ts: '2026-01-01T00:00:01Z', meta: { mid: 'cached-row' } }
+    const newestRow = { role: 'assistant', content: 'newest saved row', cls: '', ts: '2026-01-01T00:00:05Z', meta: { mid: 'newest-row' } }
+    testStore.dispatch({
+      type: 'chat/hydrateSlotMessages',
+      payload: { slot: BACKGROUND, messages: [cachedRow], hasMore: true, bounded: true, total: 1, running: false },
+    })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    expect(dash().unreadSlots).toContain(BACKGROUND)
+
+    let resolveFirstPage!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    vi.mocked(api.chatSlotDetail)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstPage = resolve }))
+      .mockResolvedValueOnce({
+        messages: [cachedRow, { role: 'user', content: 'middle row', cls: '', ts: '2026-01-01T00:00:03Z', meta: { mid: 'middle-row' } }],
+        running: false,
+        has_more: false,
+        total: 3,
+        next_before: 0,
+        queue: [],
+      })
+      .mockResolvedValueOnce({
+        messages: [newestRow],
+        running: false,
+        has_more: true,
+        total: 3,
+        next_before: 2,
+        queue: [],
+      })
+
+    const pending = testStore.dispatch(switchSlot(BACKGROUND) as never)
+    const secondWindow = createTestStore()
+    secondWindow.dispatch(markSlotUnread({
+      slot: BACKGROUND,
+      ts: unreadWatermarkTs('permission', '2026-01-01T00:00:07Z'),
+      localTs: '2026-01-01T00:00:07Z',
+    }))
+    resolveFirstPage({
+      messages: [newestRow],
+      running: false,
+      has_more: true,
+      total: 3,
+      next_before: 2,
+      queue: [],
+    })
+
+    await act(async () => { await pending })
+
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.map(call => call[2])).toEqual([undefined, 2, undefined])
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBeNull()
+    expect(restoreUnreadBadges(restoreUnreadSince())).toContain(BACKGROUND)
+  })
+
+  it('opening the session keeps the saved dot when an absorbed arrival lands during the load', async () => {
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    let resolveDetail!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise((resolve) => { resolveDetail = resolve }))
+    const pending = testStore.dispatch(switchSlot(BACKGROUND) as never)
+    const secondWindow = createTestStore()
+    secondWindow.dispatch(markSlotUnread({
+      slot: BACKGROUND,
+      ts: '2026-01-01T00:00:05Z',
+      localTs: '2026-01-01T00:00:07Z',
+    }))
+    resolveDetail({
+      messages: [{ role: 'assistant', content: 'saved row', cls: '', ts: '2026-01-01T00:00:05Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    await act(async () => { await pending })
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBeNull()
+    expect(localStorage.getItem('mc-unread-arrival:' + BACKGROUND)).toBeNull()
+    expect(restoreUnreadBadges(restoreUnreadSince())).toContain(BACKGROUND)
+  })
+
+  it('opening the session keeps the saved dot when another window records a row during the load', async () => {
+    const { ws } = mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    let resolveDetail!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    vi.mocked(api.chatSlotDetail).mockImplementationOnce(() => new Promise((resolve) => { resolveDetail = resolve }))
+    const pending = testStore.dispatch(switchSlot(BACKGROUND) as never)
+    const secondWindow = createTestStore()
+    secondWindow.dispatch(markSlotUnread({
+      slot: BACKGROUND,
+      ts: unreadWatermarkTs('permission', '2026-01-01T00:00:07Z'),
+      localTs: '2026-01-01T00:00:07Z',
+    }))
+    resolveDetail({
+      messages: [{ role: 'assistant', content: 'saved row', cls: '', ts: '2026-01-01T00:00:05Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    await act(async () => { await pending })
+    const read = sentReadFrames(ws).map(f => JSON.parse(f) as { slot: string; read_ts?: string }).find(f => f.slot === BACKGROUND)
+    expect(read?.read_ts).toBe('2026-01-01T00:00:05Z')
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBeNull()
+    const since = restoreUnreadSince()
+    expect(since[BACKGROUND]).toBe('2026-01-01T00:00:06Z')
+    expect(restoreUnreadBadges(since)).toContain(BACKGROUND)
+  })
+
+  it("a switch that overlaps another switch of the session keeps the other switch's retire", async () => {
+    mount()
+    await act(async () => {})
+    const slot = { key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }
+    act(() => { testStore.dispatch(sseSlots([slot])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    const secondDashboard = dashboardReducer(undefined, { type: '@@test/init' })
+    const secondWindow = createTestStore({
+      dashboard: {
+        ...secondDashboard,
+        slots: [slot],
+        unreadSince: { [BACKGROUND]: '2026-01-01T00:00:06Z' },
+        unreadSlots: [BACKGROUND],
+      },
+    })
+    let resolveFirstPage!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    let resolveSecondPage!: (value: Awaited<ReturnType<typeof api.chatSlotDetail>>) => void
+    vi.mocked(api.chatSlotDetail)
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveFirstPage = resolve }))
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveSecondPage = resolve }))
+    const firstSwitch = testStore.dispatch(switchSlot(BACKGROUND) as never)
+    const secondSwitch = secondWindow.dispatch(switchSlot(BACKGROUND) as never)
+    const transcript = {
+      messages: [{ role: 'assistant', content: 'saved row', cls: '', ts: '2026-01-01T00:00:05Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    }
+
+    resolveSecondPage(transcript)
+    await act(async () => { await secondSwitch })
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBe('2026-01-01T00:00:06Z')
+
+    resolveFirstPage(transcript)
+    await act(async () => { await firstSwitch })
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBe('2026-01-01T00:00:06Z')
+    expect(restoreUnreadBadges(restoreUnreadSince())).not.toContain(BACKGROUND)
+  })
+
+  it('switchSlot keeps a shared dot when its fetched page contains the held watermark', async () => {
+    const { ws } = mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [{ role: 'assistant', content: 'new row', cls: '', ts: '2026-01-01T00:00:06Z' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')[BACKGROUND]).toBe('2026-01-01T00:00:06Z')
+    expect(localStorage.getItem('mc-unread-arrival:' + BACKGROUND)).toBeNull()
+    const read = sentReadFrames(ws).map(f => JSON.parse(f) as { slot: string; read_ts?: string }).find(f => f.slot === BACKGROUND)
+    expect(read?.read_ts).toBe('2026-01-01T00:00:05Z')
+  })
+
+  it('a failed session load leaves none of its arrival markers behind', async () => {
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    vi.mocked(api.chatSlotDetail).mockRejectedValueOnce(new Error('offline'))
+    await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+    expect(localStorage.getItem('mc-unread-arrival:' + BACKGROUND)).toBeNull()
+  })
+
+  it('keeps the saved dot when the fetched page has no row time', async () => {
+    // A bounded read keeps a turn still streaming, collapsed into one row
+    // with no ts. The page holds a row, so it disproves nothing.
+    mount()
+    await act(async () => {})
+    act(() => { testStore.dispatch(sseSlots([{ key: BACKGROUND, messages: 3, running: false, last_ts: '2026-01-01T00:00:05Z' }])) })
+    testStore.dispatch(markSlotUnread({ slot: BACKGROUND, ts: '2026-01-01T00:00:06Z' }))
+    vi.mocked(api.chatSlotDetail).mockResolvedValueOnce({
+      messages: [{ role: 'streaming', content: 'writing', cls: 'msg msg-a' }],
+      running: false,
+      has_more: false,
+      total: 1,
+      queue: [],
+    })
+    await act(async () => { await testStore.dispatch(switchSlot(BACKGROUND) as never) })
+    expect(localStorage.getItem('mc-unread-orphaned:' + BACKGROUND)).toBeNull()
+    expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')[BACKGROUND]).toBe('2026-01-01T00:00:06Z')
+    const since = restoreUnreadSince()
+    expect(since[BACKGROUND]).toBe('2026-01-01T00:00:06Z')
+    expect(restoreUnreadBadges(since)).toContain(BACKGROUND)
   })
 
   it('switching away flushes the outgoing slot\'s pending trailing relay', () => {
