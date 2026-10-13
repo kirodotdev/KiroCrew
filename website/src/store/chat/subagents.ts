@@ -5,12 +5,13 @@
  *  bucket, so every aggregate skips the active key there. */
 import { createSelector, type PayloadAction } from '@reduxjs/toolkit'
 import type { RootState } from '../index'
-import type { SubagentActivity, SubagentInfo } from '../../types'
+import type { SubagentActivity, SubagentInfo, SubagentTranscriptItem } from '../../types'
 import { parseSubagentQueuedReason, type SubagentQueuedEvent } from '../../pages/chat/subagentQueuedReason'
 import { i18nT } from '../../i18n/t'
 import type { ChatState } from './state'
 import { isUnsafeKey, safeKey } from './wire'
 import { jsonEqual } from '../../utils/structuralEqual'
+import { FEED_CALLS_OVERFLOW_LINE, FEED_TRUNCATION_LINE, feedResultLine } from './subagentFeedWire'
 
 const EMPTY_SUBAGENTS: Record<string, SubagentActivity> = {}
 /** Per-slot subagent map, falling back to the global active mirror — the
@@ -109,51 +110,193 @@ function upsertSlotSub(state: ChatState, slot: string, id: string): SubagentActi
   })
 }
 
-/** Most tool calls a card keeps in its timeline (#13628). Older calls fall off
- *  the front; the card states how many it is not listing, from `toolCount`. */
-export const SUBAGENT_TOOL_CALLS_CAP = 50
+/** Most rows a card's mini-transcript keeps. Older rows fall off the front and
+ *  `transcriptOmitted` counts them, so the card states what it is not showing. */
+export const SUBAGENT_TRANSCRIPT_CAP = 200
+/** Longest text one transcript row holds (a reasoning or answer run, a tool's
+ *  output). The newest tail survives behind the shared truncation marker, so a
+ *  long-running child cannot grow the store without bound. */
+const TRANSCRIPT_TEXT_CAP = 20_000
+const TRANSCRIPT_TEXT_KEEP = 16_000
 
-/** Record one `subagent_tool` frame in the card's tool-call timeline (#13628).
- *
- *  `lastTool` alone is overwritten by every frame, so a long run showed one
- *  tool name and nothing else. This keeps the recent calls in order.
- *
- *  One gated call sends TWO frames: the tool_call update (which bumps
- *  `tool_count`) and then its permission request. Both carry the call's
- *  `tool_call_id`, so a frame naming the newest entry's id updates that entry
- *  instead of listing the call again, and a frame with a DIFFERENT id is a new
- *  call even when `tool_count` did not move -- a backend child's permission
- *  request is counted only at approval, so its count stays put. A frame with no
- *  id (an older gateway) falls back to the count: an unmoved count is the
- *  second frame of the newest call. A frame with neither id nor count (native
- *  kiro-cli cards, which `_native_subagent_sync` re-sends on every
- *  `list_update`) is not listed again when its title equals the newest entry.
- *
- *  Above the coalescing threshold the backend merges frames (latest wins), so
- *  intermediate calls never reach the client; `toolCount` still counts them,
- *  and the card reports the difference rather than implying a complete list.
- *  Reconnect replay runs this same rule on a copied timeline, while
- *  `clearSubagentsForSnapshot` keeps the running card's held timeline.
- *  Must run BEFORE the caller stores the frame's `tool_count`. */
-function recordToolCall(a: SubagentActivity, tool: string, toolCount: number | undefined, callId: string | undefined) {
-  const calls = (a.toolCalls ??= [])
-  const newest = calls[calls.length - 1]
-  const id = callId || undefined
-  let same: boolean
-  if (id && newest?.id) same = newest.id === id
-  // A replay from an older gateway can seed its one row without an id, so an
-  // id-bearing frame after it is a call of its own: the count cannot tell it
-  // apart, because a child's permission request does not move `tool_count`.
-  else if (id && newest) same = false
-  else if (typeof toolCount === 'number') same = !!newest && toolCount === a.toolCount
-  else same = newest?.tool === tool
-  if (same && newest) {
-    newest.tool = tool
-    if (id) newest.id = id
+type TranscriptToolRow = Extract<SubagentTranscriptItem, { kind: 'tool' }>
+type TranscriptTextRow = Extract<SubagentTranscriptItem, { kind: 'thinking' | 'text' }>
+
+/** Append a row, keyed past the newest row's `seq`, and keep the cap. The cap
+ *  drops rows off the front only, so the newest row's `seq` is the high-water
+ *  mark and a key is never reused on a card. Returns the row as stored, so a
+ *  caller can go on filling it. */
+function pushTranscriptItem<T extends SubagentTranscriptItem>(a: SubagentActivity, item: Omit<T, 'seq'>): T {
+  const rows = (a.transcript ??= [])
+  const seq = rows.length ? rows[rows.length - 1].seq + 1 : 0
+  const row = { ...item, seq } as T
+  rows.push(row)
+  if (rows.length > SUBAGENT_TRANSCRIPT_CAP) {
+    const drop = rows.length - SUBAGENT_TRANSCRIPT_CAP
+    rows.splice(0, drop)
+    a.transcriptOmitted = (a.transcriptOmitted ?? 0) + drop
+  }
+  return row
+}
+
+function boundTranscriptText(text: string): string {
+  return text.length > TRANSCRIPT_TEXT_CAP
+    ? i18nT('store.chatSlice.truncated') + '\n' + text.slice(-TRANSCRIPT_TEXT_KEEP)
+    : text
+}
+
+/** Append to the card's copy of the gateway's feed (`streaming`): the answer
+ *  text as it streams and, on a native card, each call's output under its title
+ *  the way `native_cards` files it -- so what the card holds is what a reconnect
+ *  snapshot's `streaming` carries (see `feedPastHeld`). Bounded like the
+ *  gateway's own copy: the newest 40k past 50k, behind the truncation line. */
+function appendFeed(a: SubagentActivity, text: string) {
+  a.streaming += text
+  if (a.streaming.length > 50_000) {
+    a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
+  }
+}
+
+/** Append a reasoning or answer chunk to the card's transcript: consecutive
+ *  chunks of one kind are one row, so a streamed paragraph reads as a paragraph
+ *  and a tool call between two bursts splits them the way the chat does. */
+function appendTranscriptText(a: SubagentActivity, kind: 'thinking' | 'text', text: string) {
+  if (!text) return
+  const rows = a.transcript
+  const newest = rows?.[rows.length - 1]
+  if (newest && newest.kind === kind) {
+    newest.text = boundTranscriptText(newest.text + text)
     return
   }
-  calls.push(id ? { tool, id } : { tool })
-  if (calls.length > SUBAGENT_TOOL_CALLS_CAP) calls.splice(0, calls.length - SUBAGENT_TOOL_CALLS_CAP)
+  pushTranscriptItem<TranscriptTextRow>(a, { kind, text: boundTranscriptText(text) })
+}
+
+/** Record a `subagent_tool` frame in the card's transcript, or refine the row
+ *  that already names the call (#13628 kept these as a separate "Tool calls"
+ *  timeline; the transcript is that timeline now, with the reasoning and text
+ *  between the calls).
+ *
+ *  kiro-cli announces a native child's call twice (the bare tool name first,
+ *  then the command-bearing title with the input), and the managed path sends a
+ *  gated call's permission frame under the same id, so the id is what tells
+ *  "the same call again" from "another call". A frame with no id (an older
+ *  gateway) falls back to `tool_count`: an unmoved count is the second frame of
+ *  the newest call. A frame with neither (the native roster re-sends its status
+ *  on every `list_update`) is the newest call again when its title matches.
+ *  A card an older gateway's snapshot rebuilds seeds its newest call without
+ *  an id (`seedTranscript`); the first id-bearing frame with that title claims
+ *  it. Reconnect replay runs this same rule on a copy of a held transcript.
+ *  Must run BEFORE the caller stores the frame's `tool_count`. */
+function recordTranscriptTool(
+  a: SubagentActivity,
+  tool: string,
+  callId: string | undefined,
+  input: string | undefined,
+  toolCount: number | undefined,
+) {
+  const id = callId || undefined
+  const row = findTranscriptTool(a, id, tool, toolCount)
+  if (row) {
+    if (tool) row.tool = tool
+    if (id) row.id = id
+    if (input) row.input = boundTranscriptText(input)
+    return
+  }
+  const item: Omit<TranscriptToolRow, 'seq'> = { kind: 'tool', tool }
+  if (id) item.id = id
+  if (input) item.input = boundTranscriptText(input)
+  pushTranscriptItem(a, item)
+}
+
+/** The newest tool row, wherever the reasoning and text rows since it fall. */
+function newestTranscriptTool(a: SubagentActivity): TranscriptToolRow | undefined {
+  const rows = a.transcript
+  if (!rows) return undefined
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const r = rows[i]
+    if (r.kind === 'tool') return r
+  }
+  return undefined
+}
+
+/** The transcript's row for a `subagent_tool` frame, by the rules above. */
+function findTranscriptTool(a: SubagentActivity, id: string | undefined, tool: string, toolCount: number | undefined) {
+  const rows = a.transcript
+  if (!rows) return undefined
+  if (id) {
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i]
+      if (r.kind === 'tool' && r.id === id) return r
+    }
+  }
+  const newest = newestTranscriptTool(a)
+  // An id-bearing frame after an id-bearing row it did not match is a call of
+  // its own. An ID-LESS frame keeps the count/title rules whatever the newest
+  // row carries: the roster's status re-send of a call the child announced by
+  // id must land on that row, not open a second one.
+  if (!newest || (id && newest.id)) return undefined
+  if (id) return newest.tool === tool ? newest : undefined
+  if (typeof toolCount === 'number') return toolCount === a.toolCount ? newest : undefined
+  return newest.tool === tool ? newest : undefined
+}
+
+/** A card the replay creates starts its transcript from what the snapshot
+ *  carries: the feed so far as one text row, then the call in flight, under its
+ *  id when the gateway sends one so the frames that follow land on it by id
+ *  (an older gateway sends none, and the first id-bearing frame with the row's
+ *  title claims it). Nothing to show leaves no transcript, and the card keeps
+ *  its plain Output box. */
+function seedTranscript(streaming: string, lastTool: string, lastToolCallId?: string): SubagentTranscriptItem[] | undefined {
+  const rows: SubagentTranscriptItem[] = []
+  if (streaming) rows.push({ kind: 'text', seq: rows.length, text: boundTranscriptText(streaming) })
+  if (lastTool) {
+    const row: TranscriptToolRow = { kind: 'tool', seq: rows.length, tool: lastTool }
+    if (lastToolCallId) row.id = lastToolCallId
+    rows.push(row)
+  }
+  return rows.length ? rows : undefined
+}
+
+/** Length of the longest suffix of `a` that is a prefix of `b` (KMP over the
+ *  tail of `a` that can hold one, linear in both). */
+function overlap(a: string, b: string): number {
+  const n = Math.min(a.length, b.length)
+  const p = b.slice(0, n)
+  const fail = new Array<number>(p.length).fill(0)
+  for (let i = 1, k = 0; i < p.length; i++) {
+    while (k > 0 && p[i] !== p[k]) k = fail[k - 1]
+    if (p[i] === p[k]) k++
+    fail[i] = k
+  }
+  const t = a.slice(a.length - n)
+  let k = 0
+  for (let i = 0; i < t.length; i++) {
+    while (k > 0 && (k === p.length || t[i] !== p[k])) k = fail[k - 1]
+    if (t[i] === p[k]) k++
+  }
+  return k
+}
+
+/** The part of a snapshot's feed this browser has not seen: what runs past the
+ *  longest run of text that both ends the feed the card holds (`streaming`,
+ *  built from the frames it received by `appendFeed`) and begins the
+ *  snapshot's. Both are bounded tails
+ *  (the card's past 50k, a managed run's past 50k behind its line, a native
+ *  card's at 40k), so once a run is long neither is a prefix of the other and
+ *  the match is an overlap. A feed the card already ends with, or that ends
+ *  with what the card holds (a longer tail of the same text), adds nothing; an
+ *  empty overlap means the gap outran the tail, and the tail is what there is
+ *  to show. The bound notice is set aside on both sides and never appended:
+ *  the card's heading and the finished result already state the bound. */
+function feedPastHeld(held: string, feed: string): string {
+  const strip = (s: string) => s.split(FEED_CALLS_OVERFLOW_LINE).join('')
+  let body = strip(feed)
+  if (body.startsWith(FEED_TRUNCATION_LINE)) body = body.slice(FEED_TRUNCATION_LINE.length)
+  const seen = strip(held)
+  if (!body) return ''
+  if (!seen) return body
+  if (seen.endsWith(body) || body.endsWith(seen)) return ''
+  return body.slice(overlap(seen, body))
 }
 
 /** A replayed snapshot is older than the held card when it carries a lower
@@ -645,13 +788,15 @@ export const subagentReducers = {
       toolCount: 0, stalled: false,
     }
   },
-  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string }>) {
+  sseSubagentTool(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool: string; turns?: number; tool_count?: number; tool_call_id?: string; input?: string }>) {
     const { slot, id } = action.payload
     // Prototype-pollution guard is centralized in upsertSlotSub, which also
     // creates the entry when this is the first frame naming the agent.
     const a = upsertSlotSub(state, slot, id)
     if (a) {
-      if (action.payload.tool) recordToolCall(a, action.payload.tool, action.payload.tool_count, action.payload.tool_call_id)
+      if (action.payload.tool) {
+        recordTranscriptTool(a, action.payload.tool, action.payload.tool_call_id, action.payload.input, action.payload.tool_count)
+      }
       a.lastTool = action.payload.tool; a.status = 'tool'
       // A tool frame proves the run launched: a retired verdict must not
       // resurrect when the run later ends `stopped`.
@@ -691,7 +836,9 @@ export const subagentReducers = {
   },
   /** One coalesced ~1s frame carrying the latest delta per agent (scale
    *  plumbing — replaces per-event tool/stalled/retrying frames when many
-   *  agents run). Field presence decides what to apply; latest wins. */
+   *  agents run). Field presence decides what to apply; latest wins. Native
+   *  cards' frames do not pass through the coalescer, so the field only they
+   *  carry (`input`) never arrives here. */
   sseSubagentBatchUpdate(state: ChatState, action: PayloadAction<{ updates: { id: string; slot: string; tool?: string; tool_count?: number; tool_call_id?: string; stalled?: boolean; idle_secs?: number; attempt?: number }[] }>) {
     for (const u of action.payload.updates || []) {
       const a = upsertSlotSub(state, u.slot, u.id)
@@ -699,7 +846,7 @@ export const subagentReducers = {
       // Order matters: retrying (attempt) applies FIRST so a tool field in
       // the same merged entry — meaning work resumed — clears it last.
       if (typeof u.attempt === 'number') { a.retrying = true; a.stalled = false; a.idleSecs = undefined; a.stalledAt = undefined }
-      if (typeof u.tool === 'string' && u.tool) { recordToolCall(a, u.tool, u.tool_count, u.tool_call_id); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
+      if (typeof u.tool === 'string' && u.tool) { recordTranscriptTool(a, u.tool, u.tool_call_id, undefined, u.tool_count); a.lastTool = u.tool; if (a.status === 'running') a.status = 'tool'; a.retrying = false }
       if (typeof u.tool_count === 'number') a.toolCount = u.tool_count
       if (typeof u.stalled === 'boolean') {
         a.stalled = u.stalled
@@ -710,17 +857,57 @@ export const subagentReducers = {
       }
     }
   },
-  /** One coalesced ~1s frame of concatenated streaming text per agent. */
-  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string }[] }>) {
+  /** One coalesced ~1s frame of concatenated streamed text per agent. A chunk
+   *  with `kind: 'thinking'` is a run of `subagent_thinking` frames: the agent's
+   *  reasoning, kept apart from its answer so the card can fold it the way the
+   *  transcript folds the parent's, and out of the `streaming` feed (the feed is
+   *  the answer). Either kind is evidence the agent is working, so it lands on
+   *  a card the store does not hold yet (`upsertSlotSub`) as a tool frame does. */
+  sseSubagentBatchChunks(state: ChatState, action: PayloadAction<{ chunks: { id: string; slot: string; text: string; kind?: 'thinking' }[] }>) {
     for (const c of action.payload.chunks || []) {
       const a = upsertSlotSub(state, c.slot, c.id)
       if (!a) continue
       a.retrying = false
-      a.streaming += c.text
-      if (a.streaming.length > 50_000) {
-        a.streaming = i18nT('store.chatSlice.truncated') + '\n' + a.streaming.slice(-40_000)
+      if (c.kind === 'thinking') {
+        appendTranscriptText(a, 'thinking', c.text)
+        continue
+      }
+      appendFeed(a, c.text)
+      appendTranscriptText(a, 'text', c.text)
+    }
+  },
+  /** A `subagent_tool_result` frame: what a call returned and how it ended,
+   *  onto the transcript row the call opened. A result for a call this browser
+   *  never saw open lands on the row a snapshot seeded for the call in flight,
+   *  when that is still the newest call and unresolved. Otherwise it opens an
+   *  untitled row under the call's id: a native child's call is first seen
+   *  through its result when its opening frame predates the child's admission
+   *  (ordinary -- a child starts working at once) or this browser's reconnect,
+   *  and the refinement kiro-cli sends after the result names the row. */
+  sseSubagentToolResult(state: ChatState, action: PayloadAction<{ slot: string; id: string; tool_call_id: string; output?: string; status?: string }>) {
+    const a = upsertSlotSub(state, action.payload.slot, action.payload.id)
+    if (!a || !action.payload.tool_call_id) return
+    let row = findTranscriptTool(a, action.payload.tool_call_id, '', undefined)
+    if (!row) {
+      const seeded = newestTranscriptTool(a)
+      if (seeded && !seeded.id && !seeded.status) {
+        seeded.id = action.payload.tool_call_id
+        row = seeded
+      } else {
+        row = pushTranscriptItem<TranscriptToolRow>(a, { kind: 'tool', id: action.payload.tool_call_id, tool: '' })
       }
     }
+    if (action.payload.output) {
+      // The gateway filed this output in the card's feed under the title it
+      // held at this moment -- the same title this row holds, since both read
+      // the same frames in order -- so the card's copy of the feed takes the
+      // same line. (A call past the call bound is filed under the gateway's
+      // unnamed line instead; the card cannot tell such a call apart, so that
+      // card's reconnect may repeat a tail. The bound is 1024 calls.)
+      appendFeed(a, feedResultLine(row.tool, action.payload.output))
+      row.output = boundTranscriptText((row.output ?? '') + action.payload.output)
+    }
+    if (action.payload.status) row.status = action.payload.status
   },
   /** Chip row click → the Activity tab scrolls to/expands this agent. */
   selectSubagent(state: ChatState, action: PayloadAction<string | null>) {
@@ -862,16 +1049,27 @@ export const subagentReducers = {
     // A replay that repeats an unchanged stall keeps the instant the card
     // first saw it, so the advancing idle figure does not jump back.
     const sameStall = stalled && existing?.stalled === true && existing.idleSecs === d.idle_secs
-    let replayedToolCalls = existing?.toolCalls
-    if (replayedToolCalls?.length && d.last_tool) {
+    // The snapshot carries the feed so far and names only the call in flight.
+    // On a held transcript both land by the live rules: the text the
+    // disconnect hid goes on as chunks would (`feedPastHeld`, merged into a
+    // trailing text row), then the call by `recordTranscriptTool`, so the row
+    // that already names it is refined and a call the disconnect hid is
+    // appended after the words that preceded it. A replay that repeats what
+    // the card shows keeps the held rows.
+    let replayedTranscript = existing?.transcript
+    let replayedOmitted = existing?.transcriptOmitted
+    if (replayedTranscript?.length) {
       const scratch = {
-        toolCalls: replayedToolCalls.map(call => ({ ...call })),
+        transcript: replayedTranscript.map(row => ({ ...row })),
+        transcriptOmitted: existing.transcriptOmitted,
         toolCount: existing.toolCount,
       } as SubagentActivity
-      recordToolCall(scratch, d.last_tool, d.tool_count, d.last_tool_call_id)
-      replayedToolCalls = jsonEqual(scratch.toolCalls, existing.toolCalls)
-        ? existing.toolCalls
-        : scratch.toolCalls
+      appendTranscriptText(scratch, 'text', feedPastHeld(existing.streaming, d.streaming))
+      if (d.last_tool) recordTranscriptTool(scratch, d.last_tool, d.last_tool_call_id, undefined, d.tool_count)
+      if (!jsonEqual(scratch.transcript, existing.transcript)) {
+        replayedTranscript = scratch.transcript
+        replayedOmitted = scratch.transcriptOmitted
+      }
     }
     const next: SubagentActivity = {
       id: d.id, task: d.task, agent: d.agent || 'kirocrew',
@@ -884,13 +1082,11 @@ export const subagentReducers = {
       childSession: d.child_session || existing?.childSession || undefined,
       batchId: d.batch_id || existing?.batchId || undefined,
       status: d.last_tool ? 'tool' : 'running', streaming: d.streaming, lastTool: d.last_tool,
-      // Replay applies the live tool-frame rule to a copy of a held timeline.
-      // A card the replay creates seeds its timeline from the latest tool.
-      toolCalls: existing?.toolCalls?.length
-        ? replayedToolCalls
-        : (d.last_tool
-            ? [d.last_tool_call_id ? { tool: d.last_tool, id: d.last_tool_call_id } : { tool: d.last_tool }]
-            : undefined),
+      // Replay applies the live tool-frame rule to a copy of a held transcript.
+      // A card the replay creates seeds its transcript from the feed so far and
+      // the call in flight (see `seedTranscript`).
+      transcript: existing?.transcript?.length ? replayedTranscript : seedTranscript(d.streaming, d.last_tool, d.last_tool_call_id),
+      transcriptOmitted: existing?.transcript?.length ? replayedOmitted : undefined,
       startedAt: d.started * 1000, elapsed: 0,
       toolCount: d.tool_count ?? 0, stalled,
       // Same pairing rule as sseSubagentStalled: the idle span lives and dies

@@ -68,8 +68,8 @@ The turn's completion is observable through two pieces of state:
 `cancel_session()` has been called, even before the agent acknowledges, so a
 caller that needs to force a kill regardless of cancel state must skip that check.
 
-`STOP_REASON_CANCELLED` and `STOP_REASON_END_TURN` live in `acp/types.py`
-alongside the other reasons (`refusal`, `stale_recover`, a tool-stall marker).
+`STOP_REASON_CANCELLED` and `STOP_REASON_END_TURN` live in `acp/stop_reasons.py`
+(re-exported by `acp/types.py`) alongside the other reasons (`refusal`, `stale_recover`, a tool-stall marker).
 
 ### Provider
 
