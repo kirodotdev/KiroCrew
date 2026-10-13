@@ -67,15 +67,17 @@ def add_item(
     embedding=None,
     namespace="default",
     content_hash=None,
+    extraction_failed=False,
 ) -> str:
     item_id = str(uuid4())
     now = datetime.now().isoformat()
     tags_json = json.dumps(tags or [])
+    failed_at = now if extraction_failed else None
     self.db.execute("BEGIN IMMEDIATE")
     try:
         self.db.execute(
-            "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO items (id, title, content, item_type, source_id, chunk_index, namespace, summary, tags, embedding, content_hash, extraction_failed_at, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_id,
                 title,
@@ -88,6 +90,7 @@ def add_item(
                 tags_json,
                 embedding,
                 content_hash,
+                failed_at,
                 now,
                 now,
             ),
@@ -168,6 +171,56 @@ def update_item(self: KnowledgeStore, item_id, **fields):
     except Exception:
         self.db.execute("ROLLBACK")
         raise
+
+
+def items_with_failed_extraction(self: KnowledgeStore, item_ids: list[str]) -> list[dict]:
+    """Those of *item_ids* whose entity-extraction call failed, oldest chunk first."""
+    if not item_ids:
+        return []
+    marks = ",".join("?" for _ in item_ids)
+    rows = self.db.execute(
+        f"SELECT id, title, content, chunk_index, extraction_failed_at FROM items "
+        f"WHERE id IN ({marks}) AND extraction_failed_at IS NOT NULL "
+        f"ORDER BY chunk_index",
+        tuple(item_ids),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_extraction_failed(self: KnowledgeStore, item_ids: list[str]) -> None:
+    """Stamp *item_ids*' failed-extraction mark with now: another attempt failed."""
+    if not item_ids:
+        return
+    marks = ",".join("?" for _ in item_ids)
+    self.db.execute(
+        f"UPDATE items SET extraction_failed_at = ? WHERE id IN ({marks})",
+        (datetime.now().isoformat(), *item_ids),
+    )
+    self.db.commit()
+
+
+def complete_reextraction(
+    self: KnowledgeStore, item_id: str, *, title: str, item_type: str, summary: str | None
+) -> None:
+    """Write a re-extracted chunk's fields and clear its failed-extraction mark.
+
+    The caller stores the chunk's entities FIRST: if the process dies between the
+    two, the mark survives and the chunk is extracted again, rather than a cleared
+    mark hiding missing entities. The next attempt starts with
+    ``clear_item_entity_links``, so the repeat stores nothing twice.
+
+    The same statement that clears the mark clears ``embedding_sig``: the stored
+    vector was built from the old title and summary. If the caller's re-embed does
+    not land (a bulk embed while the model is unloaded writes nothing), the NULL
+    signature leaves the row stale for the sig-gated re-embed sweep instead of
+    current under an outdated vector.
+    """
+    self.update_item(item_id, title=title, item_type=item_type, summary=summary)
+    self.db.execute(
+        "UPDATE items SET extraction_failed_at = NULL, embedding_sig = NULL WHERE id = ?",
+        (item_id,),
+    )
+    self.db.commit()
 
 
 def _delete_item_cascade(self: KnowledgeStore, item_id):
