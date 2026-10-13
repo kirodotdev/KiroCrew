@@ -769,14 +769,16 @@ async def adopt_target(
                     status=409,
                     code="tree_not_ready",
                 )
-            # Deferred: ``holders`` reaches the storage package, and this module is on the
-            # dashboard's boot path. The ancestor walk follows exactly the tree's own rules,
-            # which is why it is imported rather than re-implemented -- a second walk with
-            # its own reading of "a cited creator with no log" would refuse or admit cases
-            # the fold does not.
-            from kiro_crew.crew_log.holders import is_ancestor
-
-            if is_ancestor(slot.key, caller_key, nodes):
+            # The loop guard reads the settled tree AND every queued, unsettled reparent
+            # edge, following both at each node (:func:`_reaches_through_pending`). A
+            # concurrent adoption's edge is not in the fold yet, so a settled-only walk
+            # would not see that the first adoption is about to put the target above this
+            # caller, and the two could close a cycle through the edge neither tree
+            # carries. Reading the queued edge ADDITIVELY -- on top of the settled parent,
+            # not instead of it -- is what also refuses the longer loop whose closing edge
+            # fences no endpoint, and keeps the settled ancestry a failed queued append
+            # leaves in place.
+            if _reaches_through_pending(slot.key, caller_key, nodes):
                 raise SessionControlError(
                     f"{target!r} is already above this session in the tree, so adopting it "
                     "would make a loop",
@@ -849,6 +851,10 @@ async def adopt_target(
                 else ""
             )
             settled, landed = _tree_append_waiter(slot.key)
+            # The edge this adoption will add, visible to a concurrent verb's loop guard
+            # for as long as the append is in flight. Cleared with the fence by the same
+            # future, so a settled or dropped append takes it away.
+            _note_pending_edge(slot.key, caller_key, landed)
             crew_log_emit.on_session_adopted(
                 target_sid,
                 slot=slot.key,
@@ -1087,6 +1093,102 @@ def _tree_mutation_lock() -> "asyncio.Lock":
 #: slot whose state is about to move.
 _tree_pending_slots: "dict[str, asyncio.Future[bool]]" = {}
 
+#: The queued-but-unsettled reparent EDGE each in-flight append will add, keyed by the
+#: child slot (the session that moves) and holding its new parent. One entry per queued
+#: adoption, cleared with its fence by the same future's done callback. A release adds no
+#: entry: it takes a parent away rather than creating one, so it closes no cycle and
+#: contributes no edge a later verb's loop guard must see.
+#:
+#: Fencing the child slot alone is not enough to stop a cycle. Two overlapping adoptions
+#: -- ``t`` under ``a`` queued, then ``a`` under ``t`` -- fence only their own target, and
+#: the settled fold carries neither edge, so a settled-only ancestor walk does not see
+#: that the first adoption is about to make ``t`` the parent of ``a``. The second adoption
+#: passes its loop guard and commits ``a -> t``, closing ``t -> a -> t`` -- a cycle the
+#: fold cannot present, flattening the branch. Reading these queued edges ADDITIVELY on
+#: top of the settled tree (:func:`_reaches_through_pending`, which follows a slot's
+#: settled parent AND its queued parent) is what lets the guard refuse it -- and refuse a
+#: longer loop whose closing edge fences no endpoint, since the walk sees the queued edge
+#: wherever it falls on the chain, not only on the two slots a fence covers.
+_tree_pending_edges: "dict[str, tuple[str, str]]" = {}
+
+
+def _note_pending_edge(child: str, parent: str, future: "asyncio.Future[bool]") -> None:
+    """Record the ``child -> parent`` edge a queued adoption will add, until it settles.
+
+    Registered beside the fence in :data:`_tree_pending_slots` and cleared the same way
+    -- a done callback on the SAME future -- so the edge is visible to a concurrent
+    verb's loop guard for exactly as long as the append is in flight and goes when it
+    settles, with nothing to remember to release.
+    """
+    _tree_pending_edges[child] = (child, parent)
+
+    def _drop(_f: "asyncio.Future[bool]") -> None:
+        if _tree_pending_edges.get(child) == (child, parent):
+            del _tree_pending_edges[child]
+
+    future.add_done_callback(_drop)
+
+
+def _reaches_through_pending(target: str, start: str, nodes: "dict[str, Any]") -> bool:
+    """Whether *target* is reachable UP from *start* over settled AND queued edges.
+
+    The loop guard for an adoption of *target* under *start* (the caller). A cycle forms
+    when *target* is already above the caller -- and "above" has to be read over BOTH the
+    settled tree and every queued, unsettled reparent edge, because a queued edge is a
+    parent a slot is about to gain and a settled edge is a parent it still has until that
+    append commits. A pending ``child -> parent`` is therefore ADDED to the child's
+    settled parent, never substituted for it: an append that fails after its retries
+    leaves the settled edge in place, so hiding it would clear a loop the tree still
+    holds.
+
+    The SETTLED half of every step is delegated to :func:`holders.is_ancestor`, the one
+    walk the fold already uses, so this does not re-implement "a cited creator with no
+    log" or the on-a-cycle rule and cannot refuse or admit a settled chain the fold would
+    judge differently. What is genuinely new here, and the reason a single ``is_ancestor``
+    call cannot express it, is the SECOND parent: a slot can have a settled parent and a
+    queued parent at once, and the loop may run through either. So the queued edges are
+    walked locally -- each ``child -> parent`` bridges two settled sub-walks -- while every
+    settled sub-walk is ``is_ancestor``.
+
+    Reachability is grown to a fixpoint: a slot is above the caller when it is the caller,
+    a settled ancestor of a slot already known to be above it, or the queued parent of
+    one. The caller count bounds the number of queued hops, since each adds one distinct
+    pending child.
+    """
+    from kiro_crew.crew_log.holders import is_ancestor
+
+    if target == start:
+        # Adopting a session under itself is the shared gate's refusal, not a cycle this
+        # walk reasons about; a slot is never its own ancestor here.
+        return False
+
+    def _settled_hits_target(frm: str) -> bool:
+        # ``is_ancestor`` answers "is target a settled ancestor of frm"; the equal case is
+        # a direct settled edge the caller already sits under, which the walk below seeds.
+        return frm == target or is_ancestor(target, frm, nodes)
+
+    # Nodes known to be at or above the caller. Seeded with the caller itself; a queued
+    # edge is then followed from any node whose settled ancestry reaches that edge's child.
+    reached: set[str] = {start}
+    frontier: list[str] = [start]
+    while frontier:
+        node = frontier.pop()
+        if _settled_hits_target(node):
+            return True
+        for child, parent in _tree_pending_edges.values():
+            # The queued edge is in play when its child is at or above a node already
+            # known to be above the caller -- i.e. the caller can reach the child through
+            # settled edges -- because the child is about to gain *parent* as a parent.
+            if child in reached or child == node or is_ancestor(child, node, nodes):
+                if parent == target:
+                    return True
+                if parent not in reached:
+                    reached.add(parent)
+                    frontier.append(parent)
+                if child not in reached:
+                    reached.add(child)
+    return False
+
 
 def _tree_append_waiter(slot: str) -> "tuple[Callable[[bool], None], asyncio.Future[bool]]":
     """A ``(on_settled, future)`` pair for one tree append, fencing *slot* until it lands.
@@ -1099,6 +1201,13 @@ def _tree_append_waiter(slot: str) -> "tuple[Callable[[bool], None], asyncio.Fut
     settles and nothing has to remember to release it. The wait below shields the future
     for the same reason -- a timeout that cancelled it would resolve it, and the fence
     would clear while the append is still queued.
+
+    The TARGET is the only slot fenced. The queued edge this adoption adds moves the
+    target's own next state, so a verb that decides against the target during the window
+    must wait; the new parent's ANCESTRY does not change by gaining a child, so a loop
+    that would close through the queued edge is caught by :func:`_reaches_through_pending`
+    reading that edge, not by fencing the parent -- which would only refuse a manager
+    adopting a second child in parallel, a move that forms no cycle.
     """
     loop = asyncio.get_running_loop()
     future: "asyncio.Future[bool]" = loop.create_future()
@@ -1158,6 +1267,9 @@ async def _tree_append_landed(
     future's done callback: that callback runs on a later loop iteration, and a verb whose
     request finishes first would leave the slot fenced for a write that already landed. The
     callback stays as the backstop for a future resolved somewhere other than this wait.
+    An adoption records its queued edge under the same future, so that edge is dropped here
+    too -- leaving the eager drop to cover only the fence would keep the edge visible to a
+    concurrent loop guard for a write already on disk.
     """
     try:
         # SHIELDED, so the timeout cancels only this wait. Cancelling the future itself
@@ -1176,6 +1288,8 @@ async def _tree_append_landed(
         ) from None
     if _tree_pending_slots.get(target) is future:
         del _tree_pending_slots[target]
+    if target in _tree_pending_edges:
+        del _tree_pending_edges[target]
     if not landed:
         raise SessionControlError(
             f"the {operation} of {target!r} could not be written to the crew log, so "

@@ -56,6 +56,7 @@ def _tree_on(tmp_path, monkeypatch):
         lambda slot: _STORE_HEADS.get(slot, ("", True, True)),
     )
     sc._tree_pending_slots.clear()
+    sc._tree_pending_edges.clear()
     yield
     stp.reset_for_tests()
     _SIDS.clear()
@@ -64,6 +65,7 @@ def _tree_on(tmp_path, monkeypatch):
     # whose stub never settles (the wedged-writer case) leaves one standing on purpose.
     # Cleared on both sides so that is contained to the test that wants it.
     sc._tree_pending_slots.clear()
+    sc._tree_pending_edges.clear()
 
 
 #: Session ids per harness state, cleared between tests by the fixture above.
@@ -1525,3 +1527,180 @@ def test_no_suspension_between_the_final_authorization_and_the_append(verb: str,
         if isinstance(node, ast.Await) and node.lineno <= final_gate
     ]
     assert earlier, f"{verb} takes no suspension at all, so this ordering proves nothing"
+
+
+# ── a cycle closed through a queued, unsettled reparent edge ─────────────────
+#
+# A reparent hands its edge to the writer and then WAITS, bounded, for it to land.
+# During that wait the edge is not yet in the settled fold. A second adoption decided in
+# that window must not be able to close a cycle through the queued edge: the loop guard
+# reads the queued-but-unsettled edges ADDITIVELY on top of the settled tree, following a
+# slot's settled parent AND its queued parent, so it refuses a loop that closes anywhere
+# along the chain -- not only on the one slot its own append fences.
+
+
+def _pending_adopt(child: str, parent: str) -> None:
+    """Stand in for an ADOPTION whose append is queued but has NOT settled.
+
+    Registers the target fence and the queued edge exactly as the production path does
+    (``_tree_append_waiter(child)`` plus ``_note_pending_edge``), with the future
+    deliberately never resolved -- the append is handed to the writer and still in
+    flight. The edge is NOT folded into the settled tree, which is the window the hazard
+    lives in. The fixture clears the registry between tests.
+    """
+    loop = asyncio.get_event_loop()
+    future: "asyncio.Future[bool]" = loop.create_future()
+    sc._tree_pending_slots[child] = future
+    sc._note_pending_edge(child, parent, future)
+
+
+def test_a_second_adopt_cannot_close_a_cycle_through_a_queued_edge(tmp_path, monkeypatch):
+    """Two overlapping adoptions must not persist a cycle.
+
+    ``chat-t`` is being adopted under ``chat-a`` (edge t->a), handed to the writer and
+    not yet settled. A second adoption of ``chat-a`` under ``chat-t`` (edge a->t) decided
+    in that window would close the cycle t->a->t: the settled fold has neither edge, so a
+    settled-only walk does not see that ``chat-t`` is about to be ``chat-a``'s parent. The
+    loop guard follows the queued t->a edge and refuses it.
+    """
+    calls = _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    _live(state, _slot(state, "chat-a"), "sid-a")
+    t = _live(state, _slot(state, "chat-t"), "sid-t")
+    proj = stp.projection()
+    proj.apply(OpenedRecord(sid="sid-a", slot="chat-a", created_at=1))
+    proj.apply(OpenedRecord(sid="sid-t", slot="chat-t", created_at=2))
+
+    # chat-t is being adopted under chat-a: edge t->a queued, not settled. chat-a (the
+    # target of the reverse adoption) is not the fenced slot, so the call reaches the
+    # loop guard rather than the fence.
+    _pending_adopt("chat-t", "chat-a")
+
+    with pytest.raises(sc.SessionControlError) as excinfo:
+        _run(sc.adopt_target(state, caller_session_key=_key(t), target="chat-a"))
+    assert excinfo.value.code == "would_cycle"
+    # Nothing was handed to the writer: the cycle-closing edge was never queued.
+    assert calls == []
+
+
+def test_a_longer_cycle_through_a_queued_edge_is_refused_with_no_fence_in_the_way(
+    tmp_path, monkeypatch
+):
+    """The overlay alone refuses a loop whose closing adoption fences no endpoint.
+
+    Settled ``chat-a -> chat-x`` and ``chat-y -> chat-t``; ``chat-t -> chat-a`` queued,
+    not settled. Adopting ``chat-x`` under ``chat-y`` (edge x->y) would close
+    x->y->t->a->x. Only ``chat-t`` is fenced by the pending append, and neither endpoint
+    of this adoption is ``chat-t``, so no fence catches the call -- the loop guard, reading
+    the settled parents AND the queued t->a edge, is the only thing that can refuse it, and
+    it must.
+    """
+    calls = _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    _live(state, _slot(state, "chat-a"), "sid-a")
+    _live(state, _slot(state, "chat-x"), "sid-x")
+    _live(state, _slot(state, "chat-y"), "sid-y")
+    _live(state, _slot(state, "chat-t"), "sid-t")
+    _hold(state, "chat-a", "chat-x", sid="sid-a")
+    _hold(state, "chat-y", "chat-t", sid="sid-y")
+
+    _pending_adopt("chat-t", "chat-a")
+
+    x = state.get_or_create_slot("chat-x")
+    with pytest.raises(sc.SessionControlError) as excinfo:
+        _run(
+            sc.adopt_target(state, caller_session_key=_key(_slot(state, "chat-y")), target="chat-x")
+        )
+    assert excinfo.value.code == "would_cycle"
+    assert calls == []
+    assert x is not None
+
+
+def test_a_queued_edge_does_not_hide_a_slots_settled_ancestry(tmp_path, monkeypatch):
+    """A pending edge is ADDED to a slot's settled parent, never substituted for it.
+
+    Settled ``chat-z -> chat-x``, ``chat-x -> chat-b``, ``chat-b -> chat-y``; a slow
+    ``chat-x -> chat-a`` adoption is queued. Adopting ``chat-y`` under ``chat-z`` (edge
+    y->z) would close y->z->x->b->y, which stays durable if the queued chat-x append then
+    fails after its retries while this one lands. Reading the queued x->a edge INSTEAD of
+    the settled x->b would hide chat-x's real ancestry and admit the adoption; reading it
+    in ADDITION keeps x->b in view, so the loop is seen and refused.
+    """
+    calls = _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    for name, sid in (
+        ("chat-z", "sid-z"),
+        ("chat-x", "sid-x"),
+        ("chat-b", "sid-b"),
+        ("chat-y", "sid-y"),
+        ("chat-a", "sid-a"),
+    ):
+        _live(state, _slot(state, name), sid)
+    _hold(state, "chat-z", "chat-x", sid="sid-z")
+    _hold(state, "chat-x", "chat-b", sid="sid-x")
+    _hold(state, "chat-b", "chat-y", sid="sid-b")
+
+    # chat-x is being adopted under chat-a: edge x->a queued, not settled. chat-x stays
+    # fenced, but neither endpoint of the adoption below is chat-x.
+    _pending_adopt("chat-x", "chat-a")
+
+    with pytest.raises(sc.SessionControlError) as excinfo:
+        _run(
+            sc.adopt_target(state, caller_session_key=_key(_slot(state, "chat-z")), target="chat-y")
+        )
+    assert excinfo.value.code == "would_cycle"
+    assert calls == []
+
+
+def test_a_release_is_refused_while_the_target_has_a_pending_append(tmp_path, monkeypatch):
+    """A release decided against a slot with a queued reparent is refused.
+
+    ``chat-c`` is being adopted under ``chat-p`` (edge c->p), queued and not settled.
+    A release of ``chat-c`` from its CURRENT parent ``chat-old`` decided in that window
+    reads a tree the writer is about to replace: the queued adoption moves ``chat-c``'s
+    parent, and committing a release under the old parent races it. ``chat-c`` is the
+    fenced slot, so the release is refused rather than decided against a stale tree.
+    """
+    calls = _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    old = _live(state, _slot(state, "chat-old"), "sid-old")
+    _live(state, _slot(state, "chat-c"), "sid-c")
+    _live(state, _slot(state, "chat-p"), "sid-p")
+    _hold(state, "chat-c", "chat-old", sid="sid-c")
+
+    # chat-c is being adopted under chat-p: edge c->p queued, not settled.
+    _pending_adopt("chat-c", "chat-p")
+
+    with pytest.raises(sc.SessionControlError) as excinfo:
+        _run(sc.release_target(state, caller_session_key=_key(old), target="chat-c"))
+    assert excinfo.value.code == "tree_write_pending"
+    assert calls == []
+
+
+def test_a_manager_can_adopt_a_second_child_while_the_first_is_in_flight(tmp_path, monkeypatch):
+    """Gaining a child does not fence a parent: parallel sibling adoptions are allowed.
+
+    ``chat-c1`` is being adopted under ``chat-mgr`` (edge c1->mgr), queued and not
+    settled. ``chat-mgr`` adopting a second child ``chat-c2`` forms no cycle -- a parent's
+    ancestry does not change by gaining a child -- so it must NOT be refused. This is the
+    case a new-parent fence would wrongly block.
+    """
+    calls = _emitted(monkeypatch)
+    state = _make_state(tmp_path)
+    mgr = _live(state, _slot(state, "chat-mgr"), "sid-mgr")
+    _live(state, _slot(state, "chat-c1"), "sid-c1")
+    _live(state, _slot(state, "chat-c2"), "sid-c2")
+    proj = stp.projection()
+    for slot, sid, created in (
+        ("chat-mgr", "sid-mgr", 1),
+        ("chat-c1", "sid-c1", 2),
+        ("chat-c2", "sid-c2", 3),
+    ):
+        proj.apply(OpenedRecord(sid=sid, slot=slot, created_at=created))
+
+    # chat-c1 under chat-mgr is in flight; chat-mgr is NOT fenced by it.
+    _pending_adopt("chat-c1", "chat-mgr")
+
+    result = _run(sc.adopt_target(state, caller_session_key=_key(mgr), target="chat-c2"))
+    assert result == {"target": "chat-c2", "parent": "chat-mgr", "previous_parent": ""}
+    assert [c["op"] for c in calls] == ["adopt"]
