@@ -43,7 +43,7 @@ const READ_TIMEOUT_MS = 2000;
 const MAX_READ_BYTES = 64 * 1024;
 
 // The loopback must never be proxied: loopback_http.py documents why
-// (KiroCrew's own requests carry the X-Internal-Secret, and urllib has no
+    // (Kiro Crew's own requests carry the X-Internal-Secret, and urllib has no
 // implicit loopback exemption). The macOS default ExceptionsList names
 // `*.local` and `169.254/16` but NOT localhost, so discovery adds the bypass
 // itself instead of trusting the store to have it.

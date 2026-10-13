@@ -2,19 +2,18 @@
 
 The desktop shell discovers the system proxy for GUI launches that never
 inherit a shell profile's ``HTTP_PROXY`` / ``HTTPS_PROXY``
-(``website/electron/system-proxy-env.js``, issue #19821: on a proxy-only
-network every bundled ``kiro-cli-chat`` turn failed as a "transient 5xx"
-because the child reached for the model backend directly). The merge happens
-in the gateway's own environment, so the only thing the Python spawn chain has
-to guarantee is the other half of the fix: the agent scrub is a credential
-denylist that never names a proxy variable, so an inherited proxy setting
-flows to the kiro-cli child untouched.
+(``website/electron/system-proxy-env.js``): on a proxy-only network a
+bundled ``kiro-cli-chat`` without those variables reaches for the model
+backend directly and every turn reports a "transient 5xx". The merge happens
+in the gateway's own environment, so the Python spawn chain's part of the
+contract is the agent scrub: a credential denylist that never names a proxy
+variable, so an inherited proxy setting flows to the kiro-cli child
+untouched.
 
-Pin both halves of that guarantee here. If the scrub ever grows a proxy
-prefix, or ``agent_env_scrub_prefixes()`` (the refusal oracle reused by
-env-injecting validators) starts reporting one as stripped, proxy-only
-networks regress to failing every turn — and the shell-side discovery would
-silently stop mattering.
+Both halves are pinned here. If the scrub ever grows a proxy prefix, or
+``agent_env_scrub_prefixes()`` (the refusal oracle reused by env-injecting
+validators) reports one as stripped, proxy-only networks regress to failing
+every turn and the shell-side discovery stops mattering.
 """
 
 from __future__ import annotations
