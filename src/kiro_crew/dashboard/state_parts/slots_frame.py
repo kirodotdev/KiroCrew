@@ -355,6 +355,9 @@ def _slots_ws_frame(
     folders: object,
     folders_gen: object,
     governance_gen: object,
+    slots_partial: bool = False,
+    slots_held_keys: object = (),
+    slots_hold_channels: bool = False,
 ) -> str:
     """Serialize the dashboard-user ``slots`` WS frame.
 
@@ -392,6 +395,12 @@ def _slots_ws_frame(
         # its stale window. Process-local, like the two counters above.
         "governanceGeneration": governance_gen,
     }
+    if slots_partial:
+        frame["slotsPartial"] = True
+    if slots_held_keys:
+        frame["slotsHeldKeys"] = slots_held_keys
+    if slots_hold_channels:
+        frame["slotsHoldChannels"] = True
     # Same offender diagnostic as the coalesced broadcast: the
     # dashboard-user frame serializes the ENRICHED projection, so a value that
     # only enrichment adds raises here and nowhere else. Diagnosis only — the

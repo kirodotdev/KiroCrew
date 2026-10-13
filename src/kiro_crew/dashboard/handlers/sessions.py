@@ -3371,6 +3371,7 @@ async def _delete_claimed_session(
             await _remove_slot_for_history_key(state, key, delete_claim=delete_claim)
         except Exception:
             logger.warning("cleanup failed for session %s", key, exc_info=True)
+        state.release_deleted_slot_keys(_history_delete_candidate_keys(key))
         state.push_slots_update()
         state.push_refresh("history")
     return web.json_response({"ok": ok})
@@ -4026,6 +4027,11 @@ async def _clear_history_rows(
             for cleanup_key, delete_claim in cleanup_claims
         ]
         await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+        state.release_deleted_slot_keys(
+            candidate
+            for cleanup_key, _claim in cleanup_claims
+            for candidate in _history_delete_candidate_keys(cleanup_key)
+        )
     if count:
         state.push_slots_update()
         state.push_refresh("history")

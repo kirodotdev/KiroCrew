@@ -1032,7 +1032,14 @@ async def _serve_ws(
             # detectable as a change rather than as a first sighting.
             "gitlabHostsGeneration": gitlab_hosts_generation(),
             "governanceGeneration": initial_answer_generation,
+            "slotsPartial": getattr(state, "slot_list_rebuilding", False) is True,
         }
+        if is_dashboard_user:
+            held_keys = list(state.slot_list_held_keys())
+            if held_keys:
+                snapshot_frame["slotsHeldKeys"] = held_keys
+            if state.slot_list_hold_channels() is True:
+                snapshot_frame["slotsHoldChannels"] = True
         # Same offender diagnostic as the slots broadcast.
         # ``send_json`` is ``send_str(dumps(data))``, so dumping here is
         # byte-identical on the healthy path. This whole connect block sits

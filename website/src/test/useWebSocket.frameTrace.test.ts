@@ -280,6 +280,7 @@ const FRAME_CASES: Array<[string, Frame[], Frame[]]> = [
   }]],
   ['slots repeated frame only reconciles the queued depth', [{ type: 'slots', data: SLOTS, foldersGeneration: 3 }], [{ type: 'slots', data: SLOTS, foldersGeneration: 3 }]],
   ['slots unchanged generations', [{ type: 'slots', data: SLOTS, foldersGeneration: 3, gitlabHostsGeneration: 4 }], [{ type: 'slots', data: [...SLOTS].reverse(), foldersGeneration: 3, gitlabHostsGeneration: 4 }]],
+  ['slots partial frame of a restarting gateway', [], [{ type: 'slots', data: SLOTS, slotsPartial: true }]],
   ['credential_redaction_changed', [], [{ type: 'credential_redaction_changed', data: { enabled: true, changed_at: TS } }]],
   ['credential_redaction_changed without a boolean', [], [{ type: 'credential_redaction_changed', data: { enabled: 'yes', changed_at: 3 } }]],
   ['skills.pending_changed', [], [{ type: 'skills.pending_changed', data: {} }]],
@@ -945,6 +946,8 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "slots first frame of a connection": [
     'action chat/reconcileSubagentQueuedFromSlots [{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'action dashboard/sseSlotListHolds {"heldKeys":[],"holdChannels":false}',
+    'action dashboard/sseSlotsPartial false',
     'action dashboard/sseSlots [{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"}]',
     'action dashboard/sseYolo true',
     'action dashboard/setChannelTrusted false',
@@ -955,10 +958,21 @@ const EXPECTED_FRAMES: Record<string, string[]> = {
   ],
   "slots repeated frame only reconciles the queued depth": [
     'action chat/reconcileSubagentQueuedFromSlots [{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'action dashboard/sseSlotListHolds {"heldKeys":[],"holdChannels":false}',
+    'action dashboard/sseSlotsPartial false',
   ],
   "slots unchanged generations": [
     'action chat/reconcileSubagentQueuedFromSlots [{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'action dashboard/sseSlotListHolds {"heldKeys":[],"holdChannels":false}',
+    'action dashboard/sseSlotsPartial false',
     'action dashboard/sseSlots [{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'event mc:app:slots',
+  ],
+  "slots partial frame of a restarting gateway": [
+    'action chat/reconcileSubagentQueuedFromSlots [{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"}]',
+    'action dashboard/sseSlotListHolds {"heldKeys":[],"holdChannels":false}',
+    'action dashboard/sseSlotsPartial true',
+    'action dashboard/sseSlots [{"key":"slot-a","title":"Active","last_ts":"2026-09-01T00:00:00.000Z"},{"key":"slot-b","title":"Background","last_ts":"2026-09-01T00:00:00.000Z"}]',
     'event mc:app:slots',
   ],
   "credential_redaction_changed": [

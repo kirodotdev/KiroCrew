@@ -1691,6 +1691,10 @@ async def start_dashboard(
         slack_client=slack_client,
         owner_id=owner_id,
     )
+    # Before anything can serve a request: until _restore_dashboard_sessions has
+    # rebuilt the slot set, a list read here would be missing every tab it has
+    # not reached yet.
+    state.begin_slot_list_rebuild()
 
     # --- Pending-skill approval notifications ---
     _register_pending_skill_hooks(state)

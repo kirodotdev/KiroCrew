@@ -494,6 +494,12 @@ export interface ChatState {
    *  empty frame, which must not tear anything down, from a genuinely empty
    *  list, which must. */
   slotsSnapshotSeen: boolean
+  /** Whether the current gateway slot list is explicitly partial. */
+  slotListPartial: boolean
+  /** Known omitted keys protected after the global partial hold clears. */
+  slotListHeldKeys: string[]
+  /** Hold every channel-origin key when channel session discovery is unavailable. */
+  slotListHoldChannels: boolean
   stopPressedAt: Record<string, number | null>
   /** Per-slot count of turn STARTS this tab has seen: a non-steer user frame,
    *  an inject row (cron / continue / auto-nudge), a local send, the active
@@ -641,6 +647,9 @@ export const initialState: ChatState = {
   slotSideClosed: {},
   slotHistory: [],
   slotsSnapshotSeen: false,
+  slotListPartial: false,
+  slotListHeldKeys: [],
+  slotListHoldChannels: false,
   pendingQuestions: {},
   questionRequestsInFlight: {},
   questionsSettled: {},

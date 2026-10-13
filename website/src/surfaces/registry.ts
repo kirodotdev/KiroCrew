@@ -304,7 +304,8 @@ export function filterSlotsBySurface(slots: readonly ChatSlot[], slotMode: strin
  * Note — intentional asymmetry with the nav badge: `countUnreadByMode` in
  * `dashboardSlice.ts` treats orphans as the default chat surface (`''`) so
  * the Chat nav badge doesn't transiently drop while reconciliation is in
- * flight. This helper drops them instead because they can't be displayed
+ * flight. Orphans the next reconcile will not drain (a partial list, or keys
+ * the gateway holds) are left out there too. This helper drops them instead because they can't be displayed
  * in the sidebar regardless, and showing a higher count than visible
  * sessions would be a worse UX than hiding the (about-to-be-drained) item.
  */
