@@ -8,11 +8,14 @@ Covered:
   * with the setting off the watcher makes no CI call and sends no notification;
   * a failed run on the viewer's own PR raises exactly one notification, and a
     teammate's PR in the same repo never does;
-  * a re-run attempt that fails notifies again, a repeated read does not;
+  * a re-run attempt that fails notifies again, a repeated read does not, and a
+    GitLab in-place retry that fails again (same id, no attempt) does not;
   * success, in-flight runs and the first (seeding) read stay silent;
   * a ``gh`` error skips the repo and keeps its record;
   * the channel's mute and priority settings apply to the note;
-  * the setting defaults off and round-trips through the store.
+  * the setting defaults off and round-trips through the store;
+  * a GitLab project is listed and read through the GitLab client on its own
+    host, its note spells the MR ref with ``!``, and an Azure repo is never polled.
 """
 
 from __future__ import annotations
@@ -32,6 +35,7 @@ from aiohttp import web
 from kiro_crew.apps.builtins.issue_radar.backend import (
     ci_watch,
     github_client,
+    gitlab_client,
     provider,
     store,
     watch,
@@ -102,6 +106,12 @@ def _run(run_id: int, conclusion: str | None, *, attempt: int = 1, status: str =
         "url": f"https://github.com/o/r/actions/runs/{run_id}",
         "attempt": attempt,
     }
+
+
+def _age_settled() -> None:
+    """Move every settled head's last read past the recheck window."""
+    for tag in ci_watch._settled:
+        ci_watch._settled[tag] -= ci_watch.SETTLED_RECHECK_SEC + 1
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
@@ -211,12 +221,303 @@ class TestSettingOff(_Base):
         poll.assert_awaited_once()
         self.assertEqual(poll.await_args_list[0].args[1], [_KEY])
 
-    async def test_non_github_repo_is_never_ci_polled(self) -> None:
-        gl = provider.key_from_parts("g", "p", "gitlab", "gitlab.com")
-        self.assertFalse(ci_watch.opted_in({"notify_on_own_pr_ci_failure": True}, gl))
-        with mock.patch.object(github_client, "_gh_run") as gh_run:
-            await ci_watch.poll_ci_failures(_app(self.state), [gl])
+    async def test_azure_repo_is_never_ci_polled(self) -> None:
+        az = provider.key_from_parts("org", "proj", "azure", "dev.azure.com")
+        self.assertFalse(ci_watch.opted_in({"notify_on_own_pr_ci_failure": True}, az))
+        with (
+            mock.patch.object(github_client, "_gh_run") as gh_run,
+            mock.patch.object(gitlab_client, "_glab_api") as glab_api,
+        ):
+            await ci_watch.poll_ci_failures(_app(self.state), [az])
         gh_run.assert_not_called()
+        glab_api.assert_not_called()
+
+    def test_gitlab_repo_is_opted_in_by_the_same_setting(self) -> None:
+        gl = provider.key_from_parts("g", "p", "gitlab", "gitlab.com")
+        self.assertTrue(ci_watch.opted_in({"notify_on_own_pr_ci_failure": True}, gl))
+        self.assertFalse(ci_watch.opted_in({"notify_on_own_pr_ci_failure": False}, gl))
+        self.assertFalse(ci_watch.opted_in(dict(store.DEFAULT_REPO_SETTINGS), gl))
+
+
+class TestGitlabDispatch(_Base):
+    """A GitLab project goes through the GitLab client on its own host, never gh."""
+
+    _GL = provider.key_from_parts("grp", "proj", "gitlab", "gitlab.acme.internal")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.mr_heads: list[dict[str, Any]] = []
+        self.search_calls: list[tuple[str, str, str]] = []
+        self.search_logins: list[str | None] = []
+        self.login = mock.patch.object(gitlab_client, "get_current_login", return_value="me")
+        self.login.start()
+        self.addCleanup(self.login.stop)
+        # The self-managed host is on the operator's allowlist; gitlab.com always is.
+        hosts = mock.patch.object(
+            gitlab_client, "allowed_hosts", return_value=frozenset({"gitlab.acme.internal"})
+        )
+        hosts.start()
+        self.addCleanup(hosts.stop)
+        self.pipeline_reads: list[tuple[str, str, str, str]] = []
+        self.pipelines: dict[str, list[dict[str, Any]]] = {}
+
+    def _search(
+        self, owner: str, repo: str, *, host: str, state: str, author: str, limit: int, **_kw: Any
+    ) -> list[dict[str, Any]]:
+        # Stands in for gitlab_client.search_pulls, which honours ``limit``.
+        self.assertEqual(state, "open")
+        self.assertEqual(limit, gitlab_client.PR_SEARCH_MAX + 1)
+        self.search_calls.append((owner, repo, host))
+        self.search_logins.append(author)
+        return list(self.mr_heads)[:limit]
+
+    def _pipelines(self, owner: str, repo: str, sha: str, *, host: str, **_kw: Any) -> list[dict]:
+        self.pipeline_reads.append((owner, repo, sha, host))
+        return list(self.pipelines.get(sha, []))
+
+    async def _gitlab_cycle(self, keys: list[provider.RepoKey] | None = None) -> None:
+        with (
+            mock.patch.object(github_client, "_gh_run") as gh_run,
+            mock.patch.object(github_client, "_run_gh_api") as gh_api,
+            mock.patch.object(gitlab_client, "search_pulls", side_effect=self._search),
+            mock.patch.object(gitlab_client, "list_pr_workflow_runs", side_effect=self._pipelines),
+        ):
+            await ci_watch.poll_ci_failures(_app(self.state), keys or [self._GL])
+        gh_run.assert_not_called()
+        gh_api.assert_not_called()
+
+    @staticmethod
+    def _mr(number: Any, sha: str, author: str = "me") -> dict[str, Any]:
+        # The row shape gitlab_client.search_pulls returns (_norm_pull), trimmed to
+        # the fields the watch reads.
+        return {
+            "number": number,
+            "title": f"MR {number}",
+            "url": f"https://gitlab.acme.internal/grp/proj/-/merge_requests/{number}",
+            "author": author,
+            "head_sha": sha,
+        }
+
+    @staticmethod
+    def _failed(pipeline_id: int) -> list[dict[str, Any]]:
+        return [{"id": pipeline_id, "name": "p", "status": "completed", "conclusion": "failure"}]
+
+    async def test_failed_pipeline_on_own_mr_notifies_with_mr_ref(self) -> None:
+        sha = "a" * 40
+        self.mr_heads = [self._mr(7, sha)]
+        self.pipelines = {
+            sha: [
+                {
+                    "id": 501,
+                    "name": "pipeline #7",
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "url": "https://gitlab.acme.internal/grp/proj/-/pipelines/501",
+                }
+            ]
+        }
+        await self._gitlab_cycle()
+        # The listing and the runs read both went to the project's OWN host.
+        self.assertEqual(self.search_calls, [("grp", "proj", "gitlab.acme.internal")])
+        self.assertEqual(self.pipeline_reads, [("grp", "proj", sha, "gitlab.acme.internal")])
+        self.assertEqual(len(self.state.notes), 1)
+        note = self.state.notes[0]
+        self.assertEqual(note["channel"], _CHANNEL)
+        self.assertIn("grp/proj!7", note["title"])  # GitLab spells an MR ref with "!"
+        self.assertNotIn("#7", note["title"])
+        self.assertEqual(note["provider"], "gitlab")
+        self.assertEqual(note["host"], "gitlab.acme.internal")
+        self.assertEqual(note["run_url"], "https://gitlab.acme.internal/grp/proj/-/pipelines/501")
+        self.assertEqual(note["group_key"], "ci-failure:gitlab/gitlab.acme.internal/grp/proj!7")
+        # The record is keyed on the pipeline id, in the same schema as GitHub's.
+        self.assertEqual(self.writes, [{"501": 1}])
+        # Read again: the same failure stays quiet.
+        ci_watch._settled.clear()
+        await self._gitlab_cycle()
+        self.assertEqual(len(self.state.notes), 1)
+
+    async def test_login_is_read_once_per_host_and_passed_to_every_listing(self) -> None:
+        other = provider.key_from_parts("grp", "other", "gitlab", "gitlab.acme.internal")
+        public = provider.key_from_parts("g", "p", "gitlab", "gitlab.com")
+        # Patched over setUp's patch, which it restores on exit.
+        with mock.patch.object(gitlab_client, "get_current_login", return_value="me") as who:
+            await self._gitlab_cycle([self._GL, other, public])
+        self.assertEqual(
+            sorted(c.kwargs["host"] for c in who.call_args_list),
+            ["gitlab.acme.internal", "gitlab.com"],
+        )
+        self.assertEqual(len(self.search_calls), 3)
+        self.assertEqual(self.search_logins, ["me", "me", "me"])
+
+    async def test_unreadable_login_skips_the_hosts_projects_for_the_cycle(self) -> None:
+        with mock.patch.object(gitlab_client, "get_current_login", return_value=None):
+            await self._gitlab_cycle()
+        self.assertEqual(self.search_calls, [])
+        self.assertEqual(self.pipeline_reads, [])
+        self.assertEqual(self.state.notes, [])
+
+    async def test_only_the_viewers_well_formed_rows_are_read(self) -> None:
+        # The author filter is server-side, but the watch re-checks each row: a
+        # teammate's MR, a malformed number or head, and a repeat are all dropped.
+        own, mate, bad, dup = "a" * 40, "b" * 40, "not-a-sha", "c" * 40
+        self.mr_heads = [
+            self._mr(1, own, author="ME"),
+            self._mr(2, mate, author="teammate"),
+            self._mr(3, bad),
+            self._mr(True, dup),
+            self._mr(0, dup),
+            self._mr(4, dup),
+            self._mr(4, "d" * 40),
+        ]
+        self.pipelines = {sha: self._failed(i) for i, sha in enumerate((own, mate, dup), 1)}
+        await self._gitlab_cycle()
+        self.assertEqual(
+            self.pipeline_reads,
+            [
+                ("grp", "proj", own, "gitlab.acme.internal"),
+                ("grp", "proj", dup, "gitlab.acme.internal"),
+            ],
+        )
+        titles = sorted(n["title"] for n in self.state.notes)
+        self.assertEqual(len(titles), 2)
+        self.assertIn("grp/proj!1", titles[0])
+        self.assertIn("grp/proj!4", titles[1])
+
+    async def test_title_and_url_are_capped(self) -> None:
+        sha = "e" * 40
+        self.mr_heads = [{**self._mr(5, sha), "title": "t" * 900, "url": "u" * 900}]
+        self.pipelines = {sha: self._failed(5)}
+        with mock.patch.object(ci_watch, "_check_repo") as check:
+            await self._gitlab_cycle()
+        (pulls,) = [c.args[2] for c in check.call_args_list]
+        self.assertEqual(len(pulls[0]["title"]), 300)
+        self.assertEqual(len(pulls[0]["url"]), 500)
+
+    async def test_truncated_listing_skips_the_project_and_keeps_its_heads(self) -> None:
+        sha = "a" * 40
+        self.mr_heads = [self._mr(7, sha)]
+        self.pipelines = {sha: self._failed(1)}
+        await self._gitlab_cycle()
+        tag = ci_watch._head_tag(self._GL, sha)
+        self.assertIn(tag, ci_watch._settled)
+        reads = len(self.pipeline_reads)
+        # One row past search_pulls' cap means the list is partial.
+        self.mr_heads = [self._mr(i, "f" * 40) for i in range(1, gitlab_client.PR_SEARCH_MAX + 2)]
+        _age_settled()
+        await self._gitlab_cycle()
+        self.assertEqual(len(self.pipeline_reads), reads)
+        self.assertIn(tag, ci_watch._settled)
+
+    async def test_unlisted_host_takes_the_failure_branch(self) -> None:
+        sha = "a" * 40
+        self.mr_heads = [self._mr(7, sha)]
+        self.pipelines = {sha: self._failed(1)}
+        await self._gitlab_cycle()
+        tag = ci_watch._head_tag(self._GL, sha)
+        reads = len(self.pipeline_reads)
+        _age_settled()
+        # The operator removes the host from the allowlist: no listing, no runs
+        # read, and the project's tracked heads stay tracked.
+        with mock.patch.object(gitlab_client, "allowed_hosts", return_value=frozenset()):
+            await self._gitlab_cycle()
+        self.assertEqual(len(self.search_calls), 1)
+        self.assertEqual(len(self.pipeline_reads), reads)
+        self.assertIn(tag, ci_watch._settled)
+
+    async def test_a_real_failed_gitlab_pipeline_row_notifies(self) -> None:
+        # Drive the pass with what the GitLab client ACTUALLY returns for a failed
+        # pipeline, not a hand-written GitHub-shaped row: GitLab says status
+        # "failed", and the normalizer has to turn that into the conclusion the
+        # watch tests for, or no GitLab failure would ever be announced.
+        sha = "f" * 40
+        self.mr_heads = [self._mr(4, sha)]
+        raw = {
+            "id": 77,
+            "iid": 4,
+            "status": "failed",
+            "web_url": "https://gitlab.acme.internal/grp/proj/-/pipelines/77",
+            "source": "merge_request_event",
+            "created_at": "2026-10-13T00:00:00Z",
+        }
+        normalized = gitlab_client._norm_pipeline_run(raw)
+        assert normalized is not None
+        self.pipelines = {sha: [normalized]}
+        await self._gitlab_cycle()
+        self.assertEqual(len(self.state.notes), 1)
+        self.assertIn("grp/proj!4", self.state.notes[0]["title"])
+        self.assertEqual(self.writes, [{"77": 1}])
+
+    async def test_in_place_retry_that_fails_again_is_not_announced(self) -> None:
+        # GitLab's Retry reuses the pipeline id and its rows carry no attempt. A
+        # read that finds the retry running must not drop the id from the record,
+        # or the retry's failure would be announced as new.
+        sha = "c" * 40
+        self.mr_heads = [self._mr(9, sha)]
+
+        def pipeline(status: str, conclusion: str | None) -> dict[str, Any]:
+            return {"id": 601, "name": "pipeline", "status": status, "conclusion": conclusion}
+
+        self.pipelines = {sha: [pipeline("completed", "failure")]}
+        await self._gitlab_cycle()
+        self.assertEqual(len(self.state.notes), 1)
+        _age_settled()
+        self.pipelines = {sha: [pipeline("in_progress", None)]}
+        await self._gitlab_cycle()
+        self.assertEqual(self.record["notified"], {"601": 1})
+        self.pipelines = {sha: [pipeline("completed", "failure")]}
+        await self._gitlab_cycle()
+        self.assertEqual(len(self.state.notes), 1)
+
+    def test_the_normalizers_failed_conclusion_is_one_the_watch_announces(self) -> None:
+        # The invariant behind the test above, pinned directly so a vocabulary
+        # change on either side fails here with the two values side by side.
+        row = gitlab_client._norm_pipeline_run({"id": 1, "status": "failed"})
+        assert row is not None
+        self.assertEqual(row["status"], "completed")
+        self.assertIn(row["conclusion"], ci_watch.FAILED_CONCLUSIONS)
+
+    async def test_listing_error_skips_the_project_and_keeps_github_going(self) -> None:
+        self.nodes = [_pr_node(7, "me", "b" * 40)]
+        self.runs = {"b" * 40: [_run(11, "failure")]}
+        with (
+            mock.patch.object(github_client, "_gh_run", side_effect=self._gh_run),
+            mock.patch.object(github_client, "_run_gh_api", side_effect=self._run_gh_api),
+            mock.patch.object(
+                gitlab_client,
+                "search_pulls",
+                side_effect=gitlab_client.ProviderCliError("glab: boom"),
+            ),
+            mock.patch.object(gitlab_client, "list_pr_workflow_runs") as pipelines,
+        ):
+            await ci_watch.poll_ci_failures(_app(self.state), [_KEY, self._GL])
+        pipelines.assert_not_called()
+        self.assertEqual(len(self.state.notes), 1)
+        self.assertIn("o/r#7", self.state.notes[0]["title"])
+
+    async def test_same_slug_on_two_forges_keeps_separate_memory(self) -> None:
+        # A GitHub repo and a GitLab project spelled o/r must not share settled or
+        # failed-run memory, or one forge's quiet head would hide the other's red one.
+        gl = provider.key_from_parts("o", "r", "gitlab", "gitlab.com")
+        sha = "c" * 40
+        self.nodes = [_pr_node(3, "me", sha)]
+        self.runs = {sha: [_run(11, "success")]}
+        self.mr_heads = [{**self._mr(3, sha), "owner": "o", "repo": "r"}]
+        self.pipelines = {
+            sha: [{"id": 9, "name": "p", "status": "completed", "conclusion": "failure", "url": ""}]
+        }
+        with (
+            mock.patch.object(github_client, "_gh_run", side_effect=self._gh_run),
+            mock.patch.object(github_client, "_run_gh_api", side_effect=self._run_gh_api),
+            mock.patch.object(gitlab_client, "search_pulls", side_effect=self._search),
+            mock.patch.object(gitlab_client, "list_pr_workflow_runs", side_effect=self._pipelines),
+        ):
+            await ci_watch.poll_ci_failures(_app(self.state), [_KEY, gl])
+        self.assertEqual(len(self.state.notes), 1)
+        self.assertIn("o/r!3", self.state.notes[0]["title"])
+        self.assertEqual(
+            {t.split("@")[0] for t in ci_watch._settled},
+            {"github/github.com/o/r", "gitlab/gitlab.com/o/r"},
+        )
 
 
 class TestFailureAlerts(_Base):
@@ -264,6 +565,19 @@ class TestFailureAlerts(_Base):
         await self._cycle()
         self.assertEqual(len(self.state.notes), 2)
         self.assertEqual(self.record["notified"], {"41": 2})
+
+    async def test_rerun_read_while_running_then_failing_notifies_again(self) -> None:
+        sha = "9" * 40
+        self.nodes = [_pr_node(4, "me", sha)]
+        self.runs = {sha: [_run(42, "failure", attempt=1)]}
+        await self._cycle()
+        _age_settled()
+        self.runs = {sha: [_run(42, None, attempt=2, status="in_progress")]}
+        await self._cycle()
+        self.runs = {sha: [_run(42, "failure", attempt=2)]}
+        await self._cycle()
+        self.assertEqual(len(self.state.notes), 2)
+        self.assertEqual(self.record["notified"], {"42": 2})
 
     async def test_success_and_in_flight_runs_stay_quiet(self) -> None:
         sha = "e" * 40
@@ -693,7 +1007,7 @@ class TestCiRunsRoute(unittest.IsolatedAsyncioTestCase):
 
         repos = [
             {"owner": "o", "repo": "r"},
-            {"owner": "g", "repo": "p", "provider": "gitlab", "host": "gitlab.com"},
+            {"owner": "org/proj", "repo": "p", "provider": "azure", "host": "dev.azure.com"},
             {"owner": "o", "repo": "down"},
         ]
 
@@ -716,7 +1030,7 @@ class TestCiRunsRoute(unittest.IsolatedAsyncioTestCase):
         body = json.loads(cast(bytes, resp.body))
         self.assertEqual(body["truncated"], False)
         rows = {r["repo"]: r for r in body["repos"]}
-        self.assertEqual(set(rows), {"r", "down"})  # the GitLab repo is not listed
+        self.assertEqual(set(rows), {"r", "down"})  # the Azure DevOps repo is not listed
         self.assertTrue(rows["r"]["alerts"])
         self.assertEqual(rows["r"]["runs"][0]["id"], 1)
         self.assertIsNone(rows["r"]["error"])
