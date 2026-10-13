@@ -264,6 +264,7 @@ def _oauth_app() -> web.Application:
     app.router.add_post("/api/wakatime/oauth/authorize", wt.api_wakatime_oauth_authorize)
     app.router.add_get("/api/wakatime/oauth/callback", wt.api_wakatime_oauth_callback)
     app.router.add_post("/api/wakatime/oauth/disconnect", wt.api_wakatime_oauth_disconnect)
+    app.router.add_get("/api/wakatime/oauth/status", wt.api_wakatime_oauth_status)
     return app
 
 
@@ -378,6 +379,46 @@ async def test_authorize_400_when_not_configured(monkeypatch: pytest.MonkeyPatch
         resp = await client.post("/api/wakatime/oauth/authorize")
         assert resp.status == 400
         assert (await resp.json())["code"] == "not_configured"
+
+
+@pytest.mark.asyncio
+async def test_status_reports_connected_and_client_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt_oauth, "read_access_token", lambda: "stored-access")
+
+    class _Cfg:
+        class wakatime:
+            oauth_client_id = "client-123"
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda cls: _Cfg())
+    )
+    async with TestClient(TestServer(_oauth_app())) as client:
+        resp = await client.get("/api/wakatime/oauth/status")
+        assert resp.status == 200
+        assert await resp.json() == {"connected": True, "client_configured": True}
+
+
+@pytest.mark.asyncio
+async def test_status_reports_disconnected_when_no_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _allow_owner(monkeypatch)
+    monkeypatch.setattr(wt_oauth, "read_access_token", lambda: "")
+
+    class _Cfg:
+        class wakatime:
+            oauth_client_id = ""
+
+    monkeypatch.setattr(
+        "kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda cls: _Cfg())
+    )
+    async with TestClient(TestServer(_oauth_app())) as client:
+        resp = await client.get("/api/wakatime/oauth/status")
+        assert resp.status == 200
+        assert await resp.json() == {"connected": False, "client_configured": False}
 
 
 @pytest.mark.asyncio

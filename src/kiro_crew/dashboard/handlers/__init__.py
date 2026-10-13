@@ -665,6 +665,7 @@ from kiro_crew.dashboard.handlers.wakatime import (  # noqa: E402, F401
     api_wakatime_oauth_authorize,
     api_wakatime_oauth_callback,
     api_wakatime_oauth_disconnect,
+    api_wakatime_oauth_status,
     api_wakatime_stats,
 )
 

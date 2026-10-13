@@ -301,6 +301,28 @@ async def api_wakatime_oauth_disconnect(request: web.Request) -> web.Response:
     return web.json_response({"disconnected": True})
 
 
+async def api_wakatime_oauth_status(request: web.Request) -> web.Response:
+    """GET /api/wakatime/oauth/status: report the OAuth connection state.
+
+    Owner-only. ``connected`` is true when an access token is stored, so the
+    settings UI shows a Disconnect control; ``client_configured`` is true when
+    an OAuth client id is set, so the UI can prompt for app setup before
+    offering Connect. Reports no token material, only these two booleans.
+    """
+    from kiro_crew.dashboard.handlers_system import _require_owner
+
+    denied = await _require_owner(request, "wakatime.oauth.status")
+    if denied is not None:
+        return denied
+
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.wakatime import oauth
+
+    connected = bool(await asyncio.to_thread(oauth.read_access_token))
+    client_configured = bool((KiroCrewConfig.load().wakatime.oauth_client_id or "").strip())
+    return web.json_response({"connected": connected, "client_configured": client_configured})
+
+
 def _oauth_redirect_back(request: web.Request, *, ok: bool, code: str | None) -> web.HTTPFound:
     """Build a 302 back to the WakaTime settings page with a result marker.
 
