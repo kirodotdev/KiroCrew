@@ -521,10 +521,17 @@ class FakeSessions:
     async def try_acquire(self, key: str) -> bool:
         # Mirror the real atomic acquire-if-idle: refuse if a turn holds the
         # semaphore or no session exists; otherwise "acquire" and record it.
-        if self._busy or not self._has:
+        if self._busy or not self._has or self.retiring:
             return False
         self.acquired.append(key)
         return True
+
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
 
     async def destroy(self, key: str) -> None:
         self.destroyed.append(key)

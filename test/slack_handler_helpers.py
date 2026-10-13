@@ -147,6 +147,13 @@ class FakeSessionManager:
     def release(self, key):
         pass
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def is_busy(self, key):
         # Interface parity with the real SessionManager. False = no other turn is
         # in flight, so the post-footer re-check treats a recorded OPTIONS control
