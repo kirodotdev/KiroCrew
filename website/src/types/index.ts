@@ -88,6 +88,7 @@ export type {
   SideSnapshot,
   ChatSlotDetailResponse,
   SubagentActivity,
+  SubagentTranscriptItem,
   ToolPayloadCut,
   ToolActivity,
   BlockType,
