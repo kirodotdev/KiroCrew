@@ -9,7 +9,7 @@
  * DialogContent itself.
  */
 import { Loader2, Terminal, Globe, ChevronRight, Lock } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogBody, DialogFooter,
@@ -22,11 +22,11 @@ import CrewAvatar from '../CrewAvatar'
 import CrewAvatarBuilder from '../CrewAvatarBuilder'
 import CrewAvatarButton from './CrewAvatarButton'
 import { retiredCueFrom, motionsFrom, soundsFrom } from '../../lib/crewAvatarState'
-import { DisplayNameField, Field, WorkspaceField, TriggersField, WorkspaceModal, ModelField, EffortField, SessionColorField, memberMemoryState } from '../../pages/KiroCrewAgentsPage'
+import { DisplayNameField, Field, WorkspaceField, WorkspaceModal, ModelField, EffortField, memberMemoryState } from '../../pages/KiroCrewAgentsPage'
 import ErrorNotice from '../ErrorNotice'
 import { useConfirm } from '../ConfirmDialog'
 import { effortLabel } from '../../lib/effort'
-import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow } from '../../api/crewCapabilities'
+import { crewCapabilitiesApi, crewCapabilitiesKey, type CapabilityRow, type CapabilityPreview } from '../../api/crewCapabilities'
 import CrewApprovalsEditor from './CrewApprovalsEditor'
 import CrewWakeSection from '../CrewWakeSection'
 import CrewWebhookSection from '../CrewWebhookSection'
@@ -38,9 +38,8 @@ import MemoryCarveCard from '../../pages/overview/MemoryCarveCard'
 import { api } from '../../api/client'
 import { type CrewEditorController } from './useCrewEditor'
 
-type NextSection = 'general' | 'builtFrom' | 'behavior' | 'memory' | 'danger'
+type NextSection = 'general' | 'builtFrom' | 'approvals' | 'schedules' | 'webhooks' | 'memory' | 'danger'
 type BuiltFromTab = 'details' | 'tools' | 'mcp' | 'skills'
-type BehaviorTab = 'approvals' | 'model' | 'triggers' | 'schedules' | 'webhooks'
 type MemoryTab = 'profile' | 'memories' | 'recovery'
 
 /** Rows the template actually declares for a section (present ones only). */
@@ -76,7 +75,7 @@ function ToolsTab({
 
   return (
     <div className="flex flex-col gap-4" data-testid="next-builtfrom-tools">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <span className="text-[11px] uppercase tracking-wide text-muted">{rows.length} {i18nT('components.crew.crewEditorNextDialog.tools')}</span>
         <input
           type="text"
@@ -84,7 +83,7 @@ function ToolsTab({
           onChange={e => onFilter(e.target.value)}
           placeholder={i18nT("crewEditorNext.filter_tools")}
           aria-label={i18nT("crewEditorNext.filter_tools_aria")}
-          className="w-48 rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring"
+          className="w-full rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring sm:w-48"
         />
       </div>
 
@@ -386,9 +385,9 @@ function SkillsTab({ rows, filter, onFilter }: { rows: CapabilityRow[]; filter: 
 
   return (
     <div className="flex flex-col gap-1.5" data-testid="next-builtfrom-skills">
-      <div className="mb-1 flex items-center justify-between gap-3">
+      <div className="mb-1 flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
         <span className="text-[11px] uppercase tracking-wide text-muted">{rows.length} {i18nT('components.crew.crewEditorNextDialog.skills')}</span>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col items-stretch gap-1.5 sm:flex-row sm:items-center sm:gap-3">
           {allInherited && <span className="text-[11px] text-muted">{i18nT('components.crew.crewEditorNextDialog.all_from_template')}</span>}
           <input
             type="text"
@@ -396,7 +395,7 @@ function SkillsTab({ rows, filter, onFilter }: { rows: CapabilityRow[]; filter: 
             onChange={e => onFilter(e.target.value)}
             placeholder={i18nT("crewEditorNext.filter_skills")}
             aria-label={i18nT("crewEditorNext.filter_skills_aria")}
-            className="w-44 rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring"
+            className="w-full rounded-md border border-border bg-bg px-2.5 py-1 text-[12.5px] text-text focus-ring sm:w-44"
           />
         </div>
       </div>
@@ -418,10 +417,21 @@ export default function CrewEditorNextDialog({
   const [section, setSection] = useState<NextSection>('general')
   // Which Built From sub-tab is showing.
   const [builtFromTab, setBuiltFromTab] = useState<BuiltFromTab>('details')
-  // Which Behavior sub-tab is showing.
-  const [behaviorTab, setBehaviorTab] = useState<BehaviorTab>('approvals')
   // Which Memory sub-tab is showing.
   const [memoryTab, setMemoryTab] = useState<MemoryTab>('profile')
+  // Approvals draft state is OWNED HERE, not inside CrewApprovalsEditor, so an
+  // unsaved approvals draft survives the pane unmounting when the user switches
+  // section/tab — matching the classic editor's always-mounted capabilities
+  // pane. Keyed by capabilityKey; `preview` is the reviewed-but-unsaved result.
+  const [approvalsPending, setApprovalsPending] = useState<Record<string, boolean>>({})
+  const [approvalsPreview, setApprovalsPreview] = useState<CapabilityPreview | null>(null)
+  // The approvals draft is per-crewmate; when the edited target changes, drop
+  // any draft from the previous one (the classic pane got this free from its
+  // `key={editing}` remount — the lifted state must reset explicitly).
+  useEffect(() => {
+    setApprovalsPending({})
+    setApprovalsPreview(null)
+  }, [ctl.editing])
   // Free-text filter for the Tools tab.
   const [toolFilter, setToolFilter] = useState('')
   // Free-text filter for the Skills tab.
@@ -461,9 +471,8 @@ export default function CrewEditorNextDialog({
     editAvatar, openAvatarBuilder, avatarBuilderOpen, applyAvatar, closeAvatarBuilder, onAvatarImageError,
     sheetBusy, dirtyPanes, schedDraft, requestClose, save, resolved,
     error, sheetHint, editorOptionsError,
-    childDirtyHandlers, setCapabilityBusy, memoryStore, onCapabilitiesSaved, kirocrewCfg,
-    workspace, setWorkspace, triggers, setTriggers, workspaceOptions,
-    sessionColor, setSessionColor,
+    childDirtyHandlers, setCapabilityBusy, memoryStore, onCapabilitiesSaved, kirocrewCfg, memoryDirty,
+    workspace, setWorkspace, workspaceOptions,
     wsModalOpen, openWsModal, closeWsModal, onWorkspaceCreated, setWsDirty, onPaneSaveChain,
     editModel, setEditModel, editEffort, setEditEffort,
     modelOptions, modelsDegraded, resolvedError, effortCapable, effortModel,
@@ -480,9 +489,16 @@ export default function CrewEditorNextDialog({
   // blocked while such a draft is live (the unsaved note tells the user to
   // save or discard it in place first) and while a save is in flight — the
   // schedule draft keeps its own prompt via the controller's discardAsk.
-  const childDraftLive = dirtyPanes.has('capabilities') || schedDraft
+  // Navigation is blocked only while a draft that would be LOST on unmount is
+  // live. The approvals draft is now owned by the dialog (lifted state), so it
+  // survives navigation and no longer blocks it; the schedule draft and the
+  // memory doc-card drafts are still pane-local (MemoryDocCard keeps its draft
+  // in local state and clears its dirty key on unmount), so they keep the
+  // block until unmount would otherwise discard them silently. The footer Save
+  // still refuses to persist either child draft (see its own guard below).
+  const navBlocked = sheetBusy || schedDraft || memoryDirty
   const guardNav = (perform: () => void) => {
-    if (sheetBusy || childDraftLive) return
+    if (navBlocked) return
     perform()
   }
 
@@ -528,7 +544,9 @@ export default function CrewEditorNextDialog({
   const sections: { key: NextSection; label: string }[] = [
     { key: 'general', label: i18nT('crewEditorNext.section_general') },
     { key: 'builtFrom', label: i18nT('crewEditorNext.section_built_from') },
-    { key: 'behavior', label: i18nT('crewEditorNext.section_behavior') },
+    { key: 'approvals', label: i18nT('crewEditorNext.tab_approvals') },
+    { key: 'schedules', label: i18nT('crewEditorNext.tab_schedules') },
+    { key: 'webhooks', label: i18nT('crewEditorNext.tab_webhooks') },
     { key: 'memory', label: i18nT('crewEditorNext.section_memory') },
     // The default crewmate cannot be deleted — the backend rejects it with 409
     // — so the classic editor hid its Danger Zone. Keep that guard.
@@ -551,14 +569,6 @@ export default function CrewEditorNextDialog({
     { key: 'tools', label: i18nT('crewEditorNext.tab_tools') },
     { key: 'mcp', label: i18nT('crewEditorNext.tab_mcp') },
     { key: 'skills', label: i18nT('crewEditorNext.tab_skills') },
-  ]
-
-  const behaviorTabs: { key: BehaviorTab; label: string }[] = [
-    { key: 'approvals', label: i18nT('crewEditorNext.tab_approvals') },
-    { key: 'model', label: i18nT('crewEditorNext.tab_model') },
-    { key: 'triggers', label: i18nT('crewEditorNext.tab_triggers') },
-    { key: 'schedules', label: i18nT('crewEditorNext.tab_schedules') },
-    { key: 'webhooks', label: i18nT('crewEditorNext.tab_webhooks') },
   ]
 
   const memoryTabs: { key: MemoryTab; label: string }[] = [
@@ -620,18 +630,25 @@ export default function CrewEditorNextDialog({
                     aria-selected={isActive}
                     data-testid={`next-rail-${s.key}`}
                     onClick={() => guardNav(() => setSection(s.key))}
-                    disabled={!isActive && (sheetBusy || childDraftLive)}
+                    disabled={!isActive && navBlocked}
                     className={[
                       'flex w-full rounded-md px-2.5 py-1.5 text-left text-[12.5px] focus-ring',
+                      // While a draft that would be lost on unmount is live (a
+                      // memory doc or schedule draft) or a save is running,
+                      // every inactive rail item is disabled. Give that lock a
+                      // visible cue — dimmed + not-allowed cursor — so the user
+                      // sees WHY the section won't switch, not just a dead
+                      // click (matches the approvals editor's disabled styling).
+                      'disabled:opacity-50 disabled:cursor-not-allowed',
                       // Danger Zone sits directly below the ordinary sections,
                       // with a small top margin to set it off from the group
                       // above; its resting tint is danger-toned so it never
                       // reads as a routine pane.
                       isDanger ? 'mt-2' : '',
                       isActive
-                        ? (isDanger ? 'bg-danger-subtle text-danger' : 'bg-accent-subtle text-text')
+                        ? (isDanger ? 'bg-danger-subtle text-danger-text' : 'bg-accent-subtle text-text')
                         : (isDanger
-                            ? 'text-danger hover:bg-danger-subtle'
+                            ? 'text-danger-text hover:bg-danger-subtle'
                             : 'text-muted hover:bg-bg-hover hover:text-text'),
                     ].join(' ')}
                   >
@@ -711,7 +728,86 @@ export default function CrewEditorNextDialog({
                       : i18nT('crewEditorNext.workspace_hint_custom')}
                   />
 
-                  <SessionColorField value={sessionColor} onChange={setSessionColor} subject="agent" />
+                  {/* Model lives on General (moved from the Behavior section's
+                      Model tab): it is a core identity field alongside template
+                      and workspace, not a behavior toggle. The underlying model
+                      state and save path are unchanged. */}
+                  <div className="flex flex-col gap-3" data-testid="next-general-model">
+                    <p className="text-[12px] text-muted">
+                      {i18nT('components.crew.crewEditorNextDialog.model_frame')}
+                    </p>
+                    <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
+                    {/* Model list resolved DEGRADED (transport failure → auto-only/cached list).
+                        No hand-off: this is an advisory read-degradation, not a
+                        failure, and the hand-off would discard the open editor's
+                        unsaved crew/approvals/memory drafts. */}
+                    {modelsDegraded && (
+                      <ErrorNotice
+                        className="mt-1"
+                        message={i18nT('pages.chatSidebar.model_list_failed')}
+                        askAgent={false}
+                        testId="next-model-degraded"
+                      />
+                    )}
+                    {(effortCapable || !!editEffort) && (
+                      <EffortField value={editEffort} onChange={setEditEffort} />
+                    )}
+                    {!effortCapable && !!editEffort && (
+                      <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                        {effortModel
+                          ? i18nT('pages.kiroCrewAgentsPage.effort_ignored_on_this_model', { model: effortModel })
+                          : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
+                      </div>
+                    )}
+                    {/* No hand-off: a model-resolution read failure leaves the
+                        editor's unsaved crew/approvals/memory drafts in place; a
+                        hand-off would navigate away and discard them. */}
+                    <ErrorNotice
+                      message={resolvedError ? (resolvedError instanceof Error ? resolvedError.message : String(resolvedError)) : null}
+                      askAgent={false}
+                      testId="next-model-resolved-error"
+                    />
+                    {resolved && (
+                      <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
+                        <div>
+                          <span className="text-text">
+                            {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
+                          </span>
+                          {' — '}
+                          {resolved.pinned
+                            ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
+                            : resolved.model
+                              ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
+                              : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
+                        </div>
+                        {(effortCapable || !editEffort) && (
+                          <div>
+                            {effortCapable ? (
+                              <>
+                                <span className="text-text">
+                                  {i18nT('pages.kiroCrewAgentsPage.effort_resolves_to', {
+                                    effort: resolved.reasoning_effort
+                                      ? effortLabel(resolved.reasoning_effort)
+                                      : i18nT('lib.effort.default'),
+                                  })}
+                                </span>
+                                {' — '}
+                                {resolved.effort_pinned
+                                  ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
+                                  : resolved.reasoning_effort
+                                    ? i18nT('pages.kiroCrewAgentsPage.effort_inherited_from_the_global_default')
+                                    : i18nT('pages.kiroCrewAgentsPage.no_effort_pin_the_model_decides')}
+                              </>
+                            ) : effortModel ? (
+                              i18nT('pages.kiroCrewAgentsPage.effort_unavailable_on_this_model', { model: effortModel })
+                            ) : (
+                              i18nT('pages.kiroCrewAgentsPage.effort_needs_a_model')
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </fieldset>
               )}
 
@@ -734,7 +830,7 @@ export default function CrewEditorNextDialog({
                           data-testid={`next-builtfrom-tab-${t.key}`}
                           onClick={() => setBuiltFromTab(t.key)}
                           className={[
-                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring',
+                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring disabled:opacity-50 disabled:cursor-not-allowed',
                             isActive
                               ? 'border-b-2 border-accent font-medium text-text'
                               : 'border-b-2 border-transparent text-muted hover:text-text',
@@ -793,23 +889,25 @@ export default function CrewEditorNextDialog({
                             {/* At-a-glance summary: how much this template gives
                                 the mate, plus its effective model. Counts are the
                                 present rows per section — the same sets the Tools /
-                                MCP / Skills tabs list. Clicking a stat jumps to it. */}
+                                MCP / Skills tabs list. These are NON-interactive
+                                readouts (not jump buttons): the Built From tab bar
+                                above already navigates to each section, and three
+                                sibling action buttons in one row would exceed the
+                                two-action cap. */}
                             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                               {([
                                 { tab: 'tools' as const, label: i18nT('crewEditorNext.tab_tools'), n: presentRows(caps.rows, 'tools').length },
                                 { tab: 'mcp' as const, label: i18nT('crewEditorNext.stat_mcp_servers'), n: presentRows(caps.rows, 'mcpServers').length },
                                 { tab: 'skills' as const, label: i18nT('crewEditorNext.tab_skills'), n: presentRows(caps.rows, 'skills').length },
                               ]).map(stat => (
-                                <button
+                                <div
                                   key={stat.tab}
-                                  type="button"
-                                  onClick={() => setBuiltFromTab(stat.tab)}
                                   data-testid={`next-builtfrom-stat-${stat.tab}`}
-                                  className="flex flex-col items-start gap-0.5 rounded-md border border-border bg-bg-elevated p-3 text-left hover:bg-bg-hover focus-ring"
+                                  className="flex flex-col items-start gap-0.5 rounded-md border border-border bg-bg-elevated p-3 text-left"
                                 >
                                   <span className="text-[18px] font-semibold leading-none text-text">{stat.n}</span>
                                   <span className="text-[11px] text-muted">{stat.label}</span>
-                                </button>
+                                </div>
                               ))}
                               {/* Model is not a Built-From tab (it lives in
                                   Behavior → Model), so this stat is a readout, not
@@ -869,161 +967,56 @@ export default function CrewEditorNextDialog({
                 </div>
               )}
 
-              {effectiveSection === 'behavior' && (
-                <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-behavior">
-                  {/* Behavior sub-tabs: approvals, workspace, triggers. */}
-                  <div
-                    role="tablist"
-                    aria-label={i18nT("crewEditorNext.behavior_sections_aria")}
-                    className="flex shrink-0 gap-1 border-b border-border"
-                  >
-                    {behaviorTabs.map(t => {
-                      const isActive = t.key === behaviorTab
-                      return (
-                        <button
-                          key={t.key}
-                          type="button"
-                          role="tab"
-                          aria-selected={isActive}
-                          data-testid={`next-behavior-tab-${t.key}`}
-                          onClick={() => guardNav(() => setBehaviorTab(t.key))}
-                          disabled={!isActive && (sheetBusy || childDraftLive)}
-                          className={[
-                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring',
-                            isActive
-                              ? 'border-b-2 border-accent font-medium text-text'
-                              : 'border-b-2 border-transparent text-muted hover:text-text',
-                          ].join(' ')}
-                        >
-                          {t.label}
-                        </button>
-                      )
-                    })}
+              {effectiveSection === 'approvals' && (
+                <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-approvals">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <fieldset disabled={sheetBusy} className="flex min-h-0 flex-col border-0 p-0 m-0 min-w-0" data-testid="next-behavior-approvals">
+                      <CrewApprovalsEditor
+                        member={editing}
+                        pending={approvalsPending}
+                        setPending={setApprovalsPending}
+                        preview={approvalsPreview}
+                        setPreview={setApprovalsPreview}
+                        onDirtyChange={childDirtyHandlers.approvals}
+                        onBusyChange={setCapabilityBusy}
+                        onSaved={onCapabilitiesSaved}
+                      />
+                    </fieldset>
                   </div>
+                </div>
+              )}
 
-                  {/* Tab content */}
-                  <div className="min-h-0 flex-1 overflow-y-auto pt-4">
-                    {behaviorTab === 'approvals' && (
-                      <fieldset disabled={sheetBusy} className="flex min-h-0 flex-col border-0 p-0 m-0 min-w-0" data-testid="next-behavior-approvals">
-                        <CrewApprovalsEditor
-                          member={editing}
-                          onDirtyChange={childDirtyHandlers.approvals}
-                          onBusyChange={setCapabilityBusy}
-                          onSaved={onCapabilitiesSaved}
-                        />
-                      </fieldset>
-                    )}
-                    {behaviorTab === 'model' && (
-                      <fieldset disabled={sheetBusy} className="flex flex-col gap-3 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-model">
-                        <p className="text-[12px] text-muted">
-                          {i18nT('components.crew.crewEditorNextDialog.model_frame')}
-                        </p>
-                        <ModelField options={modelOptions} value={editModel} onChange={setEditModel} />
-                        {/* Model list resolved DEGRADED (transport failure → auto-only/cached list).
-                            No hand-off: this is an advisory read-degradation, not a
-                            failure, and the hand-off would discard the open editor's
-                            unsaved crew/approvals/memory drafts. */}
-                        {modelsDegraded && (
-                          <ErrorNotice
-                            className="mt-1"
-                            message={i18nT('pages.chatSidebar.model_list_failed')}
-                            askAgent={false}
-                            testId="next-model-degraded"
-                          />
-                        )}
-                        {(effortCapable || !!editEffort) && (
-                          <EffortField value={editEffort} onChange={setEditEffort} />
-                        )}
-                        {!effortCapable && !!editEffort && (
-                          <div className="rounded-md border border-warn-subtle bg-warn-subtle px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                            {effortModel
-                              ? i18nT('pages.kiroCrewAgentsPage.effort_ignored_on_this_model', { model: effortModel })
-                              : i18nT('pages.kiroCrewAgentsPage.effort_pin_needs_a_model')}
-                          </div>
-                        )}
-                        {/* No hand-off: a model-resolution read failure leaves the
-                            editor's unsaved crew/approvals/memory drafts in place; a
-                            hand-off would navigate away and discard them. */}
-                        <ErrorNotice
-                          message={resolvedError ? (resolvedError instanceof Error ? resolvedError.message : String(resolvedError)) : null}
-                          askAgent={false}
-                          testId="next-model-resolved-error"
-                        />
-                        {resolved && (
-                          <div className="flex flex-col gap-1 rounded-md border border-border bg-bg-accent px-3 py-2.5 text-[11.5px] leading-relaxed text-muted">
-                            <div>
-                              <span className="text-text">
-                                {i18nT('pages.kiroCrewAgentsPage.resolves_to', { model: resolved.model || i18nT('pages.kiroCrewAgentsPage.inherited') })}
-                              </span>
-                              {' — '}
-                              {resolved.pinned
-                                ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                                : resolved.model
-                                  ? i18nT('pages.kiroCrewAgentsPage.inherited_from_the_agent_template')
-                                  : i18nT('pages.kiroCrewAgentsPage.no_pin_anywhere_the_backend_chooses')}
-                            </div>
-                            {(effortCapable || !editEffort) && (
-                              <div>
-                                {effortCapable ? (
-                                  <>
-                                    <span className="text-text">
-                                      {i18nT('pages.kiroCrewAgentsPage.effort_resolves_to', {
-                                        effort: resolved.reasoning_effort
-                                          ? effortLabel(resolved.reasoning_effort)
-                                          : i18nT('lib.effort.default'),
-                                      })}
-                                    </span>
-                                    {' — '}
-                                    {resolved.effort_pinned
-                                      ? i18nT('pages.kiroCrewAgentsPage.pinned_on_this_crew')
-                                      : resolved.reasoning_effort
-                                        ? i18nT('pages.kiroCrewAgentsPage.effort_inherited_from_the_global_default')
-                                        : i18nT('pages.kiroCrewAgentsPage.no_effort_pin_the_model_decides')}
-                                  </>
-                                ) : effortModel ? (
-                                  i18nT('pages.kiroCrewAgentsPage.effort_unavailable_on_this_model', { model: effortModel })
-                                ) : (
-                                  i18nT('pages.kiroCrewAgentsPage.effort_needs_a_model')
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </fieldset>
-                    )}
-                    {behaviorTab === 'triggers' && (
-                      <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-triggers">
-                        <p className="text-[12px] text-muted">
-                          {i18nT('crewEditorNext.triggers_frame')}
-                        </p>
-                        <TriggersField value={triggers} onChange={setTriggers} subject="agent" />
-                      </fieldset>
-                    )}
-                    {behaviorTab === 'schedules' && (
-                      <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-schedules">
-                        <CrewWakeSection
-                          crew={editing}
-                          memberId={memberId}
-                          agentTemplate={kiroAgent}
-                          isDefaultCrew={isDefaultCrew}
-                          hideKindBadge
-                          heading={i18nT('crewEditorNext.schedules_heading')}
-                          blurb={i18nT('crewEditorNext.schedules_blurb')}
-                          onDraftChange={setSchedDraft}
-                          onSavingChange={setSchedSaving}
-                          onRequestCancel={requestCancelDraft}
-                          onNavigateAway={guardedNavigate}
-                        />
-                      </fieldset>
-                    )}
-                    {behaviorTab === 'webhooks' && (
-                      <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-webhooks">
-                        <p className="text-[12px] text-muted">
-                          {i18nT('crewEditorNext.webhooks_frame')}
-                        </p>
-                        <CrewWebhookSection crew={editing} onNavigateAway={guardedNavigate} />
-                      </fieldset>
-                    )}
+              {effectiveSection === 'schedules' && (
+                <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-schedules">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-schedules">
+                      <CrewWakeSection
+                        crew={editing}
+                        memberId={memberId}
+                        agentTemplate={kiroAgent}
+                        isDefaultCrew={isDefaultCrew}
+                        hideKindBadge
+                        heading={i18nT('crewEditorNext.schedules_heading')}
+                        blurb={i18nT('crewEditorNext.schedules_blurb')}
+                        onDraftChange={setSchedDraft}
+                        onSavingChange={setSchedSaving}
+                        onRequestCancel={requestCancelDraft}
+                        onNavigateAway={guardedNavigate}
+                      />
+                    </fieldset>
+                  </div>
+                </div>
+              )}
+
+              {effectiveSection === 'webhooks' && (
+                <div className="flex min-h-0 flex-1 flex-col" data-testid="next-pane-webhooks">
+                  <div className="min-h-0 flex-1 overflow-y-auto">
+                    <fieldset disabled={sheetBusy} className="flex flex-col gap-4 border-0 p-0 m-0 min-w-0" data-testid="next-behavior-webhooks">
+                      <p className="text-[12px] text-muted">
+                        {i18nT('crewEditorNext.webhooks_frame')}
+                      </p>
+                      <CrewWebhookSection crew={editing} onNavigateAway={guardedNavigate} />
+                    </fieldset>
                   </div>
                 </div>
               )}
@@ -1046,9 +1039,9 @@ export default function CrewEditorNextDialog({
                           aria-selected={isActive}
                           data-testid={`next-memory-tab-${t.key}`}
                           onClick={() => guardNav(() => setMemoryTab(t.key))}
-                          disabled={!isActive && (sheetBusy || childDraftLive)}
+                          disabled={!isActive && navBlocked}
                           className={[
-                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring',
+                            'relative -mb-px px-3 py-2 text-[12.5px] focus-ring disabled:opacity-50 disabled:cursor-not-allowed',
                             isActive
                               ? 'border-b-2 border-accent font-medium text-text'
                               : 'border-b-2 border-transparent text-muted hover:text-text',
@@ -1082,6 +1075,7 @@ export default function CrewEditorNextDialog({
                               read={api.memoryPreferences}
                               write={api.saveMemoryPreferences}
                               onDirtyChange={childDirtyHandlers['memory-preferences']}
+                              saveLabel={i18nT('pages.overview.memoryTab.save_profile')}
                             />
                             <MemoryDocCard
                               key={`projects-${memoryStore}`}
@@ -1093,6 +1087,7 @@ export default function CrewEditorNextDialog({
                               read={api.memoryProjects}
                               write={api.saveMemoryProjects}
                               onDirtyChange={childDirtyHandlers['memory-projects']}
+                              saveLabel={i18nT('pages.overview.memoryTab.save_profile')}
                             />
                           </fieldset>
                         )}
@@ -1173,7 +1168,14 @@ export default function CrewEditorNextDialog({
             )}
             {dirtyPanes.size > 0 && !error && !sheetHint && (
               <span className="mr-auto text-[11.5px] text-muted" data-testid="next-unsaved-note">
-                {i18nT('components.crewEditor.unsaved_changes')}
+                {/* When the only dirty panes are child-owned (approvals/memory
+                    'capabilities' or 'schedules'), the footer Save is disabled
+                    because those save through their OWN pane control — so the
+                    note must point there instead of competing with a dead
+                    "Save changes" button. */}
+                {[...dirtyPanes].every(p => p === 'capabilities' || p === 'schedules')
+                  ? i18nT('components.crewEditor.unsaved_in_pane')
+                  : i18nT('components.crewEditor.unsaved_changes')}
               </span>
             )}
             <Btn onClick={requestClose}>{i18nT('pages.kiroCrewAgentsPage.cancel')}</Btn>

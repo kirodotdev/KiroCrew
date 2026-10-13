@@ -3921,7 +3921,7 @@ one flag per origin — dismissed by the first click on any face or chip). The
 editor header and the Triggers-pane row also carry an explicit "Edit avatar"
 text button. The Crewmates page (`/members`) is a writer too, through the SAME
 editor: the centred identity pill opens the Profile card (`CrewProfilePanel`), and
-its pencil ("Edit member"), Permissions and Model entries open `CrewEditorDialog` in
+its pencil ("Edit member"), Permissions and Model entries open `CrewEditorModal` in
 place, driven by the shared `useCrewEditor` state machine, so a save is the same
 `PUT /api/agents/{name}` (and a delete the same `DELETE`) the crew manager sends; one
 write path, reached from two surfaces (see [crew-mode.md](crew-mode.md)). The page's

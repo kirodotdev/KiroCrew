@@ -13,7 +13,7 @@ import { i18nT } from '../../i18n/t'
  *  `key`), which is what discards `draft` on a store change: a draft typed
  *  against one store is not a draft of the next one, and carrying it across would
  *  make the Save button overwrite a document the user never looked at. */
-export default function MemoryDocCard({ docKey, store, title, info, rows, mono, placeholder, read, write, onDirtyChange }: {
+export default function MemoryDocCard({ docKey, store, title, info, rows, mono, placeholder, read, write, onDirtyChange, saveLabel }: {
   /** Query-key segment naming the document — `preferences`, `projects`, `history`. */
   docKey: string
   store: string
@@ -25,6 +25,12 @@ export default function MemoryDocCard({ docKey, store, title, info, rows, mono, 
   read: (store?: string) => Promise<{ content?: string; content_redacted?: boolean }>
   write: (content: string, store?: string) => Promise<unknown>
   onDirtyChange?: (dirty: boolean) => void
+  /** Overrides the bare "Save" on the button. The crewmate editor passes a
+   *  surface-specific label ("Save profile") so it does not collide with the
+   *  editor's footer "Save changes" and the approvals card's own save control
+   *  — the three-identical-"Save" hesitation the UX review flagged. The
+   *  standalone Memory tab/panel leave it unset and keep the plain "Save". */
+  saveLabel?: string
 }) {
   const queryClient = useQueryClient()
   const doc = useQuery({
@@ -76,7 +82,7 @@ export default function MemoryDocCard({ docKey, store, title, info, rows, mono, 
       <CardTitle>
         {title} {info && <InfoTip text={info} />}{' '}
         <Btn disabled={save.isPending || !editable} onClick={() => save.mutate(value)}>
-          {saved && draft === null ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}
+          {saved && draft === null ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : saveLabel ?? i18nT('pages.overview.memoryTab.save')}
         </Btn>
       </CardTitle>
       <MemoryScopeNotice error={doc.error ?? save.error} />

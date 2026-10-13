@@ -35,7 +35,7 @@ gateway, which this one reaches through a tunnel (see [instances.md](instances.m
 | `website/src/pages/overview/AgentTemplatesTab.tsx` | The **Custom agents** tab of `CapabilitiesPage` (Customize): list by origin, edit the shared definition, create, delete, chat-with / enroll (an enroll invalidates `['kirocrew-agents']` and `['kirocrewConfig']`) |
 | `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, thread get-or-create, rules, activity |
 | `src/kiro_crew/crew_teams.py` + `src/kiro_crew/dashboard/handlers/teams.py` | Crewmate teams (`teams.json` in the masked gateway-only data-home directory `crew-teams`; `/api/teams`): the Crewmates page's roster grouping and team view — specified under [learn-cron-dashboard](learn-cron-dashboard.md) with the members handlers |
-| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster and crew editor, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize). The page holds the roster and editor queries, the editor's draft, opening, saving and deleting a crew, the deep links, the template-switch writes and the Danger zone, and composes its owners beside it: the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`), the binding fields every crew editor shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each), the editor header and the Model, Workspace & memory and Routing pane bodies (`KiroCrewAgentsPagePanes.tsx`), and the unsaved-work guard with its discard dialog (`KiroCrewAgentsPageDiscard.tsx`). The Crewmates page's own crew editor (`components/crew/CrewEditorDialog.tsx` + `useCrewEditor.ts`) mounts the same fields from here and keeps its own `INHERIT_MODEL` twin |
+| `website/src/pages/KiroCrewAgentsPage.tsx` | The crewmate roster and crew editor, mounted as the **Crewmates** tab of `CapabilitiesPage` (Customize). The page holds the roster and editor queries, the editor's draft, opening, saving and deleting a crew, the deep links, the template-switch writes and the Danger zone, and composes its owners beside it: the roster cards, rows, toolbar and list (`KiroCrewAgentsPageRoster.tsx`), the binding fields every crew editor shares (`KiroCrewAgentsPageFields.tsx`; consumers import them from the page, which re-exports each), the editor header and the Model, Workspace & memory and Routing pane bodies (`KiroCrewAgentsPagePanes.tsx`), and the unsaved-work guard with its discard dialog (`KiroCrewAgentsPageDiscard.tsx`). The Crewmates page's own crew editor (`components/crew/CrewEditorNextDialog.tsx` + `useCrewEditor.ts`) mounts the same fields from here and keeps its own `INHERIT_MODEL` twin |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
 | `website/src/components/chat/crewmateBubbles.ts` | A crewmate's chat: what the transcript draws (`filterCrewmateChat`) and the run / corner rule for its bubbles (`crewmateRunPosition`, `crewmateBubbleClass`) |
@@ -1489,7 +1489,7 @@ rules above apply unchanged. A create link followed while a chat is open lands
 on that chat, never on this rule.
 
 Deleting a crewmate is available on this page: the crewmate's edit controls
-open the shared `CrewEditorDialog` in place, and its Danger pane deletes the
+open `CrewEditorModal` in place, and its Danger pane deletes the
 crewmate. A row the listing rule hides is reached through search, or through
 the Customize page's Crewmates tab.
 
@@ -1928,7 +1928,7 @@ hairline, transparent background, no hover and no pointer; never dashed, which i
 this card's empty language (Sessions empty) and would make a
 set binding read as not set up — while Workspace keeps the filled clickable-card
 treatment with its hover. Notes, Permissions, and Model follow.
-The pencil, Permissions, and Model entries open the existing `CrewEditorDialog`;
+The pencil, Permissions, and Model entries open `CrewEditorModal`;
 the card introduces no configuration writer. Memory is a non-interactive binding
 readout — it never opens the unrelated generated Dashboard. The Workspace tile's
 label is the crew record's `workspace` field shown as-is: that field is the

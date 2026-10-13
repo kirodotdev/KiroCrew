@@ -248,6 +248,9 @@ export interface CrewEditorController {
   setSchedSaving: (v: boolean) => void
   requestCancelDraft: (proceed: () => void) => void
   capabilityDirty: boolean
+  /** True while a `memory-*` doc card holds an unsaved local draft that would
+   *  be lost on unmount; the dialog folds it into its navigation guard. */
+  memoryDirty: boolean
   capabilityBusy: boolean
   /** The template pane holds unsaved typed input in a nested dialog (publish
    *  name). Exposed for the host's page-level navigation stake only — it does
@@ -515,6 +518,12 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
   // `capabilityDirty` is the logical OR: true while ANY child is dirty.
   const [childDirty, setChildDirtySet] = useState<Set<string>>(new Set())
   const capabilityDirty = childDirty.size > 0
+  // The memory doc cards (Preferences, Projects, memory-records) keep their
+  // draft in LOCAL state and clear their dirty key on unmount, so unlike the
+  // lifted approvals draft they are LOST if navigation unmounts them. Expose a
+  // `memory-*`-scoped dirty flag so the dialog can block navigation while such
+  // a draft is live (approvals, being lifted, stays navigable).
+  const memoryDirty = [...childDirty].some(k => k.startsWith('memory-'))
   const setChildDirty = useCallback((key: string, dirty: boolean) => {
     setChildDirtySet(prev => {
       if (dirty === prev.has(key)) return prev
@@ -1100,6 +1109,7 @@ export function useCrewEditor(args: UseCrewEditorArgs): CrewEditorController {
     setSchedSaving,
     requestCancelDraft,
     capabilityDirty,
+    memoryDirty,
     capabilityBusy,
     templateDirty,
     confirmDelete, setConfirmDelete,
