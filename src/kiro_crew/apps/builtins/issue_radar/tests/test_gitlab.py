@@ -1465,7 +1465,7 @@ class TestClientParity(unittest.TestCase):
         "set_pr_state", "submit_pr_review", "add_issue_comment", "add_pr_comment",
         "post_comment_batch",
         "merge_pull_request", "enable_auto_merge", "disable_auto_merge",
-        "list_pr_workflow_runs",
+        "list_pr_workflow_runs", "list_recent_workflow_runs",
         "cancel_workflow_run", "rerun_workflow_run",
     )
 

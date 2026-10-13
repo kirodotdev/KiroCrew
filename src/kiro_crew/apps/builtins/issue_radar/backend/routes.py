@@ -123,7 +123,9 @@ from .http_routes.ai import (  # noqa: F401
 )
 from .http_routes.ci_runs import (  # noqa: F401
     _CONCURRENCY,
+    _SETUP_ERROR,
     CI_RUNS_MAX_REPOS,
+    CI_RUNS_PROVIDERS,
     _handle_ci_runs,
     _repo_runs,
 )

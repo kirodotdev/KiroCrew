@@ -75,6 +75,9 @@ from .errors import RepoUrlError as RepoUrlError  # noqa: F401 — public re-exp
 from .errors import (
     sanitize_cli_stderr,
 )
+from .gitlab_client_ci import (  # noqa: F401 — public re-export
+    list_recent_workflow_runs as list_recent_workflow_runs,
+)
 from .gitlab_comments import post_comment_batch, reply_to_comment_thread  # noqa: F401 — public API
 from .gitlab_links import list_issue_links as list_issue_links  # noqa: F401 — public re-export
 
