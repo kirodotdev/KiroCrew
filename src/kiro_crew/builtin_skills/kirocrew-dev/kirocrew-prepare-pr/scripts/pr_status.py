@@ -2395,9 +2395,17 @@ def main(argv):
     # "no CONCERNS" from an unread comment list is the wrong direction.
     concerns_eval = None
     if marker_eval.get("ok") and disposition_records is not None:
+        # marker_eval["verdicts"] is filtered by the --reviewers pin, so a
+        # pinned fleet such as --reviewers gpt,opus carries no whole-design
+        # lane verdict there. Merge design_lane_verdicts() (pin-independent)
+        # so an unanswered DESIGN/FIRST-PRINCIPLES/UX CONCERNS still stops
+        # the loop regardless of the reviewer pin.
+        merged_verdicts = dict(marker_eval.get("verdicts") or {})
+        if bot_comments is not None:
+            merged_verdicts.update(design_lane_verdicts(bot_comments, head_sha, marker_bindings))
         concerns_eval = {
             "unanswered": unanswered_concern_lanes(
-                marker_eval.get("verdicts") or {}, disposition_records, head_sha
+                merged_verdicts, disposition_records, head_sha
             ),
             "head_sha": head_sha,
         }
