@@ -103,6 +103,56 @@ def _document_link_spans(text: str) -> list[tuple[int, int]]:
     return spans
 
 
+# ── Subresource Integrity digests the bare-secret pass leaves alone ──
+# An SRI value (W3C Subresource Integrity; also Bazel's `integrity =`, npm's
+# `package-lock.json` and a `<script integrity=...>` attribute) is the algorithm
+# name, `-`, and the standard-base64 digest: `sha256-<43 chars>=`,
+# `sha384-<64 chars>` or `sha512-<86 chars>==`. The digest is a hash, so it is
+# uniformly random base64 and a 40-char window inside it clears every gate of
+# `_looks_like_secret_key`; `-` and `=` are outside the run alphabet, so the
+# digest IS one whole run and pass 3 replaced it (84% of sha256 digests, more for
+# the longer two). As with `_DOCUMENT_LINK_RE`, no gate can tell the digest from a
+# key, so the decision is made on the closed shape around it:
+#   * the literal algorithm name, lowercase as every producer writes it, right
+#     after a non-run character -- a key glued before it (`X` + `sha256-`) keeps
+#     the name inside the key's own run and fails the match;
+#   * exactly the digest length of that algorithm, then exactly the padding that
+#     length takes (`=`, none, `==`), then no further run or padding character --
+#     a 40- or 44-char run, a missing or extra `=`, or a glued character after the
+#     padding fails the match, so the digest alone is exempt, never its neighbours;
+#   * only the run that is the whole digest is exempt: a key before or after the
+#     value, in another field, or anywhere a route is not written is judged as
+#     before, and every pass-1, pass-2 and pass-4 hit is unchanged.
+# Three fixed-width alternatives with no nested quantifier, so one scan is linear.
+#
+# ACCEPTED RESIDUAL: a 43-, 64- or 86-character secret a writer deliberately
+# labels `sha256-<secret>=` (or the other two shapes) is byte-identical to a
+# digest and is not redacted. A bare 40-char AWS secret key never fits: the
+# lengths are those of a 32-, 48- and 64-byte hash. A key padded out to one of
+# them (`sha256-<key>abc=`) does fit, and is the same deliberate labelling. That
+# placement is not an accidental leak, and pass 3 is no control against it.
+_SRI_INTEGRITY_RE = re.compile(
+    r"(?<![A-Za-z0-9+/])sha(?:"
+    r"256-(?P<sha256>[A-Za-z0-9+/]{43})="
+    r"|384-(?P<sha384>[A-Za-z0-9+/]{64})"
+    r"|512-(?P<sha512>[A-Za-z0-9+/]{86})=="
+    r")(?![A-Za-z0-9+/=])"
+)
+
+
+def _sri_digest_spans(text: str) -> frozenset[tuple[int, int]]:
+    """Return the span of every digest written as a whole SRI integrity value.
+
+    A set, because a run is exempt only when it IS a digest, so the caller asks
+    for its exact span: a lockfile holds one digest per package, and every one
+    of them fires the heuristic, so a per-run scan of a list would make the pass
+    quadratic in the number of digests.
+    """
+    # Each alternative holds exactly one named group, so `lastgroup` names the
+    # digest that matched.
+    return frozenset(m.span(m.lastgroup) for m in _SRI_INTEGRITY_RE.finditer(text) if m.lastgroup)
+
+
 #: Code-point ranges of the printable-ASCII tail of the standard baseline JPEG AC
 #: Huffman symbol table -- the ``HUFFVAL`` list of ITU-T T.81 Annex K, Table K.5 --
 #: in the order the table writes them. Everything before and after this tail is
@@ -1040,6 +1090,7 @@ def _credential_redaction_plan(
     withheld = _darwin_user_dir_ids(text)
     pass3: list[_RedactionSpan] = []
     link_spans: list[tuple[int, int]] | None = None
+    digest_spans: frozenset[tuple[int, int]] = frozenset()
     for m in bare_runs:
         run_end = m.start() + len(m.group().rstrip("="))
         run = text[m.start() : run_end]
@@ -1071,11 +1122,17 @@ def _credential_redaction_plan(
             if not pieces:
                 continue
         # A run wholly inside a validated document link is its host and route,
-        # not a key (see `_DOCUMENT_LINK_RE`). Scanned only after a run fires,
-        # so text with no key-shaped run never pays for it.
+        # not a key (see `_DOCUMENT_LINK_RE`), and a run that is exactly the
+        # digest of an SRI integrity value is that hash (see `_SRI_INTEGRITY_RE`).
+        # Both are scanned only after a run fires, so text with no key-shaped run
+        # never pays for either. The digest lookup is by exact span, so a text of
+        # many digests costs one set probe per run, not one pass over them all.
         if link_spans is None:
             link_spans = _document_link_spans(text)
-        if any(start <= m.start() and run_end <= end for start, end in link_spans):
+            digest_spans = _sri_digest_spans(text)
+        if (m.start(), run_end) in digest_spans or any(
+            start <= m.start() and run_end <= end for start, end in link_spans
+        ):
             continue
         for piece_start, piece_end in pieces:
             piece = text[piece_start:piece_end]

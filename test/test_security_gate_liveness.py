@@ -452,7 +452,16 @@ def _url_payload_command(n: int) -> str:
 #: cache stores output computed under exactly the set its key names. Fourteen lines:
 #: the keyword on both signatures, a two-branch read and the docstrings saying why.
 #: No rule widened or narrowed; the default path is the live read.
-_PACKAGE_LINE_BUDGET = 32_125
+#:
+#: Raised again, from 32,125, for ``redaction._SRI_INTEGRITY_RE``: pass 3 skips a run
+#: that is the whole digest of a Subresource Integrity value (``sha256-<43>=``,
+#: ``sha384-<64>``, ``sha512-<86>==``), because a digest is random base64 and a window
+#: inside it clears every gate. The shape is closed: the lowercase algorithm name after
+#: a non-run character, exactly that algorithm's digest length, exactly its padding,
+#: and nothing glued after. One regex of three fixed-width alternatives, a helper that
+#: returns the digest spans, their comment, and the one clause beside the document-link
+#: exemption. No pass widened, no threshold moved, and the exfil URL scan is unchanged.
+_PACKAGE_LINE_BUDGET = 32_182
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
