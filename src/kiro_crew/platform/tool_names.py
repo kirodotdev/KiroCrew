@@ -222,11 +222,13 @@ _EXCLUSION_FAMILY_BY_KIRO_CLI_NAME: dict[str, tuple[str, ...]] = {
 #: what a rule about the tool is written under. The target parameter is the argument
 #: naming what the tool reads. dsh resolves a missing (``grep``, ``glob``) or
 #: relative one against the session's work dir, which the gate cannot see, so only
-#: an absolute target is proved.
-DEEPSEEK_READ_ONLY_TOOLS: dict[str, tuple[str, str]] = {
-    "read": ("fs_read", "file_path"),
-    "grep": ("grep", "path"),
-    "glob": ("glob", "path"),
+#: an absolute target is proved. The owner is the stock dsh package that registers
+#: the tool; the name proves the tool only on a session whose launch showed that
+#: package owns it (``agent_sdk.tool_gate.deepseek_read_only_owner_issue``).
+DEEPSEEK_READ_ONLY_TOOLS: dict[str, tuple[str, str, str]] = {
+    "read": ("fs_read", "file_path", "@deepseek-ai/dsh-tool-fs"),
+    "grep": ("grep", "path", "@deepseek-ai/dsh-tool-fs-search"),
+    "glob": ("glob", "path", "@deepseek-ai/dsh-tool-fs-search"),
 }
 
 

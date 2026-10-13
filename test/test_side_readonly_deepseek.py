@@ -110,8 +110,12 @@ def _permission(call_id: str, request_id: int = 0) -> dict[str, Any]:
     }
 
 
-def _client(tmp_path: Path) -> AcpClient:
-    return AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
+def _client(tmp_path: Path, *, proven: bool = True) -> AcpClient:
+    """A deepseek client; *proven* stands for a launch whose composition proof passed."""
+    client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_DEEPSEEK)
+    if proven:
+        client._deepseek_read_only_issue = ""
+    return client
 
 
 def _replay(client: AcpClient, *frames: dict[str, Any]) -> LLMEvent:
@@ -151,8 +155,10 @@ def _hooks(**config: Any):
     return HookManager(HooksConfig(**config))
 
 
-async def _side_turn(tmp_path: Path, *frames: dict[str, Any], **config: Any) -> _ScriptedProvider:
-    provider = _ScriptedProvider(_replay(_client(tmp_path), *frames))
+async def _side_turn(
+    tmp_path: Path, *frames: dict[str, Any], client: AcpClient | None = None, **config: Any
+) -> _ScriptedProvider:
+    provider = _ScriptedProvider(_replay(client or _client(tmp_path), *frames))
     await stream_and_collect(
         provider,  # type: ignore[arg-type]
         "q",
@@ -299,11 +305,16 @@ async def test_side_turn_refuses_an_mcp_tool_named_after_read(tmp_path):
 )
 @pytest.mark.asyncio
 async def test_two_calls_under_one_id_are_not_read_as_the_read(tmp_path, first, second):
-    """dsh forwards the provider's id, and its permission frame names only that id."""
+    """dsh forwards the provider's id, and its permission frame names only that id.
+
+    Absolute targets, so the read proof would pass on the target alone and only
+    the same-id blanking refuses the call.
+    """
+    target = str(tmp_path / "note.txt")
     provider = await _side_turn(
         tmp_path,
-        _tool_call("call_0", first, {"file_path": "note.txt", "content": "x"}),
-        _tool_call("call_0", second, {"file_path": "note.txt"}),
+        _tool_call("call_0", first, {"file_path": target, "path": target, "content": "x"}),
+        _tool_call("call_0", second, {"file_path": target, "path": target}),
         _permission("call_0"),
     )
 
@@ -353,6 +364,7 @@ def test_the_mapped_name_rides_deepseek_alone(tmp_path):
     """Another harness stating ``read`` as its title gets no deepseek mapping."""
     for backend, expected in (("opencode", ""), (ACP_BACKEND_DEEPSEEK, "read")):
         client = AcpClient(work_dir=tmp_path, acp_backend=backend)
+        client._deepseek_read_only_issue = ""
         event = _replay(
             client, _tool_call("call_r", "read", {"file_path": "note.txt"}), _permission("call_r")
         )
@@ -476,6 +488,7 @@ def test_the_gate_plugin_turns_a_harness_allow_into_an_ask(tmp_path):
     plugin_url = Path(deepseek_gate_extension_path()).as_uri()
     out = subprocess.run(
         ["node", str(script), plugin_url],
+        cwd=tmp_path,
         check=True,
         capture_output=True,
         text=True,
@@ -484,3 +497,181 @@ def test_the_gate_plugin_turns_a_harness_allow_into_an_ask(tmp_path):
     )
 
     assert json.loads(out.stdout) == {"allow": "ask", "none": "ask", "deny": "deny"}
+
+
+# ── (e) the read proof holds only for the stock dsh read tools ─────────────────
+
+_COMPOSITION_PROBE = """
+const [, , pluginUrl, markerPath, specJson] = process.argv;
+const spec = JSON.parse(specJson);
+process.env.KIROCREW_DSH_GATE_MARKER = markerPath;
+process.env.KIROCREW_DSH_GATE_SESSION = "n1";
+process.env.KIROCREW_DSH_GATE_SCRUB_NAMES = "";
+const gate = await import(pluginUrl);
+const entries = spec.entries.map(([id, name, state, disabled]) => ({
+  id, options: { name }, fiber: { state }, disabled,
+}));
+const scoped = new Map(spec.scoped.map((names, i) => [i, { tools: new Set(names) }]));
+const ctx = {
+  on() {},
+  get(name) {
+    return name === "loader" && spec.loader ? { *entries() { yield* entries; } } : undefined;
+  },
+  root: { events: { _hooks: { "approval/request": [] } } },
+  approval: { config: { policy: "ask" } },
+  tools: {
+    defaultMode: "native",
+    layers: { scoped },
+    get: (name) => (spec.global.includes(name) ? {} : undefined),
+  },
+  subprocess: {
+    spawn: () => ({
+      done: Promise.resolve({ exitCode: 0 }),
+      collected: { stdout: { readFrom: () => ({ text: "[]", lossy: false }) } },
+    }),
+  },
+  appReady: { onReady: (callback) => callback() },
+};
+gate.apply(ctx);
+const deadline = Date.now() + 20000;
+const { existsSync } = await import("node:fs");
+while (!existsSync(markerPath) && Date.now() < deadline) {
+  await new Promise((resolve) => setImmediate(resolve));
+}
+"""
+
+_STOCK_ENTRIES = [
+    ["include", "cordis:include", 2, False],
+    ["include:tool-fs", "@deepseek-ai/dsh-tool-fs", 2, False],
+    ["include:tool-fs-search", "@deepseek-ai/dsh-tool-fs-search", 2, False],
+    ["include:acp", "@deepseek-ai/dsh-acp", 2, False],
+    ["include:tool-plugin-manager", "@deepseek-ai/dsh-plugin-manager/tools", None, True],
+]
+
+
+def _composition_marker(
+    tmp_path: Path,
+    *,
+    extra: list[list[Any]] = (),  # type: ignore[assignment]
+    scoped: list[list[str]] = (),  # type: ignore[assignment]
+    global_tools: tuple[str, ...] = ("read", "grep", "glob"),
+    owner_state: int = 2,
+    loader: bool = True,
+) -> dict[str, Any]:
+    """The marker the REAL gate plugin writes for one composition of a fake dsh."""
+    plugin = Path(deepseek_gate_extension_path())
+    entries = [
+        ([row[0], row[1], owner_state, row[3]] if row[1] == "@deepseek-ai/dsh-tool-fs" else row)
+        for row in _STOCK_ENTRIES
+    ]
+    entries.append(["include:kiro-crew-tool-gate", plugin.as_uri(), 2, False])
+    spec = {
+        "entries": [*entries, *extra],
+        "scoped": list(scoped),
+        "global": list(global_tools),
+        "loader": loader,
+    }
+    script = tmp_path / "composition.mjs"
+    script.write_text(_COMPOSITION_PROBE)
+    marker = tmp_path / "marker.json"
+    subprocess.run(
+        ["node", str(script), plugin.as_uri(), str(marker), json.dumps(spec)],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=60,
+    )
+    return json.loads(marker.read_text(encoding="utf-8"))
+
+
+def _proved_client(tmp_path: Path, marker: dict[str, Any]) -> AcpClient:
+    """A deepseek client whose launch recorded *marker*'s composition proof."""
+    from kiro_crew.acp.harness.deepseek import _record_deepseek_read_only_proof
+
+    client = _client(tmp_path, proven=False)
+    _record_deepseek_read_only_proof(client, marker, deepseek_gate_extension_path())
+    return client
+
+
+_needs_node = pytest.mark.skipif(
+    shutil.which("node") is None, reason="needs node to load the gate plugin"
+)
+
+
+@_needs_node
+@pytest.mark.asyncio
+async def test_the_stock_composition_proves_the_read_tools(tmp_path):
+    client = _proved_client(tmp_path, _composition_marker(tmp_path))
+    assert client._deepseek_read_only_issue == ""
+
+    tool_call, permission = _live_at("read", tmp_path)
+    provider = await _side_turn(tmp_path, tool_call, permission, client=client)
+
+    assert provider.approved == [permission["id"]]
+
+
+@_needs_node
+@pytest.mark.asyncio
+async def test_a_shadowing_plugin_keeps_the_side_turn_reject_all(tmp_path):
+    """A plugin from the operator's own dsh config could register its own ``read``
+    (globally before the stock one, or in an agent scope after load), so composing
+    one leaves the side turn refusing every call, the stock read included."""
+    marker = _composition_marker(
+        tmp_path, extra=[["include:shadow", "/opt/dsh-plugins/shadow-read.mjs", 2, False]]
+    )
+    client = _proved_client(tmp_path, marker)
+    assert "include:shadow" in client._deepseek_read_only_issue
+
+    tool_call, permission = _live_at("read", tmp_path)
+    provider = await _side_turn(tmp_path, tool_call, permission, client=client)
+
+    assert provider.approved == []
+    assert provider.rejected == [permission["id"]]
+
+
+@_needs_node
+@pytest.mark.parametrize(
+    "overrides,needle",
+    [
+        ({"extra": [["include:x", "./shadow.mjs", 0, False]]}, "include:x"),
+        ({"extra": [["include:x", "@deepseek-ai/../../shadow", 2, False]]}, "include:x"),
+        ({"extra": [["include:x", "@deepseek-ai/dsh-cordis-host-runner", 2, False]]}, "include:x"),
+        ({"scoped": [["read"]]}, "scoped 'read'"),
+        ({"global_tools": ("grep", "glob")}, "global 'read'"),
+        ({"owner_state": 3}, "dsh-tool-fs'"),
+        ({"loader": False}, "composed plugins"),
+    ],
+    ids=[
+        "path_plugin",
+        "dotdot_spec",
+        "host_runner",
+        "scoped",
+        "no_global",
+        "owner_failed",
+        "no_loader",
+    ],
+)
+def test_the_read_proof_refuses_a_composition_it_cannot_vouch_for(tmp_path, overrides, needle):
+    client = _proved_client(tmp_path, _composition_marker(tmp_path, **overrides))
+
+    assert needle in client._deepseek_read_only_issue
+
+
+@pytest.mark.parametrize("marker", [{}, {"composition": None}, {"composition": {"entries": []}}])
+def test_a_marker_without_a_composition_refuses_the_read_proof(tmp_path, marker):
+    assert _proved_client(tmp_path, marker)._deepseek_read_only_issue
+
+
+@pytest.mark.parametrize("name", ["read", "write"])
+@pytest.mark.asyncio
+async def test_an_unproved_session_refuses_every_side_turn_call(tmp_path, name):
+    """No composition proof recorded is REJECT_ALL, not the other read-only routes."""
+    tool_call, permission = _live_at(name, tmp_path) if name == "read" else _LIVE[name]
+    provider = await _side_turn(
+        tmp_path, tool_call, permission, client=_client(tmp_path, proven=False)
+    )
+
+    assert provider.approved == []
+    assert provider.rejected == [permission["id"]]

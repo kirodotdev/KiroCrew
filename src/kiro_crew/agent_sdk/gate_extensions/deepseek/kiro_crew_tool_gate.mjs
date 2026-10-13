@@ -130,6 +130,63 @@ function toolsSnapshot(ctx) {
 }
 
 /**
+ * The dsh tools a READ_ONLY turn auto-approves by name, the keys of
+ * `platform.tool_names.DEEPSEEK_READ_ONLY_TOOLS`.
+ */
+const READ_ONLY_TOOL_NAMES = ["read", "grep", "glob"];
+
+/**
+ * Who composed the tools a READ_ONLY turn approves by name: every enabled loader
+ * entry, and where each read tool name is registered.
+ *
+ * The registry keeps a tool's definition and not its registering context, so a
+ * name cannot be traced to its owner directly. What can be read is the
+ * composition: each enabled entry's id, module and fiber state, and for each name
+ * whether the global layer holds it and whether a scoped layer present at load
+ * shadows it. A global name is unique (a second global registration throws), so
+ * the entry owning it is the one module that registers it, running without
+ * error. A per-agent scope created after load is not visible here, so Kiro Crew
+ * grants the allowance only when every composed entry is a stock module, which
+ * leaves no other code that could register a shadow. Any shape this cannot read
+ * is reported as null, and Kiro Crew refuses the allowance on it.
+ */
+function compositionSnapshot(ctx) {
+  let entries = null;
+  try {
+    const loader = ctx.get("loader");
+    if (loader && typeof loader.entries === "function") {
+      entries = [];
+      for (const entry of loader.entries()) {
+        if (entry.disabled) continue;
+        entries.push({
+          entry: typeof entry.id === "string" ? entry.id : null,
+          module: typeof entry.options?.name === "string" ? entry.options.name : null,
+          state: typeof entry.fiber?.state === "number" ? entry.fiber.state : null,
+        });
+      }
+    }
+  } catch {
+    entries = null;
+  }
+  let tools = null;
+  try {
+    const scoped = ctx.tools?.layers?.scoped;
+    if (scoped instanceof Map && typeof ctx.tools.get === "function") {
+      tools = {};
+      for (const name of READ_ONLY_TOOL_NAMES) {
+        tools[name] = {
+          global: ctx.tools.get(name) !== undefined,
+          scoped: [...scoped.values()].some((layer) => layer?.tools?.has?.(name) !== false),
+        };
+      }
+    }
+  } catch {
+    tools = null;
+  }
+  return { entries, tools };
+}
+
+/**
  * The harness's own version, read from the package the running entry script
  * belongs to. Recorded so a refusal or an accepted proof names the release it was
  * observed on; `null` when it cannot be read, which Kiro Crew records rather than
@@ -275,6 +332,7 @@ export function apply(ctx) {
       module: import.meta.url,
       approval: approvalRouting(ctx),
       tools: toolsSnapshot(ctx),
+      composition: compositionSnapshot(ctx),
       child_env: null,
     };
     void childEnvProof(ctx, scrubNames())

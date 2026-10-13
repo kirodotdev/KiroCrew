@@ -3518,6 +3518,21 @@ async def _resolve_permission(
         await provider.reject_tool(event.request_id)
         return False
 
+    if policy == ToolApprovalPolicy.READ_ONLY and event.deepseek_read_only_issue:
+        # A DeepSeek Harness session whose launch did not prove stock dsh owns its
+        # read tools: any plugin it composes may register a tool under a read name,
+        # so no call is provable read-only and the turn is REJECT_ALL.
+        _log("rejected", metadata={"reason": "read_only_policy_unproven_composition"})
+        await _steer_host_deny(
+            provider,
+            event,
+            "this surface is read-only and the harness composes a plugin Kiro Crew "
+            "cannot vouch for, so every tool call is refused",
+            cause=DENY_CAUSE_SURFACE_POLICY,
+        )
+        await provider.reject_tool(event.request_id)
+        return False
+
     if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
         # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
         # there is no way to prove a call read-only, so the policy degrades to

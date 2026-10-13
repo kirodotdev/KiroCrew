@@ -91,6 +91,9 @@ def _to_llm_event(e: Any) -> LLMEvent:
         kas_builtin_ids=e.kas_builtin_ids,
         # Dropping this would refuse every deepseek read on a side turn.
         deepseek_tool_name=e.deepseek_tool_name,
+        # Dropping this would let a READ_ONLY turn on an unproved dsh
+        # composition reach the gate's other read-only proofs.
+        deepseek_read_only_issue=e.deepseek_read_only_issue,
         server_name=e.server_name,
         oauth_url=e.oauth_url,
         subagents=e.subagents,

@@ -384,7 +384,7 @@ def _is_deepseek_read_only_builtin(
     entry = DEEPSEEK_READ_ONLY_TOOLS.get(deepseek_tool_name)
     if mcp_server_name or entry is None:
         return False
-    policy_name, target_param = entry
+    policy_name, target_param, _owner = entry
     target = raw_params.get(target_param) if isinstance(raw_params, dict) else None
     if not isinstance(target, str) or not os.path.isabs(os.path.expanduser(target)):
         return False

@@ -452,12 +452,24 @@ frame, and a call with a server is never a host built-in. The sensitive-path
 deny runs before the proof, so a `read_file` of `~/.aws/credentials` is
 refused (`test_side_readonly_kas.py`). deepseek joins without the derived
 spec doing any work: every deepseek session runs Crew's verified gate plugin,
-which turns each stock dsh `allow` into `ask` and keeps harness denies. Its
-`tool_call` frame names the dispatched tool in `title`, and on a `READ_ONLY`
-turn only `read`, `grep` and `glob` can map to read policy names. The call must
-name an absolute target. Unknown, shadowed, MCP and command tools are refused
-(`test_side_readonly_deepseek.py`). Another harness may have a pre-approval
-surface the host gate cannot see. Off the set,
+which turns each harness `allow` into `ask` and keeps only the harness's own
+denies, so every call raises `session/request_permission` (captured on dsh
+0.2.0-rc.2, `acp_frames/deepseek/side-read-only-live.jsonl`). Its tool_call
+frame names the dispatched tool in `title` with `kind: other`, and on a
+`READ_ONLY` turn alone `read`, `grep` and `glob` are read under `fs_read`,
+`grep` and `glob` (`acp/_dispatch.build_permission_event`,
+`deepseek_tool_name`), deny rules and ceilings bind both spellings, and the
+call must name what it reads as an absolute path. Every other name is refused.
+A name proves the tool only when stock dsh registered it. The gate plugin's
+load marker lists every enabled loader entry and each read-name owner, and the
+launch records the verdict (`tool_gate.deepseek_read_only_owner_issue`). Each
+entry must be a stock `@deepseek-ai/` package hosting no operator code, a
+loader built-in, or Crew's gate. Global `read`, `grep`, and `glob` must be held
+by running `dsh-tool-fs` or `dsh-tool-fs-search` tools, with no scoped layer
+shadowing them. A later per-agent scope stays covered by the stock-only rule.
+Any other composition, unknown owner, or shadow makes each DeepSeek side turn
+`REJECT_ALL` (`deepseek_read_only_issue`, refused in `llm_helpers`). Another
+harness may have its own pre-approval surface the host gate cannot see. Off the set,
 or with the harness unknown because the config never loaded, `_run_side_turn`
 keeps the pre-allowance posture — the base agent under `REJECT_ALL`, no
 derived spec — and the prompt (`SIDE_BOUNDARY_PROMPT_NO_TOOLS`), the

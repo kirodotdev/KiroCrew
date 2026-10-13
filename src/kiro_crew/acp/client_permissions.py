@@ -13,7 +13,8 @@ Instance fields written: ``_permission_gate_events``, ``_permission_options``,
 ``_turn_permission_denied``.
 
 Instance fields read: ``_acp_config_options``, ``_agent``, ``_deepseek_gate_nonce``,
-``_pi_gate_nonce``, ``_session_id``, ``_session_key``, ``_side_read_only``,
+``_deepseek_read_only_issue``, ``_pi_gate_nonce``, ``_session_id``, ``_session_key``,
+``_side_read_only``,
 ``_spec_denied_tools``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
@@ -1124,6 +1125,9 @@ def _build_permission_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
         harness_backend=self.backend,
         harness_mcp_servers=self._harness_mcp_server_names(),
         side_read_only=getattr(self, "_side_read_only", False),
+        deepseek_read_only_issue=getattr(
+            self, "_deepseek_read_only_issue", "the harness composition was not read back"
+        ),
     )
     if event is None:
         return None

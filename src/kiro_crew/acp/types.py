@@ -1036,6 +1036,10 @@ class AcpEvent:
     #: second ``tool_call`` frame named the same id differently in the turn; empty
     #: on every other backend.
     deepseek_tool_name: str = ""
+    #: Why a DeepSeek Harness READ_ONLY turn refuses this request outright: its
+    #: launch did not prove stock dsh registers the read tools. Set only on a
+    #: deepseek permission event; empty once proved and on every other backend.
+    deepseek_read_only_issue: str = ""
     # Diff content block fields — authoritative before/after text from kiro-cli
     # for write tools. Used by chat_runner to derive the "before" snapshot
     # without a racy disk read (the write has already landed by the time the

@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from collections.abc import Sequence
 from enum import Enum
 from pathlib import PurePosixPath
@@ -992,6 +993,80 @@ def _deepseek_child_env_issue(proof: object, expected_names: Sequence[str]) -> s
     return ""
 
 
+#: A bare package specifier in dsh's own npm scope, the only spelling of stock dsh
+#: code: a path, a URL or a ``..`` segment names some other file.
+_DSH_STOCK_MODULE = re.compile(r"@deepseek-ai/[a-z0-9-]+(?:/[a-z0-9-]+)*")
+
+#: The loader's own entry kinds, which compose the entries listed beside them and
+#: register no tool.
+_DSH_LOADER_BUILTINS = frozenset({"cordis:include", "cordis:group"})
+
+#: Stock packages that run operator-supplied packages, which can register a tool
+#: under any name. Composing one counts as composing non-stock code.
+_DSH_FOREIGN_CODE_HOSTS = frozenset(
+    {"@deepseek-ai/dsh-cordis-host-runner", "@deepseek-ai/dsh-cordis-client-runner"}
+)
+
+#: A Cordis fiber that applied without error.
+_CORDIS_FIBER_ACTIVE = 2
+
+
+def deepseek_read_only_owner_issue(marker: object, gate_module: str) -> str:
+    """Why a DeepSeek Harness READ_ONLY turn may not approve its read tools by name, or ``""``.
+
+    *marker* is the parsed load marker that :func:`gate_marker_issue` already
+    accepted. *gate_module* is the module path of Kiro Crew's own gate entry, in the
+    same spelling as the marker's entry modules. The allowance needs three facts
+    from the marker's ``composition`` snapshot. First, every enabled loader entry
+    is stock: a package in dsh's own npm scope that does not host operator code, a
+    loader built-in, or Kiro Crew's gate. A per-agent scope is created after load and is not visible to
+    the snapshot, so stock-only composition is what leaves no code that could
+    register a scoped shadow. Second, each name in
+    ``DEEPSEEK_READ_ONLY_TOOLS`` is held by the global layer and by no
+    scoped layer present at load. Third, the stock package that registers it is
+    composed and active. A global name is unique, so that package owns it. Any
+    missing or malformed field is an issue.
+    """
+    from kiro_crew.platform.tool_names import DEEPSEEK_READ_ONLY_TOOLS
+
+    composition = marker.get("composition") if isinstance(marker, dict) else None
+    entries = composition.get("entries") if isinstance(composition, dict) else None
+    tools = composition.get("tools") if isinstance(composition, dict) else None
+    if (
+        not isinstance(entries, list)
+        or not entries
+        or not all(
+            isinstance(row, dict)
+            and isinstance(row.get("entry"), str)
+            and isinstance(row.get("module"), str)
+            for row in entries
+        )
+    ):
+        return "the gate's load marker does not list the composed plugins"
+    if not isinstance(tools, dict):
+        return "the gate's load marker does not say where the read tools are registered"
+    for row in entries:
+        module = row["module"]
+        if module == gate_module or module in _DSH_LOADER_BUILTINS:
+            continue
+        if not _DSH_STOCK_MODULE.fullmatch(module) or module in _DSH_FOREIGN_CODE_HOSTS:
+            return (
+                f"the harness composes plugin {row['entry']!r} ({module!r}), which is not "
+                "stock dsh code and could register its own read tool"
+            )
+    for name, (_policy, _target, owner) in DEEPSEEK_READ_ONLY_TOOLS.items():
+        where = tools.get(name)
+        if not isinstance(where, dict) or where.get("global") is not True:
+            return f"the harness has no global {name!r} tool registered"
+        if where.get("scoped") is not False:
+            return f"a scoped {name!r} tool shadows the harness's own"
+        if not any(
+            row["module"] == owner and row.get("state") == _CORDIS_FIBER_ACTIVE for row in entries
+        ):
+            return f"{owner!r}, which registers the harness's {name!r} tool, is not running"
+    return ""
+
+
 def enforce_runtime_routing(
     backend: str,
     reason: str,
@@ -1045,6 +1120,7 @@ __all__ = [
     "Verdict",
     "adapter_expose_files",
     "adapter_hidden_credential_dirs",
+    "deepseek_read_only_owner_issue",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",
     "gate_extension_issue",

@@ -102,7 +102,7 @@ _DSH_GATE_MARKER_MAX_BYTES = 64 * 1024
 # Same seal, same reason, for the DeepSeek Harness gate plugin. Pinned by
 # ``test_acp_deepseek_backend``, so editing the plugin is a deliberate two-file
 # edit.
-DEEPSEEK_GATE_EXTENSION_SHA256 = "d95796f59d8e30f840dbb12ad4253c18f09e5b3972435e5b5f307d6b7d994351"
+DEEPSEEK_GATE_EXTENSION_SHA256 = "6a9ac9cf23ed7478ec61125840a8aa278690a7021a3b18f29c53681f6cd71ce7"
 
 # ── deepseek (ACP_BACKEND_DEEPSEEK) ──
 # DeepSeek Harness is a plugin host, and ACP is one of the profiles it boots. So the
@@ -453,6 +453,43 @@ def _read_deepseek_gate_marker(marker_path: str) -> object:
         return None
 
 
+def _record_deepseek_read_only_proof(
+    session: ProcessSession, marker: dict[str, Any], extension_path: str
+) -> None:
+    """Record on *session* whether its READ_ONLY turns may approve dsh's read tools.
+
+    *marker* is the load marker :func:`acp_tool_gate.gate_marker_issue` accepted.
+    The session runs either way; only its READ_ONLY turns read the result
+    (``deepseek_read_only_issue`` on each permission event), and a non-empty issue
+    makes every such turn REJECT_ALL. The loader reports a path entry as a path or
+    a file URL, brought here to the gate's own spelling.
+    """
+    composition = marker.get("composition")
+    if isinstance(composition, dict) and isinstance(composition.get("entries"), list):
+        composition = {
+            **composition,
+            "entries": [_same_spelling_entry(row) for row in composition["entries"]],
+        }
+    issue = acp_tool_gate.deepseek_read_only_owner_issue(
+        {**marker, "composition": composition}, pi_mod._same_file_spelling(extension_path)
+    )
+    session._deepseek_read_only_issue = issue
+    if issue:
+        logger.warning("DeepSeek Harness side chat runs without tools: %s", issue)
+
+
+def _same_spelling_entry(row: object) -> object:
+    """A composition *row* whose path or file-URL ``module`` is in the gate's spelling."""
+    if not isinstance(row, dict) or not isinstance(row.get("module"), str):
+        return row
+    module = row["module"]
+    if module.startswith("file://"):
+        module = url2pathname(module[7:])
+    elif not os.path.isabs(module):
+        return row
+    return {**row, "module": pi_mod._same_file_spelling(module)}
+
+
 def _verify_deepseek_gate(
     session: ProcessSession,
     backend: str,
@@ -595,6 +632,8 @@ def _verify_deepseek_gate(
     )
     if issue:
         return issue, acp_tool_gate.remediation_for(backend)
+    if isinstance(marker, dict):
+        _record_deepseek_read_only_proof(session, marker, extension_path)
     return "", ""
 
 

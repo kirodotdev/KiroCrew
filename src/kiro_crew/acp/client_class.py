@@ -283,6 +283,10 @@ class AcpClient:
         # stubs), which is what a pi MCP tool title is spelled after.
         self._pi_mcp_server_names: tuple[str, ...] = ()
         self._deepseek_gate_nonce = ""
+        # Why this DeepSeek Harness session's READ_ONLY turns may not approve its
+        # read tools by name, or ``""`` once its launch proved stock dsh composes
+        # them (``tool_gate.deepseek_read_only_owner_issue``). Refused until then.
+        self._deepseek_read_only_issue = "the harness composition was not read back"
         # toolCallIds the gate extension asked about in this session, read off the
         # envelopes; a completed tool call not in it is a call the gate never saw.
         self._pi_gate_asked_ids: set[str] = set()

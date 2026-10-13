@@ -1168,15 +1168,17 @@ def _tier_read_only(facts: GateFacts, tier: GateTier) -> ToolHookResult | None:
         # which under READ_ONLY refuses.
         if kind and kind not in _READ_ONLY_TOOL_KINDS:
             return ToolHookResult.allow()
-        if _is_host_read_only_builtin(
-            call.mcp_tool,
-            call.mcp_server,
-            mcp_identity_trusted=call.identity_trusted,
-            kas_builtin_ids=call.kas_builtin_ids,
-        ) or _is_harness_read_only_builtin(
-            call.harness_builtin_tool, call.mcp_server
-        ) or _is_deepseek_read_only_builtin(
-            call.deepseek_tool_name, call.mcp_server, call.raw_params
+        if (
+            _is_host_read_only_builtin(
+                call.mcp_tool,
+                call.mcp_server,
+                mcp_identity_trusted=call.identity_trusted,
+                kas_builtin_ids=call.kas_builtin_ids,
+            )
+            or _is_harness_read_only_builtin(call.harness_builtin_tool, call.mcp_server)
+            or _is_deepseek_read_only_builtin(
+                call.deepseek_tool_name, call.mcp_server, call.raw_params
+            )
         ):
             return ToolHookResult.auto_approve(read_only=True)
         return ToolHookResult.allow()

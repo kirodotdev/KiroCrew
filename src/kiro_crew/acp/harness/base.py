@@ -143,6 +143,7 @@ class ProcessSession(Protocol):
     _pi_mcp_handoff: tuple[str, bytes]
     _pi_mcp_server_names: tuple[str, ...]
     _deepseek_gate_nonce: str
+    _deepseek_read_only_issue: str
 
     def _agent_env_for_spawn(self) -> dict[str, str]:
         """``agent.env`` for the spawn in progress, read at most once per spawn: a
