@@ -50,6 +50,7 @@ _OWNER_PREFIX = "kiro_crew.knowledge.ingestion_"
 _OWNERS = (
     "kiro_crew.knowledge.ingestion_budget",
     "kiro_crew.knowledge.ingestion_rebuild",
+    "kiro_crew.knowledge.ingestion_extraction_failures",
 )
 _THIS_FILE = Path(__file__).resolve()
 

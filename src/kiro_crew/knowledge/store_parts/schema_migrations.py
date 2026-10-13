@@ -391,6 +391,10 @@ def _migrate(self: KnowledgeStore):
     # NULL on legacy rows -> they fall back to the fuzzy (embedding) dedup tier.
     if "content_hash" not in cols:
         self.db.execute("ALTER TABLE items ADD COLUMN content_hash TEXT")
+    # When this chunk's entity-extraction call last failed; NULL once it has an
+    # extraction. The folder watcher re-extracts such items in place.
+    if "extraction_failed_at" not in cols:
+        self.db.execute("ALTER TABLE items ADD COLUMN extraction_failed_at TEXT")
     # Index created here (not in the CREATE TABLE DDL) so it runs only after the
     # column is guaranteed to exist: on a pre-existing DB the DDL block's
     # CREATE TABLE IF NOT EXISTS is a no-op and the column is added by the ALTER

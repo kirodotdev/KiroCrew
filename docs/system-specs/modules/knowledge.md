@@ -123,11 +123,11 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/chunker.py` | `HeadingAwareChunker` — text/markdown/code/slide chunking |
 | `knowledge/embedder.py` | `InProcessEmbedder` — embedding in-process via the shared `EmbeddingBackend` (vendored llama-cpp runtime, no server and no HTTP hop); owns `embed_signature` (per-item vector-space identity) |
 | `knowledge/store.py` | `KnowledgeStore` — the import path of the store: the per-thread connection, construction and damaged-file recovery, the ingestion gate, and the class that binds its methods from the `store_parts` owners below |
-| `knowledge/store_parts/entity_graph.py` | entity, relation and mention rows, and the in-memory `SimpleDiGraph`: first load, rebuild-and-swap, neighbourhood reads |
+| `knowledge/store_parts/entity_graph.py` | entity, relation and mention rows, and the in-memory `SimpleDiGraph`: first load, rebuild-and-swap, neighbourhood reads; `clear_item_entity_links` before a re-extraction |
 | `knowledge/store_parts/fulltext_index.py` | `items_fts`: its row writes (`_fts_index` / `_fts_unindex`), its term representation (`FTS_INDEX_VERSION`), the version-gated rebuild, `search_items_fts` |
 | `knowledge/store_parts/source_rows.py` | source rows: registration, the properties blob and its one-status rule, auto-registration retirement |
 | `knowledge/store_parts/item_ownership.py` | which sources hold an item (`source_locations`) and which document row owns it (`_DOC_STATE_TABLES`): adoption, detach, claim release |
-| `knowledge/store_parts/item_rows.py` | item rows and every delete: one item, a batch, a whole source |
+| `knowledge/store_parts/item_rows.py` | item rows and every delete: one item, a batch, a whole source; the failed-extraction mark (`items_with_failed_extraction`, `mark_extraction_failed`, `complete_reextraction`) |
 | `knowledge/store_parts/schema_migrations.py` | the DDL, the per-open column migrations, the search-only indexes and the vector-generation triggers |
 | `knowledge/store_parts/maintenance_sweeps.py` | the post-bind sweeps: orphan sources and entities, interrupted agent-ingest residue |
 | `knowledge/store_parts/content_stats.py` | read-only library statistics (`aggregate_stats`, `get_stats`) |
@@ -137,6 +137,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration; the import path of the owners below |
 | `knowledge/ingestion_budget.py` | `ImportChunkBudget` / `ImportChunkBudgetError` — the explicit-import cross-file chunk ceiling and its refusal |
 | `knowledge/ingestion_rebuild.py` | `rebuild_embeddings` — the signature-gated corpus re-embed; `start_rebuild_job` (its single-flight job row), `count_stale_items` (the watcher's trigger count) |
+| `knowledge/ingestion_extraction_failures.py` | Failed extraction calls: `EXTRACTION_INCOMPLETE_PREFIX` / `extraction_incomplete_message` (the job-row error), the per-ingest count, and `reextract_failed_items`, which `IngestionPipeline` binds as its method (see "Failed extraction calls" in §3) |
 | `knowledge/dedup.py` | Cross-source deduplication |
 | `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
 | `mcp_tools/knowledge.py` | `local_knowledge_search` MCP tool handler |
@@ -185,7 +186,8 @@ table's order, and every owner that logs uses the facade's logger name. New hand
 to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pins the family.
 
 `knowledge/ingestion.py` is a mirror facade (`kiro_crew._facade_mirror`) over
-`ingestion_budget.py` and `ingestion_rebuild.py`, lowest layer first. It keeps
+`ingestion_budget.py`, `ingestion_rebuild.py` and `ingestion_extraction_failures.py`,
+lowest layer first. It keeps
 `IngestionPipeline`, the ingestion gate and `handoff_gate_context`, `EmbedRateLimiter`,
 `run_to_completion` and the redaction and chunking helpers the pipeline reads. A patch of
 `kiro_crew.knowledge.ingestion.<name>` reaches every owner that binds the name, so a patch of
@@ -193,7 +195,9 @@ to the owner of its responsibility; `test/test_knowledge_handlers_facade.py` pin
 logs does so under the facade's logger name. `ImportChunkBudgetError` carries
 `kiro_crew.knowledge.ingestion` as its `__module__`, so a traceback names it by its import
 path. New budget work goes to `ingestion_budget.py`, new re-embed or job-row work to
-`ingestion_rebuild.py`, and new pipeline work stays in `ingestion.py`;
+`ingestion_rebuild.py`, new failed-extraction work to `ingestion_extraction_failures.py`
+(which reads the facade's `_redact` and `run_to_completion` from `sys.modules` at call
+time), and new pipeline work stays in `ingestion.py`;
 `test/test_ingestion_facade.py` pins the family.
 
 ## Constants
@@ -293,7 +297,7 @@ Base metadata always carries `format`, `title` (file stem), `file_size`, `extens
 - Batched `last_seen` flush/commit and stale-claim release run off the asyncio
   event loop; each flush and its commit stay within one worker hop so they share
   the thread-local SQLite connection.
-- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry).
+- Per-file state lives in the `folder_file_state` table with `status` ∈ `{done, scanning, skipped, failed, deduped}`. `scanning` is written **before** ingest so a crash mid-file is recoverable; `skipped`/`failed`/`deduped` files are not auto-retried (user must retry). A `done` row whose `error_message` starts with `EXTRACTION_INCOMPLETE_PREFIX` is the one unchanged `done` row a sweep acts on: it re-extracts that file's marked chunks in place, up to `MAX_SCAN_ATTEMPTS` (see "Failed extraction calls" in §3).
 - **TOCTOU defense**: `_ingest_file` re-resolves symlinks and re-checks `is_sensitive_path` at ingest time; a block writes `status='failed'` and emits an SEL `knowledge.source.file.ingest_denied` (`outcome="denied"`, `reason=sensitive_path_toctou`) audit event.
 - After a successful scan, each newly ingested/changed file gets a **targeted** cross-source dedup (`dedup_document(..., apply=True)`) — O(k·n) over the k changed files rather than a full O(n²) corpus sweep — so a folder copy collapses any matching one-shot upload.
 - Fuzzy filename matching compares valid ISO dates with their year intact: a numeric date whose span falls wholly inside a valid ISO span is not also parsed as a yearless date, while a numeric date that only partly overlaps an over-matched ISO span keeps its own explicit year. Reports dated a year apart therefore remain distinct even when their embeddings are nearly identical, including date-range filenames such as `04-01-2024_04-30-2024`. Malformed ISO-shaped tokens remain available to the generic numeric-date guard, and genuinely separate numeric dates in the filename still participate in the closest-date comparison.
@@ -543,6 +547,60 @@ Entity extraction (`EntityExtractor`) and internal-URL fetch (`agent_fetch.fetch
 
 `_get_sandbox_mode()` reads `agent.sandbox`. An **absent** value resolves to `"auto"`, the intended default: OS-level isolation, deferring to kiro-cli's own internal sandbox on macOS when that is enabled. A **present but unrecognised** value also resolves to `"auto"` (fail-secure), so a config error can never silently disable sandboxing or reach `wrap_argv` as an unknown mode. Knowledge workers honour the same `agent.sandbox` setting as chat/Slack providers (parity), so the default flows through here too.
 
+### Failed extraction calls
+
+A failed call and a chunk with nothing to extract must not look alike: read as the
+same empty payload, a timeout is stored as "no entities" under a `completed` job
+and a `done` folder row, and the unchanged file is never extracted again. So the
+two stay distinct:
+
+- **The extractor marks failures.** `EntityExtractor` returns `_failed_result()`
+  (the empty payload plus `EXTRACTION_FAILED_KEY`; test it with
+  `extraction_failed()`) when the pool raises, when the pool's batch path hands
+  back `""`, or when the reply carries no single extraction payload, and logs a
+  WARNING for the cases the pool did not already log. A blank chunk or a missing
+  pool was never sent, so it stays `_empty_result()`.
+- **Ingestion keeps the chunk, marks it and says so.** A chunk whose extraction
+  failed is still stored and embedded, so its text stays searchable; it counts as
+  processed and does not trigger the partial-failure rollback, which would make
+  the whole document unsearchable over a missing summary. Its item carries
+  `items.extraction_failed_at`, the time of the last failed call (NULL once it has
+  an extraction). Both ingest paths (`ingest_file` and `ingest_text`) log a
+  WARNING and write `entity extraction failed for N of M chunks`
+  (`EXTRACTION_INCOMPLETE_PREFIX`) to the job row's `error`.
+  `ingest_file(on_extraction_failed=)` receives `(failed, total)` inside the
+  finalize hop, before `on_committed`.
+- **The folder watcher re-extracts the marked chunks in place, bounded.** It
+  records that message on the row it writes `done` and keeps the `attempts` the
+  `scanning` marker carried. For a `done` row with that message and
+  `attempts < MAX_SCAN_ATTEMPTS` whose file is unchanged, a sweep does NOT
+  re-ingest the file: `FolderWatcher._reextract_failed_chunks` hands only the
+  marked items (`KnowledgeStore.items_with_failed_extraction`) to
+  `IngestionPipeline.reextract_failed_items`. A chunk that now extracts first
+  drops any mentions and relations a previous, unfinished attempt left
+  (`clear_item_entity_links`; relations have no uniqueness to absorb a repeat),
+  then gets its entities, then its title, type and summary with the mark cleared
+  (`complete_reextraction`, in that order, so a crash between them repeats the
+  work rather than hiding missing entities), then a fresh embedding. Clearing the
+  mark also clears `embedding_sig`, so if that embed does not land (a bulk embed
+  while the model is unloaded writes nothing) the stale-vector sweep re-embeds
+  the chunk later. When any chunk came back, the source's summary
+  (`generate_source_summary`, built from chunk summaries) is rebuilt. A chunk that
+  fails again keeps everything it had and its mark is re-stamped. No other item of
+  the document is read or written, so a retry during an outage can never cost a
+  chunk that extracted, and the row never leaves `done`. A retry waits
+  `REEXTRACT_BACKOFF_SECS` (1 h) after the newest mark, doubling per attempt, so
+  the attempts span an outage instead of three back-to-back sweeps; a retry that
+  raises counts as an attempt. Each retry's calls count against the scan's chunk
+  budget. When nothing is left the message and count clear; otherwise the message
+  names what is left and `attempts` grows. A spent budget leaves the row `done`
+  with its message, skipped by later sweeps; a touch keeps the message, and an
+  edit (new hash) re-ingests the file with a fresh budget. Without an extraction
+  pool nothing is re-extracted. Every other caller of `ingest_file` or
+  `ingest_text` (uploads, the single-file watcher, artifacts, the agent's write
+  path, source sync) records the job-row error and the item marks, and does not
+  retry.
+
 ### Pool mechanics
 
 `LLMPool.start()` reads config once off the event loop and spawns all workers; `acquire()` blocks on a semaphore when all workers are busy and transparently replaces a dead worker (`is_alive()` false) on acquire. `send()` is the acquire→send→release convenience; `send_batch()` runs prompts concurrently bounded by pool size. A failed spawn during `start()` tears down all already-started workers. After `knowledge.pool_idle_ttl_secs` (default 300; `0` disables it) of full idleness — no worker checked out — the pool scales to zero, shutting every worker down; the next `acquire()` respawns lazily. A config write reaches a running pool through `reconfigure()`, which adopts the new idle TTL at once and a new pool size at the next idle boundary.
@@ -784,6 +842,7 @@ Research Lab (the `auto-research` builtin app) reaches this module twice: a camp
 - **Sensitive paths never ingested** — `FileReader.read`, `FolderWatcher._walk`, `_hash_file`, and `_ingest_file` all gate on `is_sensitive_path()` (with symlink re-resolution at ingest time for TOCTOU).
 - **`.org` and unknown-but-supported extensions are plain text** — only `_DISPATCH` extensions get specialized readers; everything else in `SUPPORTED` flows through `_read_text` → generic chunker.
 - **Pool workers are long-lived and must be sweep-shielded** — any direct `AcpClient` worker that outlives a chat turn (not tracked in `SessionMap`/warm pool) must register its PID via `register_protected_pid`, or the orphan sweep will kill it mid-task.
+- **A failed extraction call is never stored as "found nothing"** — the extractor marks it, ingestion records it on the job row and marks the stored chunk, and a folder file carrying it has only those chunks re-extracted in place, up to `MAX_SCAN_ATTEMPTS` times, never at the cost of a chunk that extracted. `test_knowledge_extraction_failure.py` is the ratchet.
 - **LLM-derived text is redacted before storage and before return** — ingestion redacts extracted text (`ingestion._redact`), and `local_knowledge_search` redacts its assembled output.
 - **FTS query input is parameterized** — user query tokens are always double-quoted literals; the user never injects FTS5 operators.
 - **Embedding-dimension mismatches are skipped, not scored** — vector search excludes incomparable-dimension items so a model swap cannot fill the top-K with all-zero ghosts.
