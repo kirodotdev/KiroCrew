@@ -19408,6 +19408,8 @@
         "show_token_usage": "コンテキストトークンを表示",
         "sidebar_click_opens_tab": "サイドバーのセッションをセッションタブで開く",
         "sidebar_click_opens_tab_desc": "セッションをクリックすると、アクティブなタブのセッションを置き換えずに、専用のセッションタブで開きます。",
+        "session_row_tab_active": "Cmd/Ctrl-クリックでセッションタブに切り替える",
+        "session_row_tab_active_desc": "セッションを{{mod}}-クリックするとアクティブなタブとして開き、中クリックするとバックグラウンドで開きます",
         "simplified_tool_call_names": "簡略化されたツール呼び出し名",
         "tool_calls_start_expanded": "ツール呼び出しを展開して表示",
         "tool_calls_start_expanded_desc": "ツール呼び出しの行を折りたたまず、入力と出力を表示した状態で開きます。手動で開閉した行はその状態を保ちます。",

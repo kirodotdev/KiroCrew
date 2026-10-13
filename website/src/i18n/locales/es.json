@@ -20454,6 +20454,8 @@
         "show_token_usage": "Mostrar los tokens de contexto",
         "sidebar_click_opens_tab": "Abrir las sesiones de la barra lateral en una pestaña de sesión",
         "sidebar_click_opens_tab_desc": "Al hacer clic en una sesión, se abre en su propia pestaña de sesión en lugar de reemplazar la sesión de la pestaña activa.",
+        "session_row_tab_active": "Cambiar a las pestañas de sesión con Cmd/Ctrl-clic",
+        "session_row_tab_active_desc": "{{mod}}-clic en una sesión la abre como pestaña activa, y el clic central la abre en segundo plano",
         "simplified_tool_call_names": "Nombres simplificados de las llamadas de herramientas",
         "tool_calls_start_expanded": "Mostrar las llamadas a herramientas expandidas",
         "tool_calls_start_expanded_desc": "Abre las filas de llamadas a herramientas con su entrada y salida visibles, en lugar de contraídas. Las filas que abras o cierres a mano conservan tu elección.",

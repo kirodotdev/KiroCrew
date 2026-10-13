@@ -20454,6 +20454,8 @@
         "show_token_usage": "Mostra i token di contesto",
         "sidebar_click_opens_tab": "Apri le sessioni della barra laterale in una scheda di sessione",
         "sidebar_click_opens_tab_desc": "Un clic su una sessione la apre in una scheda di sessione dedicata invece di sostituire la sessione della scheda attiva.",
+        "session_row_tab_active": "Passa alle schede di sessione con Cmd/Ctrl-clic",
+        "session_row_tab_active_desc": "{{mod}}-clic su una sessione la apre come scheda attiva, il clic centrale la apre in background",
         "simplified_tool_call_names": "Nomi semplificati delle chiamate agli strumenti",
         "tool_calls_start_expanded": "Mostra le chiamate agli strumenti espanse",
         "tool_calls_start_expanded_desc": "Apri le righe delle chiamate agli strumenti con input e output visibili, invece che compresse. Le righe che apri o chiudi a mano mantengono la tua scelta.",

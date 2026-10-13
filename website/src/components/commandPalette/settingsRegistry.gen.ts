@@ -2054,6 +2054,17 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.switch-to-session-tabs-on-cmd-ctrl-click",
+    "label": "Switch to Session Tabs on Cmd/Ctrl-Click",
+    "labelKey": "pages.settings.chatPanel.session_row_tab_active",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    }
+  },
+  {
     "id": "chat.tail-only-fork",
     "label": "Tail-only Fork",
     "labelKey": "pages.settings.chatPanel.tail_only_fork",
