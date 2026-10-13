@@ -130,6 +130,13 @@ class FakeSessions:
     async def try_acquire(self, key) -> bool:
         return not self._busy
 
+    #: True models a session the Kiro account check flagged: ``try_acquire``
+    #: refuses it while it stays registered.
+    retiring = False
+
+    def is_retiring(self, key) -> bool:
+        return self.retiring
+
     def release(self, key) -> None:
         pass
 

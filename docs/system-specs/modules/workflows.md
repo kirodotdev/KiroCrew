@@ -1427,7 +1427,12 @@ never spawns `kiro-cli` in tests. Two production adapters:
   (`ACP_BACKENDS_CLIENT_NEW_CONVERSATION`, see claude-code-provider "A fresh
   conversation on the live adapter"); any other backend on its own `AcpClient`
   raises `NotImplementedError` naming the backend, and its reuse is the hard reset,
-  logged at INFO as a cold start. Dead workers are retired and replaced.
+  logged at INFO as a cold start. Before that reuse the worker runs the Kiro account
+  check (`SessionManager.run_identity_check`): it holds its session's lease from its
+  first task to its last, so it never acquires again and a sweep only flags that
+  session. A session the check flagged (`is_retiring`) takes the hard reset, whose
+  re-acquire starts a session on the current account. Dead workers are retired and
+  replaced.
   A `session=<key>` call bypasses the pool entirely, since it needs a stable named
   session rather than a reset-between-uses worker. So does a `backend=` call: every
   warm worker runs the default harness, so it runs on a one-shot unpooled session.
