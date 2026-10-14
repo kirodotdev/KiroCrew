@@ -381,6 +381,12 @@ class TaskRunner:
             _override = _resolve_workspace_dir(workspace_dir)
             if _override and run.status == "planned":
                 run.work_dir = _override
+                # The dir is now user-supplied, not runner-created scratch, even
+                # if plan() set owns_task_dir=True for a plan made with no
+                # override. Clear it so init_workspace never git-inits the user's
+                # own folder (and never redirects execution into an empty
+                # worktree that excludes the folder's existing files).
+                run.owns_task_dir = False
 
             # Guard: limit concurrent running tasks — check BEFORE mutating state.
             # With the task queue attached the cap is the lane's: excess steps

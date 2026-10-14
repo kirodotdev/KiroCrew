@@ -63,6 +63,9 @@ class Task:
     error: str = ""
     result: str = ""
     verification: str = ""  # a VerificationStatus value; "" until a verdict exists
+    diff_reviewed: bool = False  # True once self_review inspected a real git diff
+    # for this step (not the generic no-diff prompt). Drives the honest "nothing
+    # was content-reviewed" completion warning; reset with verification on requeue.
     # A "resume, do not restart" instruction rendered on every attempt
     # regardless of attempt count. Set when a process death may have left the
     # step's prompt run (an ambiguous-delivery death, or one after output or a
@@ -89,6 +92,7 @@ class Task:
             super().__setattr__(name, value)
             if name == "status" and value in (TaskStatus.PENDING, TaskStatus.IN_PROGRESS):
                 super().__setattr__("verification", "")
+                super().__setattr__("diff_reviewed", False)
 
 
 @dataclass
@@ -156,6 +160,18 @@ class Project:
     repo_root: str = ""  # original repo root (for worktree cleanup)
     git_enabled: bool = (
         True  # False when the workspace is not a git repo (run in place, no git ops)
+    )
+    owns_task_dir: bool = (
+        False  # True when the runner CREATED work_dir as its own per-run scratch
+        # (no user workspace override). Such a directory is the runner's to manage,
+        # so init_workspace may ``git init`` it to turn on verification; a
+        # user-supplied folder (False) is never git-init'd -- see git_coord.
+    )
+    git_in_place: bool = (
+        False  # True when git coordination runs DIRECTLY in work_dir with no
+        # separate worktree -- the runner-owned-dir case: the runner git-init'd
+        # its own scratch, so there is no user checkout to isolate from and the
+        # deliverable must stay in work_dir (never a worktree finalize() removes).
     )
     lessons_learned: list[str] = field(default_factory=list)
     mode: str = "quick"  # "quick" (text only) | "spec" (has spec file/content)

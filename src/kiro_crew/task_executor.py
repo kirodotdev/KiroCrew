@@ -1614,6 +1614,7 @@ async def self_review(
             logger.warning("Task %d unverified: no diff on a git run", task.index)
             return False
         if diff.strip():
+            task.diff_reviewed = True
             prompt = (
                 "You are an independent review agent. You did NOT write this code.\n"
                 "A separate execution agent made these changes. Your job: verify the diff\n"
