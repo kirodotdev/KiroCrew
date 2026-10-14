@@ -664,6 +664,9 @@ function createIpcRegistrar({
         // it generates/verifies feed metadata and also supports Linux.
         autoUpdater: require("electron-updater").autoUpdater,
         isPolicyGoverned: () => policyGoverned,
+        // On Windows, 'session-end' fires on BaseWindow (not App). The feed
+        // lane uses this to register its pending-update notice on the window.
+        getMainWindow: () => windows.getMainWindow(),
         dialog: electron.dialog,
         Notification,
         getFlavor: () => "stable",
