@@ -306,11 +306,17 @@ async def _cron_single_failure(
     _gate_counted: bool,
     _job_owns_failure: bool,
     _hand_over_streak: bool,
+    *,
+    _auth_expiry: bool = False,
 ) -> None:
     """Alert a failed single-agent cron run, or suppress a duplicate, and charge it.
 
     Called from the turn's failure handler, which re-raises *exc* afterwards.
     Every await precedes the charge, so a cancellation mid-alert counts nothing.
+
+    ``_auth_expiry`` is True when the exception is a credential/session expiry
+    (AcpAuthRequired with Kiro backend, or AWS/Bedrock token expiry text).
+    When set, the failure counter is not incremented and ``_display_bump`` is 0.
     """
     # ── Failure dedup: suppress repeated identical crash notifications ──
     # A chain-exhaustion failure carries the fallback story on the
@@ -361,7 +367,7 @@ async def _cron_single_failure(
         # on five distinct failures, or the failure belonged to a
         # shared runtime rather than to this job.
         if not _gate_counted and _job_owns_failure:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         if job.auto_paused:
             logger.warning(
                 "Cron '%s' auto-paused after %d consecutive failures",
@@ -442,17 +448,25 @@ async def _cron_single_failure(
     safe_reason = self._slack_safe_fenced(exc_detail)
     # +1 only when the charge below will actually land. This run's
     # failure is recorded after the awaited Slack attempt, so the
-    # display count has to add it explicitly -- but it is gated on
-    # _job_owns_failure, and an exempted run that still claimed
-    # "N+1 consecutive failures" would report a number the counter
-    # driving auto-pause never reached.
-    _display_bump = 1 if (_job_owns_failure and not _gate_counted) else 0
+    # display count has to add it explicitly -- but only when the same
+    # conditions hold as in record_failure(): _job_owns_failure, not
+    # _gate_counted, and not an auth/credential expiry that
+    # record_failure() skips. One predicate governs both.
+    _display_bump = 1 if (_job_owns_failure and not _gate_counted and not _auth_expiry) else 0
     if is_dup:
-        fail_msg = (
-            f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
-            f" ({job.consecutive_failures + _display_bump} consecutive failures)"
-            f" — check logs._\n```{safe_reason}```"
-        )
+        # When auth_expiry is set, the counter did not move: omit the
+        # count clause so the alert does not say '(0 consecutive failures)'.
+        if _auth_expiry:
+            fail_msg = (
+                f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
+                f" (credential expired) — check logs._\n```{safe_reason}```"
+            )
+        else:
+            fail_msg = (
+                f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
+                f" ({job.consecutive_failures + _display_bump} consecutive failures)"
+                f" — check logs._\n```{safe_reason}```"
+            )
     else:
         fail_msg = (
             f"⏰ *Cron: {safe_name}* ❌ "
@@ -471,11 +485,17 @@ async def _cron_single_failure(
     # separately from ``render_for_slack`` is how the success leg
     # composes its own channel string too.
     if is_dup:
-        channel_fail_msg = (
-            f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
-            f" ({job.consecutive_failures + _display_bump} consecutive failures)"
-            f" — check logs.\n{exc_detail}"
-        )
+        if _auth_expiry:
+            channel_fail_msg = (
+                f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
+                f" (credential expired) — check logs.\n{exc_detail}"
+            )
+        else:
+            channel_fail_msg = (
+                f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
+                f" ({job.consecutive_failures + _display_bump} consecutive failures)"
+                f" — check logs.\n{exc_detail}"
+            )
     else:
         channel_fail_msg = (
             f"⏰ Cron: {job.name} ❌ Job failed on {host} — check logs.\n" f"{exc_detail}"
@@ -514,7 +534,7 @@ async def _cron_single_failure(
     # verdict already counted THIS run, or when the failure belonged
     # to a runtime this job was sharing rather than to the job.
     if not _gate_counted and _job_owns_failure:
-        _charge_failure(job, _hand_over_streak)
+        _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
     if job.auto_paused:
         logger.warning(
             "Cron '%s' auto-paused after %d consecutive failures",

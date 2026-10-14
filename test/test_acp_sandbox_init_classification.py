@@ -498,6 +498,7 @@ def _runtime(lines):
     runtime.recording_allowed = True
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
+    runtime._saw_session_sign_out = False
     runtime._saw_sandbox_init_failure = False
     # Same sink, same startup-window guard: the drain reads it per line, so a
     # missing attribute ends the drain early under its broad ``except Exception``.

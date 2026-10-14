@@ -63,3 +63,102 @@ def is_credential_propagation_delay(haystack: str) -> bool:
     second vocabulary is what creates the gaps.
     """
     return bool(_RE_TOKEN_NOT_YET_VALID.search(haystack))
+
+
+# Credential rejection: a bearer token that is invalid or has been revoked.
+# Moved here from ``acp/transport_errors._RE_INVALID_BEARER`` so both
+# ``acp/transport_errors._is_session_expired`` and
+# ``credential_errors.is_auth_error_message`` share one definition rather
+# than keeping separate copies that can drift. ``transport_errors`` imports
+# this back.
+# Switching the active Kiro account invalidates the credential a long-lived
+# kiro-cli child still holds, and the upstream rejection reports only that the
+# bearer token is invalid: no status code and no expiry wording. Grouped with
+# session expiry because the remedy is identical: sign in again.
+_RE_INVALID_BEARER = re.compile(
+    r"\b(?:bearer\s+token\b[^.\n]{0,80}?\binvalid|invalid\s+bearer\s+token)\b",
+    re.IGNORECASE,
+)
+
+# Session expiry, by wording. Complements the status match for backends that
+# describe the expiry in prose without a machine-readable code. Deliberately
+# excludes Bedrock's named exceptions, which ``transport_errors._RE_AUTH`` owns.
+# Moved here from ``acp/transport_errors``, which imports it back.
+_RE_SESSION_EXPIRED = re.compile(
+    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
+    r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
+    r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
+    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
+    re.IGNORECASE,
+)
+
+# Expiry-only vocabulary for the cron auto-pause carve-out. Deliberately
+# narrower than ``acp/transport_errors._RE_AUTH``, which also covers
+# ``AccessDeniedException`` and ``UnauthorizedException`` — permission denials
+# that are NOT self-healing and must still count toward auto-pause. Only the
+# AWS ``ExpiredToken`` exception family (whose name makes the expiry explicit),
+# the Bedrock raw-error phrase for an expired STS token, the Kiro
+# session-expiry message produced by ``_format_acp_error``, and the Kiro Crew
+# signed-out messages from ``host_auth.signed_out_message`` are included,
+# because those are the ones that recover on their own once the user
+# re-authenticates.
+#
+# ``AcpAuthRequired`` sign-out messages ("kiro-cli is not logged in",
+# "Not signed in to Kiro") are covered by the gateway handler using
+# ``isinstance(exc, AcpAuthRequired)`` rather than text matching, so those
+# broad phrases are not added here. Text-based matching is scoped to the
+# AWS/Bedrock vocabulary that is specific enough to avoid false positives
+# from third-party tool output.
+_RE_CREDENTIAL_EXPIRED = re.compile(
+    r"\b(?:ExpiredToken(?:Exception)?"
+    r"|security\s+token\b[^.\n]{0,80}?\bis\s+expired\b"
+    r"|session\s+has\s+expired)\b",
+    re.IGNORECASE,
+)
+
+
+def is_auth_error_message(haystack: str) -> bool:
+    """True when *haystack* is a self-healing credential/auth error message.
+
+    Recognises the expiry vocabulary that appears in a cron job's ``last_error``
+    when Kiro Crew's own session credential is expired, a bearer token has been
+    revoked, or the kiro-cli process is not authenticated (``AcpAuthRequired``):
+    the job fails for an environmental reason and recovers on its own once the
+    user re-authenticates.
+
+    Deliberately excludes ``AccessDeniedException``, ``UnauthorizedException``,
+    and ``InvalidSignatureException`` — those name permanent permission denials
+    that do NOT self-heal and must still count toward auto-pause.
+
+    The IAM-propagation race (:func:`is_credential_propagation_delay`) is also
+    excluded: that signal is retried by the ACP ladder before it reaches
+    ``record_failure``; if retries are exhausted the credential may be
+    permanently broken rather than merely racing, so it counts toward auto-pause.
+
+    Returns False for an empty or falsy haystack.
+    """
+    if not haystack:
+        return False
+    # Exclude the transient IAM-propagation race. Its retries are bounded; once
+    # exhausted the credential may be permanently invalid.
+    if is_credential_propagation_delay(haystack):
+        return False
+    return bool(_RE_CREDENTIAL_EXPIRED.search(haystack) or _RE_INVALID_BEARER.search(haystack))
+
+
+def is_sign_out_wording(haystack: str) -> bool:
+    """True when *haystack* contains self-healing sign-out or expiry wording.
+
+    Narrower than ``transport_errors._is_session_expired``: uses only prose patterns
+    (``_RE_SESSION_EXPIRED``, ``_RE_INVALID_BEARER``, ``_RE_CREDENTIAL_EXPIRED``)
+    and deliberately excludes the HTTP-status match (``_RE_AUTH_STATUS``) that
+    ``_is_session_expired`` includes.  An HTTP 403 can accompany a permanent
+    ``AccessDeniedException`` that re-auth cannot fix; the prose patterns here
+    specifically describe self-healing failures (credential expiry, sign-out,
+    bearer rejection).
+    """
+    return (
+        bool(_RE_SESSION_EXPIRED.search(haystack))
+        or bool(_RE_INVALID_BEARER.search(haystack))
+        or bool(_RE_CREDENTIAL_EXPIRED.search(haystack))
+    )

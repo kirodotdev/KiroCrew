@@ -44,7 +44,12 @@ from kiro_crew.acp.types import (
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
 )
 from kiro_crew.agent_sdk import host_auth
-from kiro_crew.credential_errors import is_credential_propagation_delay
+from kiro_crew.credential_errors import (
+    _RE_INVALID_BEARER,
+    _RE_SESSION_EXPIRED,
+    is_credential_propagation_delay,
+    is_sign_out_wording,
+)
 from kiro_crew.sandbox import (
     LAUNCHER_EXIT_PREFIXES,
     SANDBOX_LAYER_CREW,
@@ -170,6 +175,14 @@ class AcpError(Exception):
         # ``llm_helpers.acp_error_is_session_not_found`` routes it down the
         # reset-and-reload-once path a dropped session takes.
         self.credential_reload: bool = False
+        # Set by :func:`_raise_acp_error` when the raw frame matches
+        # ``_RE_CREDENTIAL_EXPIRED`` (Bedrock/AWS token expiry:
+        # ``ExpiredToken(Exception)?``, "security token ... is expired"). Narrower
+        # than ``_RE_AUTH`` (which also covers permanent ``AccessDeniedException``,
+        # ``UnauthorizedException``, etc. that do not self-heal). Callers that need
+        # to distinguish self-healing credential expiry from a permanent denial read
+        # this flag rather than the formatted prose, which rewrites the raw names.
+        self.credential_expired: bool = False
 
 
 class AcpTimeoutError(AcpError):
@@ -613,29 +626,9 @@ _RE_5XX_HINT = re.compile(r"(please try again|try your request again)", re.IGNOR
 # models, neither of which can succeed against an expired login. Status is the
 # primary signal because the rejection carries no explanatory wording.
 _RE_AUTH_STATUS = re.compile(r"(?:HTTP|status)\s*(?:code\s*)?(?:401|403)\b", re.IGNORECASE)
-# Session expiry, by wording. Complements the status match for backends that
-# describe the expiry in prose without a machine-readable code. Deliberately
-# excludes Bedrock's named exceptions, which _RE_AUTH already owns.
-_RE_SESSION_EXPIRED = re.compile(
-    r"\b(?:session\s+(?:has\s+)?expired|session\s+timed?\s*out"
-    r"|login\s+(?:has\s+)?expired|authentication\s+(?:has\s+)?expired"
-    r"|not\s+logged\s+in|not\s+authenticated|not\s+signed\s+in"
-    r"|re-?authenticate|login\s+required|auth(?:entication)?\s+required)\b",
-    re.IGNORECASE,
-)
-# Credential REJECTED rather than expired. Switching the active Kiro account
-# invalidates the credential a long-lived kiro-cli child still holds, and the
-# upstream rejection reports only that the bearer token is invalid: it carries
-# no status code and never uses expiry wording, so neither _RE_AUTH_STATUS nor
-# _RE_SESSION_EXPIRED matches it and the failure reaches the user as the raw
-# upstream string with no sign-in affordance. Grouped with session expiry
-# because the remedy is identical — sign in again; no retry can make a rejected
-# credential valid. The gap between the two words is fenced to one sentence and
-# one line so the pattern cannot span unrelated errors in a combined haystack.
-_RE_INVALID_BEARER = re.compile(
-    r"\b(?:bearer\s+token\b[^.\n]{0,80}?\binvalid|invalid\s+bearer\s+token)\b",
-    re.IGNORECASE,
-)
+# Session expiry by wording (``_RE_SESSION_EXPIRED``) and credential rejection
+# (``_RE_INVALID_BEARER``) live in ``credential_errors``, imported above, so the
+# cron auto-pause carve-out and this module share one spelling of each.
 
 
 def _is_session_expired(haystack: str) -> bool:
@@ -1994,4 +1987,13 @@ def _raise_acp_error(
     if _error_kind_from_frame(error) == "cloud_credential_error":
         err.credential_reload = True
         err.transient = False
+    # Tag a credential expiry so cron's auth-expiry exemption can detect it
+    # without relying on the formatted prose, which rewrites the raw exception
+    # names. Uses prose-only sign-out patterns (``is_sign_out_wording``) so a
+    # bare HTTP 403 permanent denial is NOT tagged — that match requires the raw
+    # frame to carry session-expiry or sign-out wording, not just a 403 status.
+    # Covers Bedrock token expiry (``ExpiredToken``), bearer rejection, and any
+    # JSON-RPC session-expiry description ("session expired", "not logged in").
+    if is_sign_out_wording(raw_data) and not is_credential_propagation_delay(raw_data):
+        err.credential_expired = True
     raise err
