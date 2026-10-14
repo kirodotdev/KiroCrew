@@ -46,6 +46,7 @@ _EXPECTED_MUTATING_ROUTES = {
     ("PATCH", "/api/agents/detail/{name}"),
     ("POST", "/api/agents"),
     ("POST", "/api/agents/sync"),
+    ("PUT", "/api/agents"),
     ("PUT", "/api/agents/{name}"),
     ("DELETE", "/api/agents/{name}"),
 }
