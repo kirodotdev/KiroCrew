@@ -87,6 +87,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _GGUF_MAX_ARRAY_ITEMS,
         _GGUF_MAX_DECODED_STRING_BYTES,
         _GGUF_MAX_METADATA_ITEMS,
+        _GGUF_POOLING_TYPE_SUFFIX,
         _GGUF_SCALAR_BYTES,
         _GGUF_TYPE_ARRAY,
         _GGUF_TYPE_BOOL,
@@ -98,6 +99,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _model_context_policy,
         _parse_gguf_embedding_metadata,
         _read_gguf_embedding_metadata,
+        gguf_declared_pooling,
     )
     from kiro_crew.embeddings_llama import (  # noqa: F401
         EmbeddingBackend,
@@ -112,6 +114,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _trim_native_heap,
     )
     from kiro_crew.embeddings_model import (  # noqa: F401
+        _CUSTOM_LABEL,
+        _POOLING_SUFFIX_SEPARATOR,
         LEGACY_EMBEDDING_WARNING,
         CustomModelSpec,
         _custom_model_id,
@@ -125,6 +129,10 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _model_verification_lock,
         _model_verification_thread,
         _ModelIdentityUnverified,
+        _new_model_pooling,
+        _parse_model_id,
+        _ParsedModelId,
+        _refuse_on_event_loop,
         _sha256_file,
         _start_model_verification,
         _verify_custom_model,
@@ -134,6 +142,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         embedding_model_is_custom,
         legacy_embedding_ids,
         model_file_present,
+        model_pooling_type,
         models_dir,
         resolve_custom_model,
         validate_custom_model_path,
@@ -190,6 +199,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _N_CTX,
         _N_UBATCH,
         _POOLING_TYPE_LAST,
+        _POOLING_TYPES,
         _PRIORITY_SENTINEL,
         _PROGRESS_EVERY_BYTES,
         _REJECTED_MODEL_SENTINEL,

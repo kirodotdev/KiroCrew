@@ -22,17 +22,68 @@ from typing import NamedTuple
 
 from kiro_crew.config.loader import config_path
 from kiro_crew.config.paths import config_dir
+from kiro_crew.embeddings_gguf import gguf_declared_pooling
 from kiro_crew.embeddings_settings import (
     _DEFAULT_DIM,
     _GGUF_FILENAME,
     _GGUF_MIN_BYTES,
     _MODEL_PATH_ENV,
     _MODELS_DIR_NAME,
+    _POOLING_TYPE_LAST,
+    _POOLING_TYPES,
     _read_memory_config,
 )
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger("kiro_crew.embeddings")
+
+
+# ── Per-model pooling ──
+
+# A custom file whose GGUF declares mean or CLS pooling is recorded with that
+# pooling after its digest (`custom:sha256:<digest>@mean`), so the pooling is part
+# of what names its vector space; last-token keeps the plain `custom:sha256:<digest>`.
+_CUSTOM_LABEL = "custom"
+_POOLING_SUFFIX_SEPARATOR = "@"
+
+
+class _ParsedModelId(NamedTuple):
+    """The parts of a model id (see :func:`_parse_model_id`)."""
+
+    label: str
+    digest: str  # "" unless it is 64 lowercase hex characters
+    pooling: str  # the text after the digest's `@`, "" when there is none
+
+
+def _parse_model_id(model_id: str) -> _ParsedModelId:
+    """Split *model_id* into its label, its digest and the pooling after the digest.
+
+    The suffix is provenance, not just syntax. Every id an earlier release computed
+    is ``<label>:sha256:<digest>`` with a 64-hex digest, and it kept a configured id
+    only when the text after its last ``:sha256:`` was such a digest, re-hashing
+    anything else. So no stored vector sits under an id ending in ``@mean`` or
+    ``@cls``: that pooling always arrives with a fresh vector space, while a label
+    an operator typed, ``custom@mean`` included, names no pooling.
+    """
+    label, separator, rest = model_id.rpartition(":sha256:")
+    digest, _at, pooling = rest.partition(_POOLING_SUFFIX_SEPARATOR)
+    valid = (
+        bool(separator) and len(digest) == 64 and all(char in "0123456789abcdef" for char in digest)
+    )
+    return _ParsedModelId(label, digest if valid else "", pooling)
+
+
+def model_pooling_type(model_id: str) -> int:
+    """The llama.cpp pooling the model named by *model_id* runs with.
+
+    Only an id the loader writes names a pooling: ``custom:sha256:<digest>@mean``
+    or ``@cls``. Everything else -- the bundled model, a plain ``custom`` id, an
+    operator's label with or without a suffix -- runs with last-token pooling.
+    """
+    label, digest, pooling = _parse_model_id(model_id)
+    if label == _CUSTOM_LABEL and digest and pooling in _POOLING_TYPES:
+        return _POOLING_TYPES[pooling]
+    return _POOLING_TYPE_LAST
 
 
 # ── Model paths ──
@@ -111,7 +162,13 @@ def _verify_custom_model(path: Path, configured: str, recorded_stamp: object, co
                 and str(memory.get("embed_model_id", "") or "").strip() == configured
                 and _model_file_stamp(path) == stamp
             ):
-                if not memory.get("embed_model_stamp") and ":sha256:" not in configured:
+                if (
+                    not memory.get("embed_model_stamp")
+                    and ":sha256:" not in configured
+                    # Legacy vectors were made with last-token pooling; a model
+                    # running another rebuilds them, so it inherits nothing.
+                    and model_pooling_type(model_id) == _POOLING_TYPE_LAST
+                ):
                     labels = {f"custom:{path.name}:{stamp[2]}"}
                     if configured:
                         labels.add(configured)
@@ -155,9 +212,13 @@ def _start_model_verification(path: Path, configured: str, recorded_stamp: objec
         _model_verification_thread.start()
 
 
-@functools.lru_cache(maxsize=8)
-def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
-    """Reuse the digest until file identity, size or write timestamps change."""
+def _refuse_on_event_loop() -> None:
+    """Raise :class:`_ModelIdentityUnverified` when called on a running event loop.
+
+    Called first in each cached file read, so a loop caller that misses the cache
+    raises instead of reading; ``lru_cache`` does not cache the exception, and the
+    off-loop verification worker fills the entry.
+    """
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -166,6 +227,12 @@ def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
         raise _ModelIdentityUnverified(
             "custom model identity is unverified; verification is running"
         )
+
+
+@functools.lru_cache(maxsize=8)
+def _model_content_digest(path: Path, stamp: tuple[int, ...]) -> str:
+    """Reuse the digest until file identity, size or write timestamps change."""
+    _refuse_on_event_loop()
     digest = _sha256_file(path)
     if _model_file_stamp(path) != stamp:
         raise OSError("embedding model changed while computing its identity")
@@ -230,17 +297,35 @@ def _model_file_stamp_unaliased(path: Path) -> tuple[int, ...] | None:
 def _custom_model_id(path: Path, configured: str, *, recorded_stamp: object = None) -> str:
     """Reuse a verified file stamp; never hash model weights on the event loop."""
     stamp = _model_file_stamp(path)
-    _label, separator, recorded_digest = configured.rpartition(":sha256:")
-    if (
-        recorded_stamp == list(stamp)
-        and separator
-        and len(recorded_digest) == 64
-        and all(char in "0123456789abcdef" for char in recorded_digest)
-    ):
+    recorded = _parse_model_id(configured)
+    if recorded_stamp == list(stamp) and recorded.digest:
         return configured
     digest = _model_content_digest(path, stamp)
-    label = configured.split(":sha256:", 1)[0] if configured else "custom"
+    if recorded.digest == digest:
+        return configured
+    # A model recorded for the first time takes its file's declared pooling into
+    # its id, and so does a file replaced under a `custom` id, whose suffix named
+    # the old file's pooling (the digest changed, so it re-embeds anyway). An
+    # operator's own label carries over to the new digest and names no pooling.
+    if not configured or (recorded.digest and recorded.label == _CUSTOM_LABEL):
+        return f"{_CUSTOM_LABEL}:sha256:{digest}{_new_model_pooling(path, stamp)}"
+    label = configured.split(":sha256:", 1)[0]
     return f"{label}:sha256:{digest}"
+
+
+@functools.lru_cache(maxsize=8)
+def _new_model_pooling(path: Path, stamp: tuple[int, ...]) -> str:
+    """The id suffix naming the pooling *path*'s GGUF declares, cached per stamp.
+
+    ``""`` for last-token. A loop caller that misses the cache is refused before
+    the GGUF header is walked, exactly as a digest miss is, and the off-loop
+    verification worker fills the entry.
+    """
+    _refuse_on_event_loop()
+    pooling = gguf_declared_pooling(path)
+    if _POOLING_TYPES[pooling] == _POOLING_TYPE_LAST:
+        return ""
+    return f"{_POOLING_SUFFIX_SEPARATOR}{pooling}"
 
 
 def _is_sensitive_model_path(path: Path) -> bool:
@@ -345,6 +430,14 @@ def resolve_custom_model() -> "CustomModelSpec | None":
     configured_id = str(memory_cfg.get("embed_model_id", "") or "").strip()
 
     path, error, code = validate_custom_model_path(raw, origin)
+    if (not configured_id or configured_id.split(":sha256:", 1)[0] == _CUSTOM_LABEL) and Path(
+        str(memory_cfg.get("embed_model_path", "") or "").strip()
+    ).expanduser() != path:
+        # Only memory.embed_model_path is ever recorded (_verify_custom_model), so
+        # a file named only by the env var is never recorded; it keeps the plain
+        # label and last-token pooling rather than taking a pooling no apply chose,
+        # whether from its own header or from an id recorded for another file.
+        configured_id = _CUSTOM_LABEL
     model_id = "custom:unavailable"
     if not error:
         try:

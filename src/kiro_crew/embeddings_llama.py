@@ -27,6 +27,7 @@ from kiro_crew.embeddings_model import (
     _model_file_stamp_unaliased,
     active_model_path,
     model_file_present,
+    model_pooling_type,
 )
 from kiro_crew.embeddings_native import _load_llama_class
 from kiro_crew.embeddings_settings import (
@@ -374,6 +375,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
         self._model_path = model_path or active_model_path()
         self._dim = dim
         self._model_id = model_id
+        # A pure function of the id, which is what names the vector space, so
+        # the pooling can never change under vectors already stored for this id.
+        self._pooling_type = model_pooling_type(model_id)
         # Only the bundled factory paths set this. A custom model may declare
         # the same id and width without containing the same weights.
         self._uses_bundled_identity = False
@@ -580,9 +584,9 @@ class LlamaCppEmbedder(EmbeddingBackend):
             llm = llama_cls(
                 model_path=str(self._model_path),
                 embedding=True,
-                # Passed for every file, so the runtime never falls back to the
-                # GGUF's own pooling_type key.
-                pooling_type=_POOLING_TYPE_LAST,
+                # From the model's id, passed for every file: a model whose id
+                # was recorded under last-token keeps it whatever the file says.
+                pooling_type=self._pooling_type,
                 # n_batch == n_ctx so the logical batch always covers the whole
                 # input in one go, which last-token pooling needs. In embedding mode
                 # the vendored constructor skips the ~1.24 GB per-token logits
@@ -596,10 +600,17 @@ class LlamaCppEmbedder(EmbeddingBackend):
                 # lower-RSS 512-token micro-batch, bounded by that batch; non-causal
                 # models (cache-less encoder architectures, or a GGUF declaring
                 # `.attention.causal = false`) need one physical micro-batch to
-                # hold every token, so all three coincide.
+                # hold every token, so all three coincide. So does any model
+                # running mean or CLS pooling: llama.cpp pools each micro-batch on
+                # its own and keeps only the last one's result, which would store
+                # the mean, or the first token, of a longer input's tail. The
+                # token last-token pooling reads is always in the last micro-batch,
+                # so only a last-token decoder keeps the 512.
                 n_ctx=policy.n_ctx,
                 n_batch=policy.n_batch,
-                n_ubatch=policy.n_ubatch,
+                n_ubatch=(
+                    policy.n_ubatch if self._pooling_type == _POOLING_TYPE_LAST else policy.n_batch
+                ),
                 # Both pools are pinned. Embedding is prompt processing, so the
                 # BATCH pool is the one that actually runs, but leaving the
                 # generation pool at llama.cpp's cpu//2 default would still size
