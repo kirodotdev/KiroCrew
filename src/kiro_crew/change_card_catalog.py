@@ -513,6 +513,13 @@ def describe_manual_change(
         return f"deleted schedule {s(name)}"
     if route == ("POST", "/api/agents"):
         return f"created mate “{s(b.get('name'))}”"
+    if route == ("PUT", "/api/agents"):
+        # Body-form route: crew name comes from the request body.
+        body_name = s(b.get("name") or name)
+        update_fields = {k for k in b if k != "name"}
+        return (
+            f"updated mate {body_name!s} ({', '.join(sorted(str(k) for k in update_fields)[:6])})"
+        )
     if route == ("PUT", "/api/agents/{name}"):
         return f"updated mate {s(name)} ({', '.join(sorted(str(k) for k in b)[:6])})"
     if route == ("DELETE", "/api/agents/{name}"):
@@ -585,6 +592,7 @@ HOOKED_ROUTES: frozenset[tuple[str, str]] = frozenset(
         ("PATCH", "/api/crons/{job_id}"),
         ("DELETE", "/api/crons/{job_id}"),
         ("POST", "/api/agents"),
+        ("PUT", "/api/agents"),
         ("PUT", "/api/agents/{name}"),
         ("DELETE", "/api/agents/{name}"),
         ("POST", "/api/agents/{name}/capabilities/preview"),
