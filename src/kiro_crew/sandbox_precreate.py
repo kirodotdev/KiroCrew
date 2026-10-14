@@ -414,6 +414,9 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
 #: any clone, so materialising it early changes nothing it relies on.
 _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     "aws-control-staging",
+    # Goal drafts are created on first editor use. Precreate the directory so a
+    # sandbox launched earlier cannot see the later-created canonical prompt store.
+    "goal-drafts",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned

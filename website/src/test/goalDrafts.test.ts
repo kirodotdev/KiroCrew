@@ -1,24 +1,681 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  GOAL_DRAFTS_KEY,
+  GOAL_DRAFT_RECORD_PREFIX,
+  LEGACY_GOAL_DRAFTS_KEY,
   GOAL_DRAFT_MAX_ENTRIES,
+  GOAL_DRAFT_MAX_CYCLES,
+  GOAL_DRAFT_MAX_IDLE_SECS,
+  GOAL_DRAFT_MAX_MESSAGE_CHARS,
+  GOAL_DRAFT_SYNC_TIMEOUT_MS,
   GOAL_DRAFT_TTL_MS,
+  GoalDraftConflict,
+  adoptLatestLocalGoalDraft,
+  cacheCanonicalGoalDraft,
+  clampGoalDraftMessage,
+  enqueueRemoteGoalDraft,
   loadGoalDraft,
+  loadGoalDraftSnapshot,
+  loadRemoteGoalDraft,
+  latestLocalGoalDraft,
+  migrateLocalGoalDraft,
   saveGoalDraft,
+  savePendingGoalDraft,
+  saveRemoteGoalDraft,
   __resetForTests,
 } from '../utils/goalDrafts'
 import { safeSetItem } from '../utils/safeStorage'
 
 const draft = (message: string, idleSecs = 60, maxCycles = 0) => ({ message, idleSecs, maxCycles })
 
+const goalRecordKeys = () => Array.from({ length: localStorage.length }, (_, index) => (
+  localStorage.key(index)
+)).filter((key): key is string => key?.startsWith(GOAL_DRAFT_RECORD_PREFIX) === true)
+
+const goalRecords = () => goalRecordKeys().map(key => ({
+  key,
+  value: JSON.parse(localStorage.getItem(key) || '{}') as Record<string, unknown>,
+}))
+
+const isGoalRecordKey = (key: string) => key.startsWith(GOAL_DRAFT_RECORD_PREFIX)
+
 describe('goalDrafts', () => {
   beforeEach(() => { localStorage.clear(); __resetForTests() })
-  afterEach(() => { vi.useRealTimers() })
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
+
+  it('keeps distinct module-owned pending intent over equal-stamp durable content', () => {
+    const slot = 'chat-equal-pending'
+    const stamp = Date.now()
+    saveGoalDraft(slot, draft('durable other-tab value'), stamp)
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('QuotaExceeded')
+    })
+
+    const pending = savePendingGoalDraft(slot, draft('this-tab unsynced intent'))
+    setItem.mockRestore()
+    saveGoalDraft(slot, draft('other-tab equal-stamp value'), pending.updatedAt)
+
+    expect(pending).toEqual({
+      draft: draft('this-tab unsynced intent'),
+      updatedAt: pending.updatedAt,
+      persisted: false,
+    })
+    expect(pending.updatedAt).toBeGreaterThan(stamp)
+    expect(latestLocalGoalDraft(slot)).toEqual(pending)
+  })
+
+  it('retires an older quota fallback after a fresh durable edit supersedes it', () => {
+    const slot = 'chat-superseded-fallback'
+    const originalSetItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function(key: string, value: string) {
+      if (isGoalRecordKey(key)) throw new Error('QuotaExceeded')
+      return originalSetItem.call(this, key, value)
+    }
+    const older = savePendingGoalDraft(slot, draft('older quota-failed edit'), Date.now())
+    Storage.prototype.setItem = originalSetItem
+
+    const newer = savePendingGoalDraft(slot, draft('fresh durable edit'), older.updatedAt + 1)
+
+    expect(latestLocalGoalDraft(slot)).toEqual(newer)
+    expect(loadGoalDraftSnapshot(slot)).toEqual(newer)
+  })
+
+  it('advances a fresh edit past retained canonical and durable timestamps', () => {
+    const slot = 'chat-retained-canonical'
+    const durableStamp = Date.now() + 5_000
+    const submitted = saveGoalDraft(slot, draft('future-stamped submitted edit'), durableStamp)
+    const originalSetItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function(key: string, value: string) {
+      if (isGoalRecordKey(key)) throw new Error('QuotaExceeded')
+      return originalSetItem.call(this, key, value)
+    }
+    const canonicalStamp = Date.now()
+    try {
+      expect(cacheCanonicalGoalDraft(slot, submitted, {
+        draft: draft('server-confirmed value'),
+        updatedAt: canonicalStamp,
+      })).toBe('retained')
+    } finally {
+      Storage.prototype.setItem = originalSetItem
+    }
+
+    const fresh = savePendingGoalDraft(slot, draft('fresh edit'))
+    const [record] = goalRecords()
+    expect(fresh.updatedAt).toBeGreaterThan(durableStamp)
+    expect(record.value.baseUpdatedAt).toBe(canonicalStamp)
+    expect(latestLocalGoalDraft(slot)).toEqual(fresh)
+  })
 
   it('roundtrips a per-slot goal draft (survives close/re-open/refresh)', () => {
     saveGoalDraft('chat-1-100', draft('finish the migration', 120, 5))
     // New "page load" / popover re-mount reads it straight back.
     expect(loadGoalDraft('chat-1-100')).toEqual(draft('finish the migration', 120, 5))
+  })
+
+  it('commits a pending draft and its base in one storage write', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-atomic-record'
+    const loaded = saveGoalDraft(slot, draft('loaded canonical'), Date.now())
+    expect(cacheCanonicalGoalDraft(slot, loaded, loaded)).toBe('persisted')
+
+    const originalSetItem = Storage.prototype.setItem
+    let goalWrites = 0
+    Storage.prototype.setItem = function(key: string, value: string) {
+      if (key.startsWith('mc-goal-drafts')) {
+        goalWrites += 1
+        if (goalWrites === 2) throw new Error('interrupted second write')
+      }
+      return originalSetItem.call(this, key, value)
+    }
+    let pending: ReturnType<typeof savePendingGoalDraft>
+    try {
+      pending = savePendingGoalDraft(slot, draft('pending edit'))
+    } finally {
+      Storage.prototype.setItem = originalSetItem
+    }
+
+    expect(goalWrites).toBe(1)
+    expect(loadGoalDraftSnapshot(slot)).toEqual(pending)
+    const [record] = goalRecords()
+    expect(record.value).toMatchObject({
+      updatedAt: pending.updatedAt,
+      baseUpdatedAt: loaded.updatedAt,
+      value: draft('pending edit'),
+    })
+  })
+
+  it('preserves an explicit server timestamp in the local fallback', () => {
+    const stamp = Date.now() - 1_000
+    saveGoalDraft('chat-1-100', draft('server goal', 90, 4), stamp)
+    expect(loadGoalDraftSnapshot('chat-1-100')).toEqual({
+      draft: draft('server goal', 90, 4),
+      updatedAt: stamp,
+    })
+  })
+
+  it.each(['toString', 'constructor', 'hasOwnProperty'])(
+    'allocates finite monotonic timestamps for inherited slot name %s',
+    slot => {
+      vi.useFakeTimers()
+      vi.setSystemTime(1_800_000_000_000)
+      const serverStamp = Date.now() + 1_000
+      saveGoalDraft(slot, draft('server goal'), serverStamp)
+
+      const edited = saveGoalDraft(slot, draft('newer local edit'))
+      expect(edited.updatedAt).toBe(serverStamp + 1)
+      expect(Number.isFinite(edited.updatedAt)).toBe(true)
+      expect(loadGoalDraftSnapshot(slot)).toEqual(edited)
+    },
+  )
+
+  it('reads a legacy body and sidecar without rewriting either key', () => {
+    const slot = 'chat-cross-tab'
+    const stamp = Date.now()
+    localStorage.setItem(
+      `${LEGACY_GOAL_DRAFTS_KEY}-ts`,
+      JSON.stringify({ [slot]: stamp }),
+    )
+    localStorage.setItem(
+      LEGACY_GOAL_DRAFTS_KEY,
+      JSON.stringify({ [slot]: draft('legacy tab') }),
+    )
+    const bodyBefore = localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY)
+    const timestampsBefore = localStorage.getItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`)
+
+    expect(loadGoalDraftSnapshot(slot)).toEqual({
+      draft: draft('legacy tab'),
+      updatedAt: stamp,
+    })
+    expect(goalRecordKeys()).toEqual([])
+    expect(localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY)).toBe(bodyBefore)
+    expect(localStorage.getItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`)).toBe(timestampsBefore)
+  })
+
+  it('ignores an envelope-shaped legacy body that no released client ever wrote', () => {
+    // Every shipped writer of `mc-goal-drafts` stores a bare `Record<slot, draft>`
+    // with its timestamps in the `-ts` sidecar. A wrapped `{ drafts, timestamps }`
+    // object is therefore not a legacy input: reading it as one would resurrect a
+    // shape nothing produces, so the reader treats it as an unknown slot map.
+    const slot = 'chat-envelope-shape'
+    const payload = JSON.stringify({
+      __slotDraftStore: 1,
+      drafts: { [slot]: draft('never-shipped envelope goal') },
+      timestamps: { [slot]: Date.now() },
+    })
+    localStorage.setItem(LEGACY_GOAL_DRAFTS_KEY, payload)
+
+    expect(loadGoalDraftSnapshot(slot)).toEqual({ draft: null, updatedAt: 0 })
+    expect(goalRecordKeys()).toEqual([])
+    expect(localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY)).toBe(payload)
+  })
+
+  it('gives consecutive quota-failed edits distinct stamps even after storage rollback', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-quota-clock'
+    const futureCanonical = Date.now() + 5_000
+    saveGoalDraft(slot, draft('canonical'), futureCanonical)
+
+    const originalSetItem = Storage.prototype.setItem
+    Storage.prototype.setItem = function(key: string, value: string) {
+      if (isGoalRecordKey(key)) throw new Error('QuotaExceeded')
+      return originalSetItem.call(this, key, value)
+    }
+    try {
+      const first = savePendingGoalDraft(slot, draft('first failed edit'))
+      const second = savePendingGoalDraft(slot, draft('second failed edit'))
+      expect(first.persisted).toBe(false)
+      expect(second.persisted).toBe(false)
+      expect(first.updatedAt).toBe(futureCanonical + 1)
+      expect(second.updatedAt).toBe(futureCanonical + 2)
+    } finally {
+      Storage.prototype.setItem = originalSetItem
+    }
+  })
+
+  it.each([
+    {
+      name: 'a stale clear cannot erase a newer draft',
+      newer: draft('newer unsynced draft'),
+      stale: null,
+    },
+    {
+      name: 'a stale draft cannot resurrect a newer tombstone',
+      newer: null,
+      stale: draft('stale resurrected draft'),
+    },
+  ])('$name', ({ newer, stale }) => {
+    const slot = 'chat-opposite-modes'
+    const staleStamp = Date.now()
+    const newerStamp = staleStamp + 5_000
+    saveGoalDraft(slot, newer, newerStamp)
+
+    const staleResult = saveGoalDraft(slot, stale, staleStamp)
+
+    expect(staleResult).toEqual({ draft: newer, updatedAt: newerStamp })
+    expect(loadGoalDraftSnapshot(slot)).toEqual({ draft: newer, updatedAt: newerStamp })
+    expect(goalRecords()).toHaveLength(1)
+  })
+
+  it('repairs malformed v2 records on the next explicit save', () => {
+    const malformedKey = `${GOAL_DRAFT_RECORD_PREFIX}malformed`
+    localStorage.setItem(malformedKey, '{not-json')
+
+    saveGoalDraft('constructor', draft('repaired prototype-key goal'), Date.now())
+
+    expect(localStorage.getItem(malformedKey)).toBeNull()
+    expect(loadGoalDraft('constructor')).toEqual(draft('repaired prototype-key goal'))
+  })
+
+  it('reads every immutable primary record at most once per snapshot scan', () => {
+    saveGoalDraft('chat-read-once', draft('one atomic record'), Date.now())
+    const [recordKey] = goalRecordKeys()
+    const originalGetItem = Storage.prototype.getItem
+    let recordReads = 0
+    Storage.prototype.getItem = function(key: string) {
+      if (key === recordKey) recordReads += 1
+      return originalGetItem.call(this, key)
+    }
+    try {
+      expect(loadGoalDraft('chat-read-once')).toEqual(draft('one atomic record'))
+    } finally {
+      Storage.prototype.getItem = originalGetItem
+    }
+    expect(recordReads).toBe(1)
+  })
+
+  it('translates the canonical server wire format in both directions', async () => {
+    const stamp = Date.now()
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      if (init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body))
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+        })
+      }
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({
+          draft: { message: 'remote goal', idle_secs: 120, max_cycles: 7 },
+          updated_at: stamp,
+        }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      expect(await loadRemoteGoalDraft('chat/1')).toEqual({
+        draft: draft('remote goal', 120, 7),
+        updatedAt: stamp,
+      })
+      const snapshot = { draft: draft('local goal', 45, 2), updatedAt: stamp + 1 }
+      expect(await saveRemoteGoalDraft('chat/1', snapshot)).toEqual(snapshot)
+      expect(fetchMock.mock.calls[0][0]).toBe('/api/autonudge/draft/slot/chat%2F1')
+      expect(fetchMock.mock.calls[1][0]).toBe('/api/autonudge/draft/slot/chat%2F1')
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('does not rebase an edit onto a GET response the editor never adopted', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-delayed-get-base'
+    const loaded = saveGoalDraft(slot, draft('loaded goal'), Date.now())
+    expect(cacheCanonicalGoalDraft(slot, loaded, loaded)).toBe('persisted')
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve({
+        draft: { message: 'unseen canonical', idle_secs: 60, max_cycles: 0 },
+        updated_at: loaded.updatedAt + 100,
+      }),
+    })))
+    await loadRemoteGoalDraft(slot)
+    const edited = savePendingGoalDraft(slot, draft('local edit'))
+    const writer = vi.fn(async (_slot: string, snapshot: typeof edited) => snapshot)
+
+    await enqueueRemoteGoalDraft(slot, edited, writer)
+
+    expect(writer).toHaveBeenCalledWith(
+      slot,
+      edited,
+      expect.objectContaining({ baseUpdatedAt: loaded.updatedAt }),
+    )
+  })
+
+  it('keeps a queued edit on its own base when a migration meets another device\'s goal', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-refused-migration-base'
+    // A browser-only draft: the opening read found the slot empty, so it migrates.
+    const browserOnly = saveGoalDraft(slot, draft('browser-only goal'), Date.now() - 1_000)
+    const deviceB = {
+      draft: { message: 'device B newer goal', idle_secs: 60, max_cycles: 0 },
+      updated_at: browserOnly.updatedAt + 500,
+    }
+    let stored: { draft: Record<string, unknown> | null, updated_at: number } = { draft: null, updated_at: 0 }
+    const puts: Record<string, unknown>[] = []
+    let migrationSent!: () => void
+    const migrationIssued = new Promise<void>(resolve => { migrationSent = resolve })
+    let answerMigration!: () => void
+    const respond = (status: number, body: unknown) => ({
+      ok: status < 300,
+      status,
+      json: () => Promise.resolve(body),
+    })
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      puts.push(sent)
+      if (sent.migration === true) {
+        migrationSent()
+        // Device B saves before this PUT lands, so the store keeps B's record
+        // and refuses the migration as a conflict.
+        return new Promise(resolve => {
+          answerMigration = () => {
+            stored = deviceB
+            resolve(respond(409, {
+              code: 'goal_draft_conflict',
+              error: 'goal draft changed since it was loaded',
+              current: stored,
+            }))
+          }
+        })
+      }
+      if (sent.base_updated_at !== stored.updated_at) {
+        return Promise.resolve(respond(409, {
+          code: 'goal_draft_conflict',
+          error: 'goal draft changed since it was loaded',
+          current: stored,
+        }))
+      }
+      stored = { draft: sent.draft as Record<string, unknown> | null, updated_at: stored.updated_at + 1 }
+      return Promise.resolve(respond(200, stored))
+    }))
+    try {
+      const migration = migrateLocalGoalDraft(
+        slot,
+        latestLocalGoalDraft(slot),
+        { draft: null, updatedAt: 0 },
+        saveRemoteGoalDraft,
+      )
+      // The user edits the browser draft while the migration is in flight.
+      const edited = savePendingGoalDraft(slot, draft('edited browser goal'))
+      const queued = enqueueRemoteGoalDraft(slot, edited, saveRemoteGoalDraft)
+      await migrationIssued
+      answerMigration()
+
+      expect(await migration).toMatchObject({ result: 'conflict' })
+      await expect(queued).rejects.toBeInstanceOf(GoalDraftConflict)
+      expect(puts[1]).toMatchObject({ migration: false, base_updated_at: 0 })
+      expect(stored).toEqual(deviceB)
+      expect(latestLocalGoalDraft(slot)).toEqual(edited)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it.each([
+    { answeredBy: 'another device', result: 'conflict', base: 0 },
+    { answeredBy: 'this browser', result: 'persisted', base: 'answer' },
+  ])('keeps goal text typed during a migration answered by $answeredBy on the editor\'s base', async ({ answeredBy, result, base }) => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-typed-during-migration'
+    const browserOnly = saveGoalDraft(slot, draft('browser-only goal'), Date.now() - 1_000)
+    const deviceB = { draft: draft('device B newer goal'), updatedAt: browserOnly.updatedAt + 500 }
+    const answer = answeredBy === 'another device' ? deviceB : browserOnly
+    // The store refuses a migration over another device's record with a 409.
+    const writer = vi.fn(async () => {
+      if (answer === deviceB) throw new GoalDraftConflict(deviceB)
+      return answer
+    })
+
+    const migration = await migrateLocalGoalDraft(
+      slot,
+      latestLocalGoalDraft(slot),
+      { draft: null, updatedAt: 0 },
+      writer,
+      { typedDuringWrite: () => draft('typed during the migration') },
+    )
+
+    expect(migration).toEqual({ canonical: answer, result })
+    expect(latestLocalGoalDraft(slot).draft).toEqual(draft('typed during the migration'))
+    expect(goalRecords()[0].value).toMatchObject({
+      baseUpdatedAt: base === 'answer' ? answer.updatedAt : base,
+    })
+  })
+
+  it('keeps a browser-only copy the store refused as a pending edit that only an explicit replace sends', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-refused-legacy-copy'
+    // The copy's edit time is later than the confirmed goal, as a skewed clock gives it.
+    const browserOnly = saveGoalDraft(slot, draft('browser-only copy'), Date.now() + 60_000)
+    const confirmed = { draft: draft('confirmed on another device'), updatedAt: Date.now() - 1_000 }
+    const refused = vi.fn(async () => { throw new GoalDraftConflict(confirmed) })
+
+    const migration = await migrateLocalGoalDraft(slot, latestLocalGoalDraft(slot), confirmed, refused)
+
+    expect(migration).toEqual({ canonical: confirmed, result: 'conflict' })
+    expect(refused).toHaveBeenCalledWith(slot, browserOnly, expect.objectContaining({ migration: true }))
+    expect(latestLocalGoalDraft(slot).draft).toEqual(draft('browser-only copy'))
+    expect(goalRecords()[0].value).toMatchObject({ baseUpdatedAt: 0 })
+
+    // A reload reads the same confirmed goal: the copy is still the conflict, unsent.
+    __resetForTests()
+    const writer = vi.fn(async (_slot: string, snapshot: typeof browserOnly) => snapshot)
+    expect(await migrateLocalGoalDraft(slot, latestLocalGoalDraft(slot), confirmed, writer))
+      .toEqual({ canonical: confirmed, result: 'conflict' })
+    expect(writer).not.toHaveBeenCalled()
+
+    // Only the explicit replace sends it, as a compare-and-set on the confirmed stamp.
+    await migrateLocalGoalDraft(slot, latestLocalGoalDraft(slot), confirmed, writer, { replaceConflict: true })
+    expect(writer).toHaveBeenCalledTimes(1)
+    expect(writer.mock.calls[0][2]).toMatchObject({ baseUpdatedAt: confirmed.updatedAt })
+    expect(writer.mock.calls[0][2]).not.toMatchObject({ migration: true })
+  })
+
+  it.each([false, true])(
+    'adopts a newer canonical over an unedited confirmed cache without a write (replaceConflict=%s)',
+    async replaceConflict => {
+      vi.useFakeTimers()
+      vi.setSystemTime(1_800_000_000_000)
+      const slot = 'chat-confirmed-cache'
+      // Device A opened the popover and cached the server copy it was shown.
+      const loaded = saveGoalDraft(slot, draft('device A loaded goal'), Date.now())
+      expect(cacheCanonicalGoalDraft(slot, loaded, loaded)).toBe('persisted')
+      // Device B then saved a newer goal; A reopens without editing.
+      const newer = { draft: draft('device B newer goal'), updatedAt: loaded.updatedAt + 100 }
+      const writer = vi.fn(async (_slot: string, snapshot: typeof newer) => snapshot)
+
+      const migration = await migrateLocalGoalDraft(
+        slot,
+        latestLocalGoalDraft(slot),
+        newer,
+        writer,
+        { replaceConflict },
+      )
+
+      expect(migration).toEqual({ canonical: newer, result: 'persisted' })
+      expect(writer).not.toHaveBeenCalled()
+      expect(latestLocalGoalDraft(slot)).toEqual(newer)
+    },
+  )
+
+  it('still reports a pending edit made on an older canonical as a conflict', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-pending-conflict'
+    const loaded = saveGoalDraft(slot, draft('device A loaded goal'), Date.now())
+    expect(cacheCanonicalGoalDraft(slot, loaded, loaded)).toBe('persisted')
+    const edited = savePendingGoalDraft(slot, draft('device A unsynced edit'))
+    const newer = { draft: draft('device B newer goal'), updatedAt: edited.updatedAt + 100 }
+    const writer = vi.fn(async (_slot: string, snapshot: typeof newer) => snapshot)
+
+    const migration = await migrateLocalGoalDraft(slot, latestLocalGoalDraft(slot), newer, writer)
+
+    expect(migration).toEqual({ canonical: newer, result: 'conflict' })
+    expect(writer).not.toHaveBeenCalled()
+    expect(latestLocalGoalDraft(slot)).toEqual(edited)
+  })
+
+  it('keeps a stale tab\'s rejected edit on its own base, so its reload meets the other tab\'s save as a conflict', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-stale-tab-base'
+    // Tabs A and B both adopted version 1. This module is tab B.
+    const versionOne = saveGoalDraft(slot, draft('version 1'), Date.now())
+    expect(cacheCanonicalGoalDraft(slot, versionOne, versionOne)).toBe('persisted')
+    // Tab A saves version 2: the server and the shared browser storage now hold it.
+    const versionTwo = { draft: draft('tab A version 2'), updatedAt: versionOne.updatedAt + 100 }
+    let stored: { draft: Record<string, unknown> | null, updated_at: number } = {
+      draft: { message: 'tab A version 2', idle_secs: 60, max_cycles: 0 },
+      updated_at: versionTwo.updatedAt,
+    }
+    localStorage.setItem(`${GOAL_DRAFT_RECORD_PREFIX}${slot}`, JSON.stringify({
+      updatedAt: versionTwo.updatedAt,
+      value: versionTwo.draft,
+      baseUpdatedAt: versionTwo.updatedAt,
+    }))
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      puts.push(sent)
+      if (sent.base_updated_at !== stored.updated_at) {
+        return Promise.resolve({
+          ok: false,
+          status: 409,
+          json: () => Promise.resolve({
+            code: 'goal_draft_conflict',
+            error: 'goal draft changed since it was loaded',
+            current: stored,
+          }),
+        })
+      }
+      stored = { draft: sent.draft as Record<string, unknown> | null, updated_at: Number(sent.updated_at) }
+      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(stored) })
+    }))
+    try {
+      // Tab B edits the version 1 it still shows; its PUT is rejected.
+      const edited = savePendingGoalDraft(slot, draft('tab B stale edit'))
+      await expect(enqueueRemoteGoalDraft(slot, edited, saveRemoteGoalDraft))
+        .rejects.toBeInstanceOf(GoalDraftConflict)
+      expect(puts[0]).toMatchObject({ base_updated_at: versionOne.updatedAt })
+      expect(goalRecords()[0].value).toMatchObject({ baseUpdatedAt: versionOne.updatedAt })
+
+      // Tab B reloads: fresh module state, the same shared storage.
+      __resetForTests()
+      const migration = await migrateLocalGoalDraft(
+        slot,
+        latestLocalGoalDraft(slot),
+        versionTwo,
+        saveRemoteGoalDraft,
+      )
+
+      expect(migration).toEqual({ canonical: versionTwo, result: 'conflict' })
+      expect(puts).toHaveLength(1)
+      expect(stored).toMatchObject({ draft: { message: 'tab A version 2' }, updated_at: versionTwo.updatedAt })
+      expect(latestLocalGoalDraft(slot)).toEqual(edited)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('bases an edit on another tab\'s newer record once the editor is seeded from it', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const slot = 'chat-reseeded-tab-base'
+    const versionOne = saveGoalDraft(slot, draft('version 1'), Date.now())
+    expect(cacheCanonicalGoalDraft(slot, versionOne, versionOne)).toBe('persisted')
+    const versionTwo = { draft: draft('tab A version 2'), updatedAt: versionOne.updatedAt + 100 }
+    localStorage.setItem(`${GOAL_DRAFT_RECORD_PREFIX}${slot}`, JSON.stringify({
+      updatedAt: versionTwo.updatedAt,
+      value: versionTwo.draft,
+      baseUpdatedAt: versionTwo.updatedAt,
+    }))
+
+    // Tab B reopens: its editor now shows version 2, and an edit is made on it.
+    expect(adoptLatestLocalGoalDraft(slot)).toEqual(versionTwo)
+    const edited = savePendingGoalDraft(slot, draft('tab B edit of version 2'))
+    expect(goalRecords()[0].value).toMatchObject({ baseUpdatedAt: versionTwo.updatedAt })
+    const writer = vi.fn(async (_slot: string, snapshot: typeof edited) => snapshot)
+    const migration = await migrateLocalGoalDraft(slot, latestLocalGoalDraft(slot), versionTwo, writer)
+
+    expect(writer).toHaveBeenCalledWith(
+      slot,
+      edited,
+      expect.objectContaining({ baseUpdatedAt: versionTwo.updatedAt }),
+    )
+    expect(migration).toEqual({ canonical: edited, result: 'persisted' })
+  })
+
+  it('sends the canonical base and surfaces a 409 as a goal-draft conflict', async () => {
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      const sent = JSON.parse(String(init?.body))
+      expect(sent.base_updated_at).toBe(41)
+      return Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({
+          code: 'goal_draft_conflict',
+          error: 'goal draft changed since it was loaded',
+          current: { draft: { message: 'newer', idle_secs: 60, max_cycles: 0 }, updated_at: 42 },
+        }),
+      })
+    }))
+
+    await expect(saveRemoteGoalDraft(
+      'chat-conflict',
+      { draft: draft('stale'), updatedAt: 43 },
+      { baseUpdatedAt: 41 },
+    )).rejects.toMatchObject({
+      name: 'GoalDraftConflict',
+      current: { draft: draft('newer'), updatedAt: 42 },
+    } satisfies Partial<GoalDraftConflict>)
+  })
+
+  it('bounds a remote request instead of leaving reconciliation pending forever', async () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')))
+    })))
+
+    const rejection = expect(loadRemoteGoalDraft('chat-1')).rejects.toThrow('aborted')
+    await vi.advanceTimersByTimeAsync(GOAL_DRAFT_SYNC_TIMEOUT_MS)
+    await rejection
+  })
+
+  it('aborts a write whose body stalls after its headers, so the next queued write for the slot proceeds', async () => {
+    vi.useFakeTimers()
+    const slot = 'chat-stalled-write-body'
+    const puts: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+      const sent = JSON.parse(String(init?.body)) as Record<string, unknown>
+      puts.push(sent)
+      // The first write's headers arrive, then its body never does.
+      if (puts.length === 1) return Promise.resolve({ ok: true, status: 200, json: () => new Promise(() => {}) })
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    }))
+    try {
+      let firstSettled = false
+      const first = enqueueRemoteGoalDraft(slot, { draft: draft('stalled body'), updatedAt: 10 }, saveRemoteGoalDraft)
+      const firstOutcome = first.then(() => 'resolved', () => 'rejected').finally(() => { firstSettled = true })
+      const second = enqueueRemoteGoalDraft(slot, { draft: draft('queued next'), updatedAt: 11 }, saveRemoteGoalDraft)
+      await vi.advanceTimersByTimeAsync(GOAL_DRAFT_SYNC_TIMEOUT_MS - 1)
+      expect(firstSettled).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(1)
+      expect(firstSettled).toBe(true)
+      expect(await firstOutcome).toBe('rejected')
+      expect(puts).toHaveLength(2)
+      expect(await second).toEqual({ draft: draft('queued next'), updatedAt: 11 })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('returns null for an unknown slot', () => {
@@ -32,7 +689,7 @@ describe('goalDrafts', () => {
     expect(loadGoalDraft('chat-2-200')?.message).toBe('goal B')
   })
 
-  it('drops the slot when saved with null or a blank message (never pins the default)', () => {
+  it('loads null after a clear or blank message (never pins the default)', () => {
     saveGoalDraft('chat-1-100', draft('typed goal'))
     expect(loadGoalDraft('chat-1-100')).not.toBeNull()
     saveGoalDraft('chat-1-100', null)
@@ -40,6 +697,23 @@ describe('goalDrafts', () => {
     // Whitespace-only message is also treated as empty.
     saveGoalDraft('chat-1-100', draft('   '))
     expect(loadGoalDraft('chat-1-100')).toBeNull()
+  })
+
+  it('retains a clear tombstone timestamp across reloads', () => {
+    const stamp = Date.now()
+    saveGoalDraft('chat-1-100', draft('goal to clear'), stamp - 1)
+    saveGoalDraft('chat-1-100', null, stamp)
+    __resetForTests()
+
+    expect(loadGoalDraftSnapshot('chat-1-100')).toEqual({
+      draft: null,
+      updatedAt: stamp,
+    })
+    const [record] = goalRecords()
+    expect(record.value).toEqual({
+      updatedAt: stamp,
+      value: { deleted: true },
+    })
   })
 
   it('overwrites an existing slot draft in place', () => {
@@ -53,18 +727,18 @@ describe('goalDrafts', () => {
     // Inject deliberately-corrupt payloads via safeSetItem (it only wraps
     // quota handling — the raw string is written verbatim), proving
     // loadGoalDraft survives externally-corrupted / hand-edited storage.
-    safeSetItem(GOAL_DRAFTS_KEY, 'not json'); __resetForTests()
+    safeSetItem(LEGACY_GOAL_DRAFTS_KEY, 'not json'); __resetForTests()
     expect(loadGoalDraft('x')).toBeNull()
-    safeSetItem(GOAL_DRAFTS_KEY, '[]'); __resetForTests()
+    safeSetItem(LEGACY_GOAL_DRAFTS_KEY, '[]'); __resetForTests()
     expect(loadGoalDraft('x')).toBeNull()
-    safeSetItem(GOAL_DRAFTS_KEY, 'null'); __resetForTests()
+    safeSetItem(LEGACY_GOAL_DRAFTS_KEY, 'null'); __resetForTests()
     expect(loadGoalDraft('x')).toBeNull()
   })
 
   it('filters out entries with wrong-typed fields (corruption / hand-edit)', () => {
     // safeSetItem writes the serialized string verbatim, so it can still seed
     // wrong-typed fixture members — proving the sanitizer drops each of them.
-    safeSetItem(GOAL_DRAFTS_KEY, JSON.stringify({
+    safeSetItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify({
       good: { message: 'ok', idleSecs: 60, maxCycles: 0 },
       'no-message': { idleSecs: 60, maxCycles: 0 },
       'empty-message': { message: '', idleSecs: 60, maxCycles: 0 },
@@ -79,11 +753,85 @@ describe('goalDrafts', () => {
     expect(loadGoalDraft('not-object')).toBeNull()
   })
 
-  it('saveGoalDraft swallows QuotaExceededError without throwing', () => {
+  it('normalizes locally accepted numbers to the canonical server bounds', () => {
+    safeSetItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify({
+      high: { message: 'bounded high', idleSecs: 172_800, maxCycles: 2_147_483_648 },
+      low: { message: 'bounded low', idleSecs: -5, maxCycles: -2 },
+    }))
+    __resetForTests()
+
+    expect(loadGoalDraft('high')).toEqual({
+      message: 'bounded high',
+      idleSecs: GOAL_DRAFT_MAX_IDLE_SECS,
+      maxCycles: GOAL_DRAFT_MAX_CYCLES,
+    })
+    expect(loadGoalDraft('low')).toEqual({
+      message: 'bounded low',
+      idleSecs: 15,
+      maxCycles: 0,
+    })
+  })
+
+  it.each([7_999, 8_000, 8_001])(
+    'stores an ASCII goal of %i characters within the shared server limit',
+    length => {
+      const snapshot = saveGoalDraft(
+        `chat-message-${length}`,
+        draft('x'.repeat(length)),
+        Date.now(),
+      )
+      const expectedLength = Math.min(length, GOAL_DRAFT_MAX_MESSAGE_CHARS)
+      expect(snapshot.draft?.message).toBe('x'.repeat(expectedLength))
+      expect(Array.from(snapshot.draft?.message ?? '').length).toBe(expectedLength)
+    },
+  )
+
+  it('counts and clamps multibyte goals by Unicode code point like the server', async () => {
+    const overLimit = '😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS + 1)
+    expect(overLimit.length).toBe((GOAL_DRAFT_MAX_MESSAGE_CHARS + 1) * 2)
+    expect(Array.from(overLimit).length).toBe(GOAL_DRAFT_MAX_MESSAGE_CHARS + 1)
+    expect(clampGoalDraftMessage(overLimit)).toBe('😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS))
+
+    const fetchMock = vi.fn((_url: string, init?: RequestInit) => {
+      const sent = JSON.parse(String(init?.body))
+      return Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }),
+      })
+    })
+    vi.stubGlobal('fetch', fetchMock)
+    try {
+      await saveRemoteGoalDraft('chat-unicode-limit', {
+        draft: draft(overLimit),
+        updatedAt: Date.now(),
+      })
+      const body = JSON.parse(String(fetchMock.mock.calls[0][1]?.body))
+      expect(body.draft.message).toBe('😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS))
+      expect(Array.from(body.draft.message).length).toBe(GOAL_DRAFT_MAX_MESSAGE_CHARS)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
+  it('live edits advance past the previous canonical timestamp despite a lagging clock', () => {
+    const serverStamp = Date.now() + 60_000
+    saveGoalDraft('chat-clock', draft('canonical'), serverStamp)
+    vi.spyOn(Date, 'now').mockReturnValue(serverStamp - 30_000)
+
+    expect(saveGoalDraft('chat-clock', draft('newer local edit'))).toEqual({
+      draft: draft('newer local edit'),
+      updatedAt: serverStamp + 1,
+    })
+  })
+
+  it('saveGoalDraft reports QuotaExceededError without throwing', () => {
     const orig = Storage.prototype.setItem
     Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
     try {
-      expect(() => saveGoalDraft('chat-1-100', draft('x'))).not.toThrow()
+      expect(saveGoalDraft('chat-1-100', draft('x'))).toMatchObject({
+        draft: draft('x'),
+        persisted: false,
+      })
     } finally {
       Storage.prototype.setItem = orig
     }
@@ -96,6 +844,30 @@ describe('goalDrafts', () => {
     expect(loadGoalDraft('slot-4')).toBeNull()
     expect(loadGoalDraft('slot-5')?.message).toBe('g5')
     expect(loadGoalDraft(`slot-${GOAL_DRAFT_MAX_ENTRIES + 4}`)?.message).toBe(`g${GOAL_DRAFT_MAX_ENTRIES + 4}`)
+  })
+
+  it('retires only the evicted slot from legacy storage before removing its tombstone', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(1_800_000_000_000)
+    const victim = 'legacy-cleared-victim'
+    const survivor = 'legacy-survivor'
+    localStorage.setItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify({
+      [victim]: draft('must stay cleared'),
+      [survivor]: draft('keep this legacy slot'),
+    }))
+    localStorage.setItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`, JSON.stringify({
+      [victim]: Date.now() - 1,
+      [survivor]: Date.now() - 1,
+    }))
+    saveGoalDraft(victim, null, Date.now())
+    for (let i = 0; i < GOAL_DRAFT_MAX_ENTRIES; i++) {
+      saveGoalDraft(`new-slot-${i}`, draft(`new goal ${i}`), Date.now() + i + 1)
+    }
+
+    expect(loadGoalDraft(victim)).toBeNull()
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_GOAL_DRAFTS_KEY) || '{}')
+    expect(legacy).not.toHaveProperty(victim)
+    expect(legacy[survivor]).toEqual(draft('keep this legacy slot'))
   })
 
   it('re-saving a slot refreshes its LRU position (recently edited slot is not evicted)', () => {

@@ -4,132 +4,11 @@ import { render, screen, fireEvent, act, cleanup, waitFor } from '@testing-libra
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import AutoNudgePopover, { STOP_FILE_TOKEN, type AutoNudgeLoop } from '../components/AutoNudgePopover'
 import { AUTONUDGE_LOOPS_QUERY_KEY } from '../components/autoNudgeLoop'
-import { __resetForTests, loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
+import { __resetForTests, loadGoalDraft } from '../utils/goalDrafts'
 import { DRAFT_SAVE_DEBOUNCE_MS } from '../utils/draftConstants'
+import { SLOT, makeLoop, renderPopover } from './autoNudgePopoverFixtures'
 
-const SLOT = 'chat-1-100'
-
-function renderPopover(loop: AutoNudgeLoop | null) {
-  // A FRESH client per render: the popover reads the shared `cron-jobs` key, and
-  // a client reused across tests would serve one test's stubbed rows to the next.
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
-  return render(
-    <QueryClientProvider client={qc}>
-      <AutoNudgePopover
-        slotKey={SLOT}
-        loop={loop}
-        open={true}
-        onOpenChange={() => {}}
-        onChange={() => {}}
-        onFired={() => {}}
-      />
-    </QueryClientProvider>,
-  )
-}
-
-const makeLoop = (over: Partial<AutoNudgeLoop> = {}): AutoNudgeLoop => ({
-  id: 'l1', slot_key: SLOT, message: 'active loop goal',
-  idle_secs: 90, max_cycles: 3, cycle_count: 1, active: true, last_fire_ts: 0,
-  next_due_ts: 0, ...over,
-})
-
-describe('AutoNudgePopover goal persistence', () => {
-  beforeEach(() => {
-    localStorage.clear()
-    __resetForTests()
-    // The popover fetches on OPEN (reads /api/crons to list this slot's
-    // watches) and on Save/Stop. Stub so nothing escapes the test.
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
-  })
-  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
-
-  const goalBox = () => screen.getByPlaceholderText(/Describe what you want the agent to accomplish/i) as HTMLTextAreaElement
-
-  it('remembers the user-typed goal and restores it after the loop is gone (the reported bug)', () => {
-    vi.useFakeTimers()
-    // 1. User opens the popover (no loop yet) and types a custom goal.
-    const first = renderPopover(null)
-    fireEvent.change(goalBox(), { target: { value: 'Ship the BYOA gate harness' } })
-    // Debounced: not written synchronously. Advancing past the debounce persists it.
-    expect(loadGoalDraft(SLOT)).toBeNull()
-    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
-    expect(loadGoalDraft(SLOT)?.message).toBe('Ship the BYOA gate harness')
-    first.unmount()
-
-    // 2. The loop is stopped elsewhere → ChatPage passes loop={null} on re-open;
-    //    the popover restores the stored draft, not the default template.
-    renderPopover(null)
-    expect(goalBox().value).toBe('Ship the BYOA gate harness')
-  })
-
-  it('flushes a pending debounced edit on unmount (a fast close does not lose the last keystrokes)', () => {
-    vi.useFakeTimers()
-    const view = renderPopover(null)
-    fireEvent.change(goalBox(), { target: { value: 'closing fast' } })
-    // Close BEFORE the debounce fires — the unmount flush must still persist it.
-    expect(loadGoalDraft(SLOT)).toBeNull()
-    view.unmount()
-    expect(loadGoalDraft(SLOT)?.message).toBe('closing fast')
-  })
-
-  it('does not persist the pristine default (an untouched popover pins nothing, on open or close)', () => {
-    vi.useFakeTimers()
-    const view = renderPopover(null)
-    // Opened, never edited → the edit-guard means no write, on debounce OR unmount.
-    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
-    expect(loadGoalDraft(SLOT)).toBeNull()
-    view.unmount()
-    expect(loadGoalDraft(SLOT)).toBeNull()
-  })
-
-  it('opening with an existing stored draft does not rewrite it (a mere view must not touch the store)', () => {
-    // Seed a draft, snapshot the raw storage, then open (no edit) and close.
-    // The stored bytes must be identical — no TTL refresh, no LRU bump.
-    saveGoalDraft(SLOT, { message: 'remembered goal', idleSecs: 120, maxCycles: 5 })
-    const draftsBefore = localStorage.getItem('mc-goal-drafts')
-    const tsBefore = localStorage.getItem('mc-goal-drafts-ts')
-
-    const view = renderPopover(null)
-    expect(goalBox().value).toBe('remembered goal') // restored on open
-    view.unmount() // close without editing
-
-    expect(localStorage.getItem('mc-goal-drafts')).toBe(draftsBefore)
-    expect(localStorage.getItem('mc-goal-drafts-ts')).toBe(tsBefore)
-  })
-
-  it('prefers the live loop message over a stored draft when a loop is running', () => {
-    saveGoalDraft(SLOT, { message: 'stale draft goal', idleSecs: 60, maxCycles: 0 })
-    renderPopover(makeLoop({ message: 'active loop goal' }))
-    expect(goalBox().value).toBe('active loop goal')
-  })
-
-  it('opening with a live loop never writes the loop config into the draft store', () => {
-    vi.useFakeTimers()
-    // No stored draft. Open with a live loop, let any timer fire, then close.
-    const view = renderPopover(makeLoop())
-    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
-    view.unmount()
-    // The live loop's config must NOT have been mirrored into the user-draft store.
-    expect(loadGoalDraft(SLOT)).toBeNull()
-  })
-
-  it('editing while a loop is running does not persist to the draft store (loop is authoritative)', () => {
-    vi.useFakeTimers()
-    const view = renderPopover(makeLoop())
-    fireEvent.change(goalBox(), { target: { value: 'tweaked while running' } })
-    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
-    view.unmount()
-    expect(loadGoalDraft(SLOT)).toBeNull()
-  })
-
-  it('falsy loop fields fall back to default template / 60 / 0, not bare "" / 0 (|| not ??)', () => {
-    // A loop with an empty message and idle_secs/max_cycles of 0 must show the
-    // default template + 60 — falsy loop fields fall back (|| not ??).
-    renderPopover(makeLoop({ message: '', idle_secs: 0, max_cycles: 0 }))
-    expect(goalBox().value).toContain('north star')
-    expect((screen.getByDisplayValue('60') as HTMLInputElement).value).toBe('60')
-  })
-})
+const testNowMs = () => Date.now() // flake-ok: relative stamps are compared synchronously within each test
 
 describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
   beforeEach(() => {
@@ -174,12 +53,41 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     expect(cyclesField().value).toBe('0')
   })
 
+  it('holds the synced draft to the store bounds while the field keeps what was typed', () => {
+    vi.useFakeTimers()
+    const view = renderPopover(null)
+    fireEvent.change(idleField(), { target: { value: '172800' } })
+    fireEvent.change(cyclesField(), { target: { value: '2147483648' } })
+    fireEvent.blur(idleField())
+    fireEvent.blur(cyclesField())
+    // The service clamps a loop write and the form adopts what it stored, so
+    // the field itself is not rewritten here.
+    expect(idleField().value).toBe('172800')
+    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
+    view.unmount()
+    expect(loadGoalDraft(SLOT)).toMatchObject({ idleSecs: 86400, maxCycles: 2147483647 })
+  })
+
   it('Save sends the typed idle value even without an intervening blur', async () => {
+    // An empty shared draft, so the open-time check ends and Start enables.
+    // A draft PUT answers with what it was sent, as the store takes it.
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(String(url).startsWith('/api/autonudge/draft/slot/')
+        ? (init?.method === 'PUT' ? JSON.parse(String(init.body)) : { draft: null, updated_at: 0 })
+        : { loop: null }),
+    })) as unknown as typeof fetch)
     renderPopover(null)
     fireEvent.change(idleField(), { target: { value: '45' } })
+    // The edit keeps Start disabled until that check answers.
+    const start = screen.getByRole('button', { name: /Start loop/i })
+    expect(start).toBeDisabled()
+    await waitFor(() => expect(start).toBeEnabled())
+    // Freeze the clock so the edit's debounce cannot add a draft PUT of its own.
+    vi.useFakeTimers()
     // Click Start loop WITHOUT blurring the field first — save() must read the
     // raw string, not a stale committed number.
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    await act(async () => { fireEvent.click(start) })
     // Select the call by URL, not by index: opening the popover also READS
     // /api/crons to list this slot's watches, so the save POST is no longer
     // call 0 and an index would pin an unrelated ordering.
@@ -187,7 +95,7 @@ describe('AutoNudgePopover number-field editing (idle / max cycles)', () => {
     // bare `fetch(url)` and a delete carries only `{ method }`, so `c[1]?.body`
     // below is load-bearing rather than defensive.
     const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
-    const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
+    const save = calls.find(c => String(c[0]) === '/api/autonudge' && c[1]?.body)
     expect(save, 'no /api/autonudge write was issued').toBeTruthy()
     const body = JSON.parse(save![1]!.body!)
     expect(body.idle_secs).toBe(45)
@@ -380,7 +288,7 @@ describe('AutoNudgePopover next-trigger countdown', () => {
   })
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
-  const nowSecs = () => Date.now() / 1000
+  const nowSecs = () => testNowMs() / 1000
 
   it('shows the countdown in the popover and the trigger tooltip, and it ticks', () => {
     renderPopover(makeLoop({ next_due_ts: nowSecs() + 125 }))
@@ -530,7 +438,7 @@ describe('AutoNudgePopover cycle cap readout', () => {
     // from cycle_count/max_cycles only, so an armed ticker changes the title and
     // leaves the label alone.
     vi.useFakeTimers()
-    renderPopover(makeLoop({ cycle_count: 3, max_cycles: 24, next_due_ts: Date.now() / 1000 + 125 }))
+    renderPopover(makeLoop({ cycle_count: 3, max_cycles: 24, next_due_ts: testNowMs() / 1000 + 125 }))
     const trigger = screen.getByRole('button', { name: 'Goal active (cycle 3/24)' })
     expect(trigger.getAttribute('title')).toMatch(/Next cycle in/i)
     act(() => { vi.advanceTimersByTime(3_000) })
@@ -544,10 +452,21 @@ describe('AutoNudgePopover cycle cap readout', () => {
  *  its confirm; the loop's state is one line by the title (product owner,
  *  2026-10-01). */
 describe('AutoNudgePopover status line and Pause | Play controls', () => {
+  /** The goal-draft route as the gateway answers it: an empty slot on GET, and
+   *  the canonical echo of a PUT. */
+  const draftRoute = (url: string, init?: RequestInit) => {
+    if (!String(url).startsWith('/api/autonudge/draft/slot/')) return null
+    if (init?.method !== 'PUT') {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ draft: null, updated_at: 0 }) })
+    }
+    const sent = JSON.parse(String(init.body)) as Record<string, unknown>
+    return Promise.resolve({ ok: true, json: () => Promise.resolve({ draft: sent.draft, updated_at: sent.updated_at }) })
+  }
   beforeEach(() => {
     localStorage.clear()
     __resetForTests()
-    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => draftRoute(url, init)
+      ?? Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })) as unknown as typeof fetch)
   })
   afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
 
@@ -578,7 +497,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
   const START = 'Start loop'
   const FRESH_BUDGET = 'Play resumes it with a fresh budget.'
 
-  const running = (over: Partial<AutoNudgeLoop> = {}) => makeLoop({ next_due_ts: Math.floor(Date.now() / 1000) + 300, ...over })
+  const running = (over: Partial<AutoNudgeLoop> = {}) => makeLoop({ next_due_ts: Math.floor(testNowMs() / 1000) + 300, ...over })
   const paused = (over: Partial<AutoNudgeLoop> = {}) => makeLoop({ active: false, stopped_reason: 'manual', next_due_ts: 0, ...over })
 
   /** Controlled `open`, as the real parent wires it, so "stays open" is a
@@ -615,6 +534,8 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
    *  `written` or a refusal; the fire route answers `fire`; the crons read stays inert. */
   function stubWriteThenFire(written: AutoNudgeLoop | Refusal, fire: FireAnswer) {
     vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      const draft = draftRoute(url, init)
+      if (draft) return draft
       const isWrite = (init?.method === 'PATCH' && String(url) === '/api/autonudge/l1')
         || (init?.method === 'POST' && String(url) === '/api/autonudge')
       if (isWrite) {
@@ -663,7 +584,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
   })
 
   it('an active loop held for approval reads paused: warn box, Play resumes, Pause still stops it, no Clear', () => {
-    renderWith(running({ approval_stalled: true, next_due_ts: Math.floor(Date.now() / 1000) - 5 }))
+    renderWith(running({ approval_stalled: true, next_due_ts: Math.floor(testNowMs() / 1000) - 5 }))
     expect(status()!.textContent).toBe('Paused · an approval in this chat timed out. Press Play or send a message to resume.')
     expect(status()!.className).toMatch(/\bbg-warn-subtle\b/)
     expect(title()).toBe('Paused')
@@ -793,7 +714,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
   })
 
   it('a running loop whose cycle is already due disables Play on a pristine form only: an edit keeps the one save path live', () => {
-    renderWith(running({ next_due_ts: Math.floor(Date.now() / 1000) - 5 }))
+    renderWith(running({ next_due_ts: Math.floor(testNowMs() / 1000) - 5 }))
     expect(byLabel(NUDGE_NOW)!).toBeDisabled()
     expect(byLabel(PAUSE)!).toBeEnabled()
     fireEvent.change(goalBox(), { target: { value: 'edited while due' } })
@@ -806,6 +727,8 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     const { onChange, onOpenChange, onFired } = renderWith(null)
     expect(rowNames()).toEqual([START])
     expect(byLabel(START)!.querySelector('svg.lucide-play')).toBeTruthy()
+    // Start runs only once the open-time draft check has answered.
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
     fireEvent.change(goalBox(), { target: { value: 'brand new goal' } })
     await act(async () => { fireEvent.click(byLabel(START)!) })
     expect(createCalls()).toHaveLength(1)
@@ -824,6 +747,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     const created = makeLoop({ id: 'l9', message: 'brand new goal', next_due_ts: 0, cycle_count: 0 })
     stubWriteThenFire(created, { ok: true, loop: created })
     const { onChange, onFired } = renderWith(null)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
     const box = screen.getByRole('checkbox', { name: 'Run first cycle now' }) as HTMLInputElement
     expect(box.checked).toBe(false)
     fireEvent.click(box)
@@ -853,6 +777,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     // StrictMode, as main.tsx renders the app: its second effect pass re-runs
     // the open-edge reset after the refusal was adopted.
     render(<StrictMode><QueryClientProvider client={qc}><Harness /></QueryClientProvider></StrictMode>)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
     fireEvent.click(screen.getByRole('checkbox', { name: 'Run first cycle now' }))
     await act(async () => { fireEvent.click(byLabel(START)!) })
     expect(fireCalls('l9')).toHaveLength(1)
@@ -869,6 +794,8 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     const created = makeLoop({ id: 'l9', message: 'brand new goal', next_due_ts: 0 })
     let answerFire: (r: unknown) => void = () => {}
     vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => {
+      const draft = draftRoute(url, init)
+      if (draft) return draft
       if (init?.method === 'POST' && String(url) === '/api/autonudge') {
         return Promise.resolve({ ok: true, json: () => Promise.resolve({ ok: true, loop: created }) })
       }
@@ -885,6 +812,7 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     }
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
     render(<QueryClientProvider client={qc}><Harness /></QueryClientProvider>)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
     fireEvent.click(screen.getByRole('checkbox', { name: 'Run first cycle now' }))
     await act(async () => { fireEvent.click(byLabel(START)!) })
     expect(fireCalls('l9')).toHaveLength(1)
@@ -895,9 +823,83 @@ describe('AutoNudgePopover status line and Pause | Play controls', () => {
     expect(screen.getByTestId('auto-nudge-error')).toHaveTextContent('session is busy')
   })
 
+  const draftPutIndexes = () => calls()
+    .map((c, i) => [c, i] as const)
+    .filter(([c]) => String(c[0]).startsWith('/api/autonudge/draft/slot/') && c[1]?.method === 'PUT')
+    .map(([, i]) => i)
+
+  it('Start saves the edited draft before the create POST, and sends no goal fence', async () => {
+    const created = running({ message: 'edited before start' })
+    stubWriteThenFire(created, { ok: true, loop: created })
+    renderWith(null)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
+    // Freeze the clock so the edit's debounce cannot add a PUT of its own; the
+    // suite's afterEach restores real timers.
+    vi.useFakeTimers()
+    fireEvent.change(goalBox(), { target: { value: 'edited before start' } })
+    await act(async () => { fireEvent.click(byLabel(START)!) })
+
+    const createIndex = calls().findIndex(c => String(c[0]) === '/api/autonudge' && c[1]?.method === 'POST')
+    expect(createIndex).toBeGreaterThanOrEqual(0)
+    const body = JSON.parse(calls()[createIndex][1]!.body!)
+    // A create has no stored goal to be stale against: main's fence is untouched.
+    expect(body).not.toHaveProperty('expect_fingerprint')
+    // Start waited on this one save; the create adds none of its own.
+    expect(draftPutIndexes()).toHaveLength(1)
+    expect(draftPutIndexes()[0]).toBeLessThan(createIndex)
+    const put = JSON.parse(calls()[draftPutIndexes()[0]][1]!.body!)
+    expect(put.draft).toMatchObject({ message: 'edited before start' })
+    expect(fireCalls()).toHaveLength(0)
+  })
+
+  it('a refused Start writes no draft beyond the save it waited on', async () => {
+    stubWriteThenFire({ status: 409, error: 'slot already has a loop' }, { ok: true, loop: makeLoop() })
+    renderWith(null)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
+    vi.useFakeTimers()
+    fireEvent.change(goalBox(), { target: { value: 'refused start edit' } })
+    await act(async () => { fireEvent.click(byLabel(START)!) })
+    expect(screen.getByTestId('auto-nudge-error')).toHaveTextContent('slot already has a loop')
+    // The save Start waited on went out before the create; the refusal adds none.
+    expect(draftPutIndexes()).toHaveLength(1)
+    act(() => { vi.advanceTimersByTime(DRAFT_SAVE_DEBOUNCE_MS) })
+    await act(async () => {})
+    expect(draftPutIndexes()).toHaveLength(1)
+  })
+
+  it('a draft synced from another device is the pristine baseline when a loop then arrives', async () => {
+    vi.stubGlobal('fetch', vi.fn((url: string) => {
+      if (String(url).startsWith('/api/autonudge/draft/slot/')) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            draft: { message: 'synced goal', idle_secs: 90, max_cycles: 3 },
+            updated_at: testNowMs(),
+          }),
+        })
+      }
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ loop: null }) })
+    }) as unknown as typeof fetch)
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })
+    const props = { slotKey: SLOT, open: true, onOpenChange: vi.fn(), onChange: vi.fn(), onFired: vi.fn() }
+    const view = render(
+      <QueryClientProvider client={qc}><AutoNudgePopover {...props} loop={null} /></QueryClientProvider>,
+    )
+    await waitFor(() => expect(goalBox().value).toBe('synced goal'))
+    // The loop lands while the popover stays open (no open edge re-seeds it).
+    view.rerender(
+      <QueryClientProvider client={qc}>
+        <AutoNudgePopover {...props} loop={running({ message: 'synced goal', idle_secs: 90, max_cycles: 3 })} />
+      </QueryClientProvider>,
+    )
+    expect(dirtyDot()).toBeNull()
+    expect(byLabel(NUDGE_NOW)).toBeInTheDocument()
+  })
+
   it('a refused create shows the refusal inline and hands nothing up', async () => {
     stubWriteThenFire({ status: 409, error: 'slot already has a loop' }, { ok: true, loop: makeLoop() })
     const { onChange } = renderWith(null)
+    await waitFor(() => expect(byLabel(START)).toBeEnabled())
     await act(async () => { fireEvent.click(byLabel(START)!) })
     expect(screen.getByTestId('auto-nudge-error')).toHaveTextContent('slot already has a loop')
     expect(onChange).not.toHaveBeenCalled()
@@ -1133,11 +1135,21 @@ describe('AutoNudgePopover {{STOP_FILE}} help line (#10458)', () => {
   })
 
   it('Start loop posts the message with the token intact (display never rewrites what is stored)', async () => {
+    // An empty shared draft, so the open-time check ends and Start enables.
+    // A draft PUT answers with what it was sent, as the store takes it.
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(String(url).startsWith('/api/autonudge/draft/slot/')
+        ? (init?.method === 'PUT' ? JSON.parse(String(init.body)) : { draft: null, updated_at: 0 })
+        : { loop: null }),
+    })) as unknown as typeof fetch)
     renderPopover(null)
+    const startLoop = screen.getByRole('button', { name: /Start loop/i })
+    await waitFor(() => expect(startLoop).toBeEnabled())
     fireEvent.change(goalBox(), { target: { value: `Keep going. To halt, create ${STOP_FILE_TOKEN}` } })
-    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /Start loop/i })) })
+    await act(async () => { fireEvent.click(startLoop) })
     const calls = (fetch as unknown as { mock: { calls: [string, { body?: string }?][] } }).mock.calls
-    const save = calls.find(c => String(c[0]).startsWith('/api/autonudge') && c[1]?.body)
+    const save = calls.find(c => String(c[0]) === '/api/autonudge' && c[1]?.body)
     expect(save, 'no /api/autonudge write was issued').toBeTruthy()
     const body = JSON.parse(save![1]!.body!)
     expect(body.message).toContain(STOP_FILE_TOKEN)
