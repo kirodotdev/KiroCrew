@@ -24,7 +24,7 @@ import { render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import ChatSidebar from '../pages/ChatSidebar'
 
@@ -102,8 +102,10 @@ describe('ChatSidebar staticRows — projection gated off inside the compositor 
   })
   afterEach(() => vi.clearAllMocks())
 
-  it('staticRows strips layout AND layoutId from every session row', () => {
+  it('staticRows strips layout AND layoutId from every session row', async () => {
     const { container } = renderSidebar(true)
+    // Read after the first-population hold, so this is the state rows keep.
+    await settleSidebarRowAnim()
     const rows = rowNodes(container)
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {
@@ -115,8 +117,9 @@ describe('ChatSidebar staticRows — projection gated off inside the compositor 
     }
   })
 
-  it('desktop keeps the row projection (both halves of the tradeoff hold)', () => {
+  it('desktop keeps the row projection (both halves of the tradeoff hold)', async () => {
     const { container } = renderSidebar(false)
+    await settleSidebarRowAnim()
     const rows = rowNodes(container)
     expect(rows.length).toBeGreaterThan(0)
     for (const row of rows) {

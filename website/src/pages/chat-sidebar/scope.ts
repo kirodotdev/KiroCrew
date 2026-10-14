@@ -216,6 +216,8 @@ export interface SidebarScope {
   folderRowsDrawn: boolean
   setLaneScrollEl: (el: HTMLDivElement | null) => void
   rowAnimEnabled: boolean
+  /** True until the lane's first population has painted (see rowAnimSettle.ts). */
+  rowMotionHeld: boolean
   activeDrag: { type: string; id: string } | null
   derivedHintCol: string | null
   setDerivedHintCol: SetState<string | null>

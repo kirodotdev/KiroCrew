@@ -54,6 +54,7 @@ import { useSessionRename, useSessionAutoTitle, useFolderRename } from './chat-s
 import { useSidebarLane, useLaneCycle, renderedLane } from './chat-sidebar/lanes'
 import { useHistoryPane } from './chat-sidebar/history'
 import { usePinnedSessionOrder, usePinnedOrderAuthority, usePinnedKeyboardReorder } from './chat-sidebar/pinnedOrder'
+import { useRowAnimSettled } from './chat-sidebar/rowAnimSettle'
 import { useStaleCollapse, useStaleMoveWatcher, useStaleNarrowBridge } from './chat-sidebar/stale'
 import { useFolderSort, useFolderVisibility, useFolderFilterReveal, useFolderFilterRows, useFolderMutations, useFolderTree, useRootFolderLanes } from './chat-sidebar/folders'
 import FolderCleanupPanel from './chat-sidebar/FolderCleanupPanel'
@@ -576,6 +577,14 @@ function ChatSidebar({
   // A collapse from a pinned header takes the reduced-motion path for its one
   // commit (`instantCloseId`, see stickyCollapse.ts).
   const rowAnimEnabled = !reduceMotion && instantCloseId === null
+  // The lane's first population moves rows without animating them, until they
+  // have painted (see rowAnimSettle.ts). A separate flag, not a term of
+  // `rowAnimEnabled`: Framer reads a row's layout props once, when it mounts.
+  // `slotsGeneration` counts slot lists applied since page load and, unlike
+  // `slotsLoaded`, a socket (re)connect does not reset it, so an empty gateway
+  // whose list already landed is not waited on forever.
+  const slotListLanded = useAppSelector(s => (s.dashboard.slotsGeneration ?? 0) > 0)
+  const rowAnimSettled = useRowAnimSettled((slotsLoaded || slotListLanded) && (foldersLoaded || foldersFailed) && tagColumnsSettled)
 
   const { clearBoardCollapse, boardFolderCollapsed, toggleColumnCollapse } = useBoardFolderCollapse()
 
@@ -768,7 +777,7 @@ function ChatSidebar({
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,
-    revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowViews, searchRanked, seedError,
+    revealFlash, rootFolderIds, rootFolders, rowActions, rowAnimEnabled, rowMotionHeld: !rowAnimSettled, rowViews, searchRanked, seedError,
     seedStateLanesMutation, selectInstance, selectRecentPreset, sessionCleanup, setAllFiltersPaused,
     setAutoTitleError, setBoardError, setCleanupOpen, setCollapsedHistoryGroups, setColumnEditId,
     setDerivedHintCol, setEditingId, setEditName, setEditScope, setFilterSortOpen, setFlatView,
@@ -792,7 +801,7 @@ function ChatSidebar({
     // stable theming hook 'sidebar' — see website/docs/theming-contract.md
     // The region is the session picker a guide's "choose the session" step
     // points at (`sessions.list`): both layouts draw their rows inside it.
-    <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
+    <div role="region" aria-label={i18nT('pages.chatSidebar.sessions')} {...uiLocation('sessions.list', sidebarRootRef)} data-row-anim={rowAnimSettled ? 'settled' : 'holding'} onPointerOver={onRootPointerOver} onPointerLeave={releaseHoverPin} className={`${LIST_SHELL_CLS} flex flex-col shrink-0 relative h-full`} style={rootStyle}>
       {/* Scroll peek: full titles in a floating, click-through layer. The
           card itself keeps `sidebarWidth`. */}
       <ScrollPeekLayer titles={peekTitles} />

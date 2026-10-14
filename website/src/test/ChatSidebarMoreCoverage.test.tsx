@@ -24,7 +24,7 @@ import { render, screen, act, waitFor, within, fireEvent } from '@testing-librar
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { RootState } from '../store'
 import type { ChatFolder, ChatTag, TagColumn } from '../types'
@@ -669,6 +669,8 @@ describe('ChatSidebar — hover-to-expand (onDragOver)', () => {
   it('expands a collapsed folder after a sustained hover, animating its ring first', async () => {
     renderSidebar()
     await waitFor(() => expect(dnd.onDragOver).toBeTruthy())
+    // The settle render re-creates the folder block; query the zone after it.
+    await settleSidebarRowAnim()
     const zone = document.querySelector('[data-folder-drop="f2"]') as HTMLElement | null
     expect(zone).toBeTruthy()
 

@@ -228,7 +228,7 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
     slot: s, showDivider, scope, navScope, holdContainer, isActive, isOut, isPinned, isUnread, isRunning,
     recent, subagentCount, subagentApprovalCount, digitBadge,
     isRenaming, renamingHere, renameValue, revealFlash, pinnedOrderIndex, pinnedReorderEnabled, rowAnimEnabled,
-    opensElsewhere, peerId, peerName,
+    rowMotionHeld, opensElsewhere, peerId, peerName,
   } = view
   const conductor = view.conductor
   // An ADOPTED remote-crew row (a local slot that mirrors a peer session) has a ✕
@@ -1057,13 +1057,16 @@ export const SessionRow = memo(function SessionRow({ view, actions }: SessionRow
           ...(conductor.depth > 0 ? { 'data-testid': 'conductor-nested-row' } : {}),
           ...(conductor.anchorOnly ? { 'data-conductor-anchor': 'true' } : {}),
         } : {})}
-        initial={rowAnimEnabled ? { opacity: 0, x: -12 } : false}
+        initial={rowAnimEnabled && !rowMotionHeld ? { opacity: 0, x: -12 } : false}
         // The anchor's dimming belongs HERE and not in a class: Motion writes its
         // animation target to the element's own style, so an inline `opacity: 1` from
         // this target outranks any opacity utility on the same row and the anchor paints
         // at full strength. One source of truth, and the property a person actually sees.
         animate={{ opacity: conductor?.anchorOnly ? 0.55 : 1, x: 0 }}
-        transition={{ layout: { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
+        // While the first population settles the layout transition is instant, not
+        // the projection off: Framer reads `layout`/`layoutId` once, at mount, but
+        // reads `transition` on every layout change, so the same rows spring later.
+        transition={{ layout: rowMotionHeld ? { type: false } : { type: 'spring', stiffness: 500, damping: 35 }, opacity: { duration: 0.2 }, x: { duration: 0.2 } }}>
         {/* Both dnd ids are ORIGIN-QUALIFIED (`rowIdentity`, not `s.key`): a peer
             row's disabled droppable/draggable still registers its id with dnd-kit,
             so a peer key that collided with a local one would register twice and

@@ -7,7 +7,7 @@ import { act, cleanup, render } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 import { sseSubagentBatchChunks, sseSubagentSpawn } from '../store/chatSlice'
 
@@ -147,6 +147,7 @@ describe('ChatSidebar store subscription scope', () => {
     )
 
     await act(async () => { await new Promise(r => setTimeout(r, 100)) })
+    await settleSidebarRowAnim()
     sidebarRenders.n = 0
 
     expect(await rendersDuring(() => {})).toBe(0) // Control: no dispatch → no render
@@ -171,6 +172,7 @@ describe('ChatSidebar store subscription scope', () => {
     )
 
     await act(async () => { await new Promise(r => setTimeout(r, 100)) })
+    await settleSidebarRowAnim()
     sidebarRenders.n = 0
 
     // Same-slot streaming: count unchanged so derived selector should not re-render.
@@ -193,6 +195,7 @@ describe('ChatSidebar store subscription scope', () => {
     )
 
     await act(async () => { await new Promise(r => setTimeout(r, 100)) })
+    await settleSidebarRowAnim()
     sidebarRenders.n = 0
 
     const delta = await rendersDuring(() => {

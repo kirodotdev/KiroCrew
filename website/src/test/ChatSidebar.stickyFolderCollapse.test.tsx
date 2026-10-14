@@ -17,7 +17,7 @@ import { render, fireEvent, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
-import { createTestStore } from './helpers'
+import { createTestStore, settleSidebarRowAnim } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
 
 vi.mock('framer-motion', async () => {
@@ -129,6 +129,7 @@ async function renderSidebar(collapsed: boolean) {
     </QueryClientProvider>,
   )
   await utils.findByText('long folder')
+  await settleSidebarRowAnim()
   return utils
 }
 

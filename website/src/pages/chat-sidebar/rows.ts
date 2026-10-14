@@ -154,6 +154,9 @@ export interface RowPlacement {
   orderStamp: number
   /** Layout projection on for this copy (the facade's displacement-window gate). */
   rowAnimEnabled: boolean
+  /** The lane's first population is still settling: the row keeps its projection
+   *  but snaps instead of springing and skips its mount slide-in (rowAnimSettle.ts). */
+  rowMotionHeld?: boolean
   conductor?: ConductorRowView
   /** This copy is the one its FOLDER is drawn around: lifted to the top of the
    *  folder body, before the sub-folders and before the sorted rows. It is NOT a
@@ -238,6 +241,7 @@ export interface SessionRowView {
   showDivider: boolean
   orderStamp: number
   rowAnimEnabled: boolean
+  rowMotionHeld: boolean
   conductor: ConductorRowView | null
   /** See `RowPlacement.folderConductor`. False in every lane but the folder tree. */
   folderConductor: boolean
@@ -871,6 +875,7 @@ function rowView(slot: Slot, placement: RowPlacement, scene: RowScene, model: Vi
     showDivider: placement.showDivider,
     orderStamp: placement.orderStamp,
     rowAnimEnabled: placement.rowAnimEnabled,
+    rowMotionHeld: placement.rowMotionHeld ?? false,
     conductor: placement.conductor ?? null,
     folderConductor: placement.folderConductor ?? false,
     isActive: isActiveIn(scene, slot),
@@ -908,7 +913,7 @@ export function opensElsewhereOf(slot: Slot): string | null {
  *  without a line here is a type error rather than a field equality never compares. */
 const VIEW_FIELDS: Record<keyof SessionRowView, true> = {
   slot: true, identity: true, localKey: true, peerId: true, peerName: true, scope: true, navScope: true,
-  holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, conductor: true,
+  holdContainer: true, showDivider: true, orderStamp: true, rowAnimEnabled: true, rowMotionHeld: true, conductor: true,
   folderConductor: true,
   isActive: true, isOut: true, isPinned: true, isUnread: true, isRunning: true, recent: true,
   subagentCount: true, subagentApprovalCount: true, digitBadge: true, isRenaming: true, renamingHere: true,

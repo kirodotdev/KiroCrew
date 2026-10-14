@@ -43,7 +43,7 @@ export const SIDEBAR_DISPLACEMENT_WINDOW = 48
 /** The lane row renderers for one shell render. */
 export function createLaneRows(shell: SidebarScope) {
   const { collapsedCrews, collapsedSpaces, connected, crewEnable, historyOpen, hoverPinRef, isActiveRow, isStaleExempt,
-    listNarrowed, openHistoryPane, rowActions, rowAnimEnabled, rowViews, setStaleExpanded, shownCrewGroups,
+    listNarrowed, openHistoryPane, rowActions, rowAnimEnabled, rowMotionHeld, rowViews, setStaleExpanded, shownCrewGroups,
     shownCrewRows, sidebarRows, staleCollapseMs, staleExpanded, staticRows, toggleCrewCollapsed,
     toggleSpaceCollapsed } = shell
   // The two halves render either side of the expander, so a held row crossing it
@@ -199,6 +199,7 @@ export function createLaneRows(shell: SidebarScope) {
       // window: every later row shares the clamped stamp and snaps, keeping
       // Framer's projection registry bounded at every total list size.
       rowAnimEnabled: rowAnimEnabled && orderStamp < SIDEBAR_DISPLACEMENT_WINDOW && !staticRows,
+      rowMotionHeld,
     })
     // Windowed: far from the viewport the row renders as a cheap stub (see
     // pages/chat/sessionRowWindow). Each window root (the lane, or one board
