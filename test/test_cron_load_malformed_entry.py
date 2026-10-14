@@ -609,6 +609,7 @@ _NUMERIC_FIELD_DEFAULTS = {
     "secret_env_pending_ts": 0.0,
     "last_retry_run_ts": 0.0,
     "run_generation": 0,
+    "user_pause_generation": 0,
     "consecutive_dupes": 0,
     "consecutive_failures": 0,
     "last_retry_count": 0,
