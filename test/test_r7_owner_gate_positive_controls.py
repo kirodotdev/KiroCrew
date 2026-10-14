@@ -328,6 +328,7 @@ class _FakeWorkflowService:
         self.from_intent: tuple | None = None
         self.saved: tuple | None = None
         self.updated: tuple | None = None
+        self.removed: tuple | None = None
         self.promoted: tuple | None = None
         self.started_definition: tuple | None = None
         self.rerun: tuple | None = None
@@ -345,6 +346,10 @@ class _FakeWorkflowService:
     def update_definition(self, workflow_id: str, **kwargs):
         self.updated = (workflow_id, kwargs)
         return {"ok": True, "definition": {"id": workflow_id, "revision": 3}}
+
+    def remove_definition(self, workflow_ref: str, **kwargs):
+        self.removed = (workflow_ref, kwargs)
+        return {"ok": True, "definition": {"id": "wfd_1", "removed_at": "now"}}
 
     async def start(self, source: str, **kwargs):
         self.started = (source, kwargs)
@@ -369,6 +374,7 @@ class _FakeWorkflowService:
 
 def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
     from kiro_crew.dashboard.handlers.workflows import (
+        api_workflow_definition_remove,
         api_workflow_definition_run,
         api_workflow_definition_update,
         api_workflow_definitions,
@@ -388,6 +394,9 @@ def _workflow_app() -> tuple[web.Application, _FakeWorkflowService]:
     app.router.add_post("/api/workflows/definitions", api_workflow_definitions_create)
     app.router.add_patch(
         "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_update
+    )
+    app.router.add_delete(
+        "/api/workflows/definitions/{workflow_ref}", api_workflow_definition_remove
     )
     app.router.add_post(
         "/api/workflows/definitions/{workflow_ref}/run", api_workflow_definition_run
@@ -511,6 +520,16 @@ async def test_owner_can_update_a_workflow_definition() -> None:
 
     _assert_not_owner_refused(status, body, "PATCH /api/workflows/definitions/{ref}")
     assert service.updated is not None, "owner's definition update never landed"
+
+
+async def test_owner_can_remove_a_workflow_definition() -> None:
+    app, service = _workflow_app()
+    async with _client(app, _owner_claims()) as client:
+        response = await client.delete("/api/workflows/definitions/wfd_1")
+        status, body = response.status, await _body(response)
+
+    _assert_not_owner_refused(status, body, "DELETE /api/workflows/definitions/{ref}")
+    assert service.removed is not None, "owner's removal never landed"
 
 
 async def test_owner_can_promote_a_run() -> None:
