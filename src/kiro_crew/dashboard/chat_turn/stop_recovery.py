@@ -149,6 +149,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 turn,
                 gn.GATEWAY_TURN_STALLED_GIVE_UP_TEXT,
                 notice=gn.GATEWAY_NOTICE_TURN_STALLED_GIVE_UP,
+                invites_retry=True,
             )
         return _Flow.END
 
@@ -211,6 +212,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 turn,
                 gn.GATEWAY_TOOL_STALLED_GIVE_UP_TEXT,
                 notice=gn.GATEWAY_NOTICE_TOOL_STALLED_GIVE_UP,
+                invites_retry=True,
             )
         return _Flow.END
 
@@ -376,6 +378,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                     f"The agent process this chat shares kept restarting{_rc_suffix}"
                     " — please retry.",
                     notice=gn.GATEWAY_NOTICE_SHARED_RUNTIME_RESTARTING,
+                    invites_retry=True,
                     **_rc_args,
                 )
                 turn.died_notice = (
@@ -387,6 +390,7 @@ async def _turn_stop_recovery(turn: _ChatTurn) -> Literal[_Flow.END] | None:
                 turn,
                 f"⟳ Connection lost{_rc_suffix} — please retry.",
                 notice=gn.GATEWAY_NOTICE_CONNECTION_LOST_GIVE_UP,
+                invites_retry=True,
                 **_rc_args,
             )
             # No bell here: this arm runs only for a NESTED turn

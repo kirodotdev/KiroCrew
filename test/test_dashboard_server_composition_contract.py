@@ -402,7 +402,7 @@ _LAZY_IMPORTS = {
     "kiro_crew.connections.warm": "scavenge_warm_mint_artifacts shutdown_warm_mint",
     "kiro_crew.crew_log": "crew_log_emit",
     "kiro_crew.edition_locks": "local_enable_locked",
-    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances tailnet_direct_listener",
+    "kiro_crew.dashboard": "crew_mode_migration display_verdicts handlers_instances restart_resume tailnet_direct_listener",
     "kiro_crew.dashboard.chat": "_run_chat",
     "kiro_crew.dashboard.enterprise_gate_middleware": (
         "enterprise_gate_middleware_for enterprise_login_source install_enterprise_gate"
@@ -485,7 +485,7 @@ def test_the_lazy_imports_stay_inside_the_functions_that_need_them() -> None:
                     for alias in node.names:
                         local.setdefault(alias.asname or alias.name, set()).add(alias.name)
     assert local == {name: {module} for name, module in expected.items()}
-    assert len(expected) == 129
+    assert len(expected) == 130
 
 
 def test_a_star_import_carries_the_moved_public_names(tmp_path: Path) -> None:

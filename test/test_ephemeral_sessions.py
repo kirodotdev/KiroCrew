@@ -167,6 +167,7 @@ class TestHistoryPersistence:
             "memory_mode": "incognito",
             "model": "",
             "autocompact_pct": None,
+            "approval_mode_seen": "normal",
             "tab_id": slot._tab_id,
         }
         assert "memory_store" not in meta

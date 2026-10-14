@@ -128,6 +128,10 @@ describe('isSystemNoticeRow', () => {
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'compaction' } }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { kind: 'session_reload' }))).toBe(true)
     expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'session_reload' } }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { kind: 'approval_mode_dropped' }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'approval_mode_dropped' } }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { kind: 'auto_resume_paused' }))).toBe(true)
+    expect(isSystemNoticeRow(msg('assistant', { meta: { kind: 'auto_resume_paused' } }))).toBe(true)
   })
 
   it('never matches an untagged assistant row (even with compaction-shaped text), a tagged non-assistant row, or an unknown kind', () => {
@@ -312,6 +316,19 @@ describe('registry resolution', () => {
     expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="compaction-card"]')).toBeNull()
     expect(screen.getByText('Reloading session: relaunching the agent process.')).toBeInTheDocument()
+  })
+
+  it('SystemNoticeRow routes the two restart-resume notices to NoticeCard as well', () => {
+    // Backend kinds `approval_mode_dropped` and `auto_resume_paused`: no card of
+    // their own, so the unknown-kind fallback must draw them, not CompactionCard.
+    for (const kind of ['approval_mode_dropped', 'auto_resume_paused']) {
+      const notice = msg('assistant', { content: `notice ${kind}`, meta: { kind } })
+      const { container, unmount } = render(<SystemNoticeRow message={notice} />)
+      expect(container.querySelector('[data-testid="notice-card"]')).not.toBeNull()
+      expect(container.querySelector('[data-testid="compaction-card"]')).toBeNull()
+      expect(screen.getByText(`notice ${kind}`)).toBeInTheDocument()
+      unmount()
+    }
   })
 
   it('renders the card, not markdown prose, through the row set', () => {

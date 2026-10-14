@@ -450,6 +450,15 @@ class SessionLifecycleState:
     # Stop on a key that is idle for good still records nothing and the record
     # dict still grows only with sessions that exist.
     replay_gaps: dict[str, "_ReplayGap"] = field(default_factory=dict)
+    # Canonical key -> automatic resumes armed for it (``restart_resume``, one per
+    # chat). The chat has no live session while a resume waits -- a restored one
+    # before its first turn, or one whose failed turn tore its session down -- so
+    # a Stop there would record nothing and the pass would resume work the person
+    # refused. While a key is here, :meth:`SessionLifecycleService.note_stop`
+    # records the Stop anyway; the pass reads ``stop_generation`` when it arms
+    # and again before it dispatches. Disarmed when the resume dispatches or
+    # stands down; unlike a replay gap, nothing waits on it.
+    armed_resumes: dict[str, int] = field(default_factory=dict)
     # Canonical key -> tasks whose held turn permit died with a session that
     # ``reset`` popped. ``release`` is key-only, so once a woken waiter has put a
     # successor under the key, the torn-down turn's own late release would land
@@ -679,6 +688,8 @@ class SessionLifecycleService:
     stop_generation = _turn_stop.stop_generation
     _stop_bucket = _turn_stop._stop_bucket
     note_stop = _turn_stop.note_stop
+    arm_resume = _turn_stop.arm_resume
+    disarm_resume = _turn_stop.disarm_resume
     open_replay_gap = _turn_stop.open_replay_gap
     close_replay_gap = _turn_stop.close_replay_gap
     _discard_replay_gap = _turn_stop._discard_replay_gap

@@ -196,6 +196,21 @@ const RESUME_KEY = {
   tool_stalled_give_up: 'pages.chat.errorCard.retry_tool_stalled',
 } as const satisfies Partial<Record<GatewayNoticeToken, string>>
 
+/**
+ * Settled copy for a terminal give-up row once the gateway's own automatic
+ * resume has picked its turn back up (rfc-restart-resume): the row still records
+ * what happened, but no longer tells the reader to retry. Read by
+ * `settledProseFor` only; the resolver never settles a row on its own.
+ */
+const SETTLED_KEY = {
+  transient_give_up: 'pages.chat.errorCard.settled_connection_unstable',
+  connection_lost_give_up: 'pages.chat.errorCard.settled_connection_lost',
+  session_busy_give_up: 'pages.chat.errorCard.settled_session_busy',
+  turn_stalled_give_up: 'pages.chat.errorCard.settled_turn_stalled',
+  tool_stalled_give_up: 'pages.chat.errorCard.settled_tool_stalled',
+  shared_runtime_restarting: 'pages.chat.errorCard.settled_shared_process',
+} as const satisfies Partial<Record<GatewayNoticeToken, string>>
+
 const RESTORED_KEY = 'pages.chat.transientNotice.restored'
 const INTERRUPTED_KEY = 'pages.chat.transientNotice.interrupted'
 const BACKEND_HICCUP_RESUME_KEY = 'pages.chat.errorCard.retry_backend_hiccup'
@@ -573,4 +588,18 @@ export function resolveGatewayNotice(
 export function resumeProseFor(content: string): string | null {
   const shape = legacyShape(content)
   return shape ? (resumeTextOf(shape) ?? null) : null
+}
+
+/**
+ * Settled copy for a terminal give-up row the gateway's own automatic resume has
+ * picked back up, or `null` for a row whose words carry no retry instruction.
+ * Resolved by token when the row carries one (a localized gateway-notice row
+ * reaches `ErrorCard` as its localized text) and by the legacy wire table
+ * otherwise, so this and `resumeProseFor` read one table. The caller
+ * (`settledProse` in `ErrorCard`) establishes that a continuation followed.
+ */
+export function settledProseFor(m: ChatMessage): string | null {
+  const shape = shapeOf(m)
+  if (!shape || !(shape.token in SETTLED_KEY)) return null
+  return i18nT(SETTLED_KEY[shape.token as keyof typeof SETTLED_KEY], copyVars(shape.args))
 }
