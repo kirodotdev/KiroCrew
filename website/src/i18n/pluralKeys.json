@@ -301,6 +301,8 @@
   "pages.settings.chatPanel.follow_default_model_chats",
   "pages.settings.chatPanel.follow_default_more",
   "pages.membersPage.goals_heartbeat_per_day",
+  "components.sendFolderToInstanceSubmenu.skipped_private",
+  "components.sendFolderToInstanceSubmenu.transcript_only_hint",
   "appSdk.newMessagesDivider.new_messages",
   "pages.chatPage.jump_to_new",
   "pages.contextBreakdown.list_count",

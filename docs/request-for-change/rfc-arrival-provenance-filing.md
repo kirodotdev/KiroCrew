@@ -108,6 +108,24 @@ peer.
 nothing else. It confers no authority, is never read as an identity, and is never
 compared against a credential.
 
+**Amendment (sending a folder).** A bundle may carry an optional `folder` field: the
+NAME of the folder the session was filed in on the sender, set only when the
+sender asked for it (`send-session` with `with_folder: true`, which the folder
+menu's "Send a copy to" uses). It adds a third level below the sender:
+
+| Folder | Name | Parent |
+|---|---|---|
+| Sender's folder | `<folder>` | `from <sender>` (or `Imported` when there is no sender) |
+
+It follows every rule above: a label from an untrusted bundle that names a row and
+confers nothing, redacted on both sides like `origin`, clipped the way the store
+writes a name, never filed for an app-scoped arrival, and resolved in the same
+single transaction. It is optional in the ceiling: a store with room for the
+provenance pair but not a third row files the session in `from <sender>`, so a
+folder-carrying arrival never lands less filed than one without. A malformed value
+is dropped, not refused. A bundle without the field files exactly as before, and
+a sender that does not ask emits a byte-identical bundle.
+
 Folder names are ASCII English literals, not translated strings. A folder created
 here becomes an ordinary sidebar row the person can rename, reparent or delete,
 and a name re-derived per render from the active locale would fight that rename

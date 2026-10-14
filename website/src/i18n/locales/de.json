@@ -10517,6 +10517,20 @@
         "tool_search_description": "Zurückgestellte MCP-Tool-Spezifikationen bei Bedarf laden."
       }
     },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "Die Kopien landen auf der Crew unter Imported › from (Name dieser Instanz) › (Name dieses Ordners).",
+      "nothing_to_send": "Keine Sitzungen zum Senden",
+      "progress": "{{done}} von {{total}}",
+      "resend_all": "Ein erneuter Klick sendet alle {{total}} noch einmal (Duplikate)",
+      "retry_failed": "Klicken, um die {{count}} fehlgeschlagenen erneut zu senden",
+      "sent_all": "Gesendet: {{count}}",
+      "sent_some": "{{sent}} von {{total}} gesendet",
+      "sent_transcript_only": "Gesendet: {{sent}} ({{count}} nur Transkript)",
+      "skipped_private_one": "{{count}} Inkognito- oder temporäre Sitzung wird nicht gesendet",
+      "skipped_private_other": "{{count}} Inkognito- oder temporäre Sitzungen werden nicht gesendet",
+      "transcript_only_hint_one": "Diese Crew konnte den vollständigen Gesprächskontext nicht wiederherstellen; {{count}} Kopie setzt nur auf dem Transkript fort.",
+      "transcript_only_hint_other": "Diese Crew konnte den vollständigen Gesprächskontext nicht wiederherstellen; {{count}} Kopien setzen nur auf dem Transkript fort."
+    },
     "runYourselfCard": {
       "copy_failed": "Kopieren ging nicht, also markiere den Befehl und kopiere ihn von Hand.",
       "no_terminal": "Hier lassen sich keine Befehle ausführen, also kopiere ihn in die Terminal-App auf deinem Computer.",
