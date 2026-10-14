@@ -126,8 +126,11 @@ def _permission(child: str, request_id: int) -> dict:
 def test_codex_declares_native_subagent_sessions() -> None:
     caps = CodexHarness().client_capabilities
     assert caps["subagents"] == {}
+    # It also opts into native compaction frames (test_codex_compaction).
+    assert caps["session"] == {"compaction": {}}
     # Everything else is the shared declaration, unchanged.
-    assert {k: v for k, v in caps.items() if k != "subagents"} == ACP_CLIENT_CAPABILITIES
+    rest = {k: v for k, v in caps.items() if k not in ("subagents", "session")}
+    assert rest == ACP_CLIENT_CAPABILITIES
     # Not the JetBrains AIR private opt-in, which turns on the rest of AIR too.
     assert "_meta" not in caps
 
