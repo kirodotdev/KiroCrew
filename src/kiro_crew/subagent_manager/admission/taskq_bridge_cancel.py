@@ -9,14 +9,15 @@ binds it under the same name in ``admission/taskq_bridge.py``, so it reaches the
 reaches every call made through ``self`` or the class.
 
 This module uses no manager field directly: it reaches the store through
-``taskq_store``. Writes: none. Reads: none.
+``taskq_store``, except that :func:`taskq_post_cancel_queued` reads ``_retained_claims``.
+Writes: none. Reads: ``_retained_claims``.
 """
 
 from __future__ import annotations
 
 import asyncio as _asyncio
 import logging as _logging
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Collection, Sequence
 
 if TYPE_CHECKING:
     # Typing only: the facade imports this module at run time.
@@ -33,7 +34,7 @@ _STATE_READ_BACKOFF_SECS = 0.2
 
 
 async def taskq_cancel_queued_async(
-    self: _TaskqBridgeMixin, agent_id: str, *, allow_admitted: bool = True
+    self: _TaskqBridgeMixin, agent_id: str, *, allow_admitted: bool = True, retained: bool = False
 ) -> dict[str, Any] | None:
     """:meth:`taskq_cancel_queued` run whole on the writer thread.
 
@@ -54,7 +55,9 @@ async def taskq_cancel_queued_async(
     store = self.taskq_store()
     if store is None:
         return None
-    return await store.run(self.taskq_cancel_queued, agent_id, allow_admitted=allow_admitted)
+    return await store.run(
+        self.taskq_cancel_queued, agent_id, allow_admitted=allow_admitted, retained=retained
+    )
 
 
 async def taskq_row_is_claimed_unstarted_async(self: _TaskqBridgeMixin, agent_id: str) -> bool:
@@ -103,14 +106,21 @@ async def taskq_row_is_claimed_unstarted_async(self: _TaskqBridgeMixin, agent_id
 
 
 def taskq_cancel_queued(
-    self: _TaskqBridgeMixin, agent_id: str, *, allow_admitted: bool = True
+    self: _TaskqBridgeMixin, agent_id: str, *, allow_admitted: bool = True, retained: bool = False
 ) -> dict[str, Any] | None:
     """Cancel a persisted row that has not started; returns its params for the report.
 
+    *retained* says *agent_id* is a claim held in ``_retained_claims``, read by
+    the caller on the loop: such a claim has no run and no claimer in flight,
+    so with ``allow_admitted`` its ``starting`` row is this process's unstarted
+    work exactly like a retained ``admitted`` one, and is cancelled too.
+
     ``allow_admitted=False`` refuses a row that has been CLAIMED but not started.
     Stop-all leaves it True: the user pressed Stop, and a claimed-not-started row is
-    work they asked to end; the claimer's post-claim re-read (``claim_and_start``)
-    refuses a row cancelled here. A parent-end teardown passes False: a row in that
+    work they asked to end; the claimer's ``admitted -> starting`` compare-and-set
+    (``claim_and_start``) is refused for a row cancelled here, and a row it has
+    already moved is ``starting``, which this path leaves to the live reap. A
+    parent-end teardown passes False: a row in that
     window may be carrying a decision a person made (a spawn approval is the visible
     case), which a teardown has no standing to revoke on their behalf. Refusing
     leaves the row to the incarnation that owns it.
@@ -121,8 +131,8 @@ def taskq_cancel_queued(
     so a row a drain claimed and started in between answers None here and the
     caller falls through to the live reap -- never a ``cancelled`` row with a
     running spawn under it. A row claimed but not started (``admitted``) is
-    still this path's: the spawn re-reads the state before it registers and
-    stops there.
+    still this path's: the spawn's own start write is fenced on the
+    generation this cancel bumps, so it is refused and stops there.
 
     The cancel is deliberately NOT fenced on the read's generation. A claim, a
     requeue or a wake can bump the generation while the row stays unstarted
@@ -145,6 +155,8 @@ def taskq_cancel_queued(
         unstarted = _taskq.CLAIMABLE
         if allow_admitted:
             unstarted = unstarted | frozenset({_taskq.ADMITTED})
+            if retained:
+                unstarted = unstarted | frozenset({_taskq.STARTING})
         if rec.state not in unstarted:
             return None
         previous = store.cancel(agent_id, reason="user_stop", only_from=unstarted)
@@ -159,7 +171,7 @@ def taskq_cancel_queued(
 
 
 def taskq_cancel_queued_each(
-    self: _TaskqBridgeMixin, agent_ids: Sequence[str]
+    self: _TaskqBridgeMixin, agent_ids: Sequence[str], retained_ids: Collection[str] = ()
 ) -> dict[str, dict[str, Any] | None | Exception]:
     """:meth:`taskq_cancel_queued` for every id, as ONE call: a bulk stop's store phase.
 
@@ -167,11 +179,15 @@ def taskq_cancel_queued_each(
     None for one that was not, or the exception its cancel raised. Caught per
     id, so one row's error neither cancels nor skips the rest -- the caller
     reports the rows that were cancelled and then raises the error.
+    *retained_ids* are the ids held in ``_retained_claims``, snapshotted on
+    the loop by :meth:`taskq_post_cancel_queued`.
     """
     outcomes: dict[str, dict[str, Any] | None | Exception] = {}
     for agent_id in agent_ids:
         try:
-            outcomes[agent_id] = self.taskq_cancel_queued(agent_id)
+            outcomes[agent_id] = self.taskq_cancel_queued(
+                agent_id, retained=agent_id in retained_ids
+            )
         except Exception as exc:  # noqa: BLE001 - handed back per row, raised by the caller
             outcomes[agent_id] = exc
     return outcomes
@@ -189,15 +205,18 @@ def taskq_post_cancel_queued(
     call returns, so the caller may drop the rows' window entries before it
     awaits the answer. Inline, the pump's own store calls are inline too and
     are not ordered behind a writer-thread job, so the cancels have to have
-    landed before this returns.
+    landed before this returns. Which ids are retained claims is read here,
+    on the caller's thread, and handed to the job.
     """
     store = self.taskq_store()
     if store is None or not agent_ids:
         return {}
+    held = self._manager._retained_claims
+    retained_ids = frozenset(agent_id for agent_id in agent_ids if agent_id in held)
     try:
         _asyncio.get_running_loop()
     except RuntimeError:
-        return self.taskq_cancel_queued_each(agent_ids)
+        return self.taskq_cancel_queued_each(agent_ids, retained_ids)
     if not type(self).pump_off_loop:
-        return self.taskq_cancel_queued_each(agent_ids)
-    return store.post(self.taskq_cancel_queued_each, list(agent_ids))
+        return self.taskq_cancel_queued_each(agent_ids, retained_ids)
+    return store.post(self.taskq_cancel_queued_each, list(agent_ids), retained_ids)

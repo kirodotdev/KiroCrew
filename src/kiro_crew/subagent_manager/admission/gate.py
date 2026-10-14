@@ -1561,8 +1561,12 @@ class _GateMixin(ManagerComponent):
             self._manager._admission.taskq_settle(info)
         else:
             # Registered and handed to a run (or to the approval prompt, which
-            # is part of starting): admitted -> starting. ``running`` is written
-            # by the run itself at its first stream event addressed to its session.
+            # is part of starting): admitted -> starting. A row the off-loop
+            # pump claimed is ``starting`` already (``claim_and_start`` took
+            # that write as its compare-and-set), and ``advance`` writes
+            # nothing for it; an inline claim writes it here. ``running`` is
+            # written by the run itself at its first stream event addressed to
+            # its session.
             self._manager._admission.taskq_mark(info, "starting")
             # Nested: a parent blocked in spawn_sub_agents yields its lane slot
             # for this child (taskq.waits, W3); an event-loop caller awaits the

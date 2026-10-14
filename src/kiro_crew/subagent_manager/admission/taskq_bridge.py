@@ -466,6 +466,25 @@ class _TaskqBridgeMixin(ManagerComponent):
             store, f"fail {agent_id}", store.finish, agent_id, _taskq.FAILED, error=reason
         )
 
+    @staticmethod
+    def _release_taken_start(store: "_taskq.TaskStore", agent_id: str, generation: int) -> bool:
+        """Give back a start the claimer took but did not carry to registration.
+
+        One generation-fenced ``starting -> retry_wait`` write with no due time,
+        so the row is claimable again at once. A row that has moved on (cancelled,
+        requeued, or settled by another owner) is refused by the fence or the
+        transition table and left alone. Safe on the writer thread.
+        """
+        from kiro_crew import taskq as _taskq
+
+        return store.transition(
+            agent_id,
+            _taskq.RETRY_WAIT,
+            generation=generation,
+            next_run_at=None,
+            detail={"released": "start not carried to registration"},
+        )
+
     def taskq_settle(self, info: SubagentInfo, *, row_settled: bool = False) -> None:
         """Write the run's terminal state from its record; fenced by generation.
 
@@ -733,6 +752,8 @@ class _TaskqBridgeMixin(ManagerComponent):
     taskq_chip_overflow_async = _reads.taskq_chip_overflow_async
     taskq_pending_ids_for = _reads.taskq_pending_ids_for
     taskq_pending_ids_for_async = _reads.taskq_pending_ids_for_async
+    _retained_claim_ids_for = _reads._retained_claim_ids_for
+    _retained_starting_ids = staticmethod(_reads._retained_starting_ids)
     _live_run_ids = _reads._live_run_ids
     taskq_queued_run_async = _reads.taskq_queued_run_async
     taskq_queued_runs_async = _reads.taskq_queued_runs_async

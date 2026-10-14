@@ -13,14 +13,15 @@ reaches every call made through ``self`` or the class. The functions with no ``s
 module's store-side helpers, not members.
 
 The manager fields this module uses. Writes: ``_queued_listing_partial``. Reads:
-``_admitting_waiting``, ``_agents``, ``_queue``, ``_queue_wait``, ``_undurable_in_dispatch``.
+``_admitting_waiting``, ``_agents``, ``_queue``, ``_queue_wait``, ``_retained_claims``,
+``_undurable_in_dispatch``.
 """
 
 from __future__ import annotations
 
 import functools as _functools
 import logging as _logging
-from typing import TYPE_CHECKING, Any, Mapping
+from typing import TYPE_CHECKING, Any, Collection, Mapping, Sequence
 
 from kiro_crew.subagent_wait_reasons import RESUMING_AFTER_RESTART, RESUMING_RETRY
 
@@ -314,26 +315,64 @@ def taskq_pending_ids_for(self: _TaskqBridgeMixin, parent_session_key: str) -> l
     Waiting means accepted with no run yet, the definition the overflow
     count uses: claimable rows, and ``admitted`` rows nothing has
     registered -- a claim the pump is still awaiting, or a retained one.
-    Stop all cancels exactly these ids, and the claimer's post-claim
-    re-read refuses a row cancelled here, so a claimed row never starts
-    after the stop.
+    Stop all cancels exactly these ids, and the claimer's generation-fenced
+    ``admitted -> starting`` write is refused for a row cancelled here, so a
+    claimed row never starts after the stop. A claim retained across a
+    store outage whose row is ``starting`` (``_retained_claims``) is waiting
+    work too, with no run and no claimer in flight, so its id is named here
+    as well.
     """
     from kiro_crew import taskq as _taskq
 
     store = self.taskq_store()
     if store is None or not parent_session_key:
         return []
+    exclude = self.taskq_excluded_ids()
+    registered = list(self._manager._agents)
     try:
         rows = store.list_pending(
             _taskq.KIND_SUBAGENT,
             session_key=parent_session_key,
-            exclude_ids=self.taskq_excluded_ids(),
+            exclude_ids=exclude,
             include_admitted=True,
-            exclude_admitted_ids=list(self._manager._agents),
+            exclude_admitted_ids=registered,
         )
+        ids = [r.id for r in rows]
+        retained = self._retained_claim_ids_for(parent_session_key)
+        if retained:
+            ids += self._retained_starting_ids(store, retained, [*ids, *exclude, *registered])
     except _taskq.TaskStoreUnavailable:
         return []
-    return [r.id for r in rows]
+    return ids
+
+
+def _retained_claim_ids_for(self: _TaskqBridgeMixin, parent_session_key: str) -> list[str]:
+    """Ids of *parent_session_key*'s claims held in ``_retained_claims``.
+
+    Loop-owned state: read on the loop, and handed to the store read."""
+    return [
+        agent_id
+        for agent_id, entry in list(self._manager._retained_claims.items())
+        if entry[0].parent_session_key == parent_session_key
+    ]
+
+
+def _retained_starting_ids(
+    store: "_taskq.TaskStore", retained_ids: Sequence[str], skip: Collection[str]
+) -> list[str]:
+    """Each of *retained_ids* not in *skip* whose row is ``starting``.
+
+    A store job that reads no manager state: the ids come from the loop."""
+    from kiro_crew import taskq as _taskq
+
+    found: list[str] = []
+    for agent_id in retained_ids:
+        if agent_id in skip:
+            continue
+        rec = store.get(agent_id)
+        if rec is not None and rec.state == _taskq.STARTING:
+            found.append(agent_id)
+    return found
 
 
 async def taskq_pending_ids_for_async(
@@ -373,11 +412,23 @@ async def taskq_pending_ids_for_async(
             include_admitted=not include_window,
             exclude_admitted_ids=registered,
         )
+        ids = [r.id for r in rows]
+        # The default reading names a retained claim's ``starting`` row too.
+        # The retained ids are read here, on the loop, after the pending
+        # read, and handed to the store job.
+        retained = [] if include_window else self._retained_claim_ids_for(parent_session_key)
+        if retained:
+            ids += await store.run(
+                self._retained_starting_ids,
+                store,
+                retained,
+                [*ids, *exclude, *registered, *self._manager._agents],
+            )
     except _taskq.TaskStoreUnavailable:
         if include_window:
             raise
         return []
-    return [r.id for r in rows]
+    return ids
 
 
 def _live_run_ids(self: _TaskqBridgeMixin) -> list[str]:

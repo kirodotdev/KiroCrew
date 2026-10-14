@@ -3306,17 +3306,31 @@ async def test_a_raise_inside_reenter_releases_the_reservation(
     point = admission_mod.ClaimPoint("boom1")
     mgr._running_count += 1  # what spawn_impl does when it hands back a ClaimPoint
 
-    def _reenter(_claimed):
+    seen: dict[str, int] = {}
+
+    def _reenter(claimed):
+        seen["generation"] = int(claimed[0])
         raise RuntimeError("unwrapped agents-dir scan")
 
     with pytest.raises(RuntimeError):
         await mgr._admission.claim_and_start(point, _reenter)
     assert mgr._running_count == before, "the reservation is released when re-entry raises"
     assert "boom1" not in mgr._agents
-    # The claim itself landed; the row is leased to this incarnation and the
-    # pump's next claim keeps that lease (not lost, not a phantom run).
-    assert store.state_of("boom1") == _taskq.ADMITTED
-    assert mgr._admission.taskq_lease_is_ours("boom1")
+    # The claim landed and the store took the start (``admitted -> starting``)
+    # before the re-entry raised. Nothing runs under that row, so the claimer
+    # releases it by one fenced ``starting -> retry_wait`` write at the claim's
+    # generation, unleased and claimable at once: the next pump pass retries
+    # the accepted work (not lost, not a phantom run, not ended).
+    released = store.get("boom1")
+    assert released is not None and released.state == _taskq.RETRY_WAIT
+    assert released.generation == seen["generation"]
+    assert released.lease_owner is None and released.next_run_at is None
+    transitions = [e.data for e in store.events("boom1") if e.kind == "transition"]
+    assert not any(t.get("to") == _taskq.FAILED for t in transitions)
+    assert (transitions[-1].get("from"), transitions[-1].get("to")) == (
+        _taskq.STARTING,
+        _taskq.RETRY_WAIT,
+    )
     # The pump path swallows the same raise without leaking either.
     monkeypatch.setattr(
         mgr,
