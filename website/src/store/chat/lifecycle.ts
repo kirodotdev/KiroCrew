@@ -201,7 +201,7 @@ export const PENDING_OPEN_LEASE_MS = 10_000
 
 export const resumeFromHistory = createAsyncThunk<
   { ok: boolean; key: string; surface: string; nextBefore: number; messages: ReturnType<typeof filterMessages>; hasMore: boolean; total: number; folderId: string },
-  { key: string; title: string },
+  { key: string; title: string; leaveSplit?: boolean },
   { pendingMeta: { startedAt: number }; fulfilledMeta: Required<OriginMeta> }
 >(
   'chat/resumeFromHistory',
@@ -212,7 +212,7 @@ export const resumeFromHistory = createAsyncThunk<
     const origin = captureForkOrigin(getState() as RootState)
     const d = await api.resumeChatSlot(key, title)
     if (d.ok) {
-      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}) }))
+      dispatch(addSlotOptimistic({ key: d.key, title: title || d.key, messages: 0, running: false, memory_mode: d.memory_mode, mode: d.mode, surface: d.surface ?? d.mode, pending_approval: false, waiting_for_input: false, last_activity_ts: undefined, ...(d.folder_id ? { folder_id: d.folder_id } : {}), ...(d.history_key ? { history_key: d.history_key } : {}) }))
       dispatch(updateSlot({ key: d.key, mode: d.mode, surface: d.surface ?? d.mode }))
     }
     // Without a cursor this response cannot be paged, so do not advertise more:
@@ -651,7 +651,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         const origin = entry?.origin ?? originFromMeta(state, action.meta)
         if (!latest || !forkMayOpen({ chat: state }, origin)) return
         noteRequestActivation(state, origin)
-        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot }
+        state.lastResumeActivation = { requestId: action.meta.requestId, replaced: state.activeSlot, ...(action.meta.arg.leaveSplit ? { leaveSplit: true } : {}) }
         state.slotHistory = state.slotHistory.filter(k => k !== action.payload.key)
         if (state.activeSlot) {
           state.slotActivity[state.activeSlot] = { toolLog: state.toolLog, subagents: state.subagents, activityTab: state.activityTab, activityOpen: state.activityOpen }

@@ -192,6 +192,16 @@ export function useActiveSlotState({
     seenActivationRef.current = lastCreatedActivation
     if (lastCreatedActivation) setSplitMode(false)
   }, [lastCreatedActivation])
+  // A resume whose caller asked for it (the reopen-closed-session shortcut)
+  // leaves Split View on the same rule, once it has taken the view: the grid
+  // would otherwise keep showing its own panes and the reopened chat nowhere.
+  const lastResumeActivation = useAppSelector(s => s.chat.lastResumeActivation)
+  const seenResumeRef = useRef(lastResumeActivation)
+  useEffect(() => {
+    if (lastResumeActivation === seenResumeRef.current) return
+    seenResumeRef.current = lastResumeActivation
+    if (lastResumeActivation?.leaveSplit) setSplitMode(false)
+  }, [lastResumeActivation])
   // A crew session opens as a window over the pane (see CrewChatWindow); a
   // local session taking focus closes it. Only a MOVE between two local
   // sessions counts, so the reload restore (none -> restored) keeps it open.
