@@ -10084,6 +10084,18 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "사본은 크루의 Imported › from (이 인스턴스 이름) › (이 폴더 이름) 아래에 도착합니다.",
+      "nothing_to_send": "보낼 세션이 없습니다",
+      "progress": "{{done}} / {{total}}",
+      "resend_all": "다시 클릭하면 {{total}}개 모두를 다시 보냅니다 (중복)",
+      "retry_failed": "클릭하면 실패한 {{count}}개를 다시 보냅니다",
+      "sent_all": "전송됨: {{count}}",
+      "sent_some": "{{total}}개 중 {{sent}}개 전송됨",
+      "sent_transcript_only": "전송됨: {{sent}}({{count}}개는 대화 기록만)",
+      "skipped_private_other": "시크릿 또는 임시 세션 {{count}}개는 전송되지 않습니다",
+      "transcript_only_hint_other": "해당 크루가 전체 대화 컨텍스트를 복원할 수 없어 이 사본 {{count}}개는 대화 기록만으로 이어집니다."
     }
   },
   "hooks": {

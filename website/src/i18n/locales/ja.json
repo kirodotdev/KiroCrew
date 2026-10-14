@@ -10084,6 +10084,18 @@
         "tool_search_label": "ツール検索",
         "tool_search_description": "保留中の MCP ツール仕様を必要に応じて読み込みます。"
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "lands_in_folder": "コピーはクルー上の Imported › from (このインスタンス名) › (このフォルダー名) に届きます。",
+      "nothing_to_send": "送信するセッションがありません",
+      "progress": "{{done}} / {{total}}",
+      "resend_all": "もう一度クリックすると {{total}} 件すべてを再送信します (重複します)",
+      "retry_failed": "クリックすると失敗した {{count}} 件を再送信します",
+      "sent_all": "送信しました: {{count}}",
+      "sent_some": "{{total}} 件中 {{sent}} 件を送信しました",
+      "sent_transcript_only": "送信しました: {{sent}}（{{count}} 件は記録のみ）",
+      "skipped_private_other": "シークレットまたは一時セッション {{count}} 件は送信されません",
+      "transcript_only_hint_other": "そのクルーが会話コンテキスト全体を復元できなかったため、これらの {{count}} 件のコピーは記録のみから再開します。"
     }
   },
   "hooks": {
