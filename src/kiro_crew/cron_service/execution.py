@@ -171,6 +171,24 @@ def run_parks_one_shot(job: CronJob) -> bool:
     return not job.run_never_started or job.refusal_cannot_clear
 
 
+def auto_pause_failed_one_shot(job: CronJob, last_status: str | None) -> None:
+    """Auto-pause ``job`` when this run is a failed ``delete_after_run`` one-shot.
+
+    The one copy of the rule. A one-shot whose run failed (``last_status`` is
+    ``error``: an error, a timeout, a cancel or a reap) is kept and auto-paused
+    instead of consumed. The pause is execution-owned, so ``apply_run_record``
+    persists it under the generation fence. A fire-time denial and a run whose
+    payload never started are not failed runs and keep their own handling. A job
+    already auto-paused is left alone, so the transition is audited once.
+    """
+    if not job.delete_after_run or last_status != "error" or job.auto_paused:
+        return
+    if job.fire_time_denied or job.run_never_started:
+        return
+    job.enabled, job.auto_paused = False, True
+    job._audit_pause_change("auto_paused")
+
+
 def interruption_note(*, dispatched: bool) -> str:
     """The history row's error text for a run the cron service stopped.
 
