@@ -582,6 +582,99 @@ async def api_monitor_contract(request: web.Request) -> web.Response:
     return web.json_response(monitor_frontend_contract())
 
 
+def get_goal_draft_store() -> Any:
+    """Resolve the store lazily so dashboard boot does not import config through it."""
+
+    from kiro_crew.goal_drafts import get_goal_draft_store as resolve_store
+
+    return resolve_store()
+
+
+async def api_goal_draft_get(request: web.Request) -> web.Response:
+    """GET /api/autonudge/draft/slot/{slot_key} — canonical goal form draft."""
+
+    denied = await _require_monitor_owner(request, "goal_draft_get")
+    if denied is not None:
+        return denied
+    try:
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().get,
+            request.match_info["slot_key"],
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not read goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
+
+
+async def api_goal_draft_put(request: web.Request) -> web.Response:
+    """PUT /api/autonudge/draft/slot/{slot_key} — reconcile one goal draft.
+
+    ``draft: null`` writes a tombstone rather than deleting the timestamp, so a
+    stale browser-local value cannot resurrect a goal cleared on another device.
+    Each write compares ``base_updated_at`` with the canonical snapshot before
+    receiving a server-monotonic timestamp, and a stale base whose content the
+    record already holds answers that record.
+    """
+
+    from kiro_crew.dashboard.handlers._shared import read_bounded_json
+    from kiro_crew.goal_drafts import GoalDraftConflict
+
+    denied = await _require_monitor_owner(request, "goal_draft_put")
+    if denied is not None:
+        return denied
+    body, body_err = await read_bounded_json(request)
+    if body_err is not None:
+        return body_err
+    assert body is not None
+    try:
+        if "draft" not in body:
+            raise ValueError("draft is required")
+        draft = body["draft"]
+        if draft is not None and not isinstance(draft, dict):
+            raise ValueError("draft must be an object or null")
+        if draft is not None:
+            required = ("message", "idle_secs", "max_cycles")
+            if any(field not in draft for field in required):
+                raise ValueError("draft must include message, idle_secs, and max_cycles")
+            if draft["message"] is None:
+                raise ValueError("draft message must not be null")
+        base_updated_at = body.get("base_updated_at")
+        if base_updated_at is None:
+            raise ValueError("base_updated_at is required")
+        snapshot = await asyncio.to_thread(
+            get_goal_draft_store().put,
+            request.match_info["slot_key"],
+            message=None if draft is None else draft["message"],
+            idle_secs=None if draft is None else draft["idle_secs"],
+            max_cycles=None if draft is None else draft["max_cycles"],
+            base_updated_at=base_updated_at,
+        )
+    except GoalDraftConflict as exc:
+        return web.json_response(
+            {
+                "error": "goal draft changed since it was loaded",
+                "code": "goal_draft_conflict",
+                "current": exc.current.to_public_dict(),
+            },
+            status=409,
+        )
+    except ValueError as exc:
+        return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+    except OSError:
+        logger.warning("Could not persist goal draft", exc_info=True)
+        return web.json_response(
+            {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+            status=503,
+        )
+    return web.json_response(snapshot.to_public_dict())
+
+
 async def api_autonudge_list(request: web.Request) -> web.Response:
     """GET /api/autonudge — list every loop, structured monitors included.
 
@@ -983,7 +1076,11 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
     """POST /api/autonudge — start or replace a loop on a slot.
 
     Body: { slot_key, message, idle_secs?, max_cycles?, max_runtime_secs?,
-            stop_sentinel_path?, gate?, banner? }
+            stop_sentinel_path?, gate?, banner?, draft_updated_at? }
+
+    ``draft_updated_at`` is the goal-draft version the form showed. A stored
+    draft newer than it with different content answers the draft PUT's 409
+    ``goal_draft_conflict`` and arms nothing.
 
     ``gate`` defaults to FALSE here: this route arms whatever the goal popover was
     given, and only ``monitor_start`` has the evidence to gate by default. Pass
@@ -1080,11 +1177,48 @@ async def api_autonudge_start(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": f"{exc.field}: {exc.message}", "code": "invalid_judge_spec"}, status=400
         )
+    slot_key = body.get("session_key") or body.get("slot_key") or ""
+    message = body.get("message") or ""
+    # The goal form names the draft version it showed. A goal another device saved
+    # since then is the same conflict a draft PUT answers; no version, no check.
+    draft_version = body.get("draft_updated_at")
+    if draft_version is not None:
+        if isinstance(draft_version, bool) or not isinstance(draft_version, int):
+            return web.json_response(
+                {"error": "draft_updated_at must be an integer", "code": "invalid_goal_draft"},
+                status=400,
+            )
+        try:
+            newer = await asyncio.to_thread(
+                get_goal_draft_store().superseding,
+                slot_key,
+                version=draft_version,
+                message=message,
+                idle_secs=idle_secs,
+                max_cycles=max_cycles,
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc), "code": "invalid_goal_draft"}, status=400)
+        except OSError:
+            logger.warning("Could not read goal draft", exc_info=True)
+            return web.json_response(
+                {"error": "goal draft storage is unavailable", "code": "goal_draft_unavailable"},
+                status=503,
+            )
+        if newer is not None:
+            return web.json_response(
+                {
+                    "error": "goal draft changed since it was loaded",
+                    "code": "goal_draft_conflict",
+                    "current": newer.to_public_dict(),
+                },
+                status=409,
+            )
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=state,
-        slot_key=(body.get("session_key") or body.get("slot_key") or ""),
-        message=(body.get("message") or ""),
+        slot_key=slot_key,
+        message=message,
         idle_secs=idle_secs,
         max_cycles=max_cycles,
         stop_sentinel_path=(body.get("stop_sentinel_path") or ""),

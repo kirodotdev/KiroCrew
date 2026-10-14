@@ -472,6 +472,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # empty at 0700 so the bind has a target from the first spawn.
     "browser-harness-ipc",
     "browser-profile",
+    # Goal drafts are created on first editor use. Precreate the directory so a
+    # sandbox launched earlier cannot see the later-created canonical prompt store.
+    "goal-drafts",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned
