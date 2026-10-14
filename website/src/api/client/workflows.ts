@@ -1,6 +1,6 @@
 /**
  * The dynamic-workflow engine (/api/workflows): the run list, definition
- * list/save/update/run, authoring from intent, and promoting a run to a
+ * list/save/update/remove/run, authoring from intent, and promoting a run to a
  * definition.
  */
 
@@ -32,6 +32,12 @@ export interface WorkflowDefinition {
   content_hash: string
   derived_from: WorkflowLineage | null
   revisions: WorkflowDefinitionRevision[]
+  /** Read-only, computed on every read and set only when not empty: this
+   *  workflow's own slug and id, in that order, when they do not reach it. A
+   *  removed workflow holds the ref, or another workflow answers to it first.
+   *  Every label offers a ref left out of it; with both listed, no ref
+   *  reaches it until its file is changed or deleted. */
+  shadowed_refs?: string[]
 }
 
 export interface WorkflowDefinitionWrite {
@@ -43,7 +49,7 @@ export interface WorkflowDefinitionWrite {
   derived_from?: WorkflowLineage | null
 }
 
-export function createWorkflowsEndpoints({ get, post, patch, j }: ClientTransport) {
+export function createWorkflowsEndpoints({ get, post, patch, del, j }: ClientTransport) {
   const engine = {
     /** Compact list of dynamic-workflow runs, newest first — the AUTHORITY for a
      *  run's status.
@@ -78,8 +84,26 @@ export function createWorkflowsEndpoints({ get, post, patch, j }: ClientTranspor
       }>,
     updateWorkflowDefinition: (
       workflowRef: string,
-      body: Omit<WorkflowDefinitionWrite, 'derived_from'> & { expected_revision: number },
+      body: Omit<WorkflowDefinitionWrite, 'derived_from'> & {
+        expected_revision: number
+        /** The id the editor shows: a ref that now reaches another workflow answers 409. */
+        expected_id?: string
+      },
     ) => patch(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}`, body).then(j) as Promise<{ ok: boolean; definition: WorkflowDefinition }>,
+    /** Owner-only. Tombstones the definition: it leaves every list and run
+     *  path, while its id still resolves as the parent of adapted workflows.
+     *  With `expectedId`, a ref that now reaches another workflow answers 409
+     *  and nothing is removed. */
+    removeWorkflowDefinition: (workflowRef: string, expectedId?: string) =>
+      del(
+        `/api/workflows/definitions/${encodeURIComponent(workflowRef)}${
+          expectedId ? `?expected_id=${encodeURIComponent(expectedId)}` : ''
+        }`,
+      ).then(j) as Promise<{
+        ok: boolean
+        id: string
+        removed_at: string
+      }>,
     runWorkflowDefinition: (workflowRef: string, input: string, args: Record<string, unknown> = {}) =>
       post(`/api/workflows/definitions/${encodeURIComponent(workflowRef)}/run`, { input, args }).then(j) as Promise<{ run_id: string; workflow_id: string; revision: number; slug: string }>,
   }
