@@ -79,3 +79,41 @@ def session_mcp_server_is_disabled(name: str, agent: str | None) -> bool:
     from kiro_crew.acp import session_mcp
 
     return session_mcp.session_mcp_server_is_disabled(name, agent)
+
+
+def mirrored_session_spec(
+    project: str, project_spec: dict[str, Any], user_spec: dict[str, Any] | None
+) -> dict[str, Any]:
+    """The spec a mirrored session consumes when a checkout spec and a user spec share a name.
+
+    ``acp.session_mcp._agent_spec_and_snapshot_for(mirrored_session=True)``'s
+    rule, applied to documents already read: the checkout is trusted to choose
+    MCP servers only when ``_project_mcp_trusted`` says so, and then the checkout
+    spec is consumed whole. Otherwise the USER spec is consumed with the
+    checkout spec's switch-off keys layered on (``_project_restrictions`` /
+    ``_with_restrictions``), and the checkout spec reduced to those keys when
+    there is no user spec. The stale-config fingerprint compares the document
+    this returns, so what the badge watches cannot drift from what the session
+    runs on.
+    """
+    from kiro_crew.acp import session_mcp
+
+    if session_mcp._project_mcp_trusted(project):
+        return project_spec
+    restrictions = session_mcp._project_restrictions(project_spec)
+    if user_spec is not None:
+        return session_mcp._with_restrictions(user_spec, restrictions)
+    return {**project_spec, "mcpServers": restrictions}
+
+
+def kas_project_spec_view(project_spec: dict[str, Any]) -> dict[str, Any]:
+    """The checkout spec KAS is handed when the user level does not declare the agent.
+
+    ``acp.harness.kas.resolve_projected_spec``'s fallback: the checkout's spec
+    reduced to :data:`~kiro_crew.acp.harness.kas.PROJECT_SPEC_HONOURED_KEYS` and
+    nothing else, so an edit to a key KAS ignores there is not a change to what
+    the session runs on.
+    """
+    from kiro_crew.acp.harness.kas import PROJECT_SPEC_HONOURED_KEYS
+
+    return {key: project_spec[key] for key in PROJECT_SPEC_HONOURED_KEYS if key in project_spec}

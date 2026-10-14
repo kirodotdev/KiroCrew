@@ -20,7 +20,7 @@
  *       status region.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, act, waitFor, within } from '@testing-library/react'
 import { Provider, useSelector } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import type { RootState } from '../store'
@@ -60,7 +60,7 @@ function makeStore(memoryMode?: string) {
   })
 }
 
-function renderControl(opts: { onError?: (m: string, t: string) => void; memoryMode?: string; compact?: boolean } = {}) {
+function renderControl(opts: { onError?: (m: string, t: string) => void; memoryMode?: string; compact?: boolean; hoverActions?: boolean } = {}) {
   const store = makeStore(opts.memoryMode)
   // Mirrors the real hosts: the title prop follows the store. `slot` is a
   // prop so a test can re-target the same instance like the main header does.
@@ -68,7 +68,7 @@ function renderControl(opts: { onError?: (m: string, t: string) => void; memoryM
   // header's variant is opted into where a contract must hold for both hosts.
   const Host = ({ slot }: { slot: string }) => {
     const title = useSelector((s: RootState) => s.dashboard.slots.find((x) => x.key === slot)?.title ?? slot)
-    return <SessionTitleControl slotKey={slot} title={title} compact={opts.compact ?? true} onError={opts.onError} />
+    return <SessionTitleControl slotKey={slot} title={title} compact={opts.compact ?? true} onError={opts.onError} hoverActions={opts.hoverActions} />
   }
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const tree = (slot: string) => (
@@ -114,6 +114,27 @@ describe('SessionTitleControl', () => {
     renderControl()
     expect(screen.getByRole('button', { name: RENAME })).toBeTruthy()
     expect(screen.getByRole('button', { name: REGEN })).toBeTruthy()
+  })
+
+  it('hoverActions=false drops the hover Pen and the Auto-title button, and the title still opens the editor', () => {
+    const { container } = renderControl({ hoverActions: false })
+    const row = container.querySelector('div.cursor-text') as HTMLElement
+    act(() => { fireEvent.mouseEnter(row) })
+    expect(screen.queryByRole('button', { name: REGEN })).toBeNull()
+    expect(container.querySelector('svg.lucide-pen')).toBeNull()
+    expect(container.querySelector('svg.lucide-sparkles')).toBeNull()
+    // The title is the only control left in the row, and it still renames.
+    expect(within(row).getAllByRole('button')).toHaveLength(1)
+    expect(openEditor().value).toBe(TITLE)
+  })
+
+  it('keeps the hover Pen and Auto-title button by default', () => {
+    const { container } = renderControl()
+    const row = container.querySelector('div.cursor-text') as HTMLElement
+    act(() => { fireEvent.mouseEnter(row) })
+    expect(screen.getByRole('button', { name: REGEN })).toBeTruthy()
+    expect(container.querySelector('svg.lucide-pen')).not.toBeNull()
+    expect(within(row).getAllByRole('button')).toHaveLength(2)
   })
 
   it('(a) click -> editor seeded with the title; Enter commits through renameSlot and the store', async () => {

@@ -170,6 +170,10 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.
                 ("chat_turn/queue_drain.py", "_drain_parked_queues"),
+                # The stale-config sweep skips a reserved or running slot: its
+                # turn's end refreshes the badge, and a fingerprint read mid-turn
+                # would race the spawn record the turn is about to write.
+                ("config_staleness.py", "refresh_all_config_stale"),
                 ("chat_turn/eager_spawn.py", "_eager_spawn"),
                 ("chat_turn/eager_spawn.py", "_prefetch_ttl"),
                 ("handlers/autonudge.py", "api_autonudge_fire"),

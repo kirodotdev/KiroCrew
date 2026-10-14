@@ -16,6 +16,7 @@ import type { ChatSlot } from '../../../types'
 import { errMessage } from '../../../utils/thunkError'
 import { ChatHeaderMenu } from '../ChatHeaderMenu'
 import SessionTitleControl from '../SessionTitleControl'
+import { StaleConfigCue } from '../../../components/StaleConfigBadge'
 
 // Lazy for the same reason App.tsx lazy-loads the pill: the update chunk is
 // off the app-core budget, and the phone menu needs it only while an update exists.
@@ -158,6 +159,9 @@ export default function MobileTopBar({
                     {currentSlot?.pinned && <Pin size={12} className="lucide-inline mr-1 shrink-0 text-accent" aria-label={i18nT('pages.chatSidebar.pinned')} data-testid="session-pinned-glyph" />}
                     {currentSlot?.memory_mode === 'incognito' && <EyeOff size={13} className="lucide-inline shrink-0 text-warn" aria-label={i18nT('pages.chatPage.incognito_memory_writes_disabled')} />}
                     {currentSlot?.memory_mode === 'temporary' && <VenetianMask size={13} className="lucide-inline shrink-0 text-aim" aria-label={i18nT('pages.chatPage.temporary_no_memory_reads_or_writes')} />}
+                    {/* Changed config: a cue inside the trigger, not a third
+                        control in the cell; the menu's Reload row applies it. */}
+                    <StaleConfigCue slot={currentSlot} />
                     {title}
                   </>
                 }

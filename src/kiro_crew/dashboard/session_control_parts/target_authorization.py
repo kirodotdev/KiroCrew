@@ -994,15 +994,16 @@ def authorize_target(
     member) the fence is evaluated inline as before.
 
     ``allow_self`` waives the self-target refusal, and with it the ownership fence for
-    that one case. Three verbs pass it. A release, where the target itself is a
+    that one case. Four verbs pass it. A release, where the target itself is a
     legitimate caller because a session taken over must not depend on its holder still
     running to get out. A close, so a session that has finished its one job can archive
     its own tab instead of leaving it for the person or its creator to dismiss; the close
     is the same recoverable archival a peer close is, and it cancels the caller's own
-    running turn, which is the turn asking for it. And a rename, because a session naming
-    itself acts on nothing but its own sidebar label. It waives nothing else -- an ephemeral, app-scoped or
-    channel-linked caller is still refused, and a target that is not the caller is
-    still judged by every rule above.
+    running turn, which is the turn asking for it. A rename, because a session naming
+    itself acts on nothing but its own sidebar label. And the read-only config-status
+    check, which an agent runs on its own chat after editing its own MCP servers. It
+    waives nothing else -- an ephemeral, app-scoped or channel-linked caller is still
+    refused, and a target that is not the caller is still judged by every rule above.
     """
 
     deny = _deny_factory(caller_session_key=caller_session_key, operation=operation, target=target)

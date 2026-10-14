@@ -26,7 +26,7 @@ file was. Consequences:
 * What stays in ``kiro_crew.agent``: the forwarding machinery, the managed MCP server table (its invocation lambdas
   read this namespace), the hook and config paths a test fixture pins by module, the
   bundled config directory (computed from ``__file__``), the skill-path scan, the
-  dynamic-field refresh, the knowledge, research and heartbeat prompts, and the two
+  dynamic-field refresh, the knowledge, research and heartbeat prompts, and the
   exception classes.
 
 The owners, and where new work for each goes:

@@ -20,13 +20,23 @@ from typing import TYPE_CHECKING, Any, Literal
 
 from kiro_crew.messaging.link import canonical_key
 from kiro_crew.session_lifecycle_parts.parked_queue import _park_queue
-from kiro_crew.session_lifecycle_parts.stop_decline import StopOutcome, _compaction_waits_for_turn
+from kiro_crew.session_lifecycle_parts.stop_decline import (
+    StopOutcome,
+    _compaction_waits_for_turn,
+    _logger,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.session_lifecycle import SessionLifecycleService
 
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
+
+# What a start asked for no agent runs: ``acp_runtime_start`` substitutes this
+# name (``agent or "kirocrew"``). A respawn receipt is carried only for the
+# agent its successor actually runs, so the no-agent eager respawn compares
+# against this.
+_FACTORY_DEFAULT_AGENT = "kirocrew"
 
 
 @dataclass(slots=True)
@@ -446,10 +456,76 @@ async def _eager_respawn(self: SessionLifecycleService, key: str) -> None:
     wakes the adopted entries' channel drains.
     """
     try:
-        await self._owner.get_or_create(key)
+        spawn_config = await self._respawn_config(key)
+        started = await self._owner.get_or_create(key)
         self._owner.release(key)
     except Exception:
         self._deps.logger.debug("Eager respawn failed for %s", key, exc_info=True)
+        return
+    if isinstance(started, tuple) and len(started) == 3:
+        self._carry_respawn_config(started[0], started[1], spawn_config, agent=None)
+
+
+#: The longest a respawn or reset waits for its config fingerprint before the
+#: successor starts without one. The read is a few small files, so a wait this
+#: long means a slow or hung config directory, and a chat whose badge reads
+#: unknown until its next turn costs less than a respawn held behind it.
+RESPAWN_CONFIG_TIMEOUT_S = 2.0
+
+
+async def _respawn_config(self: SessionLifecycleService, key: str) -> Any:
+    """The owner's ``respawn_config_reader`` answer for *key*, or ``None``.
+
+    Taken BEFORE the successor starts, as a chat start takes its own, so an
+    edit landing while it starts is a difference the chat's badge shows.
+    ``None`` when no reader is wired (the CLI, tests), it fails, or it has not
+    answered within :data:`RESPAWN_CONFIG_TIMEOUT_S`: the chat's next turn
+    then records the successor, as before.
+    """
+    reader = getattr(self._owner, "respawn_config_reader", None)
+    if reader is None:
+        return None
+    try:
+        return await asyncio.wait_for(reader(key), timeout=RESPAWN_CONFIG_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        self._deps.logger.debug("Respawn config fingerprint timed out for %s", key)
+        return None
+    except Exception:  # noqa: BLE001 - a change detector never fails a respawn
+        self._deps.logger.debug("Respawn config fingerprint failed for %s", key, exc_info=True)
+        return None
+
+
+def _carry_respawn_config(
+    provider: Any, is_new: bool, spawn_config: Any, *, agent: str | None
+) -> None:
+    """Attach *spawn_config* to a successor this respawn started.
+
+    Carried as ``pool_spawn_config``, the receipt a chat records for a
+    process it did not start itself. A process that already carries one (a
+    warm-pool claim) keeps it: that one was taken before its own start.
+
+    *agent* is what the start was asked for (``None`` means the factory's
+    default agent). A receipt fingerprinted for a different agent is not
+    carried: the successor never loaded that spec, so the chat's next turn
+    records the process it actually runs instead.
+    """
+    if spawn_config is None or not is_new:
+        return
+    if not _receipt_names_agent(spawn_config, agent or _FACTORY_DEFAULT_AGENT):
+        return
+    try:
+        if provider.pool_spawn_config is None:
+            provider.pool_spawn_config = spawn_config
+    except Exception:  # noqa: BLE001 - a change detector never fails a respawn
+        _logger.debug("Respawn config not carried", exc_info=True)
+
+
+def _receipt_names_agent(spawn_config: Any, agent: str) -> bool:
+    """True when *spawn_config*'s inputs were taken for *agent*."""
+    try:
+        return bool(spawn_config[0].agent == agent)
+    except Exception:  # noqa: BLE001 - an unreadable receipt is not carried
+        return False
 
 
 async def _respawn_as(self: SessionLifecycleService, key: str, identity: dict[str, Any]) -> None:
@@ -464,12 +540,14 @@ async def _respawn_as(self: SessionLifecycleService, key: str, identity: dict[st
     still reads as a fresh start and the queued turn replays the history.
     """
     owner = self._owner
+    spawn_config = await self._respawn_config(key)
     try:
         provider, is_new, resumed = await owner.get_or_create(key, **identity)
     except Exception:
         self._deps.logger.debug("Reset respawn failed for %s", key, exc_info=True)
         return
     try:
+        self._carry_respawn_config(provider, is_new, spawn_config, agent=identity.get("agent"))
         live = owner._sessions.get(key)
         constants = self._deps.constants()
         if (

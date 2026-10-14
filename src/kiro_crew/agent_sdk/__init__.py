@@ -157,6 +157,19 @@ class AgentTurnUsage(Protocol):
     output_tokens: int
 
 
+class SpawnConfigCarrier(Protocol):
+    """The provider view the stale-config badge reads off a live session.
+
+    ``pool_spawn_config`` is the fingerprint a warm-pool process, or a
+    respawn after a hard stop or reset, was started under (None for one a
+    chat turn spawned). It is declared on the provider
+    contract; typing against this keeps the badge off the provider layer.
+    """
+
+    @property
+    def pool_spawn_config(self) -> object: ...
+
+
 __all__ = [
     "tool_row_text",
     "agents_dir_competing_claim",
@@ -170,6 +183,7 @@ __all__ = [
     "CONTEXT_EVENT_TOOL",
     "context_provider_of",
     "AgentTurnUsage",
+    "SpawnConfigCarrier",
     "MODEL_NAMESPACE_ACP",
     "SessionCapabilities",
     "UNKNOWN_BACKEND_CAPABILITIES",
