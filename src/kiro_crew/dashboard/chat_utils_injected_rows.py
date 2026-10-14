@@ -77,7 +77,7 @@ def _edit_queued_by_id(messages: list[dict], queue_id: str, content: str) -> boo
 # orchestration, not user speech.
 #
 # Each carries a bracketed marker line, matching the recovery prefixes in
-# state.py. The marker is what the dashboard matches to fold the row into a
+# state_parts/injected_turns.py. The marker is what the dashboard matches to fold the row into a
 # one-line RecoveryCard instead of printing the machine-facing prose as a
 # full-width bubble; it also labels the injection for the model, which reads
 # these the same way it reads the refusal/stall continuations.

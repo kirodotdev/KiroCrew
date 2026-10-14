@@ -249,7 +249,7 @@ def build_session_context(
     # links). These are the built-in kirocrew assistant's dashboard/Slack UI
     # contracts and apply to ALL providers — including Claude Code. The
     # dashboard renders clickable input-box options only from the
-    # [OPTIONS: ...] text tag (see dashboard/state.py and the frontend
+    # [OPTIONS: ...] text tag (see dashboard/state_parts/slot_transcript.py and the frontend
     # AssistantMessage), so CC must be told to emit it too or the options
     # never render.
     #

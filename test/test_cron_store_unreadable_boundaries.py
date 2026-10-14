@@ -1028,7 +1028,7 @@ _EXEMPT_READ_DECIDE_WRITE: dict[tuple[str, str], str] = {
         "Same shape: no matching job means it falls through to `add_job`, which "
         "refuses. Absence routes INTO the write, so the store cannot stay silent."
     ),
-    ("src/kiro_crew/dashboard/state.py", "delete_cron_folder"): (
+    ("src/kiro_crew/dashboard/state_parts/sidebar_stores.py", "delete_cron_folder"): (
         "The authoritative write is `save_cron_folders()` on a DIFFERENT store and "
         "happens BEFORE the read. The job loop that follows is documented "
         "best-effort cleanup whose per-job failure is benign (an unknown folder_id "

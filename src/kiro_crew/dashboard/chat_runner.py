@@ -14000,8 +14000,8 @@ async def _run_chat(
             # fallback until the start-of-turn restore probe succeeds.
             slot._fallback_candidate_idx = 0
             slot._fallback_walked = []
-            # Reset the promise-only one-shot on a LANDED turn so the guard re-arms
-            # per user turn (matching state.py's contract and the sibling budgets).
+            # Reset the promise-only one-shot on a LANDED turn so the guard re-arms per
+            # user turn (matching state_parts/slot_ladder.py's contract and the sibling budgets).
             # Without this a single false positive would disarm it for the slot's
             # whole life, and the "two consecutive such turns" case stays only
             # half-covered. A promise-only recovery turn is NOT landed, so it is

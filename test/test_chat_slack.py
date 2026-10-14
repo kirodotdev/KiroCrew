@@ -731,7 +731,7 @@ class TestSlackLinkAnchorTitleFallback:
     @pytest.mark.asyncio
     async def test_default_key_title_never_leaks(self, tmp_path, monkeypatch):
         """Fork adaptation guard: a slot fresh from get_or_create_slot carries
-        its raw key as the DEFAULT title (state.py initializes title to the
+        its raw key as the DEFAULT title (state_parts/chat_slot.py initializes title to the
         key); the display_title predicate must treat that as untitled so the
         anchor shows 'New session', never the raw key."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)

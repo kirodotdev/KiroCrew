@@ -1,8 +1,19 @@
 """What a slots frame contains: serialised rows and views, links and lineage parents.
 
-Channel-link labels, redaction and nonces, the lineage parents (with the one-shot
-seed request and its failure latch, rebound only here), and the frame and note
-shape with its size-paced interval.
+A slot's channel and source links as the sidebar shows them, the lineage parents
+(with the one-shot seed request and its failure latch, rebound only here), the
+frame and note shape and its size-paced interval, and member slot transitions.
+
+Instance fields of ``DashboardState`` this module reads and writes:
+
+Writes: ``_member_driven_slots_seen``.
+Reads only: ``_member_slots_retry``, ``_member_slots_unconfirmed``,
+``_pinned_order_rev``, ``_slots``, ``_slots_under_construction``, ``sessions``,
+``subagents``.
+
+A function whose first parameter is ``self`` is a ``DashboardState`` method: the
+class binds it under the same name (``state_parts/dashboard_state.py``), so it reads
+and writes the state's own fields and calls its siblings through ``self``.
 """
 
 from __future__ import annotations
@@ -14,11 +25,20 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from aiohttp import web
 
+from kiro_crew.dashboard.state_parts.slot_directory import _is_genuine_slack_link
+from kiro_crew.messaging.link import (
+    SLACK_NAMESPACE,
+    ChannelLink,
+    binding_token,
+    channel_namespace_of,
+    split_namespaced_channel_id,
+)
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard import DashboardState
     from kiro_crew.dashboard._types import SubagentManager
+    from kiro_crew.dashboard.state_parts.chat_slot import _ChatSlot
+    from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
 
 logger = logging.getLogger("kiro_crew.dashboard.state")
 
@@ -534,3 +554,637 @@ def _slots_broadcast_interval_for(frame_bytes: int) -> float:
     """Coalescing window that keeps one socket's slot-list bytes near the budget."""
     stretched = frame_bytes / _SLOTS_BROADCAST_BYTES_PER_S
     return min(_SLOTS_BROADCAST_MAX_INTERVAL_S, max(_SLOTS_BROADCAST_INTERVAL_S, stretched))
+
+
+def _channel_link_is_live(self: DashboardState, link: ChannelLink) -> bool:
+    """Is a proactive-capable transport registered for this channel?
+
+    Deliberately an IN-MEMORY check only. This runs per linked slot inside
+    ``serialize_slots``, which sits on the ``push_slots_update`` websocket
+    broadcast path, so it must not touch the filesystem: the full governed
+    ladder (``chat_runner._resolve_channel_target``) calls
+    ``governance_permits``, which walks the profile directory (``iterdir`` +
+    ``stat``, with a possible reload) — a slow filesystem there would block
+    the event loop on every push and can drive watchdog restarts.
+
+    Governance stays enforced at the async SEND boundary (
+    ``_resolve_mirror_target`` in the turn path and in the mirror-link
+    reminder handler). A link may therefore read ``live: true`` here and
+    still be refused at send time; that asymmetry is deliberate and safe —
+    the menu affordance is optimistic, the side effect is gated.
+    """
+    if link.channel_type == SLACK_NAMESPACE or not link.channel_id:
+        return False
+    transport = self.get_channel_transport(link.channel_type)
+    if transport is None:
+        return False
+    return bool(
+        getattr(
+            getattr(transport, "capabilities", None),
+            "supports_proactive_send",
+            False,
+        )
+    )
+
+
+def _slot_links(
+    self: DashboardState, slot: _ChatSlot
+) -> tuple[list[dict[str, Any]], bool, str, str]:
+    """Build the redacted channel-neutral link projection for one slot."""
+    # circular import: chat imports state at module scope.
+    from kiro_crew.dashboard.chat_utils import (
+        effective_session_key,
+        mirror_is_paused,
+        slack_mirror_is_paused,
+    )
+
+    session_key = effective_session_key(slot)
+    # Resolved once per slot rather than per row: all three are storage reads,
+    # and a session holds at most one Slack thread, one born-in conversation
+    # and one mirror binding.
+    slack_paused = slack_mirror_is_paused(self, session_key)
+    mirror_paused = mirror_is_paused(self, session_key)
+    origin_paused = mirror_is_paused(self, session_key, origin=True)
+    mirror: ChannelLink | None = None
+    persisted_ts: str | None = None
+    persisted_channel: str | None = None
+    try:
+        candidate = self.sessions.get_mirror_link(session_key)
+        if isinstance(candidate, ChannelLink):
+            mirror = candidate
+    except Exception:
+        pass
+    try:
+        raw_ts, raw_channel = self.sessions.get_slack_link(session_key)
+        persisted_ts = raw_ts if isinstance(raw_ts, str) else None
+        persisted_channel = raw_channel if isinstance(raw_channel, str) else None
+    except Exception:
+        pass
+
+    # Prefer persisted values, but retain explicit in-memory Slack links in
+    # tests and during the short interval before persistence is observable.
+    slack_ts = persisted_ts or slot._slack_thread_ts
+    slack_channel = persisted_channel or slot._slack_channel
+    namespaced_origin = split_namespaced_channel_id(persisted_channel)
+    genuine_slack = _is_genuine_slack_link(slack_ts, slack_channel)
+    # A Slack-BORN session's ``slack_thread_ts`` names the thread it LIVES
+    # in, not a mirror target somewhere else: the Slack inbound handler
+    # writes it every turn as the thread registry that routes replies back.
+    # That makes it a self-reference, and the sidebar already draws an origin
+    # glyph from the slot key -- so surfacing it as an outbound mirror badges
+    # one conversation twice and offers a session its own origin thread as a
+    # releasable mirror. A Slack-born session that genuinely mirrors to a
+    # DIFFERENT thread still carries a different ts, so it is unaffected.
+    slack_origin_self_link = (
+        channel_namespace_of(session_key) == SLACK_NAMESPACE
+        and bool(slack_ts)
+        and session_key.endswith(slack_ts)
+    )
+    links: list[dict[str, Any]] = []
+    # The per-binding nonces, read the way the bindings themselves are, so
+    # the row's token and the map's compare-and-clear digest the same
+    # material. Only a string counts: a session double that predates the
+    # accessors (or answers them with a mock) reads as no nonce.
+    mirror_nonce = _mirror_link_nonce(self, session_key)
+    slack_nonce = _slack_link_nonce(self, session_key)
+
+    def append_link(
+        link: ChannelLink, direction: str, nonce: str = "", *, drives_session: bool
+    ) -> None:
+        """Append one row. *drives_session*: messages sent there land in THIS session.
+
+        The inbound-routing fact is the server's to state, per row, because
+        it is not readable from the row's other fields: a Slack thread is
+        marked ``out`` (its inbound routing is Slack's own thread index, not
+        the mirror's inbound marker) yet a reply in it resumes this session;
+        a ``both`` mirror routes inbound by that marker; an ``out`` mirror
+        only receives replies; and the conversation a session was born in
+        is where its turns come from. Judged client-side from ``direction``
+        plus the channel name, a paused Slack row reads as a one-way link --
+        so the client reads this bit and special-cases nothing.
+        """
+        channel_type = (link.channel_type or "").lower()
+        if not channel_type:
+            return
+        channel_id = link.channel_id or ""
+        nested = split_namespaced_channel_id(channel_id)
+        if nested and nested[0] == channel_type:
+            channel_id = nested[1]
+        normalized = ChannelLink(channel_type, channel_id, link.thread_id)
+        # Real on EVERY row, origin included: the conversation a session was
+        # born in can be disconnected too, so it stops syndicating there and
+        # the session carries on in the dashboard. `direction` still records
+        # the provenance the sidebar mark needs; it does not decide whether
+        # the row has a control.
+        #
+        # Keyed to the row's SOURCE, not just its channel: a session born in
+        # Discord that also mirrors to Telegram draws two non-Slack rows, and
+        # if both read one value, muting either silently mutes the other.
+        if channel_type == SLACK_NAMESPACE:
+            paused = slack_paused
+        elif direction == "origin":
+            paused = origin_paused
+        else:
+            paused = mirror_paused
+        links.append(
+            {
+                "channel": channel_type,
+                "label": _link_label(channel_type),
+                "target": _redacted_link_target(channel_id),
+                # The row's identity for an unlink: the redacted `target`
+                # above is display only and drops the thread, so a Slack
+                # thread and its same-channel replacement would read alike;
+                # the binding's own nonce keeps a same-target replacement
+                # from reading alike too.
+                "binding": binding_token(normalized, nonce),
+                "direction": direction,
+                "drives_session": drives_session,
+                "live": self._channel_link_is_live(normalized),
+                "paused": paused,
+            }
+        )
+
+    # Non-Slack transports currently leak their home conversation through
+    # slack_channel_id. Surface that as a read-only origin, never a Slack
+    # mirror. This prefix sniff is intentionally defensive for unknown
+    # future channel types too.
+    if namespaced_origin and namespaced_origin[0] != SLACK_NAMESPACE:
+        # The conversation the session was born in: the channel dispatcher
+        # routes its messages here on every inbound turn.
+        append_link(
+            ChannelLink(namespaced_origin[0], namespaced_origin[1]),
+            "origin",
+            drives_session=True,
+        )
+
+    if mirror is not None:
+        if mirror.channel_type == SLACK_NAMESPACE:
+            # get_mirror_link synthesizes Slack for the legacy fields. If
+            # those fields actually hold a namespaced non-Slack origin, the
+            # origin above is the only truthful representation.
+            if not namespaced_origin and genuine_slack and not slack_origin_self_link:
+                append_link(
+                    ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                    "out",
+                    slack_nonce,
+                    drives_session=True,
+                )
+        else:
+            # A resume binding (set by an in-channel `!sessions` pick) routes
+            # BOTH ways: this session's replies go to that channel AND
+            # messages from it are delivered back here. That is a materially
+            # different thing for the user to see and release than an
+            # outbound-only `!link` mirror, so it gets its own direction
+            # rather than being flattened into "out". Slack is excluded by
+            # the branch above — it carries inbound on its own thread index
+            # and never sets the marker.
+            inbound = False
+            try:
+                inbound = bool(self.sessions.mirror_accepts_inbound(session_key))
+            except Exception:
+                # Older/stubbed SessionManagers may not expose the accessor;
+                # degrade to the outbound reading rather than dropping the link.
+                inbound = False
+            append_link(mirror, "both" if inbound else "out", mirror_nonce, drives_session=inbound)
+    elif genuine_slack and not slack_origin_self_link:
+        # Defensive fallback for SessionManager test doubles or older
+        # implementations that expose get_slack_link but not get_mirror_link.
+        append_link(
+            ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+            "out",
+            slack_nonce,
+            drives_session=True,
+        )
+
+    if genuine_slack and slack_origin_self_link:
+        # The conversation a session was BORN in gets a row too. Suppressing
+        # it was the last place a channel appeared with no control at all:
+        # you can stop a Slack-born session syndicating to its thread and
+        # carry on in the dashboard, and a human reply in that thread brings
+        # it back. It stays `origin` so the sidebar keeps showing where the
+        # conversation came from — provenance is history and survives a
+        # disconnect; only the delivery indicator reflects the mute.
+        append_link(
+            ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+            "origin",
+            slack_nonce,
+            drives_session=True,
+        )
+
+    if genuine_slack and not slack_origin_self_link:
+        slack_namespace = split_namespaced_channel_id(slack_channel)
+        visible_slack_channel = slack_namespace[1] if slack_namespace else (slack_channel or "")
+        # A Slack ROW accompanies `slack_linked=True` unconditionally. The
+        # dashboard's channel control is built from `links` alone — it no
+        # longer synthesizes a Slack row from this boolean, because a
+        # synthesized row cannot know `paused` and so rendered a muted thread
+        # as connected. That makes a True here with no row worse than a
+        # cosmetic gap: the session IS linked and the menu would offer to
+        # connect it. Guaranteed here rather than left to hold incidentally
+        # across the branches above.
+        if not any(
+            row["channel"] == SLACK_NAMESPACE and row["direction"] != "origin" for row in links
+        ):
+            append_link(
+                ChannelLink(SLACK_NAMESPACE, slack_channel, slack_ts),
+                "out",
+                slack_nonce,
+                drives_session=True,
+            )
+        return links, True, visible_slack_channel, slack_ts or ""
+    return links, False, "", ""
+
+
+def serialize_slot(
+    self: DashboardState,
+    slot: _ChatSlot,
+    *,
+    include_check_status: bool = False,
+    dashboard_user: bool = False,
+) -> dict[str, Any]:
+    """Serialize one slot with state-backed channel-link metadata."""
+    payload = slot.to_dict(include_check_status=include_check_status, dashboard_user=dashboard_user)
+    links, slack_linked, slack_channel, slack_thread_ts = self._slot_links(slot)
+    manual = self.manual_session_order
+    payload.update(
+        {
+            "pin_rank": self.pin_rank(slot),
+            "pin_rev": self._pinned_order_rev,
+            "manual_rank": manual.rank(slot.key),
+            "manual_rev": manual.rev,
+            "links": links,
+            "slack_linked": slack_linked,
+            "slack_channel": slack_channel,
+            "slack_thread_ts": slack_thread_ts,
+        }
+    )
+    return payload
+
+
+def serialize_slots(
+    self: DashboardState, *, include_check_status: bool = False, dashboard_user: bool = False
+) -> list:
+    """Serialize slots, optionally including owner-only provider status.
+
+    ``subagents_running`` and ``subagents_queued`` remain available to every
+    authenticated caller.
+    Credential-backed ``ci`` and ``state`` fields are omitted unless an
+    authenticated owner boundary explicitly opts in — EXCEPT a link whose
+    repository is known public, which any authenticated dashboard user
+    (``dashboard_user=True``) may see because that lifecycle is already
+    world-visible. Private/unknown repos and app tokens stay owner-only.
+    """
+    out = []
+    subs = getattr(self, "subagents", None)
+    # A slot that is registered but still under construction is not yet a
+    # session: its transcript is mid-hydration and, for an import, its Layer B
+    # join is not written. Omit it from the payload so the creation-time
+    # broadcast never advertises a tab that resolves to nothing (a click would
+    # cold-start a fresh context the pending join can never attach to). It
+    # stays REGISTERED in ``_slots`` throughout, so a concurrent same-key
+    # resume still resolves it and the idempotency guard holds; it simply is
+    # not shown until the builder ends construction and pushes. Belt-and-
+    # suspenders on ``__new__``-built states that never ran __init__:
+    # treat a missing set as empty rather than AttributeError-ing this hot
+    # path.
+    # circular import: chat_utils imports this module at load time.
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+
+    under_construction = getattr(self, "_slots_under_construction", None) or ()
+    queued_by_slot = _published_queued_by_slot(subs)
+    for s in self._slots.values():
+        if s.key in under_construction:
+            continue
+        self._drop_orphaned_mcp_report(s)
+        d = self.serialize_slot(
+            s,
+            include_check_status=include_check_status,
+            dashboard_user=dashboard_user,
+        )
+        d["subagents_running"] = bool(subs and subs.running_agents_for(effective_session_key(s)))
+        d["subagents_queued"] = queued_by_slot.get(s.key, 0)
+        out.append(d)
+    # The slot-key/session-key correspondence the lineage join needs, read the same
+    # way ``/api/sessions/memory`` reads it for the Sessions table. Handed over
+    # UNCALLED: resolving it is pure dict work over the live registry, but it belongs
+    # inside that function's failure boundary, because a fault in it is a fault in
+    # the nesting and must cost the nesting rather than the whole sidebar.
+    # ``getattr`` because a stub state in the suite may not carry the method at all.
+    _attach_slot_parents(out, getattr(self, "spend_slot_by_session", None))
+    return out
+
+
+def serialize_slot_views(
+    self: DashboardState, *, owner: bool
+) -> tuple[list[dict], list[dict], list[dict] | None]:
+    """One serialization pass, three audience views of the slot list.
+
+    Returns ``(bare, dashboard_user, owner)``; ``owner`` is ``None`` when
+    ``owner`` is False (no owner socket to build it for).
+
+    The three views the broadcast ships differ ONLY in each slot's
+    ``source_links`` field -- the audience gates are read nowhere else in the
+    summary (see ``_ChatSlot.source_links_view``). Serializing the list three
+    times therefore ran the per-slot projection body (last-message markdown
+    strip, credential redaction, options parse) and the source-link
+    budgeting three times for identical output, synchronously on the
+    event loop: measured at ~200 ms per pass on a sidebar of ~80 tabs, so a
+    broadcast stalled the loop for ~600 ms. Those stalls read as host pressure
+    to the adaptive concurrency controller (``loop_lag >= 250 ms`` is a
+    sufficient-alone decrease signal) and pinned the subagent cap at its floor
+    on an idle machine. Serialize once, then re-project only the one field.
+
+    The derived dicts are shallow copies: every other value is shared with
+    the bare list. Nothing mutates a slot payload after serialization (the
+    bare list is ``json.dumps``-ed for SSE and the WS frames are built from
+    the lists as-is), so sharing is safe and avoids a deep copy per audience.
+    A payload whose key has no live slot (a patched ``serialize_slots`` in
+    tests, or a slot closed between the two loops) is carried over unchanged.
+    """
+    bare = self.serialize_slots()
+    return (
+        bare,
+        self._reproject_slots(bare, dashboard_user=True),
+        self._reproject_slots(bare, include_check_status=True) if owner else None,
+    )
+
+
+def _reproject_slots(
+    self: DashboardState,
+    slots_data: list[dict],
+    *,
+    include_check_status: bool = False,
+    dashboard_user: bool = False,
+) -> list[dict]:
+    out: list[dict] = []
+    for payload in slots_data:
+        slot = self._slots.get(payload.get("key", ""))
+        if slot is None or "source_links" not in payload:
+            out.append(payload)
+            continue
+        view = dict(payload)
+        view["source_links"] = slot.source_links_view(
+            include_check_status=include_check_status, dashboard_user=dashboard_user
+        )
+        out.append(view)
+    return out
+
+
+def _drop_orphaned_mcp_report(self: DashboardState, slot: "_ChatSlot") -> None:
+    """Drop a slot's MCP report unless it describes the slot's CURRENT session.
+
+    A report describes exactly ONE session. Clearing it at each teardown was
+    the wrong shape — review found path after path that skipped it (the reset
+    funnel, the reload and reset-conversation routes, the queued discard, a
+    channel handler, the cron reaper, the task runner, a project change) — and
+    a LIVENESS check ("does a session exist?") still missed the last of them,
+    because a reset RECREATES a session under the same key: the slot looked
+    alive while the report described the session that had gone.
+
+    So the question asked here is identity, not liveness — is the live session
+    the one this payload was taken under? A mismatch is dropped by
+    construction, which closes every one of those paths at once, including any
+    future one, and demotes the remaining ``clear_mcp_report()`` calls to a
+    courtesy that pushes the delta early rather than the thing correctness
+    rests on.
+
+    Validating HERE cannot be bypassed: this is the single projector both
+    ``/api/chat/slots`` and the WebSocket snapshot go through.
+
+    The key derivation mirrors ``chat_utils.effective_session_key`` — a
+    channel-born slot's turns run on the channel's own session — and is
+    inlined because ``chat_utils`` imports this module. One refinement over
+    that mirror: an in-flight turn's OWN key wins over the slot's routing.
+    The two diverge when the routing is reassigned on a live slot — a cron
+    injection binds ``linked_session_key`` to ``cron:<id>`` with no
+    ``running`` gate — and the report describes the session the turn is
+    actually running on, not the one a FUTURE turn would route to.
+    Resolving the routing there reads a different (or absent) provider,
+    mismatches, and clears a live session's report mid-turn. Same rule as
+    turn cancellation: address the turn, not the routing.
+    """
+    if slot.mcp_report_payload() is None:
+        return
+    session_key = (
+        getattr(slot, "_active_turn_session_key", "")
+        or getattr(slot, "linked_session_key", "")
+        or f"dashboard:{slot.key}"
+    )
+    provider = self.sessions.get_provider(session_key)
+    live_id = getattr(provider, "session_id", "") if provider is not None else ""
+    if live_id != slot._mcp_report_session_id:
+        slot.clear_mcp_report()
+
+
+def _emit_member_slot_transitions(self: DashboardState) -> None:
+    """Log slot/opened and slot/closed for member-driven slots.
+
+    Runs after every slots broadcast and after :meth:`push_slot_removed`,
+    which is how a close reaches the log when no consumer needed the full
+    list. It diffs against the last-seen set, so a second call for the same
+    registry state emits nothing.
+    """
+    # Best-effort per-member event log: emit slot/opened and slot/closed
+    # for slots DRIVEN by a member (created_by is a member NAME), diffed
+    # against the last-seen set on this state object. Additive; never
+    # affects the broadcast above.
+    try:
+        from kiro_crew import eventlog_hooks
+
+        # The known-agent check must not read config.json here: this runs on
+        # the gateway serving loop, so it reads the off-loop alias snapshot
+        # (refreshed by every successful config load) instead of stat/read/
+        # parsing config synchronously and stalling every task.
+        from kiro_crew.eventlog.types import SLOT_CLOSED, SLOT_OPENED
+        from kiro_crew.members import member_slug, slug_from_dm_slot_key
+
+        # `_created_by` is `session_control`'s attribution and it holds the
+        # creator's SLOT KEY, never an agent name -- so comparing it against the
+        # alias snapshot could not match for ANY member-created slot, and every
+        # member slot event was dropped on the normal path.
+        #
+        # A member drives two kinds of slot and both are resolved, because
+        # covering only one leaves the other silently dropped:
+        #   (a) its pinned DM slot, keyed `member-<slug>`, from which the slug
+        #       is pure string work -- `slug_from_dm_slot_key` is the members
+        #       module's single spelling of that strip, including the
+        #       `.memory-<store>` suffix a reader must drop;
+        #   (b) an ordinary chat slot bound to the member's private store, whose
+        #       owner lives in the CONFIG. That read is deferred to the worker
+        #       below for the same reason the log id already is: this function
+        #       runs on the gateway serving loop and must not parse config here.
+        # So the loop collects identity MATERIAL and the worker resolves it.
+        current: dict[str, tuple[str, str]] = {}
+        for _sk, _slot in list(self._slots.items()):
+            _cb = getattr(_slot, "_created_by", "")
+            if not _cb:
+                continue
+            _slug = slug_from_dm_slot_key(_cb)
+            if _slug:
+                current[_sk] = (_slug, "")
+                continue
+            _creator = self._slots.get(_cb)
+            _store = getattr(_creator, "memory_store", "") if _creator else ""
+            if _store and _store != "default":
+                current[_sk] = ("", _store)
+        prev = self._member_driven_slots_seen
+        if self._member_slots_unconfirmed:
+            # An append the worker could not complete is not recorded, whatever
+            # the checkpoint says. Applying the corrections here is what makes
+            # the comparison below recompute exactly those transitions and
+            # nothing else. Drained rather than read, so a retry that fails
+            # again queues a fresh correction instead of looping on a stale one.
+            # Drained IN PLACE, and by repeated POP rather than copy-then-clear.
+            # The worker closure captures this dictionary by reference when it is
+            # created, so rebinding the attribute to a fresh one would leave an
+            # in-flight worker writing its failures into an object nothing reads.
+            # And a copy followed by clear() leaves a window: a failure the worker
+            # records between the two is wiped without ever being applied, so the
+            # comparison below recomputes nothing for it and the checkpoint then
+            # advances past that transition, dropping it for good. Each pop either
+            # returns an entry, which is therefore applied, or finds none and
+            # leaves later ones for the next pass -- no entry is discarded unread.
+            _lost: dict[str, tuple[str, str] | None] = {}
+            while True:
+                try:
+                    _lkey, _lval = self._member_slots_unconfirmed.popitem()
+                except KeyError:
+                    break
+                _lost[_lkey] = _lval
+            prev = dict(prev)
+            for _lk, _lwho in _lost.items():
+                if _lwho is None:
+                    prev.pop(_lk, None)
+                else:
+                    prev[_lk] = _lwho
+            self._member_driven_slots_seen = prev
+        # Drained IN PLACE and BEFORE the comparison, for two reasons. In place,
+        # because an in-flight worker holds this list by reference exactly as it
+        # holds the map. Before, because a retry must not depend on the slots
+        # having changed: a slot whose open failed and which is still open makes
+        # `current == prev`, so anything inside the comparison below would never
+        # run and the open would wait for an unrelated slot to move.
+        _retry: list[tuple[str, tuple[str, str], str, dict]] = []
+        while self._member_slots_retry:
+            _retry.append(self._member_slots_retry.pop(0))
+        if current != prev or _retry:
+            # emit fsyncs, so collect the (member, type, data) tuples and
+            # offload the writes: _do_slots_broadcast runs on the gateway
+            # loop and a synchronous durability barrier per slot transition
+            # would stall every concurrent session. The member's LOG ID is
+            # resolved inside that worker, not here: a member may carry an
+            # explicit `member_id` and only member_slug honours it, but it
+            # reads the config, which this path must not do on the loop.
+            # Retries FIRST: a re-emitted open has to reach the log ahead of the
+            # close computed for the same key below, or the ledger records a close
+            # with no open before it.
+            _emits: list[tuple[str, tuple[str, str], str, dict]] = list(_retry)
+            for _sk, _who in current.items():
+                if _sk not in prev:
+                    _emits.append((_sk, _who, SLOT_OPENED, {"slot_key": _sk}))
+            for _sk, _who in prev.items():
+                if _sk not in current:
+                    _emits.append(
+                        (
+                            _sk,
+                            _who,
+                            SLOT_CLOSED,
+                            {"slot_key": _sk, "reason": "closed"},
+                        )
+                    )
+
+            def _emit_slots(
+                events: list[tuple[str, tuple[str, str], str, dict]] = _emits,
+                unconfirmed: dict[str, tuple[str, str] | None] = (self._member_slots_unconfirmed),
+                retry: list[tuple[str, tuple[str, str], str, dict]] = (self._member_slots_retry),
+            ) -> None:
+                def _report(
+                    _key: str, _slug_in: str, _store_in: str, _etype: str, _data: dict
+                ) -> None:
+                    # A close goes through the checkpoint: putting the key BACK is
+                    # what makes the next comparison recompute it.
+                    if _etype == SLOT_CLOSED:
+                        unconfirmed[_key] = (_slug_in, _store_in)
+                        return
+                    # An open is retried VERBATIM and the checkpoint is left
+                    # alone. Popping the key instead only recomputes the open
+                    # while the slot is still open; if it closed in this window
+                    # the comparison computes nothing and the episode is lost for
+                    # the life of the process. Leaving the checkpoint claiming the
+                    # open means a later close is still computed normally, and
+                    # this entry is re-emitted ahead of it.
+                    retry.append((_key, (_slug_in, _store_in), _etype, _data))
+
+                for _key, (_slug_in, _store_in), _etype, _data in events:
+                    try:
+                        _slug = _slug_in
+                        if not _slug and _store_in:
+                            # Case (b): the config read this path may not do on
+                            # the loop is safe here, in the worker.
+                            from kiro_crew.config.loader import KiroCrewConfig
+
+                            _rec = KiroCrewConfig.load().memory_stores.get(_store_in)
+                            _owner = getattr(_rec, "owner_member", "") if _rec else ""
+                            if _owner:
+                                _slug = member_slug(_owner)
+                        # `name` is left empty on purpose: `emit` passes
+                        # `name or slug` to `ensure`, whose _resolved_name looks
+                        # the exact name up in the roster, so the name is
+                        # resolved once per member rather than per event.
+                        if not eventlog_hooks.emit(_slug, "", _etype, _data):
+                            # Reported, not swallowed. The checkpoint already
+                            # counts this transition as handed over, so without
+                            # this the loss is permanent for the life of the
+                            # process: the next broadcast compares against a
+                            # checkpoint that claims the event was written.
+                            _report(_key, _slug_in, _store_in, _etype, _data)
+                    except Exception:
+                        _report(_key, _slug_in, _store_in, _etype, _data)
+                        logger.debug("slot event-log emit failed", exc_info=True)
+
+            # The checkpoint advances only once the transitions are HANDED
+            # OVER. `submit` is bounded and can refuse, and this checkpoint is
+            # the only record of what is still unwritten: advancing it first
+            # turns a refusal into permanent staleness, because the next
+            # broadcast compares against `current` and computes no transitions
+            # to retry. Leaving it at `prev` instead means the next broadcast
+            # recomputes the same set and hands it over again.
+            if _emits:
+                # No running-loop check: `submit` queues on the ordered
+                # executor whether or not a loop is running, and queuing
+                # BOTH paths is what keeps them in one order. Running a
+                # no-loop caller inline instead would let it reach the log
+                # ahead of an append already queued by a loop caller.
+                if eventlog_hooks.submit(_emit_slots):
+                    self._member_driven_slots_seen = current
+            else:
+                # A change with no open or close (a slot's store changed under
+                # the same key) has nothing to hand over, so holding the
+                # checkpoint back would recompute an empty set forever.
+                self._member_driven_slots_seen = current
+    except Exception:
+        logger.debug("slot open/close event-log hook failed", exc_info=True)
+
+
+def _lineage_rows(self: DashboardState) -> list[dict[str, Any]]:
+    """One row per live slot carrying exactly what the lineage join reads.
+
+    The key, plus the two mint-witness fields ``serialize_slot`` writes for the
+    full frame. A child dispatched and not yet run has no node in the fold, and
+    the join nests it from ``created_by`` only when ``lineage_minted`` vouches for
+    it, so a row with the key alone would answer ``parent: None`` for that child
+    and a patch would detach a session the full frame nests.
+    """
+    under_construction = getattr(self, "_slots_under_construction", None) or ()
+    rows: list[dict[str, Any]] = []
+    for k, slot in list(self._slots.items()):
+        if k in under_construction:
+            continue
+        rows.append(
+            {
+                "key": k,
+                "created_by": getattr(slot, "_created_by", ""),
+                "lineage_minted": bool(getattr(slot, "_lineage_minted", False)),
+            }
+        )
+    return rows

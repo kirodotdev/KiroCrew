@@ -2194,7 +2194,7 @@ already-published one. The two sets are duplicated rather than shared to avoid a
 `/api/apps/` literal routes in `apps/routes.py`.
 
 Writers: `dashboard/ws_event_scope.py`, `dashboard/ws.py` (connect-time scope
-resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
+resolution), `dashboard/state_parts/slots_push.py` (`_send_ws_all`, `_ws_client_allowed`,
 `_serialize_for_client`), `dashboard/state_parts/slot_directory.py` (`SlotOrigin`),
 `dashboard/token_auth_app_scope.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,

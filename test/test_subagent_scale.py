@@ -1880,7 +1880,7 @@ class TestWaveDigest:
         and ``_subagent_done`` returns — so the run loop would settle on that
         bare return, exactly as it did for the direct branch.
 
-        ``slot._queue`` is a plain in-memory list (``state.py``): the
+        ``slot._queue`` is a plain in-memory list (``state_parts/chat_slot.py``): the
         ``"queued"`` role is in ``chat_persistence._TRANSIENT_ROLES`` and no
         producer writes it to disk. ``_run_chat``'s ``finally`` drains it on any
         exit path *within the process*, which is why the enqueue looks durable —

@@ -443,8 +443,8 @@ class TestARefusedSubmitLeavesTheTransitionsRetryable:
             handovers.append(fn)
             return accept["ok"]
 
-        # Patched on the real module: state.py imports eventlog_hooks INSIDE the
-        # method, so there is no module-level attribute to stand in for.
+        # Patched on the real module: state_parts/slot_directory.py imports eventlog_hooks INSIDE
+        # the method, so there is no module-level attribute to stand in for.
         import kiro_crew.eventlog_hooks as hooks_module
 
         monkeypatch.setattr(hooks_module, "submit", _fake_submit)

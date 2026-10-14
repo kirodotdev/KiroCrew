@@ -1,7 +1,8 @@
 """``dashboard/state.py`` keeps its BASE surface while its code lives in ``state_parts``.
 
-``kiro_crew.dashboard.state`` was one module. Its helpers and the ``_ChatSlot`` class
-now live in ``kiro_crew.dashboard.state_parts`` (see that package's docstring), and the
+``kiro_crew.dashboard.state`` was one module. Its helpers, the ``_ChatSlot`` class and
+``DashboardState`` now live in ``kiro_crew.dashboard.state_parts`` (see that package's
+docstring), and the
 facade imports them back and installs ``kiro_crew._facade_mirror`` so a patch of
 ``kiro_crew.dashboard.state.<name>`` reaches every owner that reads it. These tests
 freeze what the split must not change, measured on the one-module file:
@@ -18,6 +19,7 @@ freeze what the split must not change, measured on the one-module file:
 * owners never import the facade, nothing else in ``src`` imports an owner, and a
   global rebound with ``global`` has exactly one holder.
 
+``DashboardState``'s own inventory is frozen in ``test_state_parts_dashboard_state.py``.
 Each structural check has a self-test that shows it can fail.
 """
 
@@ -121,12 +123,12 @@ _BASE_MODULE_NAMES = frozenset("""
     load_window_off_loop logger logging mint_row_mid mint_tags_revision mkdirs_owner_only
     monotonic_transcript_ts native_subagent_output_tail normalize_note note_crew_log_class os
     owner_only_opener parse_cls_meta parse_hook_continuations payload_from_legacy
-    queue_persist_signature redact_credentials redact_exfiltration_urls remediation_for
-    request_slot_origin resolve_effective_agent row_mid safe_read_file_bytes_nolink
-    safety_override seed_default_grants seed_status_identity_rows sel set_build_info
-    should_queue_hook_continuation should_queue_refusal_recovery split_namespaced_channel_id
-    steer_refusal_notice strip_markdown_preview stuck_turn_notice sweep_expired_notifications
-    sys threading time turn_ceiling uuid weakref web
+    pinned_session_order queue_persist_signature redact_credentials redact_exfiltration_urls
+    remediation_for request_slot_origin resolve_effective_agent row_mid
+    safe_read_file_bytes_nolink safety_override seed_default_grants seed_status_identity_rows
+    sel set_build_info should_queue_hook_continuation should_queue_refusal_recovery
+    split_namespaced_channel_id steer_refusal_notice strip_markdown_preview stuck_turn_notice
+    sweep_expired_notifications sys threading time turn_ceiling uuid weakref web
     """.split())
 #: BASE imports of stdlib and typing names that nothing reads through the facade (no
 #: importer, no patch target), so the facade does not import them.
@@ -673,6 +675,7 @@ _SINGLE_HOLDER = {
     "_notification_io_pool": "notification_log",
     "_lineage_seed_in_flight": "slots_frame",
     "_lineage_failure_warned": "slots_frame",
+    "_build_info": "dashboard_state",
 }
 
 

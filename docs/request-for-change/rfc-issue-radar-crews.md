@@ -360,7 +360,7 @@ own usage shards (3,241 records over 10 days):
 | a busy real session today | 79 turns, 1,005 credits, 12.7/turn |
 
 Anything appended to `slot.messages` **accumulates**: a nudge is appended as a user
-message (`state.py`, `enqueue_or_run_prompt`), and so is a tool result
+message (`state_parts/chat_slot.py`, `enqueue_or_run_prompt`), and so is a tool result
 (`dashboard/chat_runner.py`). A brief re-sent on all ~80 turns of a day is therefore
 present ~80 times, costing about 0.5·N² ≈ **3,200 credits/day/crew** — three times
 the entire real session above. Reading it from a file each turn is worse still: the

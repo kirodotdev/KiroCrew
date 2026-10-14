@@ -33,7 +33,7 @@ from kiro_crew.dashboard.state_parts.slot_turns import _log_task_exception
 from kiro_crew.security.credential_sources import CredentialEvidence
 
 if TYPE_CHECKING:
-    from kiro_crew.dashboard import DashboardState
+    from kiro_crew.dashboard.state_parts.dashboard_state import DashboardState
     from kiro_crew.subagent import SubagentDelivery
     from kiro_crew.trust_patterns import GrantDeadline
 

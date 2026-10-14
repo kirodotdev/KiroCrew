@@ -427,7 +427,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 app=request.get("app", ""),
                 origin=request_slot_origin(request.get("app", ""), cron_creator=cron_creator),
                 # Human request-layer path: the dashboard new-chat tab. The
-                # origin conjunct in state.py still excludes app-token callers.
+                # origin conjunct in state_parts/slot_directory.py still excludes app-token callers.
                 # A slot an attested cron opens is not a person's and is not
                 # counted.
                 count_user_session=not cron_creator,

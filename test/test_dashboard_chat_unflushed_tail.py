@@ -343,8 +343,8 @@ class TestSlotDetailPaginationUnflushedTail:
         on-disk window region, ``all_msgs[_disk_older_count:]``, may fund a match.
 
         Reachable because a caller-supplied ``mid`` is preserved rather than re-minted
-        (``state.py:1801-1803``), which is what lets a redelivered row carry an id
-        whose original has since been paged into the prefix.
+        (``state_parts/slot_transcript.py`` ``append``), which is what lets a redelivered row carry
+        an id whose original has since been paged into the prefix.
         """
         from types import SimpleNamespace
 

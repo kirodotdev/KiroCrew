@@ -108,7 +108,7 @@ The nine hand-edited seams reduce to **one required edit** (register the descrip
 |---|---|
 | `slack/gateway.py` members tuple + start call | registry iterates descriptors |
 | `dashboard/handlers_system.py` members | derived from registry |
-| `dashboard/state.py` per-channel fields | generic `channel_state[type] = {connected, error}` map |
+| `dashboard/state_parts/dashboard_state.py` per-channel fields | generic `channel_state[type] = {connected, error}` map |
 | `sandbox_tiers.py` denylist entries | derived from descriptor cred fields |
 | `dashboard/server.py` per-channel config routes | generic `/api/channels/{name}/config` |
 | governance contract test | stays, as the tripwire pinning membership |

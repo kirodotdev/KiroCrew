@@ -343,7 +343,7 @@ message. Phase 7 expresses it as exactly that subscription.
 
 The wake is an injected message in the family
 [`injected-messages.md`](../system-specs/common/injected-messages.md) defines.
-Its prefix constant lives in `dashboard/state.py` beside the others, the
+Its prefix constant lives in `dashboard/state_parts/injected_turns.py` beside the others, the
 frontend mirrors it, and classification is `str.startswith`.
 
 ```text
@@ -567,7 +567,7 @@ it never decides what is allowed.
 | PR | Delivers | Deletes |
 |---|---|---|
 | 0 | this RFC only. The Phase 0 baseline (§2.3) is a measurement taken before PR 2, not a deliverable of any PR | — |
-| 1 | **Trust boundary.** The `hook:` prefix lift on `/api/hooks/agent`: a valid caller may name an existing dashboard session, the delivery queues when that session is busy, and it is wrapped in the redacted, untrusted-framed `[Webhook wake]` envelope (§4, §5.5) with the prefix constant in `dashboard/state.py` and its `injected-messages.md` section. Small and reviewable as a security change on its own; nothing else moves | — |
+| 1 | **Trust boundary.** The `hook:` prefix lift on `/api/hooks/agent`: a valid caller may name an existing dashboard session, the delivery queues when that session is busy, and it is wrapped in the redacted, untrusted-framed `[Webhook wake]` envelope (§4, §5.5) with the prefix constant in `dashboard/state_parts/injected_turns.py` and its `injected-messages.md` section. Small and reviewable as a security change on its own; nothing else moves | — |
 | 2 | **Core.** `webhooks.py` → `webhooks/` package: source entries gain `scheme`/`slug`/`mapping`; event buffer and subscription store; dispatcher task; `session` consumer over the queued-inject path; generic JSON and peer-session sources at `POST /api/hooks/in?src=<slug>` together with its one exact-path, POST-only `_BYPASS_EXACT_METHODS` entry (the entry lands with the route it protects, so that security review reads both); `docs/system-specs/modules/webhooks.md`. Reachable through the HTTP API only; no UI, CLI or MCP surface yet | — |
 | 3 | **Surfaces.** Webhooks page tabs (Sources, Subscriptions, Events with replay), `kirocrew webhook` CLI, `webhook_*` MCP tools (§9); spec section for each | — |
 | 4 | `github-hmac` scheme, GitHub mapping and reconcile probe; Funnel opt-in for the path `/api/hooks/in` in `tailnet_serve.py`; IP allowlist; migrate the operator's two 30-minute sessions to subscriptions and report against the Phase 0 baseline | the two cron jobs, once the baseline shows the subscriptions cover them |

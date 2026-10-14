@@ -156,7 +156,7 @@
   "sweep_expired_notifications",
   "turn_ceiling"
  ],
- "note": "dashboard/state.py stays the import path; its helpers and the _ChatSlot class live in dashboard/state_parts/ owners, served through kiro_crew._facade_mirror.",
+ "note": "dashboard/state.py stays the import path; its helpers, the _ChatSlot class and DashboardState live in dashboard/state_parts/ owners, served through kiro_crew._facade_mirror.",
  "rebound": {
   "BUSY_RECOVERY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
   "COMPACTION_RECOVERY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
@@ -165,6 +165,7 @@
   "CRON_NOTIFY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
   "CRON_NOTIFY_RE": "kiro_crew.dashboard.state_parts.injected_turns",
   "CrewLogPrevious": "kiro_crew.dashboard.state_parts.slot_session",
+  "DashboardState": "kiro_crew.dashboard.state_parts.dashboard_state",
   "EMPTY_RESPONSE_RECOVERY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
   "HOOK_CONTINUATION_RECOVERY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
   "HOOK_HALTED_RECOVERY_PREFIX": "kiro_crew.dashboard.state_parts.injected_turns",
@@ -216,7 +217,9 @@
   "note_crew_log_class": "kiro_crew.dashboard.state_parts.session_events",
   "parse_cls_meta": "kiro_crew.dashboard.state_parts.transcript_rows",
   "parse_hook_continuations": "kiro_crew.dashboard.state_parts.injected_turns",
+  "request_slot_origin": "kiro_crew.dashboard.state_parts.slot_directory",
   "row_mid": "kiro_crew.dashboard.state_parts.transcript_rows",
+  "set_build_info": "kiro_crew.dashboard.state_parts.dashboard_state",
   "should_queue_hook_continuation": "kiro_crew.dashboard.state_parts.injected_turns",
   "should_queue_refusal_recovery": "kiro_crew.dashboard.state_parts.injected_turns",
   "stuck_turn_notice": "kiro_crew.dashboard.state_parts.session_events",

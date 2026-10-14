@@ -528,11 +528,15 @@ def test_the_dashboard_subscribes_to_the_hook():
     WARNING line in a journal nobody reads.
     """
     import inspect
+    from pathlib import Path
 
     from kiro_crew.dashboard import state as state_mod
     from kiro_crew.session import SessionManager
 
-    src = inspect.getsource(state_mod.DashboardState)
+    owners = sorted((Path(state_mod.__file__).parent / "state_parts").glob("*.py"))
+    src = inspect.getsource(state_mod.DashboardState) + "\n".join(
+        path.read_text(encoding="utf-8") for path in owners
+    )
     assert "self.sessions.on_stuck_turn = " in src, "dashboard no longer subscribes"
     # …and the name it assigns really exists on the producer.
     assert "on_stuck_turn" in SessionManager.__init__.__code__.co_names

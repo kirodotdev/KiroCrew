@@ -1115,7 +1115,11 @@ def test_the_retirement_stamp_goes_when_the_slot_is_definitively_removed(service
     lifecycle.forget_retired(slot.key)
     assert slot.key not in lifecycle._retired
 
-    source = Path(state_module.__file__).read_text(encoding="utf-8")
+    state_file = Path(state_module.__file__)
+    source = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (state_file, *sorted((state_file.parent / "state_parts").glob("*.py")))
+    )
     # The definitive-removal path drops the card; it has to drop the stamp beside it.
     assert source.count("self._dynamic_cards.forget_retired(key)") == 1
     drop_card = source.index("self._dynamic_cards.forget_derived(key)")

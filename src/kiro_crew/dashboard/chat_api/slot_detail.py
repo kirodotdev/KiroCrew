@@ -305,8 +305,8 @@ def _same_persisted_body(
     verbatim (``chat_persistence.py:708-709``), so the window holds the redacted
     text; a save redacts every non-user role on the way out
     (``chat_persistence.py:1282-1284``) while the window keeps it verbatim
-    (``state.py:2107``), so in a session that was never restored the DISK holds the
-    redacted text instead. Redacting one side only cannot converge on that second
+    (``state_parts/slot_transcript.py`` ``append``), so in a session that was never restored the
+    DISK holds the redacted text instead. Redacting one side only cannot converge on that second
     pair — redacting an already-redacted body just reproduces it — so the row reads
     as un-flushed and the persisted suffix is appended twice.
 
@@ -376,8 +376,8 @@ def _snapshot_slot_window(slot: "_ChatSlot") -> tuple[int, list[dict]]:
     there, which is why capturing inside the threaded scan is the weaker option.
 
     From a thread the pair can still tear, so retry: a front trim bumps
-    ``_disk_older_count`` (state.py:2191-2200) between the reads, and a PRE-trim
-    window paired with a POST-trim count shortens ``window_disk``, hides the
+    ``_disk_older_count`` (``state_parts/slot_transcript.py`` ``append``) between the reads, and a
+    PRE-trim window paired with a POST-trim count shortens ``window_disk``, hides the
     trimmed rows' ids and re-appends rows the disk read already returned. A trim
     is the only mutation that changes the window/count relationship, so read the
     count, copy the window, then confirm the count is unchanged. ``slot._lock``

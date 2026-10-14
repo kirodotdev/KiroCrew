@@ -176,7 +176,7 @@ appends every other JSON line verbatim (`history_projection.py`,
 `TranscriptReadProjection`).
 
 One thing to *not* do: leave the new role out of `_QUESTION_RETIRING_ROLES`
-(`dashboard/state.py`, currently `{user}`, mirrored by the frontend's
+(`dashboard/state_parts/slot_transcript.py`, currently `{user}`, mirrored by the frontend's
 `QUESTION_RETIRING_ROLES`). A marker must not retire a pending question card.
 Default behaviour is already correct; this is a note against a well-meaning later
 edit.
@@ -402,11 +402,11 @@ stacked.
 ### 5.9 Persistence
 
 No new storage. `Slot.append(role=…, content=…, meta=…)`
-(`dashboard/state.py`) → in-memory window → `_build_message_entry_uncached`
+(`dashboard/state_parts/slot_transcript.py`) → in-memory window → `_build_message_entry_uncached`
 (`dashboard/slot_persistence/message_entries.py`) → the session jsonl. `meta` persists for
 all roles, carrying the label. The role is not in the
 never-persisted transient set `{chunk, done, streaming, queued, permission}`
-(`dashboard/state.py`).
+(`dashboard/state_parts/transcript_rows.py`).
 
 ## 6. Phases
 
@@ -568,7 +568,7 @@ rendering preference a client can compute; it is an assertion about the work.
 conversational ones.* A view-only event is not a new category. `RECALL_ROLES` is
 `{user, assistant, inject}` (`context_assembly/replay.py`), and the only roles excluded from
 the transcript are the transient/streaming set
-`{chunk, done, streaming, queued, permission}` (`dashboard/state.py`).
+`{chunk, done, streaming, queued, permission}` (`dashboard/state_parts/transcript_rows.py`).
 Everything else persists *and* is never replayed to a model — `tool`, `error`,
 `subagent`, `system`, `file`. Measured across a sample of 60 dashboard transcripts
 (5,664 rows): **3,152 rows — 55.6% — are persisted and non-recall-eligible**, of
@@ -670,7 +670,7 @@ marker would vanish on one of the two write paths.
    whether the virtualizer needs more than a shorter `items` array, or whether
    scroll anchoring needs a hint at the collapse boundary.
 6. **Fork and transfer.** `chat_fork` and `session_transfer` re-append historical
-   rows with `broadcast=False` (`dashboard/state.py`). Should a fork
+   rows with `broadcast=False` (`dashboard/state_parts/slot_transcript.py`). Should a fork
    inherit markers, and should the fork point itself become one?
 7. **Interaction with `collapseAllSteps`.** Should the global setting
    (`pages/chat/ChatSettings.tsx`) gain a sibling for section collapse, or is

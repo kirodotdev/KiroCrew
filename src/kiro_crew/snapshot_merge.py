@@ -1082,8 +1082,8 @@ def _serialise_with_notification_writes(work: Callable[[], None]) -> None:
     Relying on that executor for ordering means its own CREATION has to be ordered too.
     An unlocked check-then-set would let two threads each observe ``None``, each build a
     pool, and never be serialised against one another -- which would void this guarantee
-    rather than weaken it. ``dashboard/state.py`` takes a lock around the lazy init, so
-    acquiring the executor is itself race-free.
+    rather than weaken it. ``dashboard/state_parts/notification_log.py`` takes a lock around the
+    lazy init, so acquiring the executor is itself race-free.
     """
     try:
         from kiro_crew.dashboard import state as dashboard_state

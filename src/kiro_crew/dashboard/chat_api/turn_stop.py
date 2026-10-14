@@ -243,7 +243,7 @@ def _make_stop_resolver(
     and clears it once it has settled the card, so a state gate buys nothing
     there. What the state gate did buy was a bug. A turn tearing down
     concurrently drives `_stop_state` back to "idle" (`_finish_queue_cycle` in
-    chat_runner.py, through the `_stopping` setter in state.py), and that
+    chat_runner.py, through the `_stopping` setter in state_parts/chat_slot.py), and that
     teardown races the escalation. When teardown won, the hard callback bailed,
     `_resolve_stop_event` never ran, and the card pulsed at "stopping" for the
     rest of the session instead of settling to "stop_failed_reset".

@@ -201,7 +201,7 @@ def test_engine_is_injectable_where_the_ec2_engine_is() -> None:
     cannot stand in for this -- and adding that decorator to someone else's
     Protocol to make a test pass would be the wrong direction. Instead this
     exercises what actually resolves the engine: ``handlers_cloud._engine`` reads
-    ``state.cloud_launch_engine`` (typed ``Any`` at ``state.py:5254``) and returns
+    ``state.cloud_launch_engine`` (typed ``Any`` in ``state_parts/dashboard_state.py``) and returns
     the injected hook ahead of the provisioner seam.
     """
     from kiro_crew.dashboard import handlers_cloud

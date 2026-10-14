@@ -2034,7 +2034,7 @@ register_ceiling_install_hook(_on_ceiling_installed)
 #
 # This helper exists so the dashboard's status field and the per-tool-call
 # enforcement predicate cannot disagree. A second TTL cache of the same question
-# in ``dashboard/state.py`` would drift from this one: one mechanism cannot
+# in ``dashboard/state_parts/status_payload.py`` would drift from this one: one mechanism cannot
 # drift from itself.
 
 
