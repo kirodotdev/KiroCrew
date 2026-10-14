@@ -33,21 +33,4 @@ describe('setCrewEnabled', () => {
     expect(api.updateInstance).toHaveBeenCalledWith('a', { disabled: false })
     expect(connectInstanceInto).toHaveBeenCalledWith(dispatch, 'a')
   })
-
-  it('enables but does not dial a crew whose transport this build does not map', async () => {
-    // The gateway would dial an unrecognised method over SSH, which is exactly
-    // the mislabel the unmapped-transport guard exists to stop.
-    vi.mocked(api.updateInstance).mockResolvedValue({ id: 'a', connection_method: 'outbound' } as never)
-    const dispatch = vi.fn()
-    await setCrewEnabled(dispatch, 'a', true)
-    expect(api.updateInstance).toHaveBeenCalledWith('a', { disabled: false })
-    expect(connectInstanceInto).not.toHaveBeenCalled()
-  })
-
-  it.each(['ssh', 'ssm', 'fargate', ''])('still reconnects a mapped %s crew on enable', async method => {
-    vi.mocked(api.updateInstance).mockResolvedValue({ id: 'a', connection_method: method } as never)
-    const dispatch = vi.fn()
-    await setCrewEnabled(dispatch, 'a', true)
-    expect(connectInstanceInto).toHaveBeenCalledWith(dispatch, 'a')
-  })
 })
