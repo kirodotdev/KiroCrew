@@ -1146,6 +1146,19 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     }
   },
   {
+    "id": "chat.max-automatic-resumes-per-chat",
+    "label": "Max automatic resumes per chat",
+    "labelKey": "pages.settings.chatPanel.resume_retry_limit",
+    "hint": "Restart and error resumes counted together.",
+    "tab": "chat",
+    "type": "stepper",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_retry_limit"
+  },
+  {
     "id": "chat.mcp-apps-in-side-panel",
     "label": "MCP Apps in Side Panel",
     "labelKey": "pages.settings.chatPanel.mcp_apps_in_side_panel",
@@ -1327,6 +1340,31 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "params": {
       "sub": "sessions"
     }
+  },
+  {
+    "id": "chat.resume-interrupted-turns-automatically",
+    "label": "Resume interrupted turns automatically",
+    "labelKey": "pages.settings.chatPanel.resume_interrupted_turns",
+    "description": "After the app restarts, or after a turn ends in an error a retry can fix, Kiro Crew presses Resume for you, up to the per-chat limit below.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_interrupted_turns"
+  },
+  {
+    "id": "chat.resume-limit-window",
+    "label": "Resume limit window",
+    "labelKey": "pages.settings.chatPanel.resume_retry_window",
+    "tab": "chat",
+    "type": "select",
+    "occurrence": 1,
+    "params": {
+      "sub": "sessions"
+    },
+    "configKey": "dashboard.resume_retry_window_minutes"
   },
   {
     "id": "chat.selectable-models",

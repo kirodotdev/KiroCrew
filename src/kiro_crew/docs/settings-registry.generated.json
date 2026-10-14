@@ -637,6 +637,14 @@
       "description": "Show a favicon and page title instead of the raw URL. This machine then fetches every link the model outputs, so each linked site sees a request from your IP address."
     },
     {
+      "id": "chat.max-automatic-resumes-per-chat",
+      "label": "Max automatic resumes per chat",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.resume_retry_limit",
+      "hint": "Restart and error resumes counted together.",
+      "configKey": "dashboard.resume_retry_limit"
+    },
+    {
       "id": "chat.mcp-apps-in-side-panel",
       "label": "MCP Apps in Side Panel",
       "tab": "chat",
@@ -743,6 +751,21 @@
       "tab": "chat",
       "route": "/settings/chat/sessions?highlight=chat.restore-window",
       "hint": "Time window for session restoration"
+    },
+    {
+      "id": "chat.resume-interrupted-turns-automatically",
+      "label": "Resume interrupted turns automatically",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.resume_interrupted_turns",
+      "description": "After the app restarts, or after a turn ends in an error a retry can fix, Kiro Crew presses Resume for you, up to the per-chat limit below.",
+      "configKey": "dashboard.resume_interrupted_turns"
+    },
+    {
+      "id": "chat.resume-limit-window",
+      "label": "Resume limit window",
+      "tab": "chat",
+      "route": "/settings/chat/sessions?highlight=key%3Adashboard.resume_retry_window_minutes",
+      "configKey": "dashboard.resume_retry_window_minutes"
     },
     {
       "id": "chat.selectable-models",

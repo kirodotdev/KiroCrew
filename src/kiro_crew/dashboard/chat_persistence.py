@@ -66,6 +66,8 @@ from kiro_crew.config.loader import (  # noqa: F401
     config_dir,
 )
 from kiro_crew.dashboard import display_verdicts as _display_verdicts
+from kiro_crew.dashboard.approval_mode_record import live_approval_mode  # noqa: F401
+from kiro_crew.dashboard.auto_resume_stamps import read_persisted_stamps  # noqa: F401
 from kiro_crew.dashboard.channel_slots import slot_closed_since
 from kiro_crew.dashboard.chat_delivery import (  # noqa: F401
     ATTACHMENT_LIST_MAX_ITEMS,

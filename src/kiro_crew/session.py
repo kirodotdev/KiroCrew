@@ -780,6 +780,8 @@ class SessionManager:
     stop_turn = _teardown.stop_turn
     stop_generation = _teardown.stop_generation
     note_stop = _teardown.note_stop
+    arm_resume = _teardown.arm_resume
+    disarm_resume = _teardown.disarm_resume
     open_replay_gap = _teardown.open_replay_gap
     close_replay_gap = _teardown.close_replay_gap
     await_replay_gap = _teardown.await_replay_gap

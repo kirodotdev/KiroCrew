@@ -18,8 +18,8 @@ import time
 from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew.dashboard.chat_utils import (
+    RETRY_INVITED_KIND,
     TRANSIENT_GIVE_UP_TEXT,
-    TRANSIENT_NOTICE_GIVE_UP,
     TRANSIENT_NOTICE_META_KEY,
     TRANSIENT_NOTICE_RESUMING,
     TRANSIENT_NOTICE_RETRYING,
@@ -30,6 +30,7 @@ from kiro_crew.dashboard.chat_utils import (
     ResetCause,
     build_recovery_requeue,
     payload_for_replay,
+    transient_give_up_meta,
 )
 from kiro_crew.dashboard.recovery_replays import replays_of
 from kiro_crew.dashboard.state import _TURN_CONTINUING_INJECT_KINDS
@@ -126,7 +127,8 @@ async def _recover_posttoken_transient(
     # give-up token so the dashboard keeps it on the ErrorCard (whose
     # Continue affordance is the way forward) instead of a soft notice
     # reading "resuming…" forever.
-    _will_recover = not _should_suppress_requeue(slot) and _prompt_depth == 0
+    _stop_active = _should_suppress_requeue(slot)
+    _will_recover = not _stop_active and _prompt_depth == 0
     if _will_recover:
         slot.append(
             "error",
@@ -142,7 +144,7 @@ async def _recover_posttoken_transient(
             "error",
             TRANSIENT_GIVE_UP_TEXT,
             "msg msg-err",
-            meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
+            meta=transient_give_up_meta(stopped=_stop_active),
         )
     if _will_recover:
         _delay = transient_retry_delay(1)  # single short backoff (one-shot)
@@ -177,7 +179,8 @@ async def _recover_posttoken_transient(
         _posttoken_took_over = bool(
             _has_user_queued_followup(slot) or getattr(slot, "_pending_steers", None)
         )
-        if _should_suppress_requeue(slot) or _stop_pressed() or _posttoken_took_over:
+        _stop_caused = _should_suppress_requeue(slot) or _stop_pressed()
+        if _stop_caused or _posttoken_took_over:
             # nosemgrep: python.lang.security.audit.logging.logger-credential-leak.python-logger-credential-disclosure -- the rule matches the word "token" in "Post-token" (this arm runs on `_turn_emitted`, i.e. after the turn streamed its first token); the format string holds no secret and every interpolated value is non-sensitive: a session slot key, a float delay and a bool  # noqa: E501
             logger.info(
                 "Post-token CONTINUE re-prompt dropped for slot %s — the user "
@@ -195,7 +198,10 @@ async def _recover_posttoken_transient(
                 "error",
                 TRANSIENT_GIVE_UP_TEXT,
                 "msg msg-err",
-                meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
+                # Says whether the Stop caused it: a Stop from a linked channel
+                # writes no Stop card here, and the automatic error pass must
+                # not resume a turn the person stopped.
+                meta=transient_give_up_meta(stopped=_stop_caused),
             )
             # Nothing to hand back: this arm counts no attempt, and the
             # one-shot is consumed BELOW the wait precisely so a retry
@@ -355,9 +361,15 @@ async def _on_process_died(turn: _ChatTurn, exc) -> None:
                 "error",
                 "The agent process this chat shares kept restarting — please retry.",
                 "msg msg-err",
+                meta={"kind": RETRY_INVITED_KIND},
             )
     else:
-        slot.append("error", "⟳ Connection lost — please retry.", "msg msg-err")
+        slot.append(
+            "error",
+            "⟳ Connection lost — please retry.",
+            "msg msg-err",
+            meta={"kind": RETRY_INVITED_KIND},
+        )
 
 
 async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
@@ -438,6 +450,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
                 "error",
                 "The agent process this chat shares kept restarting — please retry.",
                 "msg msg-err",
+                meta={"kind": RETRY_INVITED_KIND},
             )
     elif _prompt_depth == 0:
         # Single emit (see the _on_process_died note): slot.append persists +
@@ -479,7 +492,7 @@ async def _on_acp_retryable(turn: _ChatTurn, exc) -> None:
             if _is_pipe_death
             else "⟳ Session busy — please retry."
         )
-        slot.append("error", _retry_msg, "msg msg-err")
+        slot.append("error", _retry_msg, "msg msg-err", meta={"kind": RETRY_INVITED_KIND})
 
 
 async def _on_acp_session_not_found(turn: _ChatTurn, exc) -> None:
@@ -858,7 +871,9 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
                 "error",
                 TRANSIENT_GIVE_UP_TEXT,
                 "msg msg-err",
-                meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
+                # The Stop caused it: a Stop from a linked channel writes no Stop card
+                # here, and the automatic error pass must not resume a stopped turn.
+                meta=transient_give_up_meta(stopped=True),
             )
             # A NO-REQUEUE exit ENDS the turn, so this arm owes the same
             # per-turn budget refresh as `_on_acp_error_card` and the landed arm in
@@ -892,7 +907,7 @@ async def _on_acp_transient_retry(turn: _ChatTurn, exc) -> None:
             "error",
             TRANSIENT_GIVE_UP_TEXT,
             "msg msg-err",
-            meta={TRANSIENT_NOTICE_META_KEY: TRANSIENT_NOTICE_GIVE_UP},
+            meta=transient_give_up_meta(stopped=False),
         )
 
 

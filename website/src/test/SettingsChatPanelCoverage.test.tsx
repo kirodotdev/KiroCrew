@@ -22,10 +22,14 @@ import { act, render, screen, fireEvent, waitFor, within } from '@testing-librar
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import React from 'react'
 import { SETTINGS_CARD_STAGGER_MS } from '../components/settings'
+import { resumeWindowLabel, resumeWindowProse } from '../pages/settings/chatPanelOptions'
 
 const BASE_DASH = {
   restore_sessions: false,
   restore_window_minutes: 30,
+  resume_interrupted_turns: false,
+  resume_retry_limit: 5,
+  resume_retry_window_minutes: 60,
   merge_queued_messages: false,
   default_memory_mode: 'persistent' as const,
   widget_density: 'more' as const,
@@ -106,6 +110,7 @@ import { ApiError } from '../api/apiError'
 import { markModelsAuthRequired, markModelsDegraded } from '../providers/modelListHealth'
 import { resolveDefaultMemoryMode } from '../api/queryClient'
 import { MAX_MESSAGE_FONT_SIZE } from '../pages/chat/ChatSettings'
+import en from '../i18n/locales/en.json'
 
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
@@ -626,6 +631,7 @@ describe('ChatPanel — Sessions', () => {
     ['Split View (Session Grid)', 'session_grid', true],
     ['Tail-only Fork', 'tail_fork_enabled', true],
     ['Restore Sessions', 'restore_sessions', true],
+    ['Resume interrupted turns automatically', 'resume_interrupted_turns', true],
   ])('persists %s through the dashboard config', async (label, key, expected) => {
     wrap('sessions')
     fireEvent.click(await settledSwitch(label))
@@ -686,6 +692,214 @@ describe('ChatPanel — Sessions', () => {
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({
         restore_window_minutes: 60,
       })
+    )
+  })
+
+  it('hides the automatic-resume limit and window until the switch is on', async () => {
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    expect(document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]')).toBeNull()
+    expect(document.querySelector('[data-setting-key="dashboard.resume_retry_window_minutes"]')).toBeNull()
+  })
+
+  it('states both automatic-resume consequences in the warning the switch is described by, and what the switch does as its help', async () => {
+    wrap('sessions')
+    const sw = await settledSwitch('Resume interrupted turns automatically')
+
+    const consequenceId = sw.getAttribute('aria-describedby')
+    expect(consequenceId).toBeTruthy()
+    const warning = document.getElementById(consequenceId as string) as HTMLElement
+    // The warn hue as TEXT: plain in dark palettes, darkened in light ones so the
+    // three sentences clear the 4.5:1 floor (the plain hue is 3.4:1 on kiro-light).
+    expect(warning).toHaveClass('text-warn-text')
+    expect(warning).not.toHaveClass('text-warn')
+    expect(warning).not.toHaveClass('text-muted')
+    // The three consequences share the warning, so none reads as optional help -- one
+    // bullet each, the risk first, so none hides inside a paragraph: the irreversible one
+    // (repeated work) on its own, the routine spend on its own, then the Trust kept.
+    const bullets = within(warning).getAllByRole('listitem').map(li => li.textContent ?? '')
+    expect(bullets).toHaveLength(3)
+    expect(bullets[0]).toMatch(/^May repeat work the cut-off turn had begun/)
+    expect(bullets[0]).not.toMatch(/model turns/)
+    expect(bullets[1]).toMatch(/^Uses model turns and tool calls while you are away/)
+    // The control is named as the composer labels it -- the Trust segment of Approval mode --
+    // so the reader is not sent looking for a "Trust mode" control that does not exist.
+    expect(bullets[2]).toMatch(/^After an error, the resumed turn keeps the chat's Trust approval mode, so its tools run without asking/)
+    expect(bullets[2]).not.toMatch(/Trust mode/)
+    // The approval rule is read in one place: the restart case (a turn that needs an
+    // approval waits) is the second sentence of the Trust bullet, the boundary of that
+    // risk -- not a bullet of its own (a reassurance among the risks dilutes them) and not
+    // a grey sentence a skimmer could take for every automatic resume.
+    expect(bullets[2]).toMatch(/without asking\. After a restart, a resumed turn that needs a tool approval waits for you\.$/)
+    expect(bullets.filter(b => /waits for you/.test(b))).toHaveLength(1)
+    // The row's grey help is the plain statement of the feature, always visible, not a tooltip.
+    const help = screen.getByText(/presses Resume for you, up to the per-chat limit below\.$/)
+    expect(help).toHaveClass('text-muted')
+    expect(help.textContent).not.toContain('Trust')
+    expect(help.textContent).not.toContain('repeat work')
+    expect(help.textContent).not.toMatch(/waits for you|approval/)
+    const row = sw.closest('[data-setting-key="dashboard.resume_interrupted_turns"]') as HTMLElement
+    expect(row.querySelector('[data-settings-hint]')).toBeNull()
+  })
+
+  it('keeps the automatic-resume feature statement, the two costs and the Trust consequence in separate English catalog keys', () => {
+    const chatPanel = (en as { pages: { settings: { chatPanel: Record<string, string> } } }).pages.settings.chatPanel
+
+    expect(chatPanel.resume_interrupted_turns_description).toContain('presses Resume for you')
+    expect(chatPanel.resume_interrupted_turns_description).not.toContain('Trust')
+    // The help says what the switch does and stops; the approval rule -- both halves --
+    // is the Trust bullet's, so a skimmed help cannot read as "every resume waits".
+    expect(chatPanel.resume_interrupted_turns_description).toMatch(/up to the per-chat limit below\.$/)
+    expect(chatPanel.resume_interrupted_turns_description).not.toMatch(/waits for you|approval/)
+    expect(chatPanel.resume_interrupted_turns_consequence).toMatch(/without asking\. After a restart, a resumed turn that needs a tool approval waits for you\.$/)
+    // Each consequence opens with its risk, so a reader skimming the bullets meets the
+    // hazard first; "Trust" alone would assume they know it is a mode picked in the composer.
+    expect(chatPanel.resume_interrupted_turns_cost).toMatch(/^May repeat work the cut-off turn had begun/)
+    // The irreversible risk and the routine spend are separate bullets: one sentence holding
+    // both let the half-applied edit hide behind the cost of model turns.
+    expect(chatPanel.resume_interrupted_turns_cost).not.toMatch(/model turns/)
+    expect(chatPanel.resume_interrupted_turns_spend).toMatch(/^Uses model turns and tool calls while you are away\.$/)
+    expect(chatPanel.resume_interrupted_turns_consequence).toMatch(/^After an error, the resumed turn keeps the chat's Trust approval mode, so its tools run without asking/)
+    expect(chatPanel.resume_interrupted_turns_consequence).not.toMatch(/Trust mode/)
+    expect(chatPanel.resume_interrupted_turns_hint).toBeUndefined()
+    // The window row's description states the rule; a tip restating it would say it twice.
+    expect(chatPanel.resume_retry_window_hint).toBeUndefined()
+    // The limit is a maximum, not a count of resumes so far.
+    expect(chatPanel.resume_retry_limit).toBe('Max automatic resumes per chat')
+  })
+
+  /** The second sentence of the window row's rule, moved out of the limit stepper's tip. */
+  const RESET_RULE = ' At the limit the chat pauses and asks you to press Resume, which resets the count.'
+
+  it('states the limit and the window as one rule, with both live values, on the window row', async () => {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, resume_interrupted_turns: true, resume_retry_limit: 5, resume_retry_window_minutes: 60 }) as never
+    )
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    const windowRow = document.querySelector('[data-setting-key="dashboard.resume_retry_window_minutes"]') as HTMLElement
+
+    // The pair is on the row itself, always visible: not a tooltip, not the value alone --
+    // and the row has no tip at all, since a tip would only restate the sentence. It opens
+    // with the rule, not with a pointer back to the stepper, and spells the window out
+    // ("1 hour"): inside a sentence the select's "1h" reads like a typo. The second
+    // sentence is what the limit decides -- the chat pauses at the limit and a Resume
+    // press resets the count -- in the open, not behind the stepper's glyph: a person
+    // reads it before choosing a number.
+    // The quantity carries fmtUnit's non-breaking space, which the default matcher folds into a
+    // plain one on the query side only -- so match the raw text.
+    const raw = { normalizer: (t: string) => t }
+    const sentence = within(windowRow).getByText(`At most 5 automatic resumes per chat in any 1 hour.${RESET_RULE}`, raw)
+    expect(within(windowRow).getByRole('combobox')).toHaveTextContent('1h')
+    expect(sentence.textContent).not.toMatch(/^Together with/)
+    expect(sentence).toHaveClass('text-muted')
+    expect(within(windowRow).queryByRole('button', { name: 'More information' })).toBeNull()
+    // The limit row keeps its tip for the one detail the sentence does not carry -- that
+    // restart and error resumes share the count -- and no longer for the reset rule, which
+    // would only restate the sentence beneath it. (The hidden tip text sits on `title`.)
+    const limitRow = document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]') as HTMLElement
+    expect(within(limitRow).getByRole('button', { name: 'More information' })).toHaveAttribute(
+      'title', 'Restart and error resumes counted together.'
+    )
+  })
+
+  it('abbreviates the window in the select and spells it out in the rule', () => {
+    // The select offers seven windows; a hand-edited config can hold any 5..1440.
+    expect(resumeWindowLabel(60)).toBe('1h')
+    expect(resumeWindowLabel(5)).toBe('5m')
+    expect(resumeWindowLabel(1440)).toBe('24h')
+    // Not in the list: a localized quantity of minutes, never an empty sentence.
+    expect(resumeWindowLabel(45)).toMatch(/45/)
+    expect(resumeWindowLabel(45)).not.toBe('')
+    // The prose form: whole hours as hours, anything else as minutes, unit as a word
+    // (localized by Intl, so each locale gets its own word and plural). The space is
+    // fmtUnit's non-breaking one, so the quantity never wraps between number and unit.
+    expect(resumeWindowProse(60)).toBe('1 hour')
+    expect(resumeWindowProse(120)).toBe('2 hours')
+    expect(resumeWindowProse(1440)).toBe('24 hours')
+    expect(resumeWindowProse(5)).toBe('5 minutes')
+    expect(resumeWindowProse(45)).toBe('45 minutes')
+    expect(resumeWindowProse(60)).not.toMatch(/\d+h\b/)
+  })
+
+  it('re-states the rule as the limit steps and as the window is picked', async () => {
+    // A gateway that keeps what it was sent: the re-read after each save returns
+    // the written values, as the real one does, so the row converges on them.
+    let current = { ...BASE_DASH, resume_interrupted_turns: true, resume_retry_limit: 1, resume_retry_window_minutes: 60 }
+    dashboardConfigMock.mockImplementation(() => Promise.resolve({ ...current }) as never)
+    updateDashboardConfigMock.mockImplementation((patch: Record<string, unknown>) => {
+      current = { ...current, ...patch }
+      return Promise.resolve({ ...current }) as never
+    })
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    // A limit of one reads in the singular.
+    const raw = { normalizer: (t: string) => t }
+    expect(screen.getByText(`At most 1 automatic resume per chat in any 1 hour.${RESET_RULE}`, raw)).toBeInTheDocument()
+
+    const limitRow = document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]') as HTMLElement
+    fireEvent.click(within(limitRow).getByRole('button', { name: 'Increase' }))
+    await waitFor(() =>
+      expect(screen.getByText(`At most 2 automatic resumes per chat in any 1 hour.${RESET_RULE}`, raw)).toBeInTheDocument()
+    )
+
+    const opts = await openSelect('Resume limit window')
+    fireEvent.click(opts[4])
+    await waitFor(() =>
+      expect(screen.getByText(`At most 2 automatic resumes per chat in any 2 hours.${RESET_RULE}`, raw)).toBeInTheDocument()
+    )
+  })
+
+  /** Mount Sessions with the switch on and the limit at `limit`; returns the stepper's row. */
+  async function resumeLimitRow(limit: number) {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, resume_interrupted_turns: true, resume_retry_limit: limit }) as never
+    )
+    wrap('sessions')
+    await settledSwitch('Resume interrupted turns automatically')
+    return document.querySelector('[data-setting-key="dashboard.resume_retry_limit"]') as HTMLElement
+  }
+
+  it('steps the automatic-resume limit up and persists the new value', async () => {
+    const row = await resumeLimitRow(5)
+    fireEvent.click(within(row).getByRole('button', { name: 'Increase' }))
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 6 })
+    )
+  })
+
+  it('steps the automatic-resume limit down and persists the new value', async () => {
+    const row = await resumeLimitRow(5)
+    fireEvent.click(within(row).getByRole('button', { name: 'Decrease' }))
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 4 })
+    )
+  })
+
+  it('never writes past the ceiling of the automatic-resume limit', async () => {
+    const row = await resumeLimitRow(20)
+    fireEvent.click(within(row).getByRole('button', { name: 'Increase' }))
+    await waitFor(() => expect(updateDashboardConfigMock).toHaveBeenCalledTimes(1))
+    expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_limit: 20 })
+    expect(updateDashboardConfigMock).not.toHaveBeenCalledWith({ resume_retry_limit: 21 })
+  })
+
+  it('disables the decrement at the floor of the automatic-resume limit', async () => {
+    const row = await resumeLimitRow(1)
+    expect(within(row).getByRole('button', { name: 'Decrease' })).toBeDisabled()
+    expect(within(row).getByRole('button', { name: 'Increase' })).not.toBeDisabled()
+  })
+
+  it('offers the automatic-resume windows and persists the picked one', async () => {
+    dashboardConfigMock.mockImplementation(
+      () => Promise.resolve({ ...BASE_DASH, resume_interrupted_turns: true }) as never
+    )
+    wrap('sessions')
+    const opts = await openSelect('Resume limit window')
+    expect(opts.map(o => o.textContent)).toEqual(['5m', '15m', '30m', '1h', '2h', '4h', '24h'])
+    fireEvent.click(opts[4])
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ resume_retry_window_minutes: 120 })
     )
   })
 })

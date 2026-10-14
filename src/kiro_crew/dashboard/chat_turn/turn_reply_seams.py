@@ -9,7 +9,11 @@ import time
 from typing import TYPE_CHECKING
 
 from kiro_crew.constants import reflow_and_label_glued_option_marker
-from kiro_crew.dashboard.chat_utils import TRANSIENT_RETRY_KIND, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    RETRY_INVITED_KIND,
+    TRANSIENT_RETRY_KIND,
+    slot_history_key,
+)
 from kiro_crew.security import redact
 
 if TYPE_CHECKING:
@@ -495,37 +499,54 @@ def _steer_segment_cut(turn, *, interrupted: bool = True) -> None:
     turn.assistant_text = _cleared_segment_text(slot)
 
 
-def _emit_stale(turn, msg: str, *, will_retry: bool = False) -> None:
+def _ladder_end_meta(*, will_retry: bool, invites_retry: bool) -> dict[str, str] | None:
+    """The ``meta`` of an ``error`` row the recovery ladder writes at a rung's end.
+
+    ``will_retry`` marks the row that announces a recovery ALREADY queued
+    (``TRANSIENT_RETRY_KIND``: a pending notice, not a failure). ``invites_retry``
+    marks the terminal row whose words ask for a retry (``RETRY_INVITED_KIND``),
+    which is what lets the restart-resume error pass act on it; a terminal row
+    that asks for something else -- a new chat, an approval -- stays untagged and
+    is never retried unattended.
+    """
+    if will_retry:
+        return {"kind": TRANSIENT_RETRY_KIND}
+    if invites_retry:
+        return {"kind": RETRY_INVITED_KIND}
+    return None
+
+
+def _emit_stale(turn, msg: str, *, will_retry: bool = False, invites_retry: bool = False) -> None:
     slot = turn.slot
     slot.append(
         "error",
         msg,
         "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+        meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
     )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
-def _emit_stall(turn, msg: str, *, will_retry: bool = False) -> None:
+def _emit_stall(turn, msg: str, *, will_retry: bool = False, invites_retry: bool = False) -> None:
     slot = turn.slot
     slot.append(
         "error",
         msg,
         "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+        meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
     )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.
 
 
-def _emit_error(turn, msg: str, *, will_retry: bool = False) -> None:
+def _emit_error(turn, msg: str, *, will_retry: bool = False, invites_retry: bool = False) -> None:
     slot = turn.slot
     slot.append(
         "error",
         msg,
         "msg msg-err",
-        meta={"kind": TRANSIENT_RETRY_KIND} if will_retry else None,
+        meta=_ladder_end_meta(will_retry=will_retry, invites_retry=invites_retry),
     )
     # No explicit chat_message: slot.append already emits ONE, and it
     # carries `meta` -- a second frame here would arrive untagged.

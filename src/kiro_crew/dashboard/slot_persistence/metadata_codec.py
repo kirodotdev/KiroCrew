@@ -59,6 +59,12 @@ from kiro_crew.config.loader import (
     CHAT_TURN_TIMEOUT_MAX,
     CHAT_TURN_TIMEOUT_MIN,
 )
+from kiro_crew.dashboard.approval_mode_record import (  # noqa: F401 -- re-exported for chat_handlers/restart_resume
+    approval_modes,
+    live_approval_mode,
+    mark_changed_approval_modes,
+)
+from kiro_crew.dashboard.auto_resume_stamps import read_persisted_stamps
 from kiro_crew.dashboard.chat_title import (
     _TITLE_ORIGINS,
     _counts_as_user_turn,
@@ -509,6 +515,21 @@ class Field:
     why: str = ""
 
 
+def _approval_mode_seen_line(slot: Any) -> object:
+    """The full-line form of ``approval_mode_seen``: a grant is written, the default omitted.
+
+    A line with no key reads back as ``normal``, so a chat nobody picked a mode
+    for carries nothing extra (the ephemeral-session metadata contract stays
+    byte-identical). The merge form (:func:`live_approval_mode` itself) always
+    writes, because a merge cannot delete a key and a revoke must overwrite the
+    ``trust`` an earlier line carries. Neither writer touches the slot: the
+    in-memory record (``_approval_mode_recorded``) is written by the read ONLY,
+    so a save landing during the restore cannot erase what the person last saw.
+    """
+    mode = live_approval_mode(slot)
+    return mode if mode != "normal" else OMIT
+
+
 def _titled(slot: Any) -> bool:
     return bool(slot.title and slot.title != slot.key)
 
@@ -768,6 +789,47 @@ def _read_turn_in_flight(r: _Read) -> None:
     if r.purpose.purpose == RESTORE:
         r.applied.turn_generation = cp._local_turn_generation(r.meta)
         r.applied.turn_prompt = cp._local_turn_prompt(r.meta)
+    if r.purpose.purpose in _STARTUP:
+        # A first reading for the boot pass (``restart_resume``), so it can tell
+        # which deferred windows are worth loading; ``settle`` writes the
+        # authoritative value once the marker is reconciled. Read defensively:
+        # the parse that is allowed to raise stays where each reader had it.
+        try:
+            r.slot._restart_cut_turn = cp._local_turn_generation(r.meta) > 0
+        except Exception:
+            r.slot._restart_cut_turn = False
+
+
+def _read_auto_resume_stamps(r: _Read) -> None:
+    # Validated like the turn marker: the line is a writable file, so the list is
+    # re-checked field by field. A malformed or oversize list reads as FULL (every
+    # stamp "now"), which refuses the automation and leaves the manual Resume
+    # alone -- the fail-closed direction for an automatic dispatcher. The
+    # validator is the codec's, not the dispatcher's: this read runs for every
+    # restored slot, switch on or off, and must not load the dispatcher.
+    raw = r.meta.get("auto_resume_stamps")
+    stamps, valid = read_persisted_stamps(raw)
+    if not valid:
+        logger.warning(
+            "slot %s: auto_resume_stamps on the metadata line is not a list of "
+            "timestamps this gateway wrote (%s); automatic resume is refused for the "
+            "chat for one resume window from now, or until a person sends or presses "
+            "Resume",
+            r.slot.key,
+            type(raw).__name__,
+        )
+    r.slot._auto_resume_stamps = stamps
+
+
+def _read_approval_mode_recorded(r: _Read) -> None:
+    # The recorded mode is NEVER applied to ``_trust`` / ``_trust_reads``: trust is
+    # in memory by construction (``test_trust_flags_not_restored``). It is kept
+    # only so the restore can tell the person the chat came back under a
+    # different mode (``restart_resume.approval_mode_dropped_notice``).
+    value = r.meta.get("approval_mode_seen")
+    r.slot._approval_mode_recorded = (
+        value if isinstance(value, str) and value in ("trust", "trust_reads", "normal") else ""
+    )
 
 
 def _read_created_by(r: _Read) -> None:
@@ -1153,6 +1215,33 @@ FIELDS: tuple[Field, ...] = (
         merge=_always(lambda s: s._turn_in_flight_prompt),
         why="read with the generation",
     ),
+    Field(
+        "auto_resume_stamps",
+        _ALL,
+        attr="_auto_resume_stamps",
+        line=_truthy(lambda s: list(s._auto_resume_stamps)),
+        merge=_always(lambda s: list(s._auto_resume_stamps)),
+        read=_read_auto_resume_stamps,
+        why=(
+            "the automatic-resume budget must survive a restart, or a crash loop "
+            "replays the resume on every boot (rfc-restart-resume)"
+        ),
+    ),
+    Field(
+        "approval_mode_seen",
+        _ALL,
+        attr="_approval_mode_recorded",
+        line=_always(_approval_mode_seen_line),
+        merge=_always(live_approval_mode),
+        read=_read_approval_mode_recorded,
+        why=(
+            "written from the live trust flags (a grant on the line, the default "
+            "omitted; the merge writes the default so a revoke overwrites) and read "
+            "back ONLY as a record of what the person last saw, never into the flags "
+            "themselves -- trust is in memory by construction, and the record exists "
+            "so a restart can say the mode changed (rfc-restart-resume)"
+        ),
+    ),
     # The binding is written whole or not at all: a half binding (``executor`` remote
     # with no peer slot) is the fail-closed refusal case, so the marker without its
     # target would resurrect a session that can never run.
@@ -1507,6 +1596,8 @@ LINE_ORDER: tuple[str, ...] = (
     "remote_slot",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
+    "auto_resume_stamps",
+    "approval_mode_seen",
     "folder_id",
     "channel_folder_filed",
     "app",
@@ -1569,6 +1660,8 @@ MERGE_ORDER: tuple[str, ...] = (
     "forked_from",
     "turn_in_flight_generation",
     "turn_in_flight_prompt",
+    "auto_resume_stamps",
+    "approval_mode_seen",
     "executor",
     "instance_id",
     "remote_slot",
@@ -1678,6 +1771,14 @@ class AppliedMeta:
         had_marker = cp._reconcile_local_turn_marker(
             slot, self.turn_generation, self.turn_prompt, persisted=persisted
         )
+        if self.purpose.purpose in _STARTUP:
+            # The previous process admitted a turn it never finished: the boot pass
+            # (``restart_resume``) may resume this chat, and only this chat shape.
+            # Combined with the flag as it stands, never assigned over it: the
+            # window load this settle follows awaits a worker thread, and a Stop
+            # that lands meanwhile clears the flag (``cancel_armed_retry``) with
+            # nothing else on an idle chat to show for it.
+            slot._restart_cut_turn = had_marker and bool(getattr(slot, "_restart_cut_turn", False))
         _rebase_rehydrated_refresh_mark(slot)
         return had_marker
 

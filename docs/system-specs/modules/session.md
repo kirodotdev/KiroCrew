@@ -2103,6 +2103,19 @@ is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
 
+A Stop is recorded only for a key that has a live session, sits in an open
+replay gap, or has an automatic resume armed (`arm_resume(key)` /
+`disarm_resume(key)`, counted per chat in `armed_resumes`, canonical key).
+The last exists for `dashboard/restart_resume`: a chat with a resume pending
+has no live session -- a restored one before its first turn, one whose failed
+turn tore its session down -- so a channel Stop on its idle thread would
+otherwise record nothing and the pass, which compares `stop_generation`
+before and after its wait, would resume work the person refused. Unlike a
+replay gap nothing waits on it; the pass disarms when the resume dispatches
+or stands down. The restore arms a cut chat the moment it exists
+(`restart_resume.arm_cut_chats`, synchronous), ahead of its own later
+awaits and of the boot task's notice pass.
+
 ### Cancelled-turn context restore
 
 `_Session.prev_turn_cancelled` is a one-shot flag with two writers. `stop_turn()`
@@ -2157,15 +2170,21 @@ kiro-cli appends a prompt to `<sid>.jsonl` only once the model has answered
 it, so a turn cut off by the serving process dying (a gateway restart, a crash,
 a recycled runtime) is never written, and `session/load` restores the
 conversation without it. A natively resumed session gets no Kiro Crew replay,
-so the dashboard's Resume press (`_MANUAL_RESUME_MSG`) and the automatic
-connection-lost and session-busy recoveries (`_CONN_RECOVER_MSG`,
-`_BUSY_RECOVER_MSG`) would ask the model to finish a
-request it cannot see. When either runs on a session that THIS turn resumed
-natively (`is_new` and the provider has history), `_run_chat` prepends
-`context.build_interrupted_turn_preamble(slot.messages, current=...)` to the
-final prompt AFTER the egress scrub (its markers are registered in
-`_STRUCTURAL_MARKER_RES`, so a copy planted in transcript or tool text is
-neutralized; the restored payload is scrubbed by the builder): the
+so the dashboard's Resume press (`_MANUAL_RESUME_MSG`), the two automatic
+resumes of `restart_resume` (`_AUTO_RESUME_RESTART_MSG`,
+`_AUTO_RESUME_ERROR_MSG`) and the automatic connection-lost and session-busy
+recoveries (`_CONN_RECOVER_MSG`, `_BUSY_RECOVER_MSG`) — together
+`chat_utils._INTERRUPTED_TURN_RESUME_MSGS`, the one set the runner gates on —
+would ask the model to finish a request it cannot see. When any of them runs on
+a session that THIS turn resumed natively (`is_new` and the provider has
+history), `_run_chat` prepends
+`context.build_interrupted_turn_preamble(chat_utils.interrupted_turn_rows(slot.messages), current=...)`
+to the final prompt. `interrupted_turn_rows` is the slot window with the
+gateway's own assistant-role system notices (`is_system_notice`) left out,
+since they can sit in the span the builder quotes as the model's partial
+answer. The preamble is added AFTER the egress scrub (its markers are
+registered in `_STRUCTURAL_MARKER_RES`, so a copy planted in transcript or tool
+text is neutralized; the restored payload is scrubbed by the builder): the
 newest turn opener before the resume row (a user, nudge or sub-agent row, or an
 `inject` whose kind is in `dashboard.state.TURN_OPENING_INJECT_KINDS` -- a cron,
 app or synthesis delivery; a recovery inject such as an earlier Resume press is

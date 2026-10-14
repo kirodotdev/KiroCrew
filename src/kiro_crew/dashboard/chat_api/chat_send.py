@@ -700,6 +700,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             {"error": "message is required", "code": "message_required"}, status=400
         )
 
+    if not request_app and not cron_creator:
+        # A PERSON is sending to this chat: the automatic-resume budget starts
+        # over and an armed automatic retry is moot (rfc-restart-resume). Below
+        # every refusal above -- app ownership, member pin, agent mismatch, the
+        # empty message -- so a denied send leaves the budget as it found it,
+        # and above every branch below -- steer, queue, hold, direct dispatch --
+        # so an accepted send counts whichever way it lands, the responsive
+        # path's steer or retained send included. The refusals further down
+        # guard chats the automation never acts on (a relay archive) or a
+        # slot that is closing or rebound under the send.
+        from kiro_crew.dashboard import (  # imported on use: the dispatcher stays off the boot path (AUTOSDE no-new-work-on-gateway-boot-path)
+            restart_resume,
+        )
+
+        restart_resume.reset_budget(slot)
+
     from kiro_crew.dashboard import responsive_chat
 
     _responsive_eligible = False

@@ -380,6 +380,25 @@ The selected model and effort are untouched, and no recovery is added: whether
 the failed turn is retried is decided downstream from the raised error, exactly
 as for any other harness.
 
+## Retry-invited error rows
+
+An automatic resume after an error (`dashboard/restart_resume.py`,
+`rfc-restart-resume`) retries only an `error` row its writer tagged: the
+runner's own "please retry" rows carry `meta.kind = retry_invited`, a failed
+session start carries `session_start_failed`, and `RETRYABLE_ERROR_KINDS` in
+that module is the whole list (`error_retry_candidate` reads it). The list is
+closed: a row with no structural kind, or a kind off the list, is never
+retried, whatever its words say. A new "please retry" row therefore has to
+carry the tag at its writer (`meta={"kind": RETRY_INVITED_KIND}`, as
+`chat_turn/acp_recovery.py` and `chat_turn/recovery.py` do) or it is left out of
+automatic retries with no failure anywhere to say so.
+The ladder's give-up row is the one retryable row written while a turn is
+still ending, so its writers also say WHY it ended: `transient_give_up_meta`
+(`chat_utils.py`) marks the row `stopped` when the person's Stop signal is what
+ended the backoff, and a marked row is never retried. The mark matters for a
+Stop issued on a linked channel, which moves the session's stop counter alone
+and writes no Stop card on the slot.
+
 ## Model-Side Refusals
 
 A refusal is a turn the model DECLINED, not a turn that failed: the request

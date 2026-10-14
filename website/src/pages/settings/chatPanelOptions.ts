@@ -6,6 +6,7 @@
 import type { MemoryMode } from '../chat/ChatSettings'
 import { ROLE_SLUGS, TECH_SLUGS } from '../../lib/profileOptions'
 import { i18nT } from '../../i18n/t'
+import { fmtUnit } from '../../i18n/format'
 
 /**
  * Option labels are FUNCTIONS, not module-level arrays.
@@ -25,6 +26,34 @@ export const RESTORE_OPTIONS = ['15', '30', '60', '120', '360', '720', '1440', '
  *  settings popover's key — same setting, same option, one string to translate. */
 export function restoreLabels(): string[] {
   return ['15m', '30m', '1h', '2h', '6h', '12h', '24h', i18nT('pages.settings.chatPanel.no_limit')]
+}
+/** `dashboard.resume_retry_limit` bounds, mirroring config/sections_limits.py
+ *  RESUME_RETRY_LIMIT_MIN / _MAX. */
+export const RESUME_RETRY_LIMIT_MIN = 1
+export const RESUME_RETRY_LIMIT_MAX = 20
+/** `dashboard.resume_retry_window_minutes` choices, paired positionally with
+ *  `resumeWindowLabels()` the way RESTORE_OPTIONS pairs with `restoreLabels()`;
+ *  the ends mirror config/sections_limits.py RESUME_RETRY_WINDOW_MIN / _MAX. */
+export const RESUME_WINDOW_OPTIONS = ['5', '15', '30', '60', '120', '240', '1440']
+/** Duration abbreviations are left verbatim, exactly as `restoreLabels()` does. */
+export function resumeWindowLabels(): string[] {
+  return ['5m', '15m', '30m', '1h', '2h', '4h', '24h']
+}
+/** The window as the select names it, so a sentence about the budget says the
+ *  same thing the control shows. A value the select does not offer (a hand-edited
+ *  config) reads as a localized number of minutes rather than as nothing. */
+export function resumeWindowLabel(minutes: number): string {
+  const i = RESUME_WINDOW_OPTIONS.indexOf(String(minutes))
+  return i >= 0 ? resumeWindowLabels()[i] : fmtUnit(minutes, 'minute')
+}
+/** The window spelled out for a sentence -- `1 hour`, `24 hours`, `5 minutes` --
+ *  with the same whole-hours-else-minutes split the select makes, but the unit as
+ *  a word (localized by Intl, plural and all): inside prose the select's `1h`
+ *  reads like a typo. The select itself keeps its abbreviations. */
+export function resumeWindowProse(minutes: number): string {
+  return minutes > 0 && minutes % 60 === 0
+    ? fmtUnit(minutes / 60, 'hour', { unitDisplay: 'long' })
+    : fmtUnit(minutes, 'minute', { unitDisplay: 'long' })
 }
 /** How often the feature-video cache readout re-reads while the panel is open. */
 export const FEATURE_VIDEO_POLL_MS = 15_000

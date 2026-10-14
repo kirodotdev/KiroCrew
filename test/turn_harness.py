@@ -616,6 +616,8 @@ class _NoHooks:
 _SESSION_ANSWERS: dict[str, Any] = {
     "aflush": None,
     "allocation_requested_model": "",
+    # The error pass arms the key as a turn ends in an error; nothing to answer.
+    "arm_resume": None,
     "begin_turn": None,
     # The healthy session cuts its turn cleanly at the ceiling: the native
     # cancel is acknowledged, so the deadline reports the acknowledged outcome
@@ -630,6 +632,7 @@ _SESSION_ANSWERS: dict[str, Any] = {
     "consume_provider_switch_replay": False,
     "consume_replay_suppression": False,
     "destroy": None,
+    "disarm_resume": None,
     "effective_autocompact_pct": 80.0,
     "first_turn_history_owed_pending": False,
     "get_pid": None,
