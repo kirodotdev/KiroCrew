@@ -158,6 +158,7 @@ async def plan(
             status="planned",
             task_id=task_id,
             work_dir=str(task_dir),
+            owns_task_dir=owns_task_dir,
             name=workflow_name or auto_name(spec_content or original_input, spec_path),
             workflow_id=workflow_id,
             workflow_slug=workflow_slug,
