@@ -447,10 +447,10 @@ def _load_operator_oauth_endpoints() -> frozenset[tuple[str, str]]:
     non-object files — and any entry that fails the strict per-entry
     validation — yield nothing: a mangled extension file must never widen
     trust. The ``config.loader`` import stays function-local to keep this
-    module's import graph independent of the loader's: ``config/loader.py``
-    itself imports ``security`` symbols function-locally to avoid a cycle, and
-    a module-level import here would quietly re-arm that cycle the moment the
-    loader hoists its own.
+    module's import graph independent of the loader's: ``config/loader_snapshots.py``
+    and ``config/loader_pipeline.py`` import ``security`` symbols function-locally to
+    avoid a cycle, and a module-level import here would quietly re-arm that cycle the
+    moment the loader hoists its own.
     """
     from kiro_crew.config import loader as config_loader
 

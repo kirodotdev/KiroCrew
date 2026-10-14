@@ -283,7 +283,8 @@ def test_extracted_modules_do_not_import_the_loader() -> None:
 
 # Each owner module and the config modules it may import at module scope. The
 # section owners sit under the ``config.sections`` facade and never import it;
-# the builders and migration rules sit under the loader and never import it.
+# the builders and migration rules sit under the loader and never import it, and
+# the ``loader_*`` owners sit under the loader facade, lowest layer first.
 _OWNER_CONFIG_IMPORTS = {
     "kiro_crew.config.fields": set(),
     "kiro_crew.config.service_sections": {"kiro_crew.config.fields"},
@@ -347,6 +348,68 @@ _OWNER_CONFIG_IMPORTS = {
     "kiro_crew.config.migration": {
         "kiro_crew.config.sections",
         "kiro_crew.config.superseded_defaults",
+    },
+    "kiro_crew.config.loader_credentials": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
+    "kiro_crew.config.loader_locations": {"kiro_crew.config.paths", "kiro_crew.config.sections"},
+    "kiro_crew.config.loader_document": {
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.migration",
+        "kiro_crew.config.paths",
+        "kiro_crew.config.sections",
+        "kiro_crew.config.validation",
+    },
+    "kiro_crew.config.loader_builders": {
+        "kiro_crew.config.loader_document",
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.sections",
+    },
+    "kiro_crew.config.loader_snapshots": {
+        "kiro_crew.config.loader_document",
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.paths",
+        "kiro_crew.config.sections",
+    },
+    "kiro_crew.config.loader_agents": {
+        "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.sections",
+    },
+    "kiro_crew.config.loader_writeback": {
+        "kiro_crew.config.loader_document",
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.migration",
+        "kiro_crew.config.paths",
+        "kiro_crew.config.superseded_defaults",
+    },
+    "kiro_crew.config.loader_config": {
+        "kiro_crew.config.integration_sections",
+        "kiro_crew.config.loader_agents",
+        "kiro_crew.config.loader_builders",
+        "kiro_crew.config.loader_credentials",
+        "kiro_crew.config.loader_document",
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.paths",
+        "kiro_crew.config.resolution",
+        "kiro_crew.config.sections",
+    },
+    "kiro_crew.config.loader_pipeline": {
+        "kiro_crew.config.fields",
+        "kiro_crew.config.integration_sections",
+        "kiro_crew.config.loader_agents",
+        "kiro_crew.config.loader_builders",
+        "kiro_crew.config.loader_config",
+        "kiro_crew.config.loader_document",
+        "kiro_crew.config.loader_locations",
+        "kiro_crew.config.loader_snapshots",
+        "kiro_crew.config.loader_writeback",
+        "kiro_crew.config.migration",
+        "kiro_crew.config.paths",
+        "kiro_crew.config.resolution",
+        "kiro_crew.config.section_builders",
+        "kiro_crew.config.sections",
+        "kiro_crew.config.superseded_defaults",
+        "kiro_crew.config.validation",
     },
 }
 

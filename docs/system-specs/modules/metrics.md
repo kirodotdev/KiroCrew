@@ -131,7 +131,7 @@ worst case is one dropped export cycle rather than a corrupt shard.
 
 ## Configuration
 
-`TelemetryConfig` in `config/sections_telemetry.py` (parsed by `config/loader.py`; section `telemetry` in
+`TelemetryConfig` in `config/sections_telemetry.py` (parsed by `config/loader_builders.py`; section `telemetry` in
 `~/.kiro/crew/config.json`):
 
 | Field | Default | Meaning |

@@ -289,7 +289,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:173
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	acp/session_provider.py:180-200
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	apps/builtins/code_review_sage/sage_lib/review_pool.py:490
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	config/loader.py:755-756
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:872
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:897-902
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/chat_folders.py:130

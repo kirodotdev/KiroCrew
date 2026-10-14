@@ -47,7 +47,7 @@ The single enforcement point for non-resumability is one tuple entry. `"subagent
 | Transcript | Assistant text chunks only (`write_result_chunk`, called from `subagent_manager/run.py`'s `_run_inner_impl` on assistant-text events), truncated to `RESULT_FILE_MAX_BYTES = 512_000` with an in-file marker (`context_management.RESULT_FILE_MAX_BYTES`, `cap_result_bytes` / `cap_result_file`) | No roles, no prompt, no tool sequence — cannot be rendered as a conversation or replayed into one |
 | Prompt | Only the redacted task line, in `state.json` | A run cannot be re-issued from disk |
 | Gateway restart | `_reconcile_orphans` (`subagent_manager/monitoring.py`, `_reconcile_orphans_impl`) identity-verifies the child PID, terminates it, tombstones `gateway_restart`, deletes its kiro session files, notifies the parent | Nothing partial is recoverable |
-| Retention | `mark_delivered` schedules folder pruning after `agent.subagent_result_ttl_secs` (default 3600, `config/loader.py:755-756`) | Within an hour of success nothing recoverable remains |
+| Retention | `mark_delivered` schedules folder pruning after `agent.subagent_result_ttl_secs` (default 3600, `config/sections_agent.py` `AgentConfig.subagent_result_ttl_secs`) | Within an hour of success nothing recoverable remains |
 
 The control surfaces match. `spawn_run` / `spawn_sub_agents` / `spawn_list` / `spawn_status` (`mcp_core.py:228,357,288,318`) plus seven routes under `/api/spawn` (`dashboard/server.py:652-660`: create, lost, list, status, delete, retry, clear-all) can start, watch, cancel, and re-run-if-failed. None reads a run as structured messages; none sends into one.
 

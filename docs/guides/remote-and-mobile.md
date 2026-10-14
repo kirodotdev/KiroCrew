@@ -138,7 +138,7 @@ tmux survives an SSH disconnect but does **not** auto-restart on crash or
 auto-start on reboot. Move to [a real service](#3-keep-it-alive-as-a-service)
 once the smoke test passes, and **kill the tmux session first**: only one
 gateway can own the dashboard port, which defaults to `5476`
-(`config/loader.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
+(`config/loader_credentials.py` `_DEFAULT_PORT`, overridable with the `KIROCREW_PORT`
 environment variable). Two gateways on one port means the second one fails to
 bind.
 

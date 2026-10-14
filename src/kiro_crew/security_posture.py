@@ -2805,7 +2805,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # credential pass (its docstring and identifier match the scan). Nothing
         # is redacted here and nothing leaves; the sink that honours the switch is
         # `dashboard/handlers/files.py`, already registered.
-        "config/loader.py",
+        "config/loader_locations.py",
         # Owner-gated GET/PUT for the credential-redaction switch. The identifiers
         # (`api_credential_redaction_*`, `redaction_switch.set_enabled`) match the
         # scan, but the handler redacts nothing: it reads and writes a boolean on

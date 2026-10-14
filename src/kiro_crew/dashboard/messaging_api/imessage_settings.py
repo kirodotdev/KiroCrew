@@ -201,7 +201,7 @@ async def _imessage_config_save(request: web.Request) -> web.Response:
     # advisory lock on the sidecar ``<path>.lock`` for the entire read-modify-write,
     # so a concurrent ``kirocrew config set`` in ANOTHER PROCESS cannot land between
     # our read and our write. ``_get_config_lock()`` serializes writers inside this
-    # process only, and loader.py names that combination the required path for a
+    # process only, and loader_document.py names that combination the required path for a
     # config.json mutation.
     from kiro_crew.dashboard.handlers.agents import _get_config_lock  # noqa: F811
 

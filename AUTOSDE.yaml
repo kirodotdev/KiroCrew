@@ -503,6 +503,7 @@ custom-rules:
       - "src/kiro_crew/providers/**/*.py"
       - "src/kiro_crew/platform/**/*.py"
       - "src/kiro_crew/config/loader.py"
+      - "src/kiro_crew/config/loader_*.py"
       - "src/kiro_crew/session.py"
       - "src/kiro_crew/session_parts/*.py"
       - "src/kiro_crew/subagent.py"
@@ -624,6 +625,7 @@ custom-rules:
       - "src/kiro_crew/dashboard/agent_admin/**/*.py"
       - "src/kiro_crew/eval/runner.py"
       - "src/kiro_crew/config/loader.py"
+      - "src/kiro_crew/config/loader_*.py"
       - "scripts/check_memory_store_seam.py"
     rule: |
       A named memory store is a SILO: cfg.agents[<crew>].memory_store

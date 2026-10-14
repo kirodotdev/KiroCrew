@@ -53,6 +53,16 @@ SRC = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
 #: attribute), and a bare comparison against ``ACP_BACKEND_CLAUDE``.
 MIGRATED_CONSUMERS = (
     "config/loader.py",
+    # config/loader.py's code, in the owner modules its facade serves.
+    "config/loader_agents.py",
+    "config/loader_builders.py",
+    "config/loader_config.py",
+    "config/loader_credentials.py",
+    "config/loader_document.py",
+    "config/loader_locations.py",
+    "config/loader_pipeline.py",
+    "config/loader_snapshots.py",
+    "config/loader_writeback.py",
     "dashboard/chat_handlers.py",
     "dashboard/handlers/agents.py",
     "dashboard/chat_runner.py",

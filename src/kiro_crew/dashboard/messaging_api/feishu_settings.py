@@ -393,7 +393,7 @@ async def _feishu_config_save_locked(request: web.Request) -> web.Response:
     # advisory lock on the sidecar ``<path>.lock`` for the entire read-modify-write,
     # so a concurrent ``kirocrew config set`` in ANOTHER PROCESS cannot land between
     # our read and our write. ``_get_config_lock()`` (held by the caller) only
-    # serializes writers inside this one, and loader.py names that combination the
+    # serializes writers inside this one, and loader_document.py names that combination the
     # required path for a new config.json mutation.
     #
     # ``staged`` is applied to the config as re-read INSIDE the lock rather than to

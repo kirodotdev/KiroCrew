@@ -800,7 +800,7 @@ def test_non_object_slack_section_fails_closed(tmp_path):
 
     `{"slack": []}` is a valid top-level object, so a whole-file health probe
     accepts it -- but the loader coerces a non-dict section to `{}`
-    (`config/loader.py` slack_data guard), dropping the allowlist and going
+    (`config/loader_pipeline.py` slack_data guard), dropping the allowlist and going
     default-open. Reading the value and judging usability in ONE pass closes it.
     """
     (tmp_path / "config.json").write_text('{"slack": []}', encoding="utf-8")

@@ -4780,7 +4780,7 @@ def _container_valued_sections() -> dict[str, type]:
 
     Read off ``KiroCrewConfig``'s own fields rather than hardcoded, so most
     sections added later are covered without an edit here. Which branch does that
-    reading is worth knowing, because it bounds the "most": ``config/loader.py``
+    reading is worth knowing, because it bounds the "most": ``config/loader_config.py``
     carries ``from __future__ import annotations``, so every ``field.type``
     arrives as a STRING and the string branch is the one that runs. It matches on
     the annotation's TEXT — a ``list`` prefix, a ``dict`` prefix, a ``Config``
@@ -4788,7 +4788,7 @@ def _container_valued_sections() -> dict[str, type]:
     (``Optional[list[...]]``, ``Mapping[str, str]``, a nested dataclass not named
     ``*Config``) is not recognised and gets no guard. A new section in one of
     those spellings needs a look here. So does dropping that future import from
-    ``config/loader.py``: ``field.type`` would then arrive as a resolved object,
+    ``config/loader_config.py``: ``field.type`` would then arrive as a resolved object,
     the ``isinstance`` guard would skip every field, and this map would come back
     empty — which stops the model-derived half of the guard below, though not the
     hardcoded ``dashboard.tailscale`` check after it. That is not a silent loss:

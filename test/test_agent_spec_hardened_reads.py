@@ -1067,7 +1067,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
         ("auto_improvement_assignment", "unknown")
     ],
     "kiro_crew/cli_doctor.py": [("doctor", "cli"), ("doctor", "cli"), ("doctor", "cli")],
-    "kiro_crew/config/loader.py": [("load_config", "unknown")],
+    "kiro_crew/config/loader_snapshots.py": [("load_config", "unknown")],
     "kiro_crew/connections/mint.py": [
         ("connections_mint", "dashboard"),
         ("connections_mint", "dashboard"),
@@ -1182,7 +1182,7 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
-    "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
+    "kiro_crew/config/loader_snapshots.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
 }
 
@@ -1330,7 +1330,7 @@ _EXPECTED_PARSED_SPECS_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     # The named-agent model resolver runs on the event loop from the provider
     # factory; it reads the snapshot so a warm call re-parses nothing, and keeps
     # the label its per-file hardened read carried.
-    "kiro_crew/config/loader.py": [("load_config", "unknown")],
+    "kiro_crew/config/loader_config.py": [("load_config", "unknown")],
     "kiro_crew/dashboard/handlers/_shared.py": [("skills_loaded_by_agents", "dashboard")],
     # The guide's diagnose probe lists the models agent specs pin; a refused spec
     # pins nothing usable, so the folding snapshot is the right reader.

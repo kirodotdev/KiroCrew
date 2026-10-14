@@ -14,7 +14,7 @@ What lives here:
   cache, with an explicit ``clear()`` (replacing the bare module globals that
   were impossible to reset/inject in tests).
 
-What deliberately stays in ``config/loader.py``:
+What deliberately stays in ``config/loader_document.py``:
 - ``_config_fingerprint()`` — it reads ``config_path()`` / ``config_local_path()``,
   which the test suite patches via ``kiro_crew.config.loader.config_path``; keeping
   it there preserves that monkeypatch seam. The loader computes the fingerprint

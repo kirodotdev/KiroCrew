@@ -416,11 +416,11 @@ async def test_a_boot_reads_nothing_from_the_outer_home(
 #: (``conftest._reset_home_bound_globals``) or, with a reason, here.
 _KNOWN_SECOND_BOOT_CHANGES: dict[tuple[str, str], str] = {
     # Monotonic counters and clocks: carry no home state.
-    ("kiro_crew.config.loader", "_CONFIG_AUTOCOMPACT_ISSUED"): "counter",
-    ("kiro_crew.config.loader", "_CONFIG_AUTOCOMPACT_TICKET"): "counter",
-    ("kiro_crew.config.loader", "_CONFIG_TIMEZONE_TICKET"): "counter",
-    ("kiro_crew.config.loader", "_MATERIALIZED_REFRESH_APPLIED"): "counter",
-    ("kiro_crew.config.loader", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
+    ("kiro_crew.config.loader_snapshots", "_CONFIG_AUTOCOMPACT_ISSUED"): "counter",
+    ("kiro_crew.config.loader_snapshots", "_CONFIG_AUTOCOMPACT_TICKET"): "counter",
+    ("kiro_crew.config.loader_snapshots", "_CONFIG_TIMEZONE_TICKET"): "counter",
+    ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_APPLIED"): "counter",
+    ("kiro_crew.config.loader_snapshots", "_MATERIALIZED_REFRESH_ISSUED"): "counter",
     ("kiro_crew.context", "_store_cache_generation"): "counter",
     ("kiro_crew.dashboard.handlers.updates", "_last_update_check"): "clock",
     # When telemetry consent was last re-read, and whether a re-read is in

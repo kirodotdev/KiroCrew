@@ -4213,7 +4213,7 @@ Decision + lifecycle:
   queued start (acp-client.md § Session-start gate) would add to it.
   `_run_inner` passes `on_gate_queued` / `on_gate_acquired` into `get_or_create`,
   which fires them around `_start_sem` itself; they ride `extra_factory_kwargs`
-  to the provider factory (`config/loader.py` `_acp`, where they are NAMED
+  to the provider factory (`config/loader_config.py` `_acp`, where they are NAMED
   parameters -- the `**_kwargs` catch-all would swallow them silently), into
   `AcpProvider(on_gate_acquired=...)`, and from `_start_kiro_runtime_impl` into
   both `runtime.spawn` calls and the process's `create_session`. Each callback

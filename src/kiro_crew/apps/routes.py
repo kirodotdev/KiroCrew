@@ -4918,7 +4918,7 @@ async def handle_registries(request: web.Request) -> web.Response:
     # endpoint, updates.py, security.py, messaging.py, mcp.py, core.py STT) still
     # serialize on ALONE. Holding only the flock does not exclude that family, so
     # a concurrent PUT there could commit from a snapshot taken before this write
-    # and silently revert it — the lost update ``config/loader.py`` warns about
+    # and silently revert it — the lost update ``config/loader_document.py`` warns about
     # when it says such callers must ALSO hold the in-process asyncio lock.
     # ``run_config_write`` is the one entry point that holds both, and it still
     # hands the blocking work to a worker, so the loop never stalls.

@@ -1304,8 +1304,8 @@ def build_pod_env(
         # REAL `HOME` — and every agent turn in the pod (a `chat`/`run`/`tui`
         # through `pod exec`, and the pod gateway's own sessions) would read and
         # WRITE the live workspace. `KIROCREW_WORKSPACE` is the documented override
-        # (config/loader.py:220, used as-is) and `eval/runner.py` already scopes a
-        # run the same way, so this is the existing mechanism rather than new
+        # (config/loader_locations.py `workspace_root`, used as-is) and `eval/runner.py`
+        # already scopes a run the same way, so this is the existing mechanism rather than new
         # resolution behaviour. Placing it inside the pod HOME means `pod down`'s
         # teardown removes it with everything else.
         "KIROCREW_WORKSPACE": str(home_dir / "workspace"),

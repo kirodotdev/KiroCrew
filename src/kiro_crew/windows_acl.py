@@ -445,7 +445,7 @@ def volume_is_local(path: str | os.PathLike) -> bool:
     unbounded SMB round-trip rather than discover it part way through.
 
     Returns ``False`` off Windows, where there is no volume to classify. Callers
-    reach this from inside an already-Windows branch (``config/loader.py``'s
+    reach this from inside an already-Windows branch (``config/loader_document.py``'s
     ``write_config_atomically``), so there is no POSIX-answering wrapper: on POSIX
     ``chmod`` is a local metadata update and there is nothing to rule out.
     """

@@ -445,7 +445,7 @@ numbers. Two readers deliberately do not change: the anonymous usage beacon
 build sends the same value as its base), and the About page's changelog, where
 `changelog.running_release` folds the stamp back onto its three-segment release
 so the build marks the `0.6.0` row rather than opening an empty `0.6.0.12` row. Import time is the only point that works:
-`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader.py` and
+`dashboard/handlers/updates.py`, `dashboard/ws.py`, `config/loader_document.py` and
 `cli_server.py` bind `from kiro_crew import __version__` copies that nothing
 later can reach, so this is deliberately not a `PlatformContext` field — a
 context is composed after those imports.

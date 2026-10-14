@@ -655,7 +655,7 @@ class TestEffortDropReason:
 
 class TestNoSpawnSiteDropWarning:
     """The spawn path does not emit its own drop warning: the
-    provider factory's effort gate (config/loader.py) is the single warning
+    provider factory's effort gate (config/loader_config.py) is the single warning
     authority, covering spawn, dashboard slot, and cron alike. The tool-result
     verdict (effort_dropped/effort_applied) remains the caller-facing signal;
     the operator-facing log line now comes from the gate itself."""

@@ -3104,7 +3104,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "max": CHAT_TURN_TIMEOUT_MAX,
     },
     "session.timeout_secs": {"type": "int", "min": SESSION_TIMEOUT_MIN, "max": SESSION_TIMEOUT_MAX},
-    # Range shared with the load-time clamp in config/loader.py — one constant
+    # Range shared with the load-time clamp in config/loader_builders.py — one constant
     # pair, so the write gate and the load path cannot drift.
     "session.autocompact_pct": {
         "type": "float",

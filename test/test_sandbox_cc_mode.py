@@ -352,7 +352,7 @@ class TestWrapArgvCcMode:
 
 
 class TestAgentDeniedEnvKeys:
-    """Sandboxed agents (cc/strict) must not see credentials that loader.py
+    """Sandboxed agents (cc/strict) must not see credentials that loader_config.py
     propagates into os.environ for trusted children. The namespace launcher and
     the sandbox-exec wrapper both scrub these keys."""
 

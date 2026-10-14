@@ -877,7 +877,7 @@ def sandbox_exec_argv(
     os.close(fd)
     # Build env -u flags for sensitive vars present in current env. cc/strict
     # additionally scrub agent-denied credential keys (Slack tokens, owner id)
-    # since loader.py seeds them into os.environ for trusted children only.
+    # since config/loader_config.py seeds them into os.environ for trusted children only.
     unset_args = _sandbox_env_unset_args(sandbox_level, strip_python_env, forward_ssh_auth_sock)
     # Mark the sandboxed tree, exactly as the Linux namespace launcher does after
     # its own env scrub (see ``scrub_env`` in ``sandbox_launcher_program``, the

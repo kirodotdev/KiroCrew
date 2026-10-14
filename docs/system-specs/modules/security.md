@@ -1390,7 +1390,7 @@ pinned SHA.
 - An installed app's *data* directory (`apps/{name}/data/`) is a different tree and stays
   writable — apps persist state there through the agent's own tools.
 
-**Load-time resource-limit clamp** (`config/loader.py`) — defends against a config-loader bound bypass: the dashboard config API rejects out-of-range writes, but a direct edit of `config.json` bypasses that gate.
+**Load-time resource-limit clamp** (`config/loader_builders.py`) — defends against a config-loader bound bypass: the dashboard config API rejects out-of-range writes, but a direct edit of `config.json` bypasses that gate.
 - `KiroCrewConfig.load()` calls `_clamp_security_bounds(data)` on the disk-read path before caching. `_SECURITY_BOUNDED_FIELDS` is the authoritative field-and-limit table; dedicated follow-up checks preserve documented zero sentinels while enforcing non-zero floors for `agent.max_subagents` and `agent.subagent_timeout_secs`.
 - The dashboard API and runtime consumers import the same ceiling constants rather than duplicating values.
 - Every clamp is logged at WARNING and emits a best-effort `config_bounds_clamped` SEL event; config loading never fails because the audit write failed.
@@ -2344,7 +2344,7 @@ diagnostic loop, which needs `$(…)` and is not carved out; its individual
 
 ### Credential File Permissions
 
-`load_credentials()` in `loader.py` enforces `chmod 600` on `~/.kiro/crew/.env` at load time. If permissions are too open (group/other readable), they are tightened automatically. If `chmod` fails (e.g., file owned by another user), a warning is logged.
+`load_credentials()` in `config/loader_config.py` enforces `chmod 600` on `~/.kiro/crew/.env` at load time. If permissions are too open (group/other readable), they are tightened automatically. If `chmod` fails (e.g., file owned by another user), a warning is logged.
 
 ### Data Home File Modes
 

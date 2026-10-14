@@ -4,8 +4,8 @@ One registry entry per channel carries the host's per-channel LIFECYCLE seams â€
 the members tuple, the start call, the shutdown gather. The other per-channel
 seams (the ``orch._<channel>_*`` hoist in ``slack/gateway_runtime/channel_boot.py``, the
 config dataclass in ``config/sections_*.py`` with its ``config/section_builders.py`` builder and its
-``KiroCrewConfig`` field in ``config/loader.py``, the ``sandbox_tiers.py`` credential denylist, the
-``dashboard/state.py`` connected fields, the uncredentialed-skip probe table in
+``KiroCrewConfig`` field in ``config/loader_config.py``, the ``sandbox_tiers.py`` credential
+denylist, the ``dashboard/state.py`` connected fields, the uncredentialed-skip probe table in
 ``_start_channel_transports``) are still hand-edited.
 
 This module owns the TYPES and the LOOPS
