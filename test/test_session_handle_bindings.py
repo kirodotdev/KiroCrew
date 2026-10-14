@@ -104,6 +104,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
         "b60c5fea256e",
         "session_handle_model_selection",
     ),
+    "_forget_sent_images": ("function", False, "b60c5fea256e", "session_handle_turn"),
     "_handle_elicitation_request": ("function", True, "e64128661dfa", "session_handle_elicitation"),
     "_handle_kas_session_info": ("function", False, "f3c17ef22460", "session_handle_kas"),
     "_handle_kas_subagent": ("function", False, "5f796c64544c", "session_handle_native_children"),

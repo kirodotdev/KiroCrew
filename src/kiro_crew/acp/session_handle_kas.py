@@ -332,6 +332,7 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             # them so the meter resets and fresh telemetry re-derives real
             # numbers (parity with the kiro-cli compaction handler).
             self.last_prompt_stats.reset_after_compaction()
+            self._forget_sent_images()
             self._compaction_failed_at = None
             status_type = "completed"
         elif kind == kas_wire.KIND_SUMMARIZATION_FAILED:

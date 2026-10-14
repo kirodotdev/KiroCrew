@@ -13,7 +13,8 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_claude_compaction_pending``, ``_codex_compaction_pending``,
 ``_compaction_failed_at``, ``_compaction_failed_turn``, ``_last_stop_reason``,
 ``_native_child_redactors``, ``_oauth_emitted_servers``, ``_observed_tool_calls``, ``_permission_options``,
-``_prompt_or_tool_seen``, ``_skill_reads``, ``_stale_eligible``,
+``_prompt_or_tool_seen``, ``_sent_images_req``, ``_sent_images_staged``,
+``_skill_reads``, ``_stale_eligible``,
 ``_steers_awaiting_echo``, ``_tool_call_diff_path``, ``_tool_call_harness_tool_name``,
 ``_tool_call_identity_unreadable``, ``_tool_call_input_redacted``,
 ``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
@@ -21,7 +22,7 @@ Instance fields written: ``_active_run_id``, ``_active_tool_calls``, ``_between_
 ``_tool_dispatched``, ``_turn_done``, ``last_prompt_stats``.
 
 Instance fields read: ``_agent_accepts_image``, ``_batch_window``, ``_buffer``, ``_copilot_ambiguous_mcp_calls``, ``_copilot_unmatched_titles``, ``_engine_fallback``, ``_last_activity``, ``_liveness_oracle``,
-``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``,
+``_permission_gate_events``, ``_pid``, ``_process``, ``_sel_settled_tool_calls``, ``_sent_images``,
 ``_session_id``, ``_steer_turn``, ``_turn_lock``.
 """
 
@@ -51,12 +52,17 @@ from kiro_crew.acp.client_timeouts import (
     _effective_prompt_timeout_async,
 )
 from kiro_crew.acp.client_transport import _AGENT_STARTED_REQUEST_ID, _is_safe_oauth_url
-from kiro_crew.acp.client_turn_control import format_command_result
+from kiro_crew.acp.client_turn_control import format_command_result, parse_slash_command
 from kiro_crew.acp.elicitation import is_elicitation_request
 from kiro_crew.acp.engine_fallback import is_v2_model_fallback, normalize_kiro_v2
 from kiro_crew.acp.liveness import EVIDENCE_SAMPLING, VERDICT_WORKING, consult_offloaded
 from kiro_crew.acp.oauth_offline import with_google_offline_access
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+from kiro_crew.acp.prompt_blocks import (
+    SentImageLedger,
+    StagedImages,
+    build_prompt_blocks,
+    command_drops_pictures,
+)
 from kiro_crew.acp.transport_errors import (
     AcpError,
     AcpProcessDied,
@@ -101,6 +107,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_FORBIDDEN_MODES,
     ACP_BACKEND_PROMPT_COMMAND_ALLOWLIST,
+    ACP_BACKENDS_INLINE_COMPACTION,
     ACP_BACKENDS_RELOAD_DISPOSED_SESSION,
     prompt_command_issue,
 )
@@ -618,6 +625,12 @@ async def _prompt_loop(
             ):
                 self.last_prompt_stats.event_count -= 1
                 continue
+            if action == "complete" and req_id == getattr(self, "_sent_images_req", None):
+                # The backend answered the prompt whose pictures were staged,
+                # so its conversation now holds them.
+                staged: StagedImages | None = getattr(self, "_sent_images_staged", None)
+                if staged is not None:
+                    staged.commit()
             # A harness that disposed this session's backend (see disposed_session):
             # a cancelled turn ends as cancelled, any other raises, and an approval
             # asked after the cancel is answered here rather than put to a person.
@@ -1263,6 +1276,9 @@ async def _dispatch_events(
                 summary = compaction_failure_detail(params)
             yield AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)
         elif action == "clear":
+            # The cleared conversation holds none of the pictures it was
+            # sent, so the next prompt naming one must send it again.
+            self._forget_sent_images()
             yield AcpEvent(kind=EVENT_CLEAR_STATUS)
         elif action == "subagent_list":
             params = msg.params or {}
@@ -1459,8 +1475,28 @@ async def _dispatch_events(
 # ── Private Helpers ──
 
 
+def _forget_sent_images(self: AcpClient) -> None:
+    """The conversation has dropped the pictures it was sent (a completed
+    compaction summarized it, a clear wiped it, or the session is gone): a
+    later prompt naming one inlines it again."""
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    if sent_images is not None:
+        sent_images.forget()
+
+
 async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = True) -> int:
     await self._settle_orphan_steers()
+    sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+    if message.lstrip().startswith("/") and command_drops_pictures(
+        parse_slash_command(message)[0],
+        compacts_inline=self.backend in ACP_BACKENDS_INLINE_COMPACTION,
+    ):
+        # This backend compacts inside the turn, often with no status
+        # frame to say so, and drops the pictures: forget them before the turn.
+        self._forget_sent_images()
+    # This prompt's own staging, so a build abandoned on its worker thread can
+    # write only to a staging nothing commits.
+    staged = sent_images.staging() if sent_images is not None else None
     # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
     # cannot drift.
     blocks = await asyncio.to_thread(
@@ -1468,6 +1504,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
         message,
         allow_image=allow_image,
         agent_accepts_image=self._agent_accepts_image,
+        sent_images=staged,
     )
     # A harness whose prompt parser runs ``/<name>`` as its own command can be told,
     # by prompt text alone, to stop asking before tools run. Refused before the wire,
@@ -1494,7 +1531,7 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
             # waits on the turn ending before it raises.
             self._turn_done.set()
             raise AcpError(issue, transient=False, user_worded=True)
-    return await self._send_request(
+    req_id = await self._send_request(
         METHOD_PROMPT,
         {
             "sessionId": self._session_id,
@@ -1503,6 +1540,9 @@ async def _send_prompt(self: AcpClient, message: str, *, allow_image: bool = Tru
             "prompt": blocks,
         },
     )
+    self._sent_images_req = req_id
+    self._sent_images_staged = staged
+    return req_id
 
 
 async def _read_prompt_response(self: AcpClient, req_id: int, timeout: float) -> str:

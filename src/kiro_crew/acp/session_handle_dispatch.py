@@ -994,6 +994,7 @@ async def _dispatch_events(
                     # Mirrors AcpClient._handle_compaction_status.
                     self._compaction_failed_at = None
                     self.last_prompt_stats.reset_after_compaction()
+                    self._forget_sent_images()
                 # Compaction summary is backend-echoed text (LLM-influenced)
                 # that reaches the dashboard — redact exfil URLs/credentials
                 # before surfacing it (parity with other text surfaces).
@@ -1016,7 +1017,11 @@ async def _dispatch_events(
             elif action == "clear":
                 # Same provenance as the compaction notice: one that named
                 # no session and was fanned out to co-tenants is not this
-                # session's own.
+                # session's own. A clear of this session's own conversation
+                # drops every picture it held, so the next prompt naming one
+                # must send it again.
+                if not msg.fanout_no_owner:
+                    self._forget_sent_images()
                 yield AcpEvent(kind=EVENT_CLEAR_STATUS, runtime_global=msg.fanout_no_owner)
             elif action == "agent_switched":
                 saw_agent_switch = True

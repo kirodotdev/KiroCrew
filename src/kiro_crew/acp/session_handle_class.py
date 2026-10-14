@@ -38,6 +38,7 @@ from kiro_crew.acp.liveness import (
     ToolCallState,
 )
 from kiro_crew.acp.mcp_session_report import McpSessionReport
+from kiro_crew.acp.prompt_blocks import SENT_IMAGE_RECORD_BACKENDS, SentImageLedger
 from kiro_crew.acp.session_handle_lifecycle import _CANCEL_GRACE_SECS
 from kiro_crew.acp.session_handle_runtime_contract import AcpRuntimeProtocol
 from kiro_crew.acp.session_handle_watchdog import (
@@ -237,6 +238,7 @@ class AcpSessionHandle:
     # One turn end to end: ``kiro_crew.acp.session_handle_turn``.
     wait_turn_done = _sh_turn.wait_turn_done
     prompt = _sh_turn.prompt
+    _forget_sent_images = _sh_turn._forget_sent_images
     stream_command = _sh_turn.stream_command
     command_is_native = _sh_turn.command_is_native
     _run_turn = _sh_turn._run_turn
@@ -456,6 +458,16 @@ class AcpSessionHandle:
         self._stale_probe = False
         self._tool_dispatched = False
         self._last_stop_reason = ""
+        # The pictures this session's conversation already holds, so text that
+        # names the same file every turn does not re-inline it every turn. The
+        # handle is one ACP session, so the record lives and dies with it. Kept
+        # only on a harness whose compaction this client sees (see
+        # SENT_IMAGE_RECORD_BACKENDS); elsewhere every prompt inlines as before.
+        self._sent_images: SentImageLedger | None = (
+            SentImageLedger()
+            if getattr(runtime, "acp_backend", None) in SENT_IMAGE_RECORD_BACKENDS
+            else None
+        )
         # The most recent tool result's infrastructure-error classification
         # (``recovery.ladder.InfraError``) or None. Public, like
         # ``last_compaction_transient``: the dashboard reads it through getattr
