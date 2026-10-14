@@ -116,7 +116,7 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
     /** State and machine metrics of a remote session's workspace (never starts it). */
     chatSlotEnvironmentHealth: (slot: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/health').then(j) as Promise<RemoteEnvironmentHealth>,
-    /** Read-only readiness check: Coder sign-in and each profile's template. */
+    /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,
     sessionEnvironmentsWorkspaces: () =>

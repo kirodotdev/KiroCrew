@@ -77,6 +77,9 @@ async function mounted() {
   await screen.findByLabelText('Coder URL')
   return view
 }
+/** The status glyph of the check line holding `node`. */
+const glyph = (node: HTMLElement) => node.closest('li')!.querySelector('svg')!
+const SANDBOX_LINK = 'Change the agent sandbox (Developer → Config)'
 
 describe('Session Environments configuration preview', () => {
   it('indexes the opt-in but hides the URL search result until enabled', () => {
@@ -563,13 +566,14 @@ describe('Coder setup and saved profile management', () => {
 })
 
 describe('Session Environments readiness and workspaces', () => {
-  it('runs the read-only check and reports Coder and each template', async () => {
+  it('runs the read-only check and reports Coder, each template and each git host', async () => {
     let checks = 0
     server.use(http.post('*/api/session-environments/check', () => {
       checks++
       return HttpResponse.json({
         coder: { ok: true, owner: 'devuser' },
         profiles: [{ id: 'dev', ok: false, error: 'Coder template is unavailable' }],
+        git: { 'github.com': 'signed_in', 'dev.azure.com': 'not_signed_in', 'bitbucket.org': 'unchecked' },
       })
     }))
     await mounted()
@@ -581,11 +585,122 @@ describe('Session Environments readiness and workspaces', () => {
     const failure = within(results).getByRole('alert')
     expect(failure).toHaveTextContent('Development: Coder template is unavailable')
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(results).toHaveTextContent('GitHub: signed in on this machine')
+    expect(results).toHaveTextContent(
+      'Azure DevOps: not signed in on this machine. To sign in, run az login in a terminal on this machine.',
+    )
+    expect(results).toHaveTextContent(
+      "Bitbucket: can't be checked from here; git will use this machine's saved Bitbucket login if there is one. If git can't sign in, clone a private Bitbucket repository over HTTPS in a terminal on this machine; git's credential helper saves the login it asks for.",
+    )
+    // No bare `git credential approve`: typed alone it waits on stdin.
+    expect(results).not.toHaveTextContent('git credential approve')
+    // Bitbucket has a display name of its own, like the other hosts.
+    expect(results).not.toHaveTextContent('bitbucket.org')
+    // The sign-in command reads as a command the reader copies, untranslated.
+    const command = within(results).getByText('az login')
+    expect(command.tagName).toBe('CODE')
+    expect(command).toHaveAttribute('translate', 'no')
+    // A git host is optional: signed out is a muted state ring, never the
+    // danger cross the blocking Coder and template failures use, and never an
+    // arrow that reads as a sign-in button.
+    const signedOut = glyph(command)
+    expect(signedOut).toHaveClass('lucide-circle-dashed', 'text-muted')
+    expect(signedOut).not.toHaveClass('lucide-log-in')
+    expect(signedOut).not.toHaveClass('text-danger')
+    expect(results.querySelector('svg.text-danger, svg.lucide-x, svg.lucide-log-in')).toBeNull()
+    expect(within(results).queryAllByRole('button').filter(b => !b.closest('[role="alert"]'))).toEqual([])
+    const unchecked = glyph(within(results).getByText(/^Bitbucket: can't be checked/))
+    expect(unchecked).toHaveClass('lucide-minus', 'text-muted')
+    expect(glyph(within(results).getByText('GitHub: signed in on this machine'))).toHaveClass('lucide-check', 'text-ok')
+    // Nothing was withheld, so there is no sandbox to point at.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
     expect(writes).toEqual([])
   })
 
+  it('says once that a Windows gateway that cannot verify its account shares no git login, with no sandbox link', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'unsupported', 'gitlab.com': 'unsupported', 'bitbucket.org': 'unsupported', 'dev.azure.com': 'unsupported' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    within(results).getByText(
+      "This machine can't verify its own Windows account, so its git logins aren't shared with remote sessions. Each workspace uses its own git login.",
+    )
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // The sandbox tier is not the reason, so nothing points at it.
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says once that a strict sandbox shares no git login and links to where the sandbox is set', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [],
+      git: { 'github.com': 'withheld', 'gitlab.com': 'withheld', 'bitbucket.org': 'withheld', 'dev.azure.com': 'withheld' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    const withheld = within(results).getByText(
+      "Git logins aren't shared while the agent sandbox is set to strict. Each workspace uses its own git login.",
+    )
+    // One line for every host, not four identical ones.
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|GitLab|Bitbucket|Azure DevOps|signed in on this machine/)
+    // Withheld has a glyph of its own, distinct from the unchecked dash.
+    expect(glyph(withheld)).toHaveClass('lucide-lock', 'text-muted')
+    expect(glyph(withheld)).toHaveAttribute('aria-hidden', 'true')
+    const link = screen.getByRole('link', { name: SANDBOX_LINK })
+    expect(link).toHaveAttribute('href', '/developer?tab=config&highlight=key%3Aagent.sandbox')
+    expect(results).not.toContainElement(link)
+  })
+
+  it('keeps per-host rows when only some hosts are withheld', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [], git: { 'github.com': 'withheld', 'gitlab.com': 'unchecked' },
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(glyph(within(results).getByText("GitHub: not shared with remote sessions under the 'strict' sandbox"))).toHaveClass('lucide-lock')
+    expect(glyph(within(results).getByText(/^GitLab: can't be checked/))).toHaveClass('lucide-minus')
+    expect(results).not.toHaveTextContent(/Git logins aren't shared/)
+    expect(screen.getByRole('link', { name: SANDBOX_LINK })).toBeVisible()
+  })
+
+  it('renders the Coder and profile rows from a gateway that sends no git field', async () => {
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: true, owner: 'devuser' }, profiles: [{ id: 'dev', ok: true }],
+    })))
+    mount()
+    await screen.findByLabelText('Coder URL')
+    fireEvent.click(check())
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('Signed in to Coder as devuser')
+    expect(results).toHaveTextContent('Development: template python-dev is available')
+    expect(within(results).getAllByRole('listitem')).toHaveLength(2)
+    expect(results).not.toHaveTextContent(/GitHub|Git logins|signed in on this machine/)
+    expect(screen.queryByRole('link', { name: SANDBOX_LINK })).toBeNull()
+  })
+
+  it('says the readiness check also reads git sign-ins, and leaves the Manage hint to p1', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    // The readiness rows say how git signs in; the Manage hint does not repeat it.
+    expect(screen.queryByText(/Git to GitHub, GitLab, Bitbucket and Azure DevOps/)).toBeNull()
+    // The readiness check says it also reads which git hosts this machine is signed in to.
+    expect(screen.getByText(
+      "Checks that the Coder CLI on this machine is signed in, that each profile's template exists, and which git hosts this machine is signed in to. Nothing is started and no credential is read.",
+    )).toBeVisible()
+    expect(screen.queryByText(/which keeps the credentials/)).toBeNull()
+  })
+
   it('surfaces failed Coder checks with a safe hand-off and drops them while editing', async () => {
-    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [] })
+    checkAnswers({ coder: { ok: false, error: 'Coder login expired' }, profiles: [], git: {} })
     await mounted()
     fireEvent.click(check())
     const results = await screen.findByRole('list', { name: 'Check results' })

@@ -960,13 +960,14 @@ export default [
               // "GitLab" in every language, and a localized spelling would name a
               // product that does not exist. They reach the UI as the provider name in
               // Issue Radar's connect picker, as the `{{provider}}` value
-              // interpolated into its refresh tooltips, and as the source provider's
-              // name in the pull-request panel header, so the bare brand is the whole
+              // interpolated into its refresh tooltips, as the source provider's
+              // name in the pull-request panel header, and as the host name in the
+              // Session Environments readiness check, so the bare brand is the whole
               // literal. Whole-value-anchored like the entry above, so a sentence that
               // merely mentions a forge is still reported — only the bare name is
               // exempt, and the sentences AROUND it stayed in the catalog (that is
               // what `{{provider}}` is for).
-              '^(GitHub|GitLab|Azure DevOps|Bitbucket Server|Gerrit)$',
+              '^(GitHub|GitLab|Azure DevOps|Bitbucket|Bitbucket Server|Gerrit)$',
               // The PPTX Maker chat-token KEYWORDS (`[Style: name]`,
               // `[Template: name]`). Enumerated and whole-value-anchored, exactly like
               // the modifier-key caps below: the agent prompts parse this literal
