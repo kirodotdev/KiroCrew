@@ -249,9 +249,16 @@ class ArrivalFiling(NamedTuple):
 
 
 async def arrival_folder_id(
-    state: "DashboardState", *, origin: str, request_app: str
+    state: "DashboardState", *, origin: str, request_app: str, folder: str = ""
 ) -> ArrivalFiling:
     """The folder an arriving session is filed into, creating it if needed.
+
+    *folder* is the name of the folder the session sat in on the SENDER, from
+    the bundle's optional ``folder`` field. When set it adds a third level,
+    ``Imported`` / ``from <sender>`` / ``<folder>``, so sending a folder's
+    sessions to a peer recreates that folder there. Like *origin* it is a label
+    from an untrusted bundle: it names a row and confers nothing, and it is
+    clipped the way the store writes a name. Empty keeps the two-level filing.
 
     Returns an :class:`ArrivalFiling`: the folder id, or ``""`` to leave the
     session unfiled, plus the ids this call CREATED. Never raises: every refusal
@@ -316,6 +323,7 @@ async def arrival_folder_id(
 
     group_name = store_folder_name(IMPORTED_FOLDER_NAME)
     child_name = sender_folder_name(origin)
+    leaf_name = store_folder_name(folder)
     created: list[tuple[str, str, str]] = []
     hidden_rows: list[str] = []
 
@@ -357,27 +365,50 @@ async def arrival_folder_id(
                 # an adopted row already happens.
                 hidden_rows.append(str(group.get("id", "")))
         group_id = str(group.get("id", ""))
-        if not child_name:
-            # No sender to name: file directly under the group.
-            return changed, group_id
-        child = _find(folders, child_name, group_id)
-        if child is None:
+        parent_id = group_id
+        if child_name:
+            child = _find(folders, child_name, group_id)
+            if child is None:
+                if len(folders) >= MAX_CHAT_FOLDERS:
+                    # Reachable only when ``Imported`` already existed and the store
+                    # is exactly full: the group-absent branch above already refused
+                    # the pair. File under the group, which is a real destination —
+                    # refusing here would discard a placement that costs no new row.
+                    return changed, group_id
+                child = _new_folder(child_name, group_id, len(folders))
+                folders.append(child)
+                created.append((str(child["id"]), child_name, group_id))
+                changed = True
+            else:
+                # ADOPTED, the same case as the group above, and deferred to the
+                # same place: on the landed path, not here.
+                if child.get("hidden"):
+                    hidden_rows.append(str(child.get("id", "")))
+            parent_id = str(child.get("id", ""))
+        # No sender to name leaves ``parent_id`` at the group: the session (or its
+        # folder level below) is filed directly under ``Imported``.
+        if not leaf_name:
+            return changed, parent_id
+        # The sender's own folder, one level BELOW the provenance rows, never
+        # beside them: a name chosen on another machine must not land in this
+        # person's top-level tree, and ``from <sender>`` keeps saying where it came
+        # from. Optional, so it is not part of the ceiling test above -- refusing
+        # the provenance pair because a third row does not fit would make a
+        # folder-carrying arrival land LESS filed than one without.
+        leaf = _find(folders, leaf_name, parent_id)
+        if leaf is None:
             if len(folders) >= MAX_CHAT_FOLDERS:
-                # Reachable only when ``Imported`` already existed and the store
-                # is exactly full: the group-absent branch above already refused
-                # the pair. File under the group, which is a real destination —
-                # refusing here would discard a placement that costs no new row.
-                return changed, group_id
-            child = _new_folder(child_name, group_id, len(folders))
-            folders.append(child)
-            created.append((str(child["id"]), child_name, group_id))
+                # Store full: file one level up, a real destination that costs no
+                # new row -- the same answer the child level gives.
+                return changed, parent_id
+            leaf = _new_folder(leaf_name, parent_id, len(folders))
+            folders.append(leaf)
+            created.append((str(leaf["id"]), leaf_name, parent_id))
             changed = True
-        else:
-            # ADOPTED, the same case as the group above, and deferred to the same
-            # place: on the landed path, not here.
-            if child.get("hidden"):
-                hidden_rows.append(str(child.get("id", "")))
-        return changed, str(child.get("id", ""))
+        elif leaf.get("hidden"):
+            # ADOPTED and hidden: deferred to the landed path, like both levels above.
+            hidden_rows.append(str(leaf.get("id", "")))
+        return changed, str(leaf.get("id", ""))
 
     try:
         folder_id = await state.mutate_folders(_resolve)

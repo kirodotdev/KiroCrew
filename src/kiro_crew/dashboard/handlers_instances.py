@@ -1512,7 +1512,8 @@ async def api_instances_search_sessions(request: web.Request) -> web.Response:
 async def api_instances_send_session(request: web.Request) -> web.Response:
     """POST /api/instances/{id}/send-session — copy a local session to a peer.
 
-    Body: ``{ "slot": "<local slot key>" }``.
+    Body: ``{ "slot": "<local slot key>", "with_folder": true }`` -- ``with_folder``
+    is optional and files the copy under this session's folder name on the peer.
 
     Copy semantics: the local session is left completely untouched, and the peer
     allocates a fresh key. Nothing here can delete or mutate a conversation on
@@ -1557,6 +1558,10 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             {"error": "slot must be a non-empty string", "code": "transfer_missing_slot"},
             status=400,
         )
+    # Optional: ask the peer to file the copy under this session's folder name
+    # (``Imported`` / ``from <this instance>`` / ``<folder>``). Strictly ``true``,
+    # so a truthy string from a hand-written body is not a silent opt-in.
+    with_folder = body.get("with_folder") is True
     slot = state._slots.get(slot_key)
     if slot is None:
         _audit("send_session", "denied", request_id=instance_id, error="slot not found")
@@ -1602,7 +1607,9 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
     # does NOT advance, is what re-appended the same tail from memory and landed
     # every unsaved turn twice in the copy.
     try:
-        bundle = await build_transfer_bundle_async(state, slot, origin=local_instance_label())
+        bundle = await build_transfer_bundle_async(
+            state, slot, origin=local_instance_label(), with_folder=with_folder
+        )
         publication_key = slot_history_key(slot)
 
         def _revalidate_for_publication() -> None:

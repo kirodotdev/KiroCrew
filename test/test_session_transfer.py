@@ -6413,3 +6413,139 @@ async def test_a_reserved_write_releases_when_the_write_finishes(tmp_path, monke
     await write
     await asyncio.sleep(0)
     assert st._disk_inflight == 0
+
+
+# ── a sent folder is recreated on the peer ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_arrival_carrying_its_folder_is_filed_in_a_folder_of_that_name(monkeypatch):
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(
+        _make_request(state, _valid(origin="mac", folder="Payments"))
+    )
+
+    assert resp.status == 200, resp.body
+    names = _folder_names(state)
+    child_id = next(f["id"] for f in state._folders if f["name"] == "from mac")
+    assert names["Payments"] == child_id
+    assert _filed_folder(state) == "Payments"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_folder_hint_is_dropped_not_refused(monkeypatch):
+    """A filing hint must never cost the transcript: a non-string ``folder``
+    lands the session in ``from <sender>`` as if the field were absent."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(_make_request(state, _valid(origin="mac", folder=42)))
+
+    assert resp.status == 200, resp.body
+    assert _filed_folder(state) == "from mac"
+
+
+def test_a_bundle_without_a_folder_has_no_folder_key():
+    """Byte-identity for every caller that does not ask: a single-session send
+    puts exactly the bundle it always did on the wire."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert "folder" not in st._assemble_bundle([], "t", "", "mac")
+
+
+def test_a_folder_name_is_egress_redacted_like_the_title():
+    from kiro_crew.dashboard import session_transfer as st
+
+    bundle = st._assemble_bundle([], "t", "", "mac", None, False, None, "Payments")
+    assert bundle["folder"] == "Payments"
+    leaky = st._assemble_bundle([], "t", "", "mac", None, False, None, "/Users/someone/src/app")
+    assert "someone" not in leaky.get("folder", "")
+
+
+@pytest.mark.asyncio
+async def test_the_folder_name_is_read_from_this_instances_committed_tree_by_id():
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    committed = [{"id": "abc", "name": "Payments"}]
+
+    async def read_folders(read):
+        return read(committed)
+
+    # The live list holds a rename whose write is still in flight (and may roll
+    # back): the bundle must carry the committed name, never the provisional one.
+    state = SimpleNamespace(
+        _folders=[{"id": "abc", "name": "Payments (renaming)"}], read_folders=read_folders
+    )
+    assert await st._committed_folder_name(state, "abc") == "Payments"
+    assert await st._committed_folder_name(state, "") == ""
+    assert await st._committed_folder_name(state, "gone") == ""
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("body_extra", "expected"),
+    [({"with_folder": True}, "Payments"), ({}, None), ({"with_folder": "yes"}, None)],
+)
+async def test_send_session_carries_the_folder_only_when_asked(monkeypatch, body_extra, expected):
+    """``with_folder: true`` puts the session's folder NAME on the wire; an absent
+    or non-boolean flag sends exactly today's bundle."""
+    from kiro_crew.dashboard import handlers_instances as hi
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(
+        hi.KiroCrewConfig,
+        "load",
+        staticmethod(lambda: SimpleNamespace(instances=SimpleNamespace(enabled=True))),
+    )
+    msg = {"role": "user", "content": "hi", "ts": ""}
+
+    class _Log(_PersistentLine):
+        def read_messages_chained(self, _key):
+            return [msg]
+
+    slot = _slot([msg], dirty=False)
+    slot.messages = [msg]
+    slot._disk_window_len = 1
+    slot.key = "slot-1"
+    slot.folder_id = "f1"
+
+    async def _save(_state, s, best_effort=True):
+        return True
+
+    monkeypatch.setattr(st, "save_slot_off_loop", _save)
+    captured: dict = {}
+
+    class _Mgr:
+        async def send_session_bundle(self, _id, bundle, **_kw):
+            captured["bundle"] = bundle
+            return True, {"key": "remote-1"}
+
+    folders = [{"id": "f1", "name": "Payments"}]
+
+    async def _read_folders(read):
+        return read(folders)
+
+    state = SimpleNamespace(
+        _slots={"slot-1": slot},
+        _folders=folders,
+        read_folders=_read_folders,
+        conversation_log=_Log(),
+        instances_manager=_Mgr(),
+        instances_registry=SimpleNamespace(get=lambda _i: SimpleNamespace(id="peer")),
+        owner_id="owner",
+    )
+    request = _OwnerReq(
+        app={"state": state},
+        match_info={"id": "peer"},
+        headers={},
+        json=_async_value({"slot": "slot-1", **body_extra}),
+    )
+
+    resp = await hi.api_instances_send_session(request)
+
+    assert resp.status == 200, resp.body
+    assert captured["bundle"].get("folder") == expected

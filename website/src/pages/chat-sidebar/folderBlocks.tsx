@@ -16,6 +16,7 @@ import { folderOffersHide } from '../../utils/folderVisibility'
 import { highlightText } from '../../utils/highlightText'
 import { Input } from '../../components/ui'
 import FolderMoveSubmenu from '../../components/FolderMoveSubmenu'
+import SendFolderToInstanceSubmenu from '../../components/SendFolderToInstanceSubmenu'
 import { ChannelBrandIcon, hasChannelBrandIcon } from '../../components/ChannelBrandIcon'
 import { DndDroppable } from '../../components/dnd'
 import { collectFolderSubtreeIds, folderNameText } from '../../utils/folderTree'
@@ -313,6 +314,23 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
           offline={!connected}
           offlineTitle={i18nT('utils.offline.gateway_offline_reconnect', { action: i18nT('utils.offline.move_folders') })}
           onPick={pid => moveFolderTo(folder.id, pid)} />
+        {/* Send a copy of the folder's own sessions to a connected crew, which
+         *  files them under a folder of the same name. Membership, not render:
+         *  a filter hiding a session must not silently leave it out of the copy.
+         *  Only LOCAL persistent rows -- a peer row is not ours to send, and an
+         *  incognito or temporary one is refused by send-session anyway. */}
+        {(() => {
+          const members = sidebarRows.folderTree.allRowsIn(folder.id).filter(r => !r.peer_id)
+          const sendable = members.filter(r => (r.memory_mode ?? 'persistent') === 'persistent')
+          return (
+            <SendFolderToInstanceSubmenu
+              folderId={folder.id}
+              variant={variant}
+              slotKeys={sendable.map(r => r.key)}
+              skipped={members.length - sendable.length}
+            />
+          )
+        })()}
         <Item data-testid={tid('settings')} {...offlineMenuRow(connected, i18nT('utils.offline.change_folder_settings'), i18nT('components.folderConfigModal.folder_settings'), () => { setFolderModal({ mode: 'edit', folderId: folder.id }) })}><Settings size={13} /> {i18nT('components.folderConfigModal.folder_settings')}</Item>
         {/* Hide this folder from the session lists (flat lane + tree).
          *  Same state the filter menu's checkboxes drive, reached from the

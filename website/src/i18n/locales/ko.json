@@ -10028,6 +10028,16 @@
         "tool_search_label": "도구 검색",
         "tool_search_description": "지연된 MCP 도구 사양을 필요할 때 로드합니다."
       }
+    },
+    "sendFolderToInstanceSubmenu": {
+      "nothing_to_send": "보낼 세션이 없습니다",
+      "progress": "{{done}} / {{total}}",
+      "resend_all": "클릭하면 {{total}}개 모두를 한 번 더 보냅니다",
+      "retry_failed": "클릭하면 실패한 {{count}}개를 다시 보냅니다",
+      "sent_all": "전송됨: {{count}}",
+      "sent_some": "{{total}}개 중 {{sent}}개 전송됨",
+      "sent_transcript_only": "전송됨: {{sent}}({{count}}개는 대화 기록만)",
+      "skipped_private_other": "시크릿 또는 임시 세션 {{count}}개는 전송되지 않습니다"
     }
   },
   "hooks": {

@@ -282,5 +282,6 @@
   "commandCenter.crewMain.approvals_open",
   "components.fileRenderers.json_string_show_all",
   "pages.chatPage.closed_sessions_not_deleted",
-  "pages.chatPage.older_sessions_deleted_count"
+  "pages.chatPage.older_sessions_deleted_count",
+  "components.sendFolderToInstanceSubmenu.skipped_private"
 ]
