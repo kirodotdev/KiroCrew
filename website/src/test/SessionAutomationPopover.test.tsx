@@ -233,14 +233,22 @@ describe('SessionAutomationPopover', () => {
   })
 
   it('clears a paused legacy loop through the bridge: the record is handed up as null and the popover closes', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    // The clear closes once its goal-draft tombstone is canonical, so the draft
+    // route answers like the gateway: the PUT's canonical echo.
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      if (String(url).startsWith('/api/autonudge/draft/slot/') && init?.method === 'PUT') {
+        const sent = JSON.parse(String(init.body)) as { draft: unknown, updated_at: number }
+        return Promise.resolve(new Response(JSON.stringify({ draft: sent.draft, updated_at: sent.updated_at })))
+      }
+      return Promise.resolve(new Response(null, { status: 204 }))
+    })
     vi.stubGlobal('fetch', fetchMock)
     const { onChange, onOpenChange } = renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'manual' })
     fireEvent.click(screen.getByRole('button', { name: 'Clear stopped goal' }))
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear' })) })
     expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1?intent=clear', { method: 'DELETE' })
     expect(onChange).toHaveBeenCalledWith(null)
-    expect(onOpenChange).toHaveBeenCalledWith(false)
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false))
   })
 
   it('centres the radar glyph and its count in the composer trigger', () => {
