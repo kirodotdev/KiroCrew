@@ -23014,5 +23014,9 @@
     "streak_short_many": "Serie di {{count}} giorni",
     "try_it": "Prova",
     "video_failed": "Non è stato possibile caricare il video della funzionalità"
+  },
+  "queueActions": {
+    "stillStopping": "Interruzione in corso…",
+    "teardownPending": "Il turno precedente si sta ancora interrompendo. Il messaggio è in coda e verrà inviato quando si ferma."
   }
 }

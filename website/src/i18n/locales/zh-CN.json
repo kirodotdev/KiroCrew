@@ -21980,5 +21980,9 @@
       "blurb": "一个帮你上手、始终在线的 AI 智能体",
       "action": "认识你的向导 Bot"
     }
+  },
+  "queueActions": {
+    "stillStopping": "仍在停止…",
+    "teardownPending": "上一轮仍在停止中。消息已排队，停止后将自动发送。"
   }
 }

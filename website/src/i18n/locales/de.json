@@ -22497,5 +22497,9 @@
     "streak_short_one": "{{count}} Tag in Folge",
     "load_failed": "Entdecken konnte nicht geladen werden.",
     "video_failed": "Feature-Video konnte nicht geladen werden"
+  },
+  "queueActions": {
+    "stillStopping": "Wird noch beendet…",
+    "teardownPending": "Der vorherige Durchlauf wird noch beendet. Deine Nachricht ist in der Warteschlange und wird gesendet, sobald er beendet ist."
   }
 }

@@ -23014,5 +23014,9 @@
       "starter_prompt": "Acompanhe o PR que vou colar a seguir e me avise quando a CI ficar verde.",
       "blurb": "Saiba quando a CI ficar verde ou chegar uma revisão"
     }
+  },
+  "queueActions": {
+    "stillStopping": "Ainda interrompendo…",
+    "teardownPending": "O turno anterior ainda está sendo interrompido. Sua mensagem está na fila e será enviada quando ele parar."
   }
 }

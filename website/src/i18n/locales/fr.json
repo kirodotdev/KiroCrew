@@ -23014,5 +23014,9 @@
     "notice_count_one": "{{count}} nouveauté dans Explorer",
     "try_today_entry_other": "À essayer aujourd'hui : {{count}} nouvelles fonctions",
     "video_failed": "Impossible de charger la vidéo de la fonctionnalité"
+  },
+  "queueActions": {
+    "stillStopping": "Arrêt en cours…",
+    "teardownPending": "Le tour précédent est encore en cours d’arrêt. Ton message est en attente et sera envoyé une fois l’arrêt terminé."
   }
 }

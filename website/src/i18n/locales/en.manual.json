@@ -11213,5 +11213,9 @@
     "header_progress": "{{done}} of {{total}} features tried",
     "more_to_try": "Also worth a look",
     "video_failed": "Feature video could not be loaded"
+  },
+  "queueActions": {
+    "stillStopping": "Still stopping…",
+    "teardownPending": "The previous turn is still stopping. Your message is queued and will send once it stops."
   }
 }

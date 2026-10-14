@@ -18,10 +18,10 @@ import { readIndexCss } from './indexCssSource'
  *  2. QueueStack stays below the composer's own layer: the collapsed front card
  *     carries a -OVERLAP margin so it fuses with the input box, and at or above
  *     the composer's z-index it would surface ON TOP of the box instead.
- *  3. The stack renders exactly the children this file has checked. A sixth bar
+ *  3. The stack renders exactly the children this file has checked. A new bar
  *     lands here first and has to declare its own layer before this goes green.
  *
- * Asserted against SOURCE TEXT: the numbers live in five files, several as
+ * Asserted against SOURCE TEXT: the numbers live in component files, several as
  * Tailwind classes jsdom cannot resolve into a paint order, and the invariant is
  * the comparison BETWEEN them.
  */
@@ -54,6 +54,7 @@ const CHILDREN: Record<string, RegExp> = {
   SubagentProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   WorkflowProgressBar: /<div className="px-4 mx-auto w-full relative z-\[(\d+)\]" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)' \}\}>/,
   SubagentDeliveryProgress: /className="relative z-\[(\d+)\] mx-auto w-full px-4"/,
+  QueueHoldNotice: /className="relative z-\[(\d+)\] mx-auto w-full px-4 pb-1"/,
   QueueStack: /className="px-4 mx-auto w-full relative" style=\{\{ maxWidth: 'var\(--mc-content-width, 900px\)', zIndex: (\d+) \}\}/,
 }
 const FILES: Record<keyof typeof CHILDREN | string, string> = {
@@ -61,6 +62,7 @@ const FILES: Record<keyof typeof CHILDREN | string, string> = {
   SubagentProgressBar: 'pages/chat/SubagentProgressBar.tsx',
   WorkflowProgressBar: 'pages/chat/WorkflowProgressBar.tsx',
   SubagentDeliveryProgress: 'components/QueueStack.tsx',
+  QueueHoldNotice: 'components/QueueHoldNotice.tsx',
   QueueStack: 'components/QueueStack.tsx',
 }
 
@@ -94,6 +96,16 @@ describe('composer dock layering', () => {
     // has to clear theme-experience overlays.
     const m = CHILDREN.QueueStack.exec(SRC(FILES.QueueStack))
     expect(Number(m![1])).toBeLessThan(Number(COMPOSER_Z![1]))
+  })
+
+  it('keeps passive held-queue feedback immediately above the queue and below the composer', () => {
+    const notice = SRC(FILES.QueueHoldNotice)
+    const layer = CHILDREN.QueueHoldNotice.exec(notice)
+    expect(Number(layer![1])).toBeLessThan(Number(COMPOSER_Z![1]))
+    expect(STACK![2]).toMatch(/<QueueHoldNotice message=\{queueInterruptNotice\} \/>\s*<QueueStack\b/)
+    expect(notice).toContain('if (!message) return null')
+    expect(notice).toContain('role="status"')
+    expect(notice).toContain('<NoticeCard content={message} tone="info" icon={Hourglass} />')
   })
 
   it('leaves the stack wrapper without a z-index or position, so it forms no stacking context', () => {
