@@ -339,7 +339,7 @@ describe('selectTurnInterrupted', () => {
   })
 
   // The completed-/compact shapes, mirroring `is_turn_interrupted` in
-  // `src/kiro_crew/dashboard/state.py` (test_is_interrupted.py pins the same
+  // `src/kiro_crew/dashboard/state_parts/transcript_rows.py` (test_is_interrupted.py pins the same
   // five tails). Only the PAIR -- a /compact user row whose compaction result
   // row is present -- reads as finished; the tag alone must not decide (the
   // auto-compaction case above is a real interruption carrying the same row).

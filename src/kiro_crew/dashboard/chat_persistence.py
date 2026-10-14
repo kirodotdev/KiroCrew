@@ -1781,7 +1781,8 @@ def _load_rehydrated_window(
     slot._disk_older_count = older_cut
     # Recomputed from the on-disk rows on every load (never trusted from any
     # stored value): the durable-only view of the same prefix, which is what
-    # absolute message positions are built over. See _ChatSlot.__init__.
+    # absolute message positions are built over. See ``init_transcript_fields`` in
+    # dashboard/state_parts/slot_transcript.py.
     # ``islice``, not ``messages[:older_cut]`` — this can run on the event
     # loop for a large transcript, and a slice would copy the whole prefix.
     slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))

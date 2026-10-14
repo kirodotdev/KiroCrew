@@ -2019,7 +2019,7 @@ def test_neither_chat_message_door_builds_the_frame_by_hand() -> None:
 
     Scoped to each door's own `chat_message` BRANCH rather than the whole file.
     A file-wide scan cannot work here: `chat_message_frame` is *defined* in
-    `state.py`, so its own `"slot": note[...]` body reads as a hand-built frame
+    `state_parts/transcript_rows.py`, so its own `"slot": note[...]` body reads as a hand-built frame
     and its `def` line satisfies a naive "calls the helper" check.
     """
     from pathlib import Path

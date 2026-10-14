@@ -107,7 +107,7 @@ export const selectProjectChipLocked = (state: RootState, slot: string | null): 
 
 /** `meta.injectKind` values the gateway stamps on an `inject` row that dispatched a
  *  turn. Every other inject row opens nothing. Mirrors `_TURN_INJECT_KINDS` in
- *  `dashboard/state.py`. Keyed by `InjectKind` (see `pages/chat/RecoveryCard.tsx`)
+ *  `dashboard/state_parts/transcript_rows.py`. Keyed by `InjectKind` (see `pages/chat/RecoveryCard.tsx`)
  *  so a new kind does not compile until it is classified here, the same guard
  *  `INJECT_KIND_OPENS_TURN` carries. Wider than that record on purpose: it
  *  answers "does this row start a turn the failure streak should count", and
@@ -220,7 +220,7 @@ const PYTHON_WHITESPACE_RE = /[\t\n\v\f\r\u001c-\u001f \u0085\u00a0\u1680\u2000-
 
 /** First whitespace-separated token by PYTHON's splitting rule, or undefined
  *  for all-whitespace content. Mirrors `content.split()[:1]` in
- *  `src/kiro_crew/dashboard/state.py`. */
+ *  `src/kiro_crew/dashboard/state_parts/transcript_rows.py`. */
 const firstPythonToken = (content: string): string | undefined =>
   content.split(PYTHON_WHITESPACE_RE).find(Boolean)
 
@@ -243,7 +243,7 @@ const firstPythonToken = (content: string): string | undefined =>
  * automatic compaction can write the same tagged row inside an ordinary turn
  * whose real reply never arrived, and that tail is a genuine interruption --
  * so the rule needs BOTH halves, matching `is_turn_interrupted` in
- * `src/kiro_crew/dashboard/state.py`.
+ * `src/kiro_crew/dashboard/state_parts/transcript_rows.py`.
  */
 /**
  * The tool row a turn ends on when the agent called `nothing_to_do`: a quiet
@@ -253,7 +253,7 @@ const firstPythonToken = (content: string): string | undefined =>
  * cannot close a turn. The backend's identity halves (`meta.tool_name` /
  * `meta.mcp_server`) are checked when present and may be absent: KAS names no
  * tool on its frame and opencode sends no identity at all. Mirrors
- * `is_quiet_end_row` in `src/kiro_crew/dashboard/state.py`.
+ * `is_quiet_end_row` in `src/kiro_crew/dashboard/state_parts/transcript_rows.py`.
  */
 export const QUIET_END_TOOL = 'nothing_to_do'
 export const QUIET_END_SERVER = 'kirocrew-core'
@@ -290,7 +290,7 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
     if (isStopEvent(m)) return false
     // A quiet end (`nothing_to_do`) is the turn's deliberate ending too, when it
     // is the turn's last tool row (a later tool row means the model kept working
-    // past it; mirrors `saw_later_tool` in state.py).
+    // past it; mirrors `saw_later_tool` in state_parts/transcript_rows.py).
     if (isQuietEndRow(m)) { if (!sawLaterTool) return false }
     else if (m.role === 'tool') sawLaterTool = true
     if (m.role === 'error') { sawTrailingError = true; continue }
@@ -303,7 +303,7 @@ export const selectTurnInterrupted = (state: RootState, slot?: string | null): b
     // on a deliberately halted run would be wrong. Decided before
     // CONTINUE_SCAN_SKIP, where `inject` stays for the selectors that look
     // through continuations to the prior user floor. Mirrors
-    // `is_turn_interrupted` in `dashboard/state.py`.
+    // `is_turn_interrupted` in `dashboard/state_parts/transcript_rows.py`.
     if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return true
     // A monitor loop's cycle row always dispatches a turn; unanswered, it is
     // the same shape as an unanswered user row. Decided before the skip set,
@@ -387,7 +387,7 @@ export const selectTrailingSendUnconfirmed = (state: RootState): boolean => {
     if (isStopEvent(m)) return false
     // A quiet end (`nothing_to_do`) is the turn's deliberate ending too, when it
     // is the turn's last tool row (a later tool row means the model kept working
-    // past it; mirrors `saw_later_tool` in state.py).
+    // past it; mirrors `saw_later_tool` in state_parts/transcript_rows.py).
     if (isQuietEndRow(m)) { if (!sawLaterTool) return false }
     else if (m.role === 'tool') sawLaterTool = true
     if (m.role === 'inject' && m.content && TURN_INJECT_KINDS.has((m.meta as { injectKind?: unknown } | undefined)?.injectKind)) return false

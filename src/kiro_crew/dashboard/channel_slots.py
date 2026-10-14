@@ -728,7 +728,7 @@ def _rebuild_window(slot: "_ChatSlot", messages: list[dict[str, Any]]) -> None:
     # Durable-only view of the same prefix (transient-role lines excluded),
     # recomputed from the transcript on every rebuild — the base absolute
     # message positions are built over. ``islice`` avoids copying the whole
-    # prefix. See _ChatSlot.__init__.
+    # prefix. See ``init_transcript_fields`` in dashboard/state_parts/slot_transcript.py.
     slot._disk_older_durable_count = durable_row_count(islice(messages, older_cut))
     for msg in messages[-_RESTORE_WINDOW:]:
         role = msg.get("role", "assistant")

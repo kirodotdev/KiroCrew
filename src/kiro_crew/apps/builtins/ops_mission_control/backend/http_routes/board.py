@@ -83,7 +83,7 @@ def _slot_state(request: web.Request, slot_key: str) -> dict[str, Any] | None:
         return None
 
     # `to_dict()` is the slot's PUBLIC serializer and it already derives `pending_approval`
-    # from the approval futures (state.py). Reading `slot._approval_futures` directly is
+    # from the approval futures (state_parts/slot_transcript.py). Reading `slot._approval_futures` directly is
     # wrong: a private attribute is not a contract, so a core refactor that renamed it
     # would silently turn "waiting on you" into "progressing" on this board, with nothing
     # failing anywhere. Asking the owner is the fix.

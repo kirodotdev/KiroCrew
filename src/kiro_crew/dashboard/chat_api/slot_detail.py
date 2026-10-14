@@ -343,7 +343,7 @@ def _is_answered_permission(m: dict) -> bool:
     moves it after them and the rendered order does not match what happened.
 
     The decision is written into the row's ``cls`` JSON in place
-    (``state.py`` ``_mark_permission_resolved``), which is also the only place the
+    (``state_parts/transcript_rows.py`` ``_mark_permission_resolved``), which is also the only place the
     stale-sweep and the slot resolver read it, so ``cls`` is the single source of
     truth here. Truthiness rather than key presence mirrors the client's own
     ``!meta.resolved`` test (``store/chat/selectors.ts`` ``selectSlotPendingApproval``), so an

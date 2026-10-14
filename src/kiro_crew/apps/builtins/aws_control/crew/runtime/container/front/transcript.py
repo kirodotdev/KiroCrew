@@ -38,7 +38,7 @@ thread is always ``dashboard``. Verified in the Kiro Crew wheel this image ships
 
 * ``dashboard/openai_compat.py:257`` takes the turn's ``id`` as the slot id and
   ``:296`` resolves it through ``state.get_or_create_slot``, which normalizes
-  with ``dashboard/state.py:_normalize_slot_key``.
+  with ``dashboard/state_parts/slot_directory.py:_normalize_slot_key``.
 * That function's docstring states the invariant a restart depends on:
   ``_safe_key(_history_key_for(key)) == f"dashboard_{key}"``. So the transcript
   stem is the slot key with a ``dashboard_`` prefix, and the file is
@@ -97,7 +97,7 @@ __all__ = [
 # module docstring for where this is established.
 THREAD_PREFIX = "dashboard"
 
-# Mirrors ``dashboard/state.py:_ascii_slot_key`` then the filename fold in
+# Mirrors ``dashboard/state_parts/slot_directory.py:_ascii_slot_key`` then the filename fold in
 # ``history.py:_safe_key`` (``re.ASCII`` pins ``\w`` to ``[a-zA-Z0-9_]``). Order
 # matters: the non-printable pass produces ``-``, which the filename fold keeps.
 _NON_PRINTABLE_RE = re.compile(r"[^\x20-\x7e]")
@@ -246,7 +246,7 @@ def is_fetchable_slot_id(slot_id: str) -> bool:
 def normalize_slot_key(slot_id: str) -> str:
     """Fold a turn's ``id`` exactly as the backend folds it into a slot key.
 
-    Mirrors ``dashboard/state.py:_normalize_slot_key``. The prefix stripping is
+    Mirrors ``dashboard/state_parts/slot_directory.py:_normalize_slot_key``. The prefix stripping is
     the part that matters here: ``id="dashboard_cust-1"`` reaches the SAME slot,
     and therefore the same transcript, as ``id="cust-1"``, so a fetch that
     skipped this step would miss the object for one of the two spellings and

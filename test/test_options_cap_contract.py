@@ -491,7 +491,11 @@ class TestOnlyOneTrailerParseExists:
         # (OPTIONS_RE_LINE, end-of-line). The dashboard's ``_parse_options``
         # always re-derived this split; the named-``labels`` spelling merely
         # makes it visible to this needle.
-        allowed = {"messaging/renderer.py", "slack/format.py", "dashboard/state.py"}
+        allowed = {
+            "messaging/renderer.py",
+            "slack/format.py",
+            "dashboard/state_parts/slot_transcript.py",
+        }
         offenders = self._hits('group("labels").split("|")') - allowed
         assert not offenders, (
             "these re-derive the choice split instead of calling "

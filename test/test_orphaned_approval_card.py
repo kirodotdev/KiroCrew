@@ -325,6 +325,7 @@ class TestResolveApprovalFlushes:
         ]
         sources += sorted((root / "chat_api").glob("*.py"))
         sources += sorted((root / "chat_turn").glob("*.py"))
+        sources += sorted((root / "state_parts").glob("*.py"))
         for path in sources:
             src = path.read_text(encoding="utf-8")
             for match in re.finditer(r"_mark_permission_resolved\(", src):

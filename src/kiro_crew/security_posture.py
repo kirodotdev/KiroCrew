@@ -2294,6 +2294,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/interaction_coordinator.py",
         "dashboard/notification_coordinator.py",
         "dashboard/slot_projection.py",
+        "dashboard/state_parts/dashboard_services.py",
+        "dashboard/state_parts/notification_log.py",
+        "dashboard/state_parts/slot_transcript.py",
+        "dashboard/state_parts/slot_turns.py",
+        "dashboard/state_parts/slots_frame.py",
+        "dashboard/state_parts/transcript_rows.py",
         "dashboard/websocket_hub.py",
         # Owners extracted from dashboard/handlers/source_providers.py, which keeps
         # the HTTP handlers. They redact provider data before it is cached or

@@ -138,7 +138,8 @@ the one place where a lead decides from feel, which is the thing this section
 exists to stop. Then give the capacity back: `work_ledger_record`
 `action=close` the item once it is terminal and its result is read, and
 `session_close` the child. Carry no number of your own -- the server's
-`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` in `dashboard/state.py` are the
+`MAX_SLOTS_PER_CREATOR` and `MAX_LIVE_SLOTS` in
+`dashboard/state_parts/slot_directory.py` are the
 real ceiling, and a count in your head is a second ceiling that disagrees with
 it.
 

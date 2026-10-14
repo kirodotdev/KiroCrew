@@ -2136,7 +2136,8 @@ already-published one. The two sets are duplicated rather than shared to avoid a
 
 Writers: `dashboard/ws_event_scope.py`, `dashboard/ws.py` (connect-time scope
 resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
-`_serialize_for_client`, `SlotOrigin`), `dashboard/token_auth_app_scope.py`
+`_serialize_for_client`), `dashboard/state_parts/slot_directory.py` (`SlotOrigin`),
+`dashboard/token_auth_app_scope.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
 `RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
 (`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`

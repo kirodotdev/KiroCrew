@@ -122,7 +122,7 @@ function SourceLinkIcon({ provider }: { provider: SidebarSourceLink['provider'] 
  *  A component rather than a block inside the row's render callback because the
  *  overflow chip is interactive and therefore needs per-row state. The slots
  *  payload deliberately serializes at most three links IN TOTAL per card,
- *  pull requests first and issues only in the slots left over (state.py's
+ *  pull requests first and issues only in the slots left over (state_parts/source_links.py's
  *  `_SERIALIZED_SOURCE_LINKS_PER_SLOT`), so the strip stays short and a
  *  broadcast carrying dozens of rows stays small -- which means the links
  *  behind "+N" are not on the client at all and expanding has to fetch them. */

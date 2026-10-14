@@ -88,7 +88,7 @@ export function isMemberThreadSlot(slotKey: string, slots: ReadonlyArray<{ key: 
 }
 
 /** Roles the gateway never saves to disk (`_TRANSIENT_ROLES` in
- *  `dashboard/state.py`). A gateway restart drops these rows, so the slot's
+ *  `dashboard/state_parts/transcript_rows.py`). A gateway restart drops these rows, so the slot's
  *  `last_ts` never again reaches their timestamps. */
 const UNSAVED_ROLES: ReadonlySet<string> = new Set(['chunk', 'done', 'streaming', 'queued', 'permission'])
 

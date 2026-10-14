@@ -106,7 +106,7 @@ async def api_chat_slot_todo(request: web.Request) -> web.Response:
     # rather than ticking (and telling the agent not to redo) the wrong one.
     #
     # CLICK IDENTITY IS RAW, not canonicalized. The pin/override matching in
-    # state.py canonicalizes (folds line breaks AND neutralizes markers) so a
+    # state_parts/slot_todo.py canonicalizes (folds line breaks AND neutralizes markers) so a
     # row the AGENT rebuilds from the recovery block still matches. That is the
     # wrong equality here: the neutralizers are lossy, so two DIFFERENT task
     # texts can collapse to one canonical string (a real "[Task checklist]" line

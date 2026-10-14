@@ -22,7 +22,7 @@ const FEEDBACK_ELIGIBLE_URL = '/api/feedback/eligible'
 //
 // The discriminator is the slot's `origin`, stamped server-side by the only
 // layer that knows how a session was created (`SlotOrigin` in
-// dashboard/state.py) and serialized to the browser on the slot. Only "user"
+// dashboard/state_parts/slot_directory.py) and serialized to the browser on the slot. Only "user"
 // origin — a dashboard person creating a chat with no app token — qualifies.
 // A caller-supplied slot key cannot spoof this: origin is set by the trusted
 // request layer, not derived from the key shape.

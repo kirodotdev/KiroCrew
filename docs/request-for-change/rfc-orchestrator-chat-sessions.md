@@ -111,7 +111,7 @@ user msg ──> ingress queue (durable, per-session, msg ids, entry state machi
   (`queue.json`, `topics.json`), atomic-write on every transition — the same
   durability pattern as subagent `state.json` and the #1114 registry rebuild.
   Explicitly: this durability is NEW Phase-1 work; the existing slot queue
-  (`state.py` `_ChatSlot._queue`) is in-memory and is not reused.
+  (`state_parts/chat_slot.py` `_ChatSlot._queue`) is in-memory and is not reused.
 - **Product shape**: an **orchestrator session type**, not a mode flag on
   `_ChatSlot`. The HTTP message handler routes messages for orchestrator
   sessions to `OrchestratorManager.enqueue()` before (instead of) turn

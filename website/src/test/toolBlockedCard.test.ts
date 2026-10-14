@@ -64,7 +64,7 @@ describe('the in-band tool-blocked card', () => {
   })
 
   it('counts only the blocked items, not the guidance the gateway appends', () => {
-    // `build_refusal_recovery_prompt` (dashboard/state.py) appends per-class
+    // `build_refusal_recovery_prompt` (dashboard/state_parts/injected_turns.py) appends per-class
     // remediation under a "How to do this properly:" heading. The blocked-item
     // count comes from BULLET_RE over the WHOLE body, so guidance rendered as a
     // `  - ` bullet would be counted as a second blocked tool call. It is

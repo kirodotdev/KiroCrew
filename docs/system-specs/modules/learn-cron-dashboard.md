@@ -1597,6 +1597,71 @@ Modular aiohttp package at `127.0.0.1:5476` (configurable). Split into:
   the transport, never `close()` it, so the buffer is freed and the sends waiting
   on it end. A dropped tab is not counted by `deliver_ws_owners`.
 
+`state.py` is the import path and the patch surface of both classes and of every
+module-level name it ever bound. The module helpers and `_ChatSlot` live in
+`dashboard/state_parts/` (`DashboardState` is defined in `state.py` itself), which the
+facade imports eagerly and composes with `kiro_crew._facade_mirror`, so a patch of
+`kiro_crew.dashboard.state.<name>` reaches every owner that reads that name. An
+owner never imports the facade. `_ChatSlot` is split by binding, not inheritance:
+- `state_parts/chat_slot.py` holds the class: `__slots__`, one typed declaration
+  per field, the constructor, and the properties.
+- Every method is a one-line class attribute bound to a function in its
+  collaborator (`set_todo = _slot_todo.set_todo`). That function's first parameter
+  is `self`, and its body is the method body, unchanged.
+- `own_methods` (`state_parts/__init__.py`) drops the runtime `self` annotation and
+  restores `__qualname__` (`_ChatSlot.append`). `__module__` names the collaborator.
+- Each collaborator also sets the default of every field it drives in
+  `init_<x>_fields`, which `_ChatSlot.__init__` calls in the order those fields were
+  first set. The slot keeps every field on itself.
+
+The owners, lowest layer first:
+- `state_parts/transcript_rows.py` — role sets, row identities and counts, the
+  quiet-end, stop and interrupted-turn predicates, the `chat_message` frame and
+  note, `append_and_surface`, and the permission-row marker.
+- `state_parts/injected_turns.py` — the cron, subagent and monitor prefixes, every
+  `*_RECOVERY_PREFIX`, and the recovery deciders and continuation-prompt builders.
+- `state_parts/notification_log.py` — the durable notification log and its IO pool.
+- `state_parts/source_links.py` — source-link chips: budgets, the public-repo status
+  gate and its audit, and the slot's derivation, dismissal and cache.
+- `state_parts/slot_sidebar.py` — folder, pin, tags, colour and theme fields, and the
+  process-wide tags revision.
+- `state_parts/slot_todo.py` — the todo list, its overrides and its sync prompts.
+- `state_parts/slot_session.py` — identity, relay binding, model and effort verdicts,
+  the crew-log predecessor latch, memory, channel link, title and the MCP report.
+- `state_parts/slot_turns.py` — the close fence, note buffers, the prompt queue and
+  delivery ledger, the running task, approvals and trust.
+- `state_parts/slot_ladder.py` — the recovery-ladder, model-fallback, steer, synthesis
+  and wait-tool fields the chat runner keeps on the slot.
+- `state_parts/slot_transcript.py` — `append`, `update_message`, the disk-window
+  bookkeeping, the lazy window, and `to_dict` with its OPTIONS parsing.
+- `state_parts/chat_slot.py` — the `_ChatSlot` class itself (see above).
+- `state_parts/dashboard_services.py` — the coordinator factories, and the lazy
+  accessors through which a `DashboardState` reaches its notification, approval,
+  question, websocket and persistence coordinators.
+- `state_parts/session_events.py` — the compact, recycle, unbind and stuck-turn
+  notices, and the crew-log class recording a slot publishes.
+- `state_parts/status_payload.py` — the served bundle cache and index, uptime
+  formatting and the governance status.
+- `state_parts/slot_directory.py` — slot keys (normalising, minting, index parsing),
+  the live and per-creator caps, `SlotOrigin`, the native-subagent output tail, and
+  which Slack link is a genuine thread link.
+- `state_parts/sidebar_stores.py` — the folder repository, the folder-tree guard and
+  the durable tag snapshot.
+- `state_parts/slots_frame.py` — the slots frame and note with its size-paced
+  interval, channel-link labels, redaction and nonces, and the lineage parents with
+  their one-shot seed request.
+- `state_parts/slots_push.py` — the slot patch fields, the dynamic card store, the
+  broadcast clock and the deferred-flush delay.
+
+Where new code goes:
+- a helper goes to the owner named for its responsibility;
+- a `_ChatSlot` method goes to its collaborator, plus one binding line in
+  `chat_slot.py`;
+- a new slot field gets a `__slots__` entry and a declaration in `chat_slot.py`, and
+  its default in its collaborator's `init_<x>_fields`.
+
+The frozen inventory test is `test/test_state_parts_facade.py`.
+
 `_ChatSlot` and `DashboardState` are the stable compatibility facades and the
 canonical owners of their mutable containers, with one exception: `_ChatSlot.replays`
 is a `RecoveryReplays` that owns its records, and the runner arms, claims and
@@ -5957,7 +6022,7 @@ tuple in a per-turn `_refusal_reasons` list. PreToolUse block reasons use the
 first non-empty hook STDERR value and fall back to a generic policy-hook reason
 for deny-by-default malformed results. When the turn ends — and the user
 did **not** stop it (`slot._stopping` is false) and no session reset is already
-re-queuing — `dashboard/state.py::should_queue_refusal_recovery` decides whether to queue at all (it skips when every refusal was already explained in-band by a steered notice the `steering_consumed` echo confirmed), and if so it builds a continuation via `dashboard/state.py::build_refusal_recovery_prompt` (with an `answered` variant),
+re-queuing — `dashboard/state_parts/injected_turns.py::should_queue_refusal_recovery` decides whether to queue at all (it skips when every refusal was already explained in-band by a steered notice the `steering_consumed` echo confirmed), and if so it builds a continuation via `dashboard/state_parts/injected_turns.py::build_refusal_recovery_prompt` (with an `answered` variant),
 prepends `REFUSAL_RECOVERY_PREFIX`, and `queue_insert(0, …)`s it. The existing
 finally-block dequeue loop renders it as an `inject` message (not a user bubble)
 and re-dispatches it on the same session, so the model receives the reason and

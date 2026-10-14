@@ -1,7 +1,7 @@
 /**
  * Test: the sidebar's "+N" overflow chip expands the full link list and collapses again.
  *
- * The slots payload caps chips at three PER KIND (state.py's
+ * The slots payload caps chips at three PER KIND (state_parts/source_links.py's
  * `_SERIALIZED_SOURCE_LINKS_PER_SLOT`), so the links behind "+N" are not on the
  * client at all — expanding has to fetch them. These tests pin the four
  * behaviours that makes load-bearing: the fetch happens, the revealed chips

@@ -148,7 +148,10 @@ def test_a_cancelled_replay_refunds_the_one_shot_through_the_escalation(
 # ------------------------------------------------------------------- the one owner
 
 _OWNER = "dashboard/poisoned_escalation.py"
-_CONSTRUCTOR = "dashboard/state.py"
+_CONSTRUCTOR = "dashboard/state_parts/chat_slot.py"
+#: ``_ChatSlot.__init__`` sets the cells' defaults through this collaborator's
+#: ``init_ladder_fields`` (the class binds its collaborators, see state_parts/__init__.py).
+_DEFAULTS = ("dashboard/state_parts/slot_ladder.py", "init_ladder_fields")
 
 
 def _cell_writes_and_names(tree: ast.AST) -> list[tuple[str, int]]:
@@ -213,6 +216,14 @@ def _declaration_lines(tree: ast.Module) -> set[int]:
     raise AssertionError("_ChatSlot not found")
 
 
+def _function_lines(tree: ast.Module, name: str) -> set[int]:
+    """The lines of the module-level function *name*."""
+    for node in tree.body:
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return set(range(node.lineno, (node.end_lineno or node.lineno) + 1))
+    raise AssertionError(f"{name} not found")
+
+
 def test_only_the_escalation_and_the_slot_declaration_write_or_name_the_cells() -> None:
     root = src_root()
     strays: list[str] = []
@@ -229,7 +240,10 @@ def test_only_the_escalation_and_the_slot_declaration_write_or_name_the_cells() 
         if rel == _CONSTRUCTOR:
             declared = _declaration_lines(tree)
             hits = [(cell, line) for cell, line in hits if line not in declared]
+        elif rel == _DEFAULTS[0]:
+            declared = _function_lines(tree, _DEFAULTS[1])
+            hits = [(cell, line) for cell, line in hits if line not in declared]
         strays.extend(f"{rel}:{line} writes or names {cell}" for cell, line in hits)
 
-    assert {_OWNER, _CONSTRUCTOR} <= scanned
+    assert {_OWNER, _CONSTRUCTOR, _DEFAULTS[0]} <= scanned
     assert strays == []

@@ -207,6 +207,6 @@ Measurable, and to be asserted in tests rather than claimed in prose:
    ~48 known session event types. Larger than the problem. Kiro Crew already has
    role-typed rows (`history_consolidation_skills.py::_TOOL_ROLES` covering `tool`/`tool_call`/`tool_result`,
    alongside `user`, `assistant`, `system`, `error`, `notice`, `inject`, `subagent`) plus
-   `dashboard/state.py::_TRANSIENT_ROLES` (imported by `chat_persistence.py`) that are
+   `dashboard/state_parts/transcript_rows.py::_TRANSIENT_ROLES` (imported by `chat_persistence.py`) that are
    never persisted. The gap is
    mutability, not vocabulary.

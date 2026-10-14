@@ -406,7 +406,7 @@ describe('ChatPage – recovery card wiring', () => {
   })
 })
 
-/** Verbatim from SUBAGENT_SYNTHESIS_PREFIX in src/kiro_crew/dashboard/state.py. */
+/** Verbatim from SUBAGENT_SYNTHESIS_PREFIX in src/kiro_crew/dashboard/state_parts/injected_turns.py. */
 const SYNTHESIS = '[SYSTEM] Sub-agent synthesis:'
 
 describe('parseRecoveryMessage – sub-agent synthesis', () => {

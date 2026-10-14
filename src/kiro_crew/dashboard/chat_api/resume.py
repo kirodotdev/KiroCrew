@@ -630,7 +630,8 @@ def _hydrate_slot_from_history(
     slot._disk_older_count = max(0, disk_total - len(messages))
     # Durable-only view of the same prefix, recomputed from the on-disk rows —
     # the base absolute message positions are built over. ``islice`` avoids
-    # copying the whole prefix on the event loop. See _ChatSlot.__init__.
+    # copying the whole prefix on the event loop. See ``init_transcript_fields`` in
+    # dashboard/state_parts/slot_transcript.py.
     slot._disk_older_durable_count = durable_row_count(islice(all_messages, slot._disk_older_count))
     # Synchronous construction: rows arrive already content-redacted from the
     # caller's pre-construction pass (resume redacts its window, import redacts

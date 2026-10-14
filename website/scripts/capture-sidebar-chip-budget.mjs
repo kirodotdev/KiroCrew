@@ -2,7 +2,7 @@
  * Screenshot harness for "a session card shows at most three source-link chips
  * in total, pull requests first".
  *
- * The budget is applied server-side (`state.py`'s `_budgeted_source_links`), so
+ * The budget is applied server-side (`state_parts/source_links.py`'s `_budgeted_source_links`), so
  * the sidebar renders whatever the slots payload carries. The fixtures here are
  * the two shapes that function produces for the same sessions: the per-kind
  * slice (three pull requests AND three issues on one card) and the shared slice

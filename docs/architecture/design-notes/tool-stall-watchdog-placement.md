@@ -203,7 +203,7 @@ no defined lifetime.
 
 **Not reachable at all, structurally.** Anything in `DashboardState`. The
 watchdog is in the session layer; slots, `slot.running`, `slot._approval_futures`,
-`slot._tool_stall_retries` are in `dashboard/state.py`, and `SessionManager`
+`slot._tool_stall_retries` are in `dashboard/state_parts/slot_ladder.py`, and `SessionManager`
 holds no reference to it. The session layer must not import the dashboard.
 
 **The blind spot that matters — and why it was not a plumbing problem.** From

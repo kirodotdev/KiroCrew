@@ -429,7 +429,7 @@ def drop_notes_authorized_elsewhere(
     dropped_notes = len(window) - len(kept)
     window = kept
     if dropped_notes:
-        # Count-gated exactly like the drain's own denial at state.py:2320. This is
+        # Count-gated exactly like the drain's own denial (`_ChatSlot.drain`, state_parts/slot_turns.py). This is
         # the PERIODIC save path, so an ungated emit would record a denial on every
         # save of every slot, and the same row would re-emit on each one until the
         # loop-side drain removes it from slot.messages. ``critical`` stays default

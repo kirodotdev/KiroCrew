@@ -176,7 +176,7 @@ section of `config.json` (`src/kiro_crew/hooks.py:931`, callers at
 `cli_server.py:1507`, `slack/gateway.py:653`) and has no registration path; the
 app `EventBus` is publish-only, with no `subscribe` anywhere in
 `apps/event_bus.py`; notification **routing** transports register through
-`DashboardState.register_channel_transport` (`dashboard/state.py:3200`) whose only
+`DashboardState.register_channel_transport` (in `dashboard/state.py`) whose only
 callers are first-party gateways; HTTP routes are confined to
 `/api/apps/<own-name>/*` by a hardcoded prefix (`apps/route_registry.py:122`).
 

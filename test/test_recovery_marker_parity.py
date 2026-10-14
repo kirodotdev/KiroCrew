@@ -5,7 +5,7 @@ the backend puts at the head of an injected continuation. ``PREFIXES`` in
 ``website/src/pages/chat/RecoveryCard.tsx`` is the frontend's copy of that same
 list, matched with ``startsWith`` to pick which card a transcript row renders as.
 There is no shared schema between them -- the marker travels as message text --
-so the two lists are hand-synced, and ``state.py`` says so itself: "all eight
+so the two lists are hand-synced, and ``state_parts/injected_turns.py`` says so itself: "all eight
 recovery markers share one home and the frontend has one list to mirror".
 
 Drift is silent in the direction that matters. A backend marker the frontend
@@ -33,7 +33,10 @@ import re
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[1]
-_BACKEND = _REPO / "src" / "kiro_crew" / "dashboard" / "state.py"
+_BACKEND_FILES = (
+    _REPO / "src" / "kiro_crew" / "dashboard" / "state.py",
+    *sorted((_REPO / "src" / "kiro_crew" / "dashboard" / "state_parts").glob("*.py")),
+)
 _FRONTEND = _REPO / "website" / "src" / "pages" / "chat" / "RecoveryCard.tsx"
 
 # `SOMETHING_RECOVERY_PREFIX = "[...]"` at column 0.
@@ -49,7 +52,11 @@ _FRONTEND_ENTRY_RE = re.compile(r"\[\s*'(?P<kind>[a-z_]+)'\s*,\s*'(?P<prefix>\[[
 
 
 def _backend_markers() -> dict[str, str]:
-    found = _BACKEND_RE.findall(_BACKEND.read_text(encoding="utf-8"))
+    found = [
+        hit
+        for path in _BACKEND_FILES
+        for hit in _BACKEND_RE.findall(path.read_text(encoding="utf-8"))
+    ]
     assert found, "no *_RECOVERY_PREFIX constants found in state.py"
     return {name: prefix for name, prefix in found}
 

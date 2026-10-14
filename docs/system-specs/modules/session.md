@@ -130,7 +130,7 @@ an owner (`website/src/store/chatSlice.ownership.test.ts`).
 | `website/src/store/chat/composerCards.ts` | the cards above the composer, one per slot: the question card, follow-up suggestions and the folder suggestion |
 | `website/src/store/chat/automations.ts` | monitor and goal-loop automations per slot, reconciled from the REST snapshots and upserted from live frames |
 | `website/src/store/chat/workflows.ts` | live dynamic-workflow runs, their reconcile against the authoritative run list, and the sidebar's per-session activity selectors |
-| `website/src/store/chat/selectors.ts` | slot-scoped reads, the composer's busy rule, the Continue predicate that mirrors `_has_conversation` in `dashboard/chat_handlers.py`, and the Resume predicate that mirrors `is_turn_interrupted` in `dashboard/state.py` |
+| `website/src/store/chat/selectors.ts` | slot-scoped reads, the composer's busy rule, the Continue predicate that mirrors `_has_conversation` in `dashboard/chat_handlers.py`, and the Resume predicate that mirrors `is_turn_interrupted` in `dashboard/state_parts/transcript_rows.py` |
 
 The facade keeps three constructs that a read-only check reads from this file:
 the live `chat_message` frame reducer with the question-retiring role set and the
@@ -3807,7 +3807,8 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   nonce — minted by the projection
   (`messaging.link.binding_token`) and recomputed by the map from the binding
   it holds inside `clear_mirror_link_if` / `clear_slack_link_if`, which clear
-  only on equality; the body reader `_expected_binding` in `dashboard/state.py`
+  only on equality; the body reader `_expected_binding` in
+  `dashboard/state_parts/slots_frame.py`
   is the routes' one piece of the guard, and the routes hold no compare of
   their own. The token, not the redacted
   `target`, is the identity, because the display tail drops the thread and the

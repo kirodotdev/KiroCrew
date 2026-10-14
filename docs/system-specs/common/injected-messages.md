@@ -8,12 +8,14 @@ they need a marker the model and the frontend can both recognise.
 **The user may not be present.** Process the envelope and act; do not answer it as
 though someone is waiting for a conversational reply.
 
-Most dashboard-owned prefixes are defined once in `src/kiro_crew/dashboard/state.py`;
+Most dashboard-owned prefixes are defined once in
+`src/kiro_crew/dashboard/state_parts/injected_turns.py` (re-exported by
+`src/kiro_crew/dashboard/state.py`, their import path);
 a few (the MCP app message envelope among them) live in
 `src/kiro_crew/dashboard/chat_utils_injected_rows.py`.
 The two core-safe sub-agent completion markers live in `src/kiro_crew/constants.py`
-so `subagent.py` can import them without importing the dashboard layer; `state.py`
-imports and aggregates them. Classification is by `str.startswith` on the resolved
+so `subagent.py` can import them without importing the dashboard layer;
+`injected_turns.py` imports and aggregates them. Classification is by `str.startswith` on the resolved
 prefix or prefix tuple, never by a loose regex.
 
 ## Cron notification
@@ -63,7 +65,7 @@ Head: <revision>. Changed: <allowlisted canonical facts>.
 Next action: <bounded instructions>.
 ```
 
-`MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state.py`.
+`MONITOR_WAKE_PREFIX = '[Monitor wake]'` is defined in `dashboard/state_parts/injected_turns.py`.
 The complete envelope is redacted before its 4,096-character cap and contains
 only canonical provider facts, never raw responses, logs, comments, diffs,
 stdout, or stderr. Dashboard stores it as role `nudge` with compact monitor
@@ -87,7 +89,7 @@ Usage: <credits> credits · <elapsed>
 ```
 
 - `SUBAGENT_COMPLETION_PREFIX = '[Subagent completion event]'` is defined in
-  `constants.py` and included in `state.py`'s `SUBAGENT_COMPLETION_PREFIXES`
+  `constants.py` and included in `injected_turns.py`'s `SUBAGENT_COMPLETION_PREFIXES`
   aggregate.
 - `<status> <emoji>` is one of `completed ✅`, `failed ❌`, or `stopped by user ⏹`.
   The agent-name parenthetical is present only when the sub-agent ran under a named
@@ -110,7 +112,7 @@ Usage: <credits> credits · <elapsed>
 - A user-stopped agent says so explicitly and instructs the parent not to treat the
   partial output as a finished result or retry it unprompted.
 - A wide wave is delivered in chunks under a sibling prefix,
-  `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `state.py` bundles with the others into
+  `SUBAGENT_BATCH_COMPLETION_PREFIX`, which `injected_turns.py` bundles with the others into
   `SUBAGENT_COMPLETION_PREFIXES` for the same `str.startswith` classification. A
   chunk is NOT the wave: a mid-wave chunk carries progress facts (how many of the
   total are delivered, how many still running) and tells the parent to process
@@ -241,7 +243,7 @@ surface drew before, so no history changes rendering underneath the user.
 
 The runner injects a synthetic continuation when a turn ended for a system reason
 rather than because the model was done. Each has its own prefix in
-`dashboard/state.py`, each renders as an `inject` message (not a user bubble), and
+`dashboard/state_parts/injected_turns.py`, each renders as an `inject` message (not a user bubble), and
 none is mirrored to a linked Slack or Telegram thread as though the user typed it:
 
 | Prefix | Fired when |
@@ -753,7 +755,7 @@ ordinary user message beginning `[UI] `, sent by a human, carrying an origin tag
 
 ## Other injected envelopes
 
-These carry no `state.py` prefix constant, so they are classified by their own
+These carry no `injected_turns.py` prefix constant, so they are classified by their own
 literal header rather than through `str.startswith` on a shared prefix. The
 system prompt names each one so the model reads it as data or as automation
 speech rather than as the user.
@@ -764,8 +766,8 @@ speech rather than as the user.
 | `[Hook context:]` … `[End of hook context]` | `context.py` hook-context assembly | Context supplied by a configured hook whose action is `HOOK_INJECT_CONTEXT`; webhook-restored workflow state is one producer, not the envelope's only meaning. The payload is untrusted third-party data. |
 | `[MCP app message from "server/tool"]` … `[End of MCP app message]` | `dashboard/chat_utils_injected_rows.py` (`APP_MESSAGE_PREFIX`, `APP_MESSAGE_END`; queue kind `mcp_app_message`) | A message an MCP app sent into the chat; the app's words, not the user's. See [mcp-apps.md](../modules/mcp-apps.md). |
 | `[Workflow completion event]` | `dashboard/workflow_inject.py` | A background workflow run finished; the next line names the workflow, run id and status. |
-| `[Content filter — continuing on the fallback model]` | `REFUSAL_FALLBACK_RECOVERY_PREFIX` in `dashboard/state.py`, built in `dashboard/chat_utils_turn_recovery.py` | The primary model refused on a content filter and the turn continues on the fallback model. |
-| `[Task checklist — automatic recovery]` | `todo_recovery_prompt` in `dashboard/state.py` | The conversation restarted, so the todo tool holds an empty list; rebuild it from the dashboard checklist shown. |
+| `[Content filter — continuing on the fallback model]` | `REFUSAL_FALLBACK_RECOVERY_PREFIX` in `dashboard/state_parts/injected_turns.py`, built in `dashboard/chat_utils_turn_recovery.py` | The primary model refused on a content filter and the turn continues on the fallback model. |
+| `[Task checklist — automatic recovery]` | `todo_recovery_prompt` in `dashboard/state_parts/slot_todo.py` | The conversation restarted, so the todo tool holds an empty list; rebuild it from the dashboard checklist shown. |
 | `[Previous run result — do NOT repeat the same content]` | `cron_service/identity.py` (`build_cron_session_context`) | A recurring cron's own last output, so the turn reports only what changed. |
 | `[RESOURCES]` | `resource_status.py` advisory builder | Host memory crossed the tight/critical threshold, **or** the agent slice sits within `_SLICE_TASKS_TIGHT_RATIO` of its cgroup `pids.max`, **or** the macOS kernel reports memory pressure of WARN or worse (`ResourceStatus.memory_pressure_held`) while the figure reads ample or cannot be read; take the lighter path this turn. |
 | `[Relevant skills for this message]` | `skill_runtime/delivery.py` pointer renderer (`trigger_hint`) | Skill candidates named by path instead of by injected body. The body must be read before use unless that skill already appears earlier in the conversation, where native history still carries its instructions. |
@@ -774,7 +776,7 @@ speech rather than as the user.
 
 ## Adding a new envelope
 
-- Define the prefix in `dashboard/state.py` next to the others.
+- Define the prefix in `dashboard/state_parts/injected_turns.py` next to the others.
 - Classify with `startswith` on that constant, and if the entry must survive queue
   transformations, tag the queue entry's `kind` instead of matching content.
 - Decide the slot role (`inject`, `subagent`, `nudge`) so the frontend renders it

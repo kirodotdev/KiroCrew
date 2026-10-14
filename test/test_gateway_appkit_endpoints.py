@@ -3173,7 +3173,7 @@ class TestPersistenceRebindDenialIsAudited:
     """The save-path drop of a rebound note must record a SEL denial.
 
     ``_note_authorized_elsewhere`` has three call sites. The two drain-side ones
-    share a single count-gated denial (``state.py:2320``); the save-path filter
+    share a single count-gated denial (``_ChatSlot.drain``, ``state_parts/slot_turns.py``); the save-path filter
     was the only unaudited one, so a rebind landing between the write and the next
     periodic save dropped the row with nothing recorded anywhere.
 

@@ -165,7 +165,7 @@ un-picking a deliberate "carries state, not something to read" classification.
 **Why not `role="inject"`** (what `/note` writes) — two concrete harms. It is in
 `RECALL_ROLES` (`context_assembly/replay.py`), so every marker would be replayed into the model
 as conversation content; a chapter break must not enter the prompt. And it is in
-`_PROMPT_ROLES` (`dashboard/state.py`), so a marker would rank as an inbound
+`_PROMPT_ROLES` (`dashboard/state_parts/slot_transcript.py`), so a marker would rank as an inbound
 prompt for the sidebar's `last_turn_ts`, making a session look freshly asked-of
 every time a break was drawn.
 

@@ -276,7 +276,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "dashboard/handlers/messaging.py": 12,
     "dashboard/session_control_parts/target_authorization.py": 1,
     "dashboard/session_transfer.py": 1,
-    "dashboard/state.py": 1,
+    "dashboard/state_parts/slot_turns.py": 1,
     "knowledge/agent_fetch.py": 1,
     "mcp_cron.py": 1,
     # The pooled-backend daemon never composes a companion context. Its
