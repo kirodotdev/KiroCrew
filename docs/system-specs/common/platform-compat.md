@@ -459,7 +459,25 @@ query-only handle is itself refused, or when the instant is at or after the
 root's. Absence alone
 is insufficient when that same fresh snapshot contains an entry referencing the
 observed, now-vanished unopened parent: discovery refuses even if the child and
-its descendants first appeared after the initial snapshot. This guard reports
+its descendants first appeared after the initial snapshot. The one exception is a
+referencing entry whose own creation instant predates the root: an orphan that
+already existed before the root names an earlier holder of the recycled PID, not
+the vanished candidate, so it neither blocks discovery nor joins the tree. Such
+an orphan was already listed under the same parent by the initial snapshot, so
+any other entry refuses without a query. Its children are strangers too, and
+their handles are closed with the orphan's, but only when each of its children in
+either snapshot is pinned by a termination handle opened in the same call, is
+still listed under the orphan by the fresh snapshot, and has no child of its own
+in either snapshot: an unpinned PID may hold a new process by the fresh
+snapshot, a PID reused before its handle opened shows a different parent there,
+and a grandchild's parent PID may have been recycled from a process of the tree.
+Otherwise the referencing entry refuses. A console host that exits before its
+handle opens leaves exactly this shape when its PID was recycled from a process
+whose children outlived it. This exception is deliberately narrower than the
+creation-order disproof above, which drops a disproven node's whole numeric
+subtree. Skipping this refusal is sound only one level below a process proven
+older than the root, and only for children pinned as described, so the two rules
+must not be merged. This guard reports
 only a total and at most three child/parent PID pairs, takes no extra snapshot,
 and grants no identity or termination authority. A vanished unopened child with
 no fresh descendant reference remains admissible.
