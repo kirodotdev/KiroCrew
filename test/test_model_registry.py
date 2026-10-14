@@ -103,6 +103,8 @@ class TestModelRegistry:
         assert mr.model_window("deepseek-3.2") == 164_000
         assert mr.model_window("minimax-m2.5") == 196_000
         assert mr.model_window("minimax-m2.1") == 196_000
+        assert mr.model_window("minimax-m3") == 1_000_000
+        assert mr.model_window("minimax-m2.7") == 204_800
         assert mr.model_window("glm-5") == 200_000
         assert mr.model_window("gpt-5.6-sol") == 272_000
         assert mr.model_window("gpt-5.6-terra") == 272_000
@@ -110,8 +112,8 @@ class TestModelRegistry:
         assert mr.model_window("qwen3-coder-next") == 256_000
         assert mr.model_window("qwen3-coder-480b") == 256_000
         assert mr.model_window("glm-4.7-flash") == 128_000
-        for m in ("deepseek-3.2", "minimax-m2.5", "glm-5", "gpt-5.6-terra",
-                  "qwen3-coder-next", "glm-4.7-flash"):
+        for m in ("deepseek-3.2", "minimax-m2.5", "minimax-m3", "minimax-m2.7",
+                  "glm-5", "gpt-5.6-terra", "qwen3-coder-next", "glm-4.7-flash"):
             assert mr.has_known_window(m) is True
             assert mr.window_source(m) == "supplementary"
 
