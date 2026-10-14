@@ -1688,6 +1688,13 @@ BANNER = r"""
 # there is one definition and no path can drift to a different cap.
 MAX_BANNER_CHARS = 500
 
+# Max length of an auto-nudge loop's ``message``, the recurring instruction each
+# cycle injects. The two loop authorizers (arm and update) refuse a longer one,
+# and the goal-draft store holds the inactive form's text that Start submits as
+# that message, so it reads this name too and the two bounds cannot drift apart.
+# Counted as Python ``len`` (code points), the unit the dashboard editor clamps in.
+MAX_NUDGE_MESSAGE_CHARS = 8000
+
 # Byte cap on one artifact's content: the store's own limit AND the MCP save /
 # update field cap, which must be the same number or the tool path rejects
 # content the store accepts (or the reverse). Real widget payloads (dashboards,

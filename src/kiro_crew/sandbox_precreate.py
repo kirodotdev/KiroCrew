@@ -420,6 +420,9 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # agent reads it and drives the loopback /approve to self-grant. Precreated
     # (empty, 0o700) before every spawn so the mask always has a name to bind over.
     "file-delivery-consent-pending",
+    # Goal drafts are created on first editor use. Precreate the directory so a
+    # sandbox launched earlier cannot see the later-created canonical prompt store.
+    "goal-drafts",
     "appearance-library",
     "quarantined-clones",
     # First created by the first member-born session's vouch, so a sandbox spawned

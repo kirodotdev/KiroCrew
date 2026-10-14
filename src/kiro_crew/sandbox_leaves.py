@@ -228,6 +228,11 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # ``security.paths`` so the file tools refuse it too. All three, because each
     # one alone leaves a different path open.
     "work",
+    # Canonical goal text returned by the owner-gated dashboard and executed by
+    # Start. The gateway opens it directly; no in-sandbox process needs access.
+    # Mask the directory so an agent cannot forge a prompt through its JSON file,
+    # lock, or atomic-write sibling temp.
+    "goal-drafts",
     # The Notes state files' old bare spellings: kept masked for a copy not yet moved,
     # and never carved back (the backend reads only the state directory).
     *_MD_NOTEBOOK_RETIRED_STATE_LEAVES,
