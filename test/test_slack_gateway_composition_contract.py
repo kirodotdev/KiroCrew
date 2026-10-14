@@ -617,7 +617,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_failure_alert_due",
             "function",
-            "(job: 'CronJob', streak: 'int', *, denied: 'bool' = False) -> 'bool'",
+            "(job: 'CronJob', streak: 'int', *, denied: 'bool' = False, auth_expiry: 'bool' = False) -> 'bool'",
         ),
         ("_log_held_alert", "function", "(job: 'CronJob') -> 'None'"),
         (
@@ -644,7 +644,7 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_cron_single_failure",
             "async method",
-            "(self, job: 'CronJob', exc: 'Exception', session_key: 'str', _gate_counted: 'bool', _job_owns_failure: 'bool', _hand_over_streak: 'bool') -> 'None'",
+            "(self, job: 'CronJob', exc: 'Exception', session_key: 'str', _gate_counted: 'bool', _job_owns_failure: 'bool', _hand_over_streak: 'bool', *, _auth_expiry: 'bool' = False) -> 'None'",
         ),
     ),
     "orchestrator_init": (
@@ -720,9 +720,13 @@ _BASE_SURFACE: dict[str, tuple[tuple[str, str, str], ...]] = {
         (
             "_cron_failure_attribution",
             "function",
-            "(job: 'CronJob', _run_provider: 'object | None') -> 'tuple[bool, bool]'",
+            "(job: 'CronJob', _run_provider: 'object | None', *, auth_expiry: 'bool' = False) -> 'tuple[bool, bool]'",
         ),
-        ("_charge_failure", "function", "(job: 'CronJob', _hand_over_streak: 'bool') -> 'None'"),
+        (
+            "_charge_failure",
+            "function",
+            "(job: 'CronJob', _hand_over_streak: 'bool', *, auth_expiry: 'bool' = False) -> 'None'",
+        ),
         (
             "_streak_after_charge",
             "function",

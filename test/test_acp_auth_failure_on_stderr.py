@@ -66,6 +66,7 @@ def _runtime(lines):
     runtime.recording_allowed = True
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
+    runtime._saw_session_sign_out = False
     # The same sink latches an OS-sandbox refusal. Seeded here because the drain
     # guards itself with a broad `except Exception`, so a missing attribute does
     # not raise -- it ends the drain after one line, and every assertion below

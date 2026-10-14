@@ -136,6 +136,9 @@ from kiro_crew.constants import (
 )
 from kiro_crew.context import ContextBuilder, session_store_for_turn
 from kiro_crew.context_management import summarize_result
+from kiro_crew.credential_errors import (  # noqa: F401 — used by gateway_runtime composition
+    is_auth_error_message,
+)
 from kiro_crew.cron import (
     _AUTO_PAUSE_THRESHOLD,
     _SUBPROC_CLEANUP_ALLOWANCE_SECS,

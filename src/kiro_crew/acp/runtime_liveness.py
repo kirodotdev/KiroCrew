@@ -11,6 +11,7 @@ Instance fields written: ``_dead``, ``_death_expected``, ``_death_label``,
 ``_death_reason``, ``_death_summary``, ``_death_tail``, ``_pending_init_notifications``,
 ``_pending_requests``, ``_routed_requests``, ``_saw_auth_failure``,
 ``_saw_delegate_launch_failure``, ``_saw_sandbox_init_failure``,
+``_saw_session_sign_out``,
 ``_stall_turn_sessions``, ``_stderr_lines``,
 ``_stdin_stall_death``.
 
@@ -35,6 +36,7 @@ from kiro_crew.acp.transport_errors import (
     is_auth_failure_output,
     is_delegate_launch_failure_output,
     is_sandbox_init_failure_output,
+    is_sign_out_wording,
     registration_throttle_line,
 )
 from kiro_crew.acp.transport_framing import settle_drain
@@ -312,6 +314,20 @@ def saw_not_logged_in(self: AcpRuntime) -> bool:
     Reads the latch, not the ring buffer: see ``_saw_auth_failure``.
     """
     return self._saw_auth_failure
+
+
+def saw_session_sign_out(self: AcpRuntime) -> bool:
+    """True when kiro-cli's stderr contained a self-healing sign-out message.
+
+    A narrower subset of :meth:`saw_not_logged_in`: returns True only when
+    the auth failure came from session/login expiry wording ("not logged in",
+    "session has expired", bearer rejection, ``ExpiredTokenException``, etc.),
+    not from a bare HTTP 403 or a permanent permission denial.
+    Uses :func:`~kiro_crew.acp.transport_errors.is_sign_out_wording` rather
+    than :func:`~kiro_crew.acp.transport_errors._is_session_expired`, which
+    also fires on any HTTP 403 and would exempt permanent denials.
+    """
+    return self._saw_session_sign_out
 
 
 async def settle_stderr(self: AcpRuntime, timeout: float = 0.5) -> None:
@@ -871,6 +887,8 @@ async def _drain_stderr(self: AcpRuntime) -> None:
                 # surfaced where it is actionable instead -- as AcpAuthRequired.
                 if not self._saw_auth_failure and is_auth_failure_output(text):
                     self._saw_auth_failure = True
+                if not self._saw_session_sign_out and is_sign_out_wording(text):
+                    self._saw_session_sign_out = True
                 # Same sink, same reason as the auth latch: matched
                 # unconditionally (not only when ``recording_allowed``), so a
                 # restricted session that retains no stderr still gets the

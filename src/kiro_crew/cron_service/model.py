@@ -568,7 +568,7 @@ class CronJob:
         except Exception:
             logger.debug("SEL logging failed for a cron auto-pause limit change", exc_info=True)
 
-    def record_failure(self) -> None:
+    def record_failure(self, *, auth_expiry: bool = False) -> None:
         """Count one consecutive failure and auto-pause once the threshold is hit.
 
         Auto-pause is execution-owned: it sets both `enabled` (so the in-memory
@@ -584,7 +584,29 @@ class CronJob:
         (:meth:`record_success`) clears the stamp, so it is not mistaken for
         that resume. ``failure_recorded`` is still set, so the
         timeout arm and the reaper treat this run's failure as handled.
+
+        A failure whose ``last_error`` is a terminal auth/credential error
+        (expired session, rejected Bedrock token) is counted as a run that
+        occurred but not toward the auto-pause tally: the failure is
+        environmental and self-heals once the user re-authenticates. The
+        gateway classifies the exception and passes ``auth_expiry=True`` here;
+        the classification is kept at the exception boundary rather than on
+        ``last_error`` text, so a gate refusal summary (model-authored tool
+        titles) cannot incorrectly match the auth vocabulary.
         """
+        # Credential/auth failures are environmental: the job is healthy and
+        # will succeed once the user re-authenticates. Counting them toward
+        # auto-pause would silence a whole job after one overnight session
+        # expiry. ``failure_recorded`` is still set so the timeout arm and
+        # the reaper see this run as handled; the consecutive counter and the
+        # auto-pause gate are the only steps skipped.
+        # The gateway computes ``auth_expiry`` from the exception and passes it
+        # here; the text fallback is deliberately absent so that ``last_error``
+        # (which may carry a gate refusal summary with model-authored titles)
+        # cannot incorrectly exempt a security-blocked job from auto-pause.
+        if auth_expiry:
+            self.failure_recorded = True
+            return
         if self.count_failure() and self.failure_limit_reached():
             self.enabled = False
             self.auto_paused = True

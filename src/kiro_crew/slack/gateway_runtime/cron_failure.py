@@ -43,7 +43,9 @@ if TYPE_CHECKING:
     )
 
 
-def _failure_alert_due(job: CronJob, streak: int, *, denied: bool = False) -> bool:
+def _failure_alert_due(
+    job: CronJob, streak: int, *, denied: bool = False, auth_expiry: bool = False
+) -> bool:
     """Whether this failure leaves the dashboard bell for the channel or DM.
 
     *streak* counts consecutive failed runs including this one, floored at 1: a
@@ -56,9 +58,11 @@ def _failure_alert_due(job: CronJob, streak: int, *, denied: bool = False) -> bo
     ``delete_after_run`` job is paused after a failed run
     (``auto_pause_failed_one_shot``) and a retained ``at`` job is parked
     (``run_parks_one_shot``), so it alerts too. A silent job reaches nobody
-    either way and keeps its own path.
+    either way and keeps its own path. A credential expiry (*auth_expiry*) charges
+    nothing, so its streak never grows toward the threshold: it alerts whatever the
+    threshold too, or a signed-out job would only ever ring the bell.
     """
-    if denied or job.silent or job.delete_after_run or job.schedule.kind == "at":
+    if denied or auth_expiry or job.silent or job.delete_after_run or job.schedule.kind == "at":
         return True
     streak = max(streak, 1)
     pause_limit = job.auto_pause_limit()
@@ -370,11 +374,17 @@ async def _cron_single_failure(
     _gate_counted: bool,
     _job_owns_failure: bool,
     _hand_over_streak: bool,
+    *,
+    _auth_expiry: bool = False,
 ) -> None:
     """Alert a failed single-agent cron run, or suppress a duplicate, and charge it.
 
     Called from the turn's failure handler, which re-raises *exc* afterwards.
     Every await precedes the charge, so a cancellation mid-alert counts nothing.
+
+    ``_auth_expiry`` is True when the exception is a credential/session expiry
+    (AcpAuthRequired with Kiro backend, or AWS/Bedrock token expiry text).
+    When set, the failure counter is not incremented and the streak the alert reads stays where it is.
     """
     # ── Failure dedup: suppress repeated identical crash notifications ──
     # A chain-exhaustion failure carries the fallback story on the
@@ -421,11 +431,13 @@ async def _cron_single_failure(
     # driving auto-pause never reached, and a hand-over run must not hide that
     # it is about to pause the job.
     _charges = _job_owns_failure and not _gate_counted
-    streak = _streak_after_charge(job, _charges, _hand_over_streak)
-    if not _failure_alert_due(job, streak):
+    # An auth/credential expiry charges nothing (record_failure skips it), so
+    # the streak it leaves is the counter as it stands.
+    streak = _streak_after_charge(job, _charges and not _auth_expiry, _hand_over_streak)
+    if not _failure_alert_due(job, streak, auth_expiry=_auth_expiry):
         # A held alert is still a failed run: charge it, as the dup branch does.
         if _charges:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         limit = job.alert_after_limit()
         logger.info(
             "Cron '%s': failure %d of %d held below alert_after_failures",
@@ -457,7 +469,7 @@ async def _cron_single_failure(
         # on five distinct failures, or the failure belonged to a
         # shared runtime rather than to this job.
         if not _gate_counted and _job_owns_failure:
-            _charge_failure(job, _hand_over_streak)
+            _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
         if job.auto_paused:
             logger.warning(
                 "Cron '%s' auto-paused after %d consecutive failures",
@@ -537,11 +549,19 @@ async def _cron_single_failure(
     # the caller already knows.
     safe_reason = self._slack_safe_fenced(exc_detail)
     if is_dup:
-        fail_msg = (
-            f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
-            f" ({streak} consecutive failures)"
-            f" — check logs._\n```{safe_reason}```"
-        )
+        # An auth/credential expiry charges nothing, so the counter did not
+        # move: omit the count clause rather than repeat an unchanged number.
+        if _auth_expiry:
+            fail_msg = (
+                f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
+                f" (credential expired) — check logs._\n```{safe_reason}```"
+            )
+        else:
+            fail_msg = (
+                f"⏰ *Cron: {safe_name}* ❌ _Job still failing on {escape_mrkdwn(host)}"
+                f" ({streak} consecutive failures)"
+                f" — check logs._\n```{safe_reason}```"
+            )
     else:
         fail_msg = (
             f"⏰ *Cron: {safe_name}* ❌ "
@@ -560,11 +580,17 @@ async def _cron_single_failure(
     # separately from ``render_for_slack`` is how the success leg
     # composes its own channel string too.
     if is_dup:
-        channel_fail_msg = (
-            f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
-            f" ({streak} consecutive failures)"
-            f" — check logs.\n{exc_detail}"
-        )
+        if _auth_expiry:
+            channel_fail_msg = (
+                f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
+                f" (credential expired) — check logs.\n{exc_detail}"
+            )
+        else:
+            channel_fail_msg = (
+                f"⏰ Cron: {job.name} ❌ Job still failing on {host}"
+                f" ({streak} consecutive failures)"
+                f" — check logs.\n{exc_detail}"
+            )
     else:
         channel_fail_msg = (
             f"⏰ Cron: {job.name} ❌ Job failed on {host} — check logs.\n" f"{exc_detail}"
@@ -603,7 +629,7 @@ async def _cron_single_failure(
     # verdict already counted THIS run, or when the failure belonged
     # to a runtime this job was sharing rather than to the job.
     if not _gate_counted and _job_owns_failure:
-        _charge_failure(job, _hand_over_streak)
+        _charge_failure(job, _hand_over_streak, auth_expiry=_auth_expiry)
     if job.auto_paused:
         logger.warning(
             "Cron '%s' auto-paused after %d consecutive failures",
