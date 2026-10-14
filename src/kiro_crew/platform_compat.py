@@ -319,6 +319,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         get_ppid,
         get_process_start_id,
         get_process_start_identity,
+        host_boot_id,
         is_exec_supervisor_of_this_process,
         linux_process_name,
         own_process_start_time,

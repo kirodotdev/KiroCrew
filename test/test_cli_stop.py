@@ -348,6 +348,9 @@ class TestStop:
                 "kiro_crew.cli_server.platform_compat.listening_pid_tool_available",
                 return_value=True,
             ),
+            # Every stop here targets this data home's own gateway (the Windows
+            # stop refuses to force-kill another home's gateway).
+            patch("kiro_crew.cli_server._targets_another_homes_gateway", return_value=False),
         ):
             yield
 

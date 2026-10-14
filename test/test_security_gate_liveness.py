@@ -152,6 +152,11 @@ def _url_payload_command(n: int) -> str:
 #: line parser and digest helpers apart from ``argv_floor``'s per-module cap). A
 #: Windows file too large to hash on the gate is never served, so a dotless target
 #: there is pending, and the ssh self-target refusal note says so.
+#: Raised by six lines for the ``session-trust`` and
+#: ``session-trust-stop`` entries in ``_CREW_SECRET_LEAVES``, the owner's
+#: crash-surviving chat trust record and its owner-stop marker. The
+#: store itself lives in ``dashboard/session_trust_store.py``; no rule, matcher or
+#: pass was added here.
 #:
 #: Raised again, from 28,399, by two lines: case (1) of the ssh self-target refusal
 #: note names a dotless target refused while a hosts file over 64 KiB is still read
@@ -503,7 +508,7 @@ def _url_payload_command(n: int) -> str:
 #: Raised by 8, from 32,518, for one ``_WRITE_PROTECTED_HOME_PATHS`` entry in
 #: ``paths_lists``: the crewmate agent folder, write-denied to the agent file tools
 #: like ``~/.kiro/agents``. Data, not rule logic: the matcher is unchanged.
-_PACKAGE_LINE_BUDGET = 32_526
+_PACKAGE_LINE_BUDGET = 32_532
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
