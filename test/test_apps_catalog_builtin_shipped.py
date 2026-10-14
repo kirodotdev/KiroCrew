@@ -71,6 +71,58 @@ class TestCatalogBuiltinRowsIntersectShippedBuiltins:
         names = {r["name"] for r in await registry.list_catalog_apps()}
         assert names == {"plain-row"}
 
+    @pytest.mark.asyncio
+    async def test_edition_builtin_row_is_listed_while_the_catalog_is_reachable(self, monkeypatch):
+        """An edition's ``registry_rows`` builtin survives the catalog replacing the seed."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "edition-app", "displayName": "Edition App", "source": {"type": "builtin"}}
+            ],
+        )
+        monkeypatch.setattr(
+            registry, "shipped_builtin_names", lambda: {"shipped-app", "edition-app"}
+        )
+
+        rows = {r["name"]: r for r in await registry.list_catalog_apps()}
+        assert set(rows) == {"shipped-app", "edition-app"}
+        assert rows["edition-app"]["displayName"] == "Edition App"
+
+    @pytest.mark.asyncio
+    async def test_edition_rows_only_add_names_the_catalog_does_not_publish(self, monkeypatch):
+        """A catalog row wins a name collision, as it does over the seed."""
+        _catalog(
+            monkeypatch,
+            [{"name": "shipped-app", "displayName": "Catalog", "source": {"type": "builtin"}}],
+        )
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "shipped-app", "displayName": "Edition", "source": {"type": "builtin"}}
+            ],
+        )
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+
+        rows = await registry.list_catalog_apps()
+        assert [r["displayName"] for r in rows] == ["Catalog"]
+
+    @pytest.mark.asyncio
+    async def test_edition_builtin_row_this_build_does_not_ship_is_dropped(self, monkeypatch):
+        """Edition rows pass the same shipped-builtin filter as catalog rows."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [{"name": "absent-app", "source": {"type": "builtin"}}],
+        )
+        monkeypatch.setattr(registry, "shipped_builtin_names", lambda: {"shipped-app"})
+
+        names = {r["name"] for r in await registry.list_catalog_apps()}
+        assert names == {"shipped-app"}
+
     def test_a_manifest_registration_would_reject_is_not_in_the_shipped_set(
         self, tmp_path, monkeypatch
     ):

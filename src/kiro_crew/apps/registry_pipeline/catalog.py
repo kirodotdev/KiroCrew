@@ -44,7 +44,11 @@ from kiro_crew.apps.registry_pipeline.indexes import (
     _load_external_registries,
 )
 from kiro_crew.apps.registry_pipeline.manifests import _resolve_manifest
-from kiro_crew.apps.registry_pipeline.sources import _effective_registries, _load_registry_file
+from kiro_crew.apps.registry_pipeline.sources import (
+    _edition_registry_rows,
+    _effective_registries,
+    _load_registry_file,
+)
 from kiro_crew.apps.registry_pipeline.store_art import _prewarm_owner_tier_store_assets
 from kiro_crew.apps.registry_pipeline.subprocess_env import _detect_probe_env
 from kiro_crew.sandbox import (
@@ -853,11 +857,20 @@ async def list_catalog_apps() -> list[dict[str, Any]]:
     install resolves by (which would point install-by-name at the wrong repo).
     A ``builtin`` row naming a builtin this build cannot register is dropped the
     same way, and keeps its reservation the same way.
+
+    Edition rows (the ``AppsLoader.registry_rows`` seam) are added to the
+    published list on the same ADD-only terms ``_load_registry_file`` adds them to
+    the seed: a catalog row wins a name collision, and the filters below judge
+    them like any other row. Replacing the seed with the catalog would otherwise
+    drop every edition row whenever the catalog is reachable.
     """
     # Off the event loop: the first call after a cache expiry does network I/O.
     rows = await asyncio.to_thread(official_catalog.list_catalog_rows)
     if not rows:
         return []
+    catalog_names = {row.get("name") for row in rows}
+    edition_rows = await asyncio.to_thread(_edition_registry_rows)
+    rows = [*rows, *(dict(row) for row in edition_rows if row.get("name") not in catalog_names)]
     installable = await asyncio.to_thread(_load_registry_file)
     seed_by_name = {
         e["name"]: e for e in installable if isinstance(e, dict) and isinstance(e.get("name"), str)
