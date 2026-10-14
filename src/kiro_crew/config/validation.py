@@ -33,11 +33,15 @@ from __future__ import annotations
 import copy
 import logging
 import threading
+from typing import Iterable
 
 from kiro_crew.config.fields import _coerce_bool
 
-# Top-level config.json sections a BUILTIN APP owns and reads from the file
-# directly, with no modelled field in this core. Not in _KNOWN_CONFIG_SECTIONS
+# Top-level config.json sections an app owns and reads from the file directly,
+# with no modelled field in this core. Installed apps and companion plugins add
+# their manifest declarations at validation time. This literal remains the
+# compatibility fallback for keys that predate that manifest field. Not in
+# _KNOWN_CONFIG_SECTIONS
 # (no dataclass parses them) and not in CONFIG_RESERVED_TOP_KEYS (they must
 # survive save(), not be dropped by it): the loader already captures them into
 # _extra_sections and re-emits them like any other unmodelled section. The one
@@ -483,6 +487,65 @@ _CONFIG_CACHE = ConfigCache()
 _CONFIG_CACHE_LOCK = _CONFIG_CACHE._lock
 
 
+# Top-level config keys declared by installed extension manifests, one immutable
+# snapshot per fixed discovery source. Each manifest parser bounds its own
+# declaration; validation reads only this in-memory union.
+_EXTENSION_CONFIG_KEY_SOURCES = ("apps", "plugins")
+_extension_config_keys_lock = threading.Lock()
+_extension_config_keys: dict[str, frozenset[str]] = {
+    source: frozenset() for source in _EXTENSION_CONFIG_KEY_SOURCES
+}
+
+
+def replace_extension_config_keys(source: str, keys: Iterable[str]) -> frozenset[str]:
+    """Atomically publish one fixed discovery source's key snapshot.
+
+    Discovery and lifecycle code call this after filesystem or distribution-
+    metadata work. Unknown source names are ignored so the process-global
+    registry cannot grow with caller-controlled identifiers. Returns the
+    snapshot now held for *source*.
+    """
+    if source not in _EXTENSION_CONFIG_KEY_SOURCES:
+        logger.debug("Ignoring unknown extension config-key source %r", source)
+        return frozenset()
+    snapshot = frozenset(keys)
+    with _extension_config_keys_lock:
+        _extension_config_keys[source] = snapshot
+    return snapshot
+
+
+def extension_config_keys(source: str) -> frozenset[str]:
+    """Return the published snapshot for one fixed discovery source."""
+    with _extension_config_keys_lock:
+        return _extension_config_keys.get(source, frozenset())
+
+
+def _installed_extension_config_keys() -> set[str]:
+    """Return the in-memory union of app and companion declarations.
+
+    Never raises, imports modules, reads files, or inspects distributions.
+    """
+    try:
+        with _extension_config_keys_lock:
+            return set().union(*_extension_config_keys.values())
+    except Exception:
+        logger.debug("Could not read extension config key registry", exc_info=True)
+        return set()
+
+
+def prime_extension_config_keys() -> None:
+    """Populate app and admitted-plugin key snapshots before first validation.
+
+    This is synchronous startup work. Callers invoke it before creating an
+    asyncio event loop; validation itself remains an in-memory-only consumer.
+    """
+    from kiro_crew.apps.manager import refresh_app_config_keys
+    from kiro_crew.platform.discovery import refresh_installed_plugin_config_keys
+
+    refresh_app_config_keys()
+    refresh_installed_plugin_config_keys()
+
+
 def validate_config_data(data: dict) -> dict:
     """Validate *data* against the config JSON Schema.
 
@@ -515,7 +578,9 @@ def validate_config_data(data: dict) -> dict:
     # silently falls back on anything else, so a scalar written by hand would
     # otherwise lose the one warning that tells the operator it is being ignored.
     known_top_keys = {e.path for e in SCHEMA_REGISTRY if "." not in e.path and e.path != "*"}
-    app_owned_sections = {k for k in _APP_OWNED_TOP_KEYS if isinstance(data.get(k), dict)}
+    declared_app_keys = set(_APP_OWNED_TOP_KEYS)
+    declared_app_keys.update(_installed_extension_config_keys())
+    app_owned_sections = {k for k in declared_app_keys if isinstance(data.get(k), dict)}
     core_owned_sections = {k for k in _CORE_OWNED_TOP_KEYS if isinstance(data.get(k), dict)}
     unknown = sorted(
         set(data.keys())

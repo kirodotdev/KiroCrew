@@ -39,7 +39,8 @@ permissions or setting `minKiroCrewVersion`.
 The signature covers `name`, `version`, `signer` and `permissions`, plus each of
 these groups when it is non-empty: `notifications`, `crons`, `contributes`,
 `setup`, `mcpServers`, `backend`, `ui`, `agents`, `skills`, `sops`,
-`dependencies` and `platform`. An empty group is left out of the signed bytes.
+`dependencies`, `platform` and `config_keys`. An empty group is left out of the signed
+bytes.
 
 A gateway computes the signed bytes from the groups it knows. A signed manifest
 that declares a group an older gateway does not sign fails verification there.
@@ -54,6 +55,7 @@ It fails closed: the install is refused, not downgraded. Set
 | `skills` | string[] | Paths to skill directories |
 | `sops` | string[] | Paths to SOP (Standard Operating Procedure) files |
 | `mcpServers` | object | MCP server definitions (same format as `mcp.json`) |
+| `config_keys` | string[] | Top-level `config.json` object keys owned by this app. At most 200 keys may be declared, and each key may contain at most 200 characters. Declarations apply only while the app is installed |
 
 ### How a stdio `command` is resolved at registration
 
@@ -1251,6 +1253,8 @@ gateway has them: `DISPLAY`, `WAYLAND_DISPLAY`, `XAUTHORITY`,
   `mcpServers` entries use `command`/`args`/`url`/`env` (not app-relative file paths)
   and are not path-checked.
 - All required fields must be non-empty strings
+- `config_keys` must be an array of at most 200 non-empty strings, each at most
+  200 characters long
 - Each cron entry must specify either `every` or `cron_expr`
 - A non-empty `crons` requires `"cron": true` under `permissions`. Install,
   update and self-registration refuse the manifest otherwise; an app already

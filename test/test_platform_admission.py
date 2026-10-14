@@ -10,6 +10,8 @@ import pytest
 
 from kiro_crew.platform import discovery as discovery_mod
 from kiro_crew.platform.admission import (
+    _MAX_CONFIG_KEY_CHARS,
+    _MAX_CONFIG_KEYS,
     MODE_ENFORCE,
     MODE_OPEN,
     AdmissionPolicy,
@@ -142,14 +144,59 @@ class TestKillSwitch:
 
 
 class TestManifestParsing:
+    def test_config_keys_are_parsed_and_signed(self):
+        manifest = PluginManifest.from_dict(
+            {"name": "p", "config_keys": ["aim_update"], "signature": "ignored"}
+        )
+        assert manifest.config_keys == ["aim_update"]
+        assert b'"config_keys":["aim_update"]' in manifest.signing_payload()
+
+    def test_non_list_config_keys_are_ignored(self):
+        manifest = PluginManifest.from_dict({"name": "p", "config_keys": "aim_update"})
+        assert manifest.config_keys == []
+
+    def test_invalid_config_key_entry_fails_closed(self):
+        manifest = PluginManifest.from_dict({"name": "p", "config_keys": ["aim_update", ""]})
+        assert manifest.config_keys == []
+        assert b'"config_keys"' not in manifest.signing_payload()
+
+    def test_absent_config_keys_preserve_legacy_signing_payload(self):
+        manifest = PluginManifest.from_dict({"name": "p"})
+        assert manifest.config_keys == []
+        assert (
+            manifest.signing_payload()
+            == b'{"capabilities":{},"name":"p","publisher":"","version":""}'
+        )
+
+    def test_config_keys_accept_exact_count_bound(self):
+        keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS)]
+        manifest = PluginManifest.from_dict({"name": "p", "config_keys": keys})
+        assert manifest.config_keys == keys
+
+    def test_config_keys_over_count_bound_fail_closed(self):
+        keys = [f"key-{index}" for index in range(_MAX_CONFIG_KEYS + 1)]
+        manifest = PluginManifest.from_dict({"name": "p", "config_keys": keys})
+        assert manifest.config_keys == []
+        assert b'"config_keys"' not in manifest.signing_payload()
+
+    def test_config_key_accepts_exact_length_bound(self):
+        key = "k" * _MAX_CONFIG_KEY_CHARS
+        manifest = PluginManifest.from_dict({"name": "p", "config_keys": [key]})
+        assert manifest.config_keys == [key]
+
+    def test_config_key_over_length_bound_fails_closed(self):
+        manifest = PluginManifest.from_dict(
+            {"name": "p", "config_keys": ["k" * (_MAX_CONFIG_KEY_CHARS + 1)]}
+        )
+        assert manifest.config_keys == []
+        assert b'"config_keys"' not in manifest.signing_payload()
+
     def test_string_capability_value_is_not_exploded(self):
         # A capability value given as a string (not a list) must become a
         # single-element list, NOT be exploded into per-character entries by
         # ``list(v)`` — which would corrupt both the ceiling check and the
         # signed payload.
-        m = PluginManifest.from_dict(
-            {"name": "p", "capabilities": {"egress": "*.amazon.com"}}
-        )
+        m = PluginManifest.from_dict({"name": "p", "capabilities": {"egress": "*.amazon.com"}})
         assert m.capabilities["egress"] == ["*.amazon.com"]
 
     def test_non_list_non_str_capability_value_drops_to_empty(self):
@@ -276,7 +323,9 @@ class TestCapabilityCeiling:
         # (e.g. "api.example.com" under "*.example.com") — the ceiling uses
         # fnmatch semantics, matching the documented policy shape.
         m = PluginManifest(
-            name="plugin-a", publisher="p13n", version="1",
+            name="plugin-a",
+            publisher="p13n",
+            version="1",
             capabilities={"egress": ["api.example.com"]},
         )
         patch_manifest(m)
@@ -334,9 +383,7 @@ class TestPolicyLoading:
         """an absent policy file must fail closed, not admit-all."""
         monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
         _nope = tmp_path / "nope.json"
-        monkeypatch.setattr(
-            "kiro_crew.platform.admission._policy_default_path", lambda: _nope
-        )
+        monkeypatch.setattr("kiro_crew.platform.admission._policy_default_path", lambda: _nope)
         from kiro_crew.platform.admission import load_admission_policy
 
         policy = load_admission_policy()
@@ -598,9 +645,7 @@ class TestReadPolicyTrustRoot:
         from kiro_crew.platform.admission import read_policy_trust_root
 
         adm = tmp_path / "admission_policy.json"
-        adm.write_text(
-            json.dumps({"require_policy_signature": True, "trust_keys": {"iss": "k"}})
-        )
+        adm.write_text(json.dumps({"require_policy_signature": True, "trust_keys": {"iss": "k"}}))
         monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
         policy = read_policy_trust_root()
         assert policy.require_policy_signature is True
@@ -657,9 +702,7 @@ class TestReadPolicyTrustRoot:
         assert policy.trust_keys == {}
         assert policy.require_signature is False
 
-    def test_unreadable_policy_does_not_raise(
-        self, monkeypatch, tmp_path
-    ):
+    def test_unreadable_policy_does_not_raise(self, monkeypatch, tmp_path):
         # Never raising is the reader's contract — a corrupt trust root must not
         # take down the security-ceiling load path as well.
         from kiro_crew.platform.admission import read_policy_trust_root
@@ -707,9 +750,7 @@ class TestReadPolicyTrustRoot:
         joined = " ".join(record.getMessage() for record in caplog.records)
         assert "malformed" in joined and "0 bytes" not in joined
 
-    def test_an_undecodable_trust_root_still_does_not_raise(
-        self, monkeypatch, tmp_path, caplog
-    ):
+    def test_an_undecodable_trust_root_still_does_not_raise(self, monkeypatch, tmp_path, caplog):
         # Invalid UTF-8 must land in the malformed arm, not escape the
         # reader: a read-stage decode would break the never-raises contract
         # the old single-except shape happened to provide.
@@ -797,9 +838,7 @@ class TestStrictBooleanFlagCoercion:
             AdmissionPolicy.from_dict({"require_policy_signature": junk})
         messages = [r.getMessage() for r in caplog.records]
         assert any(
-            "require_policy_signature" in m
-            and "true or false" in m
-            and "fail-closed" in m
+            "require_policy_signature" in m and "true or false" in m and "fail-closed" in m
             for m in messages
         ), messages
 
@@ -833,15 +872,11 @@ class TestNonAsciiSignature:
     def test_signature_valid_returns_false(self):
         from kiro_crew.platform.admission import _signature_valid
 
-        m = PluginManifest(
-            name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG
-        )
+        m = PluginManifest(name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG)
         assert _signature_valid(m, self._policy()) is False
 
     def test_a_non_ascii_signature_is_refused_not_raised(self, patch_manifest):
-        m = PluginManifest(
-            name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG
-        )
+        m = PluginManifest(name="amazon", publisher="p13n", version="1", signature=self._BAD_SIG)
         patch_manifest(m)
         ep = _FakeEntryPoint(name="amazon")
         decision = evaluate_admission(ep, self._policy())

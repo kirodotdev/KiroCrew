@@ -636,9 +636,7 @@ class CronEntry:
             agent_sequence=[
                 str(a) for a in _list_or_empty("agent_sequence", data.get("agent_sequence"))
             ],
-            env={
-                str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()
-            },
+            env={str(k): str(v) for k, v in _dict_or_empty("env", data.get("env")).items()},
             timezone=_str_or_flagged("timezone", data.get("timezone")),
             skip_dates=[str(d) for d in _list_or_empty("skip_dates", data.get("skip_dates"))],
             folder=_str_or_empty(data.get("folder")),
@@ -1255,9 +1253,7 @@ class Dependencies:
             # it must degrade to "empty", never crash. Both lines, since the
             # pre-existing `commands` had the identical shape.
             commands=[str(c) for c in (data.get("commands") or [])],
-            optionalCommands=[  # noqa: N815
-                str(c) for c in (data.get("optionalCommands") or [])
-            ],
+            optionalCommands=[str(c) for c in (data.get("optionalCommands") or [])],  # noqa: N815
         )
 
 
@@ -1623,6 +1619,12 @@ _MAX_PANEL_TABS_PER_APP = 8
 #: a cap only the manifest enforces truncates silently in the menu instead.
 _MAX_FILE_MENU_ITEMS_PER_APP = 10
 
+#: Bounds for top-level config ownership declarations. These mirror the generic
+#: foreign-manifest container and key bounds in ``apps.plugin_import`` so every
+#: manifest-facing parser retains the same maximum amount of untrusted input.
+_MAX_CONFIG_KEYS = 200
+_MAX_CONFIG_KEY_CHARS = 200
+
 #: The file-menu surfaces a contributed row may attach to. Data rather than a branch, so
 #: adding a surface is this line plus a render site, never an evaluator edit.
 FILE_MENU_SURFACES = frozenset({"file-overflow", "tree-context", "folder-row"})
@@ -1876,9 +1878,11 @@ class CommandArgument:
             placeholder=str(data.get("placeholder", "")),
             hint=str(data.get("hint", "")),
             kind=str(data.get("kind", "text")),
-            hosts=[str(h).strip().lower() for h in hosts_raw if str(h).strip()]
-            if isinstance(hosts_raw, list)
-            else [],
+            hosts=(
+                [str(h).strip().lower() for h in hosts_raw if str(h).strip()]
+                if isinstance(hosts_raw, list)
+                else []
+            ),
             patternError=str(data.get("patternError", "")),
             saw_pattern="pattern" in data,
             # A `hosts` that is present but not a list would otherwise coerce to the
@@ -2002,9 +2006,7 @@ class CommandContribution:
             # argument declared", which is a DIFFERENT command rather than an invalid
             # one. An explicit ``null`` is treated as absent, matching the host.
             bad_argument=(
-                "argument" in data
-                and arg_raw is not None
-                and not isinstance(arg_raw, dict)
+                "argument" in data and arg_raw is not None and not isinstance(arg_raw, dict)
             ),
         )
 
@@ -2023,14 +2025,12 @@ class CommandContribution:
             # Mirrors `MAX_KEYWORDS` in `contributedCommands.ts`, which drops the overflow
             # -- refused here so the author is told rather than silently trimmed.
             errors.append(
-                f"{where}: {len(self.keywords)} keywords exceeds the limit of "
-                f"{_MAX_KEYWORDS}"
+                f"{where}: {len(self.keywords)} keywords exceeds the limit of " f"{_MAX_KEYWORDS}"
             )
         for kw in self.keywords:
             if _mirrored_len(kw) > _MAX_KEYWORD:
                 errors.append(
-                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters "
-                    f"({_mirrored_len(kw)})"
+                    f"{where}: keyword exceeds {_MAX_KEYWORD} characters " f"({_mirrored_len(kw)})"
                 )
                 break
         if self.agent and not _COMMAND_AGENT_RE.fullmatch(self.agent):
@@ -2050,8 +2050,7 @@ class CommandContribution:
             # the frontend -- the command vanished from the launcher with the app author
             # having seen no error on install, the worst of both validators.
             errors.append(
-                f"{where}: title exceeds {_MAX_TITLE} characters "
-                f"({_mirrored_len(self.title)})"
+                f"{where}: title exceeds {_MAX_TITLE} characters " f"({_mirrored_len(self.title)})"
             )
         if self.subtitle and _mirrored_len(self.subtitle) > _MAX_TITLE:
             # Mirrors the frontend's cap. The subtitle is SEARCHED -- `rankRootRows` runs
@@ -2103,8 +2102,7 @@ class CommandContribution:
                 # The reader is asked for a value the command then ignores -- always a
                 # mistake, and a confusing one, because the command still runs.
                 errors.append(
-                    f"{where}: declares an argument but the prompt never uses "
-                    f"{ARGUMENT_TOKEN}"
+                    f"{where}: declares an argument but the prompt never uses " f"{ARGUMENT_TOKEN}"
                 )
             errors.extend(self._validate_matcher(where))
         return errors
@@ -2441,9 +2439,7 @@ class Contributes:
     #: Counted rather than flagged so the error can say how many vanished. Not
     #: serialized.
     dropped_commands: int = 0
-    sessionControls: list[SessionControlContribution] = field(  # noqa: N815
-        default_factory=list
-    )
+    sessionControls: list[SessionControlContribution] = field(default_factory=list)  # noqa: N815
     #: Whether the manifest's ``sessionControls`` was present but not a list. Same reason
     #: as ``bad_commands``: coercing to ``[]`` reads as a deliberate empty list, so the
     #: declaration would install clean and then never render a chip. Not serialized.
@@ -2497,9 +2493,11 @@ class Contributes:
                 # discarded here is reported as nothing at all — the app installs
                 # clean and the control simply never appears. The placeholder fails
                 # the required-field checks, which is that promised refusal.
-                SessionControlContribution.from_dict(c)
-                if isinstance(c, dict)
-                else SessionControlContribution()
+                (
+                    SessionControlContribution.from_dict(c)
+                    if isinstance(c, dict)
+                    else SessionControlContribution()
+                )
                 for c in raw_controls
             ]
             if isinstance(raw_controls, list)
@@ -2518,8 +2516,7 @@ class Contributes:
             bad_commands="commands" in data and not isinstance(raw, list),
             dropped_commands=sum(1 for c in entries if not isinstance(c, dict)),
             sessionControls=controls,
-            bad_session_controls="sessionControls" in data
-            and not isinstance(raw_controls, list),
+            bad_session_controls="sessionControls" in data and not isinstance(raw_controls, list),
             bad_panel_tabs="panelTabs" in data and not isinstance(tabs_raw, list),
             dropped_panel_tabs=sum(1 for t in tab_entries if not isinstance(t, dict)),
             bad_file_menu_items="fileMenuItems" in data and not isinstance(items_raw, list),
@@ -2650,6 +2647,7 @@ _KNOWN_FIELDS = frozenset(
         "skills",
         "sops",
         "mcpServers",
+        "config_keys",
         "crons",
         "ui",
         "backend",
@@ -2693,6 +2691,10 @@ class AppManifest:
     skills: list[str] = field(default_factory=list)  # paths to skill directories
     sops: list[str] = field(default_factory=list)  # paths to SOP files
     mcpServers: dict[str, Any] = field(default_factory=dict)  # MCP server configs  # noqa: N815
+
+    # --- Config ownership ---
+    config_keys: list[str] = field(default_factory=list)
+    config_keys_error: str = field(default="", repr=False)
 
     # --- Scheduling ---
     crons: list[CronEntry] = field(default_factory=list)
@@ -2790,6 +2792,9 @@ class AppManifest:
         if not self.description:
             errors.append("missing required field: description")
 
+        if self.config_keys_error:
+            errors.append(self.config_keys_error)
+
         # Path containment check on all app-root-relative resource paths.
         # Canonical (screened canonicalisation + is_relative_to) when app_root is known; lexical
         # (reject absolute + '..' segments) otherwise. Applied uniformly to
@@ -2881,9 +2886,7 @@ class AppManifest:
                     refusal,
                     f"session control contribution entryPoint {refusal}: {ctl.entryPoint!r}",
                 )
-            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(
-                ctl.statusPath
-            ):
+            if ctl.statusPath and not _SESSION_CONTROL_STATUS_PATH_RE.fullmatch(ctl.statusPath):
                 # Refused rather than ignored: a status route the dashboard
                 # declines to call would leave the chip permanently stateless
                 # with nothing saying why.
@@ -3024,6 +3027,8 @@ class AppManifest:
             "signer": self.signer,
             "permissions": self.permissions.to_dict(),
         }
+        if self.config_keys:
+            body["config_keys"] = sorted(self.config_keys)
         if self.notifications.channels:
             # Channel declarations gate what an app may push and at which
             # default priority -- tampering must invalidate the signature.
@@ -3213,6 +3218,8 @@ class AppManifest:
             d["sops"] = self.sops
         if self.mcpServers:
             d["mcpServers"] = self.mcpServers
+        if self.config_keys:
+            d["config_keys"] = self.config_keys
         if self.crons:
             d["crons"] = [c.to_dict() for c in self.crons]
         ui_d = self.ui.to_dict()
@@ -3262,6 +3269,25 @@ class AppManifest:
     def from_dict(cls, data: dict[str, Any]) -> AppManifest:
         """Parse from dict, preserving unknown fields in ``extra``."""
         extra = {k: v for k, v in data.items() if k not in _KNOWN_FIELDS}
+
+        config_keys_raw = data.get("config_keys", [])
+        if not isinstance(config_keys_raw, list):
+            config_keys: list[str] = []
+            config_keys_error = "config_keys must be an array"
+        elif len(config_keys_raw) > _MAX_CONFIG_KEYS:
+            config_keys = []
+            config_keys_error = f"config_keys must contain at most {_MAX_CONFIG_KEYS} entries"
+        elif not all(isinstance(key, str) and key for key in config_keys_raw):
+            config_keys = []
+            config_keys_error = "config_keys entries must be non-empty strings"
+        elif any(len(key) > _MAX_CONFIG_KEY_CHARS for key in config_keys_raw):
+            config_keys = []
+            config_keys_error = (
+                f"config_keys entries must be at most {_MAX_CONFIG_KEY_CHARS} characters"
+            )
+        else:
+            config_keys = list(config_keys_raw)
+            config_keys_error = ""
 
         crons_raw = data.get("crons", [])
         crons = [CronEntry.from_dict(c) for c in crons_raw if isinstance(c, dict)]
@@ -3337,6 +3363,8 @@ class AppManifest:
             ],
             sops=[str(s) for s in data.get("sops", []) if s],
             mcpServers=dict(data.get("mcpServers", {})),  # noqa: N815
+            config_keys=config_keys,
+            config_keys_error=config_keys_error,
             crons=crons,
             ui=ui,
             backend=backend,
@@ -3455,9 +3483,7 @@ def has_stdio_mcp_server(manifest: AppManifest) -> bool:
     from the app's provisioned deps tree, which is why its presence is what
     makes ``bridges.py`` provision at registration.
     """
-    return any(
-        isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values()
-    )
+    return any(isinstance(cfg, dict) and not cfg.get("url") for cfg in manifest.mcpServers.values())
 
 
 def file_entry_point_refusal(entry_point: str, app_root: Path) -> str:

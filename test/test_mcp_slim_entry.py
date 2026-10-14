@@ -301,6 +301,9 @@ def _spy_steps(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[str]:
         monkeypatch.setattr(
             owner, "ensure_data_home", lambda: steps.append("data_home") or real_home()
         )
+    from kiro_crew.config import validation
+
+    monkeypatch.setattr(validation, "prime_extension_config_keys", rec("config_keys"))
     monkeypatch.setattr(cli, "_setup_cli_logging", rec("logging"))
     monkeypatch.setattr(mcp_entry, "_setup_logging", rec("logging"))
     monkeypatch.setattr(cli, "boot_platform", rec("boot"))
@@ -345,8 +348,69 @@ def test_cli_and_slim_start_run_the_same_steps_for_an_mcp_server(
     cli_steps, cli_env = run(via_cli)
     slim_steps, slim_env = run(lambda: mcp_entry.run_if_slim(["mcp-guide"]))
     assert cli_steps[-1] == "server"
+    assert cli_steps.index("config_keys") < cli_steps.index("logging")
     assert slim_steps == cli_steps
     assert slim_env == cli_env
+
+
+def test_slim_start_primes_config_keys_without_admission_side_effects(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Priming runs before logging, so it must not seed the admission policy,
+    publish a posture, or write a SEL record, even with no policy file present."""
+    from kiro_crew import sel as sel_mod
+    from kiro_crew.config import validation
+    from kiro_crew.platform import admission, discovery, governance_health
+
+    home = tmp_path / "home"
+    home.mkdir()
+    real_prime = validation.prime_extension_config_keys
+    side_effects: list[str] = []
+
+    class _Dist:
+        files: list = []
+
+        @staticmethod
+        def read_text(_name: str) -> str:
+            return json.dumps({"name": "companion", "config_keys": ["companion-owned"]})
+
+    class _EntryPoint:
+        name = "companion"
+        group = discovery.PLUGIN_GROUP
+        value = "companion:build"
+        dist = _Dist()
+
+    monkeypatch.setenv("KIROCREW_HOME", str(home))
+    monkeypatch.delenv("KIROCREW_ADMISSION_POLICY", raising=False)
+    steps = _spy_steps(monkeypatch, tmp_path)
+    monkeypatch.setattr(validation, "prime_extension_config_keys", real_prime)
+    monkeypatch.setattr(discovery, "plugin_entry_points", lambda: [_EntryPoint()])
+    monkeypatch.setattr(sel_mod, "sel", lambda: side_effects.append("sel"))
+    monkeypatch.setattr(
+        governance_health, "mark_governance_incident", lambda *a, **k: side_effects.append("mark")
+    )
+    monkeypatch.setattr(
+        governance_health, "set_admission_posture", lambda *a, **k: side_effects.append("posture")
+    )
+    try:
+        mcp_entry.run_if_slim(["mcp-guide"])
+        assert steps[-1] == "server"
+        assert side_effects == []
+        assert not admission._policy_default_path().exists()
+        assert not admission._seed_marker_path().exists()
+        assert validation.extension_config_keys("plugins") == frozenset({"companion-owned"})
+    finally:
+        for source in ("apps", "plugins"):
+            validation.replace_extension_config_keys(source, ())
+
+
+def test_full_cli_keeps_registry_scan_off_the_gateway_readiness_path() -> None:
+    cli_src = (Path(SRC) / "kiro_crew" / "cli.py").read_text(encoding="utf-8")
+    guard = cli_src.index('\n    if args.command != "gateway":\n')
+    prime = cli_src.index("\n        prime_extension_config_keys()\n")
+    first_load = cli_src.index("\n    _setup_cli_logging(args.command, args.verbose)\n")
+    gateway_loop = cli_src.index("\n            asyncio.run(_gateway(**gw_kwargs))\n")
+    assert guard < prime < first_load < gateway_loop
 
 
 def test_slim_servers_match_the_cli_dispatch() -> None:

@@ -24,6 +24,30 @@ The slot key remains the header's hover title for debugging; `frameless` embeds
 have no title strip. `ChatEmbed.title.test.tsx` covers the delayed first read,
 fresh and resumed untitled pages, later title arrival and a slot change.
 
+An installed app may declare top-level `config.json` object ownership with
+`config_keys`. Config validation unions those declarations with the core
+compatibility fallback before warning. A manifest on disk without
+`installed.json` owns nothing, so stale or merely downloaded apps cannot silence
+unknown-key warnings. Non-gateway CLI commands and slim MCP startup prime
+installed app and admissible companion declarations before their first config
+load and before an event loop starts. This priming reads the admission policy
+without side effects: it seeds no policy file and writes no SEL record.
+
+Gateway startup keeps registry scans off its socket-readiness path. Dashboard
+startup runs `register_builtin_apps` in an executor to publish app declarations,
+and companion admission publishes plugin declarations. A config load that runs
+before that executor refresh can still log one unrecognized-key warning for an
+installed app's key. Loads after the refresh do not warn.
+
+Successful install, update, uninstall, and migrated-builtin cleanup operations
+atomically refresh the published in-memory registry. A self-managed registry
+install pre-registers the app without a registry scan; its declarations take
+effect at the next startup prime or lifecycle refresh. Config validation only
+reads this registry. It performs no app-directory, manifest, or
+distribution-metadata I/O, including after config cache invalidation. Discovery
+or registry failures degrade to the core fallback and never make validation
+raise.
+
 ## Scoped frontend HTTP transport
 
 `useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and

@@ -344,7 +344,7 @@ def test_register_acp_backends_called_once_at_boot(monkeypatch, manifest_dir) ->
     counting = _CountingProviderRegistry()
     cfg = KiroCrewConfig()
 
-    def _fake_discover(profile, cfg_):
+    def _fake_discover(profile, cfg_, **_kwargs):
         base = build_default_context(cfg_, profile=PROFILE_ENTERPRISE)
         return dataclasses.replace(base, providers=counting)
 
