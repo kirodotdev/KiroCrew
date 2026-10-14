@@ -409,6 +409,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         last_retry_count=_guard_num("last_retry_count", 0),
         last_retry_run_ts=_guard_num("last_retry_run_ts", 0.0),
         run_generation=_guard_num("run_generation", 0),
+        user_pause_generation=_guard_num("user_pause_generation", 0),
         agent_sequence=_str_list("agent_sequence"),
         env=j.get("env", {}),
         timeout_secs=_guard_num("timeout_secs", seams._JOB_TIMEOUT_SECS),
@@ -615,11 +616,13 @@ def job_record(j: CronJob) -> dict[str, Any]:
         "secret_env_pending_pin": j.secret_env_pending_pin,
         "secret_env_pending_ts": j.secret_env_pending_ts,
     }
-    # Written only when set, and last: a store with no installer-managed job
-    # and no app-registered job stays byte-identical to the one an older build
-    # writes (pinned by test_cron_refactor_contract's store-bytes fixtures). An
-    # older build reads a newer store's extra key and, from this build on,
-    # writes it back (decode_store / encode_store).
+    # Written only when set, and last: a store with no ordered user pause,
+    # installer-managed job, or app-registered job stays byte-identical to one
+    # an older build writes.
+    if j.user_pause_generation:
+        record["user_pause_generation"] = j.user_pause_generation
+    # The optional ownership keys follow the same compatibility rule. An older
+    # build reads a newer store's extra key and writes it back.
     if j.managed_by:
         record["managed_by"] = j.managed_by
     if j.app_manifest_digest:
@@ -628,8 +631,9 @@ def job_record(j: CronJob) -> dict[str, Any]:
 
 
 #: Every key :func:`job_record` can write, read off the encoder itself so the two
-#: cannot drift: a job that sets each conditionally written key (``managed_by``,
-#: ``app_manifest_digest``). A record key outside this set came from a newer
+#: cannot drift: a job that sets each conditionally written key
+#: (``user_pause_generation``, ``managed_by``, ``app_manifest_digest``). A record
+#: key outside this set came from a newer
 #: build. A key inside it is this build's to write or to omit, so a value this
 #: build cleared stays cleared.
 _KNOWN_JOB_KEYS = frozenset(
@@ -639,6 +643,7 @@ _KNOWN_JOB_KEYS = frozenset(
             name="",
             message="",
             schedule=CronSchedule(kind="cron"),
+            user_pause_generation=1,
             managed_by="-",
             app_manifest_digest="-",
         )

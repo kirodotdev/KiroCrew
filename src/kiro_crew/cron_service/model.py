@@ -48,6 +48,10 @@ class CronJob:
     thread_ts: str | None = None
     enabled: bool = True
     user_paused: bool = False  # True when explicitly paused by user; never mutated by execution
+    # Monotonic per-job order for explicit pause/resume requests, including a
+    # repeated request whose booleans already have that value. A pending run
+    # record uses it to keep a newer user choice while merging runtime fields.
+    user_pause_generation: int = 0
     auto_paused: bool = (
         False  # True when paused by execution after repeated failures; cleared on re-enable/success
     )
