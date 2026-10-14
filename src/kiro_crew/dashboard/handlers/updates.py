@@ -2647,7 +2647,7 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
                         await resp.write(f"event: refresh\ndata: {note['kinds']}\n\n".encode())
                     elif msg_type == "chat_message":
                         # Built by the SHARED serialiser, not by hand: this door
-                        # and the WebSocket arm in state.py are fed the same
+                        # and the WebSocket arm in state_parts/slots_push.py are fed the same
                         # note by `_broadcast()`, and rebuilding the frame here
                         # is how `meta` (the row's `meta.mid` dedup identity)
                         # goes missing on one transport while the other keeps it.

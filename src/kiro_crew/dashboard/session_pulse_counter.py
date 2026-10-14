@@ -11,7 +11,7 @@ survey ever shows on.
 
 The count is persisted next to the other dashboard state files via
 ``config_dir()`` so it honors ``KIROCREW_HOME`` and survives restarts. The
-in-memory ``_slot_counter`` in state.py cannot serve this: it resets to 0 on
+in-memory ``_slot_counter`` in state_parts/slot_directory.py cannot serve this: it resets to 0 on
 every gateway boot and only reseeds past currently-live slots, so it is not a
 lifetime count.
 

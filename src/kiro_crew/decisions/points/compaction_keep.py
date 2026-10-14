@@ -913,8 +913,8 @@ def build_outcome(
 
 # ── The hand-off to the compaction card ──
 #
-# The record has to reach the notice row ``dashboard/state.py`` appends when the
-# compaction finishes. ``decisions.outcomes`` is the wrong vehicle: its one slot per
+# The record has to reach the notice row ``dashboard/state_parts/session_events.py`` appends when
+# the compaction finishes. ``decisions.outcomes`` is the wrong vehicle: its one slot per
 # session belongs to the next ASSISTANT reply, and claiming it here would take the
 # strip a ``skills.select`` turn had already published and attach it to a compaction
 # notice. So this module keeps its own store, on the same three bounds and for the

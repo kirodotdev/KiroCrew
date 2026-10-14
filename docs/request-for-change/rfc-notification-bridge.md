@@ -42,7 +42,7 @@ Ingress and the bus core are complete:
 Egress is a single hardcoded consumer:
 
 ```python
-# dashboard/state.py
+# dashboard/state_parts/dashboard_services.py
 # _deliver_note is the delivery sink (log, count, broadcast, persist).
 self.notification_bus = NotificationBus(sink=self._deliver_note)
 ```

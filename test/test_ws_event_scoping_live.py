@@ -21,6 +21,17 @@ from ws_event_scoping_helpers import _allowed, _make_slot, _make_state
 from kiro_crew.dashboard.state import SlotOrigin
 from kiro_crew.dashboard.ws_event_scope import build_allowed_event_set, ws_event_allowed
 
+
+def _state_source() -> str:
+    """state.py and the state_parts owners it composes, as one text."""
+    import kiro_crew.dashboard.state as _st
+
+    facade = Path(_st.__file__)
+    owners = sorted((facade.parent / "state_parts").glob("[!_]*.py"))
+    assert owners, "no state_parts owner found beside state.py"
+    return "\n".join(path.read_text(encoding="utf-8") for path in [facade, *owners])
+
+
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _clear_module_caches = ws_event_scoping_helpers._clear_module_caches
 _clear_ws_scope_module_caches = ws_event_scoping_helpers._clear_ws_scope_module_caches
@@ -395,9 +406,7 @@ class TestLiveScopeNarrowing:
         assert 'if not ws.get("_is_dashboard_user", False):' in src
         # And the owner surfaces must NOT be narrowed: /api/status and SSE run on
         # dashboard-user tokens and still need the full snapshot.
-        state_src = (
-            Path(__file__).resolve().parents[1] / "src" / "kiro_crew" / "dashboard" / "state.py"
-        ).read_text(encoding="utf-8")
+        state_src = _state_source()
         assert (
             "branch, commit = self._build_info" in state_src
         ), "status_snapshot itself must keep returning branch/commit"

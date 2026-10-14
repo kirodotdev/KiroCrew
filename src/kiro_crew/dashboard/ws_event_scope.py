@@ -94,7 +94,7 @@ from typing import TYPE_CHECKING, Any
 # circular import: apps.manager imports config helpers that transitively pull
 # in ``kiro_crew.dashboard.state``; keeping ``get_app_manifest`` at module
 # scope requires it to load after this module's own definitions are visible,
-# which the current import order satisfies (state.py imports us lazily inside
+# which the current import order satisfies (state_parts/slots_push.py imports us lazily inside
 # broadcast_ws, and ws.py imports us before apps.manager). Kept top-level per
 # the top-level-imports guideline.
 from kiro_crew.apps.manager import get_app_manifest, is_app_enabled, staged_app_grants
@@ -784,7 +784,7 @@ def _slot_visible(
     state: DashboardState,
 ) -> bool:
     """Return True if *app* may receive slot-scoped events for *slot*."""
-    # circular import: state.py's broadcast_ws imports ws_event_allowed from
+    # circular import: state_parts/slots_push.py's broadcast_ws imports ws_event_allowed from
     # this module at runtime; importing SlotOrigin at module scope would
     # create a bootstrap cycle during state.py initialisation.
     from kiro_crew.dashboard.state import SlotOrigin

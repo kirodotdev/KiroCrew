@@ -1,4 +1,4 @@
-"""Malformed-entry preservation across the sibling JSON stores in state.py.
+"""Malformed-entry preservation across the sibling JSON stores in state_parts/sidebar_stores.py.
 
 The ``load_*`` functions drop rows the active list cannot
 use but must keep them verbatim in an ``_unparsed_*`` list so the next

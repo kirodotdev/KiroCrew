@@ -8,13 +8,15 @@ here. The facade imports every owner below, eagerly, lowest layer first, and ins
 as it reached the one module before the split. Two rules follow:
 
 * An owner never imports the facade (``kiro_crew.dashboard.state``), not even under
-  ``TYPE_CHECKING``; it imports only owners listed before it. An annotation that
-  names a class still defined in the facade imports it from ``kiro_crew.dashboard``.
+  ``TYPE_CHECKING``; at run time it imports only owners listed before it. An
+  annotation that names a class another owner defines (``DashboardState``,
+  ``_ChatSlot``) imports it from that owner under ``TYPE_CHECKING`` only.
 * A module global that a function rebinds with ``global`` lives in exactly one owner
   and no other module imports it; the facade serves it live through the mirror.
 
-A class split across files is BOUND, not inherited: ``chat_slot.py`` holds the
-``_ChatSlot`` class (its ``__slots__``, field declarations, constructor and
+A class split across files is BOUND, not inherited (``dashboard_state.py`` holds
+``DashboardState`` the same way): ``chat_slot.py`` holds the ``_ChatSlot`` class
+(its ``__slots__``, field declarations, constructor and
 properties) and binds each method as a one-line class attribute
 (``set_todo = _slot_todo.set_todo``). The method's body lives, unchanged, in the
 collaborator that owns that responsibility, as a function whose first parameter is
@@ -25,8 +27,9 @@ initial values of their fields (``init_<x>_fields``), never the storage. Each
 collaborator's docstring lists the slot fields it reads and writes.
 
 Where new code goes: a helper of one responsibility goes to the owner named for it
-(the first line of each module's docstring); a new ``_ChatSlot`` method goes to its
-collaborator and gets one binding line in ``chat_slot.py``; a new slot field gets a
+(the first line of each module's docstring); a new ``_ChatSlot`` or
+``DashboardState`` method goes to its collaborator and gets one binding line in its
+shell (``chat_slot.py`` or ``dashboard_state.py``); a new slot field gets a
 ``__slots__`` entry and a declaration in ``chat_slot.py`` and its default in the
 collaborator's ``init_<x>_fields``.
 
@@ -38,7 +41,9 @@ callback names read) and its coroutine kind are what the one-module class had. O
 ``__module__`` moves: it names the collaborator that holds the body. A type hint
 resolves in that collaborator's globals, so ``typing.get_type_hints`` cannot resolve
 a hint naming a class the module imports only under ``TYPE_CHECKING``;
-``test/test_state_parts_facade.py`` names the members that differ.
+``test/test_state_parts_facade.py`` (``_ChatSlot``) and
+``test/test_state_parts_dashboard_state.py`` (``DashboardState``) name the members
+that differ.
 """
 
 from __future__ import annotations

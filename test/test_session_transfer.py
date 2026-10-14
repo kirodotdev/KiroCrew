@@ -2966,7 +2966,7 @@ def _stub_state(st, monkeypatch, save=None):
         _tags_authoritative=True,
         _folders=[],
         # ``DashboardState`` always HAS this attribute, and ``None`` is a real
-        # production value for it (``state.py``: ``conversation_log:
+        # production value for it (``state_parts/dashboard_state.py``: ``conversation_log:
         # ConversationLog | None = None``). Present here because the import
         # handler's delete witness reads it on every import; without it the stub
         # raises ``AttributeError`` where production reads a legitimate ``None``.

@@ -370,8 +370,8 @@ def _redaction_chain(text: str) -> str:
 
 
 class TestLivePreviewEqualsTheRosterRead:
-    """The live `member/message` payload (state.py, via `member_message_payload`)
-    and the cold roster read (`last_speech_info`) build the
+    """The live `member/message` payload (state_parts/slot_directory.py, via
+    `member_message_payload`) and the cold roster read (`last_speech_info`) build the
     preview through ONE function, `speech_preview`; a formatted or long message
     must fold to exactly the string the read returns, or the read would append a
     correction after every such message."""
@@ -564,7 +564,7 @@ class TestEnvelopeClassifiersFollowTheRealWriters:
 
 class TestAnUnflushedSlotIsNotCorrectedFromDisk:
     """Live speech reaches the member log at in-memory append time (the emit in
-    state.py) while the transcript copy lands at slot flush. A roster read in
+    state_parts/slot_directory.py) while the transcript copy lands at slot flush. A roster read in
     between sees the NEW quote on the roster and the OLD speech on disk; with the
     roster observed before the read, the compare-and-append would accept the
     stale correction. `_slot_has_unflushed_rows` refuses it."""

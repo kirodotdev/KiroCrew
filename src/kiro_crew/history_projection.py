@@ -1527,8 +1527,8 @@ class TranscriptReadProjection:
                 if not text:
                     continue
                 # The ONE spelling of a roster preview (strip -> sanitize -> cap),
-                # shared with the live `member/message` writer in state.py so the
-                # roster read never disagrees with what the live path folded.
+                # shared with the live `member/message` writer in state_parts/slot_directory.py so
+                # the roster read never disagrees with what the live path folded.
                 preview = speech_preview(text, sanitize, self._log._PREVIEW_MAX_CHARS)
                 if not preview:
                     continue

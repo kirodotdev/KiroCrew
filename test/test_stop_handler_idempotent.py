@@ -566,7 +566,7 @@ class TestStopCardTeardownRace:
     """A turn tearing down must not strand the stop card at "stopping".
 
     `_finish_queue_cycle` (chat_runner.py) drives `_stopping = False` when the
-    queue drains, which the setter in state.py maps to `_stop_state = "idle"`.
+    queue drains, which the setter in state_parts/chat_slot.py maps to `_stop_state = "idle"`.
     That write races the soft-stop budget: when it landed before the escalation
     callback ran, the callback's old `_stop_state` gate bailed and the card was
     never settled. Observed against a live gateway as a stop card pulsing for

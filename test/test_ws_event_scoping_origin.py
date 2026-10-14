@@ -38,6 +38,16 @@ def _chat_handler_source() -> str:
     return "\n".join(path.read_text(encoding="utf-8") for path in [facade, *owners])
 
 
+def _state_source() -> str:
+    """state.py and the state_parts owners it composes, as one text."""
+    import kiro_crew.dashboard.state as _st
+
+    facade = Path(_st.__file__)
+    owners = sorted((facade.parent / "state_parts").glob("[!_]*.py"))
+    assert owners, "no state_parts owner found beside state.py"
+    return "\n".join(path.read_text(encoding="utf-8") for path in [facade, *owners])
+
+
 # ---------------------------------------------------------------------------
 # _origin persistence — cron/system slots must survive a restart with the
 # correct origin so the WS scope gate doesn't mis-classify them.
@@ -309,9 +319,7 @@ class TestUntaggedOriginIsNotUser:
     def test_untagged_non_app_slot_is_not_user(self):
         from kiro_crew.dashboard.state import SlotOrigin, request_slot_origin
 
-        src = Path(__import__("kiro_crew.dashboard.state", fromlist=["x"]).__file__).read_text(
-            encoding="utf-8"
-        )
+        src = _state_source()
         # The fail-open derivation must be gone from the CREATION path. It
         # still exists once, inside request_slot_origin -- that is the point:
         # the derivation moved to the layer that can actually make it.

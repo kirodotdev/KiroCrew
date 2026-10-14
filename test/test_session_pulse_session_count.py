@@ -82,7 +82,7 @@ def test_user_origin_without_flag_does_not_increment(tmp_path) -> None:
     state.get_or_create_slot(None, agent="some-agent", origin=SlotOrigin.USER)
     assert spc.get_user_session_count() == 0
     # Mutation guard: dropping the ``count_user_session`` conjunct from the
-    # increment condition in state.py makes this fail.
+    # increment condition in state_parts/slot_directory.py makes this fail.
     state.get_or_create_slot(origin=SlotOrigin.USER)
     assert spc.get_user_session_count() == 0
 

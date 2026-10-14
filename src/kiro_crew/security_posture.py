@@ -838,13 +838,13 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Dashboard slot snapshot",
-        "dashboard/state.py",
+        "dashboard/state_parts/slot_transcript.py",
         "Every message, tool input, tool output, and title in the slot payload sent "
         "to the browser.",
     ),
     (
         "Session detach notice",
-        "dashboard/state.py",
+        "dashboard/state_parts/session_events.py",
         "The notice sent to a channel whose session-resume binding was cleared — a "
         "separate egress boundary from the browser payload, and its session title is "
         "user-controlled, so the rendered notice is re-scanned through the shared "
@@ -2315,17 +2315,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # Owner-driven components extracted from dashboard/state.py.  They
         # redact while staging or dispatching through the facade, but they do
         # not introduce new logical egress paths: the same DashboardState
-        # boundaries were already represented by the facade's registered sink
-        # rows.  Classifying the implementation files separately would make a
-        # behavior-preserving decomposition change the public posture items and
-        # count even though no new value crosses a process or persistence
-        # boundary.
+        # boundaries are represented by the owners' registered sink rows ("Dashboard
+        # slot snapshot" -> state_parts/slot_transcript.py, "Session detach notice" ->
+        # state_parts/session_events.py).  Classifying the implementation files separately
+        # would make a behavior-preserving decomposition change the public posture items
+        # and count even though no new value crosses a process or persistence boundary.
         "dashboard/interaction_coordinator.py",
         "dashboard/notification_coordinator.py",
         "dashboard/slot_projection.py",
         "dashboard/state_parts/dashboard_services.py",
         "dashboard/state_parts/notification_log.py",
-        "dashboard/state_parts/slot_transcript.py",
+        "dashboard/state_parts/slot_directory.py",
         "dashboard/state_parts/slot_turns.py",
         "dashboard/state_parts/slots_frame.py",
         "dashboard/state_parts/transcript_rows.py",
@@ -2350,8 +2350,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # so this module hands records to consumers rather than writing to a
         # human, and is not itself an egress boundary.
         "subagent_persistence.py",
-        # Pre-redacts follow-up items before handing to state.py's WS egress
-        # (the registered sink); its own return string is re-redacted by
+        # Pre-redacts follow-up items before handing to the WS egress in
+        # state_parts/slots_push.py; its own return string is re-redacted by
         # chat_runner before broadcast. Not itself an egress boundary.
         "dashboard/session_directive_apply.py",
         "dashboard/cron_inject.py",
