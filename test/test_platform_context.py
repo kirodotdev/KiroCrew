@@ -238,6 +238,34 @@ class TestBootstrapAndDiscovery:
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
+    def test_bootstrap_reuses_its_entry_point_snapshot(
+        self, cfg: KiroCrewConfig, monkeypatch
+    ) -> None:
+        from kiro_crew.platform import bootstrap as bootstrap_mod
+
+        entry_point = object()
+        scans: list[int] = []
+        received: list[object] = []
+        companion = build_default_context(cfg, profile=PROFILE_ENTERPRISE)
+
+        def _entry_points():
+            scans.append(1)
+            return [entry_point]
+
+        def _discover(profile, discovered_cfg, *, entry_points, **_kwargs):
+            assert profile == PROFILE_ENTERPRISE
+            assert discovered_cfg is cfg
+            received.extend(entry_points)
+            return companion
+
+        monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
+        monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", _entry_points)
+        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", _discover)
+
+        assert bootstrap_mod.bootstrap_context(cfg) is companion
+        assert scans == [1]
+        assert received == [entry_point]
+
     def test_contract_version_mismatch_rejected(self, cfg: KiroCrewConfig, monkeypatch) -> None:
         import dataclasses
 
@@ -249,7 +277,9 @@ class TestBootstrapAndDiscovery:
         )
         monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
-        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: bad)
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kwargs: bad
+        )
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 
@@ -263,7 +293,9 @@ class TestBootstrapAndDiscovery:
 
         monkeypatch.setenv("KIROCREW_PROFILE", "enterprise")
         monkeypatch.setattr(bootstrap_mod, "plugin_entry_points", lambda: [object()])
-        monkeypatch.setattr(bootstrap_mod, "discover_companion_context", lambda profile, cfg: None)
+        monkeypatch.setattr(
+            bootstrap_mod, "discover_companion_context", lambda profile, cfg, **_kwargs: None
+        )
         with pytest.raises(PlatformCompositionError):
             bootstrap_context(cfg)
 

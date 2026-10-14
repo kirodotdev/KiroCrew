@@ -678,3 +678,54 @@ def get_app_manifest(name: str) -> AppManifest | None:
         return AppManifest.from_json_file(manifest_path)
     except Exception:
         return None
+
+
+# Scan and central publication are one ordered operation. Lifecycle changes for
+# different apps can finish concurrently; without this lock an older scan can
+# publish after a newer scan and resurrect stale keys.
+_config_keys_refresh_lock = threading.Lock()
+
+
+def _scan_installed_app_config_keys(root: Path) -> frozenset[str]:
+    if not root.is_dir():
+        return frozenset()
+    keys: set[str] = set()
+    for entry in root.iterdir():
+        if not entry.is_dir():
+            continue
+        try:
+            installed = _read_installed(entry.name)
+        except Exception:
+            # InstalledApp.from_dict performs real coercion and can raise for a
+            # malformed field. One damaged record must not freeze every other
+            # app's last published declarations.
+            logger.warning(
+                "Skipping malformed installed-app record for %s", entry.name, exc_info=True
+            )
+            continue
+        if installed is None:
+            continue
+        manifest = get_app_manifest(entry.name)
+        if manifest is not None and not manifest.config_keys_error:
+            keys.update(manifest.config_keys)
+    return frozenset(keys)
+
+
+def refresh_app_config_keys() -> frozenset[str]:
+    """Scan installed apps and atomically publish their config declarations.
+
+    Startup and lifecycle callers perform this synchronous filesystem work;
+    config validation only reads the published in-memory snapshot.
+    """
+    from kiro_crew.config.validation import (
+        extension_config_keys,
+        replace_extension_config_keys,
+    )
+
+    with _config_keys_refresh_lock:
+        try:
+            keys = _scan_installed_app_config_keys(apps_dir())
+        except Exception:
+            logger.debug("app config-key discovery failed", exc_info=True)
+            return extension_config_keys("apps")
+        return replace_extension_config_keys("apps", keys)

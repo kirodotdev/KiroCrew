@@ -34,6 +34,7 @@ from kiro_crew.apps.manager_records import (
     _write_installed,
     app_dir,
     apps_dir,
+    refresh_app_config_keys,
 )
 from kiro_crew.apps.manager_tree import _check_path_safety, gateway_data_dir_obstruction
 from kiro_crew.apps.manifest import app_name_error
@@ -839,7 +840,8 @@ def register_builtin_apps() -> int:
     if count:
         logger.info("Registered %d built-in app(s)", count)
 
-    # Warm the orphan cache after registration
+    # Publish declarations and warm the orphan cache after registration.
+    refresh_app_config_keys()
     detect_orphaned_builtins(force_refresh=True)
 
     return count
@@ -986,7 +988,8 @@ def cleanup_migrated_builtin(name: str) -> AppResult:
             error_code="io_error",
         )
 
-    # Invalidate orphan cache since we removed an orphaned entry
+    # Refresh declarations and orphan state after removing installed metadata.
+    refresh_app_config_keys()
     invalidate_orphan_cache()
 
     logger.info("Cleaned up migrated builtin %s (data preserved)", name)

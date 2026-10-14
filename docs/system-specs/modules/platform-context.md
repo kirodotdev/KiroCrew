@@ -305,9 +305,15 @@ Defense in depth, evaluated by `evaluate_admission(ep, policy)`:
 3. **Verify-before-run signature** (`require_signature`) — the plugin ships a
    signed `kirocrew_plugin.json` manifest; admission verifies the signature
    against a trust key the **policy** carries (R-11 / M-12 supply chain). POC
-   uses HMAC; production uses an asymmetric publisher key. The signature covers
-   a canonical payload (name/publisher/version/capabilities), so tampering with
-   declared capabilities invalidates it.
+   uses HMAC. Production uses an asymmetric publisher key. The signature covers
+   a canonical payload (name/publisher/version/capabilities and non-empty
+   `config_keys`), so tampering with declared capabilities or config ownership
+   invalidates it. A plugin may declare at most 200 non-empty config keys, each at
+   most 200 characters long. A malformed or over-limit declaration owns no keys.
+   An absent or empty declaration stays outside the payload, which preserves
+   signatures generated before `config_keys` existed. After admission succeeds,
+   config validation receives the declaration from the same manifest snapshot
+   without importing plugin code or reading the manifest again.
 4. **Capability ceiling** (`capability_ceiling`) — the manifest declares
    requested capabilities (tools, egress, credential paths); admission rejects a
    plugin whose declared capabilities exceed the fleet ceiling, or that requests

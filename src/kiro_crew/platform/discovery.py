@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import importlib.metadata
 import logging
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING, List, Sequence
 
 from kiro_crew.platform.admission import (
     AdmissionPolicy,
+    PluginManifest,
     evaluate_admission,
     load_admission_policy,
+    read_policy_trust_root,
     seed_default_policy,
 )
 from kiro_crew.platform.context import (
@@ -64,8 +66,48 @@ def plugin_entry_points() -> List[importlib.metadata.EntryPoint]:
         return []
 
 
+def refresh_plugin_config_keys(manifests: Sequence[PluginManifest]) -> frozenset[str]:
+    """Publish config keys from manifests already returned by admission."""
+    from kiro_crew.config.validation import replace_extension_config_keys
+
+    return replace_extension_config_keys(
+        "plugins", (key for manifest in manifests for key in manifest.config_keys)
+    )
+
+
+def refresh_installed_plugin_config_keys() -> frozenset[str]:
+    """Discover and publish declarations from the admissible companion only.
+
+    Process launch calls this synchronously before its first config load and
+    before CLI logging exists, so it reads the policy through the side-effect-free
+    :func:`read_policy_trust_root`: no first-run seed, posture publish, or SEL
+    record. Boot-time admission in :func:`discover_companion_context` remains the
+    audited decision and republishes from its own manifest. Unexpected failures
+    retain the prior snapshot; an absent, ambiguous, or rejected companion
+    publishes no declarations.
+    """
+    from kiro_crew.config.validation import extension_config_keys
+
+    try:
+        eps = plugin_entry_points()
+        if len(eps) != 1:
+            return refresh_plugin_config_keys([])
+        decision = evaluate_admission(eps[0], read_policy_trust_root())
+        manifests = (
+            [decision.manifest] if decision.allowed and decision.manifest is not None else []
+        )
+        return refresh_plugin_config_keys(manifests)
+    except Exception:
+        logger.debug("installed plugin config-key discovery failed", exc_info=True)
+        return extension_config_keys("plugins")
+
+
 def discover_companion_context(
-    profile: str, cfg: "KiroCrewConfig", *, policy: "AdmissionPolicy | None" = None
+    profile: str,
+    cfg: "KiroCrewConfig",
+    *,
+    policy: "AdmissionPolicy | None" = None,
+    entry_points: Sequence[importlib.metadata.EntryPoint] | None = None,
 ) -> "PlatformContext | None":
     """Load the companion-composed context for a non-standalone profile.
 
@@ -81,7 +123,7 @@ def discover_companion_context(
     if profile == PROFILE_STANDALONE:
         return None
 
-    eps = plugin_entry_points()
+    eps = list(entry_points) if entry_points is not None else plugin_entry_points()
     if not eps:
         raise PlatformCompositionError(
             f"profile={profile!r} but no {PLUGIN_GROUP!r} entry point is installed; "
@@ -134,6 +176,7 @@ def discover_companion_context(
             f"plugin {ep.name!r} rejected by admission policy: {decision.reason}"
         )
     logger.info("plugin %r admitted: %s", ep.name, decision.reason)
+    refresh_plugin_config_keys([decision.manifest] if decision.manifest is not None else [])
 
     try:
         build_context = ep.load()

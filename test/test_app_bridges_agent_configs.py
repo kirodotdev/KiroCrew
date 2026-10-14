@@ -251,6 +251,9 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
         declared = {f.name for f in dataclasses.fields(AppManifest)}
         # ``extra`` is the catch-all bag, splatted into the dict by key.
         declared.discard("extra")
+        # Parser diagnostics reject a manifest; they are not declarations copied
+        # into a valid builtin's persisted manifest.
+        declared.discard("config_keys_error")
 
         manifest = AppManifest.from_dict(
             {
@@ -269,6 +272,7 @@ class TestBuiltinDeclaredResourcesActuallyRegister:
                 "jobFamilies": ["jf"],
                 "tags": ["t"],
                 "mcpServers": {"m": {"command": "c"}},
+                "config_keys": ["probe-owned"],
                 "platform": {"requiresDesktopApp": True},
                 "permissions": {"storage": True},
                 "ui": {"entry": "ui/dist/index.js"},
