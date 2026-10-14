@@ -801,7 +801,12 @@ def _url_payload_command(n: int) -> str:
 #: rebuild's budget for every caller and is reused for a second on the event loop, so
 #: no gate scans ``apps/`` on its own thread. A miss refuses, and refuses later callers
 #: at once while that listing is still in flight. Re-measured.
-_PACKAGE_LINE_BUDGET = 35_901
+#:
+#: Raised again, from 35,901, for the canonical cross-device goal drafts. The
+#: seven-line increment adds hidden-leaf declarations to the security package that
+#: keep the executable draft text outside agent sandboxes. No rule, matcher or floor
+#: moved.
+_PACKAGE_LINE_BUDGET = 35_908
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

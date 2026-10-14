@@ -1,128 +1,225 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { TAB_ID } from '../api/tabId'
 import {
   GOAL_DRAFTS_KEY,
+  GOAL_DRAFT_MAX_CYCLES,
   GOAL_DRAFT_MAX_ENTRIES,
+  GOAL_DRAFT_MAX_IDLE_SECS,
+  GOAL_DRAFT_MAX_MESSAGE_CHARS,
+  GOAL_DRAFT_SYNC_TIMEOUT_MS,
   GOAL_DRAFT_TTL_MS,
-  loadGoalDraft,
-  saveGoalDraft,
+  LEGACY_GOAL_DRAFTS_KEY,
+  GoalDraftConflict,
   __resetForTests,
+  adoptGoalDraft,
+  clampGoalDraftMessage,
+  confirmedGoalDraft,
+  deleteLegacyGoalDraft,
+  loadLegacyGoalDraft,
+  loadPendingGoalDraft,
+  loadRemoteGoalDraft,
+  saveRemoteGoalDraft,
+  savePendingGoalDraft,
+  syncGoalDraft,
 } from '../utils/goalDrafts'
-import { safeSetItem } from '../utils/safeStorage'
 
+// Each pending record names the tab that wrote it; a fixed id keeps its checks exact.
+vi.mock('../api/tabId', () => ({ TAB_ID: 'tab-under-test' }))
+
+const SLOT = 'chat-1-100'
 const draft = (message: string, idleSecs = 60, maxCycles = 0) => ({ message, idleSecs, maxCycles })
+const wire = (message: string) => ({ message, idle_secs: 60, max_cycles: 0 })
+const ok = (body: unknown) => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) })
+
+/** Stub the draft PUT: `answer` maps the sent body to the response. */
+function stubPut(answer: (body: { base_updated_at: number, draft: unknown }) => Promise<unknown>) {
+  const puts: Array<{ base_updated_at: number, draft: unknown }> = []
+  vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => {
+    const body = JSON.parse(String(init?.body)) as { base_updated_at: number, draft: unknown }
+    puts.push(body)
+    return answer(body)
+  }) as unknown as typeof fetch)
+  return puts
+}
 
 describe('goalDrafts', () => {
-  beforeEach(() => { localStorage.clear(); __resetForTests() })
-  afterEach(() => { vi.useRealTimers() })
-
-  it('roundtrips a per-slot goal draft (survives close/re-open/refresh)', () => {
-    saveGoalDraft('chat-1-100', draft('finish the migration', 120, 5))
-    // New "page load" / popover re-mount reads it straight back.
-    expect(loadGoalDraft('chat-1-100')).toEqual(draft('finish the migration', 120, 5))
-  })
-
-  it('returns null for an unknown slot', () => {
-    expect(loadGoalDraft('never-set')).toBeNull()
-  })
-
-  it('keeps drafts per-slot (no crossover between sessions)', () => {
-    saveGoalDraft('chat-1-100', draft('goal A'))
-    saveGoalDraft('chat-2-200', draft('goal B'))
-    expect(loadGoalDraft('chat-1-100')?.message).toBe('goal A')
-    expect(loadGoalDraft('chat-2-200')?.message).toBe('goal B')
-  })
-
-  it('drops the slot when saved with null or a blank message (never pins the default)', () => {
-    saveGoalDraft('chat-1-100', draft('typed goal'))
-    expect(loadGoalDraft('chat-1-100')).not.toBeNull()
-    saveGoalDraft('chat-1-100', null)
-    expect(loadGoalDraft('chat-1-100')).toBeNull()
-    // Whitespace-only message is also treated as empty.
-    saveGoalDraft('chat-1-100', draft('   '))
-    expect(loadGoalDraft('chat-1-100')).toBeNull()
-  })
-
-  it('overwrites an existing slot draft in place', () => {
-    saveGoalDraft('chat-1-100', draft('first'))
-    saveGoalDraft('chat-1-100', draft('second', 300, 10))
-    expect(loadGoalDraft('chat-1-100')).toEqual(draft('second', 300, 10))
-  })
-
-  it('returns null on missing, corrupt, or non-object storage', () => {
-    expect(loadGoalDraft('x')).toBeNull()
-    // Inject deliberately-corrupt payloads via safeSetItem (it only wraps
-    // quota handling — the raw string is written verbatim), proving
-    // loadGoalDraft survives externally-corrupted / hand-edited storage.
-    safeSetItem(GOAL_DRAFTS_KEY, 'not json'); __resetForTests()
-    expect(loadGoalDraft('x')).toBeNull()
-    safeSetItem(GOAL_DRAFTS_KEY, '[]'); __resetForTests()
-    expect(loadGoalDraft('x')).toBeNull()
-    safeSetItem(GOAL_DRAFTS_KEY, 'null'); __resetForTests()
-    expect(loadGoalDraft('x')).toBeNull()
-  })
-
-  it('filters out entries with wrong-typed fields (corruption / hand-edit)', () => {
-    // safeSetItem writes the serialized string verbatim, so it can still seed
-    // wrong-typed fixture members — proving the sanitizer drops each of them.
-    safeSetItem(GOAL_DRAFTS_KEY, JSON.stringify({
-      good: { message: 'ok', idleSecs: 60, maxCycles: 0 },
-      'no-message': { idleSecs: 60, maxCycles: 0 },
-      'empty-message': { message: '', idleSecs: 60, maxCycles: 0 },
-      'bad-idle': { message: 'x', idleSecs: 'nope', maxCycles: 0 },
-      'not-object': 42,
-    }))
+  beforeEach(() => {
+    localStorage.clear()
     __resetForTests()
-    expect(loadGoalDraft('good')?.message).toBe('ok')
-    expect(loadGoalDraft('no-message')).toBeNull()
-    expect(loadGoalDraft('empty-message')).toBeNull()
-    expect(loadGoalDraft('bad-idle')).toBeNull()
-    expect(loadGoalDraft('not-object')).toBeNull()
+  })
+  afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
+
+  describe('the pending edit', () => {
+    it('keeps one latest unconfirmed edit per slot, with its base, across reloads', () => {
+      savePendingGoalDraft(SLOT, draft('first'), 4)
+      savePendingGoalDraft(SLOT, draft('second'))
+      savePendingGoalDraft('chat-2-200', null, 9)
+      __resetForTests()
+
+      expect(loadPendingGoalDraft(SLOT)).toEqual({ draft: draft('second'), base: 4, tab: TAB_ID })
+      expect(loadPendingGoalDraft('chat-2-200')).toEqual({ draft: null, base: 9, tab: TAB_ID })
+      expect(Object.keys(JSON.parse(localStorage.getItem(GOAL_DRAFTS_KEY)!))).toHaveLength(2)
+    })
+
+    it('an edit with no pending record is made on the version this tab confirmed', () => {
+      adoptGoalDraft(SLOT, { draft: draft('shown'), updatedAt: 7 })
+      expect(savePendingGoalDraft(SLOT, draft('typed'))).toEqual({ draft: draft('typed'), base: 7, tab: TAB_ID })
+    })
+
+    it('a reloaded tab builds its next edit on the edit it restored, on that edit\'s version', async () => {
+      savePendingGoalDraft(SLOT, draft('typed before the reload'), 4)
+      // A reload is a new page, with a new tab id.
+      vi.resetModules()
+      vi.doMock('../api/tabId', () => ({ TAB_ID: 'tab-after-reload' }))
+      const reloaded = await import('../utils/goalDrafts')
+      expect(reloaded.savePendingGoalDraft(SLOT, draft('typed after the reload')))
+        .toEqual({ draft: draft('typed after the reload'), base: 4, tab: 'tab-after-reload' })
+    })
+
+    it('normalizes accepted values to the server bounds and drops corrupt records', () => {
+      const long = '😀'.repeat(GOAL_DRAFT_MAX_MESSAGE_CHARS + 3)
+      savePendingGoalDraft(SLOT, { message: long, idleSecs: 1, maxCycles: GOAL_DRAFT_MAX_CYCLES + 5 }, 0)
+      const saved = loadPendingGoalDraft(SLOT)!
+      expect(Array.from(saved.draft!.message)).toHaveLength(GOAL_DRAFT_MAX_MESSAGE_CHARS)
+      expect(saved.draft).toMatchObject({ idleSecs: 15, maxCycles: GOAL_DRAFT_MAX_CYCLES })
+      expect(clampGoalDraftMessage('short')).toBe('short')
+
+      localStorage.setItem(GOAL_DRAFTS_KEY, JSON.stringify({
+        a: { draft: { message: 'x', idleSecs: GOAL_DRAFT_MAX_IDLE_SECS * 2, maxCycles: 0 }, base: 1 },
+        b: { draft: { message: '   ', idleSecs: 60, maxCycles: 0 }, base: 1 },
+        c: { draft: null },
+        d: 'nope',
+      }))
+      __resetForTests()
+      expect(loadPendingGoalDraft('a')?.draft?.idleSecs).toBe(GOAL_DRAFT_MAX_IDLE_SECS)
+      expect(loadPendingGoalDraft('b')).toBeNull()
+      expect(loadPendingGoalDraft('c')).toBeNull()
+      expect(loadPendingGoalDraft('d')).toBeNull()
+    })
+
+    it('shares the chat drafts TTL and slot cap', () => {
+      vi.useFakeTimers()
+      for (let index = 0; index <= GOAL_DRAFT_MAX_ENTRIES; index += 1) savePendingGoalDraft(`slot-${index}`, draft(`goal ${index}`), 0)
+      expect(loadPendingGoalDraft('slot-0')).toBeNull()
+      expect(loadPendingGoalDraft(`slot-${GOAL_DRAFT_MAX_ENTRIES}`)).not.toBeNull()
+      vi.advanceTimersByTime(GOAL_DRAFT_TTL_MS + 1)
+      expect(loadPendingGoalDraft(`slot-${GOAL_DRAFT_MAX_ENTRIES}`)).toBeNull()
+    })
   })
 
-  it('saveGoalDraft swallows QuotaExceededError without throwing', () => {
-    const orig = Storage.prototype.setItem
-    Storage.prototype.setItem = () => { throw new Error('QuotaExceeded') }
-    try {
-      expect(() => saveGoalDraft('chat-1-100', draft('x'))).not.toThrow()
-    } finally {
-      Storage.prototype.setItem = orig
-    }
+  describe('the pre-sync browser draft', () => {
+    it('reads the shape main wrote and deletes only this slot, sidecar included', () => {
+      localStorage.setItem(LEGACY_GOAL_DRAFTS_KEY, JSON.stringify({ [SLOT]: draft('old goal', 90, 2), other: draft('other goal') }))
+      localStorage.setItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`, JSON.stringify({ [SLOT]: Date.now(), other: Date.now() })) // flake-ok: fresh stamps, compared only to the TTL
+
+      expect(loadLegacyGoalDraft(SLOT)).toEqual(draft('old goal', 90, 2))
+      deleteLegacyGoalDraft(SLOT)
+
+      expect(loadLegacyGoalDraft(SLOT)).toBeNull()
+      expect(loadLegacyGoalDraft('other')).toEqual(draft('other goal'))
+      expect(Object.keys(JSON.parse(localStorage.getItem(`${LEGACY_GOAL_DRAFTS_KEY}-ts`)!))).toEqual(['other'])
+    })
   })
 
-  it('evicts oldest entries when over the cap', () => {
-    for (let i = 0; i < GOAL_DRAFT_MAX_ENTRIES + 5; i++) saveGoalDraft(`slot-${i}`, draft(`g${i}`))
-    // Oldest evicted, newest retained.
-    expect(loadGoalDraft('slot-0')).toBeNull()
-    expect(loadGoalDraft('slot-4')).toBeNull()
-    expect(loadGoalDraft('slot-5')?.message).toBe('g5')
-    expect(loadGoalDraft(`slot-${GOAL_DRAFT_MAX_ENTRIES + 4}`)?.message).toBe(`g${GOAL_DRAFT_MAX_ENTRIES + 4}`)
+  describe('syncGoalDraft', () => {
+    it('sends the wire format with the pending base and confirms the answer', async () => {
+      savePendingGoalDraft(SLOT, draft('typed'), 4)
+      const puts = stubPut(() => ok({ draft: wire('typed'), updated_at: 8 }))
+
+      const outcome = await syncGoalDraft(SLOT, draft('typed'))
+
+      expect(puts).toEqual([{ base_updated_at: 4, draft: wire('typed') }])
+      expect(outcome).toEqual({ result: 'persisted', canonical: { draft: draft('typed'), updatedAt: 8 } })
+      expect(confirmedGoalDraft(SLOT)).toEqual({ draft: draft('typed'), updatedAt: 8 })
+      expect(loadPendingGoalDraft(SLOT)).toBeNull()
+    })
+
+    it('an edit typed after the save stays pending, now made on the answer', async () => {
+      savePendingGoalDraft(SLOT, draft('sent'), 4)
+      stubPut(() => {
+        savePendingGoalDraft(SLOT, draft('typed meanwhile'))
+        return ok({ draft: wire('sent'), updated_at: 8 })
+      })
+
+      await syncGoalDraft(SLOT, draft('sent'))
+
+      expect(loadPendingGoalDraft(SLOT)).toEqual({ draft: draft('typed meanwhile'), base: 8, tab: TAB_ID })
+    })
+
+    it('a 409 is a conflict naming the stored record, and the edit stays pending on its base', async () => {
+      savePendingGoalDraft(SLOT, draft('typed'), 4)
+      stubPut(() => Promise.resolve({
+        ok: false,
+        status: 409,
+        json: () => Promise.resolve({ code: 'goal_draft_conflict', current: { draft: wire('other device'), updated_at: 9 } }),
+      }))
+
+      const outcome = await syncGoalDraft(SLOT, draft('typed'))
+
+      expect(outcome).toEqual({ result: 'conflict', canonical: { draft: draft('other device'), updatedAt: 9 } })
+      expect(loadPendingGoalDraft(SLOT)).toEqual({ draft: draft('typed'), base: 4, tab: TAB_ID })
+      expect(confirmedGoalDraft(SLOT)).toBeUndefined()
+    })
+
+    it('a failed save is remote-failed and leaves the edit pending', async () => {
+      savePendingGoalDraft(SLOT, draft('typed'), 4)
+      stubPut(() => Promise.reject(new TypeError('Failed to fetch')))
+
+      expect(await syncGoalDraft(SLOT, draft('typed'))).toEqual({ result: 'remote-failed' })
+      expect(loadPendingGoalDraft(SLOT)).toEqual({ draft: draft('typed'), base: 4, tab: TAB_ID })
+    })
+
+    it('queues writes per slot, so the second goes out on the first answer', async () => {
+      let stamp = 4
+      let release = () => {}
+      const held = new Promise<void>(resolve => { release = resolve })
+      const puts = stubPut(async body => {
+        if (puts.length === 1) await held
+        stamp += 1
+        return ok({ draft: body.draft, updated_at: stamp })
+      })
+      savePendingGoalDraft(SLOT, draft('one'), 4)
+      const first = syncGoalDraft(SLOT, draft('one'))
+      savePendingGoalDraft(SLOT, draft('two'))
+      const second = syncGoalDraft(SLOT, draft('two'))
+      await Promise.resolve()
+      expect(puts).toHaveLength(1)
+
+      release()
+      await Promise.all([first, second])
+
+      expect(puts.map(put => put.base_updated_at)).toEqual([4, 5])
+      expect(confirmedGoalDraft(SLOT)?.updatedAt).toBe(6)
+      expect(loadPendingGoalDraft(SLOT)).toBeNull()
+    })
+
+    it('an explicit base wins over the pending one', async () => {
+      savePendingGoalDraft(SLOT, draft('mine'), 4)
+      const puts = stubPut(() => ok({ draft: wire('mine'), updated_at: 10 }))
+      await syncGoalDraft(SLOT, draft('mine'), { base: 9 })
+      expect(puts[0].base_updated_at).toBe(9)
+    })
   })
 
-  it('re-saving a slot refreshes its LRU position (recently edited slot is not evicted)', () => {
-    for (let i = 0; i < GOAL_DRAFT_MAX_ENTRIES; i++) saveGoalDraft(`slot-${i}`, draft(`g${i}`))
-    // Keep editing slot-0 so it moves to the tail, then push one more slot.
-    saveGoalDraft('slot-0', draft('still editing'))
-    saveGoalDraft('slot-new', draft('brand new'))
-    expect(loadGoalDraft('slot-0')?.message).toBe('still editing')
-    expect(loadGoalDraft('slot-1')).toBeNull()
-    expect(loadGoalDraft('slot-new')?.message).toBe('brand new')
-  })
+  describe('remote requests', () => {
+    it('reads the canonical record and surfaces a 409 write as a GoalDraftConflict', async () => {
+      vi.stubGlobal('fetch', vi.fn(() => ok({ draft: null, updated_at: 3 })) as unknown as typeof fetch)
+      expect(await loadRemoteGoalDraft(SLOT)).toEqual({ draft: null, updatedAt: 3 })
 
-  it('discards drafts older than the TTL on load', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    saveGoalDraft('chat-old', draft('sensitive goal'))
-    vi.setSystemTime(Date.now() + GOAL_DRAFT_TTL_MS + 1000)
-    __resetForTests()
-    expect(loadGoalDraft('chat-old')).toBeNull()
-  })
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({
+        ok: false, status: 409, json: () => Promise.resolve({ code: 'goal_draft_conflict', current: 'malformed' }),
+      })) as unknown as typeof fetch)
+      const refused = await saveRemoteGoalDraft(SLOT, draft('x'), 0).catch((error: unknown) => error)
+      expect(refused).toBeInstanceOf(GoalDraftConflict)
+      expect((refused as GoalDraftConflict).current).toBeNull()
+    })
 
-  it('keeps drafts edited within the TTL window', () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'))
-    saveGoalDraft('chat-fresh', draft('recent goal'))
-    vi.setSystemTime(Date.now() + GOAL_DRAFT_TTL_MS - 1000)
-    __resetForTests()
-    expect(loadGoalDraft('chat-fresh')?.message).toBe('recent goal')
+    it('ends a request whose body stalls after its headers at the sync deadline', async () => {
+      vi.useFakeTimers()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: true, status: 200, json: () => new Promise(() => {}) })) as unknown as typeof fetch)
+      const read = loadRemoteGoalDraft(SLOT).then(() => 'answered', () => 'failed')
+      await vi.advanceTimersByTimeAsync(GOAL_DRAFT_SYNC_TIMEOUT_MS + 1)
+      expect(await read).toBe('failed')
+    })
   })
 })
