@@ -2896,8 +2896,9 @@ The markers are the **only** gate:
   because the stream also carries PR-controlled text (the prompt embeds the PR
   title/body, and the reviewer echoes the diff). Without the distinction, every
   security fix whose evidence is a working exploit read as a permanently
-  re-runnable crash (#8685). The fork GPT lane (`fork-gpt-review.yml`) still
-  reports only the generic incomplete state and is tracked separately.
+  re-runnable crash (#8685). The **fork GPT lane** (`fork-gpt-review.yml`)
+  carries the same refusal classification with the same remedy: the refused
+  copy routes to `/ai-review override gpt $HEAD`.
 - Design and UX emit `Design-Verdict:` / `UX-Verdict: PASS | BLOCK`, parsed from a
   header line. Any other word reads as no verdict, and a `BLOCK` with no `Trigger:`
   and no `Outcome:` line is published as `PASS`.
