@@ -729,6 +729,7 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _open_process_termination_handle,
         _windows_descendant_failure_details,
         _windows_foreign_descendant_pids,
+        _windows_is_older_orphan,
         _windows_lineage_matches_lifetimes,
         _windows_process_query_creation,
         _windows_process_query_diagnostic,
