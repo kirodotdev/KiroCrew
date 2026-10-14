@@ -298,9 +298,53 @@ def new_token() -> bytes:
 
 
 def write_token_file(path: Path, token: bytes) -> None:
-    """``token`` in a new private file the sandboxed bridge can read."""
+    """``token`` in a new private file the sandboxed bridge can read.
+
+    POSIX: created ``0600``. Windows ignores that mode (the file would inherit
+    its folder's ACL), so the still-empty file gets an owner-only, protected
+    DACL first, which is read back before the token is written; when that
+    cannot be done or confirmed the file is removed and ``OSError`` raised, and
+    no token is ever written to a file others could read.
+    """
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
     try:
+        if _needs_owner_dacl():
+            try:
+                _lock_to_owner(path)
+            except BaseException:
+                os.close(fd)
+                fd = -1
+                with contextlib.suppress(OSError):
+                    os.unlink(path)
+                raise
         os.write(fd, token)
     finally:
-        os.close(fd)
+        if fd >= 0:
+            os.close(fd)
+
+
+def _needs_owner_dacl() -> bool:
+    """Whether the file mode alone cannot make a file private (Windows)."""
+    return os.name == "nt"
+
+
+def _lock_to_owner(path: Path) -> None:
+    """Give ``path`` an owner-only DACL and confirm it; raise ``OSError`` otherwise.
+
+    The grants are Owner Rights and this process's own SID, as for every other
+    owner-only secret file here. An unreadable SID refuses before anything is
+    written, since an Owner-Rights-only DACL could lock this user out.
+    """
+    from kiro_crew import platform_compat, windows_acl
+
+    me = platform_compat.current_user_sid()
+    if not me:
+        raise OSError("relay token: this process's user SID cannot be read")
+    owner = platform_compat._OWNER_RIGHTS_SID
+    sids = (owner,) if me == owner else (owner, me)
+    try:
+        windows_acl.apply_owner_only(path, inherit=False, sids=sids)
+    except (windows_acl.AclWriteFailed, windows_acl.AclUnavailable) as exc:
+        raise OSError(f"relay token: an owner-only DACL could not be applied: {exc}") from exc
+    if not windows_acl.owner_only_dacl_matches(path, inherit=False, sids=sids):
+        raise OSError("relay token: the owner-only DACL did not read back")

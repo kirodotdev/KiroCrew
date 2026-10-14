@@ -89,9 +89,20 @@ and rejected writes. Saving starts no compute, removing a profile stops or
 deletes nothing external, turning the preview off changes nothing, and an older
 gateway shows an unsupported notice. "Verify readiness"
 (`POST /api/session-environments/check`, owner-only, saved configuration only)
-runs `coder whoami` and `CoderClient.probe` per profile, touching no workspace.
-"Manage" (`GET /api/session-environments/workspaces`, owner-only) lists
-registry rows without a Coder command.
+runs `coder whoami` and `CoderClient.probe` per profile, plus
+`git_gateway.login_status` per proxied git host, which runs only status
+commands (`gh auth status`, `glab auth status`, `az account show`) and reads
+their exit codes with output discarded. A host that falls back to git's
+credential helper reports `unchecked` rather than asking the helper, since
+asking would hand the gateway the secret; the card says that row cannot be
+checked and says to clone a private repository over HTTPS on the gateway so
+the helper saves the login (a bare `git credential approve` waits on stdin),
+and a `not_signed_in` row names the
+sign-in command to run on the gateway. Under the `strict` tier
+`git_gateway.git_readiness` runs no command and reports every host `withheld`,
+and the card shows one row saying no gateway login is shared. It touches no
+workspace. "Manage" (`GET /api/session-environments/workspaces`, owner-only)
+lists registry rows without a Coder command.
 
 ### Placement and the tool fence
 
@@ -143,6 +154,178 @@ reviewed remote-safe. `deploy_artifact` refuses only `local_dir`; the
 computer-use refusal is about placement, not governance.
 
 ### Transport
+
+Git from a remote workspace to GitHub, GitLab, Bitbucket and Azure DevOps is
+proxied through the gateway, so the credential never goes to the guest. Session
+start runs `begin_git_proxy` in the background (it never delays the start, and
+a failure only costs that git access): a guest worker runs `git_proxy.py`, a
+stdlib HTTP server on guest loopback that writes the port to the file the
+gateway names with the required `--port-file` (one per launch; there is no
+shared default on either side), and the gateway's
+`git_gateway.GitProxyChannel` answers it over that worker's own authenticated
+link. `workspace_tools.run_command` gives each command git's environment config
+(`GIT_CONFIG_COUNT`, so the workspace template needs git 2.31 or newer: an
+older git ignores those variables and reaches the host directly, without the
+gateway's login), appended after any `GIT_CONFIG_*` entries the command's
+environment already sets, rewriting each host's spellings
+(`workspace_tools.GIT_PROXY_REWRITES`, pinned equal to `git_gateway.HOSTS`:
+`https://`, `git@host:` and `ssh://git@host/` for the first three, HTTPS only
+for `dev.azure.com`, whose SSH path shape differs) to `/<host>/` on the proxy,
+for the lendable hosts only, and only while the port answers (a stale file from
+a dead proxy must not break public clones). Which hosts are lendable is the
+gateway's call: once the guest proxy sends a `lend` frame, the channel
+publishes `{"t": "lend", "hosts": [...]}` (`GitProxyChannel.lendable_hosts`:
+empty under `strict` or an unknown tier, else each host whose credential
+sources answer; values never leave the gateway) at once, every
+`LEND_REFRESH_SECS` (60 s), and as soon as an upstream 401 drops a cached
+login. Hosts are looked up concurrently, each under its own lock, and until
+the first full list is out each host is published as soon as its login is
+found, in a frame marked `"partial": true`, so a slow source for one host does
+not hold back another's; a refresh publishes only its full list. A login the host refused is not lent again until its source returns a
+different value (a source such as `gh auth token` can keep printing a revoked
+token), so that host goes direct until a fresh sign-in. The proxy keeps the list as `<port> <host>...` in `<port file>.lend`
+(`<port> * <host>...` for a partial one),
+removes it on exit, and `git_proxy_env` re-reads it for every command; a list
+that is unreadable routes nothing. A list that is missing, or names another
+port, means the gateway has not answered this proxy yet (the proxy removes the
+file before it asks): a command run then waits for the first answer, up to
+`GIT_PROXY_FIRST_LEND_WAIT_SECS` (20 s, above one credential CLI's 15 s limit),
+so a first private clone right after the session starts still gets the login.
+A partial list keeps the command waiting, since a host still being looked up
+would be left out of its rewrite; a complete list, even an empty one, is used
+at once. Past the wait the command routes what has been found (nothing if no
+list came), and if the proxy stops it routes nothing. The proxy itself starts in
+the background, and writes its port file only once it listens (its server binds
+without a host-name lookup, which can stall on macOS). Each new tool server is
+told by the launch whether a proxy start is in flight (`starting:<n>`, from
+`RemoteWorkerLaunch.git_proxy_state`) or not (`none`). Only during an in-flight
+start, and within the tool server's first `GIT_PROXY_FIRST_LEND_WAIT_SECS`, does
+a command with no listening port file wait for it. The wait ends as soon as the
+port answers, or when the launch writes start `n`'s number to
+`<port file>.failed` because that start failed. With no start in flight, a
+missing proxy costs no wait. A host that
+is not routed keeps the workspace's own git login (its SSH key, its
+`GIT_ASKPASS`), exactly as without Kiro Crew, so under `strict` everything goes
+direct. `GIT_ASKPASS` and the terminal prompt are never changed; a credential
+helper scoped to the proxy's own URL answers `quit=1`, so a routed request
+that ends in a 401 prompts no one. The protected-branch rule below covers
+routed pushes only: a push made with the workspace's own login goes straight
+to the forge, as from any machine holding that key. No
+git config file is written, so a terminal opened outside the tool is
+unaffected. The channel accepts only git's smart-HTTP requests
+(`info/refs?service=git-upload-pack|git-receive-pack` by GET, the two pack
+endpoints by POST) whose repository path matches that host's shape in
+`HOSTS`: `owner/repo` on GitHub and Bitbucket, nested `group/.../project` on
+GitLab, `org/[project/]_git/repo` (percent-encoded names) on Azure. Every
+segment is decoded and refused if it is empty, `.`/`..`/`-`, starts with `-`,
+or holds a separator, `@`, `:` or a control character. Leading-dot repository
+names such as `.github` remain valid. The upstream URL
+is rebuilt from those parts (GitLab gets `.git` so it does not redirect), so the
+guest cannot aim it elsewhere. It then asks
+`vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)`.
+The calling agent is captured by `AcpProvider` and carried through proxy startup
+into the channel, never taken from a guest frame. An absent identity refuses
+proxy startup and forwarding; a task-bound agent profile still intersects the
+policy ceiling even on an unrestricted dashboard surface. A push asks no one:
+before a `git-receive-pack` POST goes upstream, the channel reads its
+ref-update commands (`PushCommands`: optional `shallow` lines, then
+`<old> <new> <ref>` pkt-lines up to the flush, capped at 8 MiB) and refuses the
+whole push when any command updates or deletes a protected branch
+(`is_protected_ref`, which reuses the local git-publish floor's
+`_PROTECTED_BRANCHES` and `_normalize_ref` on the lower-cased ref, so
+`refs/heads/main`, `refs/remotes/<r>/main` and any case of them match exactly
+as `git push origin <ref>` does locally; parity is at the destination-ref
+level, since the local check's refusals of unresolvable spellings such as a
+bare push or `--all` reach the proxy already resolved to concrete refs). The refusal is a receive-pack result
+that marks every command `ng` (in the side band the client asked for, every
+packet within its size limit, with the reason on a `remote:` line), so git prints `! [remote rejected]` per ref; a
+client that asked for no report gets a 403. Nothing of a refused push goes
+upstream. A body that cannot be read (a bad pkt-line, a short ref name, a
+compressed body, a body that ends before its flush, a signed push's
+certificate) is refused with a 403. Every other push, a force-push or delete
+of a feature branch included, goes through unprompted, as it would locally,
+and any process in the workspace can make one, as any local process can. Every
+push decision writes one SEL `governance_decision` row (`_audit_push`: scope
+`git.push`, the repository and refs as the item, outcome `allowed` or
+`denied`, rule `no-protected-branch`, `protected-branch`, `unreadable-push` or
+`strict-sandbox`), best-effort, so a failed write never changes the answer. A
+request refused before the egress check (a host or endpoint the proxy does not
+carry, or a channel with no calling agent) writes one denied row too (scope
+`git.request`, rule `not-proxied` or `no-agent`). The
+channel then takes the credential from that host's sources on this
+machine, in order (`host_credential`): `gh auth token` for GitHub (Basic
+`x-access-token`), `glab config get token` then git's credential helper for
+GitLab (Basic `oauth2`), git's credential helper for Bitbucket (Basic
+user:password, an app password or API token), and `az account get-access-token`
+for the Azure DevOps resource then the helper for Azure (Bearer, or a PAT as
+Basic). The helper is asked with `GIT_TERMINAL_PROMPT=0` and
+`GCM_INTERACTIVE=never`, so it answers from what is stored and never opens a
+prompt or a browser on the gateway. Under the `strict` agent sandbox tier, which
+hides those logins from local agents, the proxy lends none
+(`gateway_logins_lent`: the configured tier and its readability from one
+`KiroCrewConfig.load()`, with the governance floor applied, read per request; an unreadable tier counts as strict, and so does a
+load that `KiroCrewConfig.load()` marked degraded -- an unparseable
+`config.json` or `config.local.json`, or a degraded `agent` section -- because
+that load stands field defaults in rather than raising). Under `strict` the
+guest routes nothing here (the published list is empty); a request that still
+arrives, from a list published before the tier changed, is read upstream
+anonymously, a private read's 401 reaching git as a 403 naming the strict tier,
+and a push is refused with that message before its body is read. Other tiers
+lend as described here, by the maintainer's choice of "strict lends no gateway
+git login at all" over per-tier lending: under `standard` and `cc` a remote
+session is also lent logins those tiers hide from local agents (`~/.azure`
+under both, `~/.git-credentials` under `cc`), so its git reach can exceed a
+local agent's on the same tier.
+Each host's value is cached in memory for
+five minutes, never logged or framed, sent upstream only, with no redirect
+followed, and the response is streamed back. An upstream 401 drops the cached
+value. For a push it reaches git as a 403 naming that host's sign-in step; a
+read retries once anonymously (so a public repository still clones), and if
+that also gets a 401 it reaches git as that 401, which prompts no one because
+the proxy's URL has its own `quit` credential helper. Azure's legacy `ORG.visualstudio.com` URLs and clone
+URLs carrying a user (`https://ORG@dev.azure.com/...`) are not rewritten. The proxy lives as long as the session's CURRENT
+workspace relay: a start can make more than one (an early tools probe, a
+respawn), so the git relay's `close` stops the proxy only when the closing relay is
+the newest one `workspace_server` made (`_git_proxy_relay`, which survives
+`close_relay` forgetting `launch.relay` at a runtime's normal end; a restart's
+replacement close leaves the proxy to the restart's own `begin_git_proxy`),
+ending its input first so it removes its own port file,
+so an older relay idling out cannot leave a live session without git. The agent's
+remote-workspace notice says git to the four hosts works as usual: through the
+gateway, with its login, for a host it can lend for, and with the workspace's
+own login otherwise (only that under `strict`), and that a protected-branch
+push through the gateway is refused; it tells the agent not to hunt for keys or
+unset the rewrites, and does not mention `GIT_ASKPASS`, which stays the
+workspace's. `git_proxy.py` ships in the installed worker
+files, and the gateway starts it with `--build`, the SHA-256 of its own copy:
+a guest of another build (or started without one) exits before it frames
+anything, and a guest link that ends before its first frame marks its start
+failed, so version skew ends git's wait at once instead of hanging. A
+request's upload flows on credit: the guest sends at most
+`git_proxy.UPLOAD_WINDOW` body frames ahead of the `credit` frames the gateway
+returns as it takes each piece, so the gateway's frame reader never waits on
+one request and a stalled upload cannot hold back its own `cancel` or another
+request; a guest past its window fails only that request. Pinned end to end by `test_remote_git_proxy.py`,
+which runs a real `git` clone and push through the real proxy and channel
+against `git http-backend`, and asserts the token never crosses to the guest.
+The git-only `GitProxyLink` binds its output reader to a byte watermark: when
+unread bytes fill the reader, it stops feeding the wire endpoint before more
+output can be acknowledged. It pauses through the base link's own consumer
+gate, so the link's stall check counts a busy git reader as reading, not as a
+silent connection. The worker's unacknowledged-byte limit then stops
+the guest producer, including when an upstream push stops draining its body.
+If the guest cannot finish delivering the response (or uploading its request),
+it sends a `cancel` frame for that request id. The channel cancels and awaits
+only that request's task, closing its upstream response and releasing its
+live-request slot without waiting for the rest of a repository download.
+
+Git LFS inherits the same URL aliases. Its batch and lock-verification POSTs
+receive a 307 redirect to their original HTTPS endpoint after the egress check,
+without reading or attaching a gateway credential. Object transfers run directly
+from the workspace: public LFS remains anonymous, while private LFS requires
+workspace-side authentication. `test_remote_git_channel_bounds.py` verifies real LFS
+clone/smudge and pre-push upload through this exclusion, as well as bounded wire
+receive flow.
 
 A vendor tunnel is not assumed to deliver ACP byte for byte (an SSM port forward
 rewrote LF into CR; ECS Exec does not forward piped stdin), so tunnels use
@@ -349,6 +532,56 @@ sandbox. The guest-script rule covers only execution inside the guest
 import the gateway sandbox), never a gateway CLI reaching a guest; gateway-side
 agent-influenced commands use the sandbox chokepoint. The two `main` entries
 are in-process `asyncio.run`. No directory-wide exemption exists.
+
+The gateway's Git credential and readiness CLI calls also have individual audit
+entries: their verbs and host names come from the fixed credential-source and
+host tables, never guest argv. Every CLI and Git helper executable passes
+`github_runner.validate_provider_executable(require_protected=True)` off-loop:
+user-writable installs and overrides are refused, even outside a project. Children
+receive a minimal environment with a trusted system PATH, no interpreter injection,
+and a non-project cwd. Git helper discovery uses protected Git in its installation
+directory and stops repository discovery there. Global/system config is read only
+as data: fixed helper selectors (`store`, `cache`, `osxkeychain`, `manager`,
+`manager-core`, `libsecret`, `wincred`, or the exact `gh auth git-credential` shape)
+are rebuilt with protected absolute executables, found in Git's exec-path or, for a
+helper installed outside it (Git Credential Manager in `/usr/local/bin`), in the
+trusted system directories. Shell snippets, configured paths
+and extra arguments are not executed. `store` and `cache` run only Git's `get`
+action against their default locations, never a write. Host-scoped keys and helper
+resets are retained and passed to `credential fill` as `GIT_CONFIG_KEY_n` /
+`GIT_CONFIG_VALUE_n` pairs, never as `-c key=value` text (a free-text subsection
+can hold `=`, which git would split at; a key holding `=` or a control character
+is skipped). `credential fill` reads only that synthesized configuration,
+with the original global/system files disabled, preventing a config swap from
+changing what executes. A host with no usable protected helper fails to authenticate;
+readiness still discards every output stream without reading a secret.
+Known limitation: the helper is asked per host, with no repository path, so a
+helper set for one path under a host (`credential.https://dev.azure.com/<org>.helper`)
+is not matched; a helper set for the host (`credential.https://dev.azure.com.helper`
+or `credential.helper`) is. In that case the host is not lent (its git uses the
+workspace's own login), and the refusal and the gateway log name the setting to use.
+On a Windows gateway the same validated helpers are run without git's shell:
+git runs every helper through `sh -c`, and Git for Windows keeps `sh` in its own
+`usr\bin`, which is not on the trusted `PATH`. `_fill_directly` runs each
+helper's validated executable with `get`, in git's config order, honouring an
+empty value's list reset and the host-scoped keys `credential.https://<host>.helper`
+(`_helper_applies`), and speaks the helper protocol itself: a user name one helper
+returns goes to the next, an expired password is dropped, `quit` stops. The secret
+is read from the helper's stdout pipe only; it is in no argv, environment or
+file. Git Credential Manager, which Git for Windows ships beside `git.exe`
+(`mingw64\bin`), is a candidate there under the same protected-install walk. A
+lookup that times out or is cancelled kills the CLI's whole process tree (`az` is
+`az.cmd`). The relay token file gets an owner-only, inheritance-protected DACL
+(Owner Rights and the gateway user's SID), read back before the token is
+written; otherwise the file is removed and the launch fails.
+A Windows gateway that cannot read its own SID or load the security-descriptor
+API lends nothing (`lending_unverifiable`): the lend list is empty,
+`host_credential` and the git-helper source refuse with `WINDOWS_LENDING_UNVERIFIED`,
+a push is refused whole (audited as `windows-unverified`), and readiness reports
+`unsupported`, which the card states in one line. With remote workspace paths
+matched as POSIX on any gateway (#23498), a remote workspace starts on a Windows
+gateway too, so lending works there end to end: workspace, guest proxy, gateway
+lookup and lent login.
 
 ### Template contract
 

@@ -60,9 +60,12 @@ def _profiles() -> list[dict[str, object]]:
 async def api_session_environments_check(request: web.Request) -> web.Response:
     """Is the saved setup ready to run?
 
-    Owner-only, read-only against Coder (``whoami``, template list). Answers::
+    Owner-only, read-only against Coder (``whoami``, template list) and
+    status-only for git logins (exit codes; no credential is read). Answers::
 
-        {"coder": {"ok", "owner" | "error"}, "profiles": [{"id", "ok", "error"?}]}
+        {"coder": {"ok", "owner" | "error"},
+         "profiles": [{"id", "ok", "error"?}],
+         "git": {host: "signed_in" | "not_signed_in" | "unchecked" | "withheld" | "unsupported"}}
     """
     if (
         refusal := await require_owner_dashboard_request(request, "session_environments.check")
@@ -72,25 +75,36 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
     from kiro_crew.coder.session_launch import CoderSessionEnvironments
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import data_home
+    from kiro_crew.remote_session.git_gateway import git_readiness
     from kiro_crew.session_environment import SessionEnvironmentUnavailable
 
     section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
+    git = await git_readiness()
     if not section.coder_url:
         return web.json_response(
-            {"coder": {"ok": False, "error": "no Coder URL is saved"}, "profiles": []}
+            {
+                "coder": {"ok": False, "error": "no Coder URL is saved"},
+                "profiles": [],
+                "git": git,
+            }
         )
     try:
         # Resolving the coder binary walks PATH, and a missing one raises.
         envs = CoderSessionEnvironments(section, await asyncio.to_thread(data_home))
         client = await asyncio.to_thread(envs._client)
     except SessionEnvironmentUnavailable as exc:
-        return web.json_response({"coder": {"ok": False, "error": str(exc)[:300]}, "profiles": []})
+        # The git rows do not depend on Coder: a missing CLI still reports them.
+        return web.json_response(
+            {"coder": {"ok": False, "error": str(exc)[:300]}, "profiles": [], "git": git}
+        )
     try:
         owner, _owner_id = await client.current_user()
     except CoderClientError as exc:
         # The CLI's own words: a timeout or a bad identity reply is not a
         # sign-in problem, and the card shows them under Details.
-        return web.json_response({"coder": {"ok": False, "error": str(exc)[:200]}, "profiles": []})
+        return web.json_response(
+            {"coder": {"ok": False, "error": str(exc)[:200]}, "profiles": [], "git": git}
+        )
     profiles: list[dict[str, object]] = []
     for profile in section.profiles:
         try:
@@ -98,7 +112,9 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
             profiles.append({"id": profile.id, "ok": True})
         except CoderClientError as exc:
             profiles.append({"id": profile.id, "ok": False, "error": str(exc)[:200]})
-    return web.json_response({"coder": {"ok": True, "owner": owner}, "profiles": profiles})
+    return web.json_response(
+        {"coder": {"ok": True, "owner": owner}, "profiles": profiles, "git": git}
+    )
 
 
 def _template_names(raw: object) -> list[str]:

@@ -1250,6 +1250,7 @@ def vet_and_audit(
     *,
     session_key: str,
     tool_name: str,
+    agent: str = "",
     app: str = "",
     fail_closed: bool = False,
     log_warning: bool = True,
@@ -1276,6 +1277,7 @@ def vet_and_audit(
         scope,
         item,
         session_key=session_key,
+        agent=agent,
         app=app,
         log_warning=log_warning,
         fail_closed=fail_closed,
@@ -1290,6 +1292,8 @@ def vet_and_audit(
 
         sel().log_governance_decision(
             session_key=session_key,
+            # The agent whose profile decided, so the row names who asked.
+            agent=agent or "kirocrew",
             tool_name=tool_name,
             scope=scope,
             item=item,

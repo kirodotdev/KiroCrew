@@ -2,11 +2,12 @@ import { useId, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Trans, useTranslation } from 'react-i18next'
 import { Link, useNavigate } from 'react-router-dom'
-import { Check, ChevronRight, ExternalLink, Minus, Plus, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, CircleDashed, ExternalLink, Lock, Minus, Plus, Trash2 } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
 import { api, type SessionEnvironmentsCheck } from '../../api/client'
+import { AGENT_SANDBOX_PATH } from '../overview/agentSandboxLink'
 import { fmtDateTime } from '../../i18n/format'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { isMemberThreadSlot, memberSlugOfSlot } from '../../hooks/unreadOnAttention'
@@ -99,14 +100,43 @@ function RawDetails({ text, className = 'pl-5' }: { text: string; className?: st
   )
 }
 
-/** One passed check: a check mark and its text, announced as a list item. */
-function CheckLine({ children }: { children: ReactNode }) {
+/** How a check line's glyph reads. Only `ok` is coloured: a git host is
+ * optional, so a signed-out or withheld one is never shown as a failure (the
+ * blocking Coder and template failures render through ErrorNotice instead).
+ * Each non-ok state has a glyph of its own; the text carries the meaning.
+ * Signed-out is a dashed ring, a state rather than an arrow or button shape,
+ * since the line itself is not something to click. */
+type CheckLineStatus = 'ok' | 'signIn' | 'withheld' | 'unknown'
+const CHECK_LINE_ICONS = { ok: Check, signIn: CircleDashed, withheld: Lock, unknown: Minus } as const
+
+/** One check line: a status glyph and its text, announced as a list item. */
+function CheckLine({ status, children }: { status: CheckLineStatus; children: ReactNode }) {
+  const Icon = CHECK_LINE_ICONS[status]
+  const tone = status === 'ok' ? 'text-ok' : 'text-muted'
   return (
     <li className="flex min-w-0 items-start gap-2 text-[13px] text-text">
-      <Check size={14} className="mt-0.5 shrink-0 text-ok" aria-hidden="true" />
+      <Icon size={14} className={`mt-0.5 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="min-w-0 break-words">{children}</span>
     </li>
   )
+}
+
+/** Display names for git hosts whose brand is a do-not-translate term; any
+ * other host is shown as its host name. */
+const GIT_HOST_NAMES: Record<string, string> = {
+  'github.com': 'GitHub',
+  'gitlab.com': 'GitLab',
+  'bitbucket.org': 'Bitbucket',
+  'dev.azure.com': 'Azure DevOps',
+}
+
+/** The gateway-machine command that signs each git host in. A host with no
+ * CLI here (Bitbucket) falls back to git's credential helper and is reported
+ * unchecked, never signed out. Commands, not prose: never translated. */
+const GIT_SIGN_IN_COMMANDS: Record<string, string> = {
+  'github.com': 'gh auth login',
+  'gitlab.com': 'glab auth login',
+  'dev.azure.com': 'az login',
 }
 
 /** What the readiness check found, in the order a person fixes things. */
@@ -116,10 +146,20 @@ function CheckResults({ result, profiles }: {
 }) {
   const { t } = useTranslation()
   const names = new Map(profiles.map(p => [p.id, p]))
+  // A gateway that predates the git rows sends no `git` at all.
+  const git = Object.entries(result.git ?? {})
+  // The sandbox tier lives on Developer → Config; link there only when it is
+  // what withheld a login, since otherwise nothing here is the sandbox's doing.
+  const withheld = git.some(([, status]) => status === 'withheld')
+  // 'strict' withholds every host alike, so one line says it once instead of
+  // repeating the same sentence per host.
+  const allWithheld = withheld && git.every(([, status]) => status === 'withheld')
+  const unsupported = git.length > 0 && git.every(([, status]) => status === 'unsupported')
   return (
+    <>
     <ul aria-label={t('sessionEnvironments.checkResults')} className="space-y-1.5">
       {result.coder.ok ? (
-        <CheckLine>{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
+        <CheckLine status="ok">{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
       ) : (
         <li>
           <ErrorNotice variant="inline" message={t('sessionEnvironments.checkCoderFailed')} askAgent askAgentLabel={t('sessionEnvironments.askAgentFix')} />
@@ -140,14 +180,48 @@ function CheckResults({ result, profiles }: {
         const profile = names.get(row.id)
         const name = profile?.name || row.id
         return row.ok ? (
-          <CheckLine key={row.id}>
+          <CheckLine key={row.id} status="ok">
             {t('sessionEnvironments.checkTemplateOk', { name, template: profile?.template ?? '' })}
           </CheckLine>
         ) : (
           <li key={row.id}><ErrorNotice variant="inline" message={t('sessionEnvironments.checkTemplateFailed', { name, error: row.error ?? '' })} askAgent askAgentLabel={t('sessionEnvironments.askAgentFix')} /></li>
         )
       })}
+      {allWithheld && <CheckLine status="withheld">{t('sessionEnvironments.checkGitWithheldAll')}</CheckLine>}
+      {/* A Windows gateway lends nothing, so one line says so; no sandbox link applies. */}
+      {unsupported && <CheckLine status="withheld">{t('sessionEnvironments.checkGitUnsupported')}</CheckLine>}
+      {!allWithheld && !unsupported && git.map(([host, status]) => {
+        const name = GIT_HOST_NAMES[host] ?? host
+        // Signed out names a sign-in command; a host with none reads as unchecked.
+        const signedOut = status === 'not_signed_in' && !!GIT_SIGN_IN_COMMANDS[host]
+        return (
+          <CheckLine key={host} status={status === 'signed_in' ? 'ok' : signedOut ? 'signIn' : status === 'withheld' ? 'withheld' : 'unknown'}>
+            {status === 'signed_in'
+              ? t('sessionEnvironments.checkGitSignedIn', { name })
+              : signedOut
+                ? (
+                  <Trans
+                    i18nKey="sessionEnvironments.checkGitSignedOut"
+                    values={{ name, command: GIT_SIGN_IN_COMMANDS[host] }}
+                    components={{ code: <code className="rounded bg-bg-elevated px-1 font-mono text-[12px] text-text" translate="no" /> }}
+                  />
+                )
+                : status === 'withheld'
+                  ? t('sessionEnvironments.checkGitWithheld', { name })
+                  : t('sessionEnvironments.checkGitUnchecked', { name })}
+          </CheckLine>
+        )
+      })}
     </ul>
+    {withheld && (
+      <p className="text-[13px]">
+        <Link to={AGENT_SANDBOX_PATH} className="inline-flex min-w-0 items-center gap-0.5 rounded text-accent hover:underline focus-ring">
+          <span className="min-w-0">{t('sessionEnvironments.checkGitSandboxLink')}</span>
+          <ChevronRight size={13} aria-hidden="true" className="shrink-0" />
+        </Link>
+      </p>
+    )}
+    </>
   )
 }
 

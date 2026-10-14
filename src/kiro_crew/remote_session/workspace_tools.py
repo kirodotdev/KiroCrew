@@ -77,6 +77,185 @@ WITHHELD_ENV = frozenset(
 )
 
 
+#: Per proxied host, the remote spellings git rewrites to the proxy (each a
+#: prefix git matches). Its hosts mirror ``git_gateway.HOSTS``, which this
+#: guest-side file cannot import; ``test_remote_git_proxy`` pins the two equal.
+#: Azure's SSH form (v3/ORG/PROJECT/REPO) has a different path shape, so only
+#: its HTTPS spelling is rewritten.
+GIT_PROXY_REWRITES: Dict[str, tuple] = {
+    "github.com": ("https://github.com/", "git@github.com:", "ssh://git@github.com/"),
+    "gitlab.com": ("https://gitlab.com/", "git@gitlab.com:", "ssh://git@gitlab.com/"),
+    "bitbucket.org": ("https://bitbucket.org/", "git@bitbucket.org:", "ssh://git@bitbucket.org/"),
+    "dev.azure.com": ("https://dev.azure.com/",),
+}
+
+
+#: Beside the port file, the gateway writes the number of a proxy start that
+#: failed. Mirrors ``remote_worker.GIT_PROXY_FAILED_SUFFIX``.
+GIT_PROXY_FAILED_SUFFIX = ".failed"
+
+
+def _start_failed(port_file: str, starting: str) -> bool:
+    """Whether the gateway marked proxy start ``starting`` as failed."""
+    try:
+        with open(port_file + GIT_PROXY_FAILED_SUFFIX, encoding="ascii") as handle:
+            return handle.read(32).strip() == starting
+    except (OSError, ValueError):
+        return False
+
+
+def _proxy_port(port_file: str) -> Optional[int]:
+    """The port the proxy named in ``port_file``, when something listens there."""
+    try:
+        with open(port_file, encoding="ascii") as handle:
+            port = int(handle.read().strip())
+    except (OSError, ValueError):
+        return None
+    return port if 0 < port < 65536 and _listening(port) else None
+
+
+def _listening(port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def git_proxy_env(
+    port_file: str,
+    secret: str,
+    base: Optional[Dict[str, str]] = None,
+    *,
+    startup_since: Optional[float] = None,
+    starting: str = "",
+) -> Dict[str, str]:
+    """Environment that routes this command's git traffic for lendable hosts via the gateway.
+
+    Only the hosts the gateway can lend a login for right now are routed: the
+    proxy keeps their names, beside its port file, as the gateway last
+    published them, and this re-reads that list for every command. Every other
+    host keeps the workspace's own git login (its SSH key, its askpass helper),
+    exactly as without Kiro Crew, and under ``strict`` the list is empty, so
+    nothing is routed. A list that cannot be read, or that names another
+    proxy's port, routes nothing: the fallback is the workspace's own login,
+    never the gateway's.
+
+    Git LFS also reads these aliases; the gateway returns its batch and lock
+    verification requests to their direct HTTPS endpoints without credentials.
+    Public LFS remains anonymous; private LFS needs workspace-side authentication.
+
+    Uses git's environment config (``GIT_CONFIG_COUNT``, git 2.31+), so nothing
+    is written to a git config file and a command run outside this tool is not
+    affected. ``GIT_ASKPASS`` and the terminal prompt are left as the workspace
+    set them; a credential helper scoped to the proxy's own URL answers
+    ``quit``, so git asks no one for a password for a routed request, even when
+    an anonymous fetch returns 401.
+    """
+    if not secret or not port_file:
+        return {}
+    deadline = _monotonic() + GIT_PROXY_FIRST_LEND_WAIT_SECS
+    port = _proxy_port(port_file)
+    if port is None and startup_since is not None and starting:
+        # The gateway starts this session's proxy in the background, and the
+        # proxy writes its port file only once it listens. When the gateway told
+        # this tool server a start is in flight (``starting``, its number), a
+        # command waits for that proxy, inside the same bound, so an early clone
+        # still gets the login. The wait ends as soon as the port answers or the
+        # gateway marks that start failed; with no start in flight, or past this
+        # tool server's first moments, a missing proxy costs no wait at all.
+        startup_deadline = min(deadline, startup_since + GIT_PROXY_FIRST_LEND_WAIT_SECS)
+        while (
+            port is None
+            and _monotonic() < startup_deadline
+            and not _start_failed(port_file, starting)
+        ):
+            _sleep(0.1)
+            port = _proxy_port(port_file)
+    if port is None:
+        # No proxy, or a file left by one that died: rewriting to a dead port
+        # would break even public clones, so the command runs as if no proxy existed.
+        return {}
+    lendable, complete = _lendable_hosts(port_file, port)
+    # The gateway answers the proxy's first ``lend`` request once its credential
+    # lookups finish, which can take a few seconds after the session starts. A
+    # command run before then would reach a host the gateway can lend for with
+    # no login, so it waits, bounded, for that answer. Until the lookups finish
+    # the gateway publishes each login it finds, marked partial; the command
+    # keeps waiting through those, since a host still being looked up would
+    # otherwise be left out of this command's rewrite. A complete list, even an
+    # empty one (``strict``, no login anywhere), is used at once; at the
+    # deadline the command takes what has been found; a proxy that stops ends
+    # the wait.
+    while not complete and _monotonic() < deadline:
+        _sleep(0.1)
+        if not _listening(port):
+            return {}
+        lendable, complete = _lendable_hosts(port_file, port)
+    if not lendable:
+        return {}
+    proxy = f"http://127.0.0.1:{port}/"
+    pairs = [
+        (f"url.{proxy}{host}/.insteadOf", prefix)
+        for host, prefixes in GIT_PROXY_REWRITES.items()
+        if host in lendable
+        for prefix in prefixes
+    ]
+    # URL-scoped; Authorization is also stripped on cross-host LFS redirects.
+    pairs.append((f"http.{proxy}.extraHeader", f"Authorization: Bearer {secret}"))
+    # No prompt for the proxy's own URL only; other hosts keep the workspace's.
+    pairs.append((f"credential.{proxy}.helper", "!f() { echo quit=1; }; f"))
+    # Entries the command's environment (``base``) already sets come first and
+    # are kept: these are appended after them, not written over them.
+    try:
+        start = max(0, int((base or {}).get("GIT_CONFIG_COUNT", "0")))
+    except ValueError:
+        start = 0
+    env = {"GIT_CONFIG_COUNT": str(start + len(pairs))}
+    for index, (key, value) in enumerate(pairs, start):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
+#: Beside the port file, ``git_proxy.py`` keeps ``<port> <host>...``: the hosts
+#: the gateway last said it can lend for. Mirrors ``git_proxy.lend_file``.
+GIT_PROXY_LEND_SUFFIX = ".lend"
+
+#: How long a command waits for the gateway's first list of lendable hosts.
+#: Above one credential CLI's own time limit on the gateway (15 s), so a slow
+#: ``az`` lookup still lands before the command; past it the command runs with
+#: the workspace's own login, as it would without Kiro Crew.
+GIT_PROXY_FIRST_LEND_WAIT_SECS = 20.0
+#: The wait's clock, module-local so a test can drive it without real time.
+_monotonic = time.monotonic
+_sleep = time.sleep
+
+
+def _lendable_hosts(port_file: str, port: int) -> "tuple[Optional[frozenset[str]], bool]":
+    """The hosts to route, and whether the gateway has finished looking them up.
+
+    The hosts are None while this proxy has no answer from the gateway yet:
+    ``serve`` removes the file before it writes its port and asks, so a missing
+    file, or one naming another proxy's port, means "not answered yet". A ``*``
+    after the port marks a partial list, published while other hosts' lookups
+    are still running. An unreadable file routes nothing and is final.
+    """
+    try:
+        with open(port_file + GIT_PROXY_LEND_SUFFIX, encoding="ascii") as handle:
+            fields = handle.read(4096).split()
+    except FileNotFoundError:
+        return None, False
+    except (OSError, ValueError):
+        return frozenset(), True
+    if fields[:1] != [str(port)]:
+        return None, False  # another proxy's list, or none yet
+    complete = fields[1:2] != ["*"]
+    return frozenset(fields[1:]) & frozenset(GIT_PROXY_REWRITES), complete
+
+
 class ToolError(Exception):
     """A refusal or failure reported to the agent as a tool error, not a crash."""
 
@@ -121,7 +300,26 @@ def glob_matches(rel: str, pattern: str) -> bool:
 
 
 class Workspace:
-    def __init__(self, root: str, *, lock_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        git_proxy_port_file: str = "",
+        *,
+        lock_dir: Optional[str] = None,
+        git_proxy_secret: str = "",
+        git_proxy_starting: str = "",
+    ) -> None:
+        #: The port file of THIS session's git proxy (``git_proxy.py --port-file``);
+        #: empty when this process runs no git (the browse and write modes).
+        self.git_proxy_port_file = git_proxy_port_file
+        self.git_proxy_secret = git_proxy_secret
+        #: The number of the git proxy start the gateway had in flight when this
+        #: tool server started, or "" when none was: only then does an early git
+        #: command wait for that proxy (git_proxy_env).
+        self.git_proxy_starting = git_proxy_starting
+        #: When this tool server started; the gateway starts the git proxy beside
+        #: it, so a command this early waits for the proxy too (git_proxy_env).
+        self.started_at = _monotonic()
         real = os.path.realpath(root)
         if not os.path.isdir(real):
             raise SystemExit(f"workspace root {root!r} is not a directory")
@@ -338,6 +536,16 @@ class Workspace:
         timeout = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
         workdir = self.resolve(cwd)
         env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
+        # GitHub git traffic goes through the gateway, which holds the credential.
+        env.update(
+            git_proxy_env(
+                self.git_proxy_port_file,
+                self.git_proxy_secret,
+                env,
+                startup_since=self.started_at,
+                starting=self.git_proxy_starting,
+            )
+        )
         argv = ["/bin/sh", "-c", command]
         timer = shutil.which("timeout")
         if timer:
@@ -827,6 +1035,8 @@ def write_request(ws: Workspace, request: Any) -> Dict[str, Any]:
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="workspace_tools.py")
     p.add_argument("--root", required=True)
+    p.add_argument("--git-proxy-port-file", default="")
+    p.add_argument("--git-proxy-secret-stdin", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
         "--browse",
@@ -839,10 +1049,26 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="save one file from a JSON request on stdin and exit",
     )
     args = p.parse_args(argv)
+    secret = starting = ""
+    if args.git_proxy_secret_stdin:
+        # "<capability> <state>": the state says whether the gateway has a proxy
+        # start in flight ("starting:<n>") or none ("none").
+        line = sys.stdin.buffer.readline(128).decode("ascii").split()
+        secret = line[0] if line else ""
+        if re.fullmatch(r"[0-9a-f]{64}", secret) is None:
+            raise SystemExit("invalid git proxy capability")
+        state = line[1] if len(line) > 1 else ""
+        if re.fullmatch(r"starting:[0-9]{1,9}", state):
+            starting = state.split(":", 1)[1]
     os.makedirs(os.path.expanduser(args.root), exist_ok=True)
+    # The port file is resolved here: a relative path names the worker directory
+    # this starts in.
     ws = Workspace(
         os.path.expanduser(args.root),
+        os.path.abspath(args.git_proxy_port_file) if args.git_proxy_port_file else "",
         lock_dir=os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "file-locks"),
+        git_proxy_secret=secret,
+        git_proxy_starting=starting,
     )
     if args.browse or args.write:
         limit = (2 * MAX_WRITE_BYTES) if args.write else 65536
