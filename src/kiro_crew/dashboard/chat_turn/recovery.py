@@ -20,6 +20,7 @@ from kiro_crew.dashboard.chat_utils import (
     KIRO_CLI_MISSING_KIND,
     MODEL_UNAVAILABLE_KIND,
     MODEL_UNENTITLED_KIND,
+    RETRY_INVITED_KIND,
     SESSION_START_FAILED_KIND,
     TRANSIENT_RETRY_KIND,
     USAGE_LIMIT_KIND,
@@ -929,7 +930,10 @@ async def _requeue_after_prompt_busy(
             "error",
             gn.GATEWAY_SESSION_BUSY_GIVE_UP_TEXT,
             "msg msg-err",
-            meta=gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_BUSY_GIVE_UP),
+            meta={
+                "kind": RETRY_INVITED_KIND,
+                **gn.gateway_notice_meta(gn.GATEWAY_NOTICE_SESSION_BUSY_GIVE_UP),
+            },
         )
 
 

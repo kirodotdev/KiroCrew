@@ -1054,7 +1054,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
         message = card_send.card_turn_text(message)
 
     from kiro_crew import crew_pause
-    from kiro_crew.dashboard import responsive_chat
+    from kiro_crew.dashboard import responsive_chat, restart_resume
+
+    if _person_send and not cron_creator:
+        # A PERSON's send refills the automatic-resume budget; no other send does.
+        restart_resume.reset_budget(slot)
 
     # Ultra Mode "Pause all" holds this session: a send is queued, not started,
     # and waits for Resume all (or the session's own Continue).
