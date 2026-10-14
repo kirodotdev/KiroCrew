@@ -1,5 +1,5 @@
 import { useState, useEffect, useLayoutEffect, useCallback, useContext, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight, Check, Monitor, Sun, Moon } from 'lucide-react'
@@ -489,8 +489,11 @@ export default function OnboardingFlow({
   // "skip all", because the rule is global: one keystroke abandons the rest of
   // first run from any point. Split out rather than folded into the trap effect
   // so the popovers gain the key binding without gaining a focus trap.
+  // Neither key binding applies while its Crew is hidden behind a remote one
+  // (components/overlayRoot): "skip all" would abandon first run unseen.
+  const crewHidden = useLocalCrewHidden()
   useEffect(() => {
-    if (!open || step <= 2) return
+    if (!open || crewHidden || step <= 2) return
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') return
       e.preventDefault()
@@ -500,13 +503,13 @@ export default function OnboardingFlow({
     }
     document.addEventListener('keydown', onKeyDown)
     return () => document.removeEventListener('keydown', onKeyDown)
-  }, [open, step, skipAll, savingProfile])
+  }, [open, crewHidden, step, skipAll, savingProfile])
 
   // Modal-step a11y (website/AGENTS.md): move focus into the dialog, trap Tab,
   // and dismiss on Escape. Applies to the centered Customize modals (steps 1-2);
   // the anchored popovers (steps 3-5) are non-modal and exempt.
   useEffect(() => {
-    if (!open || step > 2) return
+    if (!open || crewHidden || step > 2) return
     const node = dialogRef.current
     if (!node) return
     const getFocusable = () =>
@@ -563,7 +566,7 @@ export default function OnboardingFlow({
     return () => document.removeEventListener('keydown', onKeyDown)
     // shellHost?.sectionSlot: in host mode the dialog mounts a pass after the
     // flow opens, so re-run once it exists to install the trap + initial focus.
-  }, [open, step, skipAll, savingProfile, dialogRef, shellHost?.sectionSlot, imeLatch])
+  }, [open, crewHidden, step, skipAll, savingProfile, dialogRef, shellHost?.sectionSlot, imeLatch])
 
   if (!open) return null
 
@@ -818,7 +821,7 @@ export default function OnboardingFlow({
   const dotIdx = step - 3
   const isLastPop = step === LAST_STEP
 
-  return createPortal(
+  return <OverlayPortal>
     <div className="fixed z-[120] w-[288px] animate-rise" style={{ left: coords.left, top: coords.top }}>
       <div
         className="relative bg-card border border-accent p-5"
@@ -869,7 +872,6 @@ export default function OnboardingFlow({
           </div>
         </div>
       </div>
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }

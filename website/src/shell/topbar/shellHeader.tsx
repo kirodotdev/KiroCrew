@@ -76,8 +76,8 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
 /**
  * Topbar Notifications bell. The Notifications surface is `hiddenFromNav`, so
  * this is its entry point. Click opens an Activity Feed popover
- * (portaled to <body> to escape the topbar's backdrop-filter containing
- * block); clicking an item slides out a detail panel. The full page is
+ * (portaled to the body-level overlay root to escape the topbar's
+ * backdrop-filter containing block); clicking an item slides out a detail panel. The full page is
  * preserved at /notifications via the popover's "Open inbox" link.
  */
 function NotificationsBellButton() {

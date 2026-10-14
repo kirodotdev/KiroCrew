@@ -108,10 +108,12 @@ describe('side panel mount decision', () => {
     // prop is aliased to `visible` there because a local `active` in that file
     // already names the fullscreen icon.
     expect(panel).toContain('active: visible = true')
-    expect(panel).toContain('if (!visible) return')
+    // The same guard also stands down while a remote Crew fills the window: the
+    // whole local dashboard, this panel included, is then off screen.
+    expect(panel).toContain('if (!visible || crewHidden) return')
     // Close and exit-fullscreen go through the comment-draft guard, so those
     // guarded callbacks are the deps rather than `onClose` itself.
-    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active])')
+    expect(panel).toContain('}, [visible, fullscreen, exitFullscreen, requestClose, active, crewHidden])')
   })
 
   describe('find pane claims the dock', () => {

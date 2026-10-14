@@ -359,7 +359,8 @@ export function useAppShell() {
    * the panel, and the listener is on an element neither is inside.
    *
    * Widening the root does not widen what arms: dialogs render through a portal
-   * to `document.body`, so they are outside this element entirely, and a page
+   * to the body level (components/overlayRoot), so they are outside this
+   * element entirely, and a page
    * with its own drawer claims its sides with `data-owns-swipe`.
    */
   const shellRef = useRef<HTMLDivElement | null>(null)

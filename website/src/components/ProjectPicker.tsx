@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useRef, useCallback, RefObject, type ReactNode } from 'react'
 import { useImeGuard } from '../hooks/useImeGuard'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { FolderOpen, FolderSearch, ChevronRight, ChevronLeft, Clock, Search, Star } from 'lucide-react'
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
@@ -740,7 +740,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     e.stopPropagation()
   }
 
-  return createPortal(
+  return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
     <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
@@ -1114,7 +1114,6 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
           {footer}
         </div>
       )}
-    </div>,
-    document.body
-  )
+    </div>
+  }</OverlayPortal>
 }

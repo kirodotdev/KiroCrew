@@ -1,5 +1,5 @@
 import React, { useEffect, useCallback, useId, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 
@@ -108,7 +108,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // has focus (the Ctrl+digit session jumps, the Settings chord) — unguarded,
   // one of those typed into a part-filled form navigates away and unmounts the
   // dialog with the draft still in it. Modal portals its panel to
-  // document.body, but portal events still propagate through the React tree,
+  // the body-level overlay root, but portal events still propagate through the React tree,
   // so this one handler on the PANEL (not the backdrop) sees every keystroke
   // inside the dialog and stops it before the page's document-level listener.
   //
@@ -214,6 +214,9 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
   const softDismiss = useCallback(() => {
     if (!guardAccidentalDismiss && !dismissDisabled) onClose()
   }, [guardAccidentalDismiss, dismissDisabled, onClose])
+  // A modal in a Crew hidden behind another one keeps its state for the return,
+  // so an Escape aimed at the Crew in front must not close it.
+  const crewHidden = useLocalCrewHidden()
 
   useEffect(() => {
     if (!open) return
@@ -222,18 +225,19 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
     // Skip an Escape a nested layer already consumed. Overlays that render above
     // this modal call preventDefault on their own Escape handling.
     const handler = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !event.defaultPrevented) softDismiss()
+      if (event.key === 'Escape' && !event.defaultPrevented && !crewHidden) softDismiss()
     }
     window.addEventListener('keydown', handler)
     return () => {
       document.body.style.overflow = prevOverflow
       window.removeEventListener('keydown', handler)
     }
-  }, [open, softDismiss])
+  }, [open, softDismiss, crewHidden])
 
-  // Portal to document.body: fixed positioning does not escape an ancestor's
-  // clip-path, transform, or filter, and modals can mount inside those shells.
-  return createPortal(
+  // Portal to the body-level overlay root: fixed positioning does not escape an
+  // ancestor's clip-path, transform, or filter, and modals can mount inside
+  // those shells.
+  return <OverlayPortal>
     <AnimatePresence>
       {open && (
         <>
@@ -250,7 +254,6 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
           </div>
         </>
       )}
-    </AnimatePresence>,
-    document.body
-  )
+    </AnimatePresence>
+  </OverlayPortal>
 }

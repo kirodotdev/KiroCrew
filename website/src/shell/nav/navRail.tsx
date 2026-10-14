@@ -190,7 +190,7 @@ export function ShellNavRail({ shell }: { shell: AppShell }) {
 
         {/* Apps list: scrolls in its OWN frame when many apps are enabled —
             the top (menu/mains/header) and bottom sections stay pinned.
-            Collapsed hover labels are portaled to <body> (see NavItem /
+            Collapsed hover labels are portaled to the body-level overlay root (see NavItem /
             NavToggle) so this vertical clip never chops them at the rail
             edge. overscroll-y-none kills the macOS rubber-band bounce;
             scrollbar-none + scrollbarWidth hide the scrollbar across

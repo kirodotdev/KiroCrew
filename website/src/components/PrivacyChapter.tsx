@@ -1,6 +1,7 @@
 import { useContext, useEffect, useRef } from 'react'
 import { SendBtn } from './ui'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
+import { useLocalCrewHidden } from './overlayRoot'
 import OnboardingChapterShell, { OnboardingShellContext } from './OnboardingChapterShell'
 import { setupChapterAside } from './AgentImportFlow'
 import {
@@ -55,6 +56,13 @@ export default function PrivacyChapter({
   // focus and aborting the composition (`useDialogFocusTrap` is the reference
   // consumer of the same seam).
   const imeLatch = useDocumentImeLatch(open)
+  // Hidden with the local Crew, this chapter still hears keys on the page
+  // (components/overlayRoot), and its Tab trap would swallow Tab on the Crew in
+  // front. Read through a ref so a switch does not re-run the effect, which
+  // would also move focus back to the heading.
+  const crewHidden = useLocalCrewHidden()
+  const crewHiddenRef = useRef(crewHidden)
+  crewHiddenRef.current = crewHidden
 
   // Move focus to the heading on open, then trap Tab inside the dialog
   // (website/AGENTS.md modal a11y). Escape is NOT wired: this chapter cannot be
@@ -64,6 +72,7 @@ export default function PrivacyChapter({
     if (!open) return
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
+      if (crewHiddenRef.current) return
       if (event.key !== 'Tab') return
       const focusable = Array.from(
         dialogRef.current?.querySelectorAll<HTMLElement>(

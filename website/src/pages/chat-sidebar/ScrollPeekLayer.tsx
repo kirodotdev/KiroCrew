@@ -1,4 +1,4 @@
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { ROW_TITLE_CLS } from '../../components/listShell'
 import type { PeekTitle } from './scrollPeek'
 
@@ -10,7 +10,7 @@ const PAD_X = 4
  * The scroll peek's floating layer: each clipped title in view, drawn in full
  * over its row and past the sidebar's edge.
  *
- * Portaled to `document.body` and `position: fixed`, so neither the sidebar's
+ * Portaled to the body-level overlay root and `position: fixed`, so neither the sidebar's
  * width nor its overflow is involved. `pointer-events: none` on the whole
  * layer: it never takes a click, so a click on a peeked title selects the row
  * under it and a click past the sidebar reaches the chat. It is decorative
@@ -19,7 +19,7 @@ const PAD_X = 4
  */
 export default function ScrollPeekLayer({ titles }: { titles: readonly PeekTitle[] }) {
   if (titles.length === 0) return null
-  return createPortal(
+  return <OverlayPortal>
     <div aria-hidden="true" data-testid="scroll-peek-layer" className="fixed inset-0 z-[65] pointer-events-none">
       {titles.map(t => (
         <div
@@ -38,7 +38,6 @@ export default function ScrollPeekLayer({ titles }: { titles: readonly PeekTitle
           {t.text}
         </div>
       ))}
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }

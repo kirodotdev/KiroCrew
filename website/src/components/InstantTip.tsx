@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { useGuideTrustRootAttrs } from '../guide/trustRoot'
 
 /**
@@ -521,7 +521,7 @@ export function InstantTip({ tip, tipId, className = '', children }: {
   // `above` (the default) anchors the bubble's BOTTOM edge at `top` by pulling
   // it up its own height; `below` anchors its top edge there, so no translate.
   const edge = placement === 'below' ? '' : '-translate-y-full '
-  return createPortal(
+  return <OverlayPortal>
     <div
       ref={ref}
       id={tipId}
@@ -532,9 +532,8 @@ export function InstantTip({ tip, tipId, className = '', children }: {
       style={{ top: fit?.top ?? tip.top, left: fit?.left ?? tip.left }}
     >
       {children}
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }
 
 type LabelTipHandlers = {

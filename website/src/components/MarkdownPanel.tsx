@@ -2,7 +2,7 @@ import { safeSetItem } from '../utils/safeStorage'
 import { composerDraftStoreFor } from '../utils/composerDraftStore'
 import { clearAnnotationHighlight, paintAnnotationHighlight } from '../utils/annotationHighlight'
 import { memo, useState, useEffect, useLayoutEffect, useRef, useCallback, useMemo, useImperativeHandle, forwardRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { RefreshCw, Hash, WrapText, Minimize2, Copy, X, FileText, FileDiff, Folders, TriangleAlert } from 'lucide-react'
 import { useQueryClient } from '@tanstack/react-query'
 import DetailPanel from './DetailPanel'
@@ -329,6 +329,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
   const [refreshing, setRefreshing] = useState(false)
   const [hintDismissed, setHintDismissed] = useState(() => localStorage.getItem(HINT_KEY) === '1')
   const [fullscreen, setFullscreen] = useState(false)
+  // True while a remote Crew covers the local dashboard this panel lives in.
+  const crewHidden = useLocalCrewHidden()
   // Shared IME latch for the full-screen preview's Tab trap: a Tab that lands
   // during an IME composition (or its post-`compositionend` window) is
   // choosing a candidate, not leaving the field, so the trap must decline it
@@ -713,6 +715,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     commentTooltipRef.current?.remove()
     commentTooltipRef.current = null
   }, [])
+  // The tooltip is appended to `document.body` and removed on mouseleave, which
+  // never fires when the panel is hidden under it by a Crew switch.
+  useEffect(() => { if (crewHidden) removeCommentTooltip() }, [crewHidden, removeCommentTooltip])
   // Tracks the currently-flashing sidebar comment row so a new click cancels
   // the previous flash immediately (instead of leaving two rows highlighted
   // until the first one's timeout fires).
@@ -1073,8 +1078,9 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       // A background tab is mounted but invisible, so neither key may reach it:
       // Escape would close — or raise a discard prompt for — a document the user
       // cannot see, and Cmd+S would let a hidden dirty editor answer a save the
-      // user aimed at the tab in front of them.
-      if (!active) return
+      // user aimed at the tab in front of them. The whole local dashboard is
+      // equally invisible while a remote Crew is showing.
+      if (!active || crewHidden) return
       // While the discard-confirm dialog is open, the keyboard belongs to it.
       // Escape dismisses it via the dialog's own handler (re-running the guard
       // here would re-open the dialog the same keystroke just closed), and the
@@ -1101,7 +1107,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
     }
     document.addEventListener('keydown', h)
     return () => document.removeEventListener('keydown', h)
-  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen])
+  }, [active, guardedClose, editing, dirty, fullscreen, confirmOpen, crewHidden])
 
   // The first edit of a clean buffer fences the disk. A read still in flight
   // describes a buffer the user has now typed into: if the user saves before it
@@ -1318,7 +1324,7 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
       {!fullscreen && !editing && <SelectionToolbar key={filePath} containerRef={sidePanelScrollRef} actions={selectionActions} composer={selectionComposer} suspended={!active} />}
       {!fullscreen && <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />}
     </DetailPanel>
-    {fullscreen && createPortal(
+    {fullscreen && <OverlayPortal>{
       // The onKeyDown here implements a focus trap for the modal dialog; a
       // role="dialog"/aria-modal container legitimately owns keyboard handling.
       // eslint-disable-next-line jsx-a11y/no-noninteractive-element-interactions
@@ -1392,9 +1398,8 @@ export default memo(forwardRef<MarkdownPanelHandle, Props>(function MarkdownPane
         <CommentOverlayBlock onSubmitComments={onSubmitComments} comments={comments} editComment={editComment} removeComment={removeComment} submitAllComments={submitAllComments} connected={connected} onEditingChange={trackRowEditing} />
         {/* Footer */}
         <Clickable className="shrink-0 flex items-center px-3 h-6 text-[11px] text-muted font-mono truncate cursor-pointer hover:text-text transition-colors" title={i18nT('components.markdownPanel.click_to_copy_path')} onClick={() => copyToClipboard(filePath)}>{filePath}</Clickable>
-      </div>,
-      document.body
-    )}
+      </div>
+    }</OverlayPortal>}
     {confirmDialog}
     </>
   )

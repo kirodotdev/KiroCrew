@@ -8,6 +8,7 @@ import type {
 import { api, ApiError } from '../api/client'
 import { renderWithProviders } from '../test/helpers'
 import AgentImportFlow from './AgentImportFlow'
+import { LocalOverlayRoot } from './overlayRoot'
 
 // Spread the real module rather than replacing it: the component branches on
 // `error instanceof ApiError`, which needs the real class identity.
@@ -300,6 +301,25 @@ describe('AgentImportFlow', () => {
     // continue into Customize as a plain "Skip import" would.
     await waitFor(() => expect(onSkipAll).toHaveBeenCalledTimes(1))
     expect(onComplete).not.toHaveBeenCalled()
+  })
+
+  it('ignores Escape and Tab while hidden behind a remote Crew', async () => {
+    mockSuccessfulRequests()
+    const onSkipAll = vi.fn()
+    renderWithProviders(
+      <LocalOverlayRoot hidden>
+        <AgentImportFlow initialOpen onComplete={vi.fn()} onSkipAll={onSkipAll} />
+      </LocalOverlayRoot>,
+    )
+    await screen.findByRole('dialog', { name: 'Import agent setup', hidden: true })
+
+    // The keys belong to the Crew in front: neither skips first run unseen nor
+    // is claimed by the hidden chapter's Tab trap.
+    expect(fireEvent.keyDown(document, { key: 'Escape' })).toBe(true)
+    expect(fireEvent.keyDown(document, { key: 'Tab' })).toBe(true)
+    await new Promise(resolve => setTimeout(resolve, 0))
+    expect(onSkipAll).not.toHaveBeenCalled()
+    expect(api.onboardingImportState).not.toHaveBeenCalled()
   })
 
   // Both "Skip all" paths (the header control and Escape) write through

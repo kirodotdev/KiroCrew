@@ -10,7 +10,7 @@
  * a lazy boundary (see `./tree.tsx`) so the eager bundle stays clean.
  */
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../components/overlayRoot'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import type { GitStatus, GitStatusEntry } from '@pierre/trees'
 // The package root re-exports the tree's context-menu types under shorter
@@ -116,7 +116,7 @@ function expandedDirectoriesOf(
 }
 
 /** Row-level right-click menu for Pierre's `context-menu` slot -- rendered via a
- *  `document.body` PORTAL rather than into the slot itself. Pierre owns the
+ *  body-level PORTAL (the overlay root) rather than into the slot itself. Pierre owns the
  *  anchor, the outside-click wash, and open/close (the portal root's
  *  `data-file-tree-context-menu-root` marker is the library's documented way to
  *  keep a portaled surface counting as "inside"); this renders only the item
@@ -206,7 +206,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // content); letting the hook also focus would be a redundant second move.
   const menuRef = useRef<HTMLDivElement>(null)
   useMenuKeyboard({ enabled: true, containerRef: menuRef, focusFirstOnOpen: false })
-  // PORTALED to document.body, positioned from the open context's anchorRect
+  // PORTALED to the body-level overlay root, positioned from the open context's anchorRect
   // (#10100). Pierre's default slot placement puts the menu in a width-0 slot
   // hung at the row's trailing edge, inside the tree root -- and that root is
   // `overflow: hidden`, so with this app's `--trees-padding-inline-override:
@@ -288,7 +288,7 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
   // only, and /api/file-download serves a single file, not a folder.
   const canDownload = !isDir
   if (!hasBuiltinChatRow && !canDownload && rows.length === 0) return null
-  return createPortal(
+  return <OverlayPortal>
     <div
       ref={menuRef}
       role="menu"
@@ -376,9 +376,8 @@ function TreeContextMenu({ item, context, root, onAddToContext, contribItems, on
           </div>
         )
       })}
-    </div>,
-    document.body,
-  )
+    </div>
+  </OverlayPortal>
 }
 
 /** Map a porcelain status letter to Pierre's git-status lane vocabulary. */function gitStatusFor(letter: string): GitStatus | null {

@@ -1,5 +1,5 @@
 import { forwardRef, type ForwardedRef } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../components/overlayRoot'
 import { useNavigate } from 'react-router-dom'
 import { useAppSelector } from '../../store'
 import { getBuiltinSurface, selectSurfaceBadgeCount, selectSurfaceActivityCount } from '../../surfaces/registry'
@@ -328,7 +328,7 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
           against the row, so they render where they always did regardless of
           where in the children they appear. */}
       {badge}
-      {collapsed && tip && createPortal(
+      {collapsed && tip && <OverlayPortal>
         <div
           className={`fixed flex items-center gap-2.5 pl-3 pr-3 rounded-md bg-card border border-border shadow-lg text-text text-sm font-medium z-[9999] pointer-events-none whitespace-nowrap transition-opacity duration-150 ${tipOn ? 'opacity-100' : 'opacity-0'}`}
           style={{ top: tip.top, left: tip.left, height: tip.height }}
@@ -344,9 +344,8 @@ export const NavItem = forwardRef(function NavItem({ path, label, icon, active, 
               {shortcut.chord}
             </span>
           )}
-        </div>,
-        document.body
-      )}
+        </div>
+      </OverlayPortal>}
     </motion.div>
   )
 })

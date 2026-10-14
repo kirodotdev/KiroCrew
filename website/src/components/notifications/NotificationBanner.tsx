@@ -4,6 +4,8 @@ import { AnimatePresence, motion, useReducedMotion, type TargetAndTransition } f
 import { i18nT } from '../../i18n/t'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { ackNotification } from '../../store/notificationsSlice'
+import { setActiveId } from '../../store/instancesSlice'
+import { useLocalCrewHidden } from '../overlayRoot'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import Clickable from '../Clickable'
@@ -300,6 +302,13 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   }, [pending, removeNotes])
 
   // ---- actions ----------------------------------------------------------------
+  // The banner shows over every Crew, but its actions land in the local one (a
+  // navigation, the leave-guard prompt), so over a remote Crew each brings the
+  // local Crew forward first.
+  const crewHidden = useLocalCrewHidden()
+  const showLocalCrew = useCallback(() => {
+    if (crewHidden) dispatch(setActiveId(null))
+  }, [crewHidden, dispatch])
   const openNote = useCallback((n: Notification) => {
     removeNotes([n.ts])
     onOpenNote(n.ts)
@@ -311,6 +320,7 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
   // card in place with a notice instead of a vanished card and a note the
   // server still holds unread.
   const runAction = useCallback((n: Notification, url: string) => {
+    showLocalCrew()
     leave(async () => {
       const result = await dispatch(ackNotification(n.ts))
       if (ackNotification.rejected.match(result)) {
@@ -321,17 +331,18 @@ export default function NotificationBanner({ bellRef, popoverOpen, onOpenNote }:
       removeNotes([n.ts])
       navigate(url)
     }, url)
-  }, [dispatch, removeNotes, leave, navigate])
+  }, [dispatch, removeNotes, leave, navigate, showLocalCrew])
 
   // "+N more in your inbox" goes where the popover's own "Open inbox" goes --
   // the /notifications page -- so the word names one place. Guarded like every
   // other navigation out of a floating surface.
   const openInbox = useCallback(() => {
+    showLocalCrew()
     leave(() => {
       removeNotes(pendingRef.current.map(n => n.ts))
       navigate('/notifications')
     }, '/notifications')
-  }, [removeNotes, leave, navigate])
+  }, [removeNotes, leave, navigate, showLocalCrew])
 
   const anyCritical = pending.some(n => notePriority(n) === 'critical')
   // Mobile shows the newest card alone: there is no room for a deck, and the

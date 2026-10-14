@@ -7,7 +7,7 @@
  *  level this machine has and the peer does not. Both writes go through the
  *  hub proxy to the peer's own slot routes. */
 import { useCallback, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../../../components/overlayRoot'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../../../api/client'
 import ModelEffortDropdown from '../../../components/ModelEffortDropdown'
@@ -96,7 +96,7 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
     hasEffort,
     onModelClick: (r: DOMRect, trigger?: HTMLElement) => { anchorTo(r, trigger); dd.setOpen(!dd.open) },
   }
-  const portal = dd.open && rect ? createPortal(
+  const portal = dd.open && rect ? <OverlayPortal>
     <ModelEffortDropdown
       anchorRect={rect}
       dropdownRef={dd.dropdownRef}
@@ -116,9 +116,8 @@ export function useCrewWindowModelPicker({ instanceId, slotKey, slotPath, slot, 
       effortLevelsOverride={selectionQ.data?.effort_levels ?? caps?.effort_levels ?? []}
       writeEffort={writeEffort}
       onWriteError={onWriteError}
-    />,
-    document.body,
-  ) : null
+    />
+  </OverlayPortal> : null
   // A failed capability read hides the effort level, so say so (as a split
   // pane does) rather than let it look unsupported.
   return { chipProps, portal, error, clearError: () => setError(null), effortCapsFailed: selectionQ.isError }

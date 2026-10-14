@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from './overlayRoot'
 import { Check, Menu } from 'lucide-react'
 import Clickable from './Clickable'
 import { i18nT } from '../i18n/t'
@@ -224,7 +224,7 @@ export default function WindowsTitlebarMenu() {
           {i18nT(menu.labelKey)}
         </Clickable>
       ))}
-      {expanded && activeMenuId && createPortal(
+      {expanded && activeMenuId && <OverlayPortal>
         <div
           ref={popupRef}
           role="menu"
@@ -276,9 +276,8 @@ export default function WindowsTitlebarMenu() {
               )}
             </button>
           ))}
-        </div>,
-        document.body,
-      )}
+        </div>
+      </OverlayPortal>}
     </nav>
   )
 }

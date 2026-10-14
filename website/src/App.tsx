@@ -44,6 +44,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import { ChangelogModal } from './shell/updates/updateFlow'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstancesViewport from './components/InstancesViewport'
+import { LocalOverlayRoot } from './components/overlayRoot'
 import EmbeddedHostBridge from './components/EmbeddedHostBridge'
 import EmbeddedDragRegionReporter from './components/EmbeddedDragRegionReporter'
 import EmbedTabStrip from './components/EmbedTabStrip'
@@ -517,9 +518,11 @@ export default function App() {
   return (
     <ZoomProvider>
     <WsContext.Provider value={{ subscribeLogs, subscribeSubagents, forceReconnect }}>
-    {/* Above the layout branch, so every layout that can host the import row
-        also hosts its outcome: the row's menu has closed by the time it lands. */}
-    <ImportSessionOutcomeNotice />
+    {/* The import row's outcome lands after its menu has closed, so every layout
+        that can host the row hosts the notice: the popout and embed frames here,
+        the dashboard inside the local pane (below), where it hides with the
+        local Crew. */}
+    {(isPopout || isEmbed) && <ImportSessionOutcomeNotice />}
     {isPopout ? (
       <Routes>
         <Route path="/popout/chat/:slug?" element={<ErrorBoundary><PopoutFrame /></ErrorBoundary>} />
@@ -565,6 +568,9 @@ export default function App() {
       {/* Local pane: the native dashboard. Hidden (not unmounted) while a remote
           instance tab is active, so local state/websocket survive the switch. */}
       <div className="absolute inset-0" style={{ display: activeInstanceId === null ? 'block' : 'none' }}>
+      {/* Floating layers this pane opens portal into a container hidden with it
+          (see components/overlayRoot). */}
+      <LocalOverlayRoot hidden={activeInstanceId !== null}>
     <div
       ref={shellRef}
       data-testid="dashboard-shell"
@@ -847,6 +853,15 @@ export default function App() {
         <ComputerUseLiveView />
       </div>
     </div>{/* /Local dashboard grid */}
+      {/* Opened from the local Crew, so they hide with it (components/overlayRoot).
+          The image viewer and the import notice render in place, fixed layers
+          inside this pane, so the pane's own display:none hides them; the other
+          two portal. The popout and embed frames mount their own copies. */}
+      <MetricsCard metrics={metrics} />
+      <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
+      <Lightbox />
+      <ImportSessionOutcomeNotice />
+      </LocalOverlayRoot>
       </div>{/* /Local pane */}
       {/* Remote instance panes — embedded dashboards kept warm (mounted, hidden)
           so switching is instant; the active instance fills the pane. */}
@@ -866,8 +881,6 @@ export default function App() {
     )}
     </WsContext.Provider>
     {shortcutsOpen && <ShortcutsModal onClose={() => setShortcutsOpen(false)} />}
-    <MetricsCard metrics={metrics} />
-    <KiroAccountModal open={kiroUsageOpen} onClose={() => setKiroUsageOpen(false)} usage={kiroUsageState} />
     <QuickSearchSurface
       owners={slotOwners}
       open={commandPalette.open}
@@ -884,7 +897,7 @@ export default function App() {
         <Overlay />
       </ErrorBoundary>
     ))}
-    <Lightbox />
+    {(isPopout || isEmbed) && <Lightbox />}
     </ZoomProvider>
   )
 }

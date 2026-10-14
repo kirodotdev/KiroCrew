@@ -1,6 +1,6 @@
 import { Check, ChevronDown, Mic, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal, useCloseWhenCrewHidden } from './overlayRoot'
 
 import { i18nT } from '../i18n/t'
 import { DEFAULT_PSEUDO_DEVICE_ID, defaultMicName, getPreferredMicId, listMicrophones, selectableMicrophones, stripDefaultPrefix } from '../hooks/mic'
@@ -49,6 +49,8 @@ interface Props {
  */
 export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, recording, liveSwitch, triggerClass = '' }: Props) {
   const [open, setOpen] = useState(false)
+  // Holds no input, so a Crew switch closes it like a click outside (components/overlayRoot).
+  useCloseWhenCrewHidden(open, useCallback(() => setOpen(false), []))
   const [devices, setDevices] = useState<MediaDeviceInfo[]>([])
   const [preferred, setPreferred] = useState(getPreferredMicId())
   const [rect, setRect] = useState<{ left: number; top: number; bottom: number } | null>(null)
@@ -189,8 +191,8 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
         <ChevronDown size={11} className="shrink-0 opacity-70" aria-hidden="true" />
       </button>
 
-      {open && rect && createPortal(
-        // PORTALLED to <body> on purpose: VoiceDictationPanel's root is
+      {open && rect && <OverlayPortal>{
+        // PORTALLED to the body-level overlay root on purpose: VoiceDictationPanel's root is
         // `h-[168px] overflow-hidden` (it clips the shader), which clipped the
         // bottom of an in-flow menu — "System default" and the footnote were
         // simply not there. Fixed positioning off the trigger's rect is what
@@ -268,9 +270,8 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
                 : i18nT('components.micSourceMenu.applies_next_recording')}
             </div>
           )}
-        </div>,
-        document.body,
-      )}
+        </div>
+      }</OverlayPortal>}
     </span>
   )
 }

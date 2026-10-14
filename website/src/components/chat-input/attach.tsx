@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
-import { createPortal } from 'react-dom'
+import { OverlayPortal } from '../overlayRoot'
 import { Crop, FileText, Loader2, PenLine, Plus, X } from 'lucide-react'
 import { useAnchorRemeasure } from '../../hooks/useAnchorRemeasure'
 import { isScreenSnipSupported } from '../../hooks/useScreenSnip'
@@ -92,7 +92,7 @@ export function usePlusMenu({ pickers, value, onChange, composerControl, fileInp
   const [plusRect, setPlusRect] = useState<DOMRect | null>(null)
   useEffect(() => {
     if (!plusOpen) return
-    // Menu is portaled to <body> (escapes the input's overflow-hidden), so the
+    // Menu is portaled to the body-level overlay root (escapes the input's overflow-hidden), so the
     // outside-click guard must also exclude the portaled menu, not just the button.
     const h = (e: MouseEvent) => {
       const t = e.target as Node
@@ -236,7 +236,7 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
           ))}
           {/* The drop-up's scope owner, outside its own open conditional. */}
           <GuideRevealScope id="menu:composer.add-menu" open={!directFilePicker && plusOpen}>
-          {!directFilePicker && plusOpen && plusRect && createPortal(
+          {!directFilePicker && plusOpen && plusRect && <OverlayPortal>
             <div
               ref={plusMenuRef}
               className="fixed w-[260px] rounded-xl bg-bg-elevated border border-border shadow-xl p-2 animate-slide-up z-[60]"
@@ -349,9 +349,8 @@ export function AttachMenu({ plus, onUploadFiles, uploading, onCancelUpload, upl
                   </div>
                 </button>}
               </div>
-            </div>,
-            document.body
-          )}
+            </div>
+          </OverlayPortal>}
           </GuideRevealScope>
         </div>
       )}
