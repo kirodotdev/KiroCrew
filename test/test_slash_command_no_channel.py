@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_state
+from test_workflows_library_remove import _Sel, _service_on_claimed_slug
 
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
@@ -311,6 +312,36 @@ class TestKasMenuMatchesTheGate:
             "/tools",
             "/workflow",
         }
+
+    @pytest.mark.asyncio
+    async def test_the_workflow_command_the_kas_menu_offers_runs_only_what_resolves(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The KAS menu keeps ``/workflow``, and ``/workflow`` through the KAS
+        gate lists and starts what the library resolves: a workflow whose slug
+        a removed one holds is offered and started by its id, and its slug
+        starts nothing. The harness never gets the text and no KAS notice is
+        given."""
+        listed = await _menu_names(ACP_BACKEND_KAS)
+        assert "/workflow" in listed
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_runner.sel", lambda: _Sel())
+        svc, starts = _service_on_claimed_slug(tmp_path / "workflows")
+        state, slot, dispatched = _live(tmp_path, ACP_BACKEND_KAS)
+        state.workflow_service = svc
+
+        await _run_chat(state, slot, "/workflow")
+        await _run_chat(state, slot, "/workflow debug-project go")
+        await _run_chat(state, slot, "/workflow wfd_hand go")
+
+        dispatched.assert_not_called()
+        texts = _texts(slot)
+        listing = next(t for t in texts if "**Saved workflows**" in t)
+        assert "`/workflow wfd_hand`" in listing and "/workflow debug-project" not in listing
+        assert any("no such saved workflow: debug-project" in t for t in texts), texts
+        assert any("Started `/workflow wfd_hand` as `wf_started`" in t for t in texts), texts
+        assert not any("doesn't work with KAS" in t for t in texts), texts
+        assert [call["workflow_id"] for call in starts] == ["wfd_hand"]
 
     @pytest.mark.asyncio
     async def test_the_gate_reads_the_set_not_the_backend_name(

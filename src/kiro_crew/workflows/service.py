@@ -57,6 +57,7 @@ from .library import (
     SOURCE_FORMAT_TASK_PLAN,
     SensitiveWorkflowSourceError,
     WorkflowDefinitionLibrary,
+    WorkflowRefMovedError,
     WorkflowSlugTakenError,
 )
 from .registry import (
@@ -98,6 +99,8 @@ _CUT_OFF_SYNTAX_MARKERS = (
     "unexpected EOF",
 )
 _AUTHOR_REFERENCE_LIMIT = 3
+#: A dashboard request named the workflow by a ref that now reaches another one.
+_REF_MOVED_ERROR = "that name now reaches a different saved workflow; reload the library"
 _AUTHOR_REFERENCE_SOURCE_CHARS = 16000
 # Startup retries are narrower than validation retries: only ACP control-plane
 # transients qualify, and every retry receives a fresh isolated session key.
@@ -1264,6 +1267,15 @@ class WorkflowService:
         with self._definition_lock:
             return self._definition_library.get(workflow_ref)
 
+    def slug_taken(self, slug: str) -> bool:
+        """Whether a save with ``exact_slug`` would refuse *slug*."""
+        with self._definition_lock:
+            return self._definition_library.slug_taken(slug)
+
+    def _has_saved_workflow(self, workflow_id: str) -> bool:
+        with self._definition_lock:
+            return self._definition_library.has_live(workflow_id)
+
     def save_definition(
         self,
         source: str,
@@ -1297,7 +1309,9 @@ class WorkflowService:
             if errors:
                 return {"ok": False, "error": "; ".join(errors), "errors": errors}
             if derived_from is not None:
-                definitions = self._definition_library.list()
+                # Removed definitions stay valid lineage parents; only this
+                # read sees them.
+                definitions = self._definition_library.lineage_candidates()
                 if not _lineage_exists(derived_from, definitions):
                     error = "workflow lineage does not resolve to a saved revision"
                     return {"ok": False, "error": error, "errors": [error]}
@@ -1330,9 +1344,17 @@ class WorkflowService:
         if handle is None:
             return {"ok": False, "error": "no such workflow run", "not_found": True}
         if handle.workflow_id:
+            # A run of a saved workflow is never saved again. Its workflow is
+            # either still in the library, so already reusable, or removed,
+            # and removal offers no restore.
+            still_saved = await asyncio.to_thread(self._has_saved_workflow, handle.workflow_id)
             return {
                 "ok": False,
-                "error": "saved workflow invocations are already reusable",
+                "error": (
+                    "saved workflow invocations are already reusable"
+                    if still_saved
+                    else "the saved workflow this run started from is no longer in the library"
+                ),
                 "already_saved": True,
             }
         promotable_plan = handle.driver == "taskrunner" and handle.status == STATUS_PAUSED
@@ -1395,8 +1417,14 @@ class WorkflowService:
         name: Optional[str] = None,
         description: Optional[str] = None,
         slug: Optional[str] = None,
+        expected_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        """Validate and append an optimistic-concurrency-controlled revision."""
+        """Validate and append an optimistic-concurrency-controlled revision.
+
+        With ``expected_id``, a ref that now resolves to a different workflow
+        (its slug was renamed away and taken) is a conflict, not a write: the
+        revision is then appended by that id, so it can land nowhere else.
+        """
         with self._definition_lock:
             current = self._definition_library.get(workflow_id)
             if current is None:
@@ -1405,6 +1433,8 @@ class WorkflowService:
                     "error": "no such saved workflow",
                     "not_found": True,
                 }
+            if expected_id is not None and current.get("id") != expected_id:
+                return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
             source_format = str(current.get("format") or SOURCE_FORMAT_PYTHON)
             if source_format == SOURCE_FORMAT_PYTHON:
                 vr = validate(source)
@@ -1436,6 +1466,25 @@ class WorkflowService:
                 "error": "workflow definition has a newer revision",
                 "conflict": True,
             }
+        return {"ok": True, "definition": definition}
+
+    def remove_definition(
+        self, workflow_ref: str, *, expected_id: Optional[str] = None
+    ) -> dict[str, Any]:
+        """Tombstone a saved workflow: it leaves listing, saved runs and authoring examples.
+
+        Every revision stays on disk and the id keeps resolving as a lineage
+        parent, so saved definitions, drafts and runs adapted from it are
+        unaffected. Its id and slug stay reserved, so a saved
+        ``/workflow <slug>`` never reaches a different workflow.
+        """
+        with self._definition_lock:
+            try:
+                definition = self._definition_library.remove(workflow_ref, expected_id=expected_id)
+            except WorkflowRefMovedError:
+                return {"ok": False, "error": _REF_MOVED_ERROR, "conflict": True}
+        if definition is None:
+            return {"ok": False, "error": "no such saved workflow", "not_found": True}
         return {"ok": True, "definition": definition}
 
     @admission_errors
@@ -1486,13 +1535,7 @@ class WorkflowService:
                 execution_context=captured_execution,
             )
             if "run_id" in started:
-                started.update(
-                    {
-                        "workflow_id": definition["id"],
-                        "slug": definition["slug"],
-                        "revision": definition["revision"],
-                    }
-                )
+                started.update(_run_provenance(definition))
             return started
         if input_text:
             run_args["input"] = input_text
@@ -1513,13 +1556,7 @@ class WorkflowService:
             fallback_folder_id=fallback_folder_id,
         )
         if "run_id" in started:
-            started.update(
-                {
-                    "workflow_id": definition["id"],
-                    "slug": definition["slug"],
-                    "revision": definition["revision"],
-                }
-            )
+            started.update(_run_provenance(definition))
         return started
 
     def status(self, run_id: str) -> Optional[dict]:
@@ -1769,6 +1806,22 @@ def _verified_lineage(
     return lineage if exists else None
 
 
+def _run_provenance(definition: dict[str, Any]) -> dict[str, Any]:
+    """What a saved-workflow start reports about the definition it ran.
+
+    ``shadowed_refs`` rides along when the read listed any, so a caller does
+    not offer ``/workflow <slug>`` for a run that slug does not start.
+    """
+    provenance: dict[str, Any] = {
+        "workflow_id": definition["id"],
+        "slug": definition["slug"],
+        "revision": definition["revision"],
+    }
+    if definition.get("shadowed_refs"):
+        provenance["shadowed_refs"] = list(definition["shadowed_refs"])
+    return provenance
+
+
 def _declared_lineage(meta: dict[str, Any]) -> Optional[dict[str, Any]]:
     """Parse a validated workflow's optional ``META.adapted_from`` reference."""
     reference = meta.get("adapted_from")
@@ -1793,13 +1846,14 @@ def _lineage_exists(value: Any, definitions: list[dict[str, Any]]) -> bool:
         or not isinstance(revision, int)
     ):
         return False
+    # Two files can hold one id (a copied or restored record) and the library
+    # reads them in no fixed order, so every copy of the id is checked.
     for definition in definitions:
         if definition.get("id") != workflow_id:
             continue
         if definition.get("revision") == revision:
             return True
         revisions = definition.get("revisions", [])
-        return any(
-            isinstance(item, dict) and item.get("revision") == revision for item in revisions
-        )
+        if any(isinstance(item, dict) and item.get("revision") == revision for item in revisions):
+            return True
     return False

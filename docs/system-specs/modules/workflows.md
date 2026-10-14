@@ -997,8 +997,8 @@ KAS. Unlike run snapshots, definitions do not follow the configurable
 directory, so the shared sensitive-path gate blocks agent file tools and shell
 commands from planting or rewriting executable definitions. Dashboard and
 workflow-service operations open the directory directly after the human action.
-The create and revision endpoints require a positively authenticated dashboard
-user, not an app token or internal agent call. An app token is also refused before
+The create, revision and removal endpoints require a positively authenticated
+dashboard user who is the owner, not an app token or internal agent call. An app token is also refused before
 a saved run accepts its caller-supplied session header, so it cannot spoof result
 delivery into another live session. Every allow or deny decision at these
 authorization gates is SEL-audited.
@@ -1131,11 +1131,87 @@ if credential or exfiltration redaction would change executable source, the save
 the library never persists a corrupted script. Async gateway, authoring, and saved-run
 paths offload library disk I/O to worker threads, while the service serializes library
 operations so slug allocation and revision checks remain atomic in-process.
-Creates and revision updates also hold a sidecar file lock across the disk read
-(slug allocation, or the expected-revision check) and atomic replacement. A create
-with `exact_slug` refuses a used slug rather than suffixing it. This makes two gateway or harness processes sharing
-the library reject the second update to the same revision rather than silently
-accepting both and losing one writer's source.
+Creates, revision updates and removals hold one sidecar file lock, `.revisions.lock`,
+across the disk read (slug allocation, or the check) and the atomic replacement. A create
+with `exact_slug` refuses a used slug rather than suffixing it. This makes two
+gateway or harness processes sharing the library reject the second update to the
+same revision rather than silently accepting both and losing one writer's source,
+and stops a removal and an update from interleaving so that neither undoes the
+other.
+
+The library reads every `*.json` file in its folder and keys each record by its
+`id` field, not by its file name, so a copied or restored record file is a live,
+runnable definition under whatever name it has, unless a removed record holds its
+id and slug (below).
+
+Removal is a tombstone, not a file delete. `remove(ref)` sets `removed_at` on the
+record and keeps every revision on disk as stored, without re-running the
+save-time source gate, so a record saved under older redaction rules stays removable; who removed it is recorded by the route's
+SEL audit row. A v1 record also gains its default `format` field, the value every
+reader already assumes for it. The tombstone replaces the file the record was read
+from, whatever that file is named, and every file holding a live copy of the id is
+tombstoned, so no copy stays runnable after a removal succeeds. A removed definition
+is absent from `get` by id or slug, `list`, `search`, `/workflow`,
+`workflow_library_list`, saved runs and the authoring reference examples, and a
+revision update to it is refused as not found. Its id and slug stay reserved for
+good, whether a later ref matches as an id or as a slug, so a
+`/workflow <slug>` saved in a cron job or prompt answers not found from then on
+and never runs a different workflow. The reservation covers the id and the slug
+a record holds when it is removed. A rename still frees the old slug at once, so
+a written-down `/workflow <old slug>` can reach a newer workflow (#23680), and
+the reservation lives in the tombstone: deleting or damaging a removed record's
+file releases its refs, and the library logs a warning once per unreadable file
+until it changes. A revision is written to the file its record was read from,
+as a tombstone is, so a save never replaces a tombstone of the same id. One set,
+the id and the slug of every
+removed record, drives both sides. Every read by ref (`get`, `/workflow`, the
+run route, `workflow_run` with `workflow`, and the PATCH and DELETE routes)
+refuses a ref in it before matching, whether a live record carries that ref as
+its id or as its slug; otherwise ids are matched before slugs, so a free id
+reaches its own record whatever order the folder lists files in. Slug
+allocation counts that set and the id and slug of every live record, except a
+renamed record's own, as taken: a new workflow that would take one gets the
+first free numbered slug instead. A live record can still carry a reserved ref
+when it was placed by hand or restored from a tombstone; it answers to its other
+ref while that one is free. One index per read answers which record each ref
+reaches, and both what a read offers and what a ref then runs come from it. A
+record's own slug or id can miss it: a removed record holds the ref, or another
+live record answers to it first (one whose id is this record's slug, or an
+earlier one with the same slug). Reads list such refs in `shadowed_refs`,
+computed on every read and never stored (a stored copy is ignored), so the
+Customize > Workflows list and editor, `/workflow` with no name and
+`workflow_library_list` offer a ref that reaches the record, the slug first,
+else the id, and an offered command always runs the record it is listed on. With
+both listed no ref reaches it: the library list keeps the row, marked No slash
+command, the editor disables save, run and remove and says to give its file a
+new id and slug or delete it, and `/workflow`, `workflow_library_list` and their
+search leave it out; authoring references may still show it, since an adaptation
+records `id@revision`. The dashboard sends each request to the id, or to the
+slug when the id does not reach the record. Save and Remove also send the id the
+editor shows as `expected_id` (in the PATCH body, as a DELETE query parameter): when the ref now
+resolves to another workflow, because a rename freed that slug and another
+workflow took it, the request answers 409 and nothing is written or removed,
+and the dashboard re-reads the list and keeps the row. A removal that fails after tombstoning one of several copies
+leaves the rest live with their id reserved: a copy whose own slug no removed
+record holds still answers to that slug, the others to no ref, and a retried
+Remove that answers not found re-reads the list, so it never reports such a copy
+as removed. The dashboard reads the list again once any removal settles, failed
+ones included: a removal can change which ref reaches another record (a
+hand-placed record whose id is the removed slug then answers only to its own
+slug), so no row keeps a ref the library no longer answers to. Lineage is not a read by ref:
+`derived_from` still resolves a parent by id and revision, removed parents and
+reserved ids included.
+A revision saved from the dashboard sends the slug again
+and so gets the first free numbered slug, like any rename to a taken slug.
+`lineage_candidates()` is the one read
+that still returns it. `save_definition` checks `derived_from` against that read,
+so drafts and runs adapted from a removed workflow keep saving and a
+completed run's provenance keeps resolving. Lineage names a parent by id and
+revision, never by slug. Removal is a human action only: the owner-only dashboard
+route below is the single entry point, and no agent tool, MCP tool or CLI command
+can remove a saved workflow, for the same reason agents cannot write the library
+directory. Restoring a removed workflow is not offered; the tombstone keeps that
+possible later.
 
 Only explicitly saved definitions participate in local authoring matches.
 `search(intent)` uses deterministic local lexical ranking: a query word matches a
@@ -1512,6 +1588,7 @@ launch a script under a trusted chat's identity.
 | `POST /api/workflows/definitions` | `{source, format?, name?, description?, slug?, exact_slug?, derived_from?}` | explicitly save a validated definition; format defaults to `python`; with `exact_slug: true` a used slug is 409 `workflow_slug_taken` instead of a suffixed one |
 | `GET /api/workflows/definitions/{id-or-slug}` | | one definition including revisions and lineage |
 | `PATCH /api/workflows/definitions/{id-or-slug}` | `{source, expected_revision, name?, description?, slug?}` | append a revision; 404 when unknown, 409 on stale revision |
+| `DELETE /api/workflows/definitions/{id-or-slug}` | | owner only; tombstone the definition and answer `{ok, id, removed_at}`; 404 `workflow_definition_not_found` when unknown or already removed; one SEL `api_access` row with outcome `completed` per removal |
 | `POST /api/workflows/definitions/{id-or-slug}/run` | `{input?, args?, budget_total?, timeout_secs?}` | run the exact saved revision; 404 when unknown, 409 on execution admission rejection, 503 when its executor is unavailable |
 
 Every mutation route that accepts JSON requires a top-level object. A syntactically
@@ -1713,8 +1790,8 @@ identical across Kiro and adapted harnesses, and prevents an explicit reference
 from being reinterpreted by a harness. The definition format selects its owning
 driver; there is no user-facing engine choice. The Customize →
 Workflows tab is the human management surface. Its Workflow library view owns
-listing, authoring unsaved drafts, lineage, source edits as new revisions, and
-exact saved runs; its Runs view owns common history and explicit promotion.
+listing, authoring unsaved drafts, lineage, source edits as new revisions,
+removal behind a confirmation that names the workflow, and exact saved runs; its Runs view owns common history and explicit promotion.
 
 The `workflows` builtin app (`apps/builtins/workflows/`) is `defaultEnabled:
 false` and `hidden: true`; it exposes `/validate`, `/run` and `/examples` over its

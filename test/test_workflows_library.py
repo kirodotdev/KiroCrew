@@ -180,10 +180,10 @@ def test_two_library_instances_cannot_accept_the_same_revision(tmp_path) -> None
     errors = []
     original_write = first._write
 
-    def held_write(definition):
+    def held_write(definition, path=None):
         first_in_write.set()
         assert release_first.wait(5)
-        original_write(definition)
+        original_write(definition, path)
 
     first._write = held_write
 
