@@ -16,7 +16,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import importlib
-import json
 import logging
 import os
 import re
@@ -141,6 +140,7 @@ from kiro_crew.acp.transport_framing import (  # noqa: F401
     RequestWriteResult,
     _drain_oversize_line,
     _stall_window_phrase,
+    encode_frame,
     response_write_window_secs,
     settle_drain,
     write_notification_best_effort,
@@ -5258,7 +5258,7 @@ class AcpRuntime:
             on_reserved(req_id)
 
         req = JsonRpcRequest(method=method, params=params, id=req_id)
-        data = json.dumps(req.to_dict()) + "\n"
+        data = encode_frame(req.to_dict())
 
         try:
             # Bounded on the reader's PROGRESS, not held across a raw drain: on
@@ -5267,7 +5267,7 @@ class AcpRuntime:
             # other session. On a stall _write_request_bounded marks the runtime
             # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
             # below so the routing registration is dropped like any other death.
-            await self._write_request_bounded(data.encode(), req_id, method)
+            await self._write_request_bounded(data, req_id, method)
         except AcpRuntimeDead:
             self._routed_requests.pop(req_id, None)
             raise
@@ -5292,7 +5292,7 @@ class AcpRuntime:
             raise AcpRuntimeDead("runtime is dead")
 
         msg = {"jsonrpc": "2.0", "method": method, "params": params}
-        data = json.dumps(msg) + "\n"
+        data = encode_frame(msg)
 
         try:
             # A notification (session/cancel) is fire-and-forget and is the one
@@ -5302,7 +5302,7 @@ class AcpRuntime:
             outcome = await write_notification_best_effort(
                 self._process.stdin,
                 self._stdin_write_lock(),
-                data.encode(),
+                data,
                 bound_secs=_RESPONSE_WRITE_BOUND_SECS,
                 before_write=self._refuse_write_if_dead,
             )
@@ -5619,7 +5619,7 @@ class AcpRuntime:
         if projection is not None:
             params = projection.request(method, params)
         req = JsonRpcRequest(method=method, params=params, id=req_id)
-        data = json.dumps(req.to_dict()) + "\n"
+        data = encode_frame(req.to_dict())
 
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         self._pending_requests[req_id] = future
@@ -5631,7 +5631,7 @@ class AcpRuntime:
             # stall marks the runtime dead and raises AcpRuntimeStdinStalled (an
             # AcpRuntimeDead), caught below so the pending future is retrieved or
             # cancelled rather than left unretrieved.
-            await self._write_request_bounded(data.encode(), req_id, method)
+            await self._write_request_bounded(data, req_id, method)
         except AcpRuntimeDead:
             # Reached two ways, both of which have already resolved the future
             # before the raise, so retrieve or cancel it here only to stop
@@ -5690,11 +5690,11 @@ class AcpRuntime:
             raise AcpRuntimeDead("runtime is dead")
 
         msg = {"jsonrpc": "2.0", "id": request_id, "result": result}
-        data = json.dumps(msg) + "\n"
+        data = encode_frame(msg)
 
         try:
             await self._write_response_bounded(
-                data.encode(),
+                data,
                 request_id,
                 before_write=before_write,
                 withdrawal_check=withdrawal_check,
@@ -5711,10 +5711,10 @@ class AcpRuntime:
             raise AcpRuntimeDead("runtime is dead")
 
         msg = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-        data = json.dumps(msg) + "\n"
+        data = encode_frame(msg)
 
         try:
-            await self._write_response_bounded(data.encode(), request_id)
+            await self._write_response_bounded(data, request_id)
         except (BrokenPipeError, ConnectionResetError) as exc:
             self._mark_dead(f"pipe broken: {exc}")
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
@@ -8771,7 +8771,7 @@ class AcpRuntime:
         if projection is not None and translate:
             params = projection.request(method, params)
         req = JsonRpcRequest(method=method, params=params, id=req_id)
-        data = json.dumps(req.to_dict()) + "\n"
+        data = encode_frame(req.to_dict())
 
         loop = asyncio.get_running_loop()
         future: asyncio.Future[dict[str, Any]] = loop.create_future()
@@ -8783,7 +8783,7 @@ class AcpRuntime:
             # drain under the shared write lock and must not park it against
             # a flow-control-paused kiro-cli. A stall raises AcpRuntimeStdinStalled
             # (an AcpRuntimeDead), caught below to retrieve/cancel the future.
-            await self._write_request_bounded(data.encode(), req_id, method)
+            await self._write_request_bounded(data, req_id, method)
         except AcpRuntimeDead:
             # Reached through _refuse_write_if_dead (a sibling stall marked the
             # runtime dead while this caller held the lock wait) OR through

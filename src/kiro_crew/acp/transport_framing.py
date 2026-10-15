@@ -5,7 +5,8 @@ multiplexed across sessions) exchange newline-delimited JSON-RPC frames over the
 harness's stdio. This module owns the parts of that framing both transports share:
 discarding one oversize stdout line while keeping the stream on a frame boundary,
 bounding a response or notification write by the reader's progress rather than by
-elapsed time, and the bounded settle of the stderr drain on a failure path. Each
+elapsed time, the bounded settle of the stderr drain on a failure path, and the
+encoding of an outgoing frame (:func:`encode_frame`). Each
 transport keeps its own write lock, pending-request table and the death handling a
 failed write triggers.
 
@@ -16,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import json
 from typing import Any, Awaitable, Callable
 
 # The proactor check lives in a neutral leaf, because the dashboard's WebSocket hub
@@ -45,6 +47,49 @@ class OversizeLineUnrecoverable(Exception):
 # Named by the path callers import it from, as the ACP error classes are: an error
 # chain renders a raised class as ``module.qualname``.
 OversizeLineUnrecoverable.__module__ = "kiro_crew.acp.client"
+
+
+def _repair_lone_surrogates(value: Any) -> Any:
+    """``value`` with every lone UTF-16 surrogate in its strings made U+FFFD.
+
+    A UTF-16 round trip with ``surrogatepass`` re-pairs a high+low surrogate that
+    sit next to each other as two code points (the same character, so the wire
+    bytes do not change) and leaves only an unpaired half for ``replace`` to turn
+    into U+FFFD. Everything else in the string is untouched.
+    """
+    if isinstance(value, str):
+        return value.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
+    if isinstance(value, dict):
+        return {
+            _repair_lone_surrogates(key): _repair_lone_surrogates(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, (list, tuple)):
+        return [_repair_lone_surrogates(item) for item in value]
+    return value
+
+
+def encode_frame(message: dict[str, Any]) -> bytes:
+    """One newline-terminated JSON-RPC frame, as the bytes written to the harness.
+
+    ``json.dumps`` escapes a lone UTF-16 surrogate (half an emoji, e.g. from text
+    clipped by code unit) as ``\\udXXX`` rather than refusing it, but a strict
+    parser on the other end refuses the whole line: kiro-cli answers it with a
+    ``-32700 Parse error`` that carries no ``id``. Nothing can route that error
+    to the request that caused it, so a ``session/prompt`` built from such text
+    left the turn waiting forever with no error. Each lone surrogate is replaced
+    with U+FFFD before the frame goes out, so the agent gets the rest of the
+    message.
+
+    The repair only runs when the encoded frame holds a surrogate escape at all
+    (``json.dumps`` writes them lowercase). A frame without one is encoded exactly
+    as before, and one whose surrogates are all paired re-encodes to the same
+    bytes, so only a frame that held a lone half changes.
+    """
+    data = json.dumps(message)
+    if "\\ud" in data:
+        data = json.dumps(_repair_lone_surrogates(message))
+    return (data + "\n").encode()
 
 
 async def _drain_oversize_line(

@@ -21,7 +21,6 @@ Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import time
 from typing import TYPE_CHECKING, Any, Callable
@@ -129,7 +128,7 @@ async def _send_request(
     if on_id is not None:
         on_id(req_id)
     req = JsonRpcRequest(method=method, params=params, id=req_id)
-    data = json.dumps(req.to_dict()) + "\n"
+    data = transport_framing.encode_frame(req.to_dict())
     if method == METHOD_SET_MODEL:
         # The session runs this model from here on, whatever an earlier
         # agent activation put it on (see _note_agent_switched). Marked
@@ -144,7 +143,7 @@ async def _send_request(
         # co-tenant waits behind the lock, but a single session can self-wedge
         # too). A stall raises AcpProcessDied, the same recovery a closed pipe
         # already gets.
-        await self._write_request_bounded(data.encode(), req_id, method)
+        await self._write_request_bounded(data, req_id, method)
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
@@ -282,12 +281,12 @@ async def _send_response(
         raise AcpError("ACP process not running")
 
     msg = {"jsonrpc": "2.0", "id": request_id, "result": result}
-    data = json.dumps(msg) + "\n"
+    data = transport_framing.encode_frame(msg)
     try:
         if before_write is None:
-            await self._write_response_bounded(data.encode(), request_id)
+            await self._write_response_bounded(data, request_id)
         else:
-            await self._write_response_bounded(data.encode(), request_id, before_write=before_write)
+            await self._write_response_bounded(data, request_id, before_write=before_write)
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
@@ -304,9 +303,9 @@ async def _send_error(self: AcpClient, request_id: str | int, code: int, message
         raise AcpError("ACP process not running")
 
     msg = {"jsonrpc": "2.0", "id": request_id, "error": {"code": code, "message": message}}
-    data = json.dumps(msg) + "\n"
+    data = transport_framing.encode_frame(msg)
     try:
-        await self._write_response_bounded(data.encode(), request_id)
+        await self._write_response_bounded(data, request_id)
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
