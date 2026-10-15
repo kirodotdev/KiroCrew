@@ -5070,10 +5070,11 @@ async def _run_chat(
     # reset the buffer WITHOUT a tool boundary — steer cut, compaction, clear,
     # agent switch) is load-bearing for the promise-only guard below.
     _turn_flushed_visible_text = False
-    # True once a tool result this turn delivered was a head cut (the parser's
-    # ``tool_output_truncated``). The banner echo check reads this turn's tool
-    # rows for the banner phrase; a cut row cannot prove the phrase absent, so
-    # the ordinary-tail strip stands down for the rest of the turn.
+    # True once a tool result this turn delivered was not whole (cut, image, or
+    # omitted field: the parser's ``tool_output_truncated``). The banner echo
+    # check reads this turn's tool rows for the banner phrase; a row that is not
+    # whole cannot prove the phrase absent, so the ordinary-tail strip stands
+    # down for the rest of the turn.
     _turn_tool_output_truncated = False
     # ── Content-free turn-end diagnostics (empty-response verdict) ──
     # Booleans only, by contract. The empty-response branch below reaches its
@@ -9882,15 +9883,16 @@ async def _run_chat(
                             # a first terminal frame with no output still reads as one.
                             if _out or "output" not in _meta:
                                 _meta["output"] = _out
-                            # The parser's word that ``output`` is not the whole
-                            # result (a display cut, or a field the display left
-                            # out). A later turn's banner echo check reads this
-                            # row as transcript evidence and must know the number
-                            # it looks for may sit in text the row never shows.
-                            # Never cleared: a later frame for the same call
-                            # cannot restore the text.
-                            if event.tool_output_truncated:
-                                _meta["outputTruncated"] = True
+                            # Every result row created this turn records whether
+                            # its output is known whole. Missing means unknown on a
+                            # legacy row, so writing False is as important as writing
+                            # True. Once incomplete, later frames cannot restore text
+                            # an earlier frame omitted.
+                            if str(m.get("ts") or "") not in _rows_before_turn:
+                                if event.tool_output_truncated:
+                                    _meta["outputTruncated"] = True
+                                else:
+                                    _meta.setdefault("outputTruncated", False)
                     # Tell open clients about the app flag as well as storing it.
                     # `chat.mcpApps` is a BOUNDED cache, so a session that opens
                     # many apps evicts the oldest payload while its row is still
@@ -12936,26 +12938,59 @@ async def _run_chat(
                 for _m in slot.messages
                 if _m.get("role") == "tool" and str(_m.get("ts") or "") not in _rows_before_turn
             ),
-            # Whole evidence means every result this turn delivered AND every
-            # earlier tool row the transcript evidence reads showed its whole
-            # result; a cut or a field left out anywhere means the number may sit
-            # in text the check never saw.
-            tool_results_complete=not _turn_tool_output_truncated
-            and not any(
-                (_m.get("meta") or {}).get("outputTruncated")
+            # Whole evidence means every source the model could echo is
+            # readable here. Prompt-image pixels are not, restored rows before the
+            # 500-row live window are not, and a historical tool row is whole only
+            # when a new writer recorded that fact explicitly. Missing legacy
+            # metadata therefore fails open instead of proving the count absent.
+            echo_evidence_complete=not _current_turn_carries_image_ref(
+                "\n".join((message, *(str(_path) for _path in _attachments)))
+            )
+            and not bool(getattr(slot, "_disk_older_count", 0))
+            and not _turn_tool_output_truncated
+            and all(
+                (_m.get("meta") or {}).get("outputTruncated") is False
                 for _m in slot.messages
                 if _m.get("role") == "tool" and str(_m.get("ts") or "") in _rows_before_turn
+            )
+            # An earlier turn's prompt image stays in the model's conversation,
+            # so its pixels are as unreadable here as this turn's.
+            and not any(
+                _m.get("role") == "user"
+                and _current_turn_carries_image_ref(
+                    "\n".join(
+                        (
+                            str(_m.get("content") or ""),
+                            *(str(_f) for _f in (_m.get("meta") or {}).get("files") or ()),
+                        )
+                    )
+                )
+                for _m in slot.messages
+                if str(_m.get("ts") or "") in _rows_before_turn
             ),
-            # Earlier turns' rows, read lazily for the same reason as the tool
-            # rows: a request to repeat a previous answer, the human's own earlier
-            # message or a figure an earlier tool returned is an echo of the
+            # Rows the banner's tail may be echoing, read lazily for the same
+            # reason as the tool rows: a request to repeat a previous answer, the
+            # human's own earlier message, a figure an earlier tool returned, or
+            # a sentence THIS turn already finalized is an echo of the
             # transcript, and only a turn with a banner-shaped tail walks them.
-            # Every row before this turn counts, whoever wrote it: the text it
-            # shows and, for a tool row, the output it recorded.
+            # Every row before this turn counts, whoever wrote it (the text it
+            # shows and, for a tool row, the output it recorded), AND every
+            # assistant segment this turn already finalized -- a consumed steer
+            # can ask the model to repeat its own first sentence, so that
+            # sentence has to be echo evidence too. The candidate being
+            # classified is NOT yet a row (it is still ``assistant_text``, its
+            # streamed ``chunk`` rows not finalized), so reading persisted
+            # assistant rows includes this turn's finalized segments and excludes
+            # the candidate's own streaming chunks -- the number cannot be its
+            # own evidence.
             transcript_texts=(
                 _text
                 for _m in slot.messages
                 if str(_m.get("ts") or "") in _rows_before_turn
+                or (
+                    _m.get("role") == "assistant"
+                    and str(_m.get("ts") or "") not in _rows_before_turn
+                )
                 for _text in (
                     str(_m.get("content") or ""),
                     str((_m.get("meta") or {}).get("output") or ""),

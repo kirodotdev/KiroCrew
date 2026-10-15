@@ -252,6 +252,7 @@ _PROVIDER_BANNER_HOMES = {
     "_PROVIDER_BUDGET_TOPIC_RE": "turn_text",
     "_DIGIT_GROUPING_RE": "turn_text",
     "_COUNT_RE": "turn_text",
+    "_fold_unicode_digits": "turn_text",
     "_banner_count": "turn_text",
     "_carries_count": "turn_text",
     "strip_provider_budget_banner": "turn_text",

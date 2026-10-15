@@ -519,8 +519,9 @@ class TestProductionWiring:
         assert "elif event.kind == EVENT_STEER_CONSUMED:" in src
         branch_at = src.index("elif event.kind == EVENT_STEER_CONSUMED:")
         settle_at = src.index("_settle_consumed_steers(slot, event.text", branch_at)
-        # the settle call must be the branch body (within a few lines)
-        assert settle_at - branch_at < 200
+        # The settle call must remain in the branch body. Count lines rather than
+        # source bytes so a longer local name cannot weaken or break the guard.
+        assert src[branch_at:settle_at].count("\n") <= 3
 
     def test_steer_handler_registers_before_await(self):
         from pathlib import Path

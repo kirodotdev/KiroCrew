@@ -2126,10 +2126,15 @@ budget, capacity, a quota or the context window keeps the bytes visible, and a b
 appears in the human's own words this turn (the message and each steer they
 typed, in any language: a request to translate a sentence that holds the
 figure names no topic word the gate knows), in a tool result delivered to the
-model this turn or in any row of an earlier turn, whoever wrote it (its text,
-or a tool row's recorded output; the same number, however the digits are
-grouped, in any case, wording or language: the text may hold the banner
-sentence or only the figure) stays visible as a possible echo, reformatting,
+model this turn, in any row of an earlier turn, whoever wrote it (its text, or a
+tool row's recorded output), or in an assistant segment this turn already
+finalized -- a consumed steer can ask the model to repeat its own first
+sentence, so that sentence is echo evidence; the still-streaming candidate
+being classified is not yet a finalized row, so it is never its own evidence --
+with the same number, however the digits are grouped or scripted (Arabic-Indic
+`٨١٥٤` names the same whole number as ASCII `8154`), in any case, wording or
+language: the text may hold the banner sentence or only the figure, and it
+stays visible as a possible echo, reformatting,
 translation or repeat of text the turn can see. A count that appears
 nowhere the turn can see is the provider's own figure. Only then do the strips apply. Typed provider recovery (below)
 carries host-minted provenance and may remove the prefix while preserving any
@@ -2140,23 +2145,29 @@ text, glued or line-separated, and a banner-only answer with no other evidence
 stay visible: an ordinary turn cannot prove they are not an echo the user asked
 for.
 
-The tool-result text is the text the runner recorded on this turn's own tool
-rows (`meta.output`: the redacted result, at most its first 8,000 characters),
-so a number in a tool result from an earlier turn is not seen. A result whose
-row text is not the whole result is marked by the parser that built the text
-(`AcpEvent.tool_output_truncated`, set by the dispatch terminal-frame builder,
-the client's streaming update parser and the kiro-cli session-file read-back,
-the last of which also bounds each part before the join): the display bound cut
-it, or a `Json` item's stdout-only display left out another output field the
-tool returned (stderr; the envelope's `exit_status` string is a status, not
-output). The ACP provider's event translation forwards the mark, the turn
-remembers that a result it delivered was not whole, and the runner records it
-on the tool row as `meta.outputTruncated` so later turns, whose echo evidence
-reads earlier rows, know it too. A turn whose evidence is not whole (a result
-this turn, or a tool row of an earlier turn) treats its echo evidence as
-incomplete: the number may sit past the cut or in the field the row never
-shows, so the banner-only tail stays visible on an ordinary turn and the
-typed-recovery strip stands down for the same reason.
+The tool-result text is the text the runner records on each tool row
+(`meta.output`: the redacted result, at most its first 8,000 characters). A
+parser marks a result whose row text is not whole. The dispatch terminal-frame
+builder, the client's streaming update parser and the kiro-cli session-file
+read-back set `AcpEvent.tool_output_truncated`. The read-back parser also bounds
+each part before the join. The display bound may cut output, a `Json` item's
+stdout-only display may omit another output field (stderr, a nested object or
+list, a number; a status field, a boolean or a null is not output), or an image
+content block may omit pixels, including an image block inside an MCP envelope a
+`Json` item or a bare `rawOutput` carries.
+The ACP provider's event
+translation forwards the mark, the turn remembers it, and every new completed
+tool result row records explicit completeness as `meta.outputTruncated: false` or
+`meta.outputTruncated: true`. A legacy tool row with no field has unknown
+completeness and cannot prove that the count was absent.
+
+The echo evidence is incomplete when the current prompt, or an earlier user row
+in the live window (an attached file or a path in its text), carries an image,
+because the classifier cannot inspect its pixels and the model's conversation
+keeps an earlier turn's image. It is also incomplete when a restored
+session has a frozen prefix before its 500-row live window. The number may sit in
+any unavailable source. The banner-only tail therefore stays visible on an
+ordinary turn, and the typed-recovery strip stands down for the same reason.
 
 The capacity-topic gate (`chat_utils.mentions_provider_budget`) is a topic
 test, not a wording list: it fails open on the words `token`, `budget`,

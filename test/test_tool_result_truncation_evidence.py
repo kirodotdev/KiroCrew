@@ -90,7 +90,7 @@ def test_client_streaming_parser_records_the_cut(tmp_path, length: int, truncate
     assert event.tool_output_truncated is truncated
 
 
-def _read_back(tmp_path, monkeypatch, parts: list[dict]) -> AcpEvent:
+def _read_back_list(tmp_path, monkeypatch, parts: list[dict]) -> list[AcpEvent]:
     monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
     session_dir = tmp_path / ".kiro" / "sessions" / "cli"
     session_dir.mkdir(parents=True, exist_ok=True)
@@ -106,7 +106,11 @@ def _read_back(tmp_path, monkeypatch, parts: list[dict]) -> AcpEvent:
     client = AcpClient(work_dir=tmp_path)
     client._session_id = "s1"
     client._jsonl_pos = 0
-    [event] = client._read_new_tool_results_sync()
+    return client._read_new_tool_results_sync()
+
+
+def _read_back(tmp_path, monkeypatch, parts: list[dict]) -> AcpEvent:
+    [event] = _read_back_list(tmp_path, monkeypatch, parts)
     return event
 
 
@@ -207,6 +211,91 @@ def test_read_back_parser_marks_a_stdout_display_that_leaves_out_stderr_text(
     assert only_stderr.tool_output_truncated is True
 
 
+# The other output-bearing fields of a ``Json`` item are not only strings: a
+# nested object or list, and a number, are output the stdout display leaves out
+# too. A boolean, a null and an empty container hold nothing a reader could echo.
+_SHELL_REPORT_BANNER = {"stdout": "OK", "report": {"sentence": _PHRASE}}
+
+
+def test_a_container_or_number_beside_stdout_is_omitted_output() -> None:
+    assert acp_dispatch._json_result_omits_text(_SHELL_REPORT_BANNER) is True
+    assert acp_dispatch._json_result_omits_text({"stdout": "OK", "count": 8154}) is True
+    assert acp_dispatch._json_result_omits_text({"stdout": "OK", "lines": ["x"]}) is True
+    assert (
+        acp_dispatch._json_result_omits_text(
+            {"stdout": "OK", "ok": True, "note": None, "items": [], "extra": {}}
+        )
+        is False
+    )
+    assert acp_dispatch._json_result_omits_text({"stdout": "OK", "exit_code": 0}) is False
+
+
+def test_every_parser_marks_a_stdout_display_that_leaves_out_a_container(
+    tmp_path, monkeypatch
+) -> None:
+    built = acp_dispatch._build_tool_result_event(_json_update(_SHELL_REPORT_BANNER))
+    assert built is not None and built.tool_output == "OK"
+    assert built.tool_output_truncated is True
+    streamed = AcpClient(work_dir=tmp_path)._extract_tool_call_update(
+        JsonRpcMessage(
+            method="session/update", params={"update": _json_update(_SHELL_REPORT_BANNER)}
+        )
+    )
+    assert streamed is not None and _PHRASE not in streamed.tool_output
+    assert streamed.tool_output_truncated is True
+    read_back = _read_back(tmp_path, monkeypatch, [{"kind": "json", "data": _SHELL_REPORT_BANNER}])
+    assert _PHRASE not in read_back.tool_output
+    assert read_back.tool_output_truncated is True
+
+
+# kiro-cli forwards an MCP ``tools/call`` result verbatim as a ``Json`` item, and
+# a ``rawOutput`` may be such an envelope itself or carry one under ``result``. An
+# image block in it renders as encoded bytes at best, never as the figure it
+# depicts, however small the image is, so the result is not whole.
+_MCP_IMAGE = {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}
+_MCP_IMAGE_ENVELOPE = {"content": [_MCP_IMAGE]}
+_MCP_TEXT_ENVELOPE = {"content": [{"type": "text", "text": "done"}]}
+
+
+def test_every_parser_marks_a_json_wrapped_mcp_image(tmp_path, monkeypatch) -> None:
+    assert acp_dispatch._json_result_holds_image(_MCP_IMAGE_ENVELOPE) is True
+    assert acp_dispatch._json_result_holds_image(_MCP_TEXT_ENVELOPE) is False
+    assert acp_dispatch._json_result_holds_image({"content": "not a list"}) is False
+    built = acp_dispatch._build_tool_result_event(_json_update(_MCP_IMAGE_ENVELOPE))
+    assert built is not None and built.tool_output_truncated is True
+    whole = acp_dispatch._build_tool_result_event(_json_update(_MCP_TEXT_ENVELOPE))
+    assert whole is not None and whole.tool_output == "done"
+    assert whole.tool_output_truncated is False
+    streamed = AcpClient(work_dir=tmp_path)._extract_tool_call_update(
+        JsonRpcMessage(
+            method="session/update", params={"update": _json_update(_MCP_IMAGE_ENVELOPE)}
+        )
+    )
+    assert streamed is not None and streamed.tool_output_truncated is True
+    read_back = _read_back(tmp_path, monkeypatch, [{"kind": "json", "data": _MCP_IMAGE_ENVELOPE}])
+    assert read_back.tool_output_truncated is True
+
+
+@pytest.mark.parametrize(
+    "raw_output",
+    [_MCP_IMAGE_ENVELOPE, {"result": _MCP_IMAGE_ENVELOPE}],
+    ids=["bare-envelope", "result-wrapped"],
+)
+def test_a_raw_output_mcp_image_is_marked_by_both_streaming_parsers(tmp_path, raw_output) -> None:
+    update = {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "screenshot",
+        "status": "completed",
+        "rawOutput": raw_output,
+    }
+    built = acp_dispatch._build_tool_result_event(update)
+    assert built is not None and built.tool_output_truncated is True
+    streamed = AcpClient(work_dir=tmp_path)._extract_tool_call_update(
+        JsonRpcMessage(method="session/update", params={"update": update})
+    )
+    assert streamed is not None and streamed.tool_output_truncated is True
+
+
 def test_a_status_only_envelope_is_whole() -> None:
     """``exit_status`` is spelled as a string by kiro-cli and is not output text."""
     assert acp_dispatch._json_result_omits_text(_SHELL_OK) is False
@@ -216,3 +305,78 @@ def test_a_status_only_envelope_is_whole() -> None:
     )
     assert acp_dispatch._json_result_omits_text({"stdout": "x", "stderr": "   "}) is False
     assert acp_dispatch._json_result_omits_text({"stdout": "x", "stderr": "warning"}) is True
+
+
+# An image content block renders no text, so a tool result that carries one is
+# not whole: its pixels (and any figure they depict) are absent from
+# ``tool_output``. The same flag says so, and an image-only result -- which has
+# no text part to shorten -- is marked incomplete on that signal alone, so the
+# echo check never reads "the phrase is not there" from a result it could not see.
+_IMG_WRAPPED = {
+    "type": "content",
+    "content": {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"},
+}
+_IMG_BARE = {"type": "image", "data": "iVBORw0KGgo=", "mimeType": "image/png"}
+_TEXT_BLOCK = {"type": "content", "content": {"type": "text", "text": "see screenshot"}}
+
+
+def _content_update(blocks: list[dict]) -> dict:
+    return {
+        "sessionUpdate": "tool_call_update",
+        "toolCallId": "screenshot",
+        "status": "completed",
+        "content": blocks,
+    }
+
+
+def test_tool_call_content_is_image_reads_the_wrapped_and_bare_shapes() -> None:
+    assert acp_dispatch.tool_call_content_is_image(_IMG_WRAPPED) is True
+    assert acp_dispatch.tool_call_content_is_image(_IMG_BARE) is True
+    assert acp_dispatch.tool_call_content_is_image(_TEXT_BLOCK) is False
+    assert acp_dispatch.tool_call_content_is_image({"type": "text", "text": "x"}) is False
+    assert acp_dispatch.tool_call_content_is_image("not a dict") is False
+
+
+def test_dispatch_builder_marks_a_dropped_image_part() -> None:
+    event = acp_dispatch._build_tool_result_event(_content_update([_TEXT_BLOCK, _IMG_WRAPPED]))
+    assert event is not None
+    assert event.tool_output == "see screenshot"
+    assert event.tool_output_truncated is True
+
+
+def test_dispatch_builder_marks_an_image_only_result() -> None:
+    event = acp_dispatch._build_tool_result_event(_content_update([_IMG_BARE]))
+    assert event is not None
+    assert event.tool_output_truncated is True
+
+
+def test_client_streaming_parser_marks_a_dropped_image_part(tmp_path) -> None:
+    client = AcpClient(work_dir=tmp_path)
+    both = client._extract_tool_call_update(
+        JsonRpcMessage(
+            method="session/update",
+            params={"update": _content_update([_TEXT_BLOCK, _IMG_WRAPPED])},
+        )
+    )
+    assert both is not None and both.tool_output_truncated is True
+    image_only = client._extract_tool_call_update(
+        JsonRpcMessage(method="session/update", params={"update": _content_update([_IMG_BARE])})
+    )
+    assert image_only is not None and image_only.tool_output_truncated is True
+
+
+def test_read_back_parser_marks_a_dropped_image_part(tmp_path, monkeypatch) -> None:
+    both = _read_back(
+        tmp_path,
+        monkeypatch,
+        [{"kind": "text", "data": "see shot"}, {"kind": "image", "data": "iVBORw0KGgo="}],
+    )
+    assert both.tool_output == "see shot"
+    assert both.tool_output_truncated is True
+
+
+def test_read_back_parser_marks_an_image_only_result(tmp_path, monkeypatch) -> None:
+    events = _read_back_list(tmp_path, monkeypatch, [{"kind": "image", "data": "iVBORw0KGgo="}])
+    assert len(events) == 1
+    assert events[0].tool_output == ""
+    assert events[0].tool_output_truncated is True

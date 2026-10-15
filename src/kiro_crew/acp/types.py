@@ -885,13 +885,14 @@ class AcpEvent:
     tool_output_digest: str = ""
     tool_output_bytes: int = -1
     #: True when ``tool_output`` is not the whole redacted result: the display
-    #: bound (or a per-part bound on a read-back result) removed text, or a
+    #: bound (or a per-part bound on a read-back result) removed text, a
     #: ``Json`` item's stdout-only display left out another output field the tool
-    #: returned (stderr). A consumer that reads ``tool_output`` as evidence of what
-    #: the tool returned, such as the chat runner's echo check for a banner-shaped
-    #: answer, then knows that evidence is incomplete rather than taking absence
-    #: as proof. Set only by the parser that built the text; a frame with no
-    #: result payload keeps False.
+    #: returned (stderr, a nested object or list, a number), or the result held an
+    #: image block, bare or inside an MCP envelope. A consumer that reads
+    #: ``tool_output`` as evidence of what the tool returned, such as the chat
+    #: runner's echo check for a banner-shaped answer, then knows that evidence is
+    #: incomplete rather than taking absence as proof. Set only by the parser that
+    #: built the text; a frame with no result payload keeps False.
     tool_output_truncated: bool = False
     #: ``(fingerprint, section)`` for every credential redacted from the result,
     #: from ``security.credential_sources.tool_output_fingerprints``. Keyed

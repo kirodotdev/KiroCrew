@@ -781,6 +781,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _UNFINISHED_PROGRESS_RE,
         _banner_count,
         _carries_count,
+        _fold_unicode_digits,
         _strip_quoted_code,
         _terminal_sentence,
         classify_provider_budget_banner,

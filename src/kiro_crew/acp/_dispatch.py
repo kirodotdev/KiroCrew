@@ -2988,22 +2988,48 @@ _JSON_RESULT_STATUS_FIELDS = frozenset({"exit_status", "exit_code", "status", "r
 
 
 def _json_result_omits_text(payload: dict[str, Any]) -> bool:
-    """True when a ``Json`` result item carries text the ``stdout`` selection drops.
+    """True when a ``Json`` result item carries output the ``stdout`` selection drops.
 
     The display text of a ``Json`` item with a non-empty ``stdout`` is that
-    field alone, so a tool that also returned ``stderr`` (or any other
-    output-bearing string field) has text the dashboard row never shows. A
-    reader of the row text as evidence of the whole result, such as the chat
-    runner's echo check for a banner-shaped answer, needs to know the evidence
-    is partial. Status fields (``exit_status``) are not output.
+    field alone, so a tool that also returned ``stderr``, or any other
+    output-bearing field (a non-blank string, a number, a non-empty object or
+    list), has output the dashboard row never shows. A reader of the row text
+    as evidence of the whole result, such as the chat runner's echo check for a
+    banner-shaped answer, needs to know the evidence is partial. Status fields
+    (``exit_status``) are not output, and neither is a boolean or a null.
     """
     return any(
-        key != "stdout"
-        and key not in _JSON_RESULT_STATUS_FIELDS
-        and isinstance(value, str)
-        and bool(value.strip())
+        key != "stdout" and key not in _JSON_RESULT_STATUS_FIELDS and _json_value_is_output(value)
         for key, value in payload.items()
     )
+
+
+def _json_value_is_output(value: Any) -> bool:
+    """Whether one ``Json`` field holds output a reader could echo.
+
+    A number counts (a count the tool returned is exactly what an answer may
+    repeat), and so does any value of an unknown type: claiming it holds nothing
+    would let its absence from the display read as proof.
+    """
+    if value is None or isinstance(value, bool):
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (dict, list, tuple)):
+        return bool(value)
+    return True
+
+
+def _json_result_holds_image(payload: dict[str, Any]) -> bool:
+    """Whether a ``Json`` result item is an MCP envelope that holds an image block.
+
+    kiro-cli forwards an MCP ``tools/call`` result verbatim as a ``Json`` item, so
+    an image the tool returned sits in its ``content`` list. Neither display of
+    that item (the envelope's text blocks, or ``json.dumps`` of the envelope)
+    carries the figure the image depicts, however small the encoded bytes are.
+    """
+    blocks = payload.get("content")
+    return isinstance(blocks, list) and any(tool_call_content_is_image(b) for b in blocks)
 
 
 def _dumps_degraded(payload: Any, **kwargs: Any) -> str:
@@ -3113,6 +3139,27 @@ def tool_call_content_text(entry: Any) -> str | None:
         return None
     text = inner.get("text")
     return str(text) if text else None
+
+
+def tool_call_content_is_image(entry: Any) -> bool:
+    """Whether one ACP tool-call ``content`` entry is an image block.
+
+    Reads the SAME two shapes :func:`tool_call_content_text` reads -- the
+    canonical wrapper ``{"type": "content", "content": {"type": "image", ...}}``
+    and the bare ``{"type": "image", ...}`` block -- so an image counts however
+    the backend framed it. The text parsers render nothing for an image (it is a
+    known block that legitimately carries no text), so a tool result that holds
+    one is NOT whole: its pixels, and any number they depict, are absent from
+    ``tool_output``. The caller sets its omitted-field flag from this so
+    ``tool_output_truncated`` is true even for an image-only result, where there
+    is no text part to carry the mark otherwise.
+    """
+    if not isinstance(entry, dict):
+        return False
+    inner = entry.get("content")
+    if not isinstance(inner, dict) and entry.get("type") == "image":
+        inner = entry
+    return isinstance(inner, dict) and inner.get("type") == "image"
 
 
 def _rendered_shape_type(value: Any) -> str:
@@ -3332,6 +3379,12 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             text = tool_call_content_text(block)
             if text:
                 output_parts.append(text)
+            elif tool_call_content_is_image(block):
+                # An image block renders no text, so the result the model saw is
+                # not whole: its pixels (and any figure they depict) never reach
+                # ``tool_output``. Mark it omitted so the flag below is true even
+                # when the result is image-only.
+                fields_omitted = True
     # Path 2: rawOutput (status=completed) fallback.
     if not output_parts:
         raw_output = update.get("rawOutput")
@@ -3359,6 +3412,8 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                                 output_parts.append(_mcp_text)
                             else:
                                 output_parts.append(_dumps_degraded(j, default=str))
+                            # An MCP image block's figure is in neither display.
+                            fields_omitted = fields_omitted or _json_result_holds_image(j)
             # Path 3: an object that is not that envelope at all. ``rawOutput``
             # is unstructured passthrough, so ``items[]`` is ONE producer's
             # private wrapper rather than a contract, and an object Crew does
@@ -3389,6 +3444,11 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
                 output_parts.append(
                     mcp_text if mcp_text is not None else _dumps_degraded(raw_output, default=str)
                 )
+                # The same holds for an MCP image block here, bare or inside result.
+                fields_omitted = fields_omitted or any(
+                    isinstance(body, dict) and _json_result_holds_image(body)
+                    for body in (raw_output, mcp_result)
+                )
     tool_status = str(update.get("status") or "")
     if not output_parts:
         if tool_status not in TERMINAL_TOOL_STATUSES:
@@ -3399,6 +3459,9 @@ def _build_tool_result_event(update: dict[str, Any], cache_scope: str = "") -> A
             tool_call_id=tool_use_id,
             tool_final=tool_status == "completed",
             tool_status=tool_status,
+            # An image-only result has no text part to carry the mark, so the
+            # omission would otherwise read as a whole (empty) result.
+            tool_output_truncated=fields_omitted,
         )
     joined = "\n".join(output_parts)
     _redacted = _redact(joined)
