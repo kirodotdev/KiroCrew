@@ -501,6 +501,16 @@ class LLMProvider(ABC):
         """
         return ""
 
+    def settings_withheld_cause(self) -> str:
+        """Why Crew's MCP tools are withheld from this session, or ``""``.
+
+        ``"session"`` when another open Crew session's settings seed holds the
+        session's settings file, ``"project"`` when the project's own file does.
+        May read a file: call it off the event loop. Default: ``""``, nothing
+        withheld.
+        """
+        return ""
+
     def touch_activity(self) -> None:
         """Refresh the RUNTIME's activity timestamp without I/O. Default no-op.
 

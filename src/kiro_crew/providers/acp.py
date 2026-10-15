@@ -360,6 +360,18 @@ class AcpProvider(LLMProvider):
         value = self._client.model_pin_partial
         return value if isinstance(value, str) else ""
 
+    def settings_withheld_cause(self) -> str:
+        """Forward the client's live answer (see ``AcpClient.settings_withheld_cause``).
+
+        Only the claude shape (a raw ``AcpClient``) seeds the settings file; any
+        other client shape, or a non-string answer, reads as ``""``.
+        """
+        read = getattr(self._client, "settings_withheld_cause", None)
+        if not callable(read):
+            return ""
+        value = read()
+        return value if isinstance(value, str) else ""
+
     @property
     def served_model(self) -> str:
         """Model id the live session resolved (public — see LLMProvider).

@@ -862,6 +862,8 @@ class AcpClient:
     _settle_claude_settings_seed = _client_seed_ownership._settle_claude_settings_seed
     release_settings_seed_claim = _client_seed_ownership.release_settings_seed_claim
     _foreign_settings_owner = _client_seed_ownership._foreign_settings_owner
+    _foreign_settings_is_crew_seed = _client_seed_ownership._foreign_settings_is_crew_seed
+    settings_withheld_cause = _client_seed_ownership.settings_withheld_cause
     _settle_claude_settings_seed_locked = _client_seed_ownership._settle_claude_settings_seed_locked
 
     @staticmethod

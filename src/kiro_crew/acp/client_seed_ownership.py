@@ -434,10 +434,44 @@ def _foreign_settings_owner(self: AcpClient, local_settings: Path) -> str:
     lasts until that session re-seeds it. Same bounded, no-follow read as
     the share check.
     """
-    recorded = seed_provenance.recorded_durable(local_settings)
-    if self._settings_path_bytes(local_settings, recorded) is not None:
+    if self._foreign_settings_is_crew_seed(local_settings):
         return "is another open Crew session's settings seed for this work dir"
     return "belongs to the project"
+
+
+def _foreign_settings_is_crew_seed(self: AcpClient, local_settings: Path) -> bool:
+    """Whether *local_settings* holds the bytes Crew's durable record names."""
+    recorded = seed_provenance.recorded_durable(local_settings)
+    return self._settings_path_bytes(local_settings, recorded) is not None
+
+
+#: :meth:`settings_withheld_cause` answers: another open Crew session's seed holds the file.
+SETTINGS_WITHHELD_BY_SESSION = "session"
+#: :meth:`settings_withheld_cause` answers: the project's own file holds the path.
+SETTINGS_WITHHELD_BY_PROJECT = "project"
+
+
+def settings_withheld_cause(self: AcpClient) -> str:
+    """Why Crew's MCP tools are withheld from this session, or ``""`` when they are not.
+
+    Reads the live governed state, the same predicate the claude mirror and the
+    member projection read to withhold the ``mcpServers`` array
+    (:attr:`_permission_surface_governed` on a backend that seeds the file), so
+    it answers for every decline path and for a later re-earn alike. When
+    withheld, names whose file holds the path: :data:`SETTINGS_WITHHELD_BY_SESSION`
+    or :data:`SETTINGS_WITHHELD_BY_PROJECT`. A bounded, no-follow file read:
+    call it off the event loop.
+    """
+    if not self._seeds_local_settings or self._permission_surface_governed:
+        return ""
+    local_settings = self._claude_local_settings_path()
+    if self._foreign_settings_is_crew_seed(local_settings):
+        return SETTINGS_WITHHELD_BY_SESSION
+    # No file at all (the seed has not run, or its write failed): neither
+    # answer would name the holder, so the caller shows nothing.
+    if not os.path.lexists(local_settings):
+        return ""
+    return SETTINGS_WITHHELD_BY_PROJECT
 
 
 def _settle_claude_settings_seed_locked(
