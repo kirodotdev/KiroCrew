@@ -45,7 +45,7 @@ Three decisions:
   gateway. Those routes are MCP-only and strict (`server.py`, the
   *Session control* block of the internal-secret path set). No argument names
   another machine.
-- **The proxy.** `api_instances_proxy` (`src/kiro_crew/dashboard/handlers_instances.py`)
+- **The proxy.** `api_instances_proxy` (`src/kiro_crew/dashboard/handlers_instances_peer.py`)
   forwards only paths under `_PROXY_ALLOWED_PREFIXES` = `api/chat`, `api/stream`,
   owner-only, and redacts every reply since
   [#16757](https://github.com/kirodotdev/KiroCrew/pull/16757)

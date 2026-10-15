@@ -102,7 +102,7 @@ This RFC is small because it changes one layer and leaves four contracts alone.
 
 - **`proxy_request` stays the only way to talk to a peer.** Its callers
   (`api_instances_proxy` and `read_peer_slots`, both in
-  `src/kiro_crew/dashboard/handlers_instances.py`) are not touched.
+  `src/kiro_crew/dashboard/handlers_instances_peer.py`) are not touched.
 - **The peer's own token auth stays the authorisation boundary.** An outbound
   transport does not introduce a second way to be authorised to a dashboard; it
   changes only how the token is obtained.

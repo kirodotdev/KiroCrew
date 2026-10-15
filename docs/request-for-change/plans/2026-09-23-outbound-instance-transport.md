@@ -121,7 +121,7 @@ exist, is what stops phase 3 from shipping a record that renders as SSH.
       empty, with validation in the new `outbound` arm only
 - [ ] Extend `CONNECTION_METHODS` to include `"outbound"`, and add the addressing
       fields to the immutability set in
-      `src/kiro_crew/dashboard/handlers_instances.py`
+      `src/kiro_crew/dashboard/handlers_instances_gate.py`
 - [ ] Confirm a registry file written before this change loads unchanged
       (round-trip test on a fixture record with no new fields)
 - [ ] Implement the frame codec: `REGISTER`, `HEARTBEAT`, `OPEN`, `DATA`,
