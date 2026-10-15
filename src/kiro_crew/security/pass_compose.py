@@ -20,7 +20,8 @@ from __future__ import annotations
 
 from bisect import bisect_left, bisect_right
 
-from kiro_crew.security import exfil, redaction
+import kiro_crew.security.exfil as exfil
+import kiro_crew.security.redaction as redaction
 
 _Span = tuple[int, int, str]
 
@@ -44,15 +45,18 @@ class _Claimed:
         self._ends.insert(i, end)
 
 
-def _url_spans(text: str) -> tuple[list[_Span], list[str]]:
+def _url_spans(
+    text: str, exempt_hosts: frozenset[str] | None = None
+) -> tuple[list[_Span], list[str]]:
     """Every span the URL pass rewrites in *text*, with its warnings.
 
     The URL pass replaces every occurrence of each address it flags, longest
-    first, so the spans are found the same way.
+    first, so the spans are found the same way. ``exempt_hosts`` is the URL
+    pass's host snapshot; ``None`` is the live read.
     """
     removed: list[tuple[str, str]] = []
     _cleaned, warnings, _records = exfil.redact_exfiltration_urls_with_records(
-        text, removed_out=removed
+        text, removed_out=removed, exempt_hosts=exempt_hosts
     )
     if not removed:
         return [], list(warnings)
@@ -78,8 +82,12 @@ def _url_spans(text: str) -> tuple[list[_Span], list[str]]:
     return spans, list(warnings)
 
 
-def _credential_spans(text: str) -> tuple[list[_Span], list[str]]:
-    spans, warnings, _rules = redaction._credential_redaction_plan(text)
+def _credential_spans(
+    text: str, token_param_prefixes: tuple[str, ...] | None = None
+) -> tuple[list[_Span], list[str]]:
+    spans, warnings, _rules = redaction._credential_redaction_plan(
+        text, token_param_prefixes=token_param_prefixes
+    )
     return list(spans), list(warnings)
 
 
@@ -179,10 +187,20 @@ def _merge_warnings(first: list[str], second: list[str]) -> list[str]:
     return first + [w for w in second if w not in first]
 
 
-def compose(text: str) -> tuple[str, list[str], list[str]]:
-    """``(text, credential_warnings, url_warnings)`` with both passes applied once."""
-    url_spans, url_warnings = _url_spans(text)
-    cred_spans, cred_warnings = _credential_spans(text)
+def compose(
+    text: str,
+    *,
+    token_param_prefixes: tuple[str, ...] | None = None,
+    exempt_hosts: frozenset[str] | None = None,
+) -> tuple[str, list[str], list[str]]:
+    """``(text, credential_warnings, url_warnings)`` with both passes applied once.
+
+    ``token_param_prefixes`` is :func:`redact_credentials`'s pass-4 snapshot and
+    ``exempt_hosts`` the URL pass's host snapshot, so a caller that keyed on one
+    read judges every pass under it.
+    """
+    url_spans, url_warnings = _url_spans(text, exempt_hosts)
+    cred_spans, cred_warnings = _credential_spans(text, token_param_prefixes)
     if not url_spans and not cred_spans:
         # Either order is then a no-op on the first pass, so the second pass sees
         # the same text and finds nothing either.
@@ -191,15 +209,15 @@ def compose(text: str) -> tuple[str, list[str], list[str]]:
     spans = url_spans + cred_spans
     if url_spans:  # URL pass first, then the credential pass on what is left
         after_urls, rows = _splice(text, url_spans)
-        found, warnings = _credential_spans(after_urls)
+        found, warnings = _credential_spans(after_urls, token_param_prefixes)
         spans += _map_back(found, rows)
         cred_warnings = _merge_warnings(cred_warnings, warnings)
     if cred_spans:  # credential pass first, then the URL pass on what is left
         after_creds, rows = _splice(text, cred_spans)
-        found, warnings = _url_spans(after_creds)
+        found, warnings = _url_spans(after_creds, exempt_hosts)
         spans += _map_back(found, rows)
         url_warnings = _merge_warnings(url_warnings, warnings)
 
     merged = _splice_union(text, _hide_hosts_with_credentials(text, spans))
-    merged, again = redaction.redact_credentials(merged)
+    merged, again = redaction.redact_credentials(merged, token_param_prefixes=token_param_prefixes)
     return merged, _merge_warnings(cred_warnings, list(again)), url_warnings

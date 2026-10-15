@@ -55,7 +55,7 @@ PACKAGE = "kiro_crew.security"
 LEAF = "redaction"
 SECURITY_DIR = Path(redaction.__file__).resolve().parent
 #: The owner modules, in the layer order ``_OWNERS`` must list them.
-OWNERS = ("redaction_patterns", "redaction_entropy")
+OWNERS = ("redaction_patterns", "redaction_entropy", "redaction_pako")
 #: Siblings that share the ``redaction_`` prefix and are not owners of this facade.
 NON_OWNER_SIBLINGS = frozenset({"redaction_allow", "redaction_switch"})
 _THIS_FILE = Path(__file__).resolve()

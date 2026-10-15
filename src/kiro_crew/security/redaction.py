@@ -16,8 +16,9 @@ alternation: a bare high-entropy run carries no marker to anchor on, so it is
 judged by shape -- length, character classes, entropy, decodability -- and every
 gate is a separate predicate so a refusal can name which one fired.
 
-The alternation and its pre-filter live in ``redaction_patterns`` and the
-entropy machinery in ``redaction_entropy``, owner modules beside this one.
+The alternation and its pre-filter live in ``redaction_patterns``, the
+entropy machinery in ``redaction_entropy`` and the Mermaid pako verdict in
+``redaction_pako``, owner modules beside this one.
 This module is the import path of every name they define, and keeps the batch
 redactor with its pass plan and records, the pass-4 token-parameter pass,
 the redaction tags, the binary masker and the path passes. A read through this
@@ -64,6 +65,8 @@ from .redaction_entropy import (  # noqa: F401
     _DARWIN_USER_TEMP_DIR_RE,
     _DOCUMENT_LINK_RE,
     _IN_DIAGRAM_SCAN,
+    _MERMAID_PAKO_SOURCE_CAP,
+    _MERMAID_PAKO_VIEW_CAP,
     _PLANTUML_RATIO_CAP,
     _PLANTUML_SOURCE_CAP,
     _RUN_PIECE_RES,
@@ -78,6 +81,7 @@ from .redaction_entropy import (  # noqa: F401
     _plantuml_source,
     _text_contains_bare_secret,
 )
+from .redaction_pako import _mermaid_pako_verdict
 from .redaction_patterns import _credential_matches, _might_contain_credential
 
 
@@ -106,17 +110,28 @@ def _plantuml_verdict(
 def _document_link_spans(
     text: str, token_param_prefixes: tuple[str, ...] | None = None
 ) -> list[tuple[int, int]]:
-    """Return the spans of the document links that hold no key.
+    """Return validated document-link spans that hold no decoded credential.
 
     The :data:`_DOCUMENT_LINK_RE` matches, then the Outlook and Slack links
     :func:`_chat_mail_link_spans` finds by structure.
     """
     spans = []
-    budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
+    nested = _IN_DIAGRAM_SCAN.get()
+    plantuml_budget = 0 if nested else _PLANTUML_SOURCE_CAP
+    pako_budget = 0 if nested else _MERMAID_PAKO_SOURCE_CAP
+    # One view budget for every top-level pako link here: the per-state cap
+    # alone would let many links multiply the composed passes.
+    pako_views = 0 if nested else _MERMAID_PAKO_VIEW_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
-            kept, spent = _plantuml_verdict(m["diagram"], budget, token_param_prefixes)
-            budget -= spent
+            kept, spent = _plantuml_verdict(m["diagram"], plantuml_budget, token_param_prefixes)
+            plantuml_budget -= spent
+        elif m["pako"]:
+            kept, spent, viewed = _mermaid_pako_verdict(
+                m["pako"], pako_budget, pako_views, token_param_prefixes
+            )
+            pako_budget -= spent
+            pako_views -= viewed
         else:
             kept = not any(
                 len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
@@ -1417,20 +1432,23 @@ def redact_path_segments(path: str, redactor: Callable[[str], str] | None = None
 
 
 # This module is the import path of every name the output redactors offer. The batch
-# redactor, its pass plan and the path passes above stay here; the alternation and the
-# entropy machinery live in the owner modules below, and a write through this module (a
-# patch) reaches every module holding the name (:mod:`kiro_crew._facade_mirror`). The
-# header also binds the owner names ``text_redaction`` and ``display_safety`` read here.
+# redactor, its pass plan and the path passes above stay here; the alternation, the
+# entropy machinery and the Mermaid pako verdict live in the owner modules below, and a
+# write through this module (a patch) reaches every module holding the name
+# (:mod:`kiro_crew._facade_mirror`). The header also binds the owner names
+# ``text_redaction`` and ``display_safety`` read here.
 # Owners never import this module. New work goes to the owner of its responsibility:
 #   ``redaction_patterns`` -- the credential alternation and its pre-filter, one unit
 #   ``redaction_entropy`` -- the bare-secret shape gates, the base64 decode and the
 #   document-link grammar
+#   ``redaction_pako`` -- the Mermaid pako verdict over a decoded state's views
 from kiro_crew import _facade_mirror  # noqa: E402
 
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.security.redaction_patterns",
     "kiro_crew.security.redaction_entropy",
+    "kiro_crew.security.redaction_pako",
 )  # the loop below imports them in this order
 for _owner in _OWNERS:
     _importlib.import_module(_owner)
@@ -1460,6 +1478,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _LINK_HOST_CHARS,
         _LINK_PATH_CHARS,
         _LINK_PATH_MAX,
+        _MERMAID_PAKO_PARTIAL_RE,
+        _MERMAID_PAKO_PAYLOAD,
+        _MERMAID_PAKO_PAYLOAD_CAP,
+        _MERMAID_PAKO_PAYLOAD_CHUNK_RE,
+        _MERMAID_PAKO_URL_PREFIX,
         _OUTLOOK_FOLDERS,
         _OUTLOOK_HOSTS,
         _OUTLOOK_ID_ESCAPES,
@@ -1469,6 +1492,8 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _OWA_WEB_LINK_QUERIES,
         _PLANTUML_ALPHABET,
         _PLANTUML_DIAGRAM,
+        _PLANTUML_PAYLOAD_CAP,
+        _PLANTUML_ROUTE,
         _PRINTABLE_BYTES,
         _ROUTED_COMMIT_PIECE_MIN,
         _ROUTED_COMMIT_RE,
@@ -1495,12 +1520,22 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _is_slack_host,
         _is_whole_exchange_id,
         _lowercase_run_exceeds,
+        _mermaid_pako_views,
         _outlook_item_id,
         _outlook_web_link_item,
         _outlook_web_link_tail,
+        _reject_duplicate_json_keys,
+        _reject_json_constant,
         _shannon_entropy,
         _steps_up,
         _vowel_ratio,
+    )
+    from kiro_crew.security.redaction_pako import (  # noqa: F401
+        _PAKO_CHECK_DECODE_ROUNDS,
+        _PAKO_CHECK_FRAGMENT_RE,
+        _PAKO_CHECK_SCHEME_RE,
+        _pako_check_variant,
+        _pako_view_unchanged,
     )
     from kiro_crew.security.redaction_patterns import (  # noqa: F401
         _ARN_ACCOUNT_ID_12_DIGITS_RE,
