@@ -9,6 +9,7 @@ autouse fixture comes from ``autonudge_wake_judge_helpers.py``.
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import inspect
 from typing import Any
 from unittest.mock import patch
@@ -408,8 +409,11 @@ def _service() -> AutoNudgeService:
     # land, so leaving these out would make every quiet tick here report a fire and
     # hide what the test is actually about.
     svc._inflight_adds = set()
+    # The mutation-admission lease a timer callback carries: unset here, as on a
+    # tick driven outside a timer task.
+    svc._mutation_admission = contextvars.ContextVar("test_admission", default=None)
 
-    async def _no_disk() -> None:
+    async def _no_disk(**_kwargs: Any) -> None:
         return None
 
     svc._persist_locked = _no_disk  # type: ignore[method-assign]
@@ -617,7 +621,7 @@ class TestTickVerdicts:
         """
         svc, loop = self._armed(None)
 
-        async def refuse() -> None:
+        async def refuse(**_kwargs: Any) -> None:
             raise OSError("disk is gone")
 
         svc._persist_locked = refuse  # type: ignore[method-assign]
@@ -629,7 +633,7 @@ class TestTickVerdicts:
         svc, loop = self._armed(None)
         calls: list[int] = []
 
-        async def landed() -> None:
+        async def landed(**_kwargs: Any) -> None:
             calls.append(1)
 
         svc._persist_locked = landed  # type: ignore[method-assign]

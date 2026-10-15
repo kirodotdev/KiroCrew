@@ -298,6 +298,7 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
 class FakeNudgeSvc:
     def __init__(self) -> None:
         self.added: list[tuple] = []
+        self.retired_sentinels: list = []
 
     async def add(
         self,
@@ -312,10 +313,12 @@ class FakeNudgeSvc:
         admission_check=None,
         gate=True,
         creation_surface=MonitorCreationSurface.DASHBOARD,
+        retire_stale_stop_sentinel=None,
     ):
         if admission_check is not None and not admission_check():
             raise NudgeAdmissionRefused("session changed before nudge arm committed")
         self.added.append((slot_key, message, idle_secs, max_cycles, creation_surface))
+        self.retired_sentinels.append(retire_stale_stop_sentinel)
         self.banners: list[str] = getattr(self, "banners", [])
         self.banners.append(banner)
         return SimpleNamespace(

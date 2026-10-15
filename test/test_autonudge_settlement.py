@@ -17,6 +17,23 @@ from autonudge_helpers import _structured_monitor
 from kiro_crew import autonudge as _an
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
+
+def _writes_the_settlement(payload, loop_id: str) -> bool:
+    """Whether a snapshot payload carries *loop_id*'s staged settlement row.
+
+    The settlement stages the deactivated row and writes it while the live loop is
+    still active, so the write is told apart from the marker writes by the row it
+    carries, never by live state.
+    """
+    if payload is None:
+        return False
+    return any(row.get("id") == loop_id and row.get("active") is False for row in payload["loops"])
+
 
 def _reading(state: str = "MERGED", *, status: str = "ok", head: str = "a" * 40):
     """One published reading, in the shape the fetcher puts on the probe.
@@ -144,9 +161,9 @@ async def test_the_marker_writes_do_not_release_the_lock_mid_write(tmp_path, mon
     releasing = {"n": 0}
     real_releasing = service._persist_locked
 
-    async def _count_releasing():
+    async def _count_releasing(**kwargs):
         releasing["n"] += 1
-        await real_releasing()
+        await real_releasing(**kwargs)
 
     monkeypatch.setattr(service, "_persist_locked", _count_releasing)
 
@@ -757,9 +774,11 @@ async def test_a_retarget_during_lock_acquisition_does_not_crash_the_settlement(
 
     real_acquire = service._acquire_mutation_lock
 
-    async def _clear_the_monitor_then_acquire(loop_id):
-        lock = await real_acquire(loop_id)
-        if loop.monitor is not None and loop.monitor.terminal_pending:
+    async def _clear_the_monitor_then_acquire(loop_id, **kwargs):
+        lock = await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
+        if loop.monitor is not None and (
+            loop.monitor.terminal_pending or loop.monitor.terminal_delivered
+        ):
             # Stands in for a retarget landing while we waited for this lock.
             loop.monitor = None
         return lock
@@ -809,16 +828,19 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
     monkeypatch.setattr(service, "_emit", lambda event, _loop: events.append(event))
 
     real_writer = service._write_monitor_snapshot_locked
+    settlement_write_failed = False
 
-    async def _fail_the_settlement_write(payload=None):
+    async def _fail_the_settlement_write(payload=None, **kwargs):
+        nonlocal settlement_write_failed
         # Three writes use this writer in this flow -- the gate's in-flight marker,
         # the channel's terminal marker, and the settlement -- so the settlement is
-        # isolated by the one state only IT has: it deactivates the loop just before
-        # writing. Counting calls, or testing terminal_pending, both catch a marker
+        # isolated by the one state only IT has: its staged row deactivates the
+        # loop. Counting calls, or testing terminal_delivered, both catch a marker
         # write instead, which then rolls itself back and the settlement never runs.
-        if not loop.active:
+        if _writes_the_settlement(payload, loop.id):
+            settlement_write_failed = True
             raise OSError("disk full")
-        await real_writer(payload)
+        await real_writer(payload, **kwargs)
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _fail_the_settlement_write)
 
@@ -826,9 +848,10 @@ async def test_a_failed_settlement_write_leaves_the_terminal_turn_owed(tmp_path,
         await service._timer(loop, delay=0)
         assert loop.monitor is not None
         assert "expired" not in events, "a finish must not be announced unpersisted"
-        assert loop.monitor.terminal_pending == "success", "the debt stays owed"
+        assert loop.monitor.terminal_delivered == "success", "the settlement stays owed"
         assert loop.monitor.outcome is None
         assert loop.active is True, "and the watch stays live so it retries"
+        assert settlement_write_failed, "the staged settlement selector must fire"
     finally:
         service.stop()
 
@@ -865,9 +888,9 @@ async def test_the_owed_terminal_turn_settles_only_once_it_lands(tmp_path, monke
     locks: list[str] = []
     real_acquire = service._acquire_mutation_lock
 
-    async def _tracking_acquire(loop_id):
+    async def _tracking_acquire(loop_id, **kwargs):
         locks.append(loop_id)
-        return await real_acquire(loop_id)
+        return await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
 
@@ -980,9 +1003,9 @@ async def test_the_terminal_settlement_is_serialized_against_update(tmp_path, mo
     held: list[str] = []
     real_acquire = service._acquire_mutation_lock
 
-    async def _tracking_acquire(loop_id):
+    async def _tracking_acquire(loop_id, **kwargs):
         held.append(loop_id)
-        return await real_acquire(loop_id)
+        return await asyncio.wait_for(real_acquire(loop_id, **kwargs), timeout=_LOST_RUN_SECS)
 
     monkeypatch.setattr(service, "_acquire_mutation_lock", _tracking_acquire)
 
@@ -1020,9 +1043,9 @@ async def test_the_terminal_transition_is_on_disk_before_the_user_is_told(tmp_pa
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
     real_persist = service._write_monitor_snapshot_locked
 
-    async def _tracking_persist(payload=None):
+    async def _tracking_persist(payload=None, **kwargs):
         order.append("persist")
-        await real_persist(payload)
+        await real_persist(payload, **kwargs)
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _tracking_persist)
     monkeypatch.setattr(service, "_emit", lambda event, loop: order.append(f"emit:{event}"))
@@ -1108,7 +1131,7 @@ async def test_a_failed_terminal_write_keeps_the_watch_alive(tmp_path, monkeypat
     )
     service = AutoNudgeService(base_dir=tmp_path, on_fire=on_fire)
 
-    async def _explode(payload=None):
+    async def _explode(payload=None, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(service, "_write_monitor_snapshot_locked", _explode)
