@@ -204,7 +204,9 @@ def published_view(tmp_path, monkeypatch):
     monkeypatch.setattr(projection, "_DRAIN_BATCH_PAUSE_SECS", 0)
     # The pair must still be on disk after the projection is dropped: the drain
     # under test retires it, not the eager prune a dropped projection runs.
-    monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
+    monkeypatch.setattr(
+        projection, "_eager_prune", lambda directory, crew_home_id, *, force=False: None
+    )
     monkeypatch.setattr(
         "kiro_crew.agent.managed_mcp_spec_entry",
         lambda name: {"command": "test-core", "args": []},
