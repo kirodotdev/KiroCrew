@@ -8709,6 +8709,11 @@
       "quote": "Цитировать",
       "quote_hint": "Цитирует выделенное в поле ввода этого разговора — твой ответ уйдёт в основной чат"
     },
+    "lessonSaved": {
+      "saved": "Урок сохранён: {{rule}}",
+      "updated": "Урок обновлён: {{rule}}",
+      "review": "Просмотреть уроки"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} изменил имя",
       "changed_description": "{{name}} обновил описание",

@@ -403,6 +403,14 @@ still drawn in its final state after the store prunes it. The same step writes t
 `card/*` / `guide/*` crew-log entries ([crew-log-core](crew-log-core.md) section 5,
 "Cards and guides").
 
+Two surfaces record a change the agent already made, so they have no store
+behind them and the row itself is the record. `self` is a crewmate's own
+`update_self` (see [mcp](../../architecture/mcp.md)). `lesson` is a lesson
+`learn_add` wrote: one row per write that changed the store, carrying the redacted
+`rule` and the write `status` (`inserted` / `enriched`), appended by
+`chat_cards.record_lesson_saved` ([learn-cron-dashboard](learn-cron-dashboard.md),
+"`learn_add` in the conversation"). Neither row authorizes anything.
+
 `card` is in `history_projection.DISPLAY_ONLY_ROLES`: no model-bound reader
 (provenance citations, consolidation, skill detection) carries it, and the other
 model-bound readers already filter to conversation roles. The agent hears an outcome

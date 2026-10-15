@@ -28,6 +28,7 @@ when the store itself broadcast it.
 from __future__ import annotations
 
 import logging
+import uuid
 from collections import OrderedDict
 from typing import Any
 
@@ -38,6 +39,8 @@ SURFACE_CHANGE = "change"
 SURFACE_GUIDE = "guide"
 #: A crewmate's own applied change (``update_self``), with its undo.
 SURFACE_SELF = "self"
+#: A lesson the agent just saved (``learn_add``), with a link to review it.
+SURFACE_LESSON = "lesson"
 
 #: The status a proposal is born with, per surface.
 _PROPOSED = {SURFACE_CHANGE: "pending", SURFACE_GUIDE: "offered"}
@@ -435,3 +438,38 @@ def record_self_change_status(state: Any, change: dict[str, Any]) -> None:
             _patch_row(state, slot, row, {"status": status})
     except Exception:
         logger.warning("could not record a crewmate's self-change outcome", exc_info=True)
+
+
+# ── lessons ──
+
+_LESSON_RULE_MAX = 300
+
+
+def record_lesson_saved(state: Any, slot_key: str, rule: Any, outcome: Any) -> None:
+    """Put one just-saved lesson into the conversation that saved it. Never raises.
+
+    A lesson is re-injected into every later session, so a write the agent made
+    is told to the person where it happened: one ``card`` row per write that
+    changed the store (``inserted`` or ``enriched``), never one per session or per
+    rule, so a second write of the same rule is its own row like any other. The
+    row is display-only and carries the redacted rule text and the outcome, which
+    the dashboard words as "saved" or "updated". It authorizes nothing, so there
+    is nothing to read back from it.
+    """
+    try:
+        # The store's own "this write changed me" set. ``LessonWriteOutcome`` is a
+        # ``str`` enum, so the JSONL tier's plain outcome strings match it too.
+        from kiro_crew.vector_memory import _LESSON_WROTE_OUTCOMES
+
+        status = str(outcome or "")
+        if status not in _LESSON_WROTE_OUTCOMES:
+            return
+        slot = _get_slot(state, slot_key)
+        text = _clean(rule, _LESSON_RULE_MAX)
+        if slot is None or not text:
+            return
+        item_id = uuid.uuid4().hex[:16]
+        meta = _row_meta(SURFACE_LESSON, item_id, slot_key, rule=text, status=status)
+        _append_row(slot, f"Lesson {'updated' if status == 'enriched' else 'saved'}: {text}", meta)
+    except Exception:
+        logger.warning("could not record a saved lesson in its conversation", exc_info=True)

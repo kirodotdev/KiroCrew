@@ -185,7 +185,20 @@ function SetupDiagnostic({ text }: { text: string }) {
   )
 }
 
-export default function VectorMemoryCard({ onActiveChange, onMigratedChange, diagnosticsOnly = false }: { onActiveChange?: (active: boolean) => void; onMigratedChange?: (migrated: boolean) => void; diagnosticsOnly?: boolean }) {
+/** The Semantic browser's card, where a deep link to the lessons lands when
+ *  vector memory holds them (`?focus=lessons`, see MemoryTab). */
+export const SEMANTIC_CARD_ID = 'memory-semantic-card'
+
+export default function VectorMemoryCard({ onActiveChange, onMigratedChange, onSettledChange, initialSemanticFilter, diagnosticsOnly = false }: {
+  onActiveChange?: (active: boolean) => void
+  onMigratedChange?: (migrated: boolean) => void
+  /** True once the status reads that decide `active` have answered, so a caller
+   *  can tell "not active" from "not known yet". */
+  onSettledChange?: (settled: boolean) => void
+  /** The Semantic filter's text on mount: a link that names what to show. */
+  initialSemanticFilter?: string
+  diagnosticsOnly?: boolean
+}) {
   // One instance covers every input in this card; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
   const queryClient = useQueryClient()
@@ -240,7 +253,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
   const [inspectorQuery, setInspectorQuery] = useState(''); const [preview, setPreview] = useState<ContextPreview | null>(null)
   const [writeError, setWriteError] = useState('')
   const [embeddingStartError, setEmbeddingStartError] = useState('')
-  const [semFilter, setSemFilter] = useState('')
+  const [semFilter, setSemFilter] = useState(initialSemanticFilter ?? '')
 
   const ALLOWLIST_PREFIXES = useMemo(() => [
     'pref.frontend.', 'pref.backend.', 'pref.streaming.', 'pref.editor.', 'pref.os', 'pref.shell',
@@ -370,6 +383,8 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
   const eventTypes = useMemo(() => [...new Set(events.map(e => e.event_type))], [events])
 
   useEffect(() => { onActiveChange?.(!!active) }, [active, onActiveChange])
+  const settled = !statsRead.isPending && !embeddingRead.isPending
+  useEffect(() => { onSettledChange?.(settled) }, [settled, onSettledChange])
 
   const summaryError = statsRead.error || embeddingRead.error
   if (statsRead.isPending && !summaryError && !semanticRead.isError && !audit.isError) return <Card><CardTitle><Brain className="lucide-inline" /> {i18nT('pages.overview.vectorMemoryCard.vector_memory')}</CardTitle><p role="status" className="text-muted text-sm">{i18nT('pages.overview.vectorMemoryCard.loading')}</p></Card>
@@ -567,7 +582,7 @@ export default function VectorMemoryCard({ onActiveChange, onMigratedChange, dia
     </Card>
 
     {(active || semanticRead.isError) && view === 'semantic' && !diagnosticsOnly && (
-      <Card>
+      <Card id={SEMANTIC_CARD_ID}>
         <CardTitle>{i18nT('pages.overview.vectorMemoryCard.semantic_memory')} <InfoTip text={i18nT('pages.overview.vectorMemoryCard.structured_key_value_facts_about_you_confidence')} /></CardTitle>
         {/* No hand-off: retain new and inline memory drafts while retrying the read. */}
         <ErrorNotice message={semanticRead.error ? extractError(semanticRead.error) : undefined} />

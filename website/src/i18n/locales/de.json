@@ -8439,6 +8439,11 @@
       "quote": "Zitieren",
       "quote_hint": "Zitiert die Auswahl in den Verfasser dieses Gesprächs — deine Antwort geht in den Hauptchat"
     },
+    "lessonSaved": {
+      "saved": "Lektion gespeichert: {{rule}}",
+      "updated": "Lektion aktualisiert: {{rule}}",
+      "review": "Lektionen ansehen"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} hat den Namen geändert",
       "changed_description": "{{name}} hat die Beschreibung aktualisiert",

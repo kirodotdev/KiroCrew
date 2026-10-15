@@ -20,6 +20,10 @@
  * (`update_self`): already applied, so it draws as one quiet line with an Undo
  * (`SelfChangeRow`). Its row carries what to draw and nothing that authorizes:
  * the undo is restored from the gateway's own record.
+ *
+ * A fourth surface, `lesson`, is a lesson the agent saved (`learn_add`): also
+ * already applied, one row per write, drawn as one quiet line with a link to
+ * the Memory page (`LessonSavedRow`).
  */
 import type { ChatMessage } from '../types'
 import { useAppSelector } from '../store'
@@ -32,6 +36,7 @@ import { useCardCorners } from './cardCorners'
 import GuideOfferCard from '../guide/GuideOfferCard'
 import ErrorNotice from '../components/ErrorNotice'
 import SelfChangeRow, { type SelfChangeRef, type SelfField } from './SelfChangeRow'
+import LessonSavedRow, { type LessonSavedRef } from './LessonSavedRow'
 
 export const CARD_ROLE = 'card'
 
@@ -80,6 +85,19 @@ export function readSelfChangeRef(m: Pick<ChatMessage, 'role' | 'meta'>): SelfCh
     status: c.status === 'undone' ? 'undone' : 'applied',
     undoable: c.undoable !== false,
   }
+}
+
+/** The row's saved-lesson reference, or null when the row is not one. */
+export function readLessonSavedRef(m: Pick<ChatMessage, 'role' | 'meta'>): LessonSavedRef | null {
+  if (m.role !== CARD_ROLE) return null
+  const raw = (m.meta as { card?: unknown } | undefined)?.card
+  if (!raw || typeof raw !== 'object') return null
+  const c = raw as Record<string, unknown>
+  if (c.surface !== 'lesson') return null
+  const id = str(c.id, 64)
+  const rule = str(c.rule)
+  if (!id || !rule) return null
+  return { surface: 'lesson', id, slot: str(c.slot, 256), rule, status: c.status === 'enriched' ? 'updated' : 'saved' }
 }
 
 /** The row's card reference, or null when the row does not carry a usable one. */
@@ -157,6 +175,14 @@ export default function ConversationCard({ message, slot }: { message: ChatMessa
     return (
       <div className="min-w-0" data-testid="conversation-card" data-card-surface="self" data-card-id={self.id}>
         <SelfChangeRow change={self} slot={here} />
+      </div>
+    )
+  }
+  const lesson = readLessonSavedRef(message)
+  if (lesson) {
+    return (
+      <div className="min-w-0" data-testid="conversation-card" data-card-surface="lesson" data-card-id={lesson.id}>
+        <LessonSavedRow lesson={lesson} />
       </div>
     )
   }

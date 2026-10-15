@@ -8304,6 +8304,11 @@
       "quote": "引用",
       "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
     },
+    "lessonSaved": {
+      "saved": "レッスンを保存しました: {{rule}}",
+      "updated": "レッスンを更新しました: {{rule}}",
+      "review": "レッスンを確認"
+    },
     "selfChange": {
       "changed_display_name": "{{name}} が名前を変更しました",
       "changed_description": "{{name}} が説明を更新しました",

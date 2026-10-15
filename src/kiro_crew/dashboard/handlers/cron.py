@@ -2880,6 +2880,33 @@ async def _prepare_member_lesson_store(store: str) -> web.Response | None:
     return None
 
 
+async def _surface_lesson_saved(
+    request: web.Request, state: DashboardState, sk: str, rule: str, outcome: str
+) -> None:
+    """Draw a lesson the AGENT just saved in the conversation it saved it from.
+
+    Only the MCP ``learn_add`` path qualifies: it is the one caller that posts with
+    the internal secret, and a person pressing the Memory tab's Add (``dashboard:ui``)
+    needs no note about their own click. A key that maps to no live slot -- a
+    sub-agent, a cron or workflow turn, a channel thread -- has no chat to draw in,
+    so it is skipped. Best effort: the write already happened and a failure here
+    must never change the route's answer.
+    """
+    try:
+        if request.get("internal_auth") is not True or not sk or sk == "dashboard:ui":
+            return
+        from kiro_crew.dashboard import chat_cards
+        from kiro_crew.dashboard.session_control import caller_slot_key
+
+        slot_key = caller_slot_key(state, sk)
+        if not slot_key:
+            return
+        await chat_cards.load_conversation_window(state, {"slot_key": slot_key})
+        chat_cards.record_lesson_saved(state, slot_key, rule, outcome)
+    except Exception:
+        logger.warning("could not draw a saved lesson in its conversation", exc_info=True)
+
+
 async def api_lessons_create(request: web.Request) -> web.Response:
     """POST /api/lessons — add a lesson (vector store or JSONL fallback)."""
     from kiro_crew.learn import Lesson  # noqa: F811
@@ -3197,6 +3224,9 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     # refresh on a no-op re-submit costs a redundant list fetch, a missed one shows
     # deleted data.
     state.push_refresh("lessons")
+    # One chat row per write that changed the store; the recorder drops every
+    # other outcome, and a caller with no chat of its own draws nothing.
+    await _surface_lesson_saved(request, state, sk, rule, outcome)
     # ``ok`` answers the question the caller actually asked -- is the lesson I
     # submitted in the store -- so it stays true for a no-op re-submit (it is stored,
     # there was simply nothing to write) and turns false when a dedup rule or
