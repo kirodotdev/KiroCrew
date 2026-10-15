@@ -256,6 +256,7 @@ from kiro_crew.security import (  # noqa: F401 - the path owners read these
     is_sensitive_write_path,
     is_unverifiable_path_refusal,
     sensitive_path_refusal,
+    sensitive_write_path_refusal,
 )
 from kiro_crew.security.readonly_bash import (  # noqa: F401 - the owners read them
     command_invokes_git,

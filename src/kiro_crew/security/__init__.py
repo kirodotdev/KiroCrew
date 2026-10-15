@@ -2928,6 +2928,7 @@ _EXPORTS: dict[str, str] = {
     "sandbox_credential_targets": "paths",
     "sensitive_home_dirs": "paths",
     "sensitive_path_refusal": "paths",
+    "sensitive_write_path_refusal": "paths",
     "write_protected_home_paths": "paths",
     # perm_verb_mention
     "_perm_verb_mention_only": "perm_verb_mention",
@@ -3519,6 +3520,7 @@ if TYPE_CHECKING:  # keep the names visible to type checkers and IDEs
         sandbox_credential_targets,
         sensitive_home_dirs,
         sensitive_path_refusal,
+        sensitive_write_path_refusal,
         write_protected_home_paths,
     )
     from kiro_crew.security.perm_verb_mention import (  # noqa: F401

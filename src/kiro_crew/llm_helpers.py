@@ -73,11 +73,11 @@ from kiro_crew.security import (
     is_denied,
     is_denied_synthesized_target,
     is_sensitive_bash_command,
-    is_sensitive_write_path,
     is_unverifiable_path_refusal,
     redact_credentials,
     redact_exfiltration_urls,
     sensitive_path_refusal,
+    sensitive_write_path_refusal,
 )
 from kiro_crew.security.readonly_bash import command_invokes_git, is_read_only_bash
 from kiro_crew.sel import sel as _sel
@@ -1601,8 +1601,10 @@ def _edit_target_denial(
             "",
         )
     for path in candidates:
-        if is_sensitive_write_path(path):
-            return ("path", f"Blocked: write to protected path: {path}", path)
+        # ``sensitive_write_path_refusal`` is ``is_sensitive_write_path`` as a
+        # reason: a stall still refuses, worded as a timed-out check.
+        if reason := sensitive_write_path_refusal(path):
+            return ("path", reason, path)
     return None
 
 

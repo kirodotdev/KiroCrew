@@ -366,7 +366,13 @@ def _url_payload_command(n: int) -> str:
 #: Raised again, from 29,573, for the one ``pinned-order`` entry in
 #: ``paths._CREW_SECRET_LEAVES``: the person's pinned-session order is fenced from
 #: agent file tools like ``tag-grants`` beside it.
-_PACKAGE_LINE_BUDGET = 29_574
+#:
+#: Raised again, from 29,574, for the write tier's reason-or-None spelling and the
+#: stall wording that names the stalled prefix and the cooldown left: a
+#: stall still refuses everywhere it did; only the words a refused agent reads moved.
+#: The prefix is named only while its cooldown is open, since most stall raises never
+#: charge it.
+_PACKAGE_LINE_BUDGET = 29_607
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
