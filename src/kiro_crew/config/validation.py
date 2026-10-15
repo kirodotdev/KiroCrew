@@ -31,6 +31,7 @@ compatibility.
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 import threading
 
@@ -91,6 +92,12 @@ except ImportError:  # pragma: no cover
 # Config-validation warnings are part of the loader's observable contract, so
 # they are emitted on the loader's logger channel (see module docstring).
 logger = logging.getLogger("kiro_crew.config.loader")
+
+# Deprecated fields survive load and save, so repeated config reads cannot clear
+# their warning. A digest remembers each observed field value for this process
+# without retaining configured credentials in the warning registry.
+_REPORTED_DEPRECATED_FIELDS: set[tuple[str, bytes]] = set()
+_DEPRECATED_WARNING_LOCK = threading.Lock()
 
 
 # ---------------------------------------------------------------------------
@@ -546,6 +553,12 @@ def validate_config_data(data: dict) -> dict:
                 found = False
                 break
         if found and not _holds_nothing(node):
+            value_digest = hashlib.sha256(repr(node).encode("utf-8")).digest()
+            warning_key = (entry.path, value_digest)
+            with _DEPRECATED_WARNING_LOCK:
+                if warning_key in _REPORTED_DEPRECATED_FIELDS:
+                    continue
+                _REPORTED_DEPRECATED_FIELDS.add(warning_key)
             logger.warning(
                 "Config: deprecated field '%s': %s",
                 entry.path,
