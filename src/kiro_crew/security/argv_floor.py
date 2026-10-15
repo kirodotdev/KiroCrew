@@ -4375,6 +4375,10 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     single word by the shell), and collects across ALL of them: a benign feature
     push cannot vouch for a sibling protected one.
     """
+    spaced = _shell_normalizer._gh_data_newlines_as_spaces(text_lower)
+    if spaced != text_lower and not _is_git_publish(spaced):
+        # A ``git push`` line inside a literal gh text value is data, not a push.
+        return frozenset()
     tags: set[str] = set()
     saw_push = False
     for command in _split_push_command_segments(text_lower):

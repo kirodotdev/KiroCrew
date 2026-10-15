@@ -2014,3 +2014,80 @@ class TestNestedPayloadExtractionSpansTheProvenBoundary:
         )
         assert security._GIT_PUBLISH_UNGATED in floor("git push origin feature > >(echo main")
         assert security._git_push_args("bash -c '(cd /tmp && git push origin my-feature)'") is None
+
+
+class TestQuotedGhTextValueIsNotAPush:
+    """A push line inside a literal ``gh`` body / title / notes value is data.
+
+    The push splitter ends a segment at every newline, so the middle line of
+    ``gh pr create --body "notes⏎git push⏎more"`` was judged as a bare push. Only
+    one provable shape is read as data: a single ``gh pr|issue|release`` command
+    of plain words and literal quoted words, the multi-line one being the value
+    of a text flag. Every other shape keeps its per-line reading.
+    """
+
+    ALLOWED = (
+        f'gh pr create --body "notes\n{PUSH}\nmore"',
+        f"gh pr create --body 'notes\n{PUSH}\nmore'",
+        f'gh pr create -R o/r --head u:fix/x --title "t" --body "a\n{PUSH} origin main\nb"',
+        f'gh issue comment 12 -b "x\n{PUSH}\n"',
+        f'gh release create v1 --notes "n\n{PUSH} -f\n"',
+    )
+
+    DENIED = (
+        # A real push outside the quotes, on its own line or after a separator.
+        f'gh pr create --body "notes"\n{PUSH}',
+        f'gh pr create --body "x\n"\n{PUSH} origin main',
+        f'gh pr create --body "x\n" ; {PUSH} origin main',
+        f'gh pr create --body "x\n" && {PUSH} origin ma$b',
+        f'gh pr create --body "x\n" && {PUSH} origin {{main,x}}',
+        f"gh pr create --body \"x\n\" && {PUSH} origin $'main'",
+        f'{PUSH} origin main\ngh pr create --body "a\n"',
+        # Quote tricks whose quote reading is not bash's.
+        f"gh pr create --body x # don't\n{PUSH}\n'",
+        f"gh pr create --body \"x\n\" # it's\n{PUSH}\n'",
+        f'gh pr create --body "$(echo)\n{PUSH}\n"',
+        f'gh pr create --body "a\\"\n{PUSH}\n"',
+        f'gh pr create --body "unterminated\n{PUSH}',
+        f"gh pr create --body x \\\n{PUSH}",
+        f'gh pr create --body-file - <<EOF\n"\nEOF\n{PUSH}\n"',
+        f"gh pr create --body \"a\"'b\n{PUSH}\n'",
+        f'gh pr create --body "a\n{PUSH}\n" --title "$({PUSH} origin main)"',
+        # PowerShell: ``--%`` passes the rest of the LINE verbatim, and a curly
+        # quote ends a quoted word there, so the next line runs as a command.
+        f'gh pr create --% --body "x\n{PUSH} origin main\n"',
+        f"gh pr create --body 'x\u2019\n{PUSH} origin main\n'",
+        f'gh pr create --body "x\u201d\n{PUSH} origin main\n"',
+        # Not a text-flag value of a gh core command.
+        f'gh pr create "a\n{PUSH}\n"',
+        f'gh pr merge -m "a\n{PUSH}\n"',
+        f'gh myalias --body "a\n{PUSH}\n"',
+        f'gh api x --body "a\n{PUSH}\n"',
+        # Another owner, a wrapper, or more than one simple command.
+        f'bash -c "x\n{PUSH}"',
+        f'sh -c "x\n{PUSH}\n"',
+        f"eval 'x\n{PUSH}\n'",
+        f'git commit -m "x\n{PUSH}\n"',
+        f'x=1 gh pr create --body "a\n{PUSH}\n"',
+        f'cd /r && gh pr create --body "a\n{PUSH}\n"',
+        f'gh pr create --body "a\n{PUSH}\n" | cat',
+        f'gh pr create --body "a\n{PUSH}\n">/dev/null',
+        f'(gh pr create --body "a\n{PUSH}\n")',
+    )
+
+    @pytest.mark.parametrize("command", ALLOWED)
+    def test_a_push_line_in_a_literal_gh_text_value_is_allowed(
+        self, command: str, captured_sel_events
+    ) -> None:
+        assert is_denied(command) is None
+        assert not _is_push_to_protected_branch(command)
+        # Not a publish at all, so no push_allowed audit is recorded for it.
+        assert not any(e.event_type == "push_allowed" for e in captured_sel_events)
+
+    @pytest.mark.parametrize("command", DENIED)
+    def test_every_other_shape_keeps_its_per_line_reading(self, command: str) -> None:
+        from kiro_crew.security import shell_normalizer
+
+        assert shell_normalizer._gh_data_newlines_as_spaces(command.lower()) == command.lower()
+        assert is_denied(command), f"{command!r} was allowed"
+        assert _is_push_to_protected_branch(command)

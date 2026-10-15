@@ -372,7 +372,13 @@ def _url_payload_command(n: int) -> str:
 #: stall still refuses everywhere it did; only the words a refused agent reads moved.
 #: The prefix is named only while its cooldown is open, since most stall raises never
 #: charge it.
-_PACKAGE_LINE_BUDGET = 29_607
+#:
+#: Raised again, from 29,607, for ``shell_normalizer._gh_data_newlines_as_spaces``
+#: and its two callers: a ``git push`` line inside a literal ``gh pr|issue|release``
+#: text-flag value is read as the one word bash hands gh. One closed shape, read
+#: over ``_iter_shell_chars`` steps, and every other command keeps its per-line
+#: push reading.
+_PACKAGE_LINE_BUDGET = 29_696
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

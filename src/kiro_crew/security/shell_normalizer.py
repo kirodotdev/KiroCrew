@@ -2832,6 +2832,85 @@ def _split_push_command_segments(text: str) -> list[str]:
         rest = rest[resume_at:]
 
 
+#: ``gh`` command groups whose body / title / notes flags only ever carry text
+#: for the GitHub API. gh refuses an alias or extension named after a core
+#: command, so these names cannot be redefined to run their arguments.
+_GH_DATA_COMMAND_GROUPS = frozenset({"pr", "issue", "release"})
+#: The value-taking text flags of those groups (``-m`` is deliberately absent:
+#: on ``gh pr merge`` it is the boolean ``--merge``, not a message).
+_GH_DATA_FLAGS = frozenset({"-b", "--body", "-t", "--title", "--subject", "-n", "--notes"})
+#: An unquoted word of that command: no expansion, glob, redirect, comment,
+#: escape or separator character can appear in one, in bash or in PowerShell
+#: (no ``%``, so no ``--%`` stop-parsing token; no ``@``, so no splat).
+_GH_PLAIN_WORD_RE = re.compile(r"[A-Za-z0-9._/:=+,-]+")
+#: Characters PowerShell also reads as quote marks, so one inside an ASCII
+#: quoted word could end it there while bash reads on.
+_POWERSHELL_EXTRA_QUOTES = frozenset("\u2018\u2019\u201a\u201b\u201c\u201d\u201e")
+
+
+def _gh_data_newlines_as_spaces(text: str) -> str:
+    """Return *text* with newlines inside a literal ``gh`` text-flag value spaced.
+
+    The push splitter ends a segment at EVERY newline, quoted or not, so a line
+    of ``gh pr create --body "notes⏎git push⏎more"`` that reads ``git push`` was
+    judged as a bare push although bash hands the whole value to gh as one word.
+    This removes that reading for one shape only, where the quote walk below is
+    exactly bash's and PowerShell's: the whole text is ONE simple command ``gh
+    pr|issue|release ...`` of plain words (``_GH_PLAIN_WORD_RE``) and whole
+    quoted words, every quoted word closes, stands alone between blanks, holds
+    no ``_POWERSHELL_EXTRA_QUOTES`` mark, and no ``$``, backtick or backslash
+    when double-quoted, and every quoted word that spans lines is the value of a
+    ``_GH_DATA_FLAGS`` flag. With no separator, comment, heredoc, escape or
+    expansion outside the quotes, gh is the only program the shell runs.
+
+    Quote state comes from :func:`_iter_shell_chars`; the checks above are read
+    over its steps, and the spaced view is rebuilt from them with each QUOTED
+    newline as a space. Any other text is returned unchanged, so the caller
+    reads it as before; the spaced view only ever equals the single-line
+    spelling of the same command.
+    """
+    if "\n" not in text:
+        return text
+    steps = list(_iter_shell_chars(text))
+    words: list[tuple[str, bool]] = []
+    start = 0
+    for end in [*(i for i, s in enumerate(steps) if s.active and s.char in " \t"), len(steps)]:
+        if end > start:
+            word = _gh_text_word(steps[start:end], words[-1] if words else None)
+            if word is None:
+                return text
+            words.append(word)
+        start = end + 1
+    if len(words) < 2 or words[0] != ("gh", False):
+        return text
+    if words[1][1] or words[1][0] not in _GH_DATA_COMMAND_GROUPS:
+        return text
+    return "".join(" " if s.char == "\n" else s.text for s in steps)
+
+
+def _gh_text_word(
+    steps: "list[_ShellChar]", previous: "tuple[str, bool] | None"
+) -> "tuple[str, bool] | None":
+    """One blank-delimited word of :func:`_gh_data_newlines_as_spaces` as ``(text,
+    quoted)``, or None when it is not a plain word or one whole literal quoted word."""
+    raw = "".join(s.text for s in steps)
+    if all(s.active for s in steps):
+        return (raw, False) if _GH_PLAIN_WORD_RE.fullmatch(raw) else None
+    first, last = steps[0], steps[-1]
+    if not first.active or first.char not in "'\"" or len(steps) < 2 or last.state != 0:
+        return None
+    if any(s.state == 0 for s in steps[:-1]):
+        return None  # the quote closed before the word ended: text glued to it
+    body = raw[1:-1]
+    if first.char == '"' and any(c in body for c in "$`\\"):
+        return None
+    if any(c in _POWERSHELL_EXTRA_QUOTES for c in body):
+        return None
+    if "\n" in body and (previous is None or previous[1] or previous[0] not in _GH_DATA_FLAGS):
+        return None
+    return (body, True)
+
+
 # Shell expansions that fuse text INTO a word, so the literal command hides the
 # real push target. Any of these inside a git-publish command is unverifiable
 # -> deny (fail closed):
