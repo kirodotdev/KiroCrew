@@ -135,11 +135,13 @@ async def _drain_session_init_oauth_requests(
         # Raw (unredacted) name on purpose: store keys are raw and this is a
         # set-membership test, so an untrusted value can only miss. Redaction
         # happens inside _emit_mcp_oauth_request.
+        oauth_url = req.get("oauthUrl") or ""
+        await _approve_discovered_mcp_oauth_endpoint(server_name, oauth_url)
         _emit_mcp_oauth_request(
             state,
             slot,
             server_name,
-            req.get("oauthUrl") or "",
+            oauth_url,
             card_owned=bool(server_name) and server_name in managed,
             minted_by=minted_by,
         )
@@ -214,6 +216,26 @@ def _redact_acp_string(s: str) -> str:
     s, _ = redact_credentials(s)
     s, _ = redact_exfiltration_urls(s)
     return s
+
+
+async def _approve_discovered_mcp_oauth_endpoint(server_name: str, oauth_url: str) -> None:
+    """Let the banner gate accept a configured server's own consent endpoint.
+
+    Awaited just before :func:`_emit_mcp_oauth_request`. A consent URL whose
+    endpoint is outside the builtin and operator sets is otherwise refused for
+    its PKCE entropy, which left every hand-added remote MCP server with its own
+    authorization server unconnectable. ``mcp_oauth_discovery`` verifies the
+    endpoint against the discovery metadata of the server URL the operator
+    configured and, on an exact match, approves it process-wide, so this banner
+    and every later render of it (``chat_utils._redact_meta_for_role``) pass the
+    same gate. It does nothing (and makes no request) for a URL the gate already
+    accepts or would refuse for any other reason, and it never raises.
+    """
+    if not server_name or not oauth_url:
+        return
+    from kiro_crew.mcp_oauth_discovery import approve_discovered_oauth_endpoint
+
+    await approve_discovered_oauth_endpoint(server_name, oauth_url)
 
 
 def _emit_mcp_oauth_request(

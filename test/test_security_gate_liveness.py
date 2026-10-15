@@ -348,7 +348,15 @@ def _url_payload_command(n: int) -> str:
 #: spares an ordered alphabet and a data URI payload, the flag it sets, the one place pass 3
 #: reads it, and the two checks that tell those shapes from a key. No credential branch, gate
 #: verdict or other pass moved.
-_PACKAGE_LINE_BUDGET = 29_411
+#:
+#: Raised again, from 29,411, for the discovery-verified OAuth consent endpoints in
+#: ``exfil.py``: the in-memory ``(host, path) -> expiry`` set with its TTL and cap,
+#: ``record_discovered_oauth_endpoint`` (which reuses the operator file's host and
+#: path validators), its ``oauth_endpoint_discovered`` SEL emitter, one lookup in
+#: ``_approved_oauth_authorization_endpoint`` and the facade export. The rationale
+#: lives in the security spec, not the package. An approved endpoint gets exactly
+#: the builtin set's exemption; no pattern, threshold or pass moved.
+_PACKAGE_LINE_BUDGET = 29_492
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

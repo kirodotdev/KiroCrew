@@ -26,6 +26,7 @@ import logging
 import re
 import socket
 import string
+import time
 import uuid
 from collections import Counter
 from collections.abc import Iterator
@@ -583,10 +584,87 @@ def _approved_oauth_authorization_endpoint(host: str, path: str) -> bool:
     key = (host.lower(), path)
     if key in _OAUTH_AUTHORIZATION_ENDPOINTS:
         return True
+    if _discovered_oauth_endpoint_approved(key):
+        return True
     if key in _load_operator_oauth_endpoints():
         _emit_oauth_extension_used_event(*key)
         return True
     return False
+
+
+# ── Discovered OAuth endpoints (verified from an operator-configured MCP server) ──
+# Filled only by ``mcp_oauth_discovery``; trust anchor, bounds and why this does
+# not lower the agent's ceiling: docs/system-specs/modules/security.md,
+# "Discovery-verified consent endpoints".
+_OAUTH_DISCOVERED_TTL_SECONDS = 24 * 60 * 60
+_OAUTH_DISCOVERED_CAP = 64
+# Bound on the server URL copied into the SEL event; nothing else retains it.
+_OAUTH_DISCOVERED_MCP_URL_MAX_LEN = 512
+# (host, path) -> monotonic expiry. Host and path are bounded by the validators.
+_OAUTH_DISCOVERED_ENDPOINTS: dict[tuple[str, str], float] = {}
+
+
+def _discovered_oauth_endpoint_approved(key: tuple[str, str]) -> bool:
+    """Whether *key* was verified by discovery and has not expired."""
+    expiry = _OAUTH_DISCOVERED_ENDPOINTS.get(key)
+    if expiry is None:
+        return False
+    if expiry <= time.monotonic():
+        _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
+        return False
+    return True
+
+
+def record_discovered_oauth_endpoint(host: str, path: str, *, mcp_url: str) -> bool:
+    """Approve an authorization endpoint verified by MCP OAuth discovery.
+
+    Called ONLY by ``kiro_crew.mcp_oauth_discovery`` after it matched the
+    endpoint against the metadata advertised for an operator-configured MCP
+    server. Returns False (and records nothing) for a host or path the operator
+    file's validators would refuse. A newly recorded endpoint is SEL-audited
+    with the server URL it was verified from.
+    """
+    host_norm = host.lower()
+    if not _OAUTH_EXTENSION_HOST_RE.fullmatch(host_norm) or not _valid_oauth_extension_path(path):
+        return False
+    key = (host_norm, path)
+    fresh = not _discovered_oauth_endpoint_approved(key)
+    _OAUTH_DISCOVERED_ENDPOINTS.pop(key, None)
+    while len(_OAUTH_DISCOVERED_ENDPOINTS) >= _OAUTH_DISCOVERED_CAP:
+        # A default: a worker thread may expire the same key concurrently.
+        _OAUTH_DISCOVERED_ENDPOINTS.pop(next(iter(_OAUTH_DISCOVERED_ENDPOINTS)), None)
+    _OAUTH_DISCOVERED_ENDPOINTS[key] = time.monotonic() + _OAUTH_DISCOVERED_TTL_SECONDS
+    if fresh:
+        _emit_oauth_discovered_endpoint_event(host_norm, path, mcp_url)
+    return True
+
+
+def _emit_oauth_discovered_endpoint_event(host: str, path: str, mcp_url: str) -> None:
+    """Best-effort SEL record that discovery approved a consent endpoint."""
+    if len(mcp_url) > _OAUTH_DISCOVERED_MCP_URL_MAX_LEN:
+        mcp_url = mcp_url[: _OAUTH_DISCOVERED_MCP_URL_MAX_LEN - 1] + "…"
+    try:
+        SecurityEventLog().log(
+            SecurityEvent(
+                event_id=uuid.uuid4().hex[:16],
+                timestamp=datetime.now(tz=timezone.utc).isoformat(),
+                event_type="oauth_endpoint_discovered",
+                caller_identity="",
+                agent="kirocrew",
+                source="security",
+                operation="oauth_banner_check",
+                outcome="allowed",
+                resources=f"{host}{path}",
+                metadata={
+                    "host": host,
+                    "path": path,
+                    "mcp_url": mcp_url,
+                    "mechanism": "OAUTH_ENDPOINT_DISCOVERY",
+                },
+            )
+        )
+    except Exception:
+        logger.debug("SEL audit failed for oauth_endpoint_discovered (allow stands)", exc_info=True)
 
 
 # S3 presigned URLs contain X-Amz-Signature (a 64-char hex string) that

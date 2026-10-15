@@ -221,6 +221,7 @@ from kiro_crew.dashboard.chat_turn.file_changes import (  # noqa: F401
     _turn_rows,
 )
 from kiro_crew.dashboard.chat_turn.mcp_session import (  # noqa: F401
+    _approve_discovered_mcp_oauth_endpoint,
     _connections_managed_mcp_names,
     _drain_session_init_oauth_requests,
     _emit_mcp_oauth_request,
@@ -14107,6 +14108,7 @@ async def _run_chat(
                 # kiro-cli emits this notification when an MCP server's token
                 # has expired or never existed. Surface as an inline banner —
                 # kiro-cli's local callback handles the rest of the OAuth flow.
+                await _approve_discovered_mcp_oauth_endpoint(event.server_name, event.oauth_url)
                 _emit_mcp_oauth_request(
                     state,
                     slot,
