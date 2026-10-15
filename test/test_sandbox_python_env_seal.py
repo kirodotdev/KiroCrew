@@ -1,8 +1,8 @@
 """The gateway's own Python environment is read-only to every sandboxed child but a
 provisioning one.
 
-A packaged install runs from an environment (a venv, the desktop bundle's embedded
-interpreter, or a ``site-packages`` directory) whose contents the gateway loads on its
+A packaged install runs from an environment (a venv or the desktop bundle's embedded
+interpreter) whose contents the gateway loads on its
 next start. The planner seals that environment beside the package directory for every
 spawn, except the few gateway-run steps that install Python packages into it for the
 gateway: the memory extra's ``ensurepip`` and ``faiss-cpu`` install and an app's Python
@@ -98,14 +98,15 @@ def test_the_bundled_interpreter_seals_its_whole_runtime() -> None:
         f"{HOME}/.local/lib/python3.12/site-packages/kiro_crew",
     ],
 )
-def test_a_shared_interpreter_seals_only_the_site_packages(package_dir: str) -> None:
-    # A system or --user install: the interpreter beside it serves other programs.
-    assert _env(package_dir, "/usr", "/usr") == [os.path.dirname(package_dir)]
+def test_a_shared_interpreter_seals_no_more_than_the_package_directory(package_dir: str) -> None:
+    # A system or --user install: its site-packages serves every other program on that
+    # interpreter, including an agent's own `pip install --user`.
+    assert _env(package_dir, "/usr", "/usr") == []
 
 
 @_POSIX_ONLY
-def test_a_venv_that_does_not_hold_the_package_seals_only_its_site_packages() -> None:
-    assert _env(INSTALL, "/elsewhere/venv", "/usr") == [SITE]
+def test_a_venv_that_does_not_hold_the_package_seals_no_more_than_the_package_directory() -> None:
+    assert _env(INSTALL, "/elsewhere/venv", "/usr") == []
 
 
 @_POSIX_ONLY
@@ -129,9 +130,7 @@ def test_windows_layouts_are_classified() -> None:
     package = venv + r"\Lib\site-packages\kiro_crew"
     with_paths = sandbox_python_env._python_env_targets_with
     assert with_paths(package, venv, r"C:\Python312", False, r"C:\Users\u", ntpath) == [venv]
-    assert with_paths(package, r"D:\other", r"C:\Python312", False, r"C:\Users\u", ntpath) == [
-        venv + r"\Lib\site-packages"
-    ]
+    assert with_paths(package, r"D:\other", r"C:\Python312", False, r"C:\Users\u", ntpath) == []
 
 
 def test_this_source_checkout_seals_no_environment() -> None:

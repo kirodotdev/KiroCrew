@@ -1,8 +1,8 @@
 """The gateway's own Python environment, and the spawns that may write it.
 
-A packaged install runs from an environment (a virtual environment, the desktop
-bundle's embedded interpreter, or the ``site-packages`` directory of a shared
-interpreter) whose contents the gateway loads on its next start. The planner seals it
+A packaged install runs from an environment (a virtual environment or the desktop
+bundle's embedded interpreter) whose contents the gateway loads on its next start. The
+planner seals it
 read-only beside the package directory (:func:`kiro_crew.sandbox_tiers.install_root_targets_for`)
 for every sandboxed spawn but a provisioning one: a gateway-run step that installs
 Python packages into that environment for the gateway, which asks for it with
@@ -27,14 +27,16 @@ def python_env_targets_for(
     """The Python environment to seal read-only around a package at *package_dir*.
 
     Empty unless the package is a packaged install
-    (:func:`~kiro_crew.sandbox_tiers.install_root_targets_for`). When the interpreter's
-    own tree (``sys.prefix``, given as *prefix*) belongs to the install alone -- a
-    virtual environment, where it differs from *base_prefix*, or the desktop bundle's
-    embedded interpreter (*bundled*) -- and holds the package, the whole tree is the
-    environment: its ``site-packages`` with every ``.pth`` file and dependency, its
-    ``bin`` scripts and its ``pyvenv.cfg``. Any other layout (a system or ``--user``
-    install) seals the ``site-packages`` directory holding the package, never the
-    shared interpreter beside it, and so does a tree that is or contains *home*.
+    (:func:`~kiro_crew.sandbox_tiers.install_root_targets_for`) whose environment
+    belongs to the install alone: the interpreter's own tree (``sys.prefix``, given as
+    *prefix*) is a virtual environment, where it differs from *base_prefix*, or the
+    desktop bundle's embedded interpreter (*bundled*), and it holds the package. Then
+    the whole tree is the environment: its ``site-packages`` with every ``.pth`` file
+    and dependency, its ``bin`` scripts and its ``pyvenv.cfg``; a tree that is or
+    contains *home* seals only the ``site-packages`` holding the package. Any other
+    layout (a system or ``--user`` install) shares its ``site-packages`` with every
+    other program on that interpreter, so nothing beyond the package directory is
+    sealed there.
 
     Lexical only, so it never stats; :func:`resolved_python_env_targets` adds the
     canonical spellings.
@@ -53,10 +55,12 @@ def _python_env_targets_with(
     root = paths.normpath(paths.abspath(prefix))
     base = paths.normpath(paths.abspath(base_prefix))
     own_tree = bundled or paths.normcase(root) != paths.normcase(base)
+    if not own_tree or not _within(site, root, paths):
+        return []
     home_dir = paths.normpath(paths.abspath(home))
-    if own_tree and _within(site, root, paths) and not _within(home_dir, root, paths):
-        return [root]
-    return [site]
+    if _within(home_dir, root, paths):
+        return [site]
+    return [root]
 
 
 def _within(path: str, parent: str, paths: ModuleType) -> bool:
