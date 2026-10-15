@@ -21,9 +21,20 @@ the import this module replaces.
 from __future__ import annotations
 
 from kiro_crew.acp.client import AcpError, AcpProcessDied, AcpTimeoutError
+from kiro_crew.acp.engine_fallback import (
+    EngineFallbackWalk,
+    ModelFallbackNotice,
+    engine_served_model,
+    follow_engine_promotion,
+    is_unpinned_pick,
+    same_model,
+    tracker_of,
+    walk_outcome,
+)
 from kiro_crew.acp.liveness import InFlightToolTracker
 from kiro_crew.acp.session_handle import NATIVE_CHILD_NOT_RESUMABLE, AcpRequestTimeout
 from kiro_crew.acp.types import (
+    EVENT_MODEL_FALLBACK,
     EVENT_STRUCTURED_STATUS,
     STATUS_EXTENSION_VERSION,
     STATUS_PHASE_WAITING,
@@ -44,6 +55,7 @@ from kiro_crew.acp.types import (
 __all__ = [
     "is_runtime_death",
     "is_user_worded_failure",
+    "EVENT_MODEL_FALLBACK",
     "EVENT_STRUCTURED_STATUS",
     "NATIVE_CHILD_NOT_RESUMABLE",
     "STATUS_EXTENSION_VERSION",
@@ -63,6 +75,17 @@ __all__ = [
     "InFlightToolTracker",
     "StructuredStatus",
     "classify_stop_reason",
+    # The engine's own in-prompt model fallback (``acp/engine_fallback.py``): the
+    # per-turn walk a surface ends with one line, the verdict it reads, and the
+    # readers a surface that shows the model uses to follow the engine.
+    "EngineFallbackWalk",
+    "ModelFallbackNotice",
+    "engine_served_model",
+    "follow_engine_promotion",
+    "is_unpinned_pick",
+    "same_model",
+    "tracker_of",
+    "walk_outcome",
 ]
 
 

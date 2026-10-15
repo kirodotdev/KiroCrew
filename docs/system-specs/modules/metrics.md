@@ -1008,7 +1008,7 @@ Each row (`_build_token_record`) carries:
 | `ts` | str | ISO-8601 local timestamp of the turn |
 | `slot` | str | chat slot / session key |
 | `provider` | str | LLM backend (`acp` / `claude_code` / `bedrock` / …), `""` if unknown |
-| `model` | str | resolved model id for the turn; `"auto"` when the completed turn only exposes the Auto request, or the backend reported `auto` as the resolved id (a session on the default model, whose `_model` stays `""`); `""` if no model source is available. A billed row persisted with a blank model logs a WARNING (`_warn_unattributed_billing`) so the path that lost the model can be found; the provider-wrapper walk that resolves it is bounded at `_WRAPPER_CHAIN_MAX_NODES` (64) |
+| `model` | str | resolved model id for the turn; `"auto"` when the completed turn only exposes the Auto request, or the backend reported `auto` as the resolved id (a session on the default model, whose `_model` stays `""`); `""` if no model source is available. A billed row persisted with a blank model logs a WARNING (`_warn_unattributed_billing`) so the path that lost the model can be found; the provider-wrapper walk that resolves it is bounded at `wrapper_chain.WRAPPER_CHAIN_MAX_NODES` (64) |
 | `input` / `output` | int | prompt / completion tokens (structurally `0` on the ACP backend — kiro-cli bills credits only) |
 | `cache_create` / `cache_read` | int | cache-write / cache-read tokens |
 | `cost` | float | provider-reported USD cost (`0.0` on ACP) |

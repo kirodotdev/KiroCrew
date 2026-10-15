@@ -116,7 +116,9 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         ROUTE_BASELINE_ATTR,
         TURN_FALLBACK_ATTR,
         FallbackState,
+        _annotate_engine_fallback,
         _bound_to_other_loop,
+        _consume_engine_promotion,
         _fallback_wire_spelling,
         _latch_identity,
         _slot_switch_session_locks,
@@ -124,6 +126,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         annotate_model_fallback,
         append_fallback_story,
         configured_fallback_chain,
+        engine_attributed_model,
         fallback_rewound_transient_budget,
         fallback_story_of,
         first_advertised_fallback,
@@ -219,6 +222,10 @@ if TYPE_CHECKING:  # names it serves from outside the family, from their homes
         STOP_REASON_STALE_RECOVER,
         STOP_REASON_TIMEOUT,
         AcpTimeoutError,
+        engine_served_model,
+        same_model,
+        tracker_of,
+        walk_outcome,
     )
     from kiro_crew.config.loader import (  # noqa: F401
         KiroCrewConfig,

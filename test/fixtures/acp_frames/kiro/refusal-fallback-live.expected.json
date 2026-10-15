@@ -1,0 +1,99 @@
+[
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 2.0037999153137207,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "I can't help with that."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "I can't help with that.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": null,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "model_fallback",
+    "frame": "_kiro.dev/session/update",
+    "model_fallback": [
+      {
+        "cause": "refused",
+        "engine": "v2",
+        "from_model": "claude-opus-4.6",
+        "promoted": false,
+        "reason": "",
+        "source": "backend",
+        "to_model": "claude-sonnet-4.6"
+      }
+    ]
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "Here is the answer."
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "Here is the answer.",
+      "thinking": false
+    }
+  },
+  {
+    "action": "model_fallback",
+    "frame": "_kiro.dev/session/update",
+    "model_fallback": [
+      {
+        "cause": "refused",
+        "engine": "v2",
+        "from_model": "claude-opus-4.6",
+        "promoted": true,
+        "reason": "",
+        "source": "backend",
+        "to_model": "claude-sonnet-4.6"
+      }
+    ]
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": 2.0077998638153076,
+      "credits": 0.0
+    }
+  },
+  {
+    "action": "metadata",
+    "frame": "_kiro.dev/metadata",
+    "metadata": {
+      "context_pct": null,
+      "credits": 0.0
+    }
+  },
+  {
+    "frame": "response",
+    "id": 2,
+    "stop_reason": "end_turn"
+  }
+]

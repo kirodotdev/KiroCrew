@@ -21,6 +21,12 @@ from typing import Any
 
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling_on
 from kiro_crew.agent_sdk.drivers.acp_turn_vocab import LLMProvider, advertised_model_ids
+from kiro_crew.agent_sdk.drivers.acp_vocab import (
+    engine_served_model,
+    same_model,
+    tracker_of,
+    walk_outcome,
+)
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.llm_helpers_parts.backend_errors import TRANSIENT_RETRIES
 from kiro_crew.messaging.link import canonical_key
@@ -170,7 +176,7 @@ def append_fallback_story(text: str, exc: BaseException, *, budget: int | None =
     return out if budget is None else out[:budget]
 
 
-def annotate_model_fallback(text: str, provider: Any) -> str:
+def annotate_model_fallback(text: str, provider: Any, *, stop_reason: str | None = None) -> str:
     """Prepend the throttle-fallback warning to a delivered unattended result.
 
     Unattended surfaces (cron/heartbeat results, the sub-agent completion
@@ -185,8 +191,14 @@ def annotate_model_fallback(text: str, provider: Any) -> str:
     spellings: ``slack/gateway`` + an inline block in ``subagent``). Never
     raises: an annotation failure must not turn a successful run into a
     failed one — the un-annotated *text* is returned instead.
+
+    *stop_reason* is the run's terminal stop reason, which decides how the
+    ENGINE's fallback line ends (answered vs no model answered; see
+    ``acp.engine_fallback.walk_outcome``). ``None`` means the caller saw no
+    terminal, and the line reads as answered, since a result is being delivered.
     """
     try:
+        text = _annotate_engine_fallback(text, provider, stop_reason)
         fb = getattr(provider, TURN_FALLBACK_ATTR, None)
         if not fb:
             return text
@@ -207,6 +219,43 @@ def annotate_model_fallback(text: str, provider: Any) -> str:
     except Exception:  # noqa: BLE001 — annotation is best-effort visibility
         logger.debug("fallback annotation failed", exc_info=True)
         return text
+
+
+def _annotate_engine_fallback(text: str, provider: Any, stop_reason: str | None) -> str:
+    """Prepend the ENGINE's fallback line for this run, when the engine moved it.
+
+    kiro-cli can move a run onto another model inside one prompt
+    (``acp/engine_fallback.py``). The line ends the way the dashboard's notice
+    does, by the same rule (``walk_outcome``): a refusal terminal reads as no
+    model answered. With no terminal seen (*stop_reason* ``None``) it reads as
+    answered. The ids were accepted only as grammar tokens the credential scrub
+    leaves unchanged (``parse_model_id``), so the line needs no further scrub.
+    """
+    tracker = tracker_of(provider)
+    if tracker is None:
+        return text
+    walk = tracker.walk
+    outcome = "answered" if stop_reason is None else walk_outcome(stop_reason)
+    # Crew's own fallback restores its primary next run, so no promotion stands.
+    line = walk.line(outcome, promoted=not provider_fallback_active(provider))
+    if not line:
+        return text
+    return f"⚠ {line}\n\n{text}" if text else f"⚠ {line}"
+
+
+def engine_attributed_model(pin: str, provider: Any) -> str:
+    """The model a usage row records for a run Crew put on *pin*.
+
+    THE shared rule for a move kiro-cli made inside one prompt
+    (``acp/engine_fallback.py``): when the engine ran *provider*'s last prompt on
+    another model, that model answered the run and *pin* did not, so the row
+    names it (``engine_served_model``: the promoted model, else the last hop's
+    target). Otherwise *pin* stands. The dashboard, cron, heartbeat and
+    sub-agent rows all record through this, so a turn-scoped hop and a
+    promotion are billed the same way everywhere, and on top of Crew's own
+    fallback: the engine's target answered even a turn Crew moved first.
+    """
+    return engine_served_model(provider) or pin
 
 
 def provider_fallback_active(provider: Any) -> bool:
@@ -714,6 +763,27 @@ def provider_raw_model(provider: Any) -> str:
     return ""
 
 
+def _consume_engine_promotion(provider: Any, candidate: str, current: str) -> bool:
+    """Whether kiro-cli's last promotion moved *provider* from *candidate* to *current*.
+
+    On a match the promotion is consumed: the caller moves its marker to
+    *current*, so a later promotion chains from there, not from *candidate*.
+    The unattended surfaces' counterpart of the dashboard's retarget
+    (``dashboard/engine_fallback.py``). Never raises.
+    """
+    try:
+        tracker = tracker_of(provider)
+        if tracker is None or not tracker.promotion:
+            return False
+        frm, to = tracker.promotion
+        if not (same_model(candidate, frm) and same_model(current, to)):
+            return False
+        tracker.promotion = None
+        return True
+    except Exception:
+        return False
+
+
 async def probe_fallback_restore(
     provider: Any,
     *,
@@ -790,6 +860,18 @@ async def probe_fallback_restore(
 
     _clear = clear if clear is not None else _default_clear
     current = provider_active_model(provider)
+    if state is None and _consume_engine_promotion(provider, candidate, current):
+        if same_model(current, primary):
+            # The engine moved back onto the primary: the fallback is over.
+            _run_hook(_clear, "clear")
+            return
+        # The engine, not the user, moved the session off Crew's fallback:
+        # the fallback still stands, so the marker follows and the restore runs.
+        candidate = current
+        try:
+            setattr(provider, TURN_FALLBACK_ATTR, (primary, current))
+        except Exception:
+            logger.debug("fallback restore: could not move the marker", exc_info=True)
     if current and candidate and current.strip().lower() != candidate.strip().lower():
         # The session moved off our fallback by other means (explicit pick,
         # session reset). The sticky state is stale — drop it, restore nothing.

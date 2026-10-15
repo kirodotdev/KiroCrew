@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
     from typing import Any
 
+    from kiro_crew.agent_sdk.drivers.acp_vocab import EngineFallbackWalk
     from kiro_crew.dashboard.chat_runner import (
         DashboardState,
         MonitorCompletionHook,
@@ -121,6 +122,7 @@ class _ChatTurn:
     _dir_consumed_out: "dict[str, str]"
     _dispatch_lock: "Lock"
     _dispatch_lock_held: "bool"
+    _engine_fallback_walk: "EngineFallbackWalk"
     _escalation: "PoisonedConversationEscalation"
     _failed_write_calls: "set[str]"
     _first_turn_history_assembled: "bool"

@@ -975,6 +975,12 @@ async def _turn_settle_answer(turn: _ChatTurn) -> None:
         _flush_text_stream(turn)
         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
         turn._reply_flushed = True
+        # A refusal terminal means the engine did not answer this turn: a turn
+        # its in-turn fallback recovered ends `end_turn` on both engines (KAS
+        # reports it so, and a V2 refusal hop drops the refusal it moved off;
+        # see acp/engine_fallback._drop_superseded_refusal). So no extra gate:
+        # a recovered turn never reaches Crew's refusal card or retry, and the
+        # engine-fallback notice is the only account of the walk.
         if _stop_reason == STOP_REASON_REFUSAL:
             # The Kiro service's content filter STREAMS its canned
             # explanation as assistant text and then ends the turn, so the

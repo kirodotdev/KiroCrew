@@ -14,13 +14,13 @@ Instance fields written: ``_awaiting_permission``, ``_codex_compaction_pending``
 ``_stale_probe``, ``_tool_dispatched``, ``active_agent``, ``last_compaction_transient``.
 
 Instance fields read: ``_awaited_responses``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_ingress_seq``, ``_kas_compact_turn``, ``_keepalive_parked``,
-``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``, ``_session_id``,
-``_skill_reads``, ``_stale_eligible``, ``_steers_proven``, ``_tool_call_diff_path``,
-``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``, ``_tool_call_inputs``,
-``_tool_call_is_shell``, ``_tool_call_mcp_server``, ``_tool_call_raw_params``,
-``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``, ``child_fidelity_aware``,
-``last_prompt_stats``.
+``_cancelled``, ``_engine_fallback``, ``_ingress_seq``, ``_kas_compact_turn``,
+``_keepalive_parked``, ``_keepalive_ts``, ``_parked_total``, ``_queue``, ``_runtime``,
+``_session_id``, ``_skill_reads``, ``_stale_eligible``, ``_steers_proven``,
+``_tool_call_diff_path``, ``_tool_call_harness_tool_name``, ``_tool_call_input_redacted``,
+``_tool_call_inputs``, ``_tool_call_is_shell``, ``_tool_call_mcp_server``,
+``_tool_call_raw_params``, ``_tool_call_tool_name``, ``_turn_done``, ``_watchdog``,
+``child_fidelity_aware``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -48,6 +48,7 @@ from kiro_crew.acp.client import (
     compaction_failure_is_transient,
     format_command_result,
 )
+from kiro_crew.acp.engine_fallback import normalize_kiro_v2
 from kiro_crew.acp.liveness import (
     EVIDENCE_ESTABLISHED_FLAT,
     EVIDENCE_PLATFORM_LIMITED,
@@ -1035,6 +1036,16 @@ async def _dispatch_events(
                         subagents=subs,
                         runtime_global=msg.fanout_no_owner,
                     )
+            elif action == "model_fallback":
+                # The V2 engine's fallback notice for THIS session. A notice
+                # naming another session is not ours to apply: V2 sub-agents
+                # never fall back, so it can only be a co-tenant's.
+                params = msg.params or {}
+                ssid = str(params.get("sessionId") or "")
+                upd = params.get("update")
+                if (not ssid or ssid == self._session_id) and isinstance(upd, dict):
+                    for _fb_event in self._engine_fallback.events(self, normalize_kiro_v2(upd)):
+                        yield _fb_event
             elif action == "subagent_activity":
                 params = msg.params or {}
                 ssid = str(params.get("sessionId") or "")

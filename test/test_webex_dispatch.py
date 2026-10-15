@@ -847,6 +847,40 @@ class TestMirrorBinding:
 # ------------------------------------------------------------------
 
 
+class TestEnginePromotionFollow:
+    @pytest.mark.asyncio
+    async def test_the_pick_follows_a_promotion_before_the_attachment_cleanup(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The cleanup is an await: a prompt that starts there resets the walk."""
+        from kiro_crew.agent_sdk.drivers import acp_vocab
+
+        order: list[str] = []
+        real_follow = acp_vocab.follow_engine_promotion
+
+        def _follow(*args, **kwargs):
+            order.append("follow")
+            return real_follow(*args, **kwargs)
+
+        async def _ingest(_client, _inbound):
+            return SimpleNamespace(temp_paths=["/nonexistent/attachment"])
+
+        async def _turn(turn, *, sessions, ctx_builder):
+            order.append("turn")
+
+        monkeypatch.setattr(acp_vocab, "follow_engine_promotion", _follow)
+        monkeypatch.setattr(webex_dispatch, "process_webex_attachments", _ingest)
+        monkeypatch.setattr(webex_dispatch, "append_attachment_context", lambda b, _i: b)
+        monkeypatch.setattr(
+            webex_dispatch, "cleanup_attachments", lambda _p: order.append("cleanup")
+        )
+        provider = FakeProvider([AcpEvent(kind=EVENT_COMPLETE)])
+        d = _dispatcher(FakeSessions(provider), FakeCtx(), FakeClient())
+        with mock.patch("kiro_crew.webex.transport_dispatch.drive_turn", _turn):
+            await d.handle_message(replace(_inbound("hello"), file_urls=("https://x/f",)))
+        assert order == ["turn", "follow", "cleanup"]
+
+
 class TestApprovals:
     @pytest.mark.asyncio
     async def test_interactive_mode_builds_a_decider(self) -> None:
