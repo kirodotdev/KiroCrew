@@ -20,6 +20,7 @@ gate is a separate predicate so a refusal can name which one fired.
 from __future__ import annotations
 
 import base64
+import binascii
 import bisect
 import contextvars
 import functools
@@ -1246,6 +1247,8 @@ def _text_contains_bare_secret(text: str) -> bool:
 #     25-72 chars of `[A-Za-z0-9_-]`, a Confluence space key is alphanumeric, a
 #     page id is digits, a PlantUML diagram is `[/plantuml]/<png|svg|txt|uml>/`
 #     then its deflate text in PlantUML's `[0-9A-Za-z_-]` alphabet;
+#     Mermaid also admits only the exact `https://mermaid.live/edit#pako:<payload>`
+#     route with one canonical, unpadded base64url payload;
 #   * no piece of the link is a whole key: a piece exactly 40 characters long
 #     voids the match when `_looks_like_secret_key` accepts it. Pieces are cut
 #     twice, once at every non-run character (`/`, `-`, `_`, `%`, `.`, `~`)
@@ -1257,11 +1260,16 @@ def _text_contains_bare_secret(text: str) -> bool:
 #     leave that text unchanged. The text inflated per call is capped (see
 #     `_PLANTUML_SOURCE_CAP`). A key as the diagram, glued to one, or written
 #     in its source voids the match;
-#   * the link ends where the route ends, with one optional trailing `/`: a
+#     A Mermaid payload must decode canonically, inflate as one bounded zlib
+#     stream, parse as an unambiguous JSON object with a string `code`, and
+#     leave every decoded textual value unchanged under the credential passes;
+#   * the link ends where the route ends, with one optional trailing `/` for
+#     non-Mermaid routes: a
 #     further base64-alphabet character (a glued key, another `/segment`)
 #     fails the match.
-# The query and fragment are outside the match, so a key there, a `?token=`
-# value and every pass-1 and pass-2 hit are judged exactly as before.
+# Query and fragment are outside the non-Mermaid matches. Mermaid owns one
+# exact fragment route whose validated span exempts only pass 3, so fixed and
+# higher-confidence passes keep their existing precedence.
 #
 # ACCEPTED RESIDUAL: a markerless key without `/` glued to more letters or
 # digits inside the id or the page title, or carrying its own `+` inside a
@@ -1271,12 +1279,20 @@ def _text_contains_bare_secret(text: str) -> bool:
 # and pass 3 is no control against a deliberate one: a single `-` already
 # splits any run.
 _DOCUMENT_ID = r"[A-Za-z0-9_-]{25,72}"
-_PLANTUML_DIAGRAM = r"[A-Za-z0-9_-]{1,16384}"
+_PLANTUML_PAYLOAD_CAP = 16_384
+_PLANTUML_DIAGRAM = rf"[A-Za-z0-9_-]{{1,{_PLANTUML_PAYLOAD_CAP}}}"
+_MERMAID_PAKO_PAYLOAD_CAP = 65_536
+_MERMAID_PAKO_PAYLOAD = rf"[A-Za-z0-9_-]{{2,{_MERMAID_PAKO_PAYLOAD_CAP}}}"
 _GOOGLE_USER = r"(?:u/[0-9]{1,2}/)?"
 _RUN_PIECE_RES = (re.compile(r"[A-Za-z0-9+]+"), re.compile(r"[A-Za-z0-9]+"))
+_PLANTUML_ROUTE = (
+    r"(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+"
+    r"(?:/plantuml)?/(?:png|svg|txt|uml)/"
+)
 _DOCUMENT_LINK_RE = re.compile(
     r"(?<![A-Za-z0-9+.-])https://(?:"
-    r"docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
+    r"mermaid\.live/edit#pako:(?P<pako>" + _MERMAID_PAKO_PAYLOAD + r")(?![A-Za-z0-9_/=-])"
+    r"|(?:docs\.google\.com/(?:document|spreadsheets|presentation|drawings|forms)/"
     + _GOOGLE_USER
     + r"d/(?:e/)?"
     + _DOCUMENT_ID
@@ -1290,9 +1306,8 @@ _DOCUMENT_LINK_RE = re.compile(
     r"|[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.atlassian\.net/wiki/spaces/~?[A-Za-z0-9]{1,64}/"
     r"(?:overview|pages/(?:edit-v2/)?[0-9]{1,20}"
     r"(?:/[A-Za-z0-9+%._~-]{1,255})?)"
-    r"|(?:www\.)?plantuml(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(?:/plantuml)?/(?:png|svg|txt|uml)/"
-    r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
-    r")/?(?![A-Za-z0-9+/_-])"
+    r"|" + _PLANTUML_ROUTE + r"(?P<diagram>" + _PLANTUML_DIAGRAM + r")"
+    r")/?(?![A-Za-z0-9+/_-]))"
 )
 _PLANTUML_ALPHABET = {
     c: i for i, c in enumerate("0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz-_")
@@ -1351,14 +1366,116 @@ def _plantuml_verdict(encoded: str, limit: int) -> tuple[bool, int]:
         _IN_DIAGRAM_SCAN.set(previous)
 
 
+def _reject_json_constant(value: str) -> None:
+    """Reject the non-finite constants Python accepts beyond JSON."""
+    raise ValueError(f"non-finite JSON constant: {value}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    """Build an object while rejecting ambiguous duplicate keys."""
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"duplicate JSON key: {key}")
+        result[key] = value
+    return result
+
+
+def _mermaid_pako_views(payload: str, limit: int) -> tuple[tuple[str, ...] | None, int]:
+    """Decode one canonical Mermaid pako state and return every textual view."""
+    if limit <= 0 or len(payload) > _MERMAID_PAKO_PAYLOAD_CAP or len(payload) % 4 == 1:
+        return None, 0
+    try:
+        compressed = base64.b64decode(
+            payload + "=" * (-len(payload) % 4), altchars=b"-_", validate=True
+        )
+    except (ValueError, binascii.Error):
+        return None, 0
+    if base64.urlsafe_b64encode(compressed).decode().rstrip("=") != payload:
+        return None, 0
+
+    inflater = zlib.decompressobj()
+    try:
+        decoded_bytes = inflater.decompress(compressed, limit + 1)
+    except zlib.error:
+        return None, min(limit + 1, _MERMAID_PAKO_SOURCE_CAP + 1)
+    spent = len(decoded_bytes)
+    if spent > limit or not inflater.eof or inflater.unconsumed_tail or inflater.unused_data:
+        return None, spent
+    try:
+        decoded = decoded_bytes.decode("utf-8")
+        state = json.loads(
+            decoded,
+            parse_constant=_reject_json_constant,
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
+    except (UnicodeDecodeError, ValueError, RecursionError):
+        return None, spent
+    if not isinstance(state, dict) or not isinstance(state.get("code"), str):
+        return None, spent
+
+    # Keep both spellings: the raw JSON exposes escape-delimited text, while
+    # the canonical view composes semantically decoded labels with their values.
+    # Scanning keys and string values separately closes credentials carried in a
+    # standalone scalar without multiplying nested containers. The total text
+    # traversed remains linear in the bounded decoded source.
+    try:
+        semantic = json.dumps(state, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+    except (ValueError, RecursionError):
+        return None, spent
+    views = [decoded]
+    if semantic != decoded:
+        views.append(semantic)
+    pending: list[object] = [state]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            views.append(value)
+        elif isinstance(value, dict):
+            views.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, list):
+            pending.extend(value)
+    return tuple(views), spent
+
+
+_MERMAID_PAKO_SOURCE_CAP = 65_536
+_MERMAID_PAKO_URL_PREFIX = "https://mermaid.live/edit#pako:"
+_MERMAID_PAKO_PARTIAL_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])https://mermaid\.live/edit#pako:[A-Za-z0-9_-]*\Z"
+)
+_MERMAID_PAKO_PAYLOAD_CHUNK_RE = re.compile(r"[A-Za-z0-9_-]*")
+
+
+def _mermaid_pako_verdict(payload: str, limit: int) -> tuple[bool, int]:
+    """Keep one state only after bounded credential scans of its textual views."""
+    views, spent = _mermaid_pako_views(payload, min(limit, _MERMAID_PAKO_SOURCE_CAP))
+    if views is None:
+        return False, spent
+
+    # A link decoded from a diagram is ordinary text, never another exemption.
+    # This matches PlantUML's established no-nested-decoding rule and keeps the
+    # validation cost bounded by this call's one decoded-byte budget.
+    diagram_token = _IN_DIAGRAM_SCAN.set(True)
+    try:
+        return all(redact_credentials(view)[0] == view for view in views), spent
+    finally:
+        _IN_DIAGRAM_SCAN.reset(diagram_token)
+
+
 def _document_link_spans(text: str) -> list[tuple[int, int]]:
-    """Return the spans of the :data:`_DOCUMENT_LINK_RE` matches that hold no key."""
+    """Return validated document-link spans that hold no decoded credential."""
     spans = []
-    budget = 0 if _IN_DIAGRAM_SCAN.get() else _PLANTUML_SOURCE_CAP
+    nested = _IN_DIAGRAM_SCAN.get()
+    plantuml_budget = 0 if nested else _PLANTUML_SOURCE_CAP
+    pako_budget = 0 if nested else _MERMAID_PAKO_SOURCE_CAP
     for m in _DOCUMENT_LINK_RE.finditer(text):
         if m["diagram"]:
-            kept, spent = _plantuml_verdict(m["diagram"], budget)
-            budget -= spent
+            kept, spent = _plantuml_verdict(m["diagram"], plantuml_budget)
+            plantuml_budget -= spent
+        elif m["pako"]:
+            kept, spent = _mermaid_pako_verdict(m["pako"], pako_budget)
+            pako_budget -= spent
         else:
             kept = not any(
                 len(piece) == _SECRET_KEY_LEN and _looks_like_secret_key(piece)
