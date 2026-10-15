@@ -12,8 +12,8 @@ Instance fields written: ``_compaction_failed_at``, ``_compaction_terminal_seen`
 ``kas_crew_answered``, ``kas_crew_answered_commands``, ``kas_spec_shell_allowlist``,
 ``kas_spec_write_allowlist``, ``kas_projected_agent``, ``last_compaction_transient``.
 
-Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_listed_hooks``, ``_prompt_starts``,
-``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
+Instance fields read: ``_bound_cwd``, ``_crew_agent``, ``_engine_fallback``, ``_listed_hooks``,
+``_prompt_starts``, ``_runtime``, ``_session_id``, ``_session_key``, ``_turn_done``,
 ``kas_registered_agents``, ``last_prompt_stats``.
 """
 
@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.acp import kas_profile, kas_wire
 from kiro_crew.acp._dispatch import kas_crew_agent_id, redact_text
 from kiro_crew.acp.client import compaction_failure_detail, compaction_failure_is_transient
+from kiro_crew.acp.engine_fallback import KAS_KIND_MODEL_FALLBACK, normalize_kas
 from kiro_crew.acp.types import (
     ACP_BACKENDS_HOOKS_LIST,
     EVENT_AGENT_SWITCHED,
@@ -366,6 +367,11 @@ def _handle_kas_session_info(self: AcpSessionHandle, update: dict) -> list[AcpEv
             # (redacted + bounded by the helper).
             summary = compaction_failure_detail(kiro)
         return [AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)]
+    if kind == KAS_KIND_MODEL_FALLBACK:
+        # KAS moved this turn onto another model, or could not. Applied to the
+        # resolved model first, so the usage of whatever answers next is credited
+        # to the model that produced it.
+        return self._engine_fallback.events(self, normalize_kas(kiro))
     if kind in kas_wire.STEERING_KINDS:
         # KAS mid-turn steer echo. kiro-cli sends these as `session/update`
         # discriminants (handled by the "steer" action); KAS instead puts the

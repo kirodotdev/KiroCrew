@@ -26,6 +26,7 @@ import logging
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew import runtime_death
+from kiro_crew.agent_sdk.drivers.acp_vocab import follow_engine_promotion
 from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.history import mint_row_mid
@@ -185,6 +186,10 @@ async def _run_turn(
         if not muted:
             await renderer.on_turn_start()
         _memory_store = await session_store_for_turn(self.ctx_builder, session_key)
+        # The pick this turn starts on, read once: get_or_create applies it and
+        # the post-turn promotion follow compares against it, so a pick made
+        # while the turn prepares is left for the next turn.
+        _pick_before = self._model_pref.get(route)
         provider, is_new, resumed = await self.sessions.get_or_create(
             session_key,
             start_priority=person_priority(msg.person_origin),
@@ -201,7 +206,7 @@ async def _run_turn(
             # that conversation under a model its owner never picked, silently
             # and for every later turn. A resumed session therefore passes None
             # and lets its own persisted model resolve.
-            model=(None if resumed_key is not None else self._model_pref.get(route) or None),
+            model=(None if resumed_key is not None else _pick_before or None),
         )
         _acquired = True
         # Taken on acquisition: a Stop from here on cancels the turn before it streams.
@@ -389,6 +394,10 @@ async def _run_turn(
             script_hooks=hook_turn,
         )
         accumulated = await driver.run(full_message)
+        if resumed_key is None:
+            # The route's pick is what `/model` shows and what a cold start
+            # re-applies; follow a model the engine promoted this turn.
+            follow_engine_promotion(self._model_pref, route, provider, before=_pick_before)
 
         # ── Post-turn bookkeeping (each guarded so a failure here can't
         # fall through to the except and re-record the successful turn). ──
