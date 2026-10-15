@@ -2788,7 +2788,15 @@ _INERT_FLAGS = {
 }
 _INERT_WORD_OWNER_RE = re.compile(r"git\s+commit\s")
 _INERT_MASK_RE = re.compile(r"'[^']*'|\"[^\"$`\\]*\"")
-_INERT_PLAIN_RE = re.compile(r"[\w./:=@%+, \t\n;&-]*")
+_INERT_PLAIN_RE = re.compile(r"(?:[\w./:=@%+, \t\n;&-]|\$path\b)*")
+#: The variables a ``git push`` segment may set first, bare or after a plain
+#: ``env``. Only ``PATH``: it can change which ``git`` runs, not the argv the
+#: per-line floor judges, while a ``GIT_*``, ``BASH_ENV`` or ``ENV`` value can
+#: rewrite the refspec mapping or make a shell that git starts source the message
+#: file. Its value is plain characters plus ``$PATH``, the only expansion the
+#: allowlist admits, and only here.
+_INERT_PUSH_ENV = frozenset({"path"})
+_INERT_ASSIGN_RE = re.compile(r"([a-z_]\w*)=(?:[\w./:@%+,-]|\$path\b)*")
 
 
 def _quoted_line_entries(text: str) -> list[tuple[int, bool, int, int]]:
@@ -2868,8 +2876,21 @@ def _inert_mask(m: re.Match[str]) -> str:
 def _inert_segment(words: list[str]) -> bool:
     """Whether one masked segment is ``cd <dir>`` or an allowlisted ``git`` verb whose
     every flag is allowlisted, so nothing opens an editor, pager or config write that
-    could run the text; a commit needs a message.
+    could run the text; a commit needs a message. A push alone may carry a
+    ``PATH`` prefix, bare or after ``env`` (``_INERT_PUSH_ENV``).
     """
+    env = words[:1] == ["env"]
+    words = words[1:] if env else words
+    prefix = 0
+    while prefix < len(words) and (m := _INERT_ASSIGN_RE.fullmatch(words[prefix])):
+        if m.group(1) not in _INERT_PUSH_ENV:
+            return False
+        prefix += 1
+    words = words[prefix:]
+    if (env or prefix) and (not prefix or words[:2] != ["git", "push"]):
+        return False
+    if not words or any("$" in w for w in words):
+        return False
     head, *args = words
     if head == "cd":
         return len(args) == 1 and not args[0].startswith("-")

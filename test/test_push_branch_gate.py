@@ -79,11 +79,13 @@ def _multi_line_push_corpus() -> set[str]:
 
 
 #: Real-bash oracle rows for the inert-word allowlist: together they use every
-#: ``_INERT_FLAGS`` flag and segment head, and each pushes to a protected branch
-#: in real bash.
+#: ``_INERT_FLAGS`` flag and segment head and every ``_INERT_PUSH_ENV`` variable,
+#: bare and after ``env``, and each pushes to a protected branch in real bash.
 _INERT_ORACLE_ROWS = (
     "cd . && git add f && git commit -q -m 'a\n\nb' && git push -q origin main",
     "git add -- f && git commit -qm 'a\n\nb' -- f && git push -u origin main",
+    "git commit -m 'a\n\nb' && env PATH=/x:$PATH git push origin main",
+    "git commit -m 'a\n\nb' && PATH=/x git push origin main",
 )
 
 
@@ -1784,9 +1786,12 @@ class TestTokenizerContractBetweenTheLayers:
         bash = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
         assert bash, "the real-bash oracle needs bash"
         stubs = tmp_path / "stubs.sh"
+        # ``env`` exports its leading assignments and runs the rest, so the
+        # ``git`` it reaches is the stub, never a binary on a widened PATH.
         stubs.write_bytes(
             b'git() { printf \'%s\\037\' "$@" >> "$LOG"; printf \'\\n\' >> "$LOG"; }\n'
             b'sh() { "$BASH_BIN" "$@"; }\nbash() { "$BASH_BIN" "$@"; }\n'
+            b'env() { while [ "${1%%=*}" != "$1" ]; do export "$1"; shift; done; "$@"; }\n'
         )
         empty = tmp_path / "bin"
         empty.mkdir()
@@ -1798,7 +1803,10 @@ class TestTokenizerContractBetweenTheLayers:
         env.update({k: os.environ[k] for k in ("SYSTEMROOT",) if k in os.environ})
         unsafe = re.compile(r"\bcd\b(?! \. )|/git|\bcommand\b|\benv\b|PATH")
         ran_protected = []
-        for cmd in sorted(c for c in _multi_line_push_corpus() if not unsafe.search(c)):
+        # The fixed oracle rows run even with ``env``/``PATH``: their PATH holds no
+        # ``git``, and ``env`` and ``git`` are the stubs above.
+        corpus = _multi_line_push_corpus()
+        for cmd in sorted(c for c in corpus if c in _INERT_ORACLE_ROWS or not unsafe.search(c)):
             log.write_bytes(b"")
             script.write_bytes(cmd.encode())
             subprocess.run(  # noqa: S603 - argv list, stubbed PATH, scratch cwd
@@ -1828,7 +1836,8 @@ class TestTokenizerContractBetweenTheLayers:
                 assert is_denied(cmd) is not None, (walk_trust, cmd)
 
     def test_every_inert_allowlist_entry_has_a_real_bash_oracle_row(self):
-        # Widening the inert allowlist (a flag, a segment head) needs a row in
+        # Widening the inert allowlist (a flag, a segment head, a push prefix
+        # variable) needs a row in
         # ``_INERT_ORACLE_ROWS``, which the real-bash oracle above requires to run
         # a protected push that stays denied. This test reads the allowlist
         # itself, so a new entry without a row fails here.
@@ -1836,9 +1845,14 @@ class TestTokenizerContractBetweenTheLayers:
 
         flags: dict[str, set[str]] = {}
         heads: set[str] = set()
+        prefixed: set[tuple[bool, str]] = set()
         for row in _INERT_ORACLE_ROWS:
             for segment in row.split("&&"):
                 words = shlex.split(segment)
+                env = words[0] == "env"
+                words = words[env:]
+                while "=" in words[0]:
+                    prefixed.add((env, words.pop(0).split("=", 1)[0].lower()))
                 heads.add(words[0])
                 if words[0] != "git":
                     continue
@@ -1852,6 +1866,7 @@ class TestTokenizerContractBetweenTheLayers:
         for verb, allowed in sn._INERT_FLAGS.items():
             assert allowed <= flags.get(verb, set()), (verb, allowed - flags.get(verb, set()))
         assert heads == {"cd", "git"}
+        assert {(e, n) for e in (True, False) for n in sn._INERT_PUSH_ENV} <= prefixed
 
     def test_generated_mask_edge_words_never_make_a_dash_word_inert(self):
         # Mask-edge words (empty, dash-leading, glued, escaped quotes) generated
@@ -1982,6 +1997,29 @@ class TestTokenizerContractBetweenTheLayers:
             'git commit -m $"a\nb"; git push origin f',
         ):
             assert security._git_publish_floor_tags(cmd), cmd
+        # A push prefix sets only PATH, bare or after a plain ``env``, to plain text
+        # or ``$PATH``: a GIT_* or shell-startup variable, an ``env`` option, a lone
+        # assignment, a prefix on another command or ``$PATH`` elsewhere is code.
+        for cmd in (
+            "git commit -m 'a\nb' && env GIT_DIR=/x git push origin f",
+            "git commit -m 'a\nb' && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=remote.origin.push GIT_CONFIG_VALUE_0=f:main git push origin f",
+            "git commit -m 'a\nb' && BASH_ENV=.git/COMMIT_EDITMSG git push origin f",
+            "git commit -m 'a\nb' && PATH=/x GIT_SSH_COMMAND=sh git push origin f",
+            "git commit -m 'a\nb' && env -i PATH=/x git push origin f",
+            "git commit -m 'a\nb' && env git push origin f",
+            "git commit -m 'a\nb' && PATH=/x env git push origin f",
+            "git commit -m 'a\nb' && PATH=/x; git push origin f",
+            "git commit -m 'a\nb' && PATH=$b git push origin f",
+            "git commit -m 'a\nb' && PATH=$PATH'x' git push origin f",
+            "git commit -m 'a\nb' && PATH=/x* git push origin f",
+            "git commit -m 'a\nb' && PATH=/x git -c remote.origin.push=f:main push origin f",
+            "git commit -m 'a\nb' && PATH=/x git add f && git push origin f",
+            "PATH=/x git commit -m 'a\nb' && git push origin f",
+            "git commit -m 'a\nb' $PATH && git push origin f",
+            "cd $PATH && git commit -m 'a\nb' && git push origin f",
+            "git commit -m 'a\nb' && PATH=/x git push origin f $PATH",
+        ):
+            assert is_denied(cmd) is not None, cmd
         # The same word reached through ``bash -c``: the nested payload is judged too.
         nested = 'git config core.editor sh; bash -c $\'git commit "$1\\x0a" -m "git push origin HEAD:main"; git push origin f\' -- -em'
         assert is_denied(nested) is not None
@@ -1990,6 +2028,8 @@ class TestTokenizerContractBetweenTheLayers:
             "git commit -m 'a\n\nb' -- src/x.py; git push origin f",
             "git commit -qm 'x\n\nFixes #1'; git push -u fork fix/x",
             "cd /r && git commit -m 'a\n\nb' && git push origin feat",
+            "git commit -m 'a\n\nb' && env PATH=/x:$PATH git push origin feat",
+            "git commit -m 'a\n\nb' && PATH=/x git push -u fork fix/x",
         ):
             assert is_denied(cmd) is None, cmd
         # One real-bash oracle row per allowlisted segment and flag: each runs a
@@ -2001,11 +2041,11 @@ class TestTokenizerContractBetweenTheLayers:
         # Outside the allowlist the refusal says how to fix it, and the fix is allowed.
         for cmd in (
             "cd ~/r && git commit -m 'a\n\nb' && git push origin feat",
-            "git commit -m 'a\n\nb' && env PATH=/x git push origin feat",
+            "git commit -m 'a\n\nb' && env GIT_DIR=/x git push origin feat",
         ):
             reason = is_denied(cmd)
             assert reason is not None and "put the push on its own line" in reason, cmd
-        assert is_denied("git commit -m 'a\n\nb'\nenv PATH=/x git push origin feat") is None
+        assert is_denied("git commit -m 'a\n\nb'\nenv GIT_DIR=/x git push origin feat") is None
         assert is_denied("cd ~/r && git commit -m 'a\n\nb'\ngit push origin feat") is None
         # With no line entered inside a quote, or when the push on its own line is
         # still refused, the advice cannot apply, so it is left out.

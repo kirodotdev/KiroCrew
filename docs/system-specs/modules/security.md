@@ -1891,7 +1891,8 @@ of the command passes one closed allowlist: with its
 other quoted words masked (an empty one, or one opening with `-`, stays an option
 bash dequotes and fails the check, as does an inert word that opens with `-` or
 is glued to other text), only word characters, spaces, tabs, newlines and
-`. / : = @ % + , - ; &` remain,
+`. / : = @ % + , - ; &` remain (plus `$PATH`, the one expansion admitted, and
+only inside a push prefix),
 and every segment is `cd <dir>` or a `git` verb (`add`, `commit`, `push`) whose
 every flag is on that verb's lowercase allowlist (`commit -m`/`-q`, `push -u`/`-q`,
 no `add` flag, no `git -c` setting), where only `-m` takes
@@ -1900,13 +1901,19 @@ message (so no `git config`,
 `--edit`, `-c` or bare `--amend` opens an editor on the text; option scanning
 stops at `--`, so a pathspec after it, even one named `--no-edit`, is not read as
 a flag and cannot satisfy that message rule; a `--` that is the value of `-m`
-ends nothing, so an `-e` after it is still checked). Adding a verb, owner or
-flag to `_INERT_FLAGS` widens an
+ends nothing, so an `-e` after it is still checked). A `git push` alone may carry
+`PATH=<value>` assignments, bare or after a plain `env` with no option, whose
+value is plain text or `$PATH` (`_INERT_PUSH_ENV`): `PATH` can change which `git`
+runs but not the argv the per-line reading judges, while a `GIT_*` value can remap
+the refspec and `BASH_ENV`/`ENV` can make a shell that git starts source the message
+file, so no other variable is listed. Adding a verb, owner or
+flag to `_INERT_FLAGS`, or a variable to `_INERT_PUSH_ENV`, widens an
 allow on the push gate, so it needs a matching row in `_INERT_ORACLE_ROWS`, which
 the real-bash oracle (`test_no_command_real_bash_runs_as_a_protected_push_is_allowed`)
 requires to run a protected push that stays denied;
 `test_every_inert_allowlist_entry_has_a_real_bash_oracle_row` fails on an entry
-without one. The list holds
+without one (a variable needs a bare row and an `env` row; the oracle's `env` is a
+shell function that exports the assignments and runs the stub `git`). The list holds
 only the flags issue #12631's refused commands use, each with its row. When a line
 of a refused multi-line command starts inside a quote and the command with each
 `git` command after a separator (with any `env` or assignment prefix) moved onto
