@@ -11,6 +11,7 @@ import json
 
 import pytest
 
+from kiro_crew import http_proxy
 from kiro_crew.mcp_providers import official as official_mod
 from kiro_crew.mcp_providers.base import (
     McpSearchResult,
@@ -536,12 +537,12 @@ class TestFetchJsonRead:
         raw = json.dumps({"servers": []}).encode("utf-8")
         response = _serve(monkeypatch, raw)
         monkeypatch.setattr(
-            official_mod.urllib.request,
+            http_proxy.urllib.request,
             "getproxies",
             lambda: {"https": "http://proxy.example:3128"},
         )
         # Pinned so a bypass list on the host running the test cannot decide it.
-        monkeypatch.setattr(official_mod.urllib.request, "proxy_bypass", lambda _host: False)
+        monkeypatch.setattr(http_proxy.urllib.request, "proxy_bypass", lambda _host: False)
 
         await official_mod._fetch_json("https://registry.example/v0.1/servers")
 
@@ -569,6 +570,16 @@ class TestFetchJsonRead:
             monkeypatch.delenv(name.upper(), raising=False)
         monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:3128")
         monkeypatch.setenv("NO_PROXY", no_proxy)
+        monkeypatch.setattr(
+            http_proxy.urllib.request,
+            "getproxies",
+            http_proxy.urllib.request.getproxies_environment,
+        )
+        monkeypatch.setattr(
+            http_proxy.urllib.request,
+            "proxy_bypass",
+            http_proxy.urllib.request.proxy_bypass_environment,
+        )
         raw = json.dumps({"servers": []}).encode("utf-8")
         response = _serve(monkeypatch, raw)
 
@@ -581,7 +592,7 @@ class TestFetchJsonRead:
         """With no proxy configured, nothing changes — a direct request."""
         raw = json.dumps({"servers": []}).encode("utf-8")
         response = _serve(monkeypatch, raw)
-        monkeypatch.setattr(official_mod.urllib.request, "getproxies", lambda: {})
+        monkeypatch.setattr(http_proxy.urllib.request, "getproxies", lambda: {})
 
         await official_mod._fetch_json("https://registry.example/v0.1/servers")
 
