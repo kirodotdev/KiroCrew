@@ -233,9 +233,10 @@ def test_stat_is_parsed_when_the_thread_name_contains_spaces_and_parentheses() -
     """
     # Fields: pid comm state ppid pgrp session tty tpgid flags minflt cminflt
     # majflt cmajflt utime stime ...
-    text = "4242 (worker (pool 2)) R 1 1 1 0 -1 0 0 0 0 0 " "700 300 0 0 20 0 5 0 900 0 0\n"
+    text = "4242 (worker (pool 2)) R 1 1 1 0 -1 0 0 0 37 0 " "700 300 0 0 20 0 5 0 900 0 0\n"
     parsed = dt._parse_stat(text)
     assert parsed["state"] == "R"
+    assert parsed["major_faults"] == 37
     assert parsed["cpu_ticks"] == 1000  # utime 700 + stime 300
 
 

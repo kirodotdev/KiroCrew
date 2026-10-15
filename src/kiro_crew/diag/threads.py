@@ -99,6 +99,7 @@ LEDGER_SUMMARY_TOP_N = 8
 #: ``/proc/self/task/<tid>/stat`` field numbers (1-based, as ``proc(5)`` numbers
 #: them) for the two CPU columns. Resolved against the remainder after the comm
 #: field, which is parenthesised and may itself contain spaces and parentheses.
+_STAT_FIELD_MAJFLT = 12
 _STAT_FIELD_UTIME = 14
 _STAT_FIELD_STIME = 15
 #: ``state`` is field 3, the first column after comm.
@@ -419,7 +420,7 @@ def _read_text(path: str) -> str | None:
 
 
 def _parse_stat(text: str) -> dict[str, Any]:
-    """``state`` and the CPU columns from ``/proc/<pid>/task/<tid>/stat``.
+    """``state``, the major-fault count and the CPU columns from ``/proc/<pid>/task/<tid>/stat``.
 
     The comm field is parenthesised and may contain spaces *and* parentheses, so
     the split is anchored on the LAST ``)`` rather than on whitespace — a
@@ -438,6 +439,10 @@ def _parse_stat(text: str) -> dict[str, Any]:
         return fields[idx] if 0 <= idx < len(fields) else None
 
     out: dict[str, Any] = {"state": at(_STAT_FIELD_STATE)}
+    try:
+        out["major_faults"] = int(at(_STAT_FIELD_MAJFLT) or "")
+    except ValueError:
+        pass
     try:
         utime = int(at(_STAT_FIELD_UTIME) or "")
         stime = int(at(_STAT_FIELD_STIME) or "")
