@@ -58,6 +58,7 @@ function createManagedLane({
   log.info(`[update] externally managed${managed.managedBy ? ` by ${managed.managedBy}` : ""} — managed auto-update (self-contained commands)`);
 
   let foundVersion = null; // last version discovered by the checkCommand, awaiting apply
+  let stagedVersion = null; // version the user took Download for (the ready dialog's version)
   let managedQuitArmed = false; // is a before-quit auto-apply handler installed?
   let managedInstalling = false; // an apply is in progress — pause the poll
 
@@ -306,31 +307,82 @@ function createManagedLane({
   // same reason.
   const disarmManagedQuit = () => {
     foundVersion = null;
+    stagedVersion = null;
     if (managedQuitArmed) {
       app.removeListener("before-quit", managedInstallOnQuit);
       managedQuitArmed = false;
     }
   };
 
-  async function managedCheck() {
-    emit("checking");
+  // ONE check at a time. The launch timer, the poll and the renderer's Check
+  // button all land here, and the commands are slow (up to
+  // MANAGED_CHECK_TIMEOUT_MS). Two overlapping runs each emit their own
+  // verdict, so the one that finishes second overwrites whatever the user did
+  // in between -- a "found" landing after Download replaces "downloaded" and
+  // closes the ready dialog under the Install click. Overlapping callers share
+  // the run in flight instead, mirroring the feed lane's `checking` guard while
+  // still resolving only when that run has finished.
+  let checkInFlight = null;
+  function managedCheck() {
+    // An install owns the state until it relaunches or fails, as in the feed
+    // lane: a check requested now is skipped, re-surfacing "installing" for a
+    // caller (the Check button) that cleared the card first.
+    if (managedInstalling) {
+      log.info("[update] managed check skipped: an install is in progress");
+      emit("installing", { version: foundVersion });
+      return Promise.resolve();
+    }
+    if (!checkInFlight) {
+      checkInFlight = runManagedCheck().finally(() => { checkInFlight = null; });
+    }
+    return checkInFlight;
+  }
+
+  async function runManagedCheck() {
+    // The ready dialog renders only while the state is "downloaded", so a
+    // "checking" here would close it for the whole run (and swallow an Install
+    // click) even when the check then re-surfaces the same version. With a
+    // version readied, check quietly: the verdict below still re-surfaces it,
+    // supersedes it, or withdraws it.
+    if (!stagedVersion) emit("checking");
+    // A check that cannot reach a verdict says nothing about the version the
+    // user already readied, and the updateCommand will discover for itself on
+    // Install. Replacing "downloaded" with a check error would close the ready
+    // dialog the same way, so with a version readied the failure is logged and
+    // the ready state re-surfaced: the Check button clears the card before it
+    // calls in, and nothing else would bring it back.
+    const checkFailed = (err) => {
+      if (stagedVersion) {
+        log.error(`[update] managed check failed with ${stagedVersion} readied — keeping it: ${err.message}`);
+        emit("downloaded", { version: stagedVersion });
+        return;
+      }
+      emitManagedError("check", err);
+    };
     if (!managed.checkCommand) {
       // The marker says how to APPLY an update but gives no way to DISCOVER
       // one. This is a check error, NOT a green "up to date": a silent
       // "latest" would hide every future update for this install forever.
       log.info("[update] managed: no checkCommand — cannot check for updates");
-      emitManagedError("check", new Error("this managed install has no checkCommand"));
+      checkFailed(new Error("this managed install has no checkCommand"));
       return;
     }
     const { code, stdout, failed } = await runManagedCommand(managed.checkCommand, {
       timeout: MANAGED_CHECK_TIMEOUT_MS,
     });
+    // A check already running when Install was clicked (the launch timer, the
+    // poll) must not replace "installing" with its verdict, nor change the
+    // version being applied.
+    if (managedInstalling) {
+      log.info("[update] managed check finished during an install — dropping its verdict");
+      return;
+    }
     if (failed) {
       // Could not RUN the command (spawn error or timeout) — an error, not
       // "up to date". Mirrors the sibling CommandProvider, which returns an
       // error verdict for a check it could not execute.
       log.error("[update] managed check could not run");
-      emitManagedError("check", new Error("managed check command failed to run"));
+      checkFailed(new Error("managed check command failed to run"));
       return;
     }
     if (code !== 0) {
@@ -350,12 +402,22 @@ function createManagedLane({
       // update: treating it as available would relaunch to the SAME version
       // forever. Fail the check rather than report "latest".
       log.error("[update] managed check: exit 0 but printed no version");
-      emitManagedError("check", new Error("managed check command produced no version"));
+      checkFailed(new Error("managed check command produced no version"));
       return;
     }
     foundVersion = version;
-    log.info(`[update] managed check: update available -> ${version}`);
-    emit("found", { version });
+    if (stagedVersion === version) {
+      // The user already took Download for this version and the ready dialog
+      // is (or was) up. Re-surface it rather than demoting the card back to
+      // "found", exactly as the feed lane does for a stage that is still
+      // latest. A DIFFERENT version supersedes the stage and is offered anew.
+      log.info(`[update] managed check: ${version} already readied — awaiting install`);
+      emit("downloaded", { version });
+    } else {
+      stagedVersion = null;
+      log.info(`[update] managed check: update available -> ${version}`);
+      emit("found", { version });
+    }
     // Auto-on-restart: if the user allows auto-download, arm a one-shot
     // before-quit handler that applies on the natural quit.
     if (autoDownloadOn() && !managedQuitArmed) {
@@ -372,6 +434,7 @@ function createManagedLane({
       await managedCheck();
     }
     if (foundVersion) {
+      stagedVersion = foundVersion;
       emit("downloaded", { version: foundVersion });
     }
   }
@@ -383,6 +446,7 @@ function createManagedLane({
     try { if (stopGateway) await stopGateway(); } catch (err) {
       if (gatewayStillRunning(err)) {
         log.error("[update] managed install refused: a gateway from this app's bundle is still running", err);
+        managedInstalling = false;
         try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
         emitGatewayStillRunning(err);
         return;
@@ -397,6 +461,8 @@ function createManagedLane({
       return;
     }
     log.error(`[update] managed install failed (exit ${code})`);
+    // The install no longer owns the state, so checks (and the poll) resume.
+    managedInstalling = false;
     try { if (onInstallFailed) onInstallFailed(); } catch { /* advisory */ }
     emitManagedError("install", new Error(`managed update command exited ${code}`));
   }
