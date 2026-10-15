@@ -84,6 +84,23 @@ def test_removed_row_takes_the_note_and_falls_back_to_removed():
     assert by_id["b"]["reason"] == stoplog.REMOVED_REASON
 
 
+def test_a_stop_file_finish_names_its_file():
+    before = stoplog.active_summaries([_row("a", active=True)])
+    out = stoplog.stop_records(
+        before,
+        [
+            _row(
+                "a",
+                active=False,
+                stopped_reason="stop_sentinel",
+                stop_sentinel_path="/data/.stop-a",
+            )
+        ],
+        {},
+    )
+    assert (out[0]["reason"], out[0]["detail"]) == ("stop_sentinel", "/data/.stop-a")
+
+
 def test_a_note_never_labels_a_row_that_is_still_there():
     """A note belongs to a removal; a surviving row's own reason is the only truth."""
     before = stoplog.active_summaries([_row("a", active=True)])

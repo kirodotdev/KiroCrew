@@ -940,6 +940,76 @@ class TestFireSlackNudgeGuards:
         assert completion.disposition is MonitorActionDisposition.FAILURE
 
     @pytest.mark.asyncio
+    async def test_shutdown_drains_the_reply_bookkeeping_instead_of_cutting_it(
+        self, tmp_path, monkeypatch
+    ):
+        """A stop landing after the provider returned waits for the usage row, the
+        thread post and the replay save of that reply rather than cancelling them."""
+        service = AutoNudgeService(base_dir=tmp_path)
+        orch = _slack_nudge_orchestrator()
+        orch.autonudge_svc = service
+        orch.conv_log = object()
+        posting = asyncio.Event()
+        release_post = asyncio.Event()
+        steps: list[str] = []
+
+        async def _stream_ok(*_a, **_k):
+            return "reply body"
+
+        async def _persist(*_a, **_k):
+            steps.append("turn row")
+
+        async def _post(*_a, **_k):
+            posting.set()
+            await release_post.wait()
+            steps.append("reply post")
+
+        async def _save(*_a, **_k):
+            steps.append("replay save")
+
+        monkeypatch.setattr(gw, "stream_and_collect", _stream_ok)
+        monkeypatch.setattr(gw, "_persist_turn_row", _persist)
+        monkeypatch.setattr(gw, "save_conversation_turn_off_loop", _save)
+        orch.slack.post_message = AsyncMock(side_effect=_post)
+
+        fire = asyncio.create_task(orch._fire_slack_nudge(_loop()))
+        # It runs as an admitted timer callback, which shutdown cancels outside a
+        # drained section.
+        service._running_callbacks.add(fire)
+        shutdown: asyncio.Task[None] | None = None
+        try:
+            await _within_lost_run(posting.wait(), "the reply's thread post")
+            shutdown = asyncio.create_task(service.shutdown())
+
+            async def _admission_closed() -> None:
+                while service._accepting_mutations:
+                    await asyncio.sleep(0)
+
+            await _within_lost_run(_admission_closed(), "shutdown closing admission")
+            # One more turn delivers any cancellation shutdown issued.
+            await asyncio.sleep(0)
+            assert not fire.done(), "shutdown cut the reply's bookkeeping"
+            assert not shutdown.done(), "shutdown did not wait for the registered section"
+
+            release_post.set()
+            assert await _within_lost_run(fire, "the nudge's bookkeeping") is True
+            await _within_lost_run(shutdown, "the drain waiting on the bookkeeping")
+        finally:
+            release_post.set()
+            pending = [task for task in (fire, shutdown) if task is not None and not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                await _within_lost_run(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    "the bookkeeping drain test cleanup",
+                )
+            service.stop()
+
+        assert steps == ["turn row", "reply post", "replay save"]
+        assert service._inflight_adds == set()
+
+    @pytest.mark.asyncio
     async def test_cleanup_failures_do_not_mask_the_turn_result(self, monkeypatch):
         """cancel_current / release failures are swallowed; the turn still counts."""
         orch = _slack_nudge_orchestrator()

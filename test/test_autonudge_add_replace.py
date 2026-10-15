@@ -16,6 +16,11 @@ from kiro_crew.autonudge import (
 )
 from kiro_crew.monitoring.models import MONITOR_STATE_VERSION, MonitorBudgets, MonitorOutcome
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
 
 @pytest.mark.asyncio
 async def test_one_loop_per_slot_replaces(svc):
@@ -113,7 +118,9 @@ async def test_add_monitor_conditionally_replaces_one_terminal_generation(svc):
             expected_existing_config_generation=expected_generation,
         )
 
-    results = await asyncio.gather(restart(), restart(), return_exceptions=True)
+    results = await asyncio.wait_for(
+        asyncio.gather(restart(), restart(), return_exceptions=True), timeout=_LOST_RUN_SECS
+    )
     winners = [result for result in results if isinstance(result, NudgeLoop)]
     conflicts = [result for result in results if isinstance(result, MonitorUpdateConflict)]
 
@@ -140,7 +147,7 @@ async def test_add_monitor_persistence_failure_keeps_existing_monitor_running(sv
     )
     persisted_before = svc._path.read_bytes()
 
-    async def fail_snapshot(_payload):
+    async def fail_snapshot(_payload, **_kwargs):
         raise OSError("disk full")
 
     monkeypatch.setattr(svc, "_write_monitor_snapshot_locked", fail_snapshot)
