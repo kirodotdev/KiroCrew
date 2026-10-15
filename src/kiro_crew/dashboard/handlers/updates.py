@@ -34,10 +34,8 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.dashboard.chat_utils import run_config_write
-from kiro_crew.dashboard.handlers._shared import (
-    read_capped_response,
-    require_owner_dashboard_request,
-)
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+from kiro_crew.dashboard.handlers._update_feed import fetch_feed_bytes
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
 from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.dashboard.urls import is_loopback
@@ -1233,16 +1231,7 @@ async def _fetch_feed_bytes(url: str) -> tuple[int, bytes]:
     ``test/conftest.py`` that makes it impossible for the suite to reach the
     real CDN.
     """
-    timeout = aiohttp.ClientTimeout(total=_FEED_TIMEOUT_SECS)
-    async with aiohttp.ClientSession(timeout=timeout) as session:
-        async with session.get(url) as resp:
-            # Streamed to EOF with the cap enforced against RECEIVED bytes
-            # rather than a Content-Length claim; the extra byte lets the
-            # caller detect an over-cap body (mirroring the installer's
-            # --max-filesize on this very document). A single read(n) would
-            # resolve on the first buffered chunk of a chunked feed and hand
-            # back a truncated document.
-            return resp.status, await read_capped_response(resp, _FEED_MAX_BYTES)
+    return await fetch_feed_bytes(url, timeout_secs=_FEED_TIMEOUT_SECS, max_bytes=_FEED_MAX_BYTES)
 
 
 async def _check_via_provider(provider: CommandProvider) -> None:
