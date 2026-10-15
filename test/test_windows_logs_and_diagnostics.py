@@ -3,6 +3,7 @@
 import argparse
 import logging.handlers
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -40,16 +41,45 @@ def test_windows_empty_log_succeeds(windows_log, capsys):
 
 
 def test_windows_follow_reads_appended_lines_and_stops(windows_log, monkeypatch, capsys):
+    class Recorder:
+        """Forward writes to sys.stdout while recording what follow has emitted."""
+
+        def __init__(self, inner):
+            self._inner = inner
+            self.seen = ""
+
+        def write(self, text):
+            self.seen += text
+            return self._inner.write(text)
+
+        def flush(self):
+            return self._inner.flush()
+
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    # The first poll can transiently fail to open the log (a Windows
+    # CreateFileW window or a rotation rename both raise FileNotFoundError and
+    # are swallowed while following), so the tick must wait until follow has
+    # observably consumed the pre-existing content before appending. Appending
+    # on a fixed tick count races that window and loses the pre-existing line.
     windows_log.write_text("initial\n", encoding="utf-8")
-    waits = []
+    recorder = Recorder(sys.stdout)
+    monkeypatch.setattr(sys, "stdout", recorder)
+    state = {"ticks": 0, "appended": False}
 
     def tick(_seconds):
-        waits.append(1)
-        if len(waits) == 1:
+        state["ticks"] += 1
+        if state["ticks"] > 1000:  # monkeypatched sleep: zero wall-clock cost
+            raise AssertionError("follow never emitted the pre-existing content")
+        if "initial" not in recorder.seen:
+            return
+        if not state["appended"]:
+            state["appended"] = True
             with windows_log.open("a", encoding="utf-8") as log:
                 log.write("appended\n")
-        else:
-            raise KeyboardInterrupt
+            return
+        raise KeyboardInterrupt
 
     monkeypatch.setattr(cli_server.time, "sleep", tick)
     cli_server._logs_cmd(argparse.Namespace(lines=1, follow=True))
