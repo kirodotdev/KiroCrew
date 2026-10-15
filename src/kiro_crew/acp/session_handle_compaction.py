@@ -407,6 +407,10 @@ def _track_metadata(self: AcpSessionHandle, msg: JsonRpcMessage) -> None:
         self._between_turn_credits = getattr(self, "_between_turn_credits", 0.0) + credits
     else:
         self.last_prompt_stats.credits += credits
+        # Per-call context readings and the metered call count, shared with the
+        # AcpClient tracker so both transports report the same turn. A
+        # between-turns frame belongs to no turn's window, like its credits.
+        self.last_prompt_stats.note_metadata_frame(pct_f, params.get("meteringUsage"))
     # Gated on membership, exactly as the AcpClient path gates the same read.
     # The shared runtime carries hosts outside ACP_BACKENDS_STRUCTURED_REFUSAL,
     # so an unconditional read here hands a parser written for one vocabulary
