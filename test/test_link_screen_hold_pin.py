@@ -180,7 +180,7 @@ RESOLVER_DEPTH = 1
 CONTROL_MODULES = (
     "acp/prompt_blocks.py",
     "apps/builtins/auto_improvement/backend/clone_setup.py",
-    "apps/builtins/aws_control/backend/backup.py",
+    "apps/builtins/aws_control/backend/backup_parts/conversations.py",
     "apps/builtins/issue_radar/backend/crew_store.py",
     "apps/plugin_import.py",
     "dashboard/handlers/themes.py",

@@ -14,7 +14,7 @@ that would catch a regression rather than in the direction that restates the cod
   several hundred patch sites. A write into one part reaches no other holder, so no
   test outside this file's premise cases patches a part directly.
 * The owners form one acyclic stack under the facade, none of them importing it,
-  and the constructs other gates pin to ``backup.py`` by path stay there.
+  and the constructs other gates pin by path stay where those gates key them.
 """
 
 from __future__ import annotations
@@ -25,6 +25,7 @@ import importlib
 import importlib.util
 import inspect
 import itertools
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,13 +37,16 @@ import pytest
 
 from kiro_crew.apps.builtins.aws_control.backend import backup
 from kiro_crew.apps.builtins.aws_control.backend.backup_parts import (
+    archive_inputs,
     catalog,
+    conversations,
     egress_text,
     fingerprints,
     identity,
     layer_b,
     ledger,
     nightly,
+    restore,
     retention,
     state,
     traversal,
@@ -67,6 +71,9 @@ PARTS: tuple[ModuleType, ...] = (
     uploads,
     catalog,
     retention,
+    archive_inputs,
+    conversations,
+    restore,
 )
 
 #: The engine's module-level surface: every name ``backup`` answers for, dunders
@@ -705,23 +712,28 @@ class TestLayering:
             assert later == set(), f"{part.__name__} imports a part at or above it: {later}"
 
     @pytest.mark.parametrize(
-        "name",
+        ("name", "home"),
         [
-            # Declared link-screen sites, keyed to this file by path.
-            "_add_tree",
-            "_conversation_scratch_parent",
-            "_kiro_cli_conversation_db",
-            "restore_download",
-            # The redaction-sink row names this module as the backup push boundary.
-            "run_snapshot_backup",
-            "run_sessions_backup",
-            "_publish_label",
-            "_export_cli_conversations",
+            # Declared link-screen sites, keyed by path in ``test/link_screen_sites.py``;
+            # each home is the module that baseline names for the site.
+            ("_add_tree", f"{_PARTS_PACKAGE}.archive_inputs"),
+            ("_conversation_scratch_parent", f"{_PARTS_PACKAGE}.conversations"),
+            ("_kiro_cli_conversation_db", f"{_PARTS_PACKAGE}.conversations"),
+            ("restore_download", f"{_PARTS_PACKAGE}.restore"),
+            # The redaction-sink row names the facade as the backup push boundary, and
+            # ``security_posture.NON_EGRESS_REDACTION_MODULES`` lists the conversation
+            # export's part as an internal partition behind it.
+            ("run_snapshot_backup", backup.__name__),
+            ("run_sessions_backup", backup.__name__),
+            ("_publish_label", backup.__name__),
+            ("_export_cli_conversations", f"{_PARTS_PACKAGE}.conversations"),
         ],
     )
-    def test_the_constructs_other_gates_pin_to_backup_py_stay_there(self, name: str) -> None:
-        assert getattr(backup, name).__module__ == backup.__name__
-        assert name in vars(backup)
+    def test_the_constructs_other_gates_pin_to_backup_py_stay_there(
+        self, name: str, home: str
+    ) -> None:
+        assert getattr(backup, name).__module__ == home
+        assert name in vars(sys.modules[home])
 
     def test_every_outbound_put_is_made_by_the_facade(self) -> None:
         # The parts decide; the facade is where archive and label bytes leave.

@@ -1961,14 +1961,26 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # ``apps/builtins/aws_control/backend/backup.py`` boundary, which keeps every
         # outbound archive and label PUT. ``egress_text`` defines the redaction sequence
         # the engine applies to exported conversation rows, published and foreign labels
-        # and the recorded nightly failure text; ``nightly`` applies it to that failure
-        # text, which the status route serves (the call-site scan matches its read of the
-        # outbound-redaction switch, ``_unattended_sessions_redaction_gap``);
-        # ``retention`` redacts only its gate-side log lines and SEL audit text. The split
-        # adds no transport or audience and therefore no posture row.
+        # and the recorded nightly failure text; ``conversations`` applies it to each
+        # exported conversation row before the row reaches the archive the facade
+        # uploads; ``nightly`` applies it to that failure text, which the status route
+        # serves (the call-site scan matches its read of the outbound-redaction switch,
+        # ``_unattended_sessions_redaction_gap``); ``retention`` redacts only its
+        # gate-side log lines and SEL audit text. The split adds no transport or audience
+        # and therefore no posture row.
+        "apps/builtins/aws_control/backend/backup_parts/conversations.py",
         "apps/builtins/aws_control/backend/backup_parts/egress_text.py",
         "apps/builtins/aws_control/backend/backup_parts/nightly.py",
         "apps/builtins/aws_control/backend/backup_parts/retention.py",
+        # Internal partitions behind the single registered
+        # ``apps/builtins/aws_control/backend/routes.py`` boundary, the AWS Control HTTP
+        # surface whose routes serve every response. ``routes_parts/common.py`` holds
+        # ``_safe_error``, the one chokepoint every outbound error string goes through,
+        # and ``routes_parts/drive.py`` redacts a preview's head bytes before the preview
+        # route returns them. The split adds no transport or audience and therefore no
+        # posture row.
+        "apps/builtins/aws_control/backend/routes_parts/common.py",
+        "apps/builtins/aws_control/backend/routes_parts/drive.py",
         # The shared recursive redactor helper itself — a pure scrubber, not an
         # egress boundary; the modules that CALL it (mochi routes/hooks) are the
         # registered sinks.

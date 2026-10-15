@@ -45,13 +45,13 @@ work.
 
 AWS Control declares `"jobs": true` in its `app.json`. `_handle_backup_run`
 starts the backup as a Job SDK run and returns its run id without waiting for it
-to finish (`src/kiro_crew/apps/builtins/aws_control/backend/routes.py`,
+to finish (`src/kiro_crew/apps/builtins/aws_control/backend/routes_parts/backups.py`,
 `_handle_backup_run`). The in-flight fact therefore lives on the server: a
 reload, a navigation away, or a second tab still sees it. The runner still
 records completed backup metadata through `_record_run`, and `last_runs` reads
 that per-account terminal ledger (`backend/backup_parts/ledger.py`, `_record_run`
 and `last_runs`). The status endpoint returns that ledger as `runs` and the
-account's job state as `jobs` (`backend/routes.py`, `_handle_backup_status`).
+account's job state as `jobs` (`backend/routes_parts/backups.py`, `_handle_backup_status`).
 
 `_STOP` only prevents an upload reached after app teardown
 (`backend/backup_parts/uploads.py`, `_STOP` and `_authorize_upload`).

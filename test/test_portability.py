@@ -675,7 +675,7 @@ class TestTheAncestorSwapIsRefusedNotDetected:
     junction already at the name fails there rather than being traversed. Pinning
     each component before naming the next means the only path the kernel walks to
     reach component *n* runs through components already opened and verified — the
-    pattern `aws_control/backend/storage.py` already uses for the path a sandboxed
+    pattern `aws_control/backend/storage_staging.py` already uses for the path a sandboxed
     CLI writes through.
 
     These tests do not assert that the mechanism is present. They run the attacker
