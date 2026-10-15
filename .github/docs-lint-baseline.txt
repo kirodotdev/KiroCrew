@@ -246,7 +246,6 @@ line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/apps/module_loader.py:34-39
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/hooks.py:931
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/security.py:4436
-line-ref	docs/request-for-change/rfc-everything-is-an-app.md	src/kiro_crew/sel.py:58-63
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/OverviewPage.tsx:193-198
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/overviewStatCards.tsx:32
 line-ref	docs/request-for-change/rfc-everything-is-an-app.md	website/src/pages/settings/OverviewPanel.tsx:1-4
@@ -306,8 +305,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	llm_helpers.
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	mcp_core.py:228,357,288,318
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	platform/governance_profiles.py:212-220
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	runtime.py:522
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	sel.py:856-888
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	sel.py:891
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:110-122
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:124-167
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:178-195

@@ -128,7 +128,6 @@
 2483 src/kiro_crew/security/redaction.py
 3809 src/kiro_crew/security/shell_normalizer.py
 3181 src/kiro_crew/security_posture.py
-3920 src/kiro_crew/sel.py
 2232 src/kiro_crew/service/linux.py
 2421 src/kiro_crew/session_ledger.py
 2648 src/kiro_crew/session_map.py

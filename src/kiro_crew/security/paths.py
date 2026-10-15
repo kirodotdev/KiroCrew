@@ -418,11 +418,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
     "sel_hmac.key",
-    # SEL trust-root directory: sel.py stores/migrates the audit chain's HMAC
+    # SEL trust-root directory: sel_trust_root.py stores/migrates the audit chain's HMAC
     # signing key at ``trust/sel_hmac.key`` — OUTSIDE the log's directory, so
     # write access to the log dir does not imply re-signing power. The whole
     # dir is gated (like ``profiles``/``run``) so future trust-root material is
-    # covered without a new entry. sel.py opens the key directly, not through
+    # covered without a new entry. sel_trust_root.py opens the key directly, not through
     # this gate.
     #
     # Spec Builder's decision record (``trust/spec-builder-decisions.json``) relies
@@ -454,12 +454,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # reader it fences is the AGENT'S OWN FILE TOOLS.
     "member-memory-bindings",
     "security_events.jsonl",
-    # Rotated SEL segments. sel.py closes the live log at a size cap and renames
+    # Rotated SEL segments. sel_rotation.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
     # the live file does and must be gated identically — a rotated log that the
     # agent could read (or rewrite, then let the chain re-anchor from) would make
     # rotation itself the way around the fence. Directory entry, so every
-    # segment is covered without a per-name matcher. sel.py opens segments
+    # segment is covered without a per-name matcher. sel_reader.py opens segments
     # directly, not through this gate.
     "security_events.d",
     "app_admission.json",

@@ -244,7 +244,7 @@ Entry blocker: Open question 4 (which records are surfaced) is answered.
 - Record read access is workspace-global by decision, consistent with chat history. This widens exposure relative to `spawn_status`'s id-only reachability, and is documented rather than implicit.
 - Records must not be reachable through any chat-slot mutation route. Because they are not slots the guarantee is structural, and Phase 3's criteria assert it against the current handlers.
 - Promotion takes the new slot's approval policy from the slot, not from the run's spawn-time approval mode. A run spawned inside an auto-approve wave must not confer auto-approval on the interactive session it becomes (Phase 4 criterion).
-- Governance/audit attribution: `sel._infer_source` falls through to `"slack"` for unrecognized keys (`sel.py:856-888`), and `governance_profiles._infer_surface` delegates to it (`platform/governance_profiles.py:212-220`). The record store avoids this by introducing no new session-key prefix; a future revision that does must update `_infer_source`, `_AUDIT_SOURCES` (`sel.py:891`), and record an explicit decision about `_UNATTENDED_SURFACES` (`governance_profiles.py:190`).
+- Governance/audit attribution: `sel._infer_source` falls through to `"slack"` for unrecognized keys (`sel.py`), and `governance_profiles._infer_surface` delegates to it (`platform/governance_profiles.py:212-220`). The record store avoids this by introducing no new session-key prefix; a future revision that does must update `_infer_source`, `_AUDIT_SOURCES` (`sel.py`), and record an explicit decision about `_UNATTENDED_SURFACES` (`governance_profiles.py:190`).
 
 ## Alternatives considered
 

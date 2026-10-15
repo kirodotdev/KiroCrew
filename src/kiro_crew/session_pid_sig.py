@@ -126,7 +126,7 @@ from kiro_crew.sel import _sel_hmac_key_bytes, sel_hmac_key_path
 
 logger = logging.getLogger(__name__)
 
-# Mirrors sel.py: minimum trust-root key length. A shorter key on disk means
+# Mirrors sel_trust_root.py: minimum trust-root key length. A shorter key on disk means
 # truncation/corruption/tampering — signing with it would yield a predictable,
 # forgeable MAC, so both publish and verify treat a short key as absent (fail
 # closed on the verify side). The key PATH is not re-derived here: it comes

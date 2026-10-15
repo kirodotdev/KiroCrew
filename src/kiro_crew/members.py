@@ -1478,7 +1478,7 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
     if memory_store:
         binding["memory_store"] = memory_store
     path.parent.mkdir(parents=True, exist_ok=True)
-    # The trust subtree is owner-only everywhere else (sel.py creates it 0o700);
+    # The trust subtree is owner-only everywhere else (sel_trust_root.py creates it 0o700);
     # a parents=True mkdir would otherwise leave a default-mode directory chain.
     # Best-effort: the sensitive-path floor is the real fence, the mode is
     # defence in depth, and a chmod failure must not cost the thread its binding.

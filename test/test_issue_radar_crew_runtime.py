@@ -3449,7 +3449,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
 
     Every trust assertion in this file requires a fail-closed critical SEL
     audit to WIN the chain lock, and on the event-loop thread that acquire is a
-    single non-blocking attempt (``sel.py``) with a fail-closed refusal behind
+    single non-blocking attempt (``sel_chain_lock.py``) with a fail-closed refusal behind
     it (``safety_override.py``) — both correct product behaviour, pinned by
     their own tests, and deliberately not touched here. What THESE tests pin is
     the test-isolation property that makes depending on that lock safe: the
@@ -3495,7 +3495,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
         lock_dir = shared / sel_mod._TRUST_SUBDIR
         lock_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         lock_file = lock_dir / sel_mod._SEL_LOCK_FILE
-        # Same flags the code under test opens the sidecar with (sel.py), so
+        # Same flags the code under test opens the sidecar with (sel_chain_lock.py), so
         # the staged holder is byte-faithful on Windows too.
         fd = os.open(
             lock_file,

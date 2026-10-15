@@ -161,7 +161,7 @@ Consequences, each grep-verified rather than demonstrated:
   (`src/kiro_crew/security.py:4436`), not frozen. In-process code can read and
   write the keystone files directly, `security_policy.json` included.
 - The SEL chain's integrity rests on the HMAC key living outside the log
-  directory (`src/kiro_crew/sel.py:58-63`). That defeats an actor with
+  directory (`src/kiro_crew/sel_trust_root.py`, `_TRUST_SUBDIR`). That defeats an actor with
   log-directory write access, which is narrower access than an app has.
 - Audit failure never changes a decision, by explicit policy
   (`apps/execution.py:459-460`, `admission.py:154-156`), so suppressing the record
