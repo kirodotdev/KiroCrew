@@ -6,7 +6,7 @@ mode is reserved before the steer, committed once the steer lands (committed as
 unconfirmed when the steer raises or is cancelled), and released only when the
 provider declines. A message that is not steered is queued with its receipt through
 ``TelegramDispatcher._enqueue_with_receipt``. That wrapper, the receipt flip and the
-drain that replays queued messages stay in ``transport_dispatch.py``, where the
+drain that replays queued messages are ``dispatch/turn_queue.py``'s, where the
 queue-drain and receipt ratchets read them.
 """
 

@@ -163,7 +163,6 @@
 2192 src/kiro_crew/taskq/adapters/runner.py
 2195 src/kiro_crew/telegram/client.py
 2730 src/kiro_crew/telegram/renderer.py
-2490 src/kiro_crew/telegram/transport_dispatch.py
 2272 src/kiro_crew/tool_call_title.py
 2250 src/kiro_crew/ui_index.py
 5484 src/kiro_crew/validation.py

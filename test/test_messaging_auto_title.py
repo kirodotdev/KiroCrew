@@ -604,7 +604,7 @@ class TestDeletedDuringTheTurn:
         sites = {
             "slack/handler.py": "conversation_log, session_key",
             "slack/transport_dispatch.py": "conversation_log, session_key",
-            "telegram/transport_dispatch.py": "self.conv_log, session_key",
+            "telegram/dispatch/turn_engine.py": "self.conv_log, session_key",
         }
         package_root = os.path.dirname(os.path.dirname(auto_title.__file__))
         for relative, pin_args in sites.items():
@@ -643,7 +643,7 @@ class TestDeletedDuringTheTurn:
                 "await save_conversation_turn_off_loop(",
                 "conversation_log, session_key",
             ),
-            "telegram/transport_dispatch.py": (
+            "telegram/dispatch/turn_engine.py": (
                 "self._persist_turn,",
                 "self.conv_log, session_key",
             ),
@@ -735,7 +735,7 @@ class TestDeletedDuringTheTurn:
         sites = {
             "slack/handler.py": "conversation_log, session_key",
             "slack/transport_dispatch.py": "conversation_log, session_key",
-            "telegram/transport_dispatch.py": "self.conv_log, session_key",
+            "telegram/dispatch/turn_engine.py": "self.conv_log, session_key",
         }
         package_root = os.path.dirname(os.path.dirname(auto_title.__file__))
         for relative, pin_args in sites.items():

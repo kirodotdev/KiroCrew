@@ -1044,7 +1044,7 @@ class TestHookGateKwargs:
             "subagent_manager/run.py",
             "task_executor.py",
             "task_planner.py",
-            "telegram/transport_dispatch.py",
+            "telegram/dispatch/turn_engine.py",
             "apps/builtins/auto_improvement/spine/agent_runner.py",
         }, sorted(helper_sites)
         # Every pinned exception still exists; a deleted site must leave the

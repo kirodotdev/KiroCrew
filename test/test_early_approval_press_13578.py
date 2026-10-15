@@ -1076,9 +1076,20 @@ class TestTheSweepReachesTheRealRegistry:
         reading the dispatcher shows which name its own end-of-turn path uses.
         """
         import importlib
+        import importlib.util
         import inspect
+        import pkgutil
 
         source = inspect.getsource(importlib.import_module(module_name))
+        # A dispatcher composed from owners in its channel's ``dispatch`` package runs its
+        # end-of-turn path in one of them (Telegram's turn engine), so all are read.
+        owners = f"{module_name.rpartition('.')[0]}.dispatch"
+        if importlib.util.find_spec(owners) is not None:
+            package = importlib.import_module(owners)
+            source += "".join(
+                inspect.getsource(importlib.import_module(f"{owners}.{info.name}"))
+                for info in pkgutil.iter_modules(package.__path__)
+            )
         assert f"{seam}.discard_session" not in source, (
             f"{module_name} sweeps reservations through {seam}, the name callers and "
             "tests substitute -- use the registry alias instead"

@@ -1037,7 +1037,7 @@ def test_every_transport_marks_what_it_receives_as_a_persons(transport):
         ("wecom/transport_dispatch.py", "ChannelTurn", 1),
         ("whatsapp/transport_dispatch.py", "ChannelTurn", 1),
         ("discord/transport_dispatch.py", "Asker", 1),
-        ("telegram/transport_dispatch.py", "get_or_create", 1),
+        ("telegram/dispatch/turn_engine.py", "get_or_create", 1),
     ],
 )
 def test_a_channel_dispatcher_starts_a_turn_at_the_inbounds_origin(path, callee, count):

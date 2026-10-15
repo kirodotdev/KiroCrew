@@ -1,10 +1,11 @@
 """Private owners composed by :mod:`kiro_crew.telegram.transport_dispatch`.
 
-``TelegramDispatcher`` keeps its state, its inbound front door and turn engine, the
-end-of-turn queue drain and the receipt wrappers it shares with the steer path,
-``/stop``, ``/title``, the durable transcript write and the conversation-identity
-helpers (route, session key, rotation, agent): repository guards read those in
-``transport_dispatch.py`` by path. The modules here hold its other responsibilities.
+``TelegramDispatcher`` keeps its state, its inbound front door, ``/stop``, ``/title``,
+the restriction predicates, the user-facing failure reason and the
+conversation-identity helpers (route, session key, rotation, agent): repository guards
+read those in ``transport_dispatch.py`` by path. The modules here hold its other
+responsibilities, the turn engine (``turn_engine``) and the end-of-turn queue drain
+with its receipt wrappers (``turn_queue``) among them.
 
 Every owner follows the same placement rules:
 

@@ -1824,7 +1824,8 @@ A message that arrives while a turn is still generating is not a new turn: the
 session semaphore is held, so running it directly would either block or open a
 second conversation against the same key. Three channels carry the full
 steer/queue/drain machinery — `telegram/transport_dispatch.py` (its steer-or-queue arm
-in `telegram/dispatch/midturn.py`), `discord/transport_dispatch.py` and
+in `telegram/dispatch/midturn.py`, its receipt wrappers and drain in
+`telegram/dispatch/turn_queue.py`), `discord/transport_dispatch.py` and
 `teams/transport_dispatch.py`; all read the
 same `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and all implement the same three primitives
@@ -3856,16 +3857,16 @@ Bot API surface.
 `TelegramDispatcher` is one class composed from owners. `telegram/transport_dispatch.py`
 keeps the dispatcher's state and live config, the inbound front door (`handle_message`:
 governance, admission, activation, resume routing, the command ladder, the busy check,
-rotation and the turn-path privacy apply) and the turn engine it hands an admitted
-message to (`_run_turn`). It also keeps the queue drain (`_drain_queue`, `_pump_queue`),
-the receipt wrappers (`_receipt_surface`, `_enqueue_with_receipt`,
-`_receipt_flip_locked`), `/stop`, `/title`, `_persist_turn`, the restriction predicates,
+rotation and the turn-path privacy apply), `/stop`, `/title`, the restriction predicates,
 the conversation-identity helpers (route, session key, `_rotated_session_key`, agent,
 origin mirror) and `_user_safe_failure_reason`. Repository guards read those constructs
-in this file by path: the tool-gate splat, the turn ceiling and its mute-aware refusal,
-the crew-log opener, the persist-then-pin order, the failure charge, `_drain_queue`, the
-receipt flip calls, the single rotation site, the title writes, `/stop`'s owner and the
-"Telegram failure reason" redaction sink.
+in this file by path: the single rotation site, `/title`'s write, `/stop`'s owner, the
+admission order and the "Telegram failure reason" redaction sink. The turn engine
+`handle_message` hands an admitted message to is `dispatch/turn_engine.py`, and the
+guards that read the tool-gate splat, the turn ceiling and its mute-aware refusal, the
+crew-log opener, the memory-store seam, the persist-then-pin order, the transcript
+write's fallback title and the failure charge read that file; `_drain_queue` and the
+receipt flip calls are read in `dispatch/turn_queue.py`.
 
 Every other responsibility is an owner under `telegram/dispatch/`, and new work of that
 kind goes to it:
@@ -3875,6 +3876,8 @@ kind goes to it:
 | `origin.py` | `_QueuedOrigin`, its sender key, owner token and queue-entry spelling, `_CHANNEL` |
 | `addressing.py` | forum activation (`_activation_outcome`, `_addresses_this_bot`) and `_reply_target` |
 | `midturn.py` | `_handle_busy`: steer or queue a mid-turn message, with its privacy reservation; `_handle_resumed_busy`: hand a message into a busy RESUMED dashboard session to that slot's own machinery |
+| `turn_engine.py` | `_run_turn`: one model turn for an admitted message, from session acquire to release and the drain after it; `_persist_turn`, the transcript write; `_maybe_notice`, the soft-threshold context notice |
+| `turn_queue.py` | `_enqueue_with_receipt` and the receipt (`_receipt_surface`, `_receipt_flip_locked`); `_drain_queue` / `_pump_queue`, the end-of-turn drain that collapses one sender's queued messages into one turn |
 | `pickers.py` | the `/model` and `/agent` keyboards, the `_Picker` record, prune and consume, and their apply (the tables stay on the dispatcher) |
 | `callbacks.py` | `on_callback`: every inline-button prefix |
 | `spawn_approval.py` | `deliver_spawn_approval` and its destination checks |
@@ -3885,7 +3888,12 @@ A new command's handler goes to `commands.py`; its dispatch stays in `handle_mes
 An owner's function whose first parameter is `self` is bound as the `TelegramDispatcher`
 attribute of the same name, so instance and class patches, `inspect.getsource` and every
 `self.<name>(...)` call reach it as they reach a method defined in the class body; the
-state stays on the dispatcher. A name tests rebind on the facade (`sel`,
+state stays on the dispatcher. Such a function's `__qualname__` is its bare name and its
+`__module__` the owner's. The one reader is the loop watchdog's stall report, which
+names a stalled callback `__module__.__qualname__` and so names the owner function;
+nothing keys behaviour on either, and the composition contract pins `__module__`. Such a
+function needs nothing only a class body gives (`super()`, `__class__`, a mangled
+`__name`). A name tests rebind on the facade (`sel`,
 `TelegramApprovalDecider`, `list_agents`, `channel_inbound_permitted`, ...) is read
 through `kiro_crew.telegram.transport_dispatch` at call time and never bound in an
 owner. Owners log under the facade's logger name, and the facade imports every owner when

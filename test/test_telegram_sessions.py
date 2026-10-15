@@ -1931,7 +1931,7 @@ class TestTelegramRestrictedResumedSession:
         """
         import inspect
 
-        src = inspect.getsource(TelegramDispatcher)
+        src = inspect.getsource(TelegramDispatcher._run_turn)
         decided = src.index("dashboard_restricted = await self._session_restricted(")
         guarded = src.index("if not dashboard_restricted:")
         projected = src.index("mirror_mids = project_channel_turn_live(")

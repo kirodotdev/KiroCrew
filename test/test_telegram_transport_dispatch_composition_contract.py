@@ -1,8 +1,9 @@
 """Composition contract between ``TelegramDispatcher`` and ``telegram/dispatch``.
 
 ``kiro_crew.telegram.transport_dispatch`` keeps the dispatcher's state, its front door
-and turn engine and the constructs repository guards read in that file, and binds the
-methods of the owners under ``kiro_crew/telegram/dispatch/`` as class attributes. What
+and the constructs repository guards read in that file, and binds the methods of the
+owners under ``kiro_crew/telegram/dispatch/`` (the turn engine and the queue drain
+among them) as class attributes. What
 this file pins is what a caller of the dispatcher observes independently of where each
 rule lives:
 
@@ -14,8 +15,8 @@ rule lives:
   tests themselves -- still reaches the moved code that consumes it;
 * the owners follow the placement rules that make that true: no runtime facade import
   at module level, no bare read of a patched name, siblings reached through their
-  module, one logger, eager loading, and none of the constructs ``_FACADE_PINNED``
-  lists, which records why each is kept out of the owners.
+  module, one logger, eager loading, no construct that needs the class body, and each
+  construct ``_FACADE_PINNED`` lists in exactly the file ``_PINNED_HOME`` names for it.
 """
 
 from __future__ import annotations
@@ -58,6 +59,8 @@ OWNERS = frozenset(
         "origin",
         "pickers",
         "spawn_approval",
+        "turn_engine",
+        "turn_queue",
         "voice",
     }
 )
@@ -263,6 +266,8 @@ MOVED_NAMES = {
     "addressing": ("_MENTION_RES", "_mention_re"),
     "callbacks": ("_UNTAGGED_OPTIONS_REFUSAL",),
     "commands": ("_RELEASE_FAILURE",),
+    "turn_engine": ("_APPROVAL_REGISTRY",),
+    "turn_queue": ("_MAX_COLLAPSED_ATTACHMENTS",),
 }
 
 #: Dispatcher members an owner defines, by owner. Each is bound on the class as the
@@ -298,6 +303,14 @@ MOVED_MEMBERS = {
         "_spawn_chat_target",
         "_spawn_prompt_destination_permitted",
         "deliver_spawn_approval",
+    ),
+    "turn_engine": ("_maybe_notice", "_persist_turn", "_run_turn"),
+    "turn_queue": (
+        "_drain_queue",
+        "_enqueue_with_receipt",
+        "_pump_queue",
+        "_receipt_flip_locked",
+        "_receipt_surface",
     ),
     "voice": ("_handle_voice", "_speak_reply", "_voice_enabled"),
 }
@@ -826,7 +839,11 @@ def test_every_facade_read_has_its_call_time_import() -> None:
 
 @pytest.mark.asyncio
 async def test_a_facade_patch_reaches_each_moved_reader(monkeypatch: pytest.MonkeyPatch) -> None:
-    """One call per rebound name an owner reads, each answered by the facade's stand-in."""
+    """One call per rebound name the callback, command, picker, spawn-approval and voice
+    owners read, each answered by the facade's stand-in. The turn engine's facade reads
+    (``TurnDriver``, ``TelegramRenderer``, ``Stats``, ``cleanup_attachments``,
+    ``publish_turn_identity``) are driven through whole turns by test_telegram.py,
+    test_telegram_parity.py and test_close_guard_parity.py, which patch them on the facade."""
     reached: list[str] = []
 
     rows: list[dict[str, Any]] = []
@@ -977,16 +994,17 @@ def test_the_package_initializer_imports_nothing() -> None:
     assert [n for n in tree.body if not isinstance(n, ast.Expr)] == []
 
 
-#: The constructs no owner may hold, each with the reason. All but the ones in
-#: ``_FORBIDDEN_IN_THE_FACADE_TOO`` stay in ``transport_dispatch.py``, either because a
-#: repository guard locates them there by path or by ``inspect.getsource`` of that
-#: module, or (where marked) as a placement rule that keeps the turn engine whole. Those
-#: are shapes a guard forbids in the facade as well. The agent-SDK import is one: the
-#: facade's boundary baseline is empty, so check_agent_sdk_boundary refuses any. A guard
-#: that requires its construct in the facade fails by itself when the construct leaves;
-#: a guard that forbids a shape goes blind when the shape lands in an owner instead, so
-#: ``_facade_pinned_shapes`` makes both cases fail here, by name. Unguarded
-#: ``renderer.close()`` is not listed: test_close_guard_parity scans the owners for it.
+#: The constructs repository guards locate by file, each with the reason. All but the
+#: ones in ``_FORBIDDEN_IN_THE_FACADE_TOO`` live in exactly the file ``_PINNED_HOME``
+#: names, either because a repository guard locates them there by path or by
+#: ``inspect.getsource`` of that module, or (where marked) as a placement rule that keeps
+#: the turn engine whole. Those three are shapes a guard forbids in the facade and every
+#: owner alike. The agent-SDK import is one: the facade's boundary baseline is empty, so
+#: check_agent_sdk_boundary refuses any. A guard that requires its construct in a file
+#: fails by itself when the construct leaves; a guard that forbids a shape goes blind
+#: when the shape lands in another file instead, so ``_facade_pinned_shapes`` makes both
+#: cases fail here, by name. Unguarded ``renderer.close()`` is not listed:
+#: test_close_guard_parity scans the owners for it.
 _FACADE_PINNED = {
     "a redactor call": "test_security_posture: the 'Telegram failure reason' sink",
     "begin_turn": "test_turn_ceiling: GATED composes the ceiling around begin_turn",
@@ -1007,6 +1025,24 @@ _FACADE_PINNED = {
 _FORBIDDEN_IN_THE_FACADE_TOO = frozenset(
     {"a name-grant check", "the forgeable spawn title", "an agent-SDK import"}
 )
+#: The one file that holds each guarded construct: ``transport_dispatch`` for the facade,
+#: else the owner's stem. Some guards name ``dispatch/turn_engine.py`` by path; the rest,
+#: every queue-drain and receipt-flip guard among them, read the whole ``dispatch``
+#: package, so this table is what fixes the file each construct lives in.
+_PINNED_HOME = {
+    "a redactor call": "transport_dispatch",
+    "begin_turn": "turn_engine",
+    "the turn ceiling": "turn_engine",
+    "the muted renderer": "turn_engine",
+    "the hook gate splat": "turn_engine",
+    "the turn's memory store": "turn_engine",
+    "the breaker charge": "turn_engine",
+    "the tool gate": "turn_engine",
+    "the auto-title pin": "turn_engine",
+    "the reservation sweep": "turn_engine",
+    "a receipt flip": "turn_queue",
+    "the queue drain": "turn_queue",
+}
 
 
 def _facade_pinned_shapes(source: str) -> list[str]:
@@ -1051,21 +1087,26 @@ def _facade_pinned_shapes(source: str) -> list[str]:
     return [label for label, hit in held.items() if hit]
 
 
-def test_no_owner_holds_what_the_facade_guards_read_by_path() -> None:
-    """No owner holds a construct listed in ``_FACADE_PINNED``.
+def test_each_guarded_construct_lives_in_the_file_its_guard_reads() -> None:
+    """Each construct ``_FACADE_PINNED`` lists is held by exactly its ``_PINNED_HOME``.
 
     Those are: a redactor call, ``begin_turn``, the turn ceiling, the muted renderer,
     the hook gate splat, the turn's memory store, the breaker charge, the tool gate,
     the auto-title pin, a name-grant check, the forgeable spawn title, the reservation
     sweep, a receipt flip, the queue drain and an agent-SDK import, for the reason each
-    entry records. The facade holds exactly the ones that stay there, which also shows
-    the scan recognises each construct as the dispatcher really spells it.
+    entry records. The facade and every owner hold exactly the ones homed there, and the
+    three forbidden everywhere nowhere, which also shows the scan recognises each
+    construct as the dispatcher really spells it.
     """
-    held = {stem: _facade_pinned_shapes(source) for stem, source in _owner_sources().items()}
-    assert not {stem: labels for stem, labels in held.items() if labels}
+    assert _PINNED_HOME.keys() == _FACADE_PINNED.keys() - _FORBIDDEN_IN_THE_FACADE_TOO
+    sources = {"transport_dispatch": FACADE_PATH.read_text(encoding="utf-8"), **_owner_sources()}
+    assert set(_PINNED_HOME.values()) <= sources.keys()
+    held = {stem: set(_facade_pinned_shapes(source)) for stem, source in sources.items()}
+    homed = {
+        stem: {label for label, home in _PINNED_HOME.items() if home == stem} for stem in sources
+    }
+    assert held == homed
     assert not (DISPATCH_DIR / "transport_dispatch.py").exists()
-    in_facade = set(_facade_pinned_shapes(FACADE_PATH.read_text(encoding="utf-8")))
-    assert in_facade == _FACADE_PINNED.keys() - _FORBIDDEN_IN_THE_FACADE_TOO
 
 
 #: One planted construct per ``_FACADE_PINNED`` label, for the scan's self-test.
@@ -1106,6 +1147,46 @@ def test_the_placement_scan_passes_the_constructs_an_owner_may_hold() -> None:
     )
     assert _facade_pinned_shapes(allowed) == []
     assert _PLANTED.keys() == _FACADE_PINNED.keys()
+
+
+def _class_body_reads(source: str) -> list[str]:
+    """``line: construct`` for every read that only a class body gives meaning to."""
+    hits = []
+    for node in ast.walk(ast.parse(source)):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "super"
+            and not node.args
+        ):
+            hits.append(f"{node.lineno}: super()")
+        elif isinstance(node, ast.Name) and node.id == "__class__":
+            hits.append(f"{node.lineno}: __class__")
+        elif (
+            isinstance(node, ast.Attribute)
+            and node.attr.startswith("__")
+            and not node.attr.endswith("__")
+        ):
+            hits.append(f"{node.lineno}: {node.attr}")
+    return sorted(hits)
+
+
+def test_no_owner_needs_the_class_body() -> None:
+    """A function bound into the class from an owner was compiled outside it: it has no
+    ``__class__`` cell, so a zero-argument ``super()`` or a ``__class__`` read raises, and
+    a ``self.__name`` is never mangled to ``_TelegramDispatcher__name``. So no owner
+    spells one; a method that needs one stays in the class body."""
+    offenders = {
+        stem: hits
+        for stem, source in _owner_sources().items()
+        if (hits := _class_body_reads(source))
+    }
+    assert offenders == {}
+
+
+def test_the_class_body_scan_can_fail() -> None:
+    planted = "def f(self):\n    super().g()\n    return __class__, self.__secret, self.__dict__\n"
+    assert _class_body_reads(planted) == ["2: super()", "3: __class__", "3: __secret"]
 
 
 def test_dashboard_imports_stay_call_time() -> None:

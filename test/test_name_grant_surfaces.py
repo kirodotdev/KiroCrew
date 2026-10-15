@@ -164,6 +164,8 @@ class TestLoopSafetyPins:
         from kiro_crew.slack import handler as slack_handler
         from kiro_crew.slack import transport_dispatch as slack_dispatch
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+        from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
+        from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
         assert chat_runner._name_grant_refusal_off_loop is name_grant.refusal_for_command_off_loop
         # The dashboard's rung is composed into chat_runner from these owners.
@@ -185,6 +187,8 @@ class TestLoopSafetyPins:
             slack_dispatch,
             discord_dispatch,
             telegram_dispatch,
+            telegram_turn_engine,
+            telegram_turn_queue,
         ):
             assert "asyncio.to_thread(name_grant" not in inspect.getsource(mod), mod.__name__
 
@@ -194,16 +198,25 @@ class TestLoopSafetyPins:
         # instead. A gate (or its host module) that starts calling this module
         # would put PATH resolution and file digesting back on the loop. The
         # three channel transports host their gates as inline closures, so the
-        # assertion covers the whole module for each.
+        # assertion covers the whole module for each (Telegram's closure is in its
+        # turn engine owner, read with the dispatcher's other modules).
         import inspect
 
         from kiro_crew.discord import transport_dispatch as discord_dispatch
         from kiro_crew.messaging import dispatch
         from kiro_crew.slack import transport_dispatch as slack_dispatch
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+        from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
+        from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
         assert "name_grant" not in inspect.getsource(dispatch.build_tool_gate)
-        for mod in (slack_dispatch, discord_dispatch, telegram_dispatch):
+        for mod in (
+            slack_dispatch,
+            discord_dispatch,
+            telegram_dispatch,
+            telegram_turn_engine,
+            telegram_turn_queue,
+        ):
             assert "name_grant" not in inspect.getsource(mod), mod.__name__
 
 
@@ -593,9 +606,9 @@ class TestTurnDriverSurface:
 
         from kiro_crew.messaging import dispatch
         from kiro_crew.slack import transport_dispatch as slack_dispatch
-        from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+        from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
 
-        for mod in (dispatch, slack_dispatch, telegram_dispatch):
+        for mod in (dispatch, slack_dispatch, telegram_turn_engine):
             assert "audit_session_key=" in inspect.getsource(mod), mod.__name__
 
 
@@ -678,6 +691,8 @@ class TestSpawnRungEventIdentity:
         from kiro_crew.slack import handler as slack_handler
         from kiro_crew.slack import transport_dispatch as slack_dispatch
         from kiro_crew.telegram import transport_dispatch as telegram_dispatch
+        from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
+        from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
         for mod in (
             dispatch,
@@ -686,6 +701,8 @@ class TestSpawnRungEventIdentity:
             slack_dispatch,
             discord_dispatch,
             telegram_dispatch,
+            telegram_turn_engine,
+            telegram_turn_queue,
         ):
             assert 'title == "spawn_run"' not in inspect.getsource(mod), mod.__name__
 

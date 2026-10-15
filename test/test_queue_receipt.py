@@ -605,7 +605,12 @@ class TestAnAddressKeyNamesOneConversation:
         """
         missing = []
         for path in _dispatchers():
-            src = path.read_text(encoding="utf-8")
+            # Read with the owners in the channel's ``dispatch`` package, where a composed
+            # dispatcher builds its surface (Telegram's turn queue).
+            src = "".join(
+                q.read_text(encoding="utf-8")
+                for q in [path, *sorted((path.parent / "dispatch").glob("*.py"))]
+            )
             if "ReceiptSurface" not in src:
                 continue
             if "receipt_address_key(" not in src:
@@ -1570,7 +1575,7 @@ class TestAPartialDrainKeepsWhatIsStillQueuedHere:
         """
         seen = 0
         offenders: list[str] = []
-        for path in _dispatchers():
+        for path in _dispatchers() + _dispatch_owners():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for node in ast.walk(tree):
                 if not isinstance(node, ast.Call):

@@ -930,7 +930,7 @@ GATED = {
     "messaging/dispatch.py",
     "slack/transport_dispatch.py",
     "slack/handler.py",
-    "telegram/transport_dispatch.py",
+    "telegram/dispatch/turn_engine.py",
 }
 
 #: Turn sites that must NOT compose the ceiling, each with the reason. A reason
@@ -1061,7 +1061,7 @@ def test_every_exemption_states_a_reason() -> None:
 #:
 #: Slack is absent on purpose: its dispatcher builds its own driver and never
 #: consults ``delivery_is_muted``, so it has no substitute to miss.
-MUTE_AWARE = ("messaging/dispatch.py", "telegram/transport_dispatch.py")
+MUTE_AWARE = ("messaging/dispatch.py", "telegram/dispatch/turn_engine.py")
 
 
 def _muted_renderer_name(tree: ast.Module) -> str:

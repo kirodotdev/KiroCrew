@@ -1739,13 +1739,24 @@ def test_every_owner_dm_surface_opens_the_crew_log_from_its_dispatcher():
     pipeline declares ``Drift.OPENS_CREW_LOG`` and the pipeline makes the call."""
     import ast
     import importlib
+    import importlib.util
     import inspect
+    import pkgutil
 
     from kiro_crew.messaging import dispatch as pipeline
 
     for surface in sorted(sc.OWNER_DM_CONDUCTOR_SURFACES):
         dispatcher = importlib.import_module(f"kiro_crew.{surface}.transport_dispatch")
         source = inspect.getsource(dispatcher)
+        # A dispatcher composed from owners in its channel's ``dispatch`` package opens the
+        # log from one of them (Telegram's turn engine), so its source is read with theirs.
+        owners = f"kiro_crew.{surface}.dispatch"
+        if importlib.util.find_spec(owners) is not None:
+            package = importlib.import_module(owners)
+            source += "".join(
+                inspect.getsource(importlib.import_module(f"{owners}.{info.name}"))
+                for info in pkgutil.iter_modules(package.__path__)
+            )
         if "ChannelTurns(" in source:
             # The drift handed over is the declared set itself, not one with the
             # opener carved out of it (``DISCORD_DRIFT - {...}`` reads as passed).
