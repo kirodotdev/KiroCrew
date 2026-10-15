@@ -293,8 +293,15 @@ def _default_dir() -> Path:
     return _DEFAULT_DIR if _DEFAULT_DIR is not None else data_home()
 
 
-# The doctor's two store readers stay defined here: `kirocrew doctor`'s facade
-# test pins `kiro_crew.cron` as the module that defines them.
+# The doctor's three store readers live here. `kirocrew doctor`'s facade test
+# pins `unhealthy_jobs_from_disk` and `job_pause_state_from_disk` as defined in
+# `kiro_crew.cron`; this third one sits beside them. It lists the copies
+# gateway startup moved only after `crons.json` failed JSON decoding or decoded
+# to something other than an object holding a `jobs` list. Each copy is an unchanged rename under
+# `cron-history/quarantine`, which is behind the file-tool fence and the
+# sandbox mask. The dashboard notice and doctor's Cron Jobs section name the
+# copy and the restore sequence: fix it, stop Kiro Crew, move it back, then
+# start Kiro Crew again.
 def cron_store_quarantine_copies() -> tuple[Path, list[Path]]:
     """The cron store's path and every copy gateway startup moved aside, for doctor."""
     store = config_dir() / _CRONS_FILE
