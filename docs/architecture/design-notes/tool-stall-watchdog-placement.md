@@ -210,7 +210,7 @@ holds no reference to it. The session layer must not import the dashboard.
 outside, a healthy 40-minute turn and a turn parked on an approval for 40 minutes
 look identical: `semaphore.locked()` is True for both, and `last_used` advances
 only on the allocation paths and on `touch()`, not on every LLM round-trip
-(`session.py`'s module docstring), so it does not track a turn's progress.
+(`session_parts/sweeps.py`'s module docstring), so it does not track a turn's progress.
 
 The tempting reading is that the signal has to be *injected* from the layer that
 can see it — a consumer-supplied reader in the shape of

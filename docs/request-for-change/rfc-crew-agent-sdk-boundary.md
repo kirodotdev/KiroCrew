@@ -225,13 +225,13 @@ consolidates this one into `agent_sdk` and closes those two gaps.
 **Three of the four concerns v3 listed have since moved**, and `session.py` only
 forwards to them. The state is no longer where this subsection said it was:
 
-- `_warm_pool` is a forwarding property at `session.py` onto
+- `_warm_pool` is a forwarding property at `session_parts/state_views.py` onto
   `session_pool.py`, which owns the pre-spawned process pool.
-- `_bg_runtime` and `_bg_runtime_lock` forward from `session.py`
+- `_bg_runtime` and `_bg_runtime_lock` forward from `session_parts/state_views.py`
   onto `session_background.py`.
-- `_subagent_runtimes` forwards from `session.py` onto
+- `_subagent_runtimes` forwards from `session_parts/state_views.py` onto
   `session_allocation.py`.
-- `_rss_max_mb` forwards from `session.py` onto `session_cleanup.py`. Its
+- `_rss_max_mb` forwards from `session_parts/state_views.py` onto `session_cleanup.py`. Its
   settings loader is still imported from *inside* the ACP package.
 
 Those four are now a boundary question about where the SDK reads them, not a
@@ -322,7 +322,7 @@ kinds of undeclared hole:
 |---|---|---|
 | `getattr`-by-name seams whose target the core never defines — `getattr(self, "_write_claude_local_settings", None)` (`AcpClient._write_claude_local_settings`) | 2 | Silent: no permission mode, and the context window collapses from 1M to 200K |
 | Methods returning a neutral value purely so a companion can override them — `_session_mcp_servers() -> []` (`AcpClient._session_mcp_servers`) is the type case | 6 | Silent: a CC session gets **zero MCP tools**, as the docstring itself states |
-| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`session.py:170`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
+| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` (`ClaudeCodeProvider` in `session_parts/provider_probes.py`, `subagent.py:131`) | 11 sites | Statically unreachable; nine `session.py` branches and two `subagent.py` branches are dead-but-maintained |
 | Defensive attribute probes across the provider boundary (`session_pid.py` (`_collect_active_pids`) probes `_proc` and `_active_proc`, `chat_runner.py:867`, `knowledge/llm_pool.py:325`) | 4 | Duck typing in place of a type |
 | Comment clusters naming the companion or a deleted module as the supplier of behaviour | 19 | The seam's real contract lives in prose |
 | Refusal / downgrade mechanisms, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships | 9 | — |
@@ -621,7 +621,7 @@ land is PR 3's to settle (§7).
 **Not every backend question is a session question, and one of these is not.**
 `SessionCapabilities` is read off a live session, which makes it the wrong home for
 a question asked in order to decide *how to build* that session.
-`ACP_BACKENDS_ACP_RUNTIME` is exactly that case: a helper in `session.py`
+`ACP_BACKENDS_ACP_RUNTIME` is exactly that case: a helper in `session_parts/policy.py`
 (spelled `_bg_runtime_backends()` today) computes
 `ACP_BACKENDS_ACP_RUNTIME & selectable_backends()` per call, and its callers
 consult the result against the configured `agent.acp_backend` **string** to choose
@@ -752,10 +752,10 @@ would-be driver — so nothing outside loses access.
 
 ### 5.4 The supervisor owns process and session lifecycle
 
-Moved into the SDK: the warm pool (`session.py:1108`), the shared background
+Moved into the SDK: the warm pool (`session_pool.py`), the shared background
 runtime, the per-parent subagent runtime map, the RSS
 watchdog threshold and its settings loader, provider adoption
-(`session.py`), and agent-process PID tracking, sweeping and reaping (currently
+(`_Session.adopt_provider` in `session_parts/record.py`), and agent-process PID tracking, sweeping and reaping (currently
 `session_pid.py`).
 
 This is the step that makes the boundary real. Without it `SessionManager` still

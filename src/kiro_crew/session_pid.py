@@ -4,7 +4,7 @@ Manages PID files (``kiro_pids.txt`` and ``kiro_session_pids.txt``) that
 track spawned kiro-cli processes.  Provides startup cleanup, periodic
 sweeping, and per-process track/untrack operations.
 
-See ``session.py`` module docstring for the full Process Sweep Architecture.
+See the ``session_parts/sweeps.py`` module docstring for the full Process Sweep Architecture.
 """
 
 from __future__ import annotations
@@ -3410,7 +3410,7 @@ def cleanup_orphaned_session_roots() -> int:
     (:func:`platform_compat.is_exec_supervisor_of_this_process`) was filed by this
     gateway's own previous image and is judged as a dead owner's.
 
-    Called periodically from ``session.py``'s ``_cleanup_loop``. Returns the
+    Called periodically from ``SessionManager._cleanup_loop``. Returns the
     number of exact-handle trees completed plus orphaned processes killed.
     """
 

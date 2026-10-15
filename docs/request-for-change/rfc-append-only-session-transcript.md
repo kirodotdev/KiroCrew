@@ -87,7 +87,7 @@ string**, built by `src/kiro_crew/context.py::ContextBuilder.build_message` (via
 native ACP session, reached through `session/load`. Kiro Crew's JSONL is a *parallel
 durable transcript*, injected back only at session start, replay, and provider switch.
 Compaction likewise happens inside the provider —
-`src/kiro_crew/session.py::check_context_usage` → `_compact_session` sends kiro-cli an
+`src/kiro_crew/session_parts/turn_context.py::check_context_usage` → `_compact_session` sends kiro-cli an
 in-place `/compact` and watches its status; it mutates no Kiro Crew record.
 
 Adopting DSH's derivation model would mean Kiro Crew holding the message array and

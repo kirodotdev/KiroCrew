@@ -168,7 +168,8 @@ _KNOWN_SITE_FILES = (
     "acp/runtime.py",
     "acp/session_provider.py",
     "providers/base.py",
-    "session.py",
+    "session_parts/claims.py",
+    "session_parts/provider_probes.py",
     "session_pid_sig.py",
     # Reached ONLY by the reflective family, so one of these failing is the signal
     # that the string-literal form stopped being counted.

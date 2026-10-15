@@ -977,7 +977,7 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     age threshold applies — plus the orphaned bind-mount sources the namespace
     launcher stages on tmpfs (see _cleanup_stale_sandbox_mount_sources).
 
-    Called from the periodic cleanup sweep in session.py, offloaded to the
+    Called from the periodic cleanup sweep in session_parts/sweeps.py, offloaded to the
     maintenance executor (blocking I/O).  Safe to call from sync contexts too.
 
     *data_home* is the data home every path below is rooted at. The sweep runs on

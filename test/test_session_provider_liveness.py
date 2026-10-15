@@ -76,7 +76,12 @@ class TestEffectivelyAliveSemantics:
 
 class TestNoCapabilityProbesRatchet:
     def test_session_source_has_no_provider_liveness_probes(self) -> None:
-        text = _SESSION_PY.read_text(encoding="utf-8")
+        # Read with the owner modules ``SessionManager`` binds its members from.
+        parts = sorted(_SESSION_PY.with_name("session_parts").glob("*.py"))
+        text = "\n".join(
+            [_SESSION_PY.read_text(encoding="utf-8")]
+            + [p.read_text(encoding="utf-8") for p in parts]
+        )
         tree = ast.parse(text)
         probed: list[str] = []
         for node in ast.walk(tree):

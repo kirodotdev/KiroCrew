@@ -201,8 +201,6 @@ line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/bootstr
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/defaults.py:41-48
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	platform/interfaces.py:66-90
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	security.py:50-58
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session.py:1108
-line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session.py:170
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session.py:399-400
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session_pid.py:300
 line-ref	docs/request-for-change/rfc-crew-agent-sdk-boundary.md	session_pid.py:311
@@ -310,17 +308,9 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	platform/gov
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	runtime.py:522
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	sel.py:856-888
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	sel.py:891
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2073-2075
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2093-2099
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2189-2196
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2203
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2275
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:2294-2306
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session.py:261-275
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:110-122
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:124-167
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	session_map.py:178-195
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	src/kiro_crew/session.py:261-275
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	src/kiro_crew/subagent_persistence.py:4-6
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	subagent_persistence.py:224-241
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	subagent_persistence.py:275-280

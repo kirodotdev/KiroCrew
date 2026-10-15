@@ -944,7 +944,9 @@ EXEMPT = {
         "through a channel's own gated dispatcher inside "
         "turn_ceiling.generated_turn, which is where the exemption is decided"
     ),
-    "session.py": "forwards to the gate's definition rather than opening a channel turn",
+    "session_parts/claims.py": (
+        "forwards to the gate's definition rather than opening a channel turn"
+    ),
 }
 
 

@@ -37,15 +37,15 @@ anything that survived a gateway crash. No single mechanism is a single point of
 | Subagent injection outer cap | `subagent.py` `_run()` | Per-subagent completion | 1200s (`_ON_DONE_TIMEOUT`) | No | Covers semaphore wait plus injection; on timeout kills the stuck kiro-cli via `sessions.reset()` and queues a failure event for the parent to drain |
 | Subagent injection inner cap | `slack/gateway_runtime/subagent_injection.py` | Per `stream_and_collect` | 900s (`INJECTION_TIMEOUT`, from `_DEFAULT_INJECTION_TIMEOUT`; override with `KIROCREW_INJECTION_TIMEOUT`, clamped down to `_ON_DONE_TIMEOUT`) | No | `_inject_with_retry` up to 3 attempts with backoff, bounded by the outer 1200s cap |
 | Prompt-busy recovery | `llm_helpers.py` | Per `stream_and_collect` | 2 retries plus backoff | No | Cancels the orphaned prompt; kills the provider on exhaustion |
-| Message queue | `session.py` plus `slack/events.py` | Per Slack thread | Unbounded FIFO | No | Queues when busy; `message_deleted` cancels; `!stop` clears |
-| Orphaned dashboard reaping | `session.py` | Dashboard sessions | Immediate | Yes | `set_active_dashboard_slots()` reaps sessions whose slot is gone |
+| Message queue | `session_parts/claims.py` plus `slack/events.py` | Per Slack thread | Unbounded FIFO | No | Queues when busy; `message_deleted` cancels; `!stop` clears |
+| Orphaned dashboard reaping | `session_parts/sweeps.py` | Dashboard sessions | Immediate | Yes | `set_active_dashboard_slots()` reaps sessions whose slot is gone |
 | Empty dir cleanup | `session.py` | `sessions/` subdirs | Startup | No | Removes empty dirs left by timed-out subagents |
 | `cleanup_orphaned_sessions` | `session_pid.py` | All kiro-cli PIDs | Startup and shutdown only | No | Reads `kiro_session_pids.txt`, validates that each PID still names the process the entry recorded (start token, so a recycled PID is spared), kills descendants bottom-up, truncates the file. Also removes stale `session_pid_*.txt` files for dead processes, and calls `_cleanup_orphaned_mcp_servers()` internally |
 | `_cleanup_orphaned_mcp_servers` | `session_pid.py` | MCP child PIDs | Every ~5 min (periodic sweep) | Yes, runs in `_cleanup_loop` | Scans for orphaned MCP processes, sends SIGKILL |
-| Idle session expiry | `session.py` | All sessions | `session.timeout_secs`, clamped up to a 60s minimum; `0` disables the sweep but keeps process hygiene | Yes, runs in `_cleanup_loop` (~5 min interval) | Calls `provider.shutdown()`, removes the session |
-| Circuit breaker | `session.py` | Per session | 5 consecutive failures (`_CIRCUIT_BREAKER_THRESHOLD`) | No | Auto-resets the session (kills the process, creates a fresh one) |
-| Context compaction | `session.py` | Chat sessions | `session.autocompact_pct` | No | Sends `/compact` to kiro-cli to free context window |
-| Background session recycle | `session.py` | Background sessions (cron, subagent) | 70% context usage (`_BG_RECYCLE_PCT`) | No | Recycles the session before context overflow |
+| Idle session expiry | `session_parts/sweeps.py` | All sessions | `session.timeout_secs`, clamped up to a 60s minimum; `0` disables the sweep but keeps process hygiene | Yes, runs in `_cleanup_loop` (~5 min interval) | Calls `provider.shutdown()`, removes the session |
+| Circuit breaker | `session_parts/policy.py` plus `session_allocation.py` | Per session | 5 consecutive failures (`_CIRCUIT_BREAKER_THRESHOLD`) | No | Auto-resets the session (kills the process, creates a fresh one) |
+| Context compaction | `session_parts/turn_context.py` | Chat sessions | `session.autocompact_pct` | No | Sends `/compact` to kiro-cli to free context window |
+| Background session recycle | `session_parts/policy.py` plus `session_background.py` | Background sessions (cron, subagent) | 70% context usage (`_BG_RECYCLE_PCT`) | No | Recycles the session before context overflow |
 | Watchdog process liveness | `taskrunner_parts/run_steps.py` | Task runner steps | 2 consecutive dead checks (`_DEAD_THRESHOLD`) at 30s intervals | Yes, part of the watchdog loop | Resets the session to trigger crash recovery |
 | Config bound clamp | `config/loader.py` | Subagent count, turns, timeouts and pool size at load time | `subagent_auto_max` and `max_subagents` to 64 (`SUBAGENT_AUTO_MAX_CEILING`), `subagent_max_turns` 1..1000, `subagent_timeout_secs` 60..86400 (0 preserved as its "use the default" sentinel), `chat_turn_timeout_secs` 300..86400 (`CHAT_TURN_TIMEOUT_MAX`; 14400 is the default, not the ceiling), `session_start_timeout_secs`, `tool_approval_timeout_secs` 30..7200 and cross-field to 60s under the turn ceiling (`APPROVAL_TURN_MARGIN_SECS`), `loop_stall_exit_after_secs` 10..300, `dashboard.chat_entry_cache_max_entries` and `dashboard.chat_entry_cache_max_bytes`, `pool_size` 0..10, `session.reconcile_max_kills` (floor 0, its off value) (`_SECURITY_BOUNDED_FIELDS`) | No | `_clamp_security_bounds` clamps out-of-range ints, logs a WARNING, emits SEL `config_bounds_clamped` (`outcome=clamped`) |
 
@@ -562,7 +562,7 @@ itself and the injection works as described above.
   reset, for different reasons.
 
 - **Idle expiry and `_cleanup_orphaned_mcp_servers` run on the same loop.** `_cleanup_loop`
-  in `session.py` runs every ~5 min (timeout/6, minimum 60s) and performs both idle session
+  in `session_parts/sweeps.py` runs every ~5 min (timeout/6, minimum 60s) and performs both idle session
   expiry and orphaned MCP server cleanup in the same iteration.
 
 - **The ACP read timeout is what enables cooperative cancellation.** The 20s `_READ_TIMEOUT`

@@ -253,6 +253,9 @@ def test_no_consumer_hardcodes_its_own_warn_threshold() -> None:
     root = Path(kiro_crew.__file__).parent
     for rel in ("session.py", "cli_chat.py"):
         src = (root / rel).read_text(encoding="utf-8")
+        if rel == "session.py":  # read with the owners its members moved to
+            parts = sorted((root / "session_parts").glob("*.py"))
+            src = "\n".join([src, *(p.read_text(encoding="utf-8") for p in parts)])
         # The warn arm must name the shared margin.
         assert "CONTEXT_WARN_MARGIN_PCT" in src, (
             f"{rel} no longer references the shared warn margin — a warn arm "

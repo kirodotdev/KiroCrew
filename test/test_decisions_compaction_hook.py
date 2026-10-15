@@ -427,7 +427,7 @@ class TestManualCompactIsExcluded:
         pattern = re.compile(r"_compact_session\s*\(")
         allowed = {
             Path("src/kiro_crew/session_compaction.py"),
-            Path("src/kiro_crew/session.py"),
+            Path("src/kiro_crew/session_parts/turn_context.py"),
         }
         offenders = []
         for path in (REPO / "src").rglob("*.py"):

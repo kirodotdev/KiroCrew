@@ -59,7 +59,7 @@ _PIPELINE = "ChannelTurns"
 #: Modules that implement compaction for a caller instead of running a turn loop.
 #: Shrink-only: ``test_the_implementer_exemptions_can_only_shrink`` fails once an
 #: entry stops compacting, so a stale exemption cannot hide a future turn loop.
-_IMPLEMENTERS = frozenset({"session.py"})
+_IMPLEMENTERS = frozenset({"session_parts/turn_context.py"})
 
 
 def _callee(func: ast.expr) -> str | None:

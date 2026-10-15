@@ -208,7 +208,7 @@ flagged page's threaded reply.
   rebuild a dedicated `_reply_thread_to_session` reverse index from it on load,
   beside `_rebuild_thread_index`; reuse the `_evict_rival_claimants` discipline
   keyed on the new index for single-owner-per-thread, and add a TTL-expiry read
-  and an eviction accessor. `src/kiro_crew/session.py` forwards the new
+  and an eviction accessor. `src/kiro_crew/session_parts/links.py` forwards the new
   accessors.
 - `src/kiro_crew/slack/handler.py` and `slack/handler_runtime/inbound.py`:
   before the thread-owner resolution and the `slack:<ts>` fallback, check the

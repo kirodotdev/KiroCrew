@@ -141,9 +141,22 @@ def test_importing_this_module_does_not_load_acp_or_providers() -> None:
     assert loaded["backends"] is True
 
 
+#: A facade whose members moved to an owner package is read together with its owners.
+_COMPOSED = {"session.py": "session_parts"}
+
+
+def _source(path: Path) -> str:
+    """*path*'s text, followed by the owner modules it is composed from."""
+    texts = [path.read_text(encoding="utf-8")]
+    owners = _COMPOSED.get(path.relative_to(SRC).as_posix())
+    if owners is not None:
+        texts += [p.read_text(encoding="utf-8") for p in sorted((SRC / owners).glob("*.py"))]
+    return "\n".join(texts)
+
+
 def _constant_comparisons(path: Path) -> list[int]:
     """Lines comparing something against the claude backend constant by name."""
-    tree = ast.parse(path.read_text(encoding="utf-8"))
+    tree = ast.parse(_source(path))
     hits: list[int] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Compare):
@@ -179,7 +192,7 @@ def test_delegating_files_ask_the_helper(rel: str) -> None:
     confirmed -- so it would have stayed green with every call site rewritten to
     read the property instead.
     """
-    tree = ast.parse((SRC / rel).read_text(encoding="utf-8"))
+    tree = ast.parse(_source(SRC / rel))
     calls = [
         node.lineno
         for node in ast.walk(tree)

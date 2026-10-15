@@ -1095,7 +1095,7 @@ def _isolate_sandbox_mount_source_roots(_sandbox_mount_source_root, _floor_monke
 
     ``sandbox._cleanup_stale_sandbox_mount_sources()`` -- reached from every
     ``cleanup_stale_sandbox_profiles()`` call, including the periodic sweep in
-    ``session.py`` -- resolves its candidate roots from the REAL host:
+    ``session_parts/sweeps.py`` -- resolves its candidate roots from the REAL host:
     ``/run/user/$UID``, ``/dev/shm``, and the system tempdir. The tempdir is
     already redirected by the floor above, but the first two are the operator's
     live runtime tmpfs, so an unpinned test would (a) delete real orphaned

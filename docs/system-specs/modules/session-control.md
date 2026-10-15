@@ -1574,7 +1574,7 @@ facts, and any it cannot establish answers **false**.
    mirror.
 
    **The origin does not survive a gateway restart, and the exemption goes with
-   it.** `set_origin_link` holds the record in memory by design (`session.py`),
+   it.** `set_origin_link` holds the record in memory by design (`session_parts/links.py`),
    while the slot and its mirror are persisted and the slot is re-surfaced at boot.
    So between a restart and the owner's next channel message this clause is the one
    that fails while the other three hold: a monitor-loop cycle or a turn taken in
@@ -1587,7 +1587,7 @@ facts, and any it cannot establish answers **false**.
    three gates name it (`ORIGIN_NOT_ON_RECORD`) and say what clears it, rather than
    reporting a channel link the caller cannot do anything about. Making the
    exemption survive a restart means giving the origin (or an equivalent durable
-   record of the conversation a session was born in) persistence in `session.py` —
+   record of the conversation a session was born in) persistence in `session_parts/links.py` —
    out of scope here, since that store serves the auto-compact notice, whose own
    reason for being in memory is that a restart takes the live session with it.
 

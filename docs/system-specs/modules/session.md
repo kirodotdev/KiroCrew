@@ -238,6 +238,52 @@ owner's header; a responsibility no row names gets a new `session_lifecycle_part
 module, appended to `_OWNERS` in import-layer order (an owner imports only the owners
 listed before it).
 
+`session.py` is itself composed from the `session_parts/` owner package. Each
+`SessionManager` member's body is a function in the module that owns it, and the class
+binds it by name (`m = _owner.m`, or `staticmethod(_owner.f)` for a static method), so
+every member stays an attribute of the one class and its state stays on the instance.
+Each state view (`_sessions`, `_lock`, `_pool_size`, ...) is a `StateProperty`, a typed
+`property` its owner builds from the getter and setter. New work goes to the module that
+owns its responsibility:
+
+- `session_parts/policy.py` — the fixed limits, the session-key vocabulary, the
+  compaction wait budget and damping thresholds, the background recycle thresholds and
+  the model a new session falls back to
+- `session_parts/provider_probes.py` — defensive reads of a provider's optional turn
+  and identity probes
+- `session_parts/record.py` — the `_Session` record, `FirstTurnState` and the temp
+  files a queue entry owns
+- `session_parts/state_views.py` — the manager's attribute views onto its
+  collaborators' state
+- `session_parts/claims.py` — registry reads, claims and leases, `get_or_create`, the
+  per-key ending fence, turn admission, the circuit breaker, continuable and resumable
+  conversations, and the message queue
+- `session_parts/runtimes.py` — the background, warm-pool, companion and task-run
+  runtimes
+- `session_parts/turn_context.py` — context readings and compaction, the reinjection
+  marker, and the history a turn still owes (with how each backend compacts)
+- `session_parts/links.py` — Slack threads, outbound mirrors and the origin a session
+  came from
+- `session_parts/config_apply.py` — the live config apply, the published compaction
+  threshold and the cold-start queue widths
+- `session_parts/teardown.py` — reset, retirement, destroy, discard, stop, cancel,
+  drain and close through the lifecycle service
+- `session_parts/sweeps.py` — the cleanup loop's wiring and watchdog hooks (with the
+  process sweep architecture)
+
+What stays in `session.py` is the wiring that reads the ACP layer: `__init__`,
+`_allocation_deps`, `_lifecycle_deps`, the lazy ACP loaders and the members that call
+them, because no module outside `acp/`, `providers/` and `agent_sdk/` may import that
+layer (`scripts/check_agent_sdk_boundary.py`). So do the two members that name
+`SessionManager` itself (`_resolve_agent_model` and its class-level cache), and the two
+listener setters, whose bodies call the `session_map` functions of the same name that an
+owner's own definition would shadow. Every owner
+logs under `kiro_crew.session`, and `kiro_crew._facade_mirror` makes a patch through
+`kiro_crew.session` reach every owner binding the name. A class that moved keeps
+`kiro_crew.session` as its `__module__`; a bound member's `__module__` and
+`__qualname__` name its owner, which nothing reads. `test/test_session_bindings.py`
+pins the binding.
+
 `POST /api/chat/slots` refuses to create a slot bound to a remote crew: a body
 carrying `instance_id` or `adopt_remote_slot` is refused with
 `400 remote_create_retired`. A session on a connected crew is created on that
@@ -5074,7 +5120,7 @@ The Windows synchronous provider fallback uses the same exact-tree cleanup admis
 ACP teardown; its bounds and recovery procedure are in
 [platform-compat](../common/platform-compat.md#windows-session-tree-teardown).
 
-All process liveness/kill/PID-file-lock operations in `session.py` and
+All process liveness/kill/PID-file-lock operations in `session.py`, its `session_parts/` owners and
 `session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
 Windows as well as macOS/Linux. The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —

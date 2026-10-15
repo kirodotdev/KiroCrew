@@ -1531,7 +1531,7 @@ class TestMirrorAdmission:
         # The manager's passthrough, the only writer left that neither signs nor
         # restores: it carries its caller's bytes. A new writer must join a set above.
         assert others == {
-            ("session.py", "set_mirror_link"),
+            ("session_parts/links.py", "set_mirror_link"),
             # The store's own compare-and-set: stores the caller's bytes verbatim.
             ("session_map.py", "replace_mirror_link_if"),
         }, others

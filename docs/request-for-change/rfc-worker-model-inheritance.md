@@ -33,7 +33,7 @@ superseded-by: []
 
 At `e5a0b3d3b2`, a crewmate's own Crewmates-page thread runs on the model and
 effort its record pins (`KiroCrewAgentConfig.model` / `.reasoning_effort`,
-read by `_session_model` in `session.py` and `resolve_session_effort` in
+read by `_session_model` in `session_parts/policy.py` and `resolve_session_effort` in
 `config/loader.py`). `create_session` in `dashboard/session_control.py` takes
 an optional `model` and no effort; a call that names no model leaves the child
 on the agent's or the global default (`_default_session_model` in

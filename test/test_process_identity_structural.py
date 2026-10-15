@@ -51,6 +51,17 @@ REAPER_MODULES = (
     ),
     "process_identity.py",
     "session.py",
+    "session_parts/claims.py",
+    "session_parts/config_apply.py",
+    "session_parts/links.py",
+    "session_parts/policy.py",
+    "session_parts/provider_probes.py",
+    "session_parts/record.py",
+    "session_parts/runtimes.py",
+    "session_parts/state_views.py",
+    "session_parts/sweeps.py",
+    "session_parts/teardown.py",
+    "session_parts/turn_context.py",
     "session_allocation.py",
     "session_allocation_parts/companions.py",
     "session_allocation_parts/errors.py",
@@ -95,7 +106,7 @@ ALLOWED_PID_CALLS: dict[str, dict[str, frozenset[str]]] = {
 #: is "do not kill this number right now", never a kill address). Converting them
 #: to handles is the sweep's change, not the reaper's.
 ALLOWED_PID_COLLECTIONS: dict[str, frozenset[str]] = {
-    "session.py": frozenset(
+    "session_parts/runtimes.py": frozenset(
         {
             "_starting_pids",
             "_pool_sweep_pids",

@@ -28,6 +28,17 @@ _HOISTED_FILES = (
     "kiro_crew/dashboard/handlers/mcp.py",
     "kiro_crew/dashboard/handlers/hooks.py",
     "kiro_crew/session.py",
+    "kiro_crew/session_parts/claims.py",
+    "kiro_crew/session_parts/config_apply.py",
+    "kiro_crew/session_parts/links.py",
+    "kiro_crew/session_parts/policy.py",
+    "kiro_crew/session_parts/provider_probes.py",
+    "kiro_crew/session_parts/record.py",
+    "kiro_crew/session_parts/runtimes.py",
+    "kiro_crew/session_parts/state_views.py",
+    "kiro_crew/session_parts/sweeps.py",
+    "kiro_crew/session_parts/teardown.py",
+    "kiro_crew/session_parts/turn_context.py",
 )
 
 

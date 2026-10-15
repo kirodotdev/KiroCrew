@@ -748,7 +748,7 @@ Counts as of the census that produced this table (dated, not live):
 | `getattr`-by-name seams whose target the public core never defines | 2 (`acp/client.py`) |
 | Defensive attribute probes across the provider boundary | 4 |
 | Methods returning a neutral value purely for a companion to override | 6 |
-| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` | 11 sites, 2 sentinels (`session.py`, `subagent.py`) |
+| `ClaudeCodeProvider is not None and isinstance(...)` guards against a name hard-coded to `None` | 11 sites, 2 sentinels (`session_parts/provider_probes.py`, `subagent.py`) |
 | Comment clusters naming the companion or a deleted module as the supplier | 19 |
 | Refusal / downgrade mechanisms | 9, including the degrade log in `acp_backends.resolve_selected_backend()` and five capability non-memberships |
 | Live `_is_claude` branches inside `acp/` | 19 |

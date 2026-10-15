@@ -504,6 +504,7 @@ custom-rules:
       - "src/kiro_crew/platform/**/*.py"
       - "src/kiro_crew/config/loader.py"
       - "src/kiro_crew/session.py"
+      - "src/kiro_crew/session_parts/*.py"
       - "src/kiro_crew/subagent.py"
       - "src/kiro_crew/subagent_parts/*.py"
       - "src/kiro_crew/sandbox.py"

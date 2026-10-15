@@ -38,7 +38,7 @@ Code citations below were measured on main `622ada48` (2026-07-29).
 
 A subagent run's durable footprint is three files under `~/.kiro/crew/subagents/{id}/`: a `state.json` progress record, a plain-text `result.txt`, and a `tombstone.json` on exit (`src/kiro_crew/subagent_persistence.py:4-6`).
 
-The single enforcement point for non-resumability is one tuple entry. `"subagent:"` is a member of `_STATELESS_PREFIXES` (`src/kiro_crew/session.py:261-275`), which makes `get_or_create` skip the session-map lookup for the run's key (`session.py:2073-2075`), never persist a sid mapping (`session.py:2294-2306`), never arm ACP `session/load`, and bypass the warm pool (`session.py:2093-2099`). Everything else follows:
+The single enforcement point for non-resumability is one tuple entry. `"subagent:"` is a member of `_STATELESS_PREFIXES` (`src/kiro_crew/session_parts/policy.py`), which makes `get_or_create` skip the session-map lookup for the run's key, never persist a sid mapping, never arm ACP `session/load`, and bypass the warm pool (all in `SessionAllocationService._get_or_create_impl`, `session_allocation_parts/get_or_create.py`). Everything else follows:
 
 | Property | Today | Consequence |
 |---|---|---|
@@ -66,7 +66,7 @@ The dashboard has real surfacing as of #658 / #751 / #752: a persistent inline `
 The resume mechanism already exists and is key-agnostic:
 
 - `SessionMap.set` accepts any key (`session_map.py:178-195`; the whole map is rewritten by `_save`, `session_map.py:110-122`).
-- `SessionManager.get_or_create` arms `set_resume_session_id` (`session.py:2189-2196`) before `provider.start()` (`session.py:2203`).
+- `SessionManager.get_or_create` arms `set_resume_session_id` before `provider.start()` (`SessionAllocationService._get_or_create_impl`, `session_allocation_parts/get_or_create.py`).
 - `AcpRuntime.load_session` implements ACP `session/load`, capability-gated on the backend's `agentCapabilities.loadSession` (`acp/runtime.py:1014,1030-1034`, read at `runtime.py:522`). There is no `--resume` flag; spawn is `kiro-cli acp --agent <name>` plus an optional `--model`, sandbox-wrapped (`acp/runtime.py:406-425`).
 - `ConversationLog` is a general append-only JSONL store taking its root as the `base_dir` constructor argument (`ConversationLog.__init__`), with cross-process flocks; a class comment names subagent/cron/CLI writers (`ConversationLog._flock_state`).
 - `build_session_replay` (`context.py:872`) already seeds a fresh session from a stored transcript on provider switches.
@@ -82,7 +82,7 @@ The resume mechanism already exists and is key-agnostic:
 ## Non-goals
 
 - **Mid-run survival of a gateway restart.** A restart still ends in-flight runs. Recovering a live run requires a dedicated process per resumable run (Alternative 1) and is deferred.
-- Resuming the other stateless surfaces in `_STATELESS_PREFIXES` (`session.py:261-275`).
+- Resuming the other stateless surfaces in `_STATELESS_PREFIXES` (`session_parts/policy.py`).
 - **Full-text search over records.** Records are listed and opened by id, not indexed. They stay outside the chat-history store, so `search_chat_history` does not see them until a run is promoted (Open question 4).
 - **Reconstructing the spawn-time injected context in the replay branch.** A replayed promotion is a new session that has read the record, not a clone of the original. The resume branch carries that context implicitly, because kiro-cli owns the conversation.
 - Cross-instance or cross-machine resume.
@@ -158,7 +158,7 @@ Promotion **mints a fresh chat slot through the same slot-creation path the UI u
 Branch selection is on the **load outcome**, not on pre-checks:
 
 1. **Resume** — `session/load` succeeded (`provider.client.resumed`; `AcpSessionProvider.resumed` in `AcpProvider._start_kiro_runtime_impl`, `providers/acp_runtime_start.py`). No history is materialized into the new slot: kiro-cli holds the conversation, and materializing rows under `dashboard:<slot>` would make a later provider switch or rehydration re-inject as replay the same conversation the backend already has. The slot opens with a "continued from run `<id>`" header linking the record view.
-2. **Fail closed** — the load was refused because the sid is held by a live process. Surfaced as a refusal. This needs new state: `_load_session_with_retry` (`providers/acp_runtime_start.py`) returns `None` both for a persistent lock (its exhausted-attempts branch) and for a genuine load failure (its non-transient branch), and both set `_history_replay_needed` (in `_start_kiro_runtime_impl`, read at `session.py:2275`) leaving `resumed` false. A `_resume_refused_lock` flag must be set in the exhausted-attempts branch, read beside `resumed` in `get_or_create`, stored on the `_Session`, and returned by the promotion endpoint.
+2. **Fail closed** — the load was refused because the sid is held by a live process. Surfaced as a refusal. This needs new state: `_load_session_with_retry` (`providers/acp_runtime_start.py`) returns `None` both for a persistent lock (its exhausted-attempts branch) and for a genuine load failure (its non-transient branch), and both set `_history_replay_needed` (in `_start_kiro_runtime_impl`, read in `SessionAllocationService._get_or_create_impl`) leaving `resumed` false. A `_resume_refused_lock` flag must be set in the exhausted-attempts branch, read beside `resumed` in `get_or_create`, stored on the `_Session`, and returned by the promotion endpoint.
 3. **Replay** — no sid, or the load failed for any other reason. The record's rows are materialized into the default chat log under `dashboard:<slot>` so the existing replay path finds history by key (`build_session_replay` reads `conversation_log.recent_chained(session_key, …)`, `context.py:897-902`, against the default log and is not callable over an arbitrary store). The session is **labelled a replay**.
 
 Surfaced as a "Continue as chat" action on the record view and the inline `SubagentRunCard`, plus an MCP tool so an agent can hand a run back as a session instead of pasting a summary. A promoted slot is accounted for exactly like a user-created chat slot — it counts against the dashboard slot budget, never against the subagent concurrency cap.
@@ -181,7 +181,7 @@ flowchart LR
 
 ### Phase 0: Prove whether `session/load` works for the default path
 
-The resume upgrade assumes a sid created as an extra session on a **parent's** runtime is loadable from a new kiro-cli process after that session is terminated, while the parent process is still alive. Nothing in this repo asserts that: `terminate_session`'s contract is kiro-cli's in-memory session map (`acp/runtime.py:905-926`), and `drain_active_turns` documents kiro-cli releasing an on-disk session lock only on a subsequent SIGTERM (the `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS` comment in `session.py`; the drain itself is `drain_active_turns` in `session_lifecycle_parts/fleet.py`).
+The resume upgrade assumes a sid created as an extra session on a **parent's** runtime is loadable from a new kiro-cli process after that session is terminated, while the parent process is still alive. Nothing in this repo asserts that: `terminate_session`'s contract is kiro-cli's in-memory session map (`acp/runtime.py:905-926`), and `drain_active_turns` documents kiro-cli releasing an on-disk session lock only on a subsequent SIGTERM (the `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS` comment in `session_parts/policy.py`; the drain itself is `drain_active_turns` in `session_lifecycle_parts/fleet.py`).
 
 - Manual probe against real kiro-cli: create a shared session, terminate it, keep the files, `session/load` the sid from a second process while the first lives.
 - Deliverable: a **recorded verdict**, plus — if the lock is process-scoped — a decision on whether a lock held by the run's *own parent* relaxes branch 2's refusal into a labelled replay, or stays a refusal.

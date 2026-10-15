@@ -334,7 +334,7 @@ class SessionCleanup:
     # asking for long-lived sessions buys slower orphan cleanup than switching
     # the idle sweep off entirely.
     #
-    # ``session.py``'s module map states the intended cadence --
+    # ``session_parts/sweeps.py``'s module map states the intended cadence --
     # "``_expire_idle()`` -- **periodic** (every ~5 min)" -- which is this
     # ceiling. Capping cannot expire a session early: ``_expire_idle_hook``
     # passes ``state.idle_timeout``, so the timeout decides WHEN a session is
@@ -1261,7 +1261,7 @@ class SessionCleanup:
         refusal lasts at most one tick instead of the unrelated process's life.
 
         ``session_pid._prune_stale_session_pid_files`` is otherwise reached only
-        from ``cleanup_orphaned_sessions``, which ``session.py``'s module map
+        from ``cleanup_orphaned_sessions``, which ``session_parts/sweeps.py``'s module map
         records as startup + shutdown, so a gateway that keeps running holds
         every mapping it publishes until it restarts — one per released session,
         and a recycled pid number goes on carrying a dashboard slot's key. The
