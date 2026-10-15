@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react'
-import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight } from 'lucide-react'
+import { useMemo, useState, useSyncExternalStore } from 'react'
+import { X, MailOpen, Check, MessageSquare, CheckCircle, Ban, Clock, ClipboardList, ArrowUpRight, Sparkles } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useGuardedLeave } from '../NavigationLeaveGuard'
 import { useAppSelector, useAppDispatch } from '../../store'
@@ -15,6 +15,8 @@ import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, fmtFull, safeInternalUrl } from './notifMeta'
 import { CrewmateNoteFace, CrewmateNoteName, CrewmateRosterError, noteMember } from './CrewmateNoteFace'
 import { safeHttpUrl } from '../../lib/safeUrl'
+import { isGatewayConnected, sendErrorToChat, subscribeGatewayConnected } from '../../utils/errorReport'
+import { buildNotificationPrompt } from './notificationHandoff.prompt'
 
 import { i18nT } from '../../i18n/t'
 import { uiLocation } from '../../uiLocations/uiLocation'
@@ -48,6 +50,15 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
   const km = KIND_META[n.kind] || DEFAULT_META
   const member = noteMember(n)
   const slots = useAppSelector(s => s.dashboard.slots)
+  // "Fix with Crew" stages a NEW chat whose composer is pre-filled with this
+  // notification, through the same channel "Ask the agent" uses. Hidden while the
+  // gateway is down: the composer it lands in could not send.
+  const gatewayConnected = useSyncExternalStore(subscribeGatewayConnected, isGatewayConnected)
+  const fixWithCrew = () => leave(() => {
+    const prompt = buildNotificationPrompt(n, i18nT('components.notifications.notificationDetailPanel.fix_with_crew_ask'))
+    // `leaveGranted`: the guard above already asked the host page.
+    if (sendErrorToChat(prompt, { leaveGranted: true })) onClose()
+  })
 
   // The sentence names the button BY ITS OWN LABEL, interpolated rather than
   // written into each catalog, so it cannot drift from the control it points at.
@@ -187,6 +198,13 @@ export default function NotificationDetailPanel({ n, onClose }: { n: Notificatio
             <MarkdownRenderer content={typeof n.body === 'string' ? n.body : ''} readOnlyCode />
           </MessageErrorBoundary>
         </div>
+
+        {/* Approvals are excluded: Approve / Reject below already are the response. */}
+        {n.kind !== 'approval' && gatewayConnected && (
+          <div className="flex gap-3 mt-4">
+            <button type="button" className="px-4 py-2 rounded-lg border border-accent/40 bg-transparent text-accent text-[13px] font-medium cursor-pointer hover:bg-accent-subtle transition-all font-body" data-testid="notif-fix-with-crew" onClick={fixWithCrew}><Sparkles className="lucide-inline" aria-hidden="true" /> {i18nT('components.notifications.notificationDetailPanel.fix_with_crew')}</button>
+          </div>
+        )}
 
         {/* Kind-specific actions */}
         {n.kind === 'approval' && (

@@ -7997,6 +7997,8 @@
         "continue_in_chat": "Continuer dans la conversation",
         "could_not_open_the_chat_click_button_to_retry": "Impossible d'ouvrir la conversation. Clique sur {{button}} pour réessayer.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Impossible d'ouvrir le résultat dans la conversation. Clique sur {{button}} pour réessayer.",
+        "fix_with_crew": "Corriger avec Crew",
+        "fix_with_crew_ask": "Examine ceci et propose les prochaines étapes pour résoudre le problème.",
         "go_to_chat": "Aller à la conversation",
         "mark_read": "Marquer comme lu",
         "mark_unread": "Marquer comme non lu",

@@ -4937,6 +4937,8 @@
         "continue_in_chat": "Continue in Chat",
         "could_not_open_the_chat_click_button_to_retry": "Could not open the chat. Click {{button}} to retry.",
         "could_not_open_the_result_in_chat_click_button_to_retry": "Could not open the result in chat. Click {{button}} to retry.",
+        "fix_with_crew": "Fix with Crew",
+        "fix_with_crew_ask": "Please review and offer next steps to address the issue.",
         "go_to_chat": "Go to Chat",
         "mark_read": "Mark read",
         "mark_unread": "Mark unread",
