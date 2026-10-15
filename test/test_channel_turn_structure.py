@@ -90,7 +90,8 @@ def _dispatcher_files() -> dict[str, list[Path]]:
     """Each channel's dispatch modules, keyed by the channel's package name."""
     root = src_root()
     found: dict[str, list[Path]] = {}
-    for path in sorted(root.glob("*/transport_dispatch.py")) + sorted(root.glob("*/dispatch/*.py")):
+    owners = sorted(root.glob("*/dispatch/*.py")) + sorted(root.glob("*/transport_dispatch_*.py"))
+    for path in sorted(root.glob("*/transport_dispatch.py")) + owners:
         channel = path.relative_to(root).parts[0]
         found.setdefault(channel, []).append(path)
     return found

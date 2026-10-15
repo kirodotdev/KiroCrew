@@ -1994,7 +1994,7 @@ class SessionMap:
         ``TransportCapabilities.supports_session_resume`` makes its conversations
         inbound-committable, and therefore makes this refusal reachable from that
         transport's own in-channel link handler. Translate it there into a
-        followable message, as ``discord/transport_dispatch.py`` does — an uncaught
+        followable message, as ``discord/transport_dispatch_commands.py`` does — an uncaught
         raise inside a channel handler is a dropped task and a silent no-reply.
         """
         key = canonical_key(key)

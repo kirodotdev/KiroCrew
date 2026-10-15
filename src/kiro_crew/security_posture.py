@@ -1020,7 +1020,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Discord direct send",
-        "discord/transport_dispatch.py",
+        "discord/transport_dispatch_commands.py",
         "The direct-send path that bypasses TurnDriver, redacted independently.",
     ),
     (
@@ -2535,6 +2535,13 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/gateway_runtime/turn_approvals.py",
         "slack/gateway_runtime/update_apply.py",
         "slack/gateway_runtime/update_schedule.py",
+        # The owners composed into discord/transport_dispatch.py's class, beside the
+        # registered "Discord direct send" sink (the !compact owner, which holds that
+        # row's redaction): they redact the spawn-approval prompt and the transcript's
+        # failure row, and share that sink's class and namespace, so the split adds no
+        # egress path of its own.
+        "discord/transport_dispatch_ledger.py",
+        "discord/transport_dispatch_spawn_approval.py",
         # Redaction of a LOG line or a diagnostic URL/token, not agent output on
         # its way to a user. These match the (deliberately broad) redactor regex
         # in the drift guard but are not egress paths.

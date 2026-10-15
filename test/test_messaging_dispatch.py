@@ -266,8 +266,13 @@ def test_every_pipeline_channel_stop_path_records_the_stop() -> None:
     compaction replay blind to a Stop issued in the reset gap."""
     root = Path(__file__).resolve().parents[1] / "src/kiro_crew"
     checked: list[str] = []
+    # A channel's dispatcher is its facade and the owners beside it (``transport_dispatch_*``),
+    # judged as one text.
     for path in sorted(root.glob("*/transport_dispatch.py")):
-        source = path.read_text(encoding="utf-8")
+        source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in [path, *sorted(path.parent.glob("transport_dispatch_*.py"))]
+        )
         if "drive_turn(" not in source:
             continue
         cancels_directly = "cancel(wait_ack_timeout=0)" in source

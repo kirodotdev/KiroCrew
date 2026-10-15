@@ -215,7 +215,8 @@ def _spool(path: Path, **kw: Any) -> SpooledInbound:
 def test_every_shared_channel_turn_declares_an_inbound_route() -> None:
     root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
     calls: list[tuple[Path, ast.Call]] = []
-    for path in root.glob("*/transport_dispatch.py"):
+    # A channel's dispatcher includes the owners beside its facade (``transport_dispatch_*``).
+    for path in [*root.glob("*/transport_dispatch.py"), *root.glob("*/transport_dispatch_*.py")]:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         calls.extend(
             (path, node)

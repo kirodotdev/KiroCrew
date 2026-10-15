@@ -1280,6 +1280,8 @@ def _channel_dispatch_files() -> list[Path]:
     owners = sorted(_SRC.glob("*/dispatch/*.py"))
     assert len(owners) >= 8, f"expected telegram's dispatch owners, found {owners}"
     files.extend(owners)
+    # Discord's owners sit beside its facade (``discord/transport_dispatch_*.py``).
+    files.extend(sorted(_SRC.glob("*/transport_dispatch_*.py")))
     return [p for p in files if p.exists()]
 
 

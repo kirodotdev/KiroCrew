@@ -76,7 +76,7 @@ async def _handle_busy(
     # forwards TEXT ONLY, so steering a photo/document message would deliver
     # its caption and silently drop every file. Such a message always goes to
     # the queue path below, which carries ``attachments`` through the drain.
-    # Mirrors discord/transport_dispatch.py's identical gate -- Telegram was
+    # Mirrors discord/transport_dispatch_midturn.py's identical gate -- Telegram was
     # missing it, and album buffering makes it far more reachable: a follow-up
     # typed during the debounce window starts a turn, so the album's own flush
     # arrives mid-turn and would have been steered as caption-only.

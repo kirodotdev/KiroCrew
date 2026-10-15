@@ -167,6 +167,8 @@ class TestLoopSafetyPins:
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
         from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
+        # The Discord dispatcher is its facade and the owners it is composed from.
+        discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
         assert chat_runner._name_grant_refusal_off_loop is name_grant.refusal_for_command_off_loop
         # The dashboard's rung is composed into chat_runner from these owners.
         owners = [
@@ -186,6 +188,7 @@ class TestLoopSafetyPins:
             llm_helpers,
             slack_dispatch,
             discord_dispatch,
+            *discord_owners,
             telegram_dispatch,
             telegram_turn_engine,
             telegram_turn_queue,
@@ -200,6 +203,7 @@ class TestLoopSafetyPins:
         # three channel transports host their gates as inline closures, so the
         # assertion covers the whole module for each (Telegram's closure is in its
         # turn engine owner, read with the dispatcher's other modules).
+        import importlib
         import inspect
 
         from kiro_crew.discord import transport_dispatch as discord_dispatch
@@ -209,10 +213,13 @@ class TestLoopSafetyPins:
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
         from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
+        # The Discord dispatcher is its facade and the owners it is composed from.
+        discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
         assert "name_grant" not in inspect.getsource(dispatch.build_tool_gate)
         for mod in (
             slack_dispatch,
             discord_dispatch,
+            *discord_owners,
             telegram_dispatch,
             telegram_turn_engine,
             telegram_turn_queue,
@@ -684,6 +691,7 @@ class TestSpawnRungEventIdentity:
         # The canonical predicate lives in hooks.event_is_spawn_run; a surface
         # that re-inlines `title == "spawn_run"` reintroduces the forgeable
         # check this rung was hardened against.
+        import importlib
         import inspect
 
         from kiro_crew.discord import transport_dispatch as discord_dispatch
@@ -694,12 +702,15 @@ class TestSpawnRungEventIdentity:
         from kiro_crew.telegram.dispatch import turn_engine as telegram_turn_engine
         from kiro_crew.telegram.dispatch import turn_queue as telegram_turn_queue
 
+        # The Discord dispatcher is its facade and the owners it is composed from.
+        discord_owners = [importlib.import_module(o) for o in discord_dispatch._OWNERS]
         for mod in (
             dispatch,
             driver,
             slack_handler,
             slack_dispatch,
             discord_dispatch,
+            *discord_owners,
             telegram_dispatch,
             telegram_turn_engine,
             telegram_turn_queue,

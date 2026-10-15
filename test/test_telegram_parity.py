@@ -3204,7 +3204,10 @@ class TestARestrictedSessionWritesNothingAtAll:
         root = Path(kiro_crew_pkg.__file__).parent
         found: dict[str, list[str]] = {}
         for path in sorted(root.glob("*/transport_dispatch.py")):
-            source = path.read_text(encoding="utf-8")
+            source = "\n".join(
+                module.read_text(encoding="utf-8")
+                for module in TestARestrictedSessionWritesNothingAtAll._dispatch_sources(path)
+            )
             if "privacy_mode" not in source:
                 continue
             for module in TestARestrictedSessionWritesNothingAtAll._dispatch_sources(path):
@@ -3223,7 +3226,11 @@ class TestARestrictedSessionWritesNothingAtAll:
         A title write in an owner module is one the dispatcher makes, so it is read
         with the facade rather than left outside the scan.
         """
-        return [facade, *sorted((facade.parent / "dispatch").glob("*.py"))]
+        return [
+            facade,
+            *sorted((facade.parent / "dispatch").glob("*.py")),
+            *sorted(facade.parent.glob("transport_dispatch_*.py")),
+        ]
 
     def test_the_scan_finds_the_writes_it_is_meant_to_guard(self) -> None:
         """A scan that matched nothing would make the next test vacuous."""

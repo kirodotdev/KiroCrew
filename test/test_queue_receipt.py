@@ -401,7 +401,8 @@ def _dispatch_owners() -> list[Path]:
     pkg = Path(Q.__file__).resolve().parent.parent
     found = sorted(pkg.glob("*/dispatch/*.py"))
     assert len(found) >= 8, f"expected telegram's dispatch owners, found {found}"
-    return found
+    # Discord's owners sit beside its facade (``discord/transport_dispatch_*.py``).
+    return found + sorted(pkg.glob("*/transport_dispatch_*.py"))
 
 
 #: The two names a drain reaches the flip through: the registry transition itself, and a

@@ -98,7 +98,6 @@
 2795 src/kiro_crew/deploy/handlers.py
 2177 src/kiro_crew/discord/client.py
 2103 src/kiro_crew/discord/renderer.py
-2937 src/kiro_crew/discord/transport_dispatch.py
 3603 src/kiro_crew/embeddings.py
 4205 src/kiro_crew/history.py
 2128 src/kiro_crew/history_projection.py

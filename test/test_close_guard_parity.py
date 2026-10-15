@@ -174,6 +174,8 @@ class TestRatchet:
         owners = sorted(pkg.glob("*/dispatch/*.py"))
         assert len(owners) >= 8, f"expected telegram's dispatch owners, found {owners}"
         targets += owners
+        # Discord's owners sit beside its facade (``discord/transport_dispatch_*.py``).
+        targets += sorted(pkg.glob("*/transport_dispatch_*.py"))
 
         offenders = {
             str(p.relative_to(pkg)): lines

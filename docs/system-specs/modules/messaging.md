@@ -97,6 +97,7 @@ legacy metadata do not override a canonical execution.
 | `slack/renderer.py` | Slack reference `Renderer` (`SlackRenderer`) + `SlackApprovalDecider` + `build_approval_blocks` |
 | `slack/transport_dispatch.py` | `handle_message_transport()` — full new-path dispatch wiring the three layers together |
 | `telegram/transport_dispatch.py` + `telegram/dispatch/` | `TelegramDispatcher` and the owners it is composed from — see [Telegram's dispatcher composition](#telegrams-dispatcher-composition) |
+| `discord/transport_dispatch.py` + `discord/transport_dispatch_*.py` | `DiscordDispatcher` and the owners it is composed from — see [Discord's dispatcher composition](#discords-dispatcher-composition) |
 
 ## Layer 1 — `MessagingTransport` (`transport.py`)
 
@@ -1849,8 +1850,9 @@ session semaphore is held, so running it directly would either block or open a
 second conversation against the same key. Three channels carry the full
 steer/queue/drain machinery — `telegram/transport_dispatch.py` (its steer-or-queue arm
 in `telegram/dispatch/midturn.py`, its receipt wrappers and drain in
-`telegram/dispatch/turn_queue.py`), `discord/transport_dispatch.py` and
-`teams/transport_dispatch.py`; all read the
+`telegram/dispatch/turn_queue.py`), `discord/transport_dispatch.py` (its steer-or-queue
+arm in `discord/transport_dispatch_midturn.py`) and `teams/transport_dispatch.py`; all
+read the
 same `messaging.queue_mode` (`config/loader.py`, `"steer"` | `"queue"`, anything
 else normalized to `steer`) and all implement the same three primitives
 (`_handle_busy`, `_enqueue_with_receipt` + `_drain_queue`, `_handle_stop`).
@@ -2124,7 +2126,7 @@ grouping on sender and place ALONE:
   Topic, chat type and the sender's `@handle`, and excludes the handle: it is a
   mutable label for a sender `user_id` already pins, so a rename between two
   messages would split one person's burst.
-- Discord (`discord/transport_dispatch.py`, `_QueuedOrigin`) records user, channel
+- Discord (`discord/transport_dispatch_origin.py`, `_QueuedOrigin`) records user, channel
   and thread, and excludes nothing -- none of those names an individual message.
 - Webex (`webex/transport_dispatch.py`, `_QueuedPlace`) records room, thread, the
   sender's email and the room type, and groups on sender email, room and thread root
@@ -3581,8 +3583,9 @@ approved threads. Bot-authored messages (including our own) are dropped as a
 loop guard. `DISCORD_BOT_TOKEN` is on the sandbox agent env denylist.
 
 **Dispatch + rendering.** Turns ride the shared `TurnDriver`.
-`transport_dispatch.py` carries the same mid-turn steer/queue/drain/cancel
-machinery as the Telegram dispatcher (see "Mid-turn routing, queue receipts &
+`transport_dispatch.py` and the owners it is composed from
+(see [Discord's dispatcher composition](#discords-dispatcher-composition))
+carry the same mid-turn steer/queue/drain/cancel machinery as the Telegram dispatcher (see "Mid-turn routing, queue receipts &
 cancel" above) plus `!compact` under atomic `try_acquire` and the dashboard
 mirror `!link`/`!unlink`. A mid-turn message into a busy RESUMED dashboard
 session takes that slot's own steer path or queue rather than this machinery
@@ -3785,6 +3788,61 @@ characters and Discord replays old ones indefinitely, so the dispatcher's
 TTL-bounded picker registry resolves the index against the exact list it posted
 and refuses an expired, evicted or already-consumed one rather than applying a
 model from a stale advertisement.
+
+### Discord's dispatcher composition
+
+`DiscordDispatcher` is one class composed from owners beside its facade.
+`discord/transport_dispatch.py` keeps the dispatcher's state and live config, the inbound
+front door (`handle_message`: governance, admission, resume routing, the command ladder,
+the busy check, rotation, option-press provenance and the hand-off to `ChannelTurns`),
+the shared-pipeline wiring (`_channel_turns`), the queue drain (`_drain_queue`,
+`_pump_queue`), the receipt wrappers (`_receipt_surface`, `_enqueue_with_receipt`,
+`_receipt_flip_locked`), `!stop` (`_handle_stop`), the dashboard surfacing
+(`_surface_own_session`, whose own `self.dashboard_state = ...` is the only declaration of
+that attribute the type checker sees), the soft-threshold notice (`_maybe_notice`), the
+public injection surface and the
+conversation-identity helpers (scope, session key, agent, origin mirror, generation
+seed). Of those, repository guards read these in this file by path: `_drain_queue`, the
+receipt flip calls and the receipt address key, `!stop`'s owner, the `ChannelTurns`
+construction with `DISCORD_DRIFT`, the one `Asker` start priority, the admission that
+runs before the command parse, and the context-usage read beside that hand-off (a module
+that compacts must also delegate to the pipeline, which consumes `needs_reinjection`). The registered "Discord direct
+send" redaction sink is `discord/transport_dispatch_commands.py`, which holds `!compact`'s
+redaction pass; the two other owners that redact (the spawn-approval prompt and the
+transcript's failure row) are listed in `security_posture.NON_EGRESS_REDACTION_MODULES`
+beside it, which adds no posture row.
+
+Every other responsibility is an owner beside the facade, and new work of that kind goes
+to it:
+
+| Owner | Holds |
+|---|---|
+| `discord/transport_dispatch_origin.py` | `_QueuedOrigin`, its sender key, owner token and queue-entry spelling, `_CHANNEL` and `_CHAT_TYPE_THREAD` |
+| `discord/transport_dispatch_model_picker.py` | the `!model` picker: `_model_choices`, the `_ModelPicker` record and its prune, `_handle_model` and `_apply_model` (the tables stay on the dispatcher) |
+| `discord/transport_dispatch_commands.py` | `!link`, `!unlink`, `!compact` and `!status`, the channel reply sink and the single-reply command router |
+| `discord/transport_dispatch_interactions.py` | `on_interaction` (every button prefix and the slash-command gate), `_interaction_actionable`, `_on_command_interaction` and its ephemeral reply sink: every interaction response, and the one DM-pairing write |
+| `discord/transport_dispatch_midturn.py` | `_handle_busy`: steer or queue a mid-turn message; `_handle_resumed_busy`: hand a message into a busy RESUMED dashboard session to that slot's own machinery |
+| `discord/transport_dispatch_spawn_approval.py` | `deliver_spawn_approval` and its destination and actionability checks |
+| `discord/transport_dispatch_ledger.py` | `_record_turn` and `_persist_turn` (the shared pipeline's `record` adapter), `_session_restricted` (its `restricted` adapter) and `_uploads_restricted` (the upload ceiling `handle_message`'s renderer reads) |
+
+A new command's handler goes to `discord/transport_dispatch_commands.py`; its dispatch
+stays in `handle_message`. An owner's function whose first parameter is `self` is bound
+as the `DiscordDispatcher` attribute of the same name, so instance and class patches,
+`inspect.getsource` and every `self.<name>(...)` call reach it as they reach a method
+defined in the class body; the state stays on the dispatcher. Such a function's
+`__module__` names its owner and its `__qualname__` is its bare name, which is what a
+repr or a stall label shows; `_QueuedOrigin`'s and `_ModelPicker`'s `__module__` name
+theirs. No caller reads any of them. The facade keeps every name it bound
+and installs `_facade_mirror`: a name tests rebind on the facade
+(`channel_inbound_permitted`, `channel_outbound_permitted`, `safety_override`, ...)
+reaches every owner holding the same object, so the moved code reads it unchanged, and
+the few moved names the facade does not read itself are served from their owner.
+Owners log under the facade's logger name, import each other in one direction and the
+facade only under `TYPE_CHECKING`, and the facade imports every owner when it loads.
+`test/test_transport_dispatch_composition.py` pins the surface, the patch reach of the
+names the owners read, and these placement rules; `test/test_facade_mirror_guards.py`
+holds the facade to the mirror's contract (every name the tests patch through it reaches
+every owner binding it, and no owner imports it at run time).
 
 ### Resume-binding expectations (`messaging/resume_expectation.py`)
 

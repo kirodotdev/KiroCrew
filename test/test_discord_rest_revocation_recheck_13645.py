@@ -587,7 +587,11 @@ class TestCallerSuppliedDestination:
         """
         from kiro_crew.discord import transport_dispatch as td
 
-        source = Path(td.__file__).read_text(encoding="utf-8")
+        # The dispatcher is its facade and the owners it is composed from, read as one text.
+        source = "\n".join(
+            p.read_text(encoding="utf-8")
+            for p in sorted(Path(td.__file__).parent.glob("transport_dispatch*.py"))
+        )
         verbs = {"respond_interaction", "ack_component_interaction"}
         exempt_markers = ("Commands run in a direct message", "disabled by policy")
         sites: list[tuple[int, str, bool]] = []
@@ -1022,11 +1026,18 @@ class TestTransportPredicate:
         # through the one public method whose callers are checked below.
         assert funnel_callers == ["create_dm_channel", "remember_dm_recipient"], funnel_callers
 
-        for path in (
-            _REPO_ROOT / "src/kiro_crew/discord/transport.py",
-            _REPO_ROOT / "src/kiro_crew/discord/transport_dispatch.py",
+        discord = _REPO_ROOT / "src/kiro_crew/discord"
+        for path, src in (
+            (discord / "transport.py", (discord / "transport.py").read_text(encoding="utf-8")),
+            # The dispatcher is its facade and the owners it is composed from, read as one text.
+            (
+                discord / "transport_dispatch.py",
+                "\n".join(
+                    p.read_text(encoding="utf-8")
+                    for p in sorted(discord.glob("transport_dispatch*.py"))
+                ),
+            ),
         ):
-            src = path.read_text(encoding="utf-8")
             t = _ast.parse(src)
             parents: dict[_ast.AST, _ast.AST] = {}
             for node in _ast.walk(t):
