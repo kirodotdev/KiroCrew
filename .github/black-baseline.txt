@@ -82,7 +82,6 @@ src/kiro_crew/apps/builtins/issue_radar/backend/crew_routes.py
 src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
 src/kiro_crew/apps/builtins/issue_radar/backend/gitlab_client.py
 src/kiro_crew/apps/builtins/issue_radar/backend/provider.py
-src/kiro_crew/apps/builtins/issue_radar/backend/store.py
 src/kiro_crew/apps/builtins/issue_radar/backend/watch.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_gitlab.py
 src/kiro_crew/apps/builtins/issue_radar/tests/test_investigation.py

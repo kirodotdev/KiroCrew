@@ -1143,7 +1143,7 @@ the finding: an unnamed site records `user`.
 | `slack/gateway` sub-agent injection | a sub-agent completion | `subagent` |
 | `slack/gateway._retrigger_recovery` | re-injected sub-agent completions | `subagent` |
 | `chat_runner` synthesis dispatch | the sub-agent synthesis prompt | `subagent` |
-| `issue_radar.crew_runtime` | a crew-composed prompt | `crew` |
+| `issue_radar.crew_runtime_session` | a crew-composed prompt | `crew` |
 | `handlers/taskrunner` (plan, result) | a task-runner summary | `gateway` |
 
 One shared helper passes no actor on purpose: `spec_builder.runtime.enqueue_or_run_prompt`

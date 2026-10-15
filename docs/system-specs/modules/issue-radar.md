@@ -34,8 +34,9 @@ provider cannot be registered while the gate silently keeps comparing three.
 
 **Each client module is the stable composition façade for its provider.** The
 routes and tests continue to import `github_client`, `gitlab_client` and
-`azure_client`; those modules retain the protocol surface, exception aliases,
-the constants something actually binds, and patchable I/O chokepoints. A mirror
+`azure_client`; those modules carry the protocol surface, exception aliases,
+the constants something actually binds, and patchable I/O chokepoints (`github_client`
+serves them from its owners, below). A mirror
 NOTHING binds is not part of that surface: the sibling that owns the value reads
 its own module global, so a façade copy is never the seam it resembles and
 patching it changes nothing. Binding means the façade's own code, a test that
@@ -46,10 +47,28 @@ the implementation boundaries explicit: `*_transport.py` owns URL, environment,
 request and pagination mechanics; `*_normalization.py` converts provider payloads
 into the shared GitHub-shaped records; and `github_queries.py` owns GitHub's
 GraphQL, dependency and search query plans. The façades inject their current
-bindings into those helpers so established monkeypatch seams remain authoritative.
+bindings into those helpers so established monkeypatch seams remain authoritative
+(for `github_client`, its owners inject them, and the mirror keeps them patchable
+through the façade).
 The reviewed real `glab` and `az` process spawns remain in
 `gitlab_client._glab_run` and `azure_client._az_run`, respectively, which keeps
 the spawn-audit allowlist tied to the same security chokepoints.
+
+**`github_client` is a mirror façade over six owners.** Its code lives in the
+`github_client_*.py` siblings, one responsibility each, and the façade serves every
+name from the owner that binds it (`kiro_crew._facade_mirror`), so a patch of
+`github_client.<name>` reaches every owner holding that name, as it reached the one
+module. `github_client_cli` holds the exception aliases, the timeouts, the hardened
+`gh` spawn `_gh_run` and the REST runner `_run_gh_api`; `github_client_repo_reads`
+the repo access check, the issue lists and their change probe, the viewer's login
+and contributed repos, labels and members; `github_client_detail` issue detail,
+reference summaries, the issue and PR timeline, the dependency graph and the crew
+claim; `github_client_writes` the triage writes, the permission read that gates
+them, and every pull-request action, with the PR's workflow-run read that its CI
+actions and the failure watch use; `github_client_pulls` the PR lists, detail,
+checks, list-card enrichment and search; and `github_client_ci` the viewer's open-PR
+heads and each repo's recent workflow runs. New GitHub code goes to the owner of its
+responsibility, and an owner never imports the façade.
 
 | | GitHub | GitLab | Azure DevOps |
 |---|---|---|---|
@@ -508,6 +527,20 @@ cache fails its route or aborts the remaining post-write cache repairs. The
 investigation record is deliberately excluded — it is the only copy of a user's
 findings, so reading a malformed root as "absent" would let the next write replace
 it.
+
+**Where the store's code lives.** `store.py` is a mirror façade
+(`kiro_crew._facade_mirror`): routes, tests and sibling modules still reach
+`store.<name>`, and a patch through it reaches every owner binding the name. The
+code is in six owners: `store_repos` (the data root, `config.json` and its lock, the
+provider-scoped directories, the connected repos with their name matching,
+permissions and settings, the watchers' per-repo state, and GitLab groups),
+`store_labels` (the label and member caches), `store_ai` (the AI triage and PR
+summary caches, label recommendations, the tagging queue, investigation records
+and the `now_iso` clock that stamps them), `store_deps` (the dependency-edge cache),
+`store_issues` (the issue list,
+detail and reference caches, and the write-through patches a triage write applies)
+and `store_pulls` (the PR list and detail caches). New storage goes to the owner of
+its responsibility.
 
 ## Permissions
 
@@ -1136,6 +1169,16 @@ An in-process asyncio loop (`watch.py`) polls opted-in repos every 60s for new
 issues (high-water mark in `watch-state.json`). Sends dashboard bell
 notifications via `state.notify`. Zero-LLM. Guarded by `is_app_enabled` — silent
 when disabled. Lifecycle hooks registered via `app.on_startup`/`on_cleanup`.
+
+The same loop drives the crew sweep, `crew_runtime.sweep_repo`. `crew_runtime.py`
+keeps the sweep and its unblock signals, and is a mirror façade
+(`kiro_crew._facade_mirror`) for the rest of the crew runtime:
+`crew_runtime_prompt` (the brief, the nudge and the turn prompt),
+`crew_runtime_session` (a crew's slot, minting its scoped auto-approve grant, launch
+and turn dispatch) and `crew_runtime_supervision` (trust reconciliation, the wake,
+the watchdog, the slot-close and app-disable hooks, and the revocation of a crew's
+execution and grants). New crew-runtime code goes to the owner of its
+responsibility.
 
 ## First Paint (progressive open-list load)
 

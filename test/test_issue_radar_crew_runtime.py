@@ -24,6 +24,7 @@ with nobody watching:
 import ast
 import asyncio
 import contextlib
+import importlib
 import inspect
 import os
 import re
@@ -50,6 +51,10 @@ from kiro_crew.safety_override import reset_singleton, safety_override
 
 OWNER, REPO = "o", "r"
 _KEY = provider.key_from_parts(OWNER, REPO)
+
+
+def _runtime_modules() -> list[Any]:  # the mirror facade and every owner it serves names from
+    return [cr, *map(importlib.import_module, cr._OWNERS)]
 
 
 def _effectively_trusted(slot: Any) -> bool:
@@ -800,7 +805,7 @@ class TestCrewStoreScoping(unittest.TestCase):
     def test_no_unscoped_crew_store_call_survives(self):
         from kiro_crew.apps.builtins.issue_radar.backend import crew_routes
 
-        for module in (crew_routes, cr):
+        for module in (crew_routes, *_runtime_modules()):
             offenders = self._offenders(module)
             self.assertEqual(
                 offenders, [], f"unscoped crew_store calls in {module.__name__}: {offenders}"
@@ -1751,7 +1756,7 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
         """Every ``_current_crew`` call site is awaited. The helper hops to a thread
         internally, so an un-awaited call would not even be a read — but the shape is
         what a future edit would break, and the AUTOSDE rule is blocking."""
-        tree = ast.parse(inspect.getsource(cr))
+        tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         calls = [
             node
             for node in ast.walk(tree)
@@ -1785,7 +1790,7 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
         """The scope attribute is the grant's carrier, so a second writer is a second
         policy. Pinned across the module: ``revoke_crew_execution`` clears it on the
         stop path, and nothing else may assign it."""
-        tree = ast.parse(inspect.getsource(cr))
+        tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         writers = set()
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -1804,7 +1809,7 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
         window this class exists to close. The one permitted bare call is inside
         ``_reconcile_trust`` itself; ``ensure_crew_session``'s is owned by another
         change and is pinned here so that ownership is explicit rather than silent."""
-        tree = ast.parse(inspect.getsource(cr))
+        tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         owners = []
         for fn in ast.walk(tree):
             if not isinstance(fn, ast.AsyncFunctionDef):
@@ -1838,7 +1843,7 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
     def test_the_disable_revoker_latches_and_only_the_watchdog_releases(self):
         """A second writer of ``_disabling = False`` is a second place a disable can
         be forgotten; pin the set."""
-        tree = ast.parse(inspect.getsource(cr))
+        tree = ast.parse("\n".join(map(inspect.getsource, _runtime_modules())))
         setters: dict[str, set[bool]] = {}
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
@@ -3339,7 +3344,7 @@ class TestNoBackendTrustGrant(unittest.TestCase):
     """
 
     def test_crew_runtime_never_grants_slot_trust(self):
-        src = inspect.getsource(cr)
+        src = "\n".join(map(inspect.getsource, _runtime_modules()))
         assert "slot._trust = True" not in src
         # And no revive-by-another-name: not via a variable, not via setattr, and
         # not via the ``slot._trust = want`` form this replaced — which is the one

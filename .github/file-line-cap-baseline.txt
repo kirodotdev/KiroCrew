@@ -39,10 +39,7 @@
 2181 src/kiro_crew/apps/builtins/dev_fleet/live.py
 3182 src/kiro_crew/apps/builtins/dev_fleet/worktree_ops.py
 3415 src/kiro_crew/apps/builtins/issue_radar/backend/azure_client.py
-2142 src/kiro_crew/apps/builtins/issue_radar/backend/crew_runtime.py
 3072 src/kiro_crew/apps/builtins/issue_radar/backend/crew_store.py
-2840 src/kiro_crew/apps/builtins/issue_radar/backend/github_client.py
-2899 src/kiro_crew/apps/builtins/issue_radar/backend/store.py
 2802 src/kiro_crew/apps/builtins/md_notebook/server.py
 2243 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_providers.py
 4064 src/kiro_crew/apps/builtins/ops_mission_control/tests/test_routes.py

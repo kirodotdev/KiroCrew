@@ -256,7 +256,7 @@ active.
 
 **Labels as a cheap index, not as authority.** `_ISSUE_JQ` already projects
 `labels`, `body` and the comment **count** for every open issue
-(`_ISSUE_JQ` in `github_client.py`), so one list call answers both "is this in my scope" and
+(`_ISSUE_JQ` in `github_client_repo_reads.py`), so one list call answers both "is this in my scope" and
 "is anyone on it". `comments == 0` means definitively unclaimed with no timeline
 read at all. The asymmetry that makes divergence safe:
 
@@ -550,7 +550,7 @@ on that rehydrate.
 | `update_issue_comment` → `PATCH /repos/{o}/{r}/issues/comments/{id}` | **missing.** The only PATCHes are on `issues/{n}` and `pulls/{n}`, both state-only |
 | `id` and `updated_at` on normalized comment rows | **missing.** `_normalize_timeline_event` keeps only `kind`/`actor`/`created_at`/`body`, so the comment cannot be addressed for an edit |
 | `create_pull_request` | **missing** from this client. A parallel implementation exists in `auto_improvement/profiles/github_repo/pr_recipe.py` |
-| `/issue/comment` HTTP route | **missing.** `add_issue_comment` exists in `github_client.py`; only `/pull/comment` is routed |
+| `/issue/comment` HTTP route | **missing.** `add_issue_comment` exists in `github_client_writes.py`; only `/pull/comment` is routed |
 | everything else (list, timeline, labels, checks, reviews, merge, auto-merge, rerun) | present — 12 write functions |
 
 The marker's `v` needs one more read-side change. `_parse_crew_marker` already

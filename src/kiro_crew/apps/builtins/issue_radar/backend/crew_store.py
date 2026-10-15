@@ -18,7 +18,7 @@ mismatch is a cache miss, refetch from the forge — does NOT transfer here: a c
 record has no upstream to refetch from, so readers coerce forward on read and a
 real migration is required if the shape ever changes incompatibly.
 
-Locking. ``store.py``'s per-record lock is the model for the crew record. The
+Locking. ``store_issues.py``'s per-record lock is the model for the crew record. The
 ledger takes no lock of its own: an append to a crew log is serialised by the
 crew log's writer, and every invariant the old three-file transaction held under
 three locks -- a phase never moves without its logged reason, an issue is never
