@@ -783,12 +783,17 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         voice_runtime_workspace_conflict,
     )
     from kiro_crew.sandbox_wrap import (  # noqa: F401
+        _INHERITED_USERNS_FAILURE_ENV,
         _backend,
         _background_warm,
+        _holds_inherited_unshare_failure,
+        _inherited_unshare_failure,
         _kick_background_warm,
         _last_unshare_failure,
         _probe_unshare,
+        _read_inherited_userns_failure,
         _record_probe_failure,
+        _set_inherited_userns_failure,
         _warm_thread,
         _warn_no_isolation,
         detect_backend,
