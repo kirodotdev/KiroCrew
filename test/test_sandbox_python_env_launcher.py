@@ -63,11 +63,13 @@ def test_a_linked_managed_environment_is_sealed_without_refusal(tmp_path: Path) 
         assert (info.st_dev, info.st_ino) in sealed, path
 
 
-def test_a_shared_interpreter_site_packages_is_sealed_without_refusal(tmp_path: Path) -> None:
-    site = tmp_path / "user" / "lib" / "python3.12" / "site-packages"
+def test_a_site_packages_under_a_prefix_holding_home_is_sealed_without_refusal(
+    tmp_path: Path,
+) -> None:
+    site = tmp_path / "lib" / "python3.12" / "site-packages"
     (site / "kiro_crew").mkdir(parents=True)
     env = sandbox_python_env._python_env_targets_cached.__wrapped__(
-        str(site / "kiro_crew"), "/usr", "/usr", sys.executable, "/nonexistent-home"
+        str(site / "kiro_crew"), str(tmp_path), "/usr", sys.executable, str(tmp_path / "home")
     )
     assert env == (str(site),)
 
