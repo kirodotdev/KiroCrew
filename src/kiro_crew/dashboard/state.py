@@ -522,6 +522,12 @@ class DashboardState:
         )
         self._slots: dict[str, _ChatSlot] = {}
         self._slot_registry = SlotRegistry()
+        # Process-local guard for copies queued before a durable consumption
+        # stamp lands, and for a hydration that read the hold before it. An
+        # entry is kept once its stamp is proven, marked stamped so eviction
+        # takes it before any still-unstamped guard; the registry is
+        # count-bounded by _MAX_CONSUMED_MERGE_CARDS.
+        self._consumed_merge_cards: dict[str, _ConsumedMergeCard] = {}
         # Process-local Spec Builder outbox claims, keyed by directory + delivery.
         # Directory scope matters because aliases use different slots for the same
         # files; durable status remains owned by the app's decision ledger.
@@ -5293,10 +5299,13 @@ from kiro_crew.dashboard.state_parts.slot_transcript import (  # noqa: E402,F401
     load_window_off_loop,
 )
 from kiro_crew.dashboard.state_parts.slot_turns import (  # noqa: E402,F401 -- re-exported; see state_parts
+    _MAX_CONSUMED_MERGE_CARDS,
+    _MAX_CONTEXT_PER_SOURCE,
     _MAX_PENDING_CONTEXT,
     _MAX_PENDING_SUBAGENT_DELIVERIES,
     PERSISTED_SUBAGENT_REPLAY_KEEP,
     PERSISTED_SUBAGENT_REPLAY_MAX_AGE_SECS,
+    _ConsumedMergeCard,
     _delivery_key,
     _log_task_exception,
     _note_authorized_elsewhere,

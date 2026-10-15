@@ -267,6 +267,42 @@ class TestResumeGuards:
         assert len(hellos) == 1, f"history duplicated: {len(hellos)} copies: {hellos!r}"
 
     @pytest.mark.asyncio
+    async def test_pinned_member_resume_refuses_late_live_replacement(self, tmp_path, monkeypatch):
+        """A late member-slot winner must still match the transcript identity pin."""
+        from chat_test_helpers import _make_app
+
+        import kiro_crew.dashboard.chat_handlers as handlers
+
+        state = _make_state(tmp_path)
+        write_dm_binding(CREW, member=CREW, slot_key=member_slot_key(CREW))
+        key = f"dashboard:{member_slot_key(CREW)}"
+        log = state.conversation_log
+        log.append(key, "user", "original")
+        log.update_metadata(key, {"agent": CREW, "mode": DM_SLOT_MODE})
+        expected_created_at = log.get_metadata(key)["created_at"]
+
+        replacement = state.get_or_create_slot(member_slot_key(CREW), agent=CREW, mode=DM_SLOT_MODE)
+        replacement._disk_meta_created_at = "1999-01-01T00:00:00+00:00"
+        live_slot_probe = AsyncMock(
+            side_effect=[
+                None,
+                None,
+                handlers.ResumeOutcome(slot=replacement, already_live=True, total=0),
+            ]
+        )
+        monkeypatch.setattr(handlers, "_live_slot_for_resume", live_slot_probe)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                f"/api/chat/slots/{member_slot_key(CREW)}/resume",
+                json={"key": key, "expected_created_at": expected_created_at},
+            )
+            body = await response.json()
+
+        assert (response.status, body["code"]) == (409, "resume_identity_mismatch")
+        assert live_slot_probe.await_count == 3
+
+    @pytest.mark.asyncio
     async def test_resume_of_a_closed_member_thread_succeeds(self, tmp_path):
         """A CLOSED member thread's legitimate resume must not self-409.
 

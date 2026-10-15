@@ -39,6 +39,7 @@ from chat_test_helpers import _make_state
 from kiro_crew.dashboard.chat_handlers import (
     _persist_deferred_note_hold,
     api_chat_slot_note,
+    deliver_note,
 )
 from kiro_crew.dashboard.chat_persistence import (
     _rehydrate_slot_from_history,
@@ -46,6 +47,7 @@ from kiro_crew.dashboard.chat_persistence import (
 )
 from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
 from kiro_crew.dashboard.slot_buffers import (
+    AWAITING_DURABLE_WRITE,
     MAX_DEFERRED_NOTE_CHARS,
     MAX_DEFERRED_NOTES,
     DeferredHoldFull,
@@ -57,14 +59,19 @@ from kiro_crew.dashboard.slot_buffers import (
     sanitize_restored_deferred_notes,
     serialize_deferred_notes,
 )
-from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.state import DashboardState, load_window_off_loop
+from kiro_crew.history import TranscriptWithheld
+from kiro_crew.session_lifecycle import STOP_DECLINED_KEY_MAX_CHARS
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
-def _seeded_slot(state: DashboardState, name: str):
+def _seeded_slot(state: DashboardState, name: str, *, created_at: str | None = None):
     """A slot with a metadata line on disk — the durable identity the hold
     attaches to (the persist guard refuses to upsert a line that a concurrent
     deletion may just have removed)."""
     slot = state.get_or_create_slot(name)
+    if created_at is not None:
+        slot.created_at = created_at
     slot._titled = True
     slot.append("user", "kick off the long turn")
     slot.drain()
@@ -164,6 +171,152 @@ class TestEnqueueDurability:
             assert not _meta(state, slot).get("deferred_notes")
         finally:
             slot.task = None
+
+    @pytest.mark.asyncio
+    async def test_notes_wait_behind_a_durable_write_and_keep_their_order(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A turn-end flush cannot let a later note overtake a durable card."""
+        from threading import Event
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "ordered-success")
+        running = asyncio.get_running_loop().create_future()
+        slot.task = running
+        entered, release = Event(), Event()
+        write = persist_deferred_notes_sync
+
+        def _blocked_write(*args, **kwargs):
+            entered.set()
+            assert release.wait(10), "the durable write was not released"
+            return write(*args, **kwargs)
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.persist_deferred_notes_sync", _blocked_write
+        )
+        posting = asyncio.create_task(
+            deliver_note(
+                state,
+                slot,
+                content="durable card",
+                source="merge",
+                durable=True,
+            )
+        )
+        await async_wait_until(entered.is_set, describe=lambda: "the write never entered its hold")
+        _hold_note(slot, "later note")
+        running.cancel()
+        slot.task = None
+
+        assert slot.flush_deferred_notes() == 0
+        assert [note["content"] for note in slot._deferred_notes] == [
+            "durable card",
+            "later note",
+        ]
+
+        release.set()
+        delivery = await await_until(posting, what="the durable card write")
+        assert not isinstance(delivery, web.Response)
+
+        injected = [row["content"] for row in slot.messages if row.get("role") == "inject"]
+        assert injected == ["durable card", "later note"]
+        assert slot._deferred_notes == []
+
+    @pytest.mark.asyncio
+    async def test_failed_durable_write_releases_the_notes_behind_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A failed card is removed before its ordered suffix is flushed."""
+        from threading import Event
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "ordered-failure")
+        running = asyncio.get_running_loop().create_future()
+        slot.task = running
+        entered, release = Event(), Event()
+
+        def _failed_write(*args, **kwargs):
+            entered.set()
+            assert release.wait(10), "the failed durable write was not released"
+            raise OSError("disk full")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.persist_deferred_notes_sync", _failed_write
+        )
+        posting = asyncio.create_task(
+            deliver_note(
+                state,
+                slot,
+                content="failed card",
+                source="merge",
+                durable=True,
+            )
+        )
+        await async_wait_until(entered.is_set, describe=lambda: "the write never entered its hold")
+        _hold_note(slot, "later note")
+        running.cancel()
+        slot.task = None
+
+        assert slot.flush_deferred_notes() == 0
+        assert [note["content"] for note in slot._deferred_notes] == [
+            "failed card",
+            "later note",
+        ]
+
+        release.set()
+        refusal = await await_until(posting, what="the failed durable card write")
+        assert isinstance(refusal, web.Response)
+        assert refusal.status == 503
+
+        injected = [row["content"] for row in slot.messages if row.get("role") == "inject"]
+        assert injected == ["later note"]
+        assert slot._deferred_notes == []
+
+    @pytest.mark.asyncio
+    async def test_a_withheld_durable_write_releases_the_notes_behind_it(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """A card refused for privacy is removed before the notes behind it are flushed."""
+        from threading import Event
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "ordered-withheld")
+        running = asyncio.get_running_loop().create_future()
+        slot.task = running
+        entered, release = Event(), Event()
+
+        def _withheld_write(*args, **kwargs):
+            entered.set()
+            assert release.wait(10), "the withheld durable write was not released"
+            raise TranscriptWithheld("the source was made private")
+
+        monkeypatch.setattr(
+            "kiro_crew.dashboard.chat_handlers.persist_deferred_notes_sync", _withheld_write
+        )
+        posting = asyncio.create_task(
+            deliver_note(
+                state,
+                slot,
+                content="withheld card",
+                source="merge",
+                durable=True,
+            )
+        )
+        await async_wait_until(entered.is_set, describe=lambda: "the write never entered its hold")
+        _hold_note(slot, "later note")
+        running.cancel()
+        slot.task = None
+
+        release.set()
+        with pytest.raises(TranscriptWithheld):
+            await await_until(posting, what="the withheld durable card write")
+
+        injected = [row["content"] for row in slot.messages if row.get("role") == "inject"]
+        assert injected == ["later note"]
+        assert slot._deferred_notes == []
 
     @pytest.mark.asyncio
     async def test_rollback_removes_the_failed_note_by_identity(self, tmp_path: Path, monkeypatch):
@@ -589,6 +742,106 @@ class TestEnqueueDurability:
 class TestRestartRoundTrip:
     """Gates (a) and (b): survive one restart, deliver once, retire via the save."""
 
+    def test_only_its_own_write_makes_a_note_awaiting_it_durable(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "own")
+        waiting = _hold_note(slot, "derived, awaiting its write")
+        waiting.update(id="waiting1", **{AWAITING_DURABLE_WRITE: True})
+        sibling = _hold_note(slot, "a plain note")
+        sibling["id"] = "sibling1"
+
+        # A sibling's write and a full save leave the waiting note off disk.
+        assert _persist(state, slot, ensure=sibling).written is True
+        _save_slot_to_history(state, slot, closed=False)
+        assert [entry["id"] for entry in _meta(state, slot)["deferred_notes"]] == ["sibling1"]
+        # Its own write puts it down, in the order the notes are held.
+        assert _persist(state, slot, ensure=waiting).written is True
+        assert [entry["id"] for entry in _meta(state, slot)["deferred_notes"]] == [
+            "waiting1",
+            "sibling1",
+        ]
+
+    def test_an_empty_window_save_leaves_a_note_awaiting_its_write_off_disk(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("empty")
+        # A session with a metadata line and no messages yet, as a fresh chat has.
+        state.conversation_log.update_metadata(slot_history_key(slot), {"title": "empty"})
+        waiting = _hold_note(slot, "derived, awaiting its write")
+        waiting.update(id="waiting1", **{AWAITING_DURABLE_WRITE: True})
+        plain = _hold_note(slot, "a plain note")
+        plain["id"] = "plain1"
+
+        _save_slot_to_history(state, slot, closed=False, force=True)
+
+        assert [entry["id"] for entry in _meta(state, slot)["deferred_notes"]] == ["plain1"]
+
+    def test_a_note_awaiting_its_write_keeps_later_notes_held(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "kept")
+        waiting = _hold_note(slot, "waits for its write")
+        waiting[AWAITING_DURABLE_WRITE] = True
+        later = _hold_note(slot, "delivers later")
+
+        assert slot.flush_deferred_notes() == 0
+
+        assert slot._deferred_notes == [waiting, later]
+        assert not any(row.get("role") == "inject" for row in slot.messages)
+
+    def test_failed_card_flush_restores_its_context_before_a_save(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "card-fail")
+        note = _hold_note(slot, "merge context")
+        note["id"] = "cardflush001"
+        note["merged_from"] = {
+            "session": "dashboard:fork",
+            "slot": "fork",
+            "title": "Fork",
+            "createdAt": "2026-10-02T18:00:00+00:00",
+            "after": "",
+            "through": "message-1",
+            "digest": "ab" * 32,
+            "messages": 1,
+        }
+        assert _persist(state, slot).written is True
+        pending_before = list(slot._pending_context)
+
+        def no_room(*args, **kwargs):
+            raise OSError("no room")
+
+        monkeypatch.setattr(type(slot), "append", no_room)
+        with pytest.raises(OSError):
+            slot.flush_deferred_notes()
+
+        assert slot._pending_context == pending_before
+        assert slot._deferred_notes[0]["context"]["content"] == "merge context"
+        _save_slot_to_history(state, slot, closed=False)
+        [persisted] = _meta(state, slot)["deferred_notes"]
+        assert persisted["context"]["content"] == "merge context"
+
+    def test_a_hold_is_not_merged_into_a_transcript_recreated_on_its_key(
+        self, tmp_path: Path, monkeypatch
+    ):
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "gone", created_at="2026-10-01T12:00:00+00:00")
+        _hold_note(slot, "for the deleted chat")
+        # A permanent delete, then another chat on the same key.
+        del state._slots["gone"]
+        state.conversation_log.delete_session(slot_history_key(slot))
+        stranger = _seeded_slot(state, "gone", created_at="2026-10-01T12:00:01+00:00")
+        assert stranger._disk_meta_created_at not in ("", slot._disk_meta_created_at)
+
+        assert _persist(state, slot).written is False
+        assert not _meta(state, stranger).get("deferred_notes")
+
     def test_note_survives_restart_and_first_flush_delivers_exactly_once(
         self, tmp_path: Path, monkeypatch
     ):
@@ -888,7 +1141,7 @@ class TestRestoreTrustBoundary:
         state = _make_state(tmp_path)
         slot = _seeded_slot(state, "tb1")
         session = effective_session_key(slot)
-        ceiling = 2 * MAX_DEFERRED_NOTES
+        ceiling = 3 * MAX_DEFERRED_NOTES
         raw = [
             "not a dict",
             {"content": "", "session": session},  # empty content: dropped
@@ -914,7 +1167,7 @@ class TestRestoreTrustBoundary:
     def test_restore_replays_every_acknowledged_entry_up_to_the_ceiling(
         self, tmp_path: Path, monkeypatch
     ):
-        """A durable hold at the 2x ceiling (10 delivered-but-unsaved retained
+        """A durable hold at the 3x ceiling (10 delivered-but-unsaved retained
         + 10 live) is a documented, supported state. A restore must replay ALL
         of it: the newest half are undelivered 200-acknowledged notes whose
         callers were told not to re-post, so capping the restore at the live
@@ -923,7 +1176,7 @@ class TestRestoreTrustBoundary:
         state = _make_state(tmp_path)
         slot = _seeded_slot(state, "tb2")
         session = effective_session_key(slot)
-        ceiling = 2 * MAX_DEFERRED_NOTES
+        ceiling = 3 * MAX_DEFERRED_NOTES
         entries = [
             {
                 "id": f"ack{i:09d}",
@@ -1013,6 +1266,31 @@ class TestRestoreTrustBoundary:
         assert entry["content"] == content
         assert entry["context"]["content"] == content
 
+    def test_restore_replaces_over_bound_id(self):
+        oversized = "i" * 13
+        [note] = sanitize_restored_deferred_notes(
+            [{"id": oversized, "content": "kept", "session": "s"}]
+        )
+        assert note["id"] != oversized
+        assert len(note["id"]) == 12
+
+    def test_restore_replaces_over_bound_class(self):
+        oversized = "c" * 65
+        [note] = sanitize_restored_deferred_notes(
+            [{"content": "kept", "cls": oversized, "session": "s"}]
+        )
+        assert note["cls"] == "reconcile-note"
+
+    def test_restore_drops_over_bound_session(self):
+        oversized = "s" * (STOP_DECLINED_KEY_MAX_CHARS + 1)
+        notes = sanitize_restored_deferred_notes(
+            [
+                {"content": "dropped", "session": oversized},
+                {"content": "kept", "session": "s"},
+            ]
+        )
+        assert [note["content"] for note in notes] == ["kept"]
+
     def test_restore_drops_over_bound_content_instead_of_truncating(self):
         """The enqueue boundary rejects oversized deferred notes before any
         200, so an over-bound persisted entry can only be tampering or
@@ -1033,10 +1311,10 @@ class TestRestoreTrustBoundary:
         state = _make_state(tmp_path)
         slot = _seeded_slot(state, "hf1")
         session = effective_session_key(slot)
-        # Fill the durable hold to the 2x ceiling with retained entries.
+        # Fill the durable hold to the 3x ceiling with retained entries.
         retained = [
             {"id": f"ret{i:09d}", "content": f"r{i}", "cls": "reconcile-note", "session": session}
-            for i in range(2 * MAX_DEFERRED_NOTES)
+            for i in range(3 * MAX_DEFERRED_NOTES)
         ]
         state.conversation_log.update_metadata(slot_history_key(slot), {"deferred_notes": retained})
         slot._deferred_notes.append(
@@ -1051,8 +1329,57 @@ class TestRestoreTrustBoundary:
         with pytest.raises(DeferredHoldFull):
             _persist(state, slot)
         persisted = _meta(state, slot)["deferred_notes"]
-        assert len(persisted) == 2 * MAX_DEFERRED_NOTES, "no retained entry may be evicted"
+        assert len(persisted) == 3 * MAX_DEFERRED_NOTES, "no retained entry may be evicted"
         assert all(entry["id"].startswith("ret") for entry in persisted)
+
+    def test_plain_notes_fill_no_more_of_the_hold_than_two_live_caps(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The third share of the durable hold is for merge cards alone: a plain
+        note is refused at the plain-note ceiling, and a merge card past it is
+        still accepted."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = _seeded_slot(state, "hf2")
+        session = effective_session_key(slot)
+        retained = [
+            {"id": f"ret{i:09d}", "content": f"r{i}", "cls": "reconcile-note", "session": session}
+            for i in range(2 * MAX_DEFERRED_NOTES)
+        ]
+        state.conversation_log.update_metadata(slot_history_key(slot), {"deferred_notes": retained})
+        plain_note = {
+            "id": "new000000001",
+            "content": "one plain note too many",
+            "cls": "reconcile-note",
+            "context": None,
+            "session": session,
+        }
+        slot._deferred_notes.append(plain_note)
+        with pytest.raises(DeferredHoldFull):
+            _persist(state, slot)
+        assert len(_meta(state, slot)["deferred_notes"]) == 2 * MAX_DEFERRED_NOTES
+
+        slot._deferred_notes[:] = [
+            {
+                **plain_note,
+                "id": "card00000001",
+                "content": "merge card",
+                "merged_from": {
+                    "session": "dashboard:fork",
+                    "slot": "fork",
+                    "title": "Fork",
+                    "createdAt": "2026-10-02T18:00:00+00:00",
+                    "after": "",
+                    "through": "message-1",
+                    "digest": "ab" * 32,
+                    "messages": 1,
+                },
+            }
+        ]
+        assert _persist(state, slot).written is True
+        persisted = _meta(state, slot)["deferred_notes"]
+        assert len(persisted) == 2 * MAX_DEFERRED_NOTES + 1
+        assert persisted[-1]["id"] == "card00000001"
 
     def test_ensure_pins_a_note_a_racing_flush_already_drained(self, tmp_path: Path, monkeypatch):
         """F2: the POST's note can be drained by a turn-end flush before the
@@ -1161,6 +1488,126 @@ class TestRestoreTrustBoundary:
         assert all(
             entry.get("id") != "rowcommitted" for entry in leftover
         ), "the committed entry must be retired by the next full save, not retained forever"
+
+    @staticmethod
+    def _restore_lazy_row_whose_hold_awaits_settling(state: DashboardState, name: str):
+        """Seed *name* with a committed plain note ``plaindone``, a committed
+        merge card ``carddone`` and an uncommitted note ``stillheld``, leave
+        all three on the metadata line as a crash between the flush and the
+        save that retires them does, and bring the tab back as a sidebar row
+        whose window is not loaded. Apply filled the hold from the line and
+        the loader cleared the line; only the window load can settle it."""
+        slot = _seeded_slot(state, name)
+        key = slot_history_key(slot)
+        session = effective_session_key(slot)
+        block = {
+            "session": "dashboard:fork",
+            "slot": "fork",
+            "title": "the fork",
+            "createdAt": "2026-10-02T18:00:00+00:00",
+            "after": "",
+            "through": "msg-f",
+            "digest": "ab" * 32,
+            "messages": 1,
+        }
+        committed_plain = {
+            "id": "plaindone",
+            "content": "delivered plain note",
+            "cls": "reconcile-note",
+            "context": None,
+            "session": session,
+        }
+        committed_card = {
+            "id": "carddone",
+            "content": "merge summary",
+            "cls": "reconcile-note",
+            "context": {
+                "content": "merge summary",
+                "source": "merge",
+                "ephemeral": True,
+                "injectedAt": 1_000_000.0,
+            },
+            "session": session,
+            "merged_from": block,
+        }
+        held_plain = {
+            "id": "stillheld",
+            "content": "not delivered yet",
+            "cls": "reconcile-note",
+            "context": None,
+            "session": session,
+        }
+        durable = serialize_deferred_notes([committed_plain, committed_card, held_plain])
+        slot._deferred_notes = [dict(committed_plain), dict(committed_card)]
+        slot._titled = True
+        assert slot.flush_deferred_notes() == 2
+        slot.drain()
+        _save_slot_to_history(state, slot, closed=False)
+        state.conversation_log.update_metadata(key, {"deferred_notes": durable})
+        del state._slots[name]
+
+        tail = state.conversation_log.read_messages_chained(key)[-2:]
+        restored = _rehydrate_slot_from_history(state, name, _lazy_tail=tail)
+        assert restored is not None
+        assert restored.window_pending
+        assert restored._lazy_window._applied.meta == {}
+        assert [entry["id"] for entry in restored._deferred_notes] == [
+            "plaindone",
+            "carddone",
+            "stillheld",
+        ]
+        return restored
+
+    @staticmethod
+    def _rows_carrying_note(slot, note_id: str) -> int:
+        return sum(1 for row in slot.messages if (row.get("meta") or {}).get("noteId") == note_id)
+
+    def test_a_sidebar_rows_first_window_load_settles_its_hold(self, tmp_path: Path, monkeypatch):
+        """A tab the startup restore builds as a sidebar row applies its hold
+        from the metadata line but loads its rows later, and the loader keeps
+        no raw line meanwhile. The first window load must settle the hold the
+        same way an eager restore does: the committed plain note's entry leaves
+        the hold and its id is recorded for row-less retirement, the committed
+        merge card's context is queued exactly once, and the uncommitted note
+        stays held. Before the fix the load read the cleared line, emptied the
+        hold and queued nothing."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        restored = self._restore_lazy_row_whose_hold_awaits_settling(state, "lazyhold")
+
+        asyncio.run(load_window_off_loop(restored))
+
+        assert not restored.window_pending
+        assert [entry["id"] for entry in restored._deferred_notes] == ["stillheld"]
+        assert [entry["noteId"] for entry in restored._pending_context] == ["carddone"]
+        assert restored._pending_context[0]["content"] == "merge summary"
+        assert "plaindone" in restored._dropped_note_ids
+        assert "carddone" not in restored._dropped_note_ids
+
+    def test_a_flush_on_a_pending_sidebar_row_settles_its_hold_first(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """The cleanup sweep and the hand-over drain flush a popped sidebar row
+        without loading its window. The flush must settle the hold before it
+        copies it: only the uncommitted note is delivered, each note keeps one
+        row, and the committed card's context is queued once, by the settle.
+        Before the fix the flush copied and cleared the unsettled hold, its
+        first append loaded the window against the empty hold, and every
+        committed note got a second row."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        restored = self._restore_lazy_row_whose_hold_awaits_settling(state, "lazyflush")
+
+        assert restored.flush_deferred_notes() == 1
+
+        assert not restored.window_pending
+        assert self._rows_carrying_note(restored, "plaindone") == 1
+        assert self._rows_carrying_note(restored, "carddone") == 1
+        assert self._rows_carrying_note(restored, "stillheld") == 1
+        assert [entry["noteId"] for entry in restored._pending_context] == ["carddone"]
+        assert restored._deferred_notes == []
+        assert "plaindone" in restored._dropped_note_ids
+        assert "carddone" not in restored._dropped_note_ids
 
     @pytest.mark.asyncio
     async def test_recorded_drop_dominates_durable_evidence(self, tmp_path: Path, monkeypatch):
