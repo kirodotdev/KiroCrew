@@ -1621,6 +1621,14 @@ async def _run_chat(
     _this_turn_is_clear = turn._this_turn_is_clear
     first_word = turn.first_word
     is_slash = turn.is_slash
+    # Where the most recent compaction started inside `assistant_text`. A
+    # synthesized terminal arrives only at turn end, so the accumulator still
+    # holds any unfinished pre-compaction fragment, and the continuation gate
+    # judges only the text after this offset. A segment cut empties the
+    # accumulator and the next segment is wholly post-compaction, so the first
+    # chunk appended to an empty accumulator zeroes the offset: no cut site has
+    # to clear it, and a cut with no text after it leaves nothing to judge.
+    _compaction_text_offset = 0
     try:
         _flow = await _turn_admit(turn)
         if _flow is _Flow.END:
@@ -2282,6 +2290,8 @@ async def _run_chat(
                 if event.message_id:
                     slot.segment_message_id = event.message_id
                 _accumulate_segment_raw(slot, event.text, safe_chunk, _removed)
+                if not turn.assistant_text:
+                    _compaction_text_offset = 0
                 turn.assistant_text += safe_chunk
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text
@@ -2420,6 +2430,7 @@ async def _run_chat(
                     # AcpClient synthesizes one at turn end.
                     _compaction_started = True
                     turn._compaction_started = _compaction_started
+                    _compaction_text_offset = len(turn.assistant_text)
                     state.broadcast_ws(
                         "chat_message",
                         {"slot": slot.key, "role": "compacting", "content": ""},
@@ -3669,9 +3680,20 @@ async def _run_chat(
         # output and must stream, flush and persist — but it is not an answer,
         # and the branch below is what decides whether one was given.
         _answer_text = _answer_text_only(turn.assistant_text, _compaction_notice_chunks)
+        _continuation_answer_text = _answer_text_only(
+            turn.assistant_text[_compaction_text_offset:], _compaction_notice_chunks
+        )
+        # A refusal's explanation answers the turn wherever it streamed: one that
+        # arrived before a compaction still takes the streamed-explanation refusal
+        # path below, instead of the no-text refusal branch, which would retry the
+        # message on the fallback model and word its card as if nothing was said.
+        _branch_answer_text = (
+            _answer_text if _stop_reason == STOP_REASON_REFUSAL else _continuation_answer_text
+        )
 
-        # A turn whose ONLY assistant text was such a notice still has to reach
-        # the wire and the transcript, but it must not take the answer branch:
+        # A turn with no answer after compaction still has to preserve every
+        # pre-compaction fragment and control notice, but it must not take the
+        # answer branch:
         # the post-compaction continuation is an `elif` UNDER that branch, so
         # entering it would shadow the continuation and leave the request
         # unanswered — the exact hang this PR exists to fix. Flush here and fall
@@ -3679,7 +3701,7 @@ async def _run_chat(
         # kept out of `assistant_text`: the answer branch owns the only terminal
         # `_flush_text_stream`, and the rolling redactor withholds the notice
         # until something flushes it, so a skipped notice was emitted nowhere.)
-        if turn.assistant_text and not _answer_text:
+        if turn.assistant_text and not _branch_answer_text:
             _flush_text_stream(turn)
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
             turn._reply_flushed = True
@@ -3701,7 +3723,7 @@ async def _run_chat(
                 turn._terminal_directive_kind,
             )
 
-        if _answer_text:
+        if _branch_answer_text:
             _flush_text_stream(turn)
             _flush_segment(state, slot, turn.assistant_text, broadcast=False)
             turn._reply_flushed = True
@@ -3838,7 +3860,7 @@ async def _run_chat(
             # The turn's own answer (see `_answer_text` above), not the raw
             # segment: this gate must not mistake "the backend said it was
             # compacting" for "the request was answered".
-            final_segment_text=_answer_text,
+            final_segment_text=_continuation_answer_text,
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
             prompt_depth=_prompt_depth,
