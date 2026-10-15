@@ -635,7 +635,20 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#:
+#: Raised again, from 33,723, for ``shell_normalizer_walk._gh_data_newlines_as_spaces``
+#: and its caller in ``is_denied``: a ``git push`` line inside a literal ``gh pr|issue|release``
+#: text-flag value is read as the one word bash hands gh. One closed shape, read
+#: over ``_iter_shell_chars`` steps, and every other command keeps its per-line
+#: push reading. ``_SHELL_TITLE_PREFIX`` moves to that module so the helper reads
+#: a ``Running: `` title through the constant ``denied_rules`` already uses.
+#: Twelve more for the publish gate's guard on the gh-body reading: a command with a
+#: backslash, or a source with an unresolved printf conversion, keeps its
+#: per-line push reading, since every escape decoder can make a quote bash
+#: never prints (``\X27`` lowercased, a printf format's ``\0047``, echo's ``\47``).
+#: Four more: only the command the shell runs gets the gh-body reading, since a
+#: filter such as ``tr`` may rewrite a nested payload before its evaluator.
+_PACKAGE_LINE_BUDGET = 33_802
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
