@@ -21,15 +21,16 @@ per-instance (`connection_method`) — see §13.
 > registry, the tunnel or the EC2 box rather than the surface.
 
 > **Section numbers in this document are an API.** Code cites them:
-> `dashboard/handlers_instances.py` cites §6, and `dashboard/session_transfer.py`
-> cites §1 and §14. Do not renumber existing sections; append new material as new
-> trailing sections.
+> `dashboard/handlers_instances.py` cites §6, `dashboard/session_transfer.py`
+> cites §14 and `dashboard/session_transfer_staging.py` cites §1. Do not renumber
+> existing sections; append new material as new trailing sections.
 
 Code: `src/kiro_crew/instances/` (registry, tunnel manager, port allocator, token
 mint, diagnostics, injection validation, run-marker, shared constants
 (`constants.py`), the warm set (`warm_set.py`), the tunnel keeper
 (`tunnel_keeper.py`) and the chained-hop port guard (`hop_port_guard.py`, §17)) plus
-`src/kiro_crew/dashboard/handlers_instances.py` (control plane) and the frontend
+`src/kiro_crew/dashboard/handlers_instances.py` (control plane, with its owners
+`handlers_instances_gate.py` and `handlers_instances_peer.py`) and the frontend
 `InstanceTabBar` / `InstancesViewport` / `Settings → Remote Crew` surfaces.
 
 ---
@@ -159,7 +160,7 @@ Module responsibilities:
 | `run_marker.py` | Records the running gateway's own `kirocrew` launcher (and pid) keyed by port, so a remote mint execs the same venv the live gateway runs from. Also backs zero-config client port discovery. See §12. |
 | `ssh_tunnel_manager.py` | Supervises one tunnel child per instance — `ssh -N -L` or `aws ssm start-session` — with readiness wait, health probe, 2-tier self-heal, proactive token refresh, stored-token liveness probe, remote restart. One state machine, two forwarder shapes; the `fargate` method shares the SSM forwarder, and a headless crew mints nothing whatever its method (§16). An SSM child's stdout is captured and drained alongside stderr, because the close notice that names why a forward ended is printed there. |
 | `diagnostics.py` | Dependency-ordered failure probes; reports the first broken link. `diagnose_instance` (SSH ladder), `diagnose_instance_ssm` (SSM ladder) and `diagnose_instance_fargate` (ECS task ladder, §16). |
-| `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane. |
+| `handlers_instances.py` | Owner-only, enabled-gated, SEL-audited HTTP control plane: the registry, connection, remote-update, session-search and session-send routes. It is the import path of its two owners, `handlers_instances_gate.py` (the owner gate `_guard`, the SEL audit, registry access and the chain policy every handler shares) and `handlers_instances_peer.py` (the routes that read a connected peer — capabilities, approval state, versions, live sessions — and the proxy to it). New gate or registry primitives go to the gate owner; a new route that reads the peer goes to the peer owner. |
 
 `ssh_tunnel_manager.py` stays the import path, and `SshTunnelManager`'s behaviour lives in
 sibling `instances/ssh_tunnel_manager_*.py` owner modules, one responsibility each; new work
@@ -1801,7 +1802,12 @@ The legacy `ssm_proxy_ssh_host` helper is kept for reference only.
 Copies one dashboard session from this instance to a connected peer. The user
 picks it from any session menu: **Send a copy to ▸ `<instance>`**.
 
-Code: `src/kiro_crew/dashboard/session_transfer.py` (bundle + importer),
+Code: `src/kiro_crew/dashboard/session_transfer.py` (the sending side's bundle
+assembly, and the import path of its owners: `session_transfer_staging.py` for the
+bundle format, staging dirs and bundle files, `session_transfer_layers.py` for
+reading Layer A and B and writing Layer B on arrival, `session_transfer_intake.py`
+for admitting and parsing an arriving body, and `session_transfer_install.py` for
+validating and installing it),
 `src/kiro_crew/dashboard/transcript_snapshot.py` (the bundle's consistent
 transcript read, under its `TRANSFER` rules),
 `SshTunnelManager.send_session_bundle` (delivery),

@@ -38,7 +38,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import mcp_discovery
-from kiro_crew.dashboard import handlers_instances
+from kiro_crew.dashboard import handlers_instances, handlers_instances_peer
 from kiro_crew.dashboard.handlers import _shared as shared_handlers
 from kiro_crew.dashboard.handlers import mcp as mcp_handlers
 from kiro_crew.dashboard.routes import agent_config as agent_config_routes
@@ -54,7 +54,8 @@ _LOCAL_SUBJECT = "local-app"
 
 _MUTATING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
-#: The five modules whose mutating routes carry the gate.
+#: The five modules whose mutating routes carry the gate; the instances control
+#: plane is its facade and the owner its peer-reading routes live in.
 _GATED_MODULES = frozenset(
     {
         "kiro_crew.dashboard.handlers.hooks",
@@ -62,6 +63,7 @@ _GATED_MODULES = frozenset(
         "kiro_crew.dashboard.handlers.mcp",
         "kiro_crew.dashboard.handlers.security",
         "kiro_crew.dashboard.handlers_instances",
+        "kiro_crew.dashboard.handlers_instances_peer",
     }
 )
 
@@ -97,10 +99,13 @@ _REFUSAL = {"error": "owner authorization required", "code": "owner_only"}
 
 
 #: The four modules that reach the gate through
-#: ``_shared.require_owner_dashboard_request``. ``handlers_instances`` is absent on
-#: purpose: it gates inside ``_guard``, which is a pure function covered directly
-#: below, so it needs no route drive at all.
-_SHARED_GATE_MODULES = frozenset(_GATED_MODULES - {"kiro_crew.dashboard.handlers_instances"})
+#: ``_shared.require_owner_dashboard_request``. ``handlers_instances`` (with its peer
+#: owner) is absent on purpose: it gates inside ``_guard``, which is a pure function
+#: covered directly below, so it needs no route drive at all.
+_SHARED_GATE_MODULES = frozenset(
+    _GATED_MODULES
+    - {"kiro_crew.dashboard.handlers_instances", "kiro_crew.dashboard.handlers_instances_peer"}
+)
 
 #: Status the stand-in gate answers with. Outside every status any handler body
 #: produces, so "the gate ran and stopped here" cannot be confused with a body.
@@ -514,8 +519,8 @@ async def test_every_instances_route_runs_the_guard() -> None:
     """A route added to the instances module later must not skip the seam.
 
     The count is read off the real registrar and compared with the number of
-    ``_guard`` call sites in the module, so a fourteenth-plus route that forgets
-    the gate fails here rather than shipping open.
+    ``_guard`` call sites in the module and its peer owner, so a fourteenth-plus
+    route that forgets the gate fails here rather than shipping open.
     """
     import inspect
 
@@ -528,13 +533,14 @@ async def test_every_instances_route_runs_the_guard() -> None:
     routes = {
         (r.method, r.resource.canonical)
         for r in app.router.routes()
-        if getattr(r.handler, "__module__", "") == "kiro_crew.dashboard.handlers_instances"
+        if getattr(r.handler, "__module__", "")
+        in {"kiro_crew.dashboard.handlers_instances", "kiro_crew.dashboard.handlers_instances_peer"}
         and r.resource is not None
         and r.method != "HEAD"
     }
     assert len(routes) >= 14, f"the instances walk found only {len(routes)} routes"
 
-    source = inspect.getsource(handlers_instances)
+    source = inspect.getsource(handlers_instances) + inspect.getsource(handlers_instances_peer)
     assert source.count("= _guard(request,") == len(routes), (
         f"{len(routes)} instances routes but "
         f"{source.count('= _guard(request,')} _guard call sites"

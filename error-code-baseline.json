@@ -259,8 +259,11 @@
       "missing_code": 16
     },
     "dashboard/handlers_instances.py": {
-      "missing_code": 11,
+      "missing_code": 9,
       "opaque_body": 3
+    },
+    "dashboard/handlers_instances_gate.py": {
+      "missing_code": 2
     },
     "dashboard/handlers_project.py": {
       "missing_code": 1

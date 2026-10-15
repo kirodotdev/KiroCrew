@@ -652,9 +652,9 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Peer live-session list",
-        "dashboard/handlers_instances.py",
+        "dashboard/handlers_instances_peer.py",
         "Rows returned by GET /api/instances/{id}/chat-slots, straight to the "
-        "browser's Sessions list. A second, distinct boundary in this module from "
+        "browser's Sessions list. A second, distinct Instances boundary from "
         "the federated search above: these are a connected peer's OPEN session "
         "titles, and a title is MODEL-AUTHORED text produced on the other machine. "
         "The local half of that same list has its title scrubbed by "
@@ -2240,6 +2240,12 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # user-visible surface is already covered by a registered sink.
         "dashboard/chat_folders.py",
         "dashboard/chat_fork.py",
+        # Inbound: the receiving half of the session transfer. An arrived bundle's
+        # title, origin label and rows are scrubbed before they become a slot, its
+        # transcript and its audit line, so this is inbound sanitisation rather than an
+        # egress boundary; ``dashboard/session_transfer.py`` stays the registered
+        # "Session transfer bundle" sink for what leaves the host.
+        "dashboard/session_transfer_install.py",
         # The owners composed into the ``dashboard/chat_handlers.py`` facade: the same
         # redactor calls, moved verbatim, under the facade's existing non-egress
         # classification; the split adds no egress path.
