@@ -25,7 +25,7 @@ import logging
 import math
 import re
 from typing import TYPE_CHECKING, NamedTuple
-from urllib.parse import unquote
+from urllib.parse import quote, unquote
 
 from aiohttp import web
 
@@ -49,6 +49,7 @@ from kiro_crew.dashboard.session_transfer import (
     TranscriptBusy,
     TranscriptWithheld,
     build_transfer_bundle_async,
+    install_peer_export,
     local_instance_label,
     release_bundle_files,
     write_bundle_file,
@@ -1728,6 +1729,174 @@ async def api_instances_send_session(request: web.Request) -> web.Response:
             "resume_mode": payload.get("resume_mode", ""),
         }
     )
+
+
+#: A peer's slot key as this route will put it into a peer path: the shapes the
+#: gateway mints (``chat-…``, ``<channel>:…``) without anything that could step
+#: out of the ``/api/chat/slots/{key}/export`` segment. It is still quoted.
+_FETCH_SLOT_KEY_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+
+
+#: How much of a peer's 404 body is read to find the export's own code. That
+#: refusal is one small JSON object; anything longer is not it.
+_PEER_REFUSAL_READ_CAP = 4096
+
+
+async def _peer_slot_is_missing(upstream) -> bool:
+    """Whether a peer's 404 is the export's own ``export_slot_not_found``.
+
+    A crew without the export route answers aiohttp's bare 404, which is not a
+    missing session. The body is peer text: it is read under a cap only to make
+    this one comparison, and nothing of it is relayed.
+    """
+    data = b""
+    try:
+        async for chunk in upstream.content.iter_chunked(1024):
+            data += chunk
+            if len(data) > _PEER_REFUSAL_READ_CAP:
+                return False
+        parsed = json.loads(data)
+    except Exception:
+        return False
+    return isinstance(parsed, dict) and parsed.get("code") == "export_slot_not_found"
+
+
+def _peer_bundle_failure(arrival: web.Response) -> web.Response:
+    """Re-answer the arrival's 400 for a FETCHED bundle as a 502.
+
+    The arrival's code (``transfer_body_unreadable``, ``transfer_invalid_gzip``,
+    ``transfer_invalid_json`` or a validation code) is kept so a reader can still
+    tell a dropped tunnel from a malformed export; only the status and the
+    sentence change, because the body that failed came from the peer.
+    """
+    code = "transfer_peer_bundle_invalid"
+    # ``json_response`` stores bytes; any other body shape keeps the fallback code.
+    body = arrival.body
+    if isinstance(body, bytes):
+        try:
+            parsed = json.loads(body)
+            if isinstance(parsed, dict) and isinstance(parsed.get("code"), str):
+                code = parsed["code"]
+        except ValueError:
+            pass
+    return web.json_response(
+        {"error": "the crew's export could not be read", "code": code}, status=502
+    )
+
+
+async def api_instances_fetch_session(request: web.Request) -> web.Response:
+    """POST /api/instances/{id}/fetch-session — copy a peer's session HERE.
+
+    Body: ``{ "slot": "<the peer's slot key>" }``.
+
+    The pull counterpart of :func:`api_instances_send_session`. The hub asks the
+    peer's own export route for the session over the already-open tunnel, with
+    the manager-held credential, and installs the reply through the one local
+    arrival path (``install_peer_export``). Nothing on the peer changes: its
+    export is a read, and the arrival is a NEW local slot (copy semantics).
+
+    Layer B is asked for (``include_layer_b=true``) and the PEER decides: its
+    export carries the context window only when its own operator enabled
+    ``dashboard.export_include_layer_b`` and the request is the owner's, which
+    the manager-held credential is (a minted token's subject is the peer's
+    owner). Otherwise the copy is transcript-only and the answer says so through
+    ``resume_mode``, as an import from a file does.
+
+    Owner-only, like the proxy: the request runs on the peer with the owner's
+    credential, so a non-owner dashboard subject must not be able to pull a
+    peer transcript through it.
+    """
+    # ``_guard`` is the owner-only gate (see its comment); nothing weaker passes.
+    denied = _guard(request, "fetch_session")
+    if denied is not None:
+        return denied
+    state: DashboardState = request.app["state"]
+    instance_id = request.match_info["id"]
+    inst = await asyncio.to_thread(_registry(state).get, instance_id)
+    if inst is None:
+        _audit("fetch_session", "denied", request_id=instance_id, error="not found")
+        return web.json_response({"error": "not found", "code": "instance_not_found"}, status=404)
+    mgr = getattr(state, "instances_manager", None)
+    if mgr is None:
+        _audit("fetch_session", "denied", request_id=instance_id, error="manager unavailable")
+        return web.json_response(
+            {"error": "instances manager not running", "code": "instances_manager_down"},
+            status=503,
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        return web.json_response(
+            {"error": "invalid JSON body", "code": "transfer_invalid_json"}, status=400
+        )
+    slot_key = body.get("slot") if isinstance(body, dict) else None
+    if not isinstance(slot_key, str) or not _FETCH_SLOT_KEY_RE.match(slot_key):
+        return web.json_response(
+            {"error": "slot must be a crew session key", "code": "transfer_missing_slot"},
+            status=400,
+        )
+
+    path = f"api/chat/slots/{quote(slot_key, safe='')}/export"
+    try:
+        async with mgr.proxy_request(
+            instance_id, "GET", path, params={"include_layer_b": "true"}
+        ) as upstream:
+            if upstream.status != 200:
+                if upstream.status == 404 and await _peer_slot_is_missing(upstream):
+                    _audit(
+                        "fetch_session", "denied", request_id=instance_id, error="peer slot missing"
+                    )
+                    return web.json_response(
+                        {
+                            "error": "session not found on the crew",
+                            "code": "transfer_slot_not_found",
+                        },
+                        status=404,
+                    )
+                # The peer's own refusal (a non-persistent session, a mid-turn
+                # snapshot it could not take), or a 404 without the export's own
+                # code: a crew with no such route, which is not a missing
+                # session. The body is peer text, so only the status is relayed.
+                # The export's statuses already separate "never exportable"
+                # (400) from "try again" (503) and "failed" (500).
+                _audit(
+                    "fetch_session",
+                    "failure",
+                    request_id=instance_id,
+                    error=f"peer export HTTP {upstream.status}",
+                )
+                return web.json_response(
+                    {
+                        "error": f"the crew refused the export (HTTP {upstream.status})",
+                        "code": "transfer_peer_refused",
+                        "peer_status": upstream.status,
+                    },
+                    status=502,
+                )
+            # The sender is named from OUR registry entry, never from the crew's
+            # bytes: its export leaves ``origin`` empty.
+            response = await install_peer_export(
+                request, upstream, origin=str(getattr(inst, "name", "") or instance_id)
+            )
+            if response.status == 400:
+                # Every 400 the arrival answers is about the BUNDLE, and here the
+                # bundle is the peer's reply, not the owner's request (whose own
+                # body was validated above). A tunnel that dropped mid-stream
+                # (``transfer_body_unreadable``), a corrupt gzip or a malformed
+                # export is a peer or proxy failure, so it is a 502 that keeps the
+                # arrival's code, never a 400 that blames the caller.
+                response = _peer_bundle_failure(response)
+    except ProxyRequestError as e:
+        _audit("fetch_session", "failure", request_id=instance_id, error=e.code)
+        if e.http_status == 503:
+            return web.json_response({"error": e.message, "code": e.code}, status=503)
+        return web.json_response({"error": e.message, "code": e.code}, status=502)
+    _audit(
+        "fetch_session",
+        "success" if 200 <= response.status < 300 else "failure",
+        request_id=instance_id,
+    )
+    return response
 
 
 # ── Generic chat proxy ────────────────────────────────────────────────────────

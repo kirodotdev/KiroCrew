@@ -1788,9 +1788,13 @@ def _disk_full_response() -> web.Response:
 
 
 async def _stalling_chunks(
-    request: web.Request, stall: asyncio.Timeout, loop: asyncio.AbstractEventLoop
+    request: Any, stall: asyncio.Timeout, loop: asyncio.AbstractEventLoop
 ) -> AsyncIterator[bytes]:
     """Yield the request body in chunks, moving *stall* ahead on each one.
+
+    *request* is anything with a ``content`` stream: the arriving
+    ``web.Request``, or the peer's ``ClientResponse`` when this hub fetches a
+    session itself (:func:`install_peer_export`).
 
     Each chunk that arrives is progress, so the deadline is always
     :data:`DEFAULT_SESSION_TRANSFER_TIMEOUT_SECS` past the last one; a sender
@@ -1801,7 +1805,7 @@ async def _stalling_chunks(
         yield chunk
 
 
-async def _stream_request_to_file(request: web.Request, dst: Path) -> tuple[bool, int]:
+async def _stream_request_to_file(request: Any, dst: Path) -> tuple[bool, int]:
     """Stream the request body to *dst* in chunks. Returns ``(is_gzip, bytes_written)``.
 
     Reads ``request.content`` (the raw ``StreamReader``) and NEVER
@@ -1866,7 +1870,7 @@ async def _stream_request_to_file(request: web.Request, dst: Path) -> tuple[bool
 
 
 async def _read_bundle_body(
-    request: web.Request, keep: contextlib.AsyncExitStack
+    request: web.Request, keep: contextlib.AsyncExitStack, *, source: Any = None
 ) -> tuple[Any, web.Response | None]:
     """Read the request body as a bundle document. Returns ``(body, error)``.
 
@@ -1907,6 +1911,10 @@ async def _read_bundle_body(
     Args:
         request: the arriving request; its body stream is read once.
         keep: the arrival's own stack, which the arrival permit is entered on.
+        source: where the bytes come from when they are not *request*'s own
+            body -- the peer's export response on a fetch. Same stream, same
+            admissions, same temp files: a fetched session is an arrival like
+            any other.
     """
     # The upload slot bounds how many staging descriptors arrivals hold; it is
     # taken before the file is opened and released when the stream ends.
@@ -1935,7 +1943,9 @@ async def _read_bundle_body(
     try:
         try:
             with upload_slot:
-                is_gzip, _total = await _stream_request_to_file(request, raw_path)
+                is_gzip, _total = await _stream_request_to_file(
+                    request if source is None else source, raw_path
+                )
         except _DiskFull:
             return None, _disk_full_response()
         except Exception:
@@ -2335,8 +2345,40 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     return response
 
 
+async def install_peer_export(
+    request: web.Request, source: Any, *, origin: str = ""
+) -> web.Response:
+    """Install a session this hub FETCHED from a peer's export route.
+
+    The pull counterpart of the tunnel's ``send_session_bundle``: *source* is
+    the peer's live ``GET /api/chat/slots/{key}/export`` response, and its body
+    is the exact file that route hands a user. It goes through the one arrival
+    path (:func:`_install_arrived_bundle`), so the rules for "a session arrived
+    here" -- the format sniff, the admissions, redaction, the arrival folders,
+    copy semantics -- hold for a fetch without a second implementation.
+
+    *request* is the hub's own request (the owner asking for the copy); it
+    decides the caller identity and filing, never the peer.
+
+    *origin* is the name THIS hub's registry has for the peer it read from. It
+    replaces the bundle's own ``origin``, which a crew's export always leaves
+    empty (it is a file for a person, not a push from a named sender), so without
+    it a fetched copy would land under a bare ``Imported`` looking like an
+    anonymous file. Taken from the hub's registry, never from the peer's bytes.
+    """
+    async with contextlib.AsyncExitStack() as keep:
+        response = await _install_arrived_bundle(
+            request, keep, source=source, origin_override=origin
+        )
+    return response
+
+
 async def _install_arrived_bundle(
-    request: web.Request, keep: contextlib.AsyncExitStack
+    request: web.Request,
+    keep: contextlib.AsyncExitStack,
+    *,
+    source: Any = None,
+    origin_override: str = "",
 ) -> web.Response:
     """Materialise one arrived bundle. See :func:`api_chat_slot_import`.
 
@@ -2378,7 +2420,7 @@ async def _install_arrived_bundle(
             status=429,
         )
 
-    body, body_err = await _read_bundle_body(request, keep)
+    body, body_err = await _read_bundle_body(request, keep, source=source)
     if body_err is not None:
         return body_err
 
@@ -2418,7 +2460,9 @@ async def _install_arrived_bundle(
     source_title = bundle["title"] or "Untitled"
     source_title, _ = redact_exfiltration_urls(source_title)
     source_title, _ = redact_credentials(source_title)
-    origin = bundle["origin"]
+    # A fetch names its sender from the hub's own registry (see
+    # :func:`install_peer_export`); every other arrival uses the bundle's label.
+    origin = origin_override or bundle["origin"]
     origin, _ = redact_exfiltration_urls(origin)
     origin, _ = redact_credentials(origin)
     suffix = f" (from {origin})" if origin else ""

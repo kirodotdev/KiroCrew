@@ -145,6 +145,11 @@ def register(app: web.Application) -> None:
     # through that proxy: it is fenced to the `api/chat` prefixes and a widening
     # that reached the turn route would reach the crew's control surface too.
     app.router.add_post("/api/instances/{id}/crew-turn", handlers_crew_turn.api_crew_turn)
+    # The pull counterpart: copy one of the crew's sessions to this machine.
+    # Before the catch-all proxy route, like send-session.
+    app.router.add_post(
+        "/api/instances/{id}/fetch-session", handlers_instances.api_instances_fetch_session
+    )
     # Peer capability read — the per-instance counterpart to the local
     # /api/agents, /api/models, /api/effort-levels and /api/workspaces, for a
     # session whose turns run on that peer. Registered BEFORE the catch-all

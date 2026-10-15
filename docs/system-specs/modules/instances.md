@@ -1858,6 +1858,7 @@ versions is what lets a v2 instance still receive a copy from a v1 one.
 | Method and path | Purpose |
 |---|---|
 | `POST /api/instances/{id}/send-session` | Sending side. Body `{"slot": "<local slot key>"}`. Bundles the local session and delivers it over that instance's open tunnel. |
+| `POST /api/instances/{id}/fetch-session` | Receiving side, pulled by THIS hub. Body `{"slot": "<the peer's slot key>"}`. Reads the peer's own `GET /api/chat/slots/{slot}/export?include_layer_b=true` over the open tunnel and installs the reply through the one arrival path (§14.5a). See below. |
 | `GET /api/chat/slots/{slot}/export` | Sending side, file hop. Streams the SAME bundle as a gzipped download instead of over a tunnel — see §14.7. `?format=md` streams it as a human-readable Markdown transcript instead; see §14.7a. |
 | `POST /api/chat/slots/import` | Receiving side, for BOTH arrival routes. Accepts a bundle — gzipped or plain JSON, sniffed from its own bytes — and materialises a new slot. See §14.5a. |
 
@@ -1898,6 +1899,50 @@ cannot land in the peer's access log). The trade runs as soon as the link is
 stored (connect, re-mint, self-heal), inside the link's click window, and the
 session is cached against that link. Any audit of where tokens leave the gateway
 still finds exactly the routes §6 names.
+
+**`fetch-session` is the pull, built from parts that already exist.** The hub
+issues the peer read through `SshTunnelManager.proxy_request` (the chat proxy's
+carrier: manager-held cookie, one re-mint on `401/403`, no redirects) to the
+peer's export route, which sits inside the proxy's `api/chat` grant, and hands
+the live response to `install_peer_export`. That function runs
+`_install_arrived_bundle` with the response as the body source, so the format
+sniff, the upload and expansion admissions, redaction, the arrival folders and
+copy semantics are the same code a pushed or file-imported session meets. It
+does not go through the browser-facing proxy route, which forwards JSON and SSE
+only and would refuse the gzip export.
+
+The sender is named by THIS hub. A peer's export is a file for a person and
+stamps no `origin`, so `install_peer_export` passes the hub's own registry name
+for the instance (falling back to its id) as the origin, and the copy lands in
+`Imported` / `from <instance name>` with the ` (from <instance name>)` title
+suffix, exactly like a push from that crew. An `origin` inside the peer's bytes
+is ignored: the peer does not choose where its copy is filed or what the title
+claims.
+
+The peer decides Layer B, not the hub. Its export carries the context window
+only when the peer's own operator enabled `dashboard.export_include_layer_b`
+and the request is the owner's -- which it is, because a minted token's subject
+is the peer's owner. Otherwise the arrival is transcript-only and its
+`resume_mode` says so. The peer slot key must match `_FETCH_SLOT_KEY_RE` and is
+percent-quoted into the path, so it cannot leave the export segment.
+
+Status codes: `400` a body without a valid slot key, `404` an unknown instance
+or a slot the peer does not have (`transfer_slot_not_found`, only when the
+peer's own 404 carries `export_slot_not_found`), `502` any other peer refusal
+or a proxy failure. A peer refusal is `transfer_peer_refused` with
+`peer_status` (the peer's HTTP status). The export's own statuses already tell
+"never exportable" (`400`) from "try again" (`503`) and "failed" (`500`), so
+nothing of the peer's body is relayed: it is peer text. A 404 counts as a
+missing session only when its body is a small JSON object whose `code` is
+`export_slot_not_found`; a bare 404 (a peer without the route) is a refusal.
+`503` the
+manager is down or the
+peer is not connected. Every outcome of the arrival itself is the import's own
+answer, with one exception: a `400` the arrival gives for the bundle (a tunnel
+that dropped mid-stream, a corrupt gzip, a malformed export) is answered as a
+`502` that keeps the arrival's `code`, because that bundle is the peer's reply
+and not the caller's request. Like `send-session` it carries no token in its
+response.
 
 ### 14.5 Trust model for an inbound session
 
@@ -2292,9 +2337,9 @@ runs hub → peer. Because each remote dashboard is embedded as an iframe (§3),
 "send" driven from inside a remote pane would need that remote to reach back to
 the hub — usually impossible (a dev desk cannot SSH to a laptop). Sending in the
 other direction is therefore done by registering the peers you want on each host
-that should originate a transfer, and a hub-initiated **pull** (read a peer's
-session over the same forward) is the natural follow-on that would make
-remote → hub and remote → remote work without any reverse reachability.
+that should originate a transfer. The hub-initiated **pull**
+(`fetch-session`, §14.4) reads a peer's session over the same forward, so
+remote → hub works without any reverse reachability.
 
 ### 14.7 The file hop (`GET /api/chat/slots/{slot}/export`)
 
