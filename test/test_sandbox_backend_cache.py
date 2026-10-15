@@ -58,11 +58,37 @@ def clean_backend(monkeypatch):
     monkeypatch.setattr(
         sb, "_KIRO_INTERNAL_SETTINGS_PATH", "/nonexistent/kirocrew-test/amazon-internal.json"
     )
+    _join_warm_thread()
     sb.reset_backend()
-    sb._warm_thread = None
     monkeypatch.setattr(sb.time, "sleep", lambda _s: None)
     yield
+    _join_warm_thread()
     sb.reset_backend()
+
+
+def _join_warm_thread() -> None:
+    """Join any background warm thread before clearing module state.
+
+    Nulling ``sb._warm_thread`` only drops the handle — a probe thread a prior
+    test started keeps running and later writes ``_backend`` / the failure record
+    directly. Dropped into the next test's window it lands AFTER ``reset_backend()``:
+    on a user-namespace-capable worker it sets ``_backend == "namespace"``, so
+    ``_probe_unshare``'s warm-cache fast path returns early and the off-loop retry
+    (``time.sleep``) never runs — the order-dependent flake. The sibling
+    ``test_sandbox_remedy.py`` fixture joins for the same reason; mirror it here so
+    no stray thread survives into the next test.
+
+    Duck-typed on purpose: some tests plant a lightweight stand-in (a
+    ``SimpleNamespace`` with ``start``/``is_alive`` but no ``join``, or a faked
+    ``threading.Thread``) as the handle. Those never run a real probe, so there is
+    nothing to join — only a handle that exposes a callable ``join`` is waited on.
+    """
+    thread = sb._warm_thread
+    join = getattr(thread, "join", None)
+    is_alive = getattr(thread, "is_alive", None)
+    if callable(join) and callable(is_alive) and is_alive():
+        join(timeout=10)
+        assert not is_alive(), "sandbox warm thread did not finish"
     sb._warm_thread = None
 
 
