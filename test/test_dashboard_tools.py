@@ -182,9 +182,7 @@ class TestStagingRecordsNothing:
         instance._preview_path(SLUG).write_text(
             json.dumps(raw, ensure_ascii=False), encoding="utf-8"
         )
-        # Both readers share _preview_payload, so neither raises.
         assert instance.staged_preview(SLUG) is None
-        assert instance.staged_package_preview(SLUG) is None
 
     def test_the_preview_wire_carries_the_link_and_never_the_page(self) -> None:
         """The html is the large half and the agent that staged it already holds it."""
@@ -272,7 +270,7 @@ class TestAnAgentWrittenPageCannotBeStaged:
         with pytest.raises(instance.InstanceRefused) as refused:
             instance.stage_preview(SLUG, **kwargs)
         assert str(refused.value) == instance.AUTHORED_PAGE_REFUSAL
-        assert "come later" in str(refused.value)
+        assert "dashboard_save" in str(refused.value)
         assert instance.staged_preview(SLUG) is None, "a refused page was staged anyway"
 
     def test_the_refusal_says_what_to_call_instead(self) -> None:
@@ -433,10 +431,11 @@ class TestTheToolSurface:
             "dashboard_rollback",
         }
 
-    def test_apply_advertises_no_arguments(self) -> None:
-        """The emptiness IS the safety property: apply cannot be pointed elsewhere."""
+    def test_apply_advertises_only_an_optional_template_id(self) -> None:
+        """A template applies without a preview: the preview is a look, not a gate."""
         apply_tool = next(t for t in _list_tools() if t["name"] == "dashboard_apply")
-        assert apply_tool["inputSchema"].get("properties") == {}
+        assert set(apply_tool["inputSchema"]["properties"]) == {"template_id"}
+        assert not apply_tool["inputSchema"].get("required")
 
 
 class TestDashboardTemplatesTool:
@@ -543,10 +542,8 @@ class TestDashboardPreviewTool:
         # A markdown link, because the chat links a root-relative href only in that
         # form; the bare path would show as plain text the person cannot click.
         assert "[Open the dashboard preview](/members?member=fleet&dashboard=preview)" in out
-        # The instruction to ASK is unconditional: this tool's whole value is that it
-        # changes nothing, and an agent that previews and applies in one breath has
-        # spent the staging step without letting anybody look.
-        assert "ASK the person" in out
+        # The way to keep it, and the person's own buttons, are both named.
+        assert "dashboard_apply with template_id `fixture-board` puts it live" in out
 
     @pytest.mark.parametrize(
         "args",
@@ -574,7 +571,7 @@ class TestDashboardPreviewTool:
         with patch("kiro_crew.mcp_panel._post") as mock_post:
             out = _call_tool_inner("dashboard_preview", args)
         assert out == f"Error: {instance.AUTHORED_PAGE_REFUSAL}"
-        assert "come later" in out
+        assert "dashboard_save" in out
         mock_post.assert_not_called()
 
     def test_previewing_nothing_is_refused_locally(self, _verified_caller: Any) -> None:
@@ -591,7 +588,8 @@ class TestDashboardPreviewTool:
         """
         tool = next(t for t in _list_tools() if t["name"] == "dashboard_preview")
         assert set(tool["inputSchema"]["properties"]) == {"template_id"}
-        assert "CANNOT preview a page you wrote" in tool["description"]
+        assert "OPTIONAL" in tool["description"]
+        assert "dashboard_save" in tool["description"]
 
     def test_a_refusal_from_the_gateway_comes_back_whole(self, _verified_caller: Any) -> None:
         """A parity refusal names every unpaired field in both directions.

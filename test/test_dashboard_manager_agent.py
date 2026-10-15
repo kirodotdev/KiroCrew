@@ -94,17 +94,15 @@ class TestTheNameIsOneString:
         """
         assert "do not need it" in _MEMBER_DASHBOARD_ITEM
 
-    def test_the_prompt_says_the_crewmate_cannot_write_a_page(self) -> None:
-        """The F1 rule, where an agent reads it before it tries.
+    def test_the_prompt_names_the_save_that_puts_a_composed_page_live(self) -> None:
+        """A composed page goes live through dashboard_save, with no preview gate."""
+        assert "dashboard_save" in _MEMBER_DASHBOARD_ITEM
+        assert "only a look" in _MEMBER_DASHBOARD_ITEM
 
-        Only a template that shipped with the product renders; a page an agent wrote
-        runs its own script against this crewmate's task titles and summaries inside
-        a frame that can navigate itself.
-        """
-        assert "cannot write a page" in _MEMBER_DASHBOARD_ITEM
-
-    def test_the_prompt_keeps_the_ask_step(self) -> None:
-        assert "ask first" in _MEMBER_DASHBOARD_ITEM
+    def test_the_prompt_says_to_tell_the_person_what_changed(self) -> None:
+        assert (
+            "Tell" in _MEMBER_DASHBOARD_ITEM and "one rollback undoes it" in _MEMBER_DASHBOARD_ITEM
+        )
 
     def test_item_seven_rides_on_the_unavailable_briefing_variant_too(self) -> None:
         """The tab does not depend on layer 4.
@@ -213,14 +211,14 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
         mcp.json for a session that must mount one."""
         assert installed["includeMcpJson"] is False
 
-    def test_the_prompt_carries_the_ask_step_and_the_fold_rule(self) -> None:
+    def test_the_prompt_carries_the_optional_preview_and_the_fold_rule(self) -> None:
         """The charter, not the procedure -- but these two do not live in a skill.
 
-        The ASK is the only thing standing between an agent and a page the reader
-        never saw, and the fold rule is what stops a page that is true once.
+        A preview is an optional look, not a gate, and the fold rule is what stops a
+        page that is true once.
         """
         prompt = agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
-        assert "ASK" in prompt
+        assert "is optional" in prompt
         assert "Never type one" in prompt
         assert "dashboard" in prompt.lower()
 
@@ -233,7 +231,7 @@ class TestTheSpecsSurfaceIsSmallOnPurpose:
         person who asked.
         """
         prompt = agent_mod._DASHBOARD_MANAGER_SYSTEM_PROMPT
-        assert "cannot write the page" in prompt
+        assert "do not write the page here" in prompt
         assert "data-dashboard-field" not in prompt, "still teaching page authoring"
         # The old imperative, by its own words. Matched on the INSTRUCTION rather
         # than on the phrase "manifest and html", which the current prompt still

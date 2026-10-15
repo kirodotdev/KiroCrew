@@ -38,6 +38,7 @@ to mean "this shipped in the product".
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final
@@ -51,6 +52,7 @@ from kiro_crew.dashboard_templates.manifest import (
 
 __all__ = [
     "BUILTIN_SOURCE",
+    "PAGE_SINKS",
     "USER_SOURCE",
     "CatalogEntry",
     "Catalog",
@@ -58,6 +60,7 @@ __all__ = [
     "builtin_dir",
     "list_templates",
     "load_one",
+    "page_sink",
 ]
 
 logger = logging.getLogger(__name__)
@@ -153,6 +156,40 @@ def _linked_part(directory: Path) -> str | None:
     return None
 
 
+#: Every call by which a page can turn a value into markup or code. ONE list, read by
+#: the operator-page check below and by ``test_dashboard_template_sink_ban.py`` over
+#: the shipped pages, so the two cannot drift. A text match, not a parser: it can
+#: refuse a page that only names a call in a comment, which is the safe way to be
+#: wrong. A page with a real need for one goes through review with this list changed.
+PAGE_SINKS: Final[tuple[str, ...]] = (
+    "innerHTML",
+    "outerHTML",
+    "insertAdjacentHTML",
+    "document.write",
+    "document.writeln",
+    "eval(",
+    "Function(",
+    "createContextualFragment",
+    "DOMParser",
+    "parseFromString",
+    "setHTMLUnsafe",
+    "parseHTMLUnsafe",
+    "srcdoc",
+)
+
+#: ``setTimeout`` or ``setInterval`` handed a string, which runs it as code.
+_STRING_TIMER_RE: Final[re.Pattern[str]] = re.compile(r"\bset(?:Timeout|Interval)\s*\(\s*[\"'`]")
+
+
+def page_sink(text: str) -> str | None:
+    """The first :data:`PAGE_SINKS` call (or string timer) in *text*, else ``None``."""
+    for sink in PAGE_SINKS:
+        if sink in text:
+            return sink
+    match = _STRING_TIMER_RE.search(text)
+    return match.group(0) if match else None
+
+
 def _scan(root: Path, origin: str) -> tuple[list[CatalogEntry], list[tuple[str, str]]]:
     """Load every template directory under *root*. Never raises for a bad member."""
     entries: list[CatalogEntry] = []
@@ -196,6 +233,15 @@ def _scan(root: Path, origin: str) -> tuple[list[CatalogEntry], list[tuple[str, 
                 )
             )
             continue
+        if origin == USER_SOURCE:
+            # An operator page goes live on apply with no review here, so the
+            # "values are text" premise is checked on it like a bad manifest is.
+            sink = page_sink(html)
+            if sink is not None:
+                problems.append(
+                    (name, f"template.html uses {sink!r}; write values with textContent")
+                )
+                continue
         entries.append(CatalogEntry(manifest, html, directory, origin))
     return entries, problems
 

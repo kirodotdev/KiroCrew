@@ -1,6 +1,6 @@
 ---
 name: dashboard
-description: "Load this when somebody asks about their crewmate's Dashboard tab: a page that shows something particular, a change to the one they have, or going back. You write the page and you own the gate -- stage, preview, their yes, apply. Every number comes from a fold, never from your typing."
+description: "Load this when somebody asks about their crewmate's Dashboard tab: a page that shows something particular, a change to the one they have, or going back. dashboard_save stores your page, dashboard_apply puts it live; every change is a version. Every number comes from a fold, never from your typing."
 triggers: dashboard, my dashboard, dashboard tab, change my dashboard, another dashboard, dashboard page, show me a different, go back to the old dashboard, build a dashboard, dashboard gallery, dashboard template
 ---
 
@@ -17,20 +17,21 @@ Three parts, and knowing which is which is most of the job:
 | the values | the crew log folds | pushed in as they move, never typed by you |
 | the frame | the gateway | no network, text-only bindings, nothing you write runs outside it |
 
-## 1. You own it, and nothing lands unapproved
+## 1. You own it, and every change is one rollback away
 
-A page goes live through four steps, and only you can run them:
+Your page goes live on apply, and only you can apply it:
 
 ```
-stage -> preview -> a person approves -> apply
+dashboard_save -> dashboard_apply -> live, as a new version
 ```
 
-1. **Stage.** A save writes the package as a STAGED copy. `view.html` carries
-   your markup, your CSS and your script. `model` names every field you bind,
-   and it is also the list the controller pushes, so a binding the model does
-   not declare is refused at the save and told to you by name. Staging records
-   the page and nothing else: it does not go live, it cuts no version, and the
-   controller pushes it no values. The save then RUNS the page once, offline,
+1. **Save.** `dashboard_save` takes the package's `model`, `view` and `theme`.
+   `view.html` carries your markup, your CSS and your script. `model` names every
+   field you bind, and it is also the list the controller pushes, so a binding
+   the model does not declare is refused at the save and told to you by name.
+   The gateway fills `kind` and `bound_to` from who you are, so the package is
+   always your own. Saving stores it; the page in force does not move yet.
+   The save then RUNS the page once, offline,
    over a SYNTHETIC copy of your crewmate's current data: the same fields,
    nesting, list lengths, nulls and types, with invented values (booleans and
    the schema's fixed words are kept, and an `enum` field shows one of its own
@@ -43,7 +44,7 @@ stage -> preview -> a person approves -> apply
    block: `passed`, `failed` with each script error and the `view.html` line and
    column it was thrown at, `timed_out` when the run hit its time limit, or
    `skipped` with the reason (no system-installed browser on the machine, for
-   one). Fix a failed page and save again before you tell the person about it.
+   one). Fix a failed page and save again before you apply it.
    An error that depends on how two invented values compare (a count above its
    total) may come from the copy; one that depends on a missing field, a null or
    a wrong type does not. The page is run as the dashboard shows it: the
@@ -61,57 +62,44 @@ stage -> preview -> a person approves -> apply
    never more than about twelve. One page is checked at a time across the gateway,
    so a save that finds another check running, or a machine short of memory, is
    `skipped` at once and does not wait.
-2. **Preview.** Show the staged page to the person who will decide on it. A
-   preview records nothing, which is what makes "show me" free when the answer
-   is no.
-3. **A person approves** the page they have just read. Ask one sentence they can
-   answer. A page nobody agreed to is a page they undo instead of keep.
-4. **Apply.** This cuts a version from the STAGED page and takes no page
-   argument, so what lands is provably the page they looked at. Then say what
-   changed, not what the page shows -- they are looking at the contents.
-   The person may also press Keep or Discard on the preview themselves, so
-   re-read your `[DASHBOARD]` block before calling `dashboard_apply`.
+2. **Apply.** `dashboard_apply` with no arguments puts your saved package live
+   as a new version. Your `dashboard_write` fields keep working on it, and
+   `dashboard_fields` lists them.
+3. **Say what changed**, not what the page shows -- they are looking at it.
 
-`dashboard_save` is the tool that stages an authored page, and it ships in
-[#18851](https://github.com/kirodotdev/KiroCrew/pull/18851). Until it is in your
-hands, saving the package only BINDS the page: the tab keeps drawing the
-template instance, no version is cut, and your agentic field writes to that
-crewmate are refused `package_display_pending` until a person cuts one. So the
-page you saved is not yet the page they see. Describe it, get their yes, and
-leave the cut to them.
+There is no preview step. A person cannot see an exfiltration script by looking
+at a page, so a "please approve" step would add a click and no safety. What
+keeps the page safe is the frame (section 4). What keeps the person in charge is
+the history: every apply is a version.
 
-Going back is `artifact_revert` on the package artifact. A page is a version of
-an artifact, so the artifact store's own revert is what puts an earlier page
-back, and there is no dashboard-specific rollback verb beside it. Going back
-moves FORWARD: restoring version 1 over version 2 writes version 3, so it is
-itself undoable.
+A TEMPLATE page goes live the same way: `dashboard_apply` with a `template_id`
+from `dashboard_templates`. `dashboard_preview` is only a look, for when the
+person asks to see one first; it changes nothing.
 
-Dropping the gate is not a simplification. Your script runs in the frame with no
-gateway-minted wrapper around it, and that exemption was granted ON this gate:
-what makes it worth anything to a reader is that the page in front of them is a
-page a person said yes to. A change that would render a page nobody approved
-needs the RFC amended first.
+**Going back** is `dashboard_rollback`. `dashboard_fields` lists the versions a
+rollback can reach; a version is either a template page or one of your saved
+packages, and the one you restore is the one that draws. Going back moves
+FORWARD: restoring version 1 over version 2 writes version 3, so it is itself
+undoable.
 
 **When the layout is locked.** The person can lock the page's layout with the
 **Lock dashboard layout** switch on their Profile tab, and the Dashboard tab
 then shows a small **Layout locked -- unlock on Profile** badge-button. The lock
-is a ceiling over you: while it holds, the tab ignores a bound package and
-serves the template page, and `dashboard_apply` and `dashboard_rollback` answer
-`dashboard_locked`. `artifact_revert` is NOT lock-aware -- it succeeds, and
-nothing on the tab changes, with no error telling you why -- so read the lock
-rather than inferring it from a tool that answered yes. Your `[DASHBOARD]` block
-says LOCKED when it is. Then do not apply, revert or propose another page: ask
-them to unlock it, and wait until they say they have. Only the person can
-unlock it, and no tool of yours can. You can still preview a page for them to
-look at, and `dashboard_write` values still land.
+is a ceiling over you: while it holds, the tab keeps the page that was in force
+when they locked it, and `dashboard_apply` and `dashboard_rollback` answer
+`dashboard_locked`. Your `[DASHBOARD]` block says LOCKED when it is. Then do
+not apply or propose another page: ask them to
+unlock it, and wait until they say they have. Only the person can unlock it, and
+no tool of yours can. You can still preview a template for them to look at, and
+`dashboard_write` values still land.
 
-Only the owner stages the page or writes its values. A worker is refused on all
-three artifact write paths and told to `work_report` instead; the ledger fold
-then carries its report onto the page by itself.
+Only the owner writes the page or its values. A worker is refused on every
+artifact write path to another crewmate's package and told to `work_report`
+instead; the ledger fold then carries its report onto the page by itself.
 
 Three things not to do:
 
-- Do not apply a page they have not read.
+- Do not change the page without telling the person what changed.
 - Do not report what the page shows. They are looking at it. Say what changed.
 - Do not write a number into the markup. Bind it.
 
@@ -263,8 +251,9 @@ second design.
 
 ## 7. Pages to start from
 
-`gallery/` beside this file holds whole working packages. Copy one, change its
-`bound_to`, change what it binds, and stage it; nothing loads a gallery page by
+`gallery/` beside this file holds whole working packages. Copy one, pass its
+`model`, `view` and `theme` (the gateway fills `kind` and `bound_to`), change
+what it binds, and save it with `dashboard_save`; nothing loads a gallery page by
 id, so editing your copy cannot reach anybody else's.
 
 `GALLERY.md`, also beside this file, lists those packages and the pages that

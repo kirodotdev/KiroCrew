@@ -5011,11 +5011,14 @@ DASHBOARD_PREVIEW_SCHEMA = ToolSchema(
     ],
 )
 
-#: Empty and registered, for ``PANEL_TEMPLATES_SCHEMA``'s reason -- and here the
-#: emptiness is also the safety property the tool advertises: apply installs the page
-#: that was STAGED, so an accepted argument would be a way to make the thing applied
-#: differ from the thing the person looked at.
-DASHBOARD_APPLY_SCHEMA = ToolSchema(tool_name="dashboard_apply")
+DASHBOARD_APPLY_SCHEMA = ToolSchema(
+    tool_name="dashboard_apply",
+    fields=[
+        # Optional. Present, the template is applied directly -- a preview is an
+        # optional look, not a gate. Absent, the staged preview is applied.
+        FieldSpec("template_id", str, max_len=64),
+    ],
+)
 
 DASHBOARD_ROLLBACK_SCHEMA = ToolSchema(
     tool_name="dashboard_rollback",

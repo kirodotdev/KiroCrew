@@ -38,7 +38,6 @@ from kiro_crew.dashboard.handlers.members import (
     _member_names_for_slug,
     _member_thread_slot,
 )
-from kiro_crew.dashboard_agentic import PACKAGE_DISPLAY_PENDING
 from kiro_crew.dashboard_templates import catalog, instance
 from kiro_crew.members import MemberSlugError
 from kiro_crew.platform.context import redact_code_via_context, redact_via_context
@@ -305,6 +304,21 @@ def _bound_package_slug(member: str) -> str:
         return ""
 
 
+def _package_in_force(slug: str) -> tuple[instance.PinnedPackage | None, bool, bool]:
+    """``(pinned page, older rule, locked)`` for *slug*, from its instance record.
+
+    The write path asks the first two questions (``dashboard_package.read_package_model``),
+    so the page and the write check name one Model. The third is the person's layout lock,
+    which a package page reports exactly as a template page does. Blocking file IO.
+    """
+    record = instance.read(slug)
+    return (
+        instance.pinned_package(record),
+        instance.keeps_older_package_rule(record),
+        record.structure_locked,
+    )
+
+
 async def _run(fn: Callable[[], Any]) -> Any:
     """Run a blocking call off the event loop: file IO, or work over a whole page."""
     return await asyncio.to_thread(fn)
@@ -440,14 +454,29 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     #: caller that NAMES a package asked for that package and still gets it; the tab
     #: never sends both.
     staged_only = request.query.get("preview") == "1" and not package_slug
-    if not package_slug and not staged_only:
-        # RESOLVED HERE, which is what makes the package page reachable at all: no
-        # caller knows a package's slug, so without this the route, the push and the
-        # refetch were unreachable code. Named by the crewmate's own binding, off the
-        # event loop because it lists the artifact library.
-        #
-        # THE PACKAGE LINE'S OWN LOOKUP answers this -- one implementation of "which
-        # package is bound here" for every caller that asks, so the two cannot drift.
+    # WHICH PAGE IS IN FORCE is the instance record's to say, lock included (`read`
+    # answers the lock's snapshot while the person has locked the layout). A record
+    # that pins a package is served from the gateway's own snapshot of the bytes the
+    # owner saved, so no later artifact write, delete-and-save or version pruning
+    # moves the page. A record that released packages, or an older record under the
+    # lock, serves its template copy. Only an older unlocked record keeps the rule of
+    # looking a package up by the crewmate's binding.
+    pinned: instance.PinnedPackage | None = None
+    older_rule = False
+    structure_locked = False
+    if not staged_only:
+        try:
+            pinned, older_rule, structure_locked = await _run(lambda: _package_in_force(slug))
+        except Exception as exc:
+            return _refusal(exc)
+        if pinned is not None:
+            package_slug = pinned.slug
+        elif not older_rule:
+            package_slug = ""
+    if older_rule and not package_slug:
+        # Named by the crewmate's own binding, off the event loop because it lists the
+        # artifact library. THE PACKAGE LINE'S OWN LOOKUP answers this -- one
+        # implementation of "which package is bound here" for every caller that asks.
         package_slug = await _run(lambda: _bound_package_slug(_member))
     if _name_unsafe(package_slug):
         # A SLUG IS A NAME TOO, and it travels further than the others: the body carries
@@ -483,27 +512,6 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             slug,
         )
         package_slug = ""
-    if package_slug and await _run(lambda: instance.is_locked(slug)):
-        # THE PERSON'S LOCK IS A CEILING OVER THE CREWMATE, so it is read BEFORE the
-        # package branch takes the response, not after.
-        #
-        # The lock exists so a crewmate cannot change which page the tab shows. Package
-        # selection is the crewmate doing exactly that by another route: writing its own
-        # `kind="dashboard"` artifact is ordinary agent work, and this branch returns
-        # before `instance.read` below -- the only reader of the lock -- so the locked
-        # page would be replaced, and an unapplied package would replace it with the
-        # empty state. Nothing unusual has to happen for that.
-        #
-        # The lock is answered by serving the record it pinned, which is the branch
-        # below: same answer the person had before the crewmate wrote anything. A lock
-        # that pins a PACKAGE is a separate thing nothing can set today, so there is no
-        # locked package to preserve here.
-        logger.info(
-            "dashboard: %r has a bound package but its layout is locked; serving the "
-            "locked record instead",
-            slug,
-        )
-        package_slug = ""
     if package_slug:
         # A PAGE ITS OWNER WROTE, served from the same route and behind the same owner
         # check as a template instance. The body keeps the shape the tab already reads
@@ -521,6 +529,8 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
             # the crewmate's own binding does not, because nobody asked -- the same
             # split this route already makes for a slug it refuses above.
             asked_for=bool(request.query.get("dashboard", "")),
+            pinned=pinned,
+            structure_locked=structure_locked,
         )
     if request.query.get("preview") == "1":
         # The STAGED page, which no version records. Served from the same route and
@@ -530,43 +540,7 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
         # reads this: the Members page's Dashboard tab, which asks here with
         # `preview=1` and draws the answer under a preview label.
         #
-        # A STAGED COMPOSED PACKAGE is asked about first, and nothing here can draw
-        # one. The hosted page above reads a BOUND `kind="dashboard"` artifact
-        # (`_bound_package_slug`); a staged page is neither an artifact nor a binding,
-        # and `_preview_record` below goes through `staged_preview`, which answers
-        # `None` for a package payload. So previewing one does not hand back a page
-        # the tab cannot render -- which fell through to an "unavailable" card and
-        # asked the person to approve something they could not see. It answers the
-        # SAME pending refusal the apply gives, `package_display_pending` with a plain
-        # message, so the one thing a person is told is the true one: the page is
-        # staged, and it is a later change that gives a staged page a reader and lifts
-        # the apply. The staged page is left in place; this is a read.
-        #
-        # BEHIND `_refusal`, for the reason the apply's own precheck is: this read
-        # reaches `instance_dir`, whose link guard raises `InstanceError`, which is not
-        # an `OSError` and so is not caught inside `staged_package_preview`. Unguarded
-        # it would leave this route as an unhandled 500 rather than the body every
-        # other store fault here answers with. The `_preview_record` read below is
-        # left as it is on purpose -- it is this route's existing template path, not
-        # this change's, and moving its boundary is a separate fix.
-        try:
-            staged_package = await _run(lambda: instance.staged_package_preview(slug))
-        except Exception as exc:
-            return _refusal(exc)
-        if staged_package is not None:
-            return web.json_response(
-                {
-                    "error": (
-                        "this crewmate composed a dashboard page and it is staged, but "
-                        "a staged page has no reader on this build -- the hosted page "
-                        "draws a page that was put in force, and nothing put this one "
-                        "in force. The page is kept; a later change gives a staged "
-                        "page a reader and lets it be applied"
-                    ),
-                    "code": PACKAGE_DISPLAY_PENDING,
-                },
-                status=409,
-            )
+        # Only a TEMPLATE is ever staged: a composed package goes in force on save.
         staged = await _run(lambda: _preview_record(slug))
         if staged is None:
             return web.json_response(
@@ -1692,8 +1666,18 @@ async def _serve_package(
     locale: str,
     *,
     asked_for: bool = True,
+    pinned: instance.PinnedPackage | None = None,
+    structure_locked: bool = False,
 ) -> web.Response:
     """Serve the ``kind="dashboard"`` artifact *package_slug* as this crewmate's page.
+
+    *pinned* is the page the crewmate's instance record put in force, read from the
+    gateway's snapshot (``instance.pinned_package``); ``None`` keeps the older rule for
+    a record written before packages could be pinned -- the newest version a person cut.
+
+    *structure_locked* is the person's layout lock from the same record, carried into
+    the body as a template page carries it, so the Profile switch and the Dashboard's
+    lock badge read the lock that holds.
 
     *asked_for* is whether a CALLER named this slug. False means it came from the
     crewmate's own binding, and it changes one answer: a package with nothing to serve
@@ -1719,89 +1703,96 @@ async def _serve_package(
     )
     from kiro_crew.artifacts import ArtifactError, get_default_store
 
-    try:
-        loaded = await _run(lambda: get_default_store().get(package_slug))
-    except ArtifactError:
-        if not asked_for:
+    if pinned is not None:
+        # THE GATEWAY'S OWN SNAPSHOT of the bytes the owner saved, pinned by the
+        # instance record. No artifact read: the artifact is where the owner
+        # authors, and nothing done to it later moves the page in force.
+        version, content = pinned.version, pinned.content
+    else:
+        try:
+            loaded = await _run(lambda: get_default_store().get(package_slug))
+        except ArtifactError:
+            if not asked_for:
+                return _nothing_to_serve(slug, package_slug)
+            return _bad("dashboard_not_found", "no dashboard package at that slug", status=404)
+        except OSError:
+            logger.warning("dashboard: package %r could not be read", package_slug)
+            return _bad("dashboard_failed", "the dashboard package could not be read", status=500)
+        # THE RECORD'S OWN KIND, checked before anything is parsed. Content alone is not
+        # enough: a LINKED artifact's bytes come from a file on disk, so its content can be
+        # changed without passing the artifact write gate at all -- and parsing whatever is
+        # there would arm a page nobody authorized. Only a stored `kind="dashboard"`
+        # artifact that owns its own bytes reaches the parse below.
+        if str(getattr(loaded, "kind", "")) != DASHBOARD_KIND:
+            return _bad(
+                "dashboard_not_a_package",
+                "that artifact is not a dashboard package",
+                status=409,
+            )
+        if str(getattr(loaded, "source_path", "") or "") and not bool(
+            getattr(loaded, "source_copy_only", False)
+        ):
+            # A live pointer: the artifact serves a file's current bytes, which nothing in
+            # the artifact API gates. Refused rather than rendered, because the page RUNS.
+            return _bad(
+                "dashboard_live_source",
+                "a dashboard package cannot be served from a linked file: its bytes would "
+                "bypass the write gate that decides whose page this is",
+                status=409,
+            )
+        # THE RESIDUAL, named where it bites. These are the record's OWN bytes, and the
+        # store rotates a random `content_token` per write rather than hashing them, so a
+        # write made straight into the stored file -- around the artifact API and so around
+        # the owner gate -- is not detectable at this line. Nor can a check here close it: a
+        # writer reaching that file is the same OS user as this process, so any digest or key
+        # this handler compared against sits in a file that writer can rewrite too, and it
+        # could edit this module instead. What bounds the damage is the frame rather than the
+        # gate -- the page runs with no network on an opaque origin and is sent only the
+        # fields the model declares, so tampered markup can mislead the owner reading it and
+        # reach nothing beyond that tab. The gate's own job is the write that arrives over
+        # the API, which is the one every agent and app actually has.
+        # THE VERSION IN FORCE, and the bytes come from IT rather than from the record's
+        # current content: `get(slug)` with no version answers whatever was written last.
+        # The owner's `dashboard_save` pins the version it wrote in the instance record;
+        # an older record falls back to the newest version a person cut (see
+        # `applied_package_version` for why that marker is the event's actor).
+        version = applied_package_version(loaded)
+        if version <= 0:
+            # NOTHING APPLIED, so nothing renders -- for a caller that named the slug too.
+            # This is not "no such package": the package is here and its owner has written
+            # pages into it. There is just no page a person has said yes to, and the one
+            # honest thing to draw for that is nothing.
             return _nothing_to_serve(slug, package_slug)
-        return _bad("dashboard_not_found", "no dashboard package at that slug", status=404)
-    except OSError:
-        logger.warning("dashboard: package %r could not be read", package_slug)
-        return _bad("dashboard_failed", "the dashboard package could not be read", status=500)
-    # THE RECORD'S OWN KIND, checked before anything is parsed. Content alone is not
-    # enough: a LINKED artifact's bytes come from a file on disk, so its content can be
-    # changed without passing the artifact write gate at all -- and parsing whatever is
-    # there would arm a page nobody authorized. Only a stored `kind="dashboard"`
-    # artifact that owns its own bytes reaches the parse below.
-    if str(getattr(loaded, "kind", "")) != DASHBOARD_KIND:
-        return _bad(
-            "dashboard_not_a_package",
-            "that artifact is not a dashboard package",
-            status=409,
-        )
-    if str(getattr(loaded, "source_path", "") or "") and not bool(
-        getattr(loaded, "source_copy_only", False)
-    ):
-        # A live pointer: the artifact serves a file's current bytes, which nothing in
-        # the artifact API gates. Refused rather than rendered, because the page RUNS.
-        return _bad(
-            "dashboard_live_source",
-            "a dashboard package cannot be served from a linked file: its bytes would "
-            "bypass the write gate that decides whose page this is",
-            status=409,
-        )
-    # THE RESIDUAL, named where it bites. These are the record's OWN bytes, and the
-    # store rotates a random `content_token` per write rather than hashing them, so a
-    # write made straight into the stored file -- around the artifact API and so around
-    # the owner gate -- is not detectable at this line. Nor can a check here close it: a
-    # writer reaching that file is the same OS user as this process, so any digest or key
-    # this handler compared against sits in a file that writer can rewrite too, and it
-    # could edit this module instead. What bounds the damage is the frame rather than the
-    # gate -- the page runs with no network on an opaque origin and is sent only the
-    # fields the model declares, so tampered markup can mislead the owner reading it and
-    # reach nothing beyond that tab. The gate's own job is the write that arrives over
-    # the API, which is the one every agent and app actually has.
-    # THE APPLIED VERSION, and the bytes come from IT rather than from the record's
-    # current content. `get(slug)` with no version answers whatever was written last,
-    # and an agent writing over MCP cuts a version on every save, so the current bytes
-    # are the agent's latest draft and not a page anyone approved. See
-    # `applied_package_version` for why the marker is the event's actor.
-    version = applied_package_version(loaded)
-    if version <= 0:
-        # NOTHING APPLIED, so nothing renders -- for a caller that named the slug too.
-        # This is not "no such package": the package is here and its owner has written
-        # pages into it. There is just no page a person has said yes to, and the one
-        # honest thing to draw for that is nothing.
-        return _nothing_to_serve(slug, package_slug)
-    try:
-        applied = await _run(lambda: get_default_store().get(package_slug, version=version))
-        # THE SAME RECORD, not merely the same slug and number.
-        #
-        # The approval was read off `loaded` and the bytes are fetched by slug and
-        # version in a second call, so a delete-and-recreate in between answers with a
-        # DIFFERENT artifact's version N -- and that one's v2 is whatever its agent
-        # wrote, served under an approval a person gave to the record that is gone.
-        # A slug is reusable and a version number restarts at 1, so neither identifies
-        # the record; `created_at` is minted once per record and does.
-        if _record_identity(applied) != _record_identity(loaded):
+        try:
+            applied = await _run(lambda: get_default_store().get(package_slug, version=version))
+            # THE SAME RECORD, not merely the same slug and number.
+            #
+            # The approval was read off `loaded` and the bytes are fetched by slug and
+            # version in a second call, so a delete-and-recreate in between answers with a
+            # DIFFERENT artifact's version N -- and that one's v2 is whatever its agent
+            # wrote, served under an approval a person gave to the record that is gone.
+            # A slug is reusable and a version number restarts at 1, so neither identifies
+            # the record; `created_at` is minted once per record and does.
+            if _record_identity(applied) != _record_identity(loaded):
+                logger.warning(
+                    "dashboard: package %r was replaced between its approval read and its "
+                    "versioned read; serving nothing",
+                    package_slug,
+                )
+                return _nothing_to_serve(slug, package_slug)
+        except (ArtifactError, OSError):
+            # The approval is recorded and its bytes are gone -- a pruned version, or a
+            # history this process cannot read. Fail closed: an approval whose page cannot
+            # be produced is not a page to serve.
             logger.warning(
-                "dashboard: package %r was replaced between its approval read and its "
-                "versioned read; serving nothing",
+                "dashboard: package %r has an applied version %d whose bytes could not be read",
                 package_slug,
+                version,
             )
             return _nothing_to_serve(slug, package_slug)
-    except (ArtifactError, OSError):
-        # The approval is recorded and its bytes are gone -- a pruned version, or a
-        # history this process cannot read. Fail closed: an approval whose page cannot
-        # be produced is not a page to serve.
-        logger.warning(
-            "dashboard: package %r has an applied version %d whose bytes could not be read",
-            package_slug,
-            version,
-        )
-        return _nothing_to_serve(slug, package_slug)
+        content = applied.content or ""
     try:
-        package = await _run(lambda: parse_package(applied.content or ""))
+        package = await _run(lambda: parse_package(content))
     except Exception as exc:
         # THE VALIDATOR QUOTES THE VALUE IT REFUSED, and this sentence is an HTTP body.
         #
@@ -1938,6 +1929,8 @@ async def _serve_package(
             "html": safe_view["html"],
             "manifest": _manifest_text_safe(package.get("model") or {}),
             "state": instance.STATE_LIVE,
+            # The person's layout lock, as a template page's body carries it.
+            "structure_locked": structure_locked,
             "rendered_html": html,
             # THE ALLOWLIST, named in the body so a reader of one response can see
             # exactly which fields this page can ever be sent.

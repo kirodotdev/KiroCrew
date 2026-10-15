@@ -155,6 +155,30 @@ async def test_the_persons_lock_outranks_the_crewmates_package(
 
 
 @pytest.mark.asyncio
+async def test_a_locked_pinned_package_tells_the_tab_it_is_locked(wired: Any) -> None:
+    """A pinned package page carries the person's lock, as a template page does.
+
+    The Profile switch and the Dashboard's lock badge read ``structure_locked`` from
+    this body; a package page that left it out read as unlocked after a refetch.
+    """
+    from kiro_crew.dashboard_templates import instance as instance_mod
+
+    instance_mod.apply_package(
+        SLUG,
+        package_slug=PACKAGE_SLUG,
+        package_version=APPLIED_VERSION,
+        content=dp.dump_package(_package()),
+    )
+    instance_mod.set_structure_lock(SLUG, True)
+
+    status, body = await _call(md.api_member_dashboard, _request(wired.app, "GET", PATH))
+
+    assert status == 200, body
+    assert PAGE in body["rendered_html"], "the pinned package is the page in force"
+    assert body.get("structure_locked") is True
+
+
+@pytest.mark.asyncio
 async def test_an_unlocked_crewmate_still_gets_its_package(wired: Any) -> None:
     """The limit: the lock is the only thing that outranks the package, so a crewmate
     nobody locked is unaffected -- which is every crewmate today."""

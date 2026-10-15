@@ -109,11 +109,10 @@ def schemas() -> list[dict[str, Any]]:
                             "-- and no values anywhere in it, because values stay in "
                             "the crew log and reach the page through the fold. The "
                             "store refuses anything else, naming the rule it broke. "
-                            "Saving one BINDS that crewmate's page to it: while the "
-                            "page still draws from its template instance, agentic "
-                            "field writes to that crewmate are refused "
-                            "package_display_pending, so compose a package only for "
-                            "a page the user asked for."
+                            "To put your own page LIVE, use the dashboard_save tool "
+                            "instead: it writes this package for you and makes it "
+                            "the page your Dashboard tab draws, as a version a "
+                            "rollback can undo."
                         ),
                     },
                     "source": {

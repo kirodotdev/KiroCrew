@@ -2446,28 +2446,25 @@ async def test_a_write_is_refused_for_every_package_state_that_has_no_model(
         assert (await resp.json())["code"] == code
 
 
-async def test_a_live_package_is_refused_while_the_display_still_reads_the_template(
-    vetted, monkeypatch
-):
-    """Fails CLOSED on this base, because the two paths select different Models.
+async def test_a_live_package_checks_the_write_against_its_own_model(vetted, monkeypatch):
+    """The page draws the package, so the write is checked against it.
 
-    The write would be checked against the PACKAGE's Model, while
-    ``api_member_dashboard`` renders the TEMPLATE instance -- that route reads no
-    package on this base. A package declaring a field with a different type than the
-    displayed template therefore lets a write land that the display cannot draw: a
-    string where the page reads a list empties the cards, with no error anywhere.
-
-    A refusal the agent can act on is the honest answer until the display reads the
-    same package, which is the change that lifts this.
+    A package-bound write is not refused for being package-bound: it is checked
+    against the package's own field table, so a value of the wrong shape is refused
+    by that table and not by the provenance of the read.
     """
-    from kiro_crew import dashboard_package
+    from kiro_crew import dashboard_agentic, dashboard_package
+    from kiro_crew.dashboard.handlers.member_dashboard_fields import package_manifest
 
-    # A LIVE read of a real PACKAGE, which is exactly what `read_package_model` answers
-    # for one: no Model, because the field table is not translated on this base, and
-    # `from_package` to say where the answer came from. The refusal turns on that flag
-    # and never needs a manifest, so this stand-in carries none either.
+    package = {
+        "bound_to": "crewmate:atlas",
+        "model": {"types": {"for_you": {"type": "text", "source": {"agentic": True}}}},
+    }
     live = dashboard_package.PackageRead(
-        None,
+        dashboard_agentic.Instance(
+            manifest=package_manifest(package, slug="dash-atlas", version=2),
+            instance_version=2,
+        ),
         dashboard_package.STATE_LIVE,
         "package 'dash-atlas' version 2",
         from_package=True,
@@ -2476,15 +2473,12 @@ async def test_a_live_package_is_refused_while_the_display_still_reads_the_templ
     async with _client() as c:
         resp = await c.post(
             WRITE_PATH,
-            json={"field": "for_you", "value": "approve the plan"},
+            json={"field": "for_you", "value": ["not", "text"]},
             headers={"X-Session-Key": "dashboard:chat-1"},
         )
         assert resp.status == 400, await resp.text()
         body = await resp.json()
-        assert body["code"] == "package_display_pending", body
-        # The remedy has to name WHY, or an agent reads it as "your value was wrong"
-        # and retries the same write forever.
-        assert "display" in body["error"].lower(), body
+        assert body["code"] == "wrong_type", body
 
 
 async def test_the_write_route_asks_for_a_package_by_member_and_not_by_slug(vetted, monkeypatch):
@@ -3037,15 +3031,11 @@ def _page_store(monkeypatch, **over: Any) -> SimpleNamespace:
         stage_preview=lambda _slug, **_kw: SimpleNamespace(
             wire=lambda member: {**staged, "preview_url": instance_preview_url(member)}
         ),
-        # NO PACKAGE STAGED, which is this stub's default on purpose: these cases
-        # are the TEMPLATE half of a route that now installs either kind, and a
-        # stub that answered a package here would send every one of them down the
-        # other branch. The package half has its own file,
-        # ``test_dashboard_save_tool.py``.
-        staged_package_preview=lambda _slug: None,
-        stage_package_preview=lambda _slug, **_kw: SimpleNamespace(wire=lambda: {}),
         discard_preview=lambda _slug: None,
         apply_preview=lambda _slug, **_kw: SimpleNamespace(
+            instance_version=5, template_id="fixture-board"
+        ),
+        adopt=lambda _slug, _template_id, **_kw: SimpleNamespace(
             instance_version=5, template_id="fixture-board"
         ),
         rollback=lambda _slug, _to, **_kw: SimpleNamespace(
@@ -3244,7 +3234,11 @@ class TestTheApplyAndRollbackRoutesOverHttp:
             monkeypatch.setattr(
                 state, "broadcast_ws", lambda kind, data: frames.append((kind, data))
             )
-            resp = await c.post(APPLY_PATH, json={}, headers={"X-Session-Key": "dashboard:chat-1"})
+            resp = await c.post(
+                APPLY_PATH,
+                json={"template_id": "fixture-board"},
+                headers={"X-Session-Key": "dashboard:chat-1"},
+            )
             assert resp.status == 200, await resp.text()
             body = await resp.json()
         assert body["instance_version"] == 5 and body["template_id"] == "fixture-board"
@@ -3253,7 +3247,7 @@ class TestTheApplyAndRollbackRoutesOverHttp:
 
     @pytest.mark.parametrize(
         ("path", "body"),
-        [(APPLY_PATH, {}), (ROLLBACK_PATH, {"to_version": 2})],
+        [(APPLY_PATH, {"template_id": "fixture-board"}), (ROLLBACK_PATH, {"to_version": 2})],
         ids=["apply", "rollback"],
     )
     async def test_the_reply_hands_the_new_page_block_and_upkeep_pointer(
@@ -3273,18 +3267,18 @@ class TestTheApplyAndRollbackRoutesOverHttp:
             reply = await resp.json()
         assert reply["dashboard"] == f"[DASHBOARD for {SLUG}]\nUpkeep: x"
 
-    async def test_apply_with_nothing_staged_is_a_refusal(self, vetted, monkeypatch) -> None:
-        store = _page_store(monkeypatch)
-
-        def _nothing(_slug, **_kw):
-            raise store.InstanceRefused("there is no page staged to keep")
-
-        monkeypatch.setattr(store, "apply_preview", _nothing)
+    async def test_apply_with_no_template_and_no_saved_page_is_a_refusal(
+        self, vetted, monkeypatch
+    ) -> None:
+        _page_store(monkeypatch)
+        monkeypatch.setattr(
+            routes, "_dashboard_artifact_store", lambda: SimpleNamespace(list=lambda **_kw: [])
+        )
         async with _client() as c:
             resp = await c.post(APPLY_PATH, json={}, headers={"X-Session-Key": "dashboard:chat-1"})
             assert resp.status == 400, await resp.text()
             body = await resp.json()
-        assert body["code"] == "refused" and "no page staged" in body["error"]
+        assert body["code"] == "refused" and "nothing to apply" in body["error"]
 
     async def test_rollback_reports_the_version_it_landed_on(self, vetted, monkeypatch) -> None:
         """Two different numbers: the one asked for, and the one now current.

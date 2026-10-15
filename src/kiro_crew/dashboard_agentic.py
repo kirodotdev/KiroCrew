@@ -146,37 +146,6 @@ PACKAGE_REFUSALS: Final[dict[str, str]] = {
     "error": "package_model_invalid",
 }
 
-#: The refusal a package-bound write gets while the DISPLAY still selects a different
-#: Model from the one the write would be checked against. Its own code, because the
-#: remedy is neither "create a package" nor "repair this one": the package is fine and
-#: the write is fine, and what is missing is the half that draws it.
-PACKAGE_DISPLAY_PENDING: Final[str] = "package_display_pending"
-
-
-def display_pending_refusal(field: str) -> WriteRefused:
-    """A live package whose values nothing would draw yet.
-
-    Checking a write against the package's Model while the member's page renders from
-    its TEMPLATE instance lets a value land that the display cannot draw -- a string
-    where the page reads a list renders as nothing, so the cards that were there
-    disappear and no error is raised anywhere. The old values are still in the log, but
-    a reader looking at the page cannot tell that from an empty list.
-
-    Refused rather than written, because the two halves disagreeing is not something an
-    agent can see or work around. The caller decides WHEN to ask this: the condition is
-    about the display, which is not this module's to read.
-    """
-    return WriteRefused(
-        PACKAGE_DISPLAY_PENDING,
-        field,
-        "this crewmate's page is composed from a dashboard package, and the display "
-        "still draws it from the template instance -- so a value checked against the "
-        "package could be one the page cannot draw, and writing it would blank what is "
-        "already there. Nothing is wrong with the package or the value: wait for the "
-        "display to read the package, and write it then",
-    )
-
-
 #: What each refusal tells the agent to DO, which is the half a bare state cannot
 #: supply. One sentence per state, and they differ in the action rather than in tone:
 #: create one, tell a human, stop reaching for it.
@@ -859,6 +828,14 @@ def _read_page(slug: str) -> tuple[Any, TemplateManifest | None, str]:
 
         record = instance_store.read(slug)
         locked = instance_store.LOCKED_REFUSAL if getattr(record, "structure_locked", False) else ""
+        if getattr(record, "package_slug", ""):
+            # The crewmate's own package is in force: its Model is the page's, read
+            # the way `dashboard_write` reads it, so the block names the right fields.
+            from kiro_crew import dashboard_package
+
+            package = dashboard_package.read_package_model(slug)
+            if package.from_package and package.model is not None:
+                return record, package.model.manifest, locked
         if record.state == instance_store.STATE_EMPTY:
             fallback = instance_store.default_instance(slug)
             if fallback is None:
@@ -870,6 +847,13 @@ def _read_page(slug: str) -> tuple[Any, TemplateManifest | None, str]:
     except Exception:
         logger.debug("no dashboard page in force for %r", slug, exc_info=True)
         return None, None, ""
+
+
+def _package_manifest_id() -> str:
+    """The manifest id a package in force carries (``instance.PACKAGE_TEMPLATE_ID``)."""
+    from kiro_crew.dashboard_templates import instance as instance_store
+
+    return instance_store.PACKAGE_TEMPLATE_ID
 
 
 def page_in_force(slug: str) -> tuple[Any, TemplateManifest] | None:
@@ -980,9 +964,14 @@ def turn_block(slug: str) -> str:
         return "[DASHBOARD]\n" + SUGGESTIONS_LINE + (f"\n{locked_line}" if locked_line else "")
     names = sorted(agentic_fields(manifest))
     writes = ", ".join(names) if names else "none (every field is folded)"
+    shows = (
+        f"the page you saved with dashboard_save (package version {manifest.version})"
+        if manifest.id == _package_manifest_id()
+        else f"template {manifest.id} v{manifest.version}"
+    )
     block = (
         "[DASHBOARD]\n"
-        f"Your Dashboard tab shows template {manifest.id} v{manifest.version}.\n"
+        f"Your Dashboard tab shows {shows}.\n"
         + (f"{locked_line}\n" if locked_line else "")
         + f"Fields you write: {writes}. Call dashboard_fields for their shapes and "
         "current values before dashboard_write."

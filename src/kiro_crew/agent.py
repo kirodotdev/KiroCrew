@@ -5776,15 +5776,13 @@ _MEMBER_DASHBOARD_GRANTS: tuple[str, ...] = _CONDUCTOR_DASHBOARD_GRANTS + (
 #: ``dashboard_apply`` and ``dashboard_rollback`` do change the page -- and they are
 #: granted rather than prompted on the same ownership test the tuple above is judged
 #: by. The page is the calling crewmate's own, resolved from the calling session and
-#: not from any argument; apply installs the page that was STAGED and takes no
-#: argument at all, so it cannot be pointed at a page nobody looked at; and every
-#: earlier version stays on disk, so the worst case is a crewmate changing its own
-#: page and the person saying "go back".
+#: not from any argument; apply installs a template the catalog serves (or the one
+#: staged by a preview); and every earlier version stays on disk, so the worst case
+#: is a crewmate changing its own page and the person saying "go back".
 #:
-#: What makes the person's YES part of the flow is the preview/apply SPLIT and the
-#: ``dashboard`` skill that drives it, not an approval dialog: a prompt on apply
-#: would ask the person to confirm a page the agent has not shown them yet, which is
-#: the wrong question at the wrong time.
+#: No approval step guards a page swap: a person cannot judge a page's script by
+#: looking at it, so a preview gate adds a click and no safety. The frame contains
+#: every page the same way, and the history makes every swap one rollback away.
 _MEMBER_PANEL_GRANTS: tuple[str, ...] = (
     "@kirocrew-panel/panel_templates",
     "@kirocrew-panel/panel_publish",
@@ -5818,29 +5816,22 @@ Your whole job is to carry that out and say what happened.
    search covers each template's title, its description AND the fold paths its
    fields read, so a person asking for "cost" finds the page that shows a usage
    number whose author never used the word.
-2. `dashboard_preview` -- stage the one that fits, by `template_id`. That is the
-   only argument. This records NOTHING: no version is written and the page they
-   are reading is untouched. It hands back a link.
-3. ASK. Give them the link and wait for an answer. This is not a formality: the
-   page is theirs, and a page swapped without asking is one they have to undo.
-4. `dashboard_apply` -- only after they say yes. It takes no arguments, so what
-   lands is the page they looked at.
+2. `dashboard_apply` with the `template_id` that fits. The page goes live as a
+   new version; the one they had stays on disk.
+3. `dashboard_preview` is optional: use it, by `template_id`, only when they ask
+   to look before choosing. It records nothing and hands back a link; then
+   `dashboard_apply` with that `template_id` puts it live.
 
-"Go back" skips all of that: `dashboard_fields` lists the versions a rollback can
-still reach, and `dashboard_rollback` restores one. A rollback moves FORWARD --
-version 1 over version 2 becomes version 3 -- so going back is itself undoable.
+"Go back": `dashboard_fields` lists the versions a rollback can still reach, and
+`dashboard_rollback` restores one. A rollback moves FORWARD -- version 1 over
+version 2 becomes version 3 -- so going back is itself undoable.
 
-## You cannot write the page
+## You do not write the page here
 
-Only a template that shipped with the product can be previewed or kept. A
-dashboard page runs its own script against this crewmate's task titles and
-summaries, inside a frame that can navigate itself, so a page nobody here has
-looked at could carry them out. Custom templates come later, behind a wrapper
-document this gateway mints.
-
-So if nothing in the catalog fits, say so and name the one that came closest. Do
-not write a manifest and html: the preview refuses them, and the refusal is a
-cycle you can spend on the answer instead.
+You pick from the catalog. A page the crewmate composes itself is its own
+dashboard package, saved by that crewmate with `dashboard_save`. So if nothing in
+the catalog fits, say so and name the one that came closest.
+Do not write a manifest and html: the preview refuses them.
 
 ## The rule behind the whole design
 

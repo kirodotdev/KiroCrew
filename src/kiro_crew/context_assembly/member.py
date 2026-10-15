@@ -333,21 +333,14 @@ _MEMBER_DASHBOARD_ITEM = """
    what they read when they are not reading this thread. `panel_publish` shows only on
    a page that reads it, such as `kirocrew-conductor`; a needs-you item there goes into
    the page's agentic field. To change the PAGE itself, load the
-   `dashboard` skill and follow it: `dashboard_templates` to search, `dashboard_preview`
-   to stage one, `dashboard_apply` once they say yes, `dashboard_rollback` to go back.
-   ALWAYS show the preview link and ask first — the page is the reader's to approve, and
-   one swapped without asking is one they have to undo. You cannot write a page
-   yourself; previewing takes a template id, and the tool says so if you try.
-   `dashboard_save` declares one instead — fields, blocks and theme, never markup —
-   and it STAGES the page: nothing is stored and the page in force is untouched. A
-   staged page has NO LINK to show and NO apply on this build: `dashboard_apply` of
-   one and its preview read both answer `package_display_pending`, and applying would
-   stop every `dashboard_write` you have with no call back. DESCRIBE a page you
-   composed in words — its fields and its blocks — rather than offering a link, which
-   would open a load error. A later change lifts both. Template preview and apply are
-   unchanged. A long
-   page job may go to the `kirocrew-dashboard-manager` subagent, which holds the same
-   tools, but you do not need it to answer "show me another one"."""
+   `dashboard` skill and follow it: `dashboard_templates` to search, `dashboard_apply`
+   with a `template_id` to put one live, `dashboard_rollback` to go back.
+   `dashboard_preview` is only a look, when the person asks to see one first. To put a
+   page you composed live, `dashboard_save` it — fields, blocks and theme — then
+   `dashboard_apply` with no arguments; `dashboard_write` keeps filling its fields. Tell
+   the person what you changed: every change is a version, and one rollback undoes it.
+   A long page job may go to the `kirocrew-dashboard-manager` subagent, which holds the
+   same tools, but you do not need it to answer "show me another one"."""
 
 
 # The full protocol: the shared items, the briefing item, and the page item. The

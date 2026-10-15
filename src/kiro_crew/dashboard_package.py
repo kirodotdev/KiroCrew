@@ -89,8 +89,9 @@ class PackageRead:
     """What the write path is told about a member's current dashboard package."""
 
     #: The Model as the write path needs it, or ``None`` when there is none to check
-    #: against -- every non-live state, and a live PACKAGE, which this build does not
-    #: translate.
+    #: against -- every non-live state. A live PACKAGE's Model is its ``model.types``
+    #: translated by ``member_dashboard_fields.package_manifest``, the same translation
+    #: the page's controller subscribes by.
     #:
     #: :class:`~kiro_crew.dashboard_agentic.Instance` is REUSED rather than a new type
     #: minted beside it, and that reuse is what keeps this seam one function:
@@ -105,10 +106,7 @@ class PackageRead:
     #: Whether a real dashboard PACKAGE was read, as opposed to the template instance
     #: this read falls through to when no package is bound.
     #:
-    #: PROVENANCE, and nothing more. What it means for a write is the write route's to
-    #: decide -- today that route refuses, because the page a crewmate is shown still
-    #: renders the template -- and keeping the meaning there is what stops this module
-    #: from having to know what any page draws.
+    #: PROVENANCE, and nothing more.
     from_package: bool = False
 
 
@@ -148,10 +146,91 @@ def read_package_model(member: str) -> PackageRead:
 
 
 def _from_package(member: str) -> PackageRead:
-    """Read the ``kind="dashboard"`` artifact bound to *member*."""
+    """Read the package page in force for *member*: the pinned one, or a bound one.
+
+    THE SAME ANSWER THE PAGE READ GIVES. ``member_dashboard._serve`` asks the instance
+    record which page is in force; asking it here too keeps a write checked against
+    the Model the person is looking at. A pinned page is read from the gateway's own
+    snapshot. A record that released packages, or an older record under the lock,
+    answers EMPTY so the write falls through to the template instance. Only an older
+    unlocked record looks a package up by the crewmate's binding.
+    """
+    from kiro_crew.dashboard_templates import instance as instance_store
+
+    # Read DEFENSIVELY off the store, like `_from_template_instance` does, so a
+    # narrower stand-in store reads as an older record.
+    pinned_of = getattr(instance_store, "pinned_package", None)
+    older_of = getattr(instance_store, "keeps_older_package_rule", None)
+    record: object = None
+    if pinned_of is not None and older_of is not None:
+        try:
+            record = instance_store.read(member)
+            pinned = pinned_of(record)
+            older = older_of(record)
+        except Exception as exc:
+            raise PackageReadError(
+                f"the dashboard instance for {member!r} cannot be read: {exc}"
+            ) from exc
+        if pinned is not None:
+            return _package_model(
+                member,
+                pinned.slug,
+                pinned.version,
+                pinned.content,
+                int(getattr(record, "instance_version", 0) or 0),
+            )
+        if not older:
+            return PackageRead(None, STATE_EMPTY, f"{member}'s template page is in force")
+    return _from_bound_package(member, record)
+
+
+def _package_model(
+    member: str, slug: str, version: int, content: str, instance_version: int
+) -> PackageRead:
+    """The Model of one package page, or the state that says why there is none."""
+    from kiro_crew.artifact_store.dashboard_package import parse_package
+    from kiro_crew.artifacts import ArtifactError
+
+    bound_to = f"{_CREWMATE_SCOPE}{member}"
+    try:
+        package = parse_package(content)
+    except (ArtifactError, ValueError) as exc:
+        return PackageRead(
+            None, STATE_ERROR, f"the dashboard package at {slug!r} does not load: {exc}"
+        )
+    types = (package.get("model") or {}).get("types")
+    if not isinstance(types, Mapping):
+        # The gate validated the package and this reader cannot find a field table in
+        # it. A disagreement between two readers of one record, so it is a state with a
+        # sentence rather than a raise.
+        return PackageRead(
+            None, STATE_ERROR, f"the dashboard package at {slug!r} declares no field table"
+        )
+    if package.get("bound_to") != bound_to:
+        # The page in force must be THIS member's: the page read refuses another
+        # binding, so the write does too.
+        return PackageRead(
+            None, STATE_ERROR, f"the dashboard package at {slug!r} is not bound to {bound_to}"
+        )
+    from kiro_crew.dashboard.handlers.member_dashboard_fields import package_manifest
+
+    # The ARTIFACT version is the manifest's; the INSTANCE version is the record's, the
+    # number `dashboard_fields` reports beside the versions a rollback can reach.
+    return PackageRead(
+        Instance(
+            manifest=package_manifest(package, slug=slug, version=version),
+            instance_version=instance_version or version,
+        ),
+        STATE_LIVE,
+        f"package {slug!r} version {version}, bound to {bound_to}",
+        from_package=True,
+    )
+
+
+def _from_bound_package(member: str, record: object) -> PackageRead:
+    """The older rule: the ``kind="dashboard"`` artifact bound to *member*."""
     from kiro_crew.artifact_store.dashboard_package import (
         BindingLookupIncomplete,
-        parse_package,
         resolve_bound_slug,
     )
     from kiro_crew.artifacts import ArtifactError, get_default_store
@@ -197,44 +276,41 @@ def _from_package(member: str) -> PackageRead:
         raise PackageReadError(f"the dashboard packages cannot be listed: {exc}") from exc
     if not slug:
         return PackageRead(None, STATE_EMPTY, f"{member} has no dashboard package yet")
+    store = get_default_store()
     try:
-        loaded = get_default_store().get(slug)
+        loaded = store.get(slug)
     except ArtifactError:
-        # Absent, or a slug this caller named that holds nothing. EMPTY rather than
-        # ERROR: there is no package here to be broken.
+        # Absent, or a slug that holds nothing: there is no package here to be broken.
         return PackageRead(None, STATE_EMPTY, f"there is no dashboard package at {slug!r}")
     except OSError as exc:
         raise PackageReadError(f"the dashboard package {slug!r} cannot be read: {exc}") from exc
+    from kiro_crew.dashboard.handlers.member_dashboard import applied_package_version
+
+    # The page draws the newest version a person cut, and nothing when there is none.
+    # The CURRENT bytes are still checked when nothing is cut, so a package that is
+    # present and broken is told so rather than hidden behind a template.
+    applied = applied_package_version(loaded)
+    current = int(getattr(loaded, "version", 0) or 0)
     try:
-        package = parse_package(loaded.content or "")
-    except (ArtifactError, ValueError) as exc:
+        drawn = loaded if applied <= 0 or applied == current else store.get(slug, version=applied)
+    except ArtifactError:
         return PackageRead(
-            None, STATE_ERROR, f"the dashboard package at {slug!r} does not load: {exc}"
+            None, STATE_ERROR, f"the dashboard package {slug!r} version {applied} is not stored"
         )
-    types = (package.get("model") or {}).get("types")
-    if not isinstance(types, Mapping):
-        # The gate validated the package and this reader cannot find a field table in
-        # it. A disagreement between two readers of one record, so it is a state with a
-        # sentence rather than a raise, and it stays AHEAD of the live answer below: a
-        # package that is present and malformed is told so, rather than being folded
-        # into the one answer every readable package gets.
-        return PackageRead(
-            None, STATE_ERROR, f"the dashboard package at {slug!r} declares no field table"
-        )
-    version = int(getattr(loaded, "version", 0) or 0)
-    # LIVE, and carrying NO Model. A package's field table is not translated into
-    # manifest field specs on this base, because the one caller refuses a package-bound
-    # write before it would check one: the page a crewmate is shown still renders the
-    # template instance, so checking the write against the package while the page draws
-    # something else is what lets an undrawable value land. The translation ships with
-    # the change that makes the display read the same package, which is the first place
-    # its output is used for anything.
-    return PackageRead(
-        None,
-        STATE_LIVE,
-        f"package {slug!r} version {version}, bound to {bound_to}",
-        from_package=True,
+    except OSError as exc:
+        raise PackageReadError(f"the dashboard package {slug!r} cannot be read: {exc}") from exc
+    read = _package_model(
+        member,
+        slug,
+        applied or current,
+        drawn.content or "",
+        int(getattr(record, "instance_version", 0) or 0),
     )
+    if read.state == STATE_LIVE and applied <= 0:
+        # Nothing a person cut, so the page draws nothing and the write is checked
+        # against the template instance instead.
+        return PackageRead(None, STATE_EMPTY, f"{member}'s package has no page in force")
+    return read
 
 
 def _from_template_instance(member: str) -> PackageRead:

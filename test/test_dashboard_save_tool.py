@@ -1,28 +1,16 @@
-"""Tests for ``dashboard_save`` -- the call that STAGES a composed page.
+"""Tests for ``dashboard_save`` -- the call that puts a composed page IN FORCE.
 
-The property guarded hardest here is the gate: a save stores NOTHING. It stages
-the composed page beside the crewmate's record and hands back its field and block
-counts -- NO link, because the ``?preview=1`` read answers
-``package_display_pending`` (a staged page is neither an artifact nor a binding, and
-the hosted page reads a bound one) and a link would open a load error.
-``dashboard_apply`` answers the same code for its own reason: binding a package
-leaves ``dashboard_write`` refusing every agentic field, which no change has lifted.
-So no call in this file mints a package artifact, and the tests at the top prove both
-halves refuse to: a save leaves the store untouched, and an apply of a staged package
-writes nothing and binds nothing.
+There is no preview gate: the owner crewmate's package is stored and
+drawn at once, as an instance version, and one ``dashboard_rollback`` goes back to
+any earlier version -- another package version or the template page.
 
-The second property is the one the binding carries: the artifact's ``bound_to``
-decides whose Dashboard tab renders this page, so it is derived from the vetted
-caller on the server and never read out of the body -- a caller that sends one is
-refused, a staged page bound elsewhere is refused at the apply rather than
-re-stamped, and a page already bound to another crewmate is never written over.
+The binding is derived from the vetted caller on the server and never read out of
+the body, so a save only ever writes the caller's own package.
 
-The third is that nothing here reimplements the store's own write gate. The save
-runs ``canonical_package_content`` -- the same function ``ArtifactStore.create``
-and ``.update`` run -- so the package's size, surrogate and closed-catalog guards
-answer while the agent is still composing rather than after a person has approved
-the page. The refusal tests below prove that by sending packages each guard
-refuses and asserting the save answers 400 with nothing staged.
+Nothing here reimplements the store's own write gate. The save runs
+``canonical_package_content`` -- the same function ``ArtifactStore.create`` and
+``.update`` run -- and the refusal tests send packages each guard refuses and
+assert the save answers 400 with nothing stored.
 """
 
 from __future__ import annotations
@@ -119,7 +107,12 @@ class _Store:
             content = canonical_package_content(content)
         slug = f"dashboard-{len(self.records)}"
         rec = SimpleNamespace(
-            slug=slug, name=name, content=content, kind=kind or "markdown", version=1
+            slug=slug,
+            name=name,
+            content=content,
+            kind=kind or "markdown",
+            version=1,
+            content_token="0" * 64,
         )
         self.records[slug] = rec
         return rec
@@ -181,218 +174,362 @@ async def _save(client: TestClient, body: dict[str, Any]):
     return await client.post("/api/agent-panel/dashboard/save", json=body)
 
 
+async def _save_and_apply(client: TestClient, body: dict[str, Any]) -> None:
+    """Save a page, then put it live: the package flow is save -> apply."""
+    saved = await _save(client, body)
+    assert saved.status == 200, await saved.text()
+    applied = await _apply(client)
+    assert applied.status == 200, await applied.text()
+
+
 async def _apply(client: TestClient):
     """The person's "yes". Takes no body, like the route."""
     return await client.post("/api/agent-panel/dashboard/apply", json={})
 
 
 # --------------------------------------------------------------------------- #
-# 0. THE GATE: a save stages, an apply installs
+# 0. A save puts the page in force, as a version
 # --------------------------------------------------------------------------- #
 
 
-async def test_a_save_stages_the_page_and_stores_nothing(monkeypatch, store):
-    """The whole gate in one test: nothing is written and nothing is live.
+def _instance():
+    from kiro_crew.dashboard_templates import instance as instance_store
 
-    The store is untouched -- not an empty page, not a version 0 record, nothing
-    at all -- and the response says ``staged`` rather than ``saved``, carrying the
-    link a person opens. An agent that read ``saved`` here would tell them their
-    dashboard had changed when the next thing it has to do is ask them.
+    return instance_store
+
+
+async def test_a_save_stores_the_page_and_apply_puts_it_live(monkeypatch, store):
+    """Save stores the caller's own package; apply puts it live, with no preview step.
+
+    The package is bound to the CALLER, and the instance version the apply writes
+    pins it, so the page read and the write check both draw it.
     """
     async with _client(monkeypatch) as client:
         resp = await _save(client, _package_body())
         assert resp.status == 200, await resp.text()
         payload = await resp.json()
+        # Stored, not live yet.
+        assert _instance().read(SLUG).instance_version == 0
+        applied = await _apply(client)
+        assert applied.status == 200, await applied.text()
+        reply = await applied.json()
 
-    assert "saved" not in payload, "a save reported a stored page"
-    staged = payload["staged"]
-    assert staged["fields"] == 2
-    assert staged["blocks"] == 2
-    # NO LINK. The package read answers `package_display_pending`, which the tab
-    # draws as "could not be loaded" with a Retry that retries it -- so a reply
-    # carrying a link would send the person to an error card. Put `preview_url`
-    # back in `PackagePreview.wire` and this reddens.
-    assert "preview_url" not in staged, "the save offered a link that answers 409"
-    # The one instruction, travelling with the thing it is about: describe it,
-    # and know that the apply is refused too.
-    assert "IN WORDS" in payload["next"]
-    assert "package_display_pending" in payload["next"]
-    assert "preview_url" not in payload["next"]
-    # NOTHING STORED. This is the assertion the whole ruling rests on.
-    assert store.records == {}
-    assert store.updates == []
+    saved = payload["saved"]
+    assert (saved["fields"], saved["blocks"]) == (2, 2)
+    [record] = store.records.values()
+    assert record.kind == DASHBOARD_KIND
+    assert parse_package(record.content)["bound_to"] == f"crewmate:{SLUG}"
+    assert saved["package"] == reply["package"] == record.slug
+    current = _instance().read(SLUG)
+    assert (current.package_slug, current.package_version) == (record.slug, 1)
+    assert current.instance_version == reply["instance_version"] == 1
 
 
-async def test_a_root_session_save_stages_under_its_own_binding(monkeypatch, store):
-    """A ROOT SESSION can save. Written before the fix and run red.
+async def test_a_second_save_updates_the_same_package_under_its_read(monkeypatch, store):
+    """One package per crewmate: a second save updates it, fenced on the read."""
+    second = _package_body()
+    second["view"]["blocks"].reverse()
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+        await _save_and_apply(client, second)
 
-    ``_resolve_dashboard_caller`` answers a root session with an empty crew name and
-    a slug that ``instance.session_instance_key`` already spelled ``session:<digest>``
-    -- which IS one of the two bindings the package grammar accepts
-    (``_BOUND_TO_RE``: ``crewmate:<slug>`` or ``session:<slot key>``). Prefixing it
-    built ``crewmate:session:<digest>``, the grammar refused that, and EVERY
-    root-session save answered 400 ``invalid_package``. The agent could not fix it
-    either: the schema refuses a caller-sent ``bound_to``, so the one key that would
-    have corrected the binding is the one key it may not send.
+    assert len(store.records) == 1
+    [update] = store.updates
+    assert "snapshot_token" in update
+    current = _instance().read(SLUG)
+    assert (current.package_version, current.instance_version) == (2, 2)
 
-    Re-add the prefix for a session slug and this reddens with that 400.
+
+async def test_one_rollback_goes_back_to_a_package_or_to_the_template(monkeypatch, store):
+    """Every apply is a version, and the version restores its own page in force."""
+    instance_store = _instance()
+    second = _package_body()
+    second["view"]["blocks"].reverse()
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())  # v1: package v1
+        await _save_and_apply(client, second)  # v2: package v2
+        applied = await client.post(
+            "/api/agent-panel/dashboard/apply", json={"template_id": "project-report"}
+        )
+        assert applied.status == 200, await applied.text()  # v3: template
+        assert instance_store.read(SLUG).package_released is True
+        back = await client.post("/api/agent-panel/dashboard/rollback", json={"to_version": 1})
+        assert back.status == 200, await back.text()  # v4: package v1 again
+
+    current = instance_store.read(SLUG)
+    assert (current.instance_version, current.package_version) == (4, 1)
+    assert current.package_released is False
+
+
+async def test_the_page_read_draws_what_the_record_puts_in_force(monkeypatch, store):
+    """The page read follows the record: pinned, locked, then released."""
+    from kiro_crew.dashboard.handlers import member_dashboard
+
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+        [slug] = store.records
+        pinned, older, locked = member_dashboard._package_in_force(SLUG)
+        assert pinned is not None and (pinned.slug, pinned.version) == (slug, 1)
+        assert older is False and locked is False
+        # The lock keeps the pinned page the person locked, and the page reports it.
+        _instance().set_structure_lock(SLUG, True)
+        assert member_dashboard._package_in_force(SLUG)[::2] == (pinned, True)
+        _instance().set_structure_lock(SLUG, False)
+        applied = await client.post(
+            "/api/agent-panel/dashboard/apply", json={"template_id": "project-report"}
+        )
+        assert applied.status == 200, await applied.text()
+        assert member_dashboard._package_in_force(SLUG) == (None, False, False)
+
+
+async def test_the_pinned_page_survives_whatever_happens_to_the_artifact(monkeypatch, store):
+    """The page in force is the gateway's snapshot of the saved bytes.
+
+    An artifact deleted and saved again under the same slug, or a pinned artifact
+    version the store has pruned, does not change or drop the page a version pins.
     """
-    from kiro_crew.artifact_store import dashboard_package as pkg
-    from kiro_crew.dashboard_templates import instance as instance_store
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+    [slug] = store.records
+    saved = store.records[slug].content
+    # Deleted, and a different page saved under the same slug and version.
+    other = _package_body()
+    other["view"]["blocks"].reverse()
+    other.update({"kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"})
+    store.records.clear()
+    store.create(name="again", content=json.dumps(other), kind=DASHBOARD_KIND)
+    pinned = _instance().pinned_package(_instance().read(SLUG))
+    assert pinned is not None and pinned.content == saved
 
-    session_slug = instance_store.session_instance_key("chat-7-17910")
-    assert session_slug.startswith("session:"), session_slug
-    # The grammar's own verdict, so this test fails for the reason it names: the
-    # bare session slug is a binding, the prefixed one is not.
-    assert pkg._BOUND_TO_RE.match(session_slug), session_slug
-    assert not pkg._BOUND_TO_RE.match(f"crewmate:{session_slug}")
 
+async def test_only_pinned_pages_are_kept_after_a_save(monkeypatch, store):
+    """A save prunes the snapshots no kept version pins, and keeps every pinned one."""
+    from kiro_crew.agent_panel import panel_dir
+
+    second = _package_body()
+    second["view"]["blocks"].reverse()
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+        await _save_and_apply(client, second)
+    pages = sorted(p.name for p in panel_dir().glob(f"{SLUG}.dashboard-page.*.json"))
+    # Both versions are kept, so both pages stay reachable by a rollback.
+    assert len(pages) == 2, pages
+    # A page nobody pins is dropped on the next save.
+    stray = panel_dir() / f"{SLUG}.dashboard-page.{'0' * 32}.json"
+    stray.write_text("{}", encoding="utf-8")
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+    assert not stray.exists()
+
+
+async def test_an_older_locked_record_checks_writes_against_its_template(monkeypatch, tmp_path):
+    """A record from before pins keeps its template under the lock, for the write too."""
+    from kiro_crew import artifacts
+    from kiro_crew import dashboard_package as reader
+    from kiro_crew.artifacts import ArtifactStore
+
+    instance_store = _instance()
+    real = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(artifacts, "get_default_store", lambda: real)
+    instance_store.adopt(SLUG, "project-report")
+    # Written before the `package` key existed.
+    path = instance_store.instance_dir(SLUG) / "instance.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw.pop("package")
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    # A package bound to the crewmate, with a version a person cut.
+    pkg = {**_package_body(), "kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"}
+    art = real.create(name="page", content=json.dumps(pkg), kind=DASHBOARD_KIND)
+    pkg["view"]["blocks"].reverse()
+    read = real.get(art.slug, assign_token=True)
+    real.update(art.slug, content=json.dumps(pkg), actor="user", snapshot_token=read.content_token)
+
+    assert reader.read_package_model(SLUG).from_package is True
+    instance_store.set_structure_lock(SLUG, True)
+    locked = reader.read_package_model(SLUG)
+    assert locked.from_package is False
+    assert locked.model is not None and locked.model.manifest.id == "project-report"
+
+
+def test_a_package_enum_keeps_its_choices_for_the_write_check():
+    """A value outside an `enum` field's declared choices is refused before it lands."""
+    from kiro_crew import dashboard_agentic
+    from kiro_crew.dashboard.handlers.member_dashboard_fields import package_manifest
+
+    package = {
+        "model": {
+            "types": {
+                "state": {
+                    "type": "enum",
+                    "choices": ["green", "red"],
+                    "source": {"agentic": True},
+                }
+            }
+        }
+    }
+    model = dashboard_agentic.Instance(
+        manifest=package_manifest(package, slug="p", version=1), instance_version=1
+    )
+    dashboard_agentic.check_write(model, "state", "green", {})
+    with pytest.raises(dashboard_agentic.WriteRefused):
+        dashboard_agentic.check_write(model, "state", "purple", {})
+
+
+async def test_a_package_rebound_before_the_fenced_read_is_not_written(monkeypatch, store):
+    """The save re-checks the binding on the read whose token fences the update."""
+    async with _client(monkeypatch) as client:
+        assert (await _save(client, _package_body())).status == 200
+        [slug] = store.records
+        # Rebound to another crewmate between the lookup and the fenced read.
+        theirs = {**_package_body(), "kind": DASHBOARD_KIND, "bound_to": f"crewmate:{OTHER_SLUG}"}
+        from kiro_crew.artifact_store.dashboard_package import canonical_package_content
+
+        real_get = store.get
+
+        def _rebound_get(s: str, **kw: Any) -> SimpleNamespace:
+            rec = real_get(s, **kw)
+            if kw.get("assign_token"):
+                rec.content = canonical_package_content(json.dumps(theirs))
+            return rec
+
+        monkeypatch.setattr(store, "get", _rebound_get)
+        resp = await _save(client, _package_body())
+        body = await resp.json()
+    assert resp.status == 400, body
+    assert "not bound to you" in body["error"]
+    assert store.updates == []
+    assert slug in store.records
+
+
+async def test_any_apply_drops_a_preview_left_staged(monkeypatch, store):
+    """A committed version replaces a staged look, so the tab never offers a stale Keep."""
+    instance_store = _instance()
+    async with _client(monkeypatch) as client:
+        instance_store.stage_preview(SLUG, template_id="project-report")
+        await _save_and_apply(client, _package_body())
+        assert instance_store.staged_preview(SLUG) is None
+        instance_store.stage_preview(SLUG, template_id="project-report")
+        applied = await client.post(
+            "/api/agent-panel/dashboard/apply", json={"template_id": "project-report"}
+        )
+        assert applied.status == 200, await applied.text()
+        assert instance_store.staged_preview(SLUG) is None
+
+
+async def test_a_scan_that_cannot_read_a_kept_version_prunes_nothing(monkeypatch, store):
+    """A kept version that will not read may pin a page, so nothing is deleted."""
+    from kiro_crew.agent_panel import panel_dir
+
+    instance_store = _instance()
+    second = _package_body()
+    second["view"]["blocks"].reverse()
+    async with _client(monkeypatch) as client:
+        await _save_and_apply(client, _package_body())
+        stray = panel_dir() / f"{SLUG}.dashboard-page.{'0' * 32}.json"
+        stray.write_text("{}", encoding="utf-8")
+
+        def _unreadable(_slug: str, _version: int) -> dict:
+            raise instance_store.InstanceError("instance version cannot be read")
+
+        monkeypatch.setattr(instance_store, "_read_version", _unreadable)
+        await _save_and_apply(client, second)
+    assert stray.exists()
+    assert len(list(panel_dir().glob(f"{SLUG}.dashboard-page.*.json"))) == 3
+
+
+def test_a_concurrent_prune_never_drops_the_page_being_committed(monkeypatch):
+    """The snapshot write, the commit and the prune share one lock."""
+    instance_store = _instance()
+    seen: list[bool] = []
+    real_prune = instance_store._prune_page_snapshots
+
+    def _prune(slug: str) -> None:
+        # Asked from inside the commit's critical section: the record already pins it.
+        record = instance_store._read_record(slug) or {}
+        seen.append(bool(instance_store._package_field(record)[2]))
+        real_prune(slug)
+
+    monkeypatch.setattr(instance_store, "_prune_page_snapshots", _prune)
+    pkg = {**_package_body(), "kind": DASHBOARD_KIND, "bound_to": f"crewmate:{SLUG}"}
+    from kiro_crew.artifact_store.dashboard_package import canonical_package_content
+
+    record = instance_store.apply_package(
+        SLUG,
+        package_slug="p",
+        package_version=1,
+        content=canonical_package_content(json.dumps(pkg)),
+    )
+    assert seen == [True]
+    assert instance_store.pinned_package(record) is not None
+
+
+async def test_a_template_applies_without_a_preview(monkeypatch, store):
+    """A preview is an optional look: ``template_id`` applies directly."""
+    async with _client(monkeypatch) as client:
+        resp = await client.post(
+            "/api/agent-panel/dashboard/apply", json={"template_id": "project-report"}
+        )
+        assert resp.status == 200, await resp.text()
+        assert (await resp.json())["template_id"] == "project-report"
+        unknown = await client.post(
+            "/api/agent-panel/dashboard/apply", json={"template_id": "no-such-page"}
+        )
+        assert unknown.status == 400, await unknown.text()
+    assert _instance().read(SLUG).instance_version == 1
+
+
+async def test_a_root_session_save_is_refused_and_writes_nothing(monkeypatch, store):
+    """The hosted-page reader resolves a crewmate's binding only, so nothing would draw."""
+    session_slug = _instance().session_instance_key("chat-7-17910")
     async with _client(monkeypatch, resolved=(session_slug, "", "chat-7-17910")) as client:
         resp = await _save(client, _package_body())
         body = await resp.json()
-
-    assert resp.status == 200, body
-    assert body["staged"]["fields"] == 2
-    # Staged under the session's OWN binding, not a crewmate-prefixed one.
-    staged = instance_store.staged_package_preview(session_slug)
-    assert staged is not None
-    assert (staged.package() or {})["bound_to"] == session_slug
-    # Still a save, so still nothing stored.
+    assert resp.status == 400, body
+    assert body["code"] == "session_package_unsupported"
     assert store.records == {}
-    assert store.updates == []
 
 
-async def test_the_apply_of_a_package_is_refused_until_a_renderer_lands(monkeypatch, store):
-    """Option 1 (buluoray review): apply-of-package is refused on this base.
-
-    Applying would bind the package, and binding one leaves every agentic
-    `dashboard_write` for that caller refused with `package_display_pending`
-    (`agent_panel`'s own `package.from_package` guard) and no agent verb back. A
-    page in force IS drawable -- `member_dashboard` draws a bound artifact -- so
-    what keeps the apply refused is that write guard, not a missing reader: the 409
-    `package_display_pending`, and NOTHING is written. A later change lifts the
-    guard and this apply together. The staged page is kept, so a save followed by
-    this refusal still leaves the page there.
-    """
-    from kiro_crew.dashboard_templates import instance as instance_store
-
+async def test_a_locked_layout_refuses_the_apply_and_keeps_the_page(monkeypatch, store):
+    """The lock refuses the apply; the save is only a write to the crewmate's artifact."""
+    instance_store = _instance()
+    instance_store.set_structure_lock(SLUG, True)
     async with _client(monkeypatch) as client:
         assert (await _save(client, _package_body())).status == 200
-        assert store.records == {}, "the save wrote before anybody was asked"
-        resp = await _apply(client)
-        assert resp.status == 409, await resp.text()
-        assert (await resp.json())["code"] == "package_display_pending"
-
-    # NOTHING BOUND: no artifact created or updated, so no page is frozen.
-    assert store.records == {}
-    assert store.updates == []
-    # The staged page is left in place -- the refusal was a read, not a discard.
-    assert instance_store.staged_package_preview(SLUG) is not None
-
-
-async def test_a_store_fault_in_the_package_precheck_answers_like_every_other(monkeypatch, store):
-    """GPT 6.1 F1: the precheck's own fault goes through the route's boundary.
-
-    ``staged_package_preview`` reaches ``instance_dir``, whose link guard raises
-    ``InstanceError``. That is not an ``OSError``, so ``_preview_payload``'s except
-    list does not catch it and it leaves the store call. Called BEFORE the route's
-    ``try``, it left ``dashboard_apply`` as an unhandled 500 -- while the very same
-    fault one line later, in ``apply_preview``, answered the JSON 503
-    ``store_failed`` an agent can act on. One route, one fault, two answers.
-
-    Move the precheck back above the ``try`` and this reddens with a 500.
-    """
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    def _boom(_slug: str) -> None:
-        raise instance_store.InstanceError("a linked dashboard directory is refused")
-
-    async with _client(monkeypatch) as client:
-        assert (await _save(client, _package_body())).status == 200
-        monkeypatch.setattr(instance_store, "staged_package_preview", _boom)
         resp = await _apply(client)
         body = await resp.json()
-
-    assert resp.status == 503, body
-    assert body["code"] == "store_failed", body
-    # A refused read, so nothing was written on the way to the refusal either.
-    assert store.records == {}
-    assert store.updates == []
+    assert resp.status == 423, body
+    assert body["code"] == "dashboard_locked"
+    assert instance_store.read(SLUG).package_slug == ""
 
 
-async def test_a_refused_package_apply_leaves_template_writes_working(monkeypatch, store):
-    """The point of refusing (buluoray's asked-for assertion): nothing is frozen.
-
-    buluoray asked for a test that applies a package and then asserts what a
-    template-field `dashboard_write` returns. Because the apply is refused and
-    nothing is bound, `read_package_model` still answers from the template instance
-    (`from_package=False`) -- so `dashboard_write` keeps checking against the
-    template and keeps working, instead of being refused `package_display_pending`.
-    """
+async def test_dashboard_write_is_checked_against_the_package_in_force(monkeypatch, tmp_path):
+    """The write guard is lifted: a bound package's own Model checks the write."""
+    from kiro_crew import artifacts, dashboard_agentic
     from kiro_crew import dashboard_package as reader
+    from kiro_crew.artifacts import ArtifactStore
 
+    real = ArtifactStore(tmp_path / "artifacts")
+    monkeypatch.setattr(routes, "_dashboard_artifact_store", lambda: real)
+    monkeypatch.setattr(artifacts, "get_default_store", lambda: real)
     async with _client(monkeypatch) as client:
-        assert (await _save(client, _package_body())).status == 200
-        assert (await _apply(client)).status == 409
+        await _save_and_apply(client, _package_body())
 
-    # No package is bound, so the write path still reads the template, not a package.
     model = reader.read_package_model(SLUG)
-    assert model.from_package is False, "a refused apply still froze the live page"
+    assert model.from_package is True and model.model is not None
+    assert set(model.model.manifest.fields) == {"open_prs", "headline"}
+    dashboard_agentic.check_write(model.model, "open_prs", 3, {})
+    with pytest.raises(dashboard_agentic.WriteRefused):
+        dashboard_agentic.check_write(model.model, "open_prs", "three", {})
 
 
 async def test_an_apply_with_nothing_staged_writes_nothing(monkeypatch, store):
-    """No save, no page. The template path answers, and it has nothing either."""
+    """No template named and nothing staged: the apply has nothing to put in force."""
     async with _client(monkeypatch) as client:
         resp = await _apply(client)
         assert resp.status == 400, await resp.text()
 
     assert store.records == {}
     assert store.updates == []
-
-
-async def test_a_second_apply_of_a_staged_package_is_refused_the_same_way(monkeypatch, store):
-    """The refusal is a plain read, so it does not consume the staged page.
-
-    A second apply finds the same staged package and answers the same 409 -- the
-    staged page is only cleared by a save that replaces it or a discard, never by
-    this refusal.
-    """
-    async with _client(monkeypatch) as client:
-        assert (await _save(client, _package_body())).status == 200
-        assert (await _apply(client)).status == 409
-        second = await _apply(client)
-        assert second.status == 409, await second.text()
-        assert (await second.json())["code"] == "package_display_pending"
-
-    assert store.records == {}
-    assert store.updates == []
-
-
-async def test_a_staged_page_bound_elsewhere_is_also_refused_at_the_apply(monkeypatch, store):
-    """A package staged under another binding is refused too, and nothing is bound.
-
-    On this base the refusal is the same `package_display_pending` -- the apply does
-    not reach the binding check because it does not commit at all -- so a mismatched
-    staged file, like any staged package, installs nothing. Reached by staging a
-    package the save route would never produce, which is what an older staging file
-    on disk looks like.
-    """
-    from kiro_crew.artifact_store.dashboard_package import canonical_package_content
-    from kiro_crew.dashboard_templates import instance as instance_store
-
-    theirs = _package_body()
-    theirs["kind"] = DASHBOARD_KIND
-    theirs["bound_to"] = f"crewmate:{OTHER_SLUG}"
-    instance_store.stage_package_preview(
-        SLUG, content=canonical_package_content(json.dumps(theirs))
-    )
-
-    async with _client(monkeypatch) as client:
-        resp = await _apply(client)
-        assert resp.status == 409, await resp.text()
-        assert (await resp.json())["code"] == "package_display_pending"
-
-    assert store.records == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -604,17 +741,13 @@ async def test_an_ordinary_field_name_still_saves(monkeypatch, store):
     """The control for the refusal above, and why it is not a blanket block.
 
     Without it, a route that refused EVERY package would pass that test. The body
-    is this file's ordinary one, whose names no redactor touches. A save stages and
-    stores nothing, so the control is that the page STAGES and the store stays empty.
+    is this file's ordinary one, whose names no redactor touches.
     """
-    from kiro_crew.dashboard_templates import instance as instance_store
-
     async with _client(monkeypatch) as client:
         resp = await _save(client, _package_body())
         assert resp.status == 200, await resp.text()
 
-    assert instance_store.staged_package_preview(SLUG) is not None
-    assert store.records == {}
+    assert len(store.records) == 1
 
 
 async def test_a_credential_shaped_block_id_is_refused_too(monkeypatch, store):
@@ -681,41 +814,35 @@ async def test_a_credential_shaped_theme_token_is_refused_too(monkeypatch, store
         assert (await _apply(client)).status == 400
 
 
-async def test_an_ordinary_theme_token_still_stages(monkeypatch, store):
+async def test_an_ordinary_theme_token_still_saves(monkeypatch, store):
     """The control: without it, a route refusing EVERY theme would pass above."""
-    from kiro_crew.dashboard_templates import instance as instance_store
-
     body = _package_body()
     body["theme"]["tokens"]["--surface"] = "oklch(0.98 0.01 250)"
     async with _client(monkeypatch) as client:
         resp = await _save(client, body)
         assert resp.status == 200, await resp.text()
 
-    assert instance_store.staged_package_preview(SLUG) is not None
-    assert store.records == {}
+    assert len(store.records) == 1
 
 
 async def test_the_real_store_round_trips_a_valid_package(monkeypatch, tmp_path):
     """The positive control for the surrogate test, through the real store.
 
     Without it, a route that refused EVERY package would pass the surrogate test,
-    so this is what proves the 400 there came from the surrogate and not from the
-    save path being broken against a real store. A save stages and stores nothing,
-    so what this pins is that a valid package STAGES against a real store and that
-    the store stays empty until an apply (refused on this base).
+    so this proves the 400 there came from the surrogate and not from the save path
+    being broken against a real store.
     """
     from kiro_crew.artifacts import ArtifactStore
-    from kiro_crew.dashboard_templates import instance as instance_store
 
     real = ArtifactStore(tmp_path / "artifacts")
-    monkeypatch.setattr(routes, "_dashboard_artifact_store", lambda: real, raising=False)
+    monkeypatch.setattr(routes, "_dashboard_artifact_store", lambda: real)
     async with _client(monkeypatch) as client:
         resp = await _save(client, _package_body())
         assert resp.status == 200, await resp.text()
-        assert "staged" in await resp.json()
+        assert "saved" in await resp.json()
 
-    assert instance_store.staged_package_preview(SLUG) is not None
-    assert real.list(kind=DASHBOARD_KIND) == []
+    [stored] = real.list(kind=DASHBOARD_KIND)
+    assert parse_package(real.get(stored.slug).content)["bound_to"] == f"crewmate:{SLUG}"
 
 
 # --------------------------------------------------------------------------- #
@@ -780,8 +907,14 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
         sent["path"] = path
         sent["payload"] = payload
         return {
-            "staged": {"fields": 2, "blocks": 2},
-            "next": "describe the page you composed IN WORDS and do not offer a link",
+            "saved": {
+                "package": "p",
+                "package_version": 1,
+                "instance_version": 3,
+                "fields": 2,
+                "blocks": 2,
+            },
+            "dashboard": "[DASHBOARD]\nYour Dashboard tab shows the page you saved.",
         }
 
     monkeypatch.setattr(mcp_panel, "_post", _post)
@@ -790,13 +923,9 @@ def test_the_tool_sends_only_the_three_declarations(monkeypatch):
     out = mcp_panel._call_tool_inner("dashboard_save", body)
     assert sent["path"] == "/api/agent-panel/dashboard/save"
     assert set(sent["payload"]) == {"model", "view", "theme"}
-    # STAGED, and NO LINK. An agent told "saved" here would report a change nobody
-    # approved; one handed a link would send the person to a load error, since the
-    # package read answers 409 on this base.
-    assert "STAGED, not live" in out
-    assert "dashboard=preview" not in out, "the tool reply offered a link that answers 409"
-    assert "cannot be shown or put in force" in out
-    assert "IN WORDS" in out
+    # SAVED, not live: the reply names the apply that puts it live.
+    assert "SAVED" in out and "not live yet" in out
+    assert "dashboard_apply" in out
 
 
 def test_the_tool_hands_back_a_refusal_whole(monkeypatch):
@@ -867,12 +996,11 @@ async def test_a_page_written_as_html_comes_back_with_its_verification(monkeypat
     The runner is stubbed: what this proves is the route's half -- it is asked with the
     vetted caller's slug, crew and slot and with the CANONICAL package (what an apply
     would commit), a deadline no later than the check's time limit, its answer reaches
-    the body, and the page stays staged whatever the answer is, so the fix is one more save.
+    the body, and the page stays saved whatever the answer is, so the fix is one more save.
     """
     from kiro_crew import dashboard_verify
     from kiro_crew.artifact_store import dashboard_package
     from kiro_crew.dashboard.handlers import member_dashboard_fields
-    from kiro_crew.dashboard_templates import instance as instance_store
 
     asked: dict[str, Any] = {}
     failed = _verdict(
@@ -907,9 +1035,8 @@ async def test_a_page_written_as_html_comes_back_with_its_verification(monkeypat
     # The check is over by one limit, counted from the save and not from the thread's start.
     assert asked["deadline"] <= time.monotonic() + dashboard_verify.RUN_TIMEOUT_SECONDS
     assert on_the_loop and not any(on_the_loop), "a package was parsed on the event loop"
-    # STILL STAGED: a failed verdict does not unstage, and nothing is stored.
-    assert instance_store.staged_package_preview(SLUG) is not None
-    assert store.records == {}
+    # STILL SAVED: a failed verdict does not undo the save, and nothing goes live.
+    assert len(store.records) == 1
 
 
 async def test_a_block_layout_has_no_script_to_run(monkeypatch, store):
@@ -1271,65 +1398,6 @@ def test_a_read_that_fails_is_a_skip_and_the_page_is_still_disarmed(glue):
     assert glue.ran == []
 
 
-def test_the_reply_lists_each_error_with_its_place_in_the_page():
-    from kiro_crew import mcp_panel
-
-    verification = _verdict(
-        "failed",
-        errors=[
-            {
-                "kind": "exception",
-                "message": "TypeError: rows.map is not a function",
-                "line": 4,
-                "column": 8,
-            },
-            {"kind": "rejection", "message": "Error: later", "line": 9, "column": None},
-            {
-                "kind": "csp",
-                "message": "Connecting to 'https://x.test/' violates ...",
-                "line": None,
-                "column": None,
-            },
-        ],
-        omitted=2,
-        notes=["This check runs offline, so these requests were refused: https://cdn.test/x.js."],
-    )
-
-    out = mcp_panel._render_staged({"fields": 2, "blocks": 0}, "describe it", verification)
-
-    assert "verification: failed" in out
-    assert "raised 5 error(s)" in out
-    assert "1. TypeError: rows.map is not a function (view.html line 4, column 8)" in out
-    assert "2. unhandled promise rejection: Error: later (view.html line 9)" in out
-    assert "3. refused by the frame's policy: Connecting to" in out
-    assert "... and 2 more." in out
-    assert "note: This check runs offline" in out
-    assert "call dashboard_save again before you describe the page" in out
-    # The verdict leads: it is what the agent has to act on before anything else.
-    assert out.index("verification: failed") < out.index("Next: describe it")
-
-
-def test_the_reply_says_what_a_pass_and_a_skip_mean():
-    from kiro_crew import mcp_panel
-
-    passed = mcp_panel._render_staged({}, "", _verdict("passed"))
-    skipped = mcp_panel._render_staged({}, "", _verdict("skipped", reason="no browser here"))
-
-    assert "verification: passed" in passed and "no script errors" in passed
-    assert "verification: skipped -- no browser here." in skipped
-    assert "The page was not verified" in skipped
-
-
-def test_a_reply_without_a_verification_is_the_reply_it_always_was():
-    from kiro_crew import mcp_panel
-
-    base = mcp_panel._render_staged({"fields": 1, "blocks": 1}, "note")
-
-    assert "verification" not in base
-    assert mcp_panel._render_staged({"fields": 1, "blocks": 1}, "note", None) == base
-    assert mcp_panel._render_staged({"fields": 1, "blocks": 1}, "note", "garbage") == base
-
-
 def test_the_tool_hands_the_verification_to_the_agent(monkeypatch):
     from kiro_crew import mcp_panel
 
@@ -1338,8 +1406,7 @@ def test_the_tool_hands_the_verification_to_the_agent(monkeypatch):
         mcp_panel,
         "_post",
         lambda *_a, **_k: {
-            "staged": {"fields": 2, "blocks": 0},
-            "next": "describe it",
+            "saved": {"fields": 2, "blocks": 0},
             "verification": _verdict(
                 "failed",
                 errors=[{"kind": "exception", "message": "Error: boom", "line": 3, "column": 1}],
@@ -1433,7 +1500,7 @@ async def test_a_saved_page_is_run_end_to_end_through_the_route(
     assert 'id="kirocrew-dashboard-data"' in document
     assert '"generation"' in document and '"missing"' in document
     assert "boom();" in document
-    assert store.records == {}
+    assert len(store.records) == 1
 
 
 @LINUX_ONLY
@@ -1726,7 +1793,7 @@ async def test_a_save_stops_waiting_for_a_check_that_does_not_come_back(
     assert running.is_set(), "the check never started"
     assert payload["verification"]["status"] == "timed_out"
     assert "stopped waiting for it" in payload["verification"]["reason"]
-    assert payload["staged"], "the page is staged whatever the check did"
+    assert payload["saved"], "the page is saved whatever the check did"
 
 
 async def test_the_save_waits_for_a_check_no_longer_than_the_bound(monkeypatch):
@@ -1832,52 +1899,3 @@ def test_only_a_save_of_a_written_page_can_start_a_check():
         if isinstance(call, ast.Call) and getattr(call.func, "id", None) == "_page_check"
     }
     assert starters == {"api_dashboard_save"}
-
-
-def test_the_reply_says_what_a_timed_out_check_means():
-    from kiro_crew import mcp_panel
-
-    out = mcp_panel._render_staged(
-        {"fields": 2, "blocks": 0},
-        "describe it",
-        _verdict(
-            "timed_out",
-            reason="the check reached its 8 second limit and the browser was stopped",
-            errors=[
-                {
-                    "kind": "timeout",
-                    "message": "the page did not finish loading",
-                    "line": None,
-                    "column": None,
-                }
-            ],
-        ),
-    )
-
-    assert "verification: timed_out -- the check reached its 8 second limit" in out
-    assert "The page was not verified" in out
-    assert "a loop or a wait that may never end" in out
-    assert "1. the page did not finish loading" in out
-    assert out.index("verification: timed_out") < out.index("Next: describe it")
-
-
-def test_the_reply_says_the_page_ran_over_a_synthetic_copy():
-    from kiro_crew import mcp_panel
-
-    passed = mcp_panel._render_staged({}, "", _verdict("passed"))
-    failed = mcp_panel._render_staged(
-        {},
-        "",
-        _verdict(
-            "failed",
-            errors=[{"kind": "exception", "message": "TypeError: x", "line": 2, "column": 1}],
-        ),
-    )
-    plain = mcp_panel._render_staged({}, "", _verdict("passed", data=""))
-
-    assert "ran once over a synthetic copy of your crewmate's current data" in passed
-    assert "the same shape with invented values" in passed
-    assert "ran once over a synthetic copy" in failed
-    assert "your crewmate's data and raised" not in failed
-    # A verdict that does not say what it ran over does not claim a copy.
-    assert "synthetic" not in plain

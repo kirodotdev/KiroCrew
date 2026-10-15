@@ -43,7 +43,7 @@ import threading
 import uuid
 from typing import Any, Callable, Final, Mapping
 
-from kiro_crew.dashboard_templates.manifest import FieldSpec, TemplateManifest
+from kiro_crew.dashboard_templates.manifest import FieldSpec, Shape, TemplateManifest
 
 logger = logging.getLogger(__name__)
 
@@ -127,7 +127,15 @@ def package_manifest(
                 continue
             kind = _TYPE_MAP.get(str(spec.get("type") or ""), "string")
             if source.get("agentic") is True:
-                fields[name] = FieldSpec(name, kind, None, None, True, None)
+                # An `enum` field keeps its declared choices as the shape's `enum`, so
+                # the write's own shape check refuses a value outside the catalog.
+                choices = spec.get("choices") if spec.get("type") == "enum" else None
+                shape = (
+                    Shape(kind, enum=tuple(choices))
+                    if isinstance(choices, list) and choices
+                    else None
+                )
+                fields[name] = FieldSpec(name, kind, None, None, True, shape)
                 continue
             fold = str(source.get("fold") or "")
             path = str(source.get("path") or "")

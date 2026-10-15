@@ -1474,7 +1474,13 @@ class TestTheRealPackagePath:
         def _get(slug: str, **_kw: Any) -> Any:
             if get_raises is not None:
                 raise get_raises
-            return SimpleNamespace(slug=slug, content=content, version=version)
+            # A version a PERSON cut, which is what the older rule draws.
+            return SimpleNamespace(
+                slug=slug,
+                content=content,
+                version=version,
+                events=[{"by": "user", "type": "edited", "version": version}],
+            )
 
         monkeypatch.setattr(
             artifacts, "get_default_store", lambda: SimpleNamespace(get=_get), raising=False
@@ -1592,26 +1598,21 @@ class TestTheRealPackagePath:
 
     # -- what a live package answers, with no Model to check against --------- #
 
-    def test_a_readable_package_is_live_and_carries_no_model(
+    def test_a_readable_package_is_live_and_carries_its_own_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A package that parses is ``live`` and brings NO manifest field specs.
+        """A package that parses is ``live`` and brings ITS OWN field specs.
 
-        The translation into field specs ships with the change that makes the display
-        read the same package, because that change is the first place its output is used
-        for anything: here, every package-bound write is refused before a Model would be
-        checked, so translating one would build a manifest and throw it away.
-
-        ``from_package`` is what the write route turns on, and it is PROVENANCE -- the
-        only thing this module can honestly say. What a package-sourced read means for a
-        write is the route's own decision, which is why the refusal lives there.
+        The page draws the package, so a write is checked against the same
+        ``package_manifest`` translation the page's controller subscribes by.
         """
         from kiro_crew import dashboard_package
 
         self.gate(monkeypatch)
         got = self.read()
         assert got.state == dashboard_package.STATE_LIVE
-        assert got.model is None
+        assert got.model is not None
+        assert got.model.manifest.id == "dashboard-package"
         assert got.from_package is True
         # The slug and the version still reach a person through the sentence, which is
         # what the refusal quotes.
@@ -1691,13 +1692,20 @@ class TestTheRealGateAndStore:
         art = store.create(
             name="Atlas", kind="dashboard", content=json.dumps(self._package("crewmate:atlas"))
         )
+        # A version a PERSON cut, which is the page the older rule draws.
+        cut = self._package("crewmate:atlas")
+        cut["view"]["blocks"][0]["title"] = "For you"
+        read = store.get(art.slug, assign_token=True)
+        store.update(
+            art.slug, content=json.dumps(cut), actor="user", snapshot_token=read.content_token
+        )
         got = dashboard_package.read_package_model("atlas")
         assert got.state == dashboard_package.STATE_LIVE
         # The STORED package is what was found, not the template a fall-through would
-        # have handed back: that is the thing this case is about, and ``from_package``
-        # is what says so now that a package read carries no Model.
+        # have handed back: that is the thing this case is about.
         assert got.from_package is True
-        assert got.model is None
+        assert got.model is not None
+        assert set(got.model.manifest.fields) == {"for_you"}
         assert art.slug in got.state_reason
 
     def test_a_package_the_validator_rejects_is_an_error_and_not_a_fall_through(

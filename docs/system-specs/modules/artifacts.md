@@ -1354,9 +1354,8 @@ The save then runs a page written as `view.html` once, offline
 `member_dashboard_fields.verify_package_page`) and returns the outcome as the reply's
 `verification` block: `passed`, `failed` with each error's message and its line and
 column in the agent's own `view.html`, `timed_out` when the run hit its limit, or
-`skipped` with the reason. **The page is not given the record.** A staged page is one no
-person has approved, and "a staged page is never fed, so a page nobody approved never
-receives a value" holds: the read `LivePage.arm` builds for the tab is taken inside the
+`skipped` with the reason. **The page is not given the record.** The check runs before the
+page is applied, so a page that is not live never receives a value: the read `LivePage.arm` builds for the tab is taken inside the
 gateway only to be copied (`dashboard_synth.synthesize`), and the browser is handed the
 copy alone. The copy keeps the record's shape -- the fields the package declares, list
 lengths, nulls and absent fields, each value's type, a string's length and the kinds of its
@@ -1413,23 +1412,15 @@ counted from the save: at it the browser's whole process group is killed and the
 `timed_out`. The read of the record cannot be interrupted, so a read that outlasts the
 limit starts no browser, and the save route waits at most `REPLY_SECONDS` for the check
 whatever it is doing. A block layout has no script and
-returns `verification: null`. The page stays staged whatever the run finds.
+returns `verification: null`. The page stays saved, and not live, whatever the run finds.
 
-**NOTHING IS STORED BY THE SAVE.** It stages the page. The package runs the
-store's own write gate (`canonical_package_content`) at STAGING, so a layout that
-could never be stored is refused while the agent is still composing rather than
-after a person has approved it. STAGING IS AS FAR AS A COMPOSED PAGE GETS ON THIS
-BASE: `dashboard_apply` of a staged package, and its `?preview=1` read, both
-answer HTTP 409 `package_display_pending`, write no artifact, bind nothing and
-leave the staged page in place. The two refusals share a code and have different
-reasons. The READ has nothing to draw: a staged page is neither an artifact nor a
-binding, the hosted page reads a BOUND `kind="dashboard"` artifact, and
-`member_dashboard._preview_record` goes through `staged_preview`, which answers
-`None` for a package payload. The APPLY would cost the caller its field writes:
-`dashboard_write` refuses every agentic field once a package is bound
-(`package.from_package`), with no agent verb that unbinds it. A later change
-lifts that write guard and this apply together, and makes the apply the
-artifact's writer. Template save, preview and apply are unchanged.
+**Save stores the page; apply puts it live, with no preview step** (rfc-crewmate-dynamic-dashboard, amendment 2026-10-15, decision 1). A person cannot judge a page's script by looking at it, so a preview step would add a click and no safety. `dashboard_save` runs the store's own write gate (`canonical_package_content`), then creates the caller's package or updates the one already bound to it (a fenced `update` naming the `content_token` it read); the page in force does not move. `dashboard_apply` with no `template_id` re-gates that package's current bytes and commits an instance version through `instance.apply_package`, which pins a gateway-owned snapshot of them. A root session's save or package apply is refused `session_package_unsupported`, because the hosted-page reader resolves a crewmate's binding only. The person's lock refuses the apply with `dashboard_locked`.
+
+**The page in force is a gateway-owned snapshot, named by the instance record.** `apply_package` writes the saved bytes to `crew-panels/<slug>.dashboard-page.<digest>.json` — beside the person's lock, outside the `members/<slug>/` tree the crewmate's shell can write — and the instance version pins `{slug, version, digest}`. A template version writes `package: null`. `instance.pinned_package(record)` reads the snapshot and checks its digest; `instance.keeps_older_package_rule(record)` is true only for an unlocked record written before the `package` key existed. `member_dashboard._serve` and `dashboard_package.read_package_model` both ask those two questions, so the page and the write check name one Model: a pinned snapshot is drawn and checked as-is; otherwise a released record, or an older record under the lock, uses its template copy; only an older unlocked record looks a package up by binding and draws the newest version a person cut (`applied_package_version`), with writes falling to the template when there is none. Because the page is the snapshot, no later `artifact_update`, delete-and-save under the same slug, or artifact version pruning moves or drops it. `dashboard_write` is checked against the snapshot's `model.types` (translated by `member_dashboard_fields.package_manifest`), and `dashboard_fields` lists those fields with the instance version beside them.
+
+**Every apply is a version, and one rollback goes back.** A package apply, a template `dashboard_apply` (with a `template_id`; `dashboard_preview` is only a look) and a rollback each write an instance version. A template apply releases the package, which is how a crewmate goes from its package back to a template page. `dashboard_rollback(to_version)` restores the version's own page in force: a package version re-pins its snapshot, and a template version releases it. A package apply prunes the snapshots that no kept version, current record or lock still pins. While the lock holds, `read` answers the lock snapshot, so a pinned page stays the page the person locked, and apply and rollback are refused.
+
+**Containment is unchanged.** The page is minted by `dashboard_frame` (sandbox `allow-scripts` only, `connect-src 'none'`, the model as the push allowlist, bindings written as text). The writer gate is unchanged: only the bound crewmate writes its package, and `binding_refusal` refuses a served version bound to anyone else. `catalog.PAGE_SINKS` is the one list of calls that turn a value into markup or code (decision 4): `test_dashboard_template_sink_ban.py` holds every shipped page and gallery package to it, and the catalog scan reports a `user` page that uses one as a problem and does not serve it.
 
 The kind is in `ALLOWED_KINDS` and deliberately NOT in
 `USER_SELECTABLE_KINDS`, and [Kind inference](#kind-inference) never returns it:
