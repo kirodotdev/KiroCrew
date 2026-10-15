@@ -25,9 +25,12 @@ No subprocess is spawned by anything in this file.
 
 from __future__ import annotations
 
+import gc
 import json
 import os
+import shutil
 import sys
+import threading
 from pathlib import Path
 from unittest import mock
 
@@ -36,6 +39,7 @@ import pytest
 from conftest import make_dir_link, requires_symlinks
 from kiro_crew.apps.builtins.papyrus.backend import store
 from kiro_crew.slugs import SLUG_CHARS
+from kiro_crew.testing.wait import wait_until
 
 
 @pytest.fixture()
@@ -231,6 +235,13 @@ class TestMainFile:
     def test_handles_a_corrupt_config(self, project: Path) -> None:
         (project / store.PROJECT_CONFIG_FILENAME).write_text("{not valid json", encoding="utf-8")
         assert store.get_main_file(project) == "main.tex"
+        # An oversized clone-supplied config reads as absent instead of raising.
+        oversized = json.dumps({"pad": "x" * store.PROJECT_CONFIG_MAX_BYTES})
+        (project / store.PROJECT_CONFIG_FILENAME).write_text(oversized, encoding="utf-8")
+        assert store.get_main_file(project) == "main.tex"
+        # ...and is not rewritten (which would discard its keys).
+        store.set_main_file(project, "main.tex")
+        assert (project / store.PROJECT_CONFIG_FILENAME).read_text(encoding="utf-8") == oversized
 
     def test_handles_a_non_object_config(self, project: Path) -> None:
         (project / store.PROJECT_CONFIG_FILENAME).write_text('["a list"]', encoding="utf-8")
@@ -331,7 +342,9 @@ class TestListProjects:
         proj.mkdir(parents=True)
         (proj / "main.tex").write_text("", encoding="utf-8")
         payload = store.list_projects(data_root)[0].to_dict()
-        assert set(payload) == {"name", "modified", "has_pdf"}
+        assert set(payload) == {"name", "modified", "has_pdf", "title", "generation"}
+        assert payload["title"] == "paper"
+        assert payload["generation"]
 
 
 class TestFileIO:
@@ -995,3 +1008,157 @@ class TestTheWalkAndTheScanRefuseJunctionsToo:
         make_dir_link(pdir / "alias", real)
 
         assert [p.name for p in store.list_projects(data_root)] == ["paper"]
+
+
+class TestPaperTitle:
+    """What the list CALLS a paper: the user's name, else the directory."""
+
+    def test_an_untrusted_title_is_cleaned(self, data_root: Path) -> None:
+        proj = store.projects_dir(data_root) / "cloned"
+        proj.mkdir(parents=True)
+        (proj / "main.tex").write_text("", encoding="utf-8")
+        cases: list[tuple[object, str]] = [
+            ("paper\u202egnp.txt", "papergnp.txt"),
+            ("first\nsecond", "first second"),
+            ("90% done", "90% done"),
+            ("\\LaTeX", "\\LaTeX"),
+            ("  Two   spaces ", "Two spaces"),
+            ({"nested": "object"}, "cloned"),
+            ("A" * 4000, "A" * 4000),  # the display cap is the route's, after redaction
+        ]
+        for configured, expected in cases:
+            store.write_project_config(proj, {"title": configured})
+            assert store.project_title(proj) == expected, configured
+
+        store.write_project_config(proj, {"title": "Kept"})
+        with pytest.raises(store.TitleRejected), store.config_lock(proj):
+            store.set_project_title_locked(proj, "\u200b")
+        assert store.read_project_config(proj)["title"] == "Kept"
+
+    @requires_symlinks
+    def test_no_config_read_follows_a_link(
+        self, data_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "config.json").write_text(json.dumps({"title": "Exfiltrated"}), encoding="utf-8")
+        proj = store.projects_dir(data_root) / "paper"
+        proj.mkdir(parents=True)
+
+        # `.papyrus.json` swapped for a link after `_config_path` checked it.
+        config = proj / store.PROJECT_CONFIG_FILENAME
+        os.symlink(outside / "config.json", config)
+        monkeypatch.setattr(store, "_config_path", lambda _project: config)
+        assert store.read_project_config(proj) == {}
+
+    def test_paper_state_survives_deletes_and_races(
+        self, data_root: Path, tmp_path: Path
+    ) -> None:
+        def paper(name: str) -> Path:
+            proj = store.projects_dir(data_root) / name
+            proj.mkdir(parents=True)
+            (proj / "main.tex").write_text("\\documentclass{article}", encoding="utf-8")
+            return proj
+
+        # A generation is stable, changes when the paper is replaced, and is shared
+        # with a spelling of the same paper behind a linked ancestor.
+        proj = paper("paper")
+        before = store.project_generation(proj)
+        assert store.project_generation(proj) == before
+        make_dir_link(tmp_path / "alias", data_root)
+        via_link = store.projects_dir(tmp_path / "alias") / "paper"
+        assert store.project_generation(via_link) == before
+        assert store.config_lock(via_link) is store.config_lock(proj)
+        store.delete_project(proj)
+        proj = paper("paper")
+        assert store.project_generation(proj) != before
+
+        # The registry is capped. A full registry first forgets entries whose
+        # folder is gone, then refuses a new paper instead of evicting a token it
+        # already handed out, so a listing never invalidates a row it returns.
+        store._GENERATIONS.clear()
+        current = store.project_generation(proj)
+        with mock.patch.object(store, "_MAX_GENERATIONS", 2):
+            other_gen = store.project_generation(other := paper("other"))
+            assert store.project_generation(third := paper("third")) == ""
+            assert store.project_generation(proj) == current
+            assert store.project_generation(other) == other_gen
+            with pytest.raises(RuntimeError):
+                store.list_projects(data_root)
+            shutil.rmtree(other)  # removed outside Papyrus
+            assert store.project_generation(third) != ""
+        store.delete_project(third)
+        # A row torn by a delete and recreate while it is built is left out.
+        real_title = store.project_title
+
+        def replaced_mid_row(project: Path) -> str:
+            title = real_title(project)
+            store.delete_project(project)
+            paper(project.name)
+            return title
+
+        with mock.patch.object(store, "project_title", replaced_mid_row):
+            assert store.list_projects(data_root) == []
+        assert [p.name for p in store.list_projects(data_root)] == ["paper"]
+
+        # A title rename and a main-file change racing between read and write both land.
+        paper("race")
+        race = store.projects_dir(data_root) / "race"
+        (race / "other.tex").write_text("", encoding="utf-8")
+        real_read = store.read_project_config
+        real_read_for_update = store._read_config_for_update
+        both_read = threading.Barrier(2, timeout=0.5)
+
+        def slow_read(project: Path) -> dict:
+            config = real_read_for_update(project)
+            try:
+                both_read.wait()
+            except threading.BrokenBarrierError:
+                pass  # serialized: the second reader never enters the window
+            return config
+
+        def rename(project: Path, title: str) -> None:
+            with store.config_lock(project):
+                store.set_project_title_locked(project, title)
+
+        with mock.patch.object(store, "_read_config_for_update", slow_read):
+            workers = [
+                threading.Thread(target=rename, args=(race, "Named")),
+                threading.Thread(target=store.set_main_file, args=(race, "other.tex")),
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(5)
+        config = real_read(race)
+        assert (config.get("title"), config.get("main_file")) == ("Named", "other.tex")
+
+        # A refused write is not a saved rename, nor a saved main document.
+        with mock.patch.object(store, "write_project_config", return_value=False):
+            with pytest.raises(store.ConfigWriteRefused):
+                rename(race, "New name")
+            assert store.set_main_file(race, "main.tex") is False
+
+        # A delete waits for a write in flight, and a late write never recreates it.
+        lock = store.config_lock(race)
+        lock.acquire()
+        queued = threading.Event()
+        worker = threading.Thread(target=store.delete_project, args=(race,))
+        try:
+            with mock.patch.object(
+                store, "_config_lock", side_effect=lambda _p, held=lock: queued.set() or held
+            ):
+                worker.start()
+                wait_until(queued.is_set)
+            assert race.exists()
+        finally:
+            lock.release()
+            worker.join(timeout=5)
+        assert not race.exists()
+        assert store.write_project_config(race, {"title": "late"}) is False
+        assert not race.exists()
+
+        # A deleted paper does not keep its lock in the registry.
+        del lock
+        gc.collect()
+        assert str(race) not in store._CONFIG_LOCKS

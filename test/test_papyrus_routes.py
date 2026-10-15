@@ -26,6 +26,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -36,6 +38,7 @@ from aiohttp import web
 from aiohttp.test_utils import make_mocked_request
 
 from kiro_crew.apps.builtins.papyrus.backend import gitops, latex, routes, store, tectonic
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 def _request(method: str, path: str, body: dict[str, Any] | None = None) -> web.Request:
@@ -47,6 +50,14 @@ def _request(method: str, path: str, body: dict[str, Any] | None = None) -> web.
     request.json = mock.AsyncMock(return_value=body if body is not None else {})  # type: ignore[method-assign]
     request._payload_length = len(payload)  # type: ignore[attr-defined]
     return request
+
+
+def _gen(name: str = "my-paper") -> str:
+    """The generation the paper list hands the row for *name* (``PUT /title`` needs it)."""
+    try:
+        return store.project_generation(store.safe_project_dir(name)) or "absent"
+    except store.PathRejected:
+        return "rejected"
 
 
 def _json_of(response: web.StreamResponse) -> dict[str, Any]:
@@ -121,7 +132,7 @@ def _registered_routes() -> list[tuple[str, str, Any]]:
         for r in app.router.routes()
         if r.resource is not None and r.method != "HEAD"
     ]
-    assert len(found) == 19, found
+    assert len(found) == 20, found
     return found
 
 
@@ -160,7 +171,7 @@ class TestOwnerGate:
             guarded = routes._require_enabled(_record)
             response = await guarded(_gated_request(method, path, user=_OWNER))
             assert response.status == 200, f"owner refused on {method} {path} ({handler.__name__})"
-        assert len(reached) == 19
+        assert len(reached) == 20
 
     async def test_registered_push_and_commit_never_reach_git_for_a_non_owner(
         self, enabled: None, data_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -492,6 +503,26 @@ class TestClone:
         assert response.status == 422
         assert not (store.projects_dir() / "p").exists()
 
+    async def test_a_rejected_clone_is_removed_under_the_config_lock(
+        self, enabled: None, data_root: Path
+    ) -> None:
+        """A title write racing an unlocked cleanup would recreate the rejected paper."""
+        async def fake_clone(_url: str, destination: Path) -> None:
+            destination.mkdir(parents=True)
+            (destination / "README.md").write_text("", encoding="utf-8")
+
+        with (
+            mock.patch.object(gitops, "clone", fake_clone),
+            mock.patch.object(store, "delete_project", wraps=store.delete_project) as delete,
+        ):
+            await routes._handle_clone_project(
+                _request(
+                    "POST", "/api/apps/papyrus/projects/clone",
+                    {"url": "https://example.com/g/p.git"},
+                )
+            )
+        delete.assert_called_once()
+
     async def test_derives_the_name_from_the_url(self, enabled: None, data_root: Path) -> None:
         async def fake_clone(_url: str, destination: Path) -> None:
             destination.mkdir(parents=True)
@@ -613,6 +644,13 @@ class TestFiles:
             _request("PUT", "/api/apps/papyrus/main", {"name": "my-paper", "path": "thesis.tex"})
         )
         assert _json_of(response)["main_file"] == "thesis.tex"
+        assert store.get_main_file(project) == "thesis.tex"
+        # A write the store refuses is not reported as saved.
+        with mock.patch.object(store, "_config_path", return_value=None):
+            response = await routes._handle_set_main(
+                _request("PUT", "/api/apps/papyrus/main", {"name": "my-paper", "path": "main.tex"})
+            )
+        assert (response.status, _json_of(response)["code"]) == (409, "project_config_refused")
         assert store.get_main_file(project) == "thesis.tex"
 
     async def test_set_main_404s_an_absent_file(self, enabled: None, project: Path) -> None:
@@ -1454,6 +1492,7 @@ class TestNoBlockingCallsOnTheLoop:
             routes._handle_create_file,
             routes._handle_delete_file,
             routes._handle_set_main,
+            routes._handle_set_title,
             routes._handle_pdf,
         ):
             src = inspect.getsource(handler)
@@ -1624,3 +1663,180 @@ class TestValidationErrorsSurviveTheOffload:
                     )
                 )
         assert clone.await_count == 0
+
+
+@pytest.mark.asyncio
+class TestPaperTitleRoute:
+    """``PUT /title`` renames what the list and the header DISPLAY; the directory stays."""
+
+    async def test_rename_lifecycle(self, enabled: None, project: Path) -> None:
+        async def shown() -> tuple[str, str]:
+            listed = await routes._handle_list_projects(
+                _request("GET", "/api/apps/papyrus/projects")
+            )
+            (row,) = _json_of(listed)["projects"]
+            detail = await routes._handle_get_project(
+                _request("GET", "/api/apps/papyrus/project?name=my-paper")
+            )
+            assert row["name"] == _json_of(detail)["name"] == "my-paper"
+            return row["title"], _json_of(detail)["title"]
+
+        async def put(body: dict[str, Any]) -> web.StreamResponse:
+            return await routes._handle_set_title(
+                _request("PUT", "/api/apps/papyrus/title", body)
+            )
+
+        # No name set: the directory.
+        assert await shown() == ("my-paper", "my-paper")
+
+        # A rename wins everywhere and touches neither the directory nor the config.
+        store.set_main_file(project, "main.tex")
+        response = await put({"name": "my-paper", "generation": _gen(), "title": "MACKEREL"})
+        assert _json_of(response) == {"ok": True, "title": "MACKEREL"}
+        assert await shown() == ("MACKEREL", "MACKEREL")
+        assert (project / "main.tex").is_file()
+        assert store.read_project_config(project)["main_file"] == "main.tex"
+
+        # Malformed requests are refused and keep the name.
+        for body in (
+            {"name": "my-paper", "generation": _gen()},
+            {"name": "my-paper", "generation": _gen(), "title": 7},
+            {"name": "my-paper", "title": "New"},
+        ):
+            with pytest.raises(web.HTTPBadRequest):
+                await put(body)
+        response = await put({"name": "my-paper", "generation": _gen(), "title": "\u200b"})
+        assert (response.status, _json_of(response)["code"]) == (400, "title_rejected")
+        assert await shown() == ("MACKEREL", "MACKEREL")
+
+        # An empty title is the way back to the directory name.
+        response = await put({"name": "my-paper", "generation": _gen(), "title": ""})
+        assert _json_of(response)["title"] == "my-paper"
+        assert store.PROJECT_TITLE_KEY not in store.read_project_config(project)
+
+        with pytest.raises(web.HTTPNotFound):
+            await put({"name": "absent", "generation": _gen("absent"), "title": "x"})
+        with pytest.raises(web.HTTPBadRequest):
+            await put({"name": "../evil", "generation": _gen("../evil"), "title": "x"})
+
+    async def test_a_rename_that_did_not_happen_says_so(
+        self, enabled: None, project: Path
+    ) -> None:
+        async def put(generation: str, title: str) -> web.StreamResponse:
+            return await routes._handle_set_title(
+                _request(
+                    "PUT",
+                    "/api/apps/papyrus/title",
+                    {"name": "my-paper", "generation": generation, "title": title},
+                )
+            )
+
+        # The existence check runs under the config lock.
+        held: list[bool] = []
+        real_project = routes._project
+
+        def observing(name: str) -> Path:
+            held.append(store.config_lock(store.safe_project_dir(name)).locked())
+            return real_project(name)
+
+        with mock.patch.object(routes, "_project", observing):
+            assert (await put(_gen(), "New")).status == 200
+        assert held == [True]
+
+        # A write the store refuses is an error, not a success.
+        with mock.patch.object(store, "_config_path", return_value=None):
+            response = await put(_gen(), "Refused")
+        assert (response.status, _json_of(response)["code"]) == (409, "project_config_refused")
+
+        # A config that exists but was not read (oversized, a hardlink) is not
+        # overwritten as empty, and a write past the read cap is not made.
+        config_file = project / store.PROJECT_CONFIG_FILENAME
+        cap = store.PROJECT_CONFIG_MAX_BYTES
+        linked = '{"main_file": "main.tex"}'
+        for content in ('{"p":"' + "x" * cap + '"}', '{"p":"' + "x" * (cap - 20) + '"}', linked):
+            config_file.write_text(content, encoding="utf-8")
+            if content == linked:
+                os.link(config_file, project / "hardlink")
+            response = await put(_gen(), "Refused")
+            assert (response.status, _json_of(response)["code"]) == (409, "project_config_refused")
+            assert config_file.read_text(encoding="utf-8") == content
+        (project / "hardlink").unlink()
+        # A config that does not parse into an object holds nothing to keep, so a
+        # rename replaces it instead of being refused forever.
+        for content in ("{no", "[]"):
+            config_file.write_text(content, encoding="utf-8")
+            assert (await put(_gen(), "Repaired")).status == 200
+            assert store.read_project_config(project)[store.PROJECT_TITLE_KEY] == "Repaired"
+        config_file.unlink()
+        # A row loaded before a same-name replacement cannot rename the new paper,
+        # and a reloaded row can.
+        stale = _gen()
+        main_tex = (project / "main.tex").read_text(encoding="utf-8")
+        store.delete_project(project)
+        project.mkdir()
+        (project / "main.tex").write_text(main_tex, encoding="utf-8")
+        response = await put(stale, "Stale")
+        assert (response.status, _json_of(response)["code"]) == (409, "project_replaced")
+        assert store.PROJECT_TITLE_KEY not in store.read_project_config(project)
+        assert _gen() != stale
+        assert (await put(_gen(), "Fresh")).status == 200
+
+        # A rename queued behind a delete leaves the recreated paper alone.
+        lock = store.config_lock(project)
+        lock.acquire()
+        queued = threading.Event()
+        try:
+            with mock.patch.object(
+                store, "_config_lock", side_effect=lambda _p, held=lock: queued.set() or held
+            ):
+                pending = asyncio.ensure_future(put(_gen(), "Queued"))
+                await async_wait_until(queued.is_set)
+            store._delete_locked(project, lock)
+            project.mkdir()
+        finally:
+            lock.release()
+        response = await await_until(pending, what="queued rename")
+        assert (response.status, _json_of(response)["code"]) == (409, "project_replaced")
+        assert store.PROJECT_TITLE_KEY not in store.read_project_config(project)
+
+    async def test_a_title_is_redacted_and_capped_on_every_surface(
+        self, enabled: None, project: Path
+    ) -> None:
+        async def listed_title() -> str:
+            response = await routes._handle_list_projects(
+                _request("GET", "/api/apps/papyrus/projects")
+            )
+            (row,) = _json_of(response)["projects"]
+            return str(row["title"])
+
+        def declare(title: str) -> None:
+            store.write_project_config(project, {"title": title})
+
+        declare(f"aws_secret_access_key = {_FAKE_AWS_SECRET}")
+        detail = await routes._handle_get_project(
+            _request("GET", "/api/apps/papyrus/project?name=my-paper")
+        )
+        for title in (await listed_title(), _json_of(detail)["title"]):
+            assert _FAKE_AWS_SECRET not in title
+            assert "[REDACTED" in title
+
+        # Redacted before the display cut, so a token across the cap cannot leak.
+        declare("x" * (store.MAX_TITLE_CHARS - 20) + " " + _FAKE_PAT)
+        assert "ghp_" not in await listed_title()
+        declare("B" * 4000)
+        assert await listed_title() == "B" * store.MAX_TITLE_CHARS
+
+        # Without the redaction layer the row falls back to the identifier.
+        declare("Perfectly fine")
+        with mock.patch.object(routes, "_HAS_SECURITY", False):
+            assert await listed_title() == "my-paper"
+
+        # The rename echoes the resolved title back, redacted too.
+        response = await routes._handle_set_title(
+            _request(
+                "PUT",
+                "/api/apps/papyrus/title",
+                {"name": "my-paper", "generation": _gen(), "title": f"key {_FAKE_AWS_SECRET}"},
+            )
+        )
+        assert _FAKE_AWS_SECRET not in _json_of(response)["title"]

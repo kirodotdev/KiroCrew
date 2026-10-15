@@ -30,13 +30,19 @@ import json
 import logging
 import os
 import re
+import secrets
 import stat
+import threading
+import unicodedata
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import platform_compat
 from kiro_crew.apps.manager import app_data_dir
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger("kirocrew.app.papyrus")
@@ -45,12 +51,41 @@ APP_NAME = "papyrus"
 
 #: Per-project config file holding the chosen main ``.tex`` document.
 PROJECT_CONFIG_FILENAME = ".papyrus.json"
+# `.papyrus.json` holds a main-file name and a capped title; anything larger is
+# not a config this app wrote, and is read as absent rather than parsed.
+PROJECT_CONFIG_MAX_BYTES = 64 * 1024
 
 #: The document compiled when a project has no configured main file.
 DEFAULT_MAIN_FILE = "main.tex"
 
 #: Candidate main documents probed, in order, when ``main.tex`` is absent.
 MAIN_FILE_CANDIDATES = ("main.tex", "paper.tex", "article.tex", "manuscript.tex")
+
+#: Config key holding a display name the USER chose for the paper.
+#:
+#: Separate from the directory name on purpose: the directory name is the app's
+#: identifier — it appears in every route (``?name=``), in the PDF URL, in the
+#: "last opened paper" pointer and in the key of the paper's co-author session —
+#: so renaming the directory would break links a rename has no business
+#: touching. This key renames only what the list DISPLAYS.
+PROJECT_TITLE_KEY = "title"
+
+#: Ceiling on a displayed title, in characters.
+#:
+#: A set name is untrusted (see :func:`project_title`), so it is text from a
+#: cloned repository landing in a table cell: without a cap, 40 kB of it is a
+#: layout attack on the paper list, and every project row carries it in the list
+#: payload.
+MAX_TITLE_CHARS = 120
+
+#: How long a raw title :func:`sanitize_title` accepts. Generous against the
+#: 120-char display cap, small enough that the work stays bounded whatever a
+#: cloned ``.papyrus.json`` ships. A longer raw title is treated as no title
+#: rather than cut, and the display cap itself is applied by
+#: the route AFTER redaction: cutting first can split a credential across the
+#: boundary, and the half left behind does not match the pattern that would have
+#: redacted it.
+_TITLE_INPUT_CHARS = MAX_TITLE_CHARS * 64
 
 #: A project name must be one lowercase slug segment. Anything else (a slash, a
 #: dot, a leading dash) is refused rather than sanitized, because a "cleaned up"
@@ -119,9 +154,24 @@ class ProjectSummary:
     name: str
     modified: float
     has_pdf: bool
+    #: What to DISPLAY for this paper — see :func:`project_title`. Never the
+    #: identifier: ``name`` stays the key every route and stored pointer uses.
+    title: str = ""
+    #: Which paper this row is — see :func:`project_generation`. A rename sends it
+    #: back, so a row loaded before a delete and same-name create cannot rename
+    #: the paper that replaced it.
+    generation: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "modified": self.modified, "has_pdf": self.has_pdf}
+        return {
+            "name": self.name,
+            "modified": self.modified,
+            "has_pdf": self.has_pdf,
+            # Falls back to the identifier rather than shipping "", so a client
+            # can render `title` unconditionally and never print an empty row.
+            "title": self.title or self.name,
+            "generation": self.generation,
+        }
 
 
 def data_dir(root: Path | None = None) -> Path:
@@ -381,28 +431,160 @@ def _config_path(project: Path) -> Path | None:
         return None
 
 
+class TitleRejected(ValueError):
+    """A non-blank rename that sanitizes to nothing (only invisible characters).
+
+    Only a blank field clears the override; a name with no displayable text is
+    refused rather than read as a request to clear.
+    """
+
+
+class ConfigWriteRefused(Exception):
+    """``.papyrus.json`` is a link, outside the project, unreadable or would exceed its cap.
+
+    Raised by the callers whose success the user sees — a rename and ``PUT /main``
+    — instead of answering "saved" over a write that never happened. The compile
+    path ignores :func:`set_main_file`'s answer: it calls it implicitly and must
+    not fail.
+    """
+
+
+# Weak values: a lock lives only while a writer holds it, so a deleted paper leaves
+# no entry behind. A concurrent writer still gets the SAME lock, because the one
+# holding it keeps it alive for as long as it matters.
+# Storing a bare `threading.Lock` here does NOT raise TypeError: `_thread.lock`
+# has a C-level weak-reference slot, so `weakref.ref(threading.Lock())` works on
+# every Python this package runs on (>= 3.12) even though the object exposes no
+# `__weakref__` attribute. The `_AgentLock` docstring in `subagent_persistence.py`
+# says otherwise; it is wrong, and no wrapper is needed. The route tests take these
+# locks on every rename, delete and main-file write, so a TypeError would fail them.
+_CONFIG_LOCKS: weakref.WeakValueDictionary[str, threading.Lock] = weakref.WeakValueDictionary()
+_CONFIG_LOCKS_GUARD = threading.Lock()
+
+
+def _state_key(project: Path) -> str:
+    """The key every per-paper in-memory table uses for *project*.
+
+    Resolved, because callers spell the same paper differently: the listing walks
+    :func:`projects_dir` as built, while a route goes through
+    :func:`safe_project_dir`, which resolves. Behind a symlinked ancestor
+    (``/home`` -> ``/var/home`` on rpm-ostree Fedora, a home moved to another
+    volume on macOS) the two strings differ, and a raw ``str(project)`` would give
+    one paper two locks and two generations.
+    """
+    try:
+        return str(project.resolve())
+    except (OSError, RuntimeError):
+        return str(project.absolute())
+
+
+def _config_lock(project: Path) -> threading.Lock:
+    """Return the lock serializing *project*'s config read-modify-write.
+
+    Two mutators (the main document and the display title) each read the whole
+    file and write it back; run concurrently, both read the same stale config and
+    the later write silently discards the other's key. Keyed per project so two
+    papers never wait on each other.
+    """
+    key = _state_key(project)
+    with _CONFIG_LOCKS_GUARD:
+        return _CONFIG_LOCKS.setdefault(key, threading.Lock())
+
+
+def _canonical_project_root(project: Path) -> Path:
+    """The admission root for a read inside *project*.
+
+    The projects dir (owned by Kiro Crew, resolved for a symlinked ancestor) plus
+    the entry name taken LITERALLY. Resolving the entry itself would let a project
+    directory swapped for a link redefine its own root.
+    """
+    return project.parent.resolve() / project.name
+
+
 def read_project_config(project: Path) -> dict[str, Any]:
-    """Read ``.papyrus.json``, returning ``{}`` when absent, corrupt or uncontained."""
+    """Read ``.papyrus.json``, returning ``{}`` when absent, corrupt, oversized or uncontained."""
+    try:
+        return _read_config_for_update(project)
+    except ConfigUnreadable:
+        return {}
+
+
+class ConfigUnreadable(Exception):
+    """``.papyrus.json`` exists but was not read (oversized or refused).
+
+    A writer must not take it for an empty config: rewriting it would discard
+    every key it holds.
+    """
+
+
+def _read_config_for_update(project: Path) -> dict[str, Any]:
+    """:func:`read_project_config` for a writer: ``{}`` when there is no file, or
+    when it holds nothing to keep (not valid JSON, or not a JSON object).
+
+    A file that exists but cannot be used raises :class:`ConfigUnreadable`. The
+    bytes are read through :func:`safe_read_file_bytes_nolink`, pinned to the
+    project root on the opened descriptor: `_config_path` refuses a link at the
+    name, but a pull can swap the file for one between that check and the read.
+    That read answers ``None`` for an absent file and for every refusal alike
+    (a hardlink, a descriptor it cannot verify), so the two are told apart here.
+    """
     path = _config_path(project)
-    if path is None or not path.is_file():
+    if path is None:
+        # A link or an uncontained name: `write_project_config` refuses it too.
         return {}
     try:
-        loaded = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        root = _canonical_project_root(project)
+        raw = safe_read_file_bytes_nolink(
+            str(path),
+            str(root),
+            max_bytes=PROJECT_CONFIG_MAX_BYTES,
+            within_root_is_canonical=True,
+        )
+    except (OSError, FileTooLargeError) as exc:
+        raise ConfigUnreadable(project.name) from exc
+    if raw is None:
+        if os.path.lexists(path):
+            raise ConfigUnreadable(project.name)
+        return {}
+    # Bytes that do not parse into an object hold no key to keep, so the writer
+    # starts from an empty config instead of refusing every write forever.
+    try:
+        loaded = json.loads(raw.decode("utf-8"))
+    except ValueError:
         return {}
     return loaded if isinstance(loaded, dict) else {}
 
 
-def write_project_config(project: Path, config: dict[str, Any]) -> None:
+def write_project_config(project: Path, config: dict[str, Any]) -> bool:
     """Persist ``.papyrus.json`` atomically (crash mid-write keeps the old file).
 
     Refuses an uncontained path for the mirror of the reason the reader does: a
     symlinked config would have this WRITE land on whatever it points at.
+    Returns whether it wrote, so a caller that must not report a refused write
+    as saved can tell the two apart.
+
+    Also refuses once the project directory is gone: a write that lands after
+    :func:`delete_project` would recreate the directory, and the deleted paper's
+    name would stay taken. Callers hold :func:`_config_lock`, which the delete
+    holds too, so the check and the write cannot straddle a removal.
+
+    Refuses a payload over the read cap too: it would save, then read back as absent.
     """
     path = _config_path(project)
-    if path is None:
-        return
-    atomic_write(path, json.dumps(config, indent=2), fsync=True)
+    if path is None or not project.is_dir():
+        return False
+    payload = json.dumps(config, indent=2)
+    if len(payload.encode("utf-8")) > PROJECT_CONFIG_MAX_BYTES:
+        return False
+    # This function calls atomic_write() with the full path
+    # projects/<id>/.papyrus.json. If another program replaced the
+    # projects/<id> folder with a symlink just before that call, the file
+    # would be written in the folder that symlink points to. Accepted:
+    # Papyrus never creates symlinks or moves folders, so only a program
+    # running as this same user could do it, and that program can already
+    # write .papyrus.json itself.
+    atomic_write(path, payload, fsync=True, newline="")
+    return True
 
 
 def get_main_file(project: Path) -> str:
@@ -472,12 +654,184 @@ def _contained_file(project: Path, relative: str) -> bool:
         return False
 
 
-def set_main_file(project: Path, main_file: str) -> None:
-    """Set the main document (validated), preserving other config keys."""
+#: Directory path -> (inode, random token). Held in memory, never in the paper:
+#: ``.papyrus.json`` travels with a cloned repository, so a token stored there
+#: would come back identical when the same repository is cloned again under the
+#: same name — exactly the replacement this has to tell apart.
+_GENERATIONS: dict[str, tuple[int, str]] = {}
+_GENERATIONS_GUARD = threading.Lock()
+#: Entry cap for :data:`_GENERATIONS`. A delete through Papyrus forgets its entry,
+#: but a directory removed outside it leaves one behind. At the cap, entries whose
+#: directory is gone (or holds another inode) are dropped first; if it is still
+#: full, a new paper gets no token rather than evicting one already handed out, so
+#: a listing never returns a row whose token it has just invalidated, and
+#: :func:`list_projects` leaves that paper out and logs how many it left out. Far
+#: above any real paper count. An entry is a path and a token, so the cap bounds
+#: the registry to a few megabytes.
+_MAX_GENERATIONS = 65536
+
+
+class ProjectReplaced(Exception):
+    """The paper a client names is not the one it loaded (see :func:`project_generation`)."""
+
+
+def project_generation(project: Path) -> str:
+    """A token that changes whenever *project* is deleted and created again.
+
+    Random per directory and forgotten on delete, so a paper recreated under the
+    same name gets a new one. The inode is kept alongside it to catch a directory
+    removed and recreated outside Papyrus. A restart forgets every token: a list
+    loaded before it then has its rename refused, which is the safe failure (the
+    client reloads the list and retries).
+
+    The inode alone cannot catch a removal outside Papyrus that the OS answers
+    with the SAME inode on the recreate. That is accepted: the token guards only
+    the display-only ``title`` key (``name`` stays every route's identifier), the
+    wrong name shows in the next list and is retyped or cleared with the same
+    route. Adding ctime to the identity, the obvious remedy, would be worse: a
+    directory's ctime moves whenever an entry in it is created, renamed or removed,
+    including the atomic write of ``.papyrus.json`` each rename does and the PDF
+    each first compile creates, so ordinary renames would be refused.
+    """
+    try:
+        inode = project.stat().st_ino
+    except OSError:
+        return ""
+    key = _state_key(project)
+    with _GENERATIONS_GUARD:
+        entry = _GENERATIONS.get(key)
+        if entry is None or entry[0] != inode:
+            if entry is None and len(_GENERATIONS) >= _MAX_GENERATIONS:
+                _drop_stale_generations_locked()
+                if len(_GENERATIONS) >= _MAX_GENERATIONS:
+                    return ""
+            entry = (inode, secrets.token_hex(16))
+            _GENERATIONS[key] = entry
+        return entry[1]
+
+
+def _drop_stale_generations_locked() -> None:
+    """Forget entries whose directory is gone or holds another inode.
+
+    The caller holds :data:`_GENERATIONS_GUARD`. Runs only at the cap.
+    """
+    for key, (inode, _token) in list(_GENERATIONS.items()):
+        try:
+            if os.stat(key).st_ino == inode:
+                continue
+        except OSError:
+            pass
+        del _GENERATIONS[key]
+
+
+def _delete_locked(project: Path, lock: threading.Lock) -> bool:
+    """Body of :func:`delete_project`; the caller holds *lock*."""
+    key = _state_key(project)
+    gone = platform_compat.rmtree_force(project)
+    with _GENERATIONS_GUARD:
+        _GENERATIONS.pop(key, None)
+    return gone
+
+
+def delete_project(project: Path) -> bool:
+    """Remove *project*'s tree, returning whether it is gone afterwards.
+
+    Holds the config lock so a rename or main-document write in flight either
+    finishes before the removal or sees the directory gone and writes nothing.
+    """
+    lock = _config_lock(project)
+    with lock:
+        return _delete_locked(project, lock)
+
+
+def set_main_file(project: Path, main_file: str) -> bool:
+    """Set the main document (validated), preserving other config keys.
+
+    Returns whether it was saved: ``False`` for a config that is a link, outside
+    the project or oversized. The compile path ignores the answer; ``PUT /main``
+    reports it.
+    """
     safe_child(project, main_file)
-    config = read_project_config(project)
-    config["main_file"] = main_file
-    write_project_config(project, config)
+    with _config_lock(project):
+        try:
+            config = _read_config_for_update(project)
+        except ConfigUnreadable:
+            logger.warning("papyrus: not rewriting an unreadable config in %s", project.name)
+            return False
+        config["main_file"] = main_file
+        return write_project_config(project, config)
+
+
+def sanitize_title(raw: str) -> str:
+    """Return *raw* as a displayable name, or ``""`` to refuse it.
+
+    A name is plain text, so ``%`` and a backslash are ordinary characters.
+    Unicode control and format characters (categories ``Cc``/``Cf``, where a bidi
+    override lives) are removed, a line break or tab becoming a space:
+    ``.papyrus.json`` can arrive inside a cloned repository. Runs of spaces
+    collapse to one, and a name with nothing left is refused, which falls back
+    to the directory name.
+
+    Does NOT apply :data:`MAX_TITLE_CHARS`: the route cuts to that length after
+    redacting, so a token that straddles the cap is redacted whole instead of
+    being split into a fragment the redactor does not recognize.
+    """
+    if len(raw) > _TITLE_INPUT_CHARS:
+        return ""
+    visible = "".join(
+        char
+        for char in raw
+        if char.isspace() or unicodedata.category(char) not in ("Cc", "Cf")
+    )
+    return re.sub(r"\s+", " ", visible).strip()
+
+
+def project_title(project: Path) -> str:
+    """Resolve what the paper list should CALL this project.
+
+    The name the user set, else the directory name. The set name is UNTRUSTED
+    text — ``.papyrus.json`` can arrive inside a cloned repository — so it goes
+    through :func:`sanitize_title`, and an empty result falls back to the
+    directory name rather than showing a blank row.
+    """
+    configured = read_project_config(project).get(PROJECT_TITLE_KEY)
+    if isinstance(configured, str) and (chosen := sanitize_title(configured)):
+        return chosen
+    return project.name
+
+
+def config_lock(project: Path) -> threading.Lock:
+    """The lock a caller holds across authorizing *project* and writing its config.
+
+    :func:`set_project_title_locked` expects it held: taken BEFORE the route's
+    existence check, it keeps a delete (which holds it too) and a same-name
+    create from landing between that check and the write.
+    """
+    return _config_lock(project)
+
+
+def set_project_title_locked(project: Path, title: str) -> None:
+    """Set (or clear) the user's display name; the caller holds :func:`config_lock`.
+
+    An empty *title* REMOVES the override instead of storing a blank, so the
+    field doubles as "go back to the directory name" — which is the only
+    way back once a paper has been renamed, and needs no second control.
+    """
+    cleaned = sanitize_title(title)
+    if title.strip() and not cleaned:
+        raise TitleRejected(project.name)
+    try:
+        config = _read_config_for_update(project)
+    except ConfigUnreadable:
+        raise ConfigWriteRefused(project.name) from None
+    if cleaned:
+        config[PROJECT_TITLE_KEY] = cleaned
+    else:
+        config.pop(PROJECT_TITLE_KEY, None)
+    # The path is re-checked at write time: a link at `.papyrus.json`, or a
+    # directory deleted meanwhile, is refused there and must not answer as saved.
+    if not write_project_config(project, config):
+        raise ConfigWriteRefused(project.name)
 
 
 def pdf_path(project: Path, main_file: str) -> Path | None:
@@ -548,11 +902,25 @@ def list_projects(root: Path | None = None) -> list[ProjectSummary]:
     Synchronous filesystem scan — call it off the event loop.
     """
     out: list[ProjectSummary] = []
+    no_token = 0
     for entry in sorted(projects_dir(root).iterdir()):
         # Same helper as `safe_project_dir`, which refuses a linked project entry
         # outright: a junction under `projects/` is a directory `is_symlink()`
         # misses, so it was enumerated here as a real project.
         if not entry.is_dir() or is_reparse_link(entry) or entry.name.startswith("."):
+            continue
+        # Sampled BEFORE the row's fields and checked again after them: a delete
+        # and same-name create in between would otherwise pair the replacement's
+        # generation with the deleted paper's title, and a rename from that row
+        # would pass the generation check. Such a row is left out; the next list
+        # shows the paper that replaced it.
+        generation = project_generation(entry)
+        if not generation:
+            # Besides a folder deleted mid-listing, `project_generation` returns ""
+            # only when :data:`_MAX_GENERATIONS` papers that still exist already
+            # hold a token: it never erases a token it handed out, and drops those
+            # of deleted folders first. That case fails the whole list below.
+            no_token += 1
             continue
         main_file = resolve_main_file(entry)
         if main_file is None:
@@ -562,14 +930,28 @@ def list_projects(root: Path | None = None) -> list[ProjectSummary]:
             modified = tex.stat().st_mtime
         except OSError:
             continue
-        out.append(
-            ProjectSummary(
-                name=entry.name,
-                modified=modified,
-                # An uncontained PDF reads as "no PDF": not servable either way.
-                has_pdf=bool((_pdf := pdf_path(entry, main_file)) and _pdf.is_file()),
-            )
+        row = ProjectSummary(
+            name=entry.name,
+            modified=modified,
+            # An uncontained PDF reads as "no PDF": not servable either way.
+            has_pdf=bool((_pdf := pdf_path(entry, main_file)) and _pdf.is_file()),
+            title=project_title(entry),
+            generation=generation,
         )
+        if project_generation(entry) != generation:
+            continue
+        out.append(row)
+    if no_token:
+        logger.warning(
+            "papyrus: left %d paper(s) out of the list: no generation token "
+            "(unreadable directory, or the registry is at its cap of %d)",
+            no_token,
+            _MAX_GENERATIONS,
+        )
+        # At the cap the rows left out still exist: a successful list would tell
+        # the page they were deleted, and it would forget their co-author chats.
+        if len(_GENERATIONS) >= _MAX_GENERATIONS:
+            raise RuntimeError("papyrus: generation registry full, paper list incomplete")
     return out
 
 

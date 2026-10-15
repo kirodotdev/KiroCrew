@@ -31,10 +31,10 @@ once at gateway startup and an unwrapped one would answer regardless of the opt-
 |--------|------|---------|
 | GET | `/health` | Whether a compiler and `git` exist on the host, so the UI can explain "Cmd+S does nothing" before the first compile rather than as a failure. Also carries `managed` — whether this platform has a pinned Tectonic build, whether one is installed, and the provisioning job's live state — so ONE poll drives both the warning banner and the install progress |
 | POST | `/compiler/provision` | Install the managed Tectonic compiler. **202 + poll `/health`**; idempotent (200 when already installed), 422 `compiler_unsupported_platform` where no pinned build exists. See Managed compiler |
-| GET | `/projects` | List papers (name, main-document mtime, whether a PDF exists) |
+| GET | `/projects` | List papers (display name, directory name, main-document mtime, whether a PDF exists) |
 | POST | `/projects` | Create a paper from the standard `article` template (or a supplied `template`) |
 | POST | `/projects/clone` | Shallow-clone a git remote as a paper. A repo with no `.tex` is rejected **and removed**, so the name is not held hostage by an unopenable project |
-| GET | `/project` | Resolved main document + file list + PDF presence |
+| GET | `/project` | Resolved display name + main document + file list + PDF presence |
 | DELETE | `/project` | Delete a paper and its tree. **500 `project_delete_incomplete`** when the tree survives the removal, rather than answering `ok: true` over a partial delete that leaves the name taken with no explanation |
 | GET | `/files` | The paper's file list |
 | GET | `/file` | Read one file as UTF-8 text |
@@ -42,6 +42,7 @@ once at gateway startup and an unwrapped one would answer regardless of the opt-
 | POST | `/file` | Create a file, refusing to clobber |
 | DELETE | `/file` | Delete a file; the main document is refused |
 | PUT | `/main` | Choose which `.tex` is the main document |
+| PUT | `/title` | Set the paper's display name, or clear it with an empty value and fall back to the directory name (see Naming a paper). **400** when `title` is missing or not a string — an explicit `""` is the clear, so an absent field must not be read as one. **409 `project_config_refused`** when `.papyrus.json` is a link or uncontained and cannot be written, rather than answering success over a rename that was not saved. **400** when `generation` is missing: it is the value the list row carried (`GET /projects` sends one per paper), and **409 `project_replaced`** answers a row loaded before its paper was deleted and recreated under the same name, so a stale list cannot rename the replacement |
 | POST | `/compile` | Compile and return `{ok, log, errors[], duration_ms}`. **422 on a failed compile, and the log/diagnostics still ride the response** — that payload is exactly what the user needs to fix the document. **422 `compiler_sandbox_unavailable`** is the distinct case where this host could not build an OS-level sandbox, so the compiler never ran (see Platform) |
 | GET | `/pdf` | Serve the compiled PDF (see Security) |
 | GET | `/git` | Branch, dirtiness, ahead/behind, recent commits — or `{is_git: false}` |
@@ -91,6 +92,27 @@ like the Latin one the rule allows, and the rule beside it is one clause
 (`Use lowercase a–z, 0–9, . - _`), its `. - _` tail joined by a no-break space between
 the characters and a word joiner after the hyphen so it never wraps mid-list. Pinned by `test/test_papyrus_store.py::TestProjectNameStaysAscii`
 and the `test_create_explains_*` tests in `test/test_papyrus_routes.py`.
+
+### Naming a paper
+
+That slug is the app's **identifier** — the `?name=` of every route, the PDF URL,
+the "last opened paper" pointer, the key of the paper's co-author session — and it
+is never renamed. For a cloned paper it is the last segment of the clone URL,
+which for an Overleaf remote is the project id, so on its own it shows the reader
+a string they never chose. A **display name** can therefore be set beside it: the
+name the user typed, held in `.papyrus.json`, else the directory name.
+`PUT /title` sets it and an empty value clears it.
+
+The name is **untrusted** — `.papyrus.json` can be shipped inside a cloned
+repository — so it is kept as plain text: `%` and a backslash are ordinary
+characters, while control **and format** characters (a bidi override in a name
+reorders the whole row) are removed, a line break or tab becoming a space. A name
+with nothing left is refused, and a refused stored name falls back to the
+directory name. It then
+takes the same redaction the compile log takes, and only then is length-capped —
+cutting first could split a credential into a fragment the redactor no longer
+recognizes. For the same reason a raw name longer than the sanitizer's work
+bound is no name at all rather than a cut prefix.
 
 ## Security model
 
@@ -190,6 +212,10 @@ input. `get_main_file` re-validates the configured value through `safe_child` on
 **every read** and ignores it on failure — without that, a hostile repo naming
 `../../etc/passwd.tex` would pivot through the PDF-serving route. Pinned by
 `test/test_papyrus_store.py::TestMainFile`.
+
+Its `title` key is untrusted for a second reason: it is **display text**, so a
+cloned repo can ship a name that lands in a dashboard table cell. It takes the
+treatment described in Naming a paper.
 
 ### The compiler is never given shell escape
 
