@@ -40,6 +40,33 @@ _EAGAIN_REASON = "fork failed with errno 11 (EAGAIN)"
 _EPERM_REASON = "unshare(CLONE_NEWNS) failed with errno 1 (EPERM)"
 
 
+def _sandbox_child_env(monkeypatch, env=None):
+    """Return the env from the real sandboxed-spawn chokepoint without OS setup."""
+    monkeypatch.setattr(sb, "wrap_argv", lambda argv, **_kwargs: (list(argv), None))
+    monkeypatch.setattr(sb, "cgroup_scope_bus_env", lambda child_env: (child_env, ()))
+    monkeypatch.setattr(sb, "cgroup_scope_argv", lambda argv: argv)
+
+    _argv, child_env, _cleanup = sb.sandboxed_spawn_argv(["tool"], env=env or {})
+
+    return child_env
+
+
+def _become_child(monkeypatch, child_env):
+    """Install *child_env* as this process's env and seed state as import does."""
+    for name in (
+        sb._INHERITED_USERNS_FAILURE_ENV,
+        sb.KIROCREW_SPAWNED_ENV,
+        sb.KIROCREW_SANDBOX_TOOL_ENV,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in child_env.items():
+        monkeypatch.setenv(name, value)
+    inherited = sb._read_inherited_userns_failure()
+    monkeypatch.setattr(sb, "_inherited_unshare_failure", inherited)
+    sb.reset_backend()
+    sb._last_unshare_failure = inherited
+
+
 @pytest.fixture(autouse=True)
 def clean_backend(monkeypatch):
     """Reset cached backend + probe detail + warm thread; no real sleeping in retry path.
@@ -55,6 +82,7 @@ def clean_backend(monkeypatch):
     passthrough from short-circuiting tests on sandboxed hosts.
     """
     monkeypatch.delenv("KIROCREW_SANDBOX_ACTIVE", raising=False)
+    monkeypatch.delenv(sb._INHERITED_USERNS_FAILURE_ENV, raising=False)
     monkeypatch.setattr(
         sb, "_KIRO_INTERNAL_SETTINGS_PATH", "/nonexistent/kirocrew-test/amazon-internal.json"
     )
@@ -110,6 +138,69 @@ def test_probe_permanent_failure_does_not_retry(monkeypatch):
     assert sb._probe_unshare() is False
     assert len(calls) == 1
     assert sb._last_unshare_failure == (False, _EPERM_REASON, "")
+
+
+def test_inherited_permanent_failure_skips_probe_and_warning(monkeypatch, caplog):
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    sb._last_unshare_failure = (False, _EPERM_REASON, "apparmor_userns")
+    # The no-backend path sets no launcher marker, and a caller value is replaced.
+    child_env = _sandbox_child_env(
+        monkeypatch, {sb._INHERITED_USERNS_FAILURE_ENV: '["forged","forged"]'}
+    )
+    assert "KIROCREW_SANDBOX_ACTIVE" not in child_env
+
+    _become_child(monkeypatch, child_env)
+    monkeypatch.setattr(
+        sb,
+        "_probe_unshare_once",
+        lambda: pytest.fail("child repeated the inherited permanent probe"),
+    )
+
+    assert sb.detect_backend() == "none"
+    sb.reset_backend()
+    sb._last_unshare_failure = sb._inherited_unshare_failure
+    sb._background_warm()
+    assert sb._backend == "none"
+    assert sb._last_unshare_failure == (False, _EPERM_REASON, "apparmor_userns")
+    assert not [record for record in caplog.records if "probe" in record.message]
+
+
+def test_child_without_inherited_failure_probes_and_logs(monkeypatch, caplog):
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    _become_child(monkeypatch, _sandbox_child_env(monkeypatch))
+    calls: list[int] = []
+
+    def fake_once():
+        calls.append(1)
+        return (False, False, _EPERM_REASON, "apparmor_userns")
+
+    monkeypatch.setattr(sb, "_probe_unshare_once", fake_once)
+
+    assert sb._inherited_unshare_failure is None
+    assert sb._probe_unshare() is False
+    assert calls == [1]
+    assert [
+        record.message for record in caplog.records if "userns probe failed" in record.message
+    ] == [f"userns probe failed (permanent): {_EPERM_REASON}"]
+
+
+def test_hint_outside_a_chokepoint_tree_is_ignored(monkeypatch):
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    _become_child(monkeypatch, {sb._INHERITED_USERNS_FAILURE_ENV: '["forged","forged"]'})
+
+    assert sb._inherited_unshare_failure is None
+
+
+def test_transient_failure_is_not_inherited_by_child(monkeypatch):
+    monkeypatch.setattr(sb, "sys", types.SimpleNamespace(platform="linux"))
+    sb._last_unshare_failure = (True, _EAGAIN_REASON, "")
+
+    child_env = _sandbox_child_env(
+        monkeypatch,
+        {sb._INHERITED_USERNS_FAILURE_ENV: '["stale","stale"]'},
+    )
+
+    assert sb._INHERITED_USERNS_FAILURE_ENV not in child_env
 
 
 def test_probe_transient_then_success_recovers(monkeypatch):
