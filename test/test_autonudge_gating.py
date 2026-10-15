@@ -143,7 +143,7 @@ async def test_persistence_across_restart(tmp_path):
     svc1 = AutoNudgeService(base_dir=tmp_path)
     await svc1.start()
     loop = await svc1.add(slot_key="chat-1-123", message="go", idle_secs=15, max_cycles=5)
-    svc1.stop()
+    await svc1.shutdown()
 
     # New instance reads the same file and restores loops.
     svc2 = AutoNudgeService(base_dir=tmp_path)
@@ -154,7 +154,7 @@ async def test_persistence_across_restart(tmp_path):
     assert restored.message == "go"
     assert restored.max_cycles == 5
     assert loop.id in svc2._timers  # timer re-armed
-    svc2.stop()
+    await svc2.shutdown()
 
 
 @pytest.mark.asyncio
@@ -463,7 +463,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     monkeypatch.setattr(_an.irq, "poll", _ledger_settled)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck",
         slot_key="slack:C123:1700000000.1",
@@ -475,7 +475,7 @@ async def test_a_work_ledger_recheck_confirms_from_the_verdict_not_an_observatio
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is True
+            await service._terminal_still_holds(loop, monitor) == "holds"
         ), "an all-accepted work-ledger terminal confirms the owed success"
     finally:
         service.stop()
@@ -499,7 +499,7 @@ async def test_a_work_ledger_recheck_with_a_changed_class_drops_the_owed_debt(
     monkeypatch.setattr(_an.irq, "poll", _ledger_rejected)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck-2",
         slot_key="slack:C123:1700000000.1",
@@ -511,7 +511,7 @@ async def test_a_work_ledger_recheck_with_a_changed_class_drops_the_owed_debt(
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is False
+            await service._terminal_still_holds(loop, monitor) == "gone"
         ), "a different ending is not the owed one"
     finally:
         service.stop()
@@ -528,7 +528,7 @@ async def test_a_work_ledger_recheck_keeps_a_still_running_watch_alive(tmp_path,
     monkeypatch.setattr(_an.irq, "poll", _still_open)
     service = AutoNudgeService(base_dir=tmp_path, on_fire=lambda loop: True)
     monitor = _structured_monitor(kind="work-ledger", target="slack:C123:1700000000.1")
-    monitor.terminal_pending = "success"
+    monitor.terminal_delivered = "success"
     loop = NudgeLoop(
         id="monitor-wl-recheck-3",
         slot_key="slack:C123:1700000000.1",
@@ -540,7 +540,7 @@ async def test_a_work_ledger_recheck_keeps_a_still_running_watch_alive(tmp_path,
     service._loops[loop.id] = loop
     try:
         assert (
-            await service._terminal_still_holds(loop, monitor) is False
+            await service._terminal_still_holds(loop, monitor) == "gone"
         ), "an unfinished ledger keeps the watch alive"
     finally:
         service.stop()

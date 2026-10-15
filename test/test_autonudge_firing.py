@@ -16,6 +16,11 @@ from kiro_crew import autonudge_authz as _autonudge_mod
 from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.dashboard.handlers.autonudge import render_nudge_message
 
+#: Lost-run ceiling for synchronization the test itself must release. It is a
+#: hang guard whose expiry fails at the awaited line, never a performance
+#: assertion, and is at most half the repository's ``--timeout=120``.
+_LOST_RUN_SECS = 30.0
+
 _FROZEN_NOW = 1_000_000.0
 
 
@@ -83,7 +88,9 @@ async def test_skip_when_delivery_returns_false(svc, monkeypatch):
     async def _sleep(secs):
         sleep_calls.append(secs)
         if len(sleep_calls) >= 2:
-            await gate.wait()  # halt the re-arm chain so the test is bounded
+            await asyncio.wait_for(
+                gate.wait(), timeout=_LOST_RUN_SECS
+            )  # halt the re-arm chain so the test is bounded
         return None
 
     monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
@@ -136,7 +143,7 @@ async def test_fire_callback_exception_does_not_deactivate(svc, monkeypatch):
     async def _sleep(secs):
         sleep_calls.append(secs)
         if len(sleep_calls) >= 2:
-            await gate.wait()
+            await asyncio.wait_for(gate.wait(), timeout=_LOST_RUN_SECS)
         return None
 
     monkeypatch.setattr(_an.asyncio, "sleep", _sleep)
