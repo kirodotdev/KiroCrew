@@ -1773,6 +1773,15 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "redactor is handed in by the route rather than chosen here, so the module "
         "applies the gateway's own redactor and cannot substitute a weaker one.",
     ),
+    (
+        "Fork merge-back summaries",
+        "dashboard/chat_merge_back.py",
+        "The summary the background model writes of a fork's new messages, on its way "
+        "to the merge dialog, where the person edits it before Merge writes it into "
+        "the parent chat, and the fork's title the merge card shows. Both pass the "
+        "shared exfiltration-URL then credential chain before they leave the gateway; "
+        "the summary is cut to the merge limit only after that.",
+    ),
 )
 
 # Modules that call a redactor but are NOT an output egress boundary, so they do
