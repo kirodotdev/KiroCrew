@@ -1870,13 +1870,29 @@ never the spec's `command` / `args`: KAS spawns it directly, so
 `daemon/control_plane.py::_spawns_own_control_plane` never vets it, and a hand-edited spec
 must not hand the token to another binary. Its env keeps only the projected
 `KIROCREW_PORT` / `KIROCREW_SESSION_KEY` plus the managed env; a name whose
-managed invocation does not resolve is hoisted as projected with no token. The move is bounded: only managed names, only the active
-agent, never a name the caller's array already carries (a broker stub or the
-member dispatch entry stays authoritative and a name appears once), and only a
-stdio entry whose keys are drawn only from `command`, `args`, `env`, `type` — a
-`disabled`, `disabledTools` or `timeout` customization, a registry marker, a
-remote URL or a command-less entry keeps the agent-block path where that field
-is honoured. The agent's `tools`, `excludedTools` and `permissions` are
+managed invocation does not resolve is hoisted as projected with no token. On `session/new` the move covers the active agent's managed names only; on
+`session/load` it additionally hoists remaining user-declared names
+(`resume=True` in `hoist_managed_servers`): kiro-cli re-initialises MCP servers
+from the session-level array only on load — not from agent-block declarations —
+so a spec edit adding a new MCP server is silently ignored on resume without the
+wider hoist. That load-only launch set was probed on released kiro-cli 2.31.0
+(the #17781 repro: `session/load` with a spec adding `@probe/beta` exposed no
+`beta` tool, `session/new` with the same spec did); the 2.18.0 and 2.20.0
+captures above did not probe which declaration site `session/load` launches
+from, so the premise is pinned to 2.31.0 alone. Exception: a user-declared server whose name a settings file
+kiro-cli reads also declares — the user's global `~/.kiro/settings/mcp.json` or
+the session cwd's `.kiro/settings/mcp.json`
+(`reserved_names=settings_server_names(session_work_dir)` at the `load_session`
+call site in `runtime_session_load.py`) — stays in the agent block, so the
+resumed session resolves that name by kiro-cli's own precedence, exactly as
+`session/new` did; a session-level injection would outrank both files.
+`session/new` (`create_session`) is unchanged. Non-managed entries hoisted on
+load travel as projected with no session token. On both paths: a name
+the caller's array already carries is skipped (a broker stub or member dispatch
+entry stays authoritative and a name appears once), and only a stdio entry whose
+keys are drawn only from `command`, `args`, `env`, `type` — a `disabled`,
+`disabledTools` or `timeout` customization, a registry marker, a remote URL or a
+command-less entry keeps the agent-block path where that field is honoured. The agent's `tools`, `excludedTools` and `permissions` are
 untouched: refs resolve wherever the server was declared, and on 2.18.0 an
 allowlist-only or `excludedTools` restriction on the hoisted server still
 yields readiness with only the permitted tag advertised. Exact legacy

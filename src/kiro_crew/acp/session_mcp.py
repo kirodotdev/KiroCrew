@@ -389,6 +389,37 @@ def _global_settings(*, strict: bool = False) -> dict[str, Any]:
         return {}
 
 
+def settings_server_names(work_dir: str | Path | None) -> frozenset[str]:
+    """Names of MCP servers declared in the settings files kiro-cli reads.
+
+    The user's global ``~/.kiro/settings/mcp.json`` and, when *work_dir* is
+    given, the checkout's ``.kiro/settings/mcp.json`` -- the same two sources
+    :func:`native_settings_sources` enumerates, read once each with no bracketing
+    because a name set is advisory here, not a restriction to fail closed on.
+
+    Used by :func:`~kiro_crew.acp.kas_agents.hoist_managed_servers` as
+    ``reserved_names`` on the ``session/load`` path: a user-declared server whose
+    name a settings file also declares stays in the agent block, so the resumed
+    session resolves that name exactly as ``session/new`` did -- by kiro-cli's own
+    precedence between its settings files and the agent block -- instead of by a
+    session-level injection that would outrank both. Covering the workspace file
+    as well as the global one is what keeps new and resumed sessions agreeing
+    whichever file the colliding entry lives in. A file that is absent or
+    unreadable contributes no names.
+    """
+    names: set[str] = set(_global_settings().get("mcpServers", {}))
+    if work_dir:
+        try:
+            project = _read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json")
+        except (OSError, ValueError):
+            logger.debug("session MCP: project settings unreadable")
+            project = {}
+        declared = project.get("mcpServers", {}) if isinstance(project, dict) else {}
+        if isinstance(declared, dict):
+            names.update(declared)
+    return frozenset(names)
+
+
 class ToolsAllowlist(NamedTuple):
     """The spec's ``tools`` allowlist, as a value rather than a filter pass.
 

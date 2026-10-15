@@ -40,7 +40,10 @@ from kiro_crew.acp.session_handle import (
     AcpSessionHandle,
     _load_watchdog_settings,
 )
-from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
+from kiro_crew.acp.session_mcp import (
+    session_mcp_server_is_disabled,
+    settings_server_names,
+)
 from kiro_crew.acp.types import ACP_BACKEND_KAS, METHOD_SESSION_LOAD, JsonRpcMessage
 from kiro_crew.agent_files import kas_wire_agent_id
 from kiro_crew.dashboard.side_readonly_spec import unavailable_mode_explanation
@@ -265,9 +268,31 @@ async def load_session(
         payload_snapshot = kas_extras.derived_spec_snapshot
         # Same carriage as create_session: a resumed session re-initializes
         # its servers, and the managed ones must win the same-name contest
-        # on load exactly as they did on new.
+        # on load exactly as they did on new.  ``resume=True`` additionally
+        # hoists user-declared (non-managed) servers: on session/load kiro-cli
+        # re-initialises servers from the session-level array only -- agent-block
+        # declarations are re-registered but not re-launched -- so spec edits
+        # adding new MCP servers would be silently ignored without this.
+        # session/new (create_session) is unchanged: kiro-cli reads agent-block
+        # servers on its own there, and hoist_managed_servers default (False) does
+        # not widen that path.
+        #
+        # A user-declared name that a settings file kiro-cli reads (the global
+        # ~/.kiro/settings/mcp.json or the checkout's .kiro/settings/mcp.json)
+        # also declares is NOT hoisted: left in the agent block, the resumed
+        # session resolves it by kiro-cli's own precedence, the same way
+        # session/new did. The checkout is the session's own cwd, the same one
+        # native_settings_sources reads beside: kiro-cli reads the workspace
+        # settings file from cwd whatever level its agent spec resolves at.
+        # Read off the loop thread like the other settings reads here.
+        reserved = await asyncio.to_thread(settings_server_names, session_work_dir)
         kas_agents, mcp_servers = hoist_managed_servers(
-            kas_agents, active_agent, mcp_servers, session_token=stub_token
+            kas_agents,
+            active_agent,
+            mcp_servers,
+            session_token=stub_token,
+            resume=True,
+            reserved_names=reserved,
         )
         # REBIND, not just re-assign the param: the hoist changes the array, and
         # wire_servers is what the stall diagnostic and the session report read.
