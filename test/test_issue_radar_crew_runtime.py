@@ -1548,10 +1548,18 @@ class TestAStoodDownLoopStaysDown(unittest.IsolatedAsyncioTestCase):
         self.loop_id = self.svc.get_by_slot(self.slot_key).id
 
     async def asyncTearDown(self):
-        timers = list(self.svc._timers.values())
+        # Settle every task that can still write under the temporary store before
+        # the directory is removed. A detached persist (``_persist_soon``) writes
+        # from a worker thread that cancelling its task does not stop, so those are
+        # awaited, not cancelled. Timers and the reconciler are cancelled by
+        # ``stop()`` and awaited until they have actually finished.
+        await asyncio.gather(*list(self.svc._inflight_adds), return_exceptions=True)
+        tasks = list(self.svc._timers.values())
+        if self.svc._reconciler is not None:
+            tasks.append(self.svc._reconciler)
         self.svc.stop()
-        if timers:
-            await asyncio.gather(*timers, return_exceptions=True)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*list(self.svc._inflight_adds), return_exceptions=True)
 
     async def _watchdog(self) -> None:
         record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
@@ -1561,12 +1569,8 @@ class TestAStoodDownLoopStaysDown(unittest.IsolatedAsyncioTestCase):
         """Five failed cycles, then the tick that stands the loop down."""
         setattr(self.svc._loops[self.loop_id], failures_field, 5)
         self.svc._cancel_timer(self.loop_id)
-
-        async def _no_wait(_secs):
-            return None
-
-        with mock.patch.object(asyncio, "sleep", _no_wait):
-            await self.svc._timer(self.svc._loops[self.loop_id])
+        self.svc._arm_timer(self.svc._loops[self.loop_id], delay=0)
+        await self.svc._timers[self.loop_id]
         self.assertFalse(self.svc._loops[self.loop_id].active)
 
     async def test_a_failure_stand_down_pauses_the_crew_instead_of_reviving(self):
