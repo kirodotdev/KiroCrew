@@ -585,6 +585,28 @@ class TestConductorInstaller:
         assert "work_ledger_read` with `compact=true` first, every cycle" in body
         assert "action=accept" in body
 
+    def test_prompt_and_skill_name_the_template_dispatch_for_a_shadowed_worker(
+        self, tmp_path, monkeypatch
+    ):
+        """On installs where an older agent sync enrolled ``kirocrew-worker`` as a crew
+        member with private memory, a conductor running as a crew member on the
+        shared store (or a child a parent conductor created) is refused
+        ``memory_delegation_denied`` for every leaf dispatch. Left unsaid, the
+        conductor invents a remedy that does not exist (a memory-store setting), so
+        both the summary and the procedure name the real one -- ``agent_kind:
+        "template"`` -- as the way EVERY worker is dispatched, not as a retry after
+        the refusal, and say the binding is not a setting.
+        """
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        body = " ".join((SKILL_DIR / "SKILL.md").read_text(encoding="utf-8").split())
+        for text in (prompt, body):
+            assert 'Always dispatch `kirocrew-worker` with `agent_kind: "template"`' in text
+            assert "Re-send" not in text
+            assert "memory_delegation_denied" in text
+            assert "needs no memory of its own" in text
+        assert "no setting can change" in prompt
+        assert "immutable and Settings offers no control" in body
+
     def test_prompt_and_skill_close_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
         """A conductor that stops an item's loop and leaves its session open leaves a
         finished worker parked in the sidebar with nothing to re-arm. The prompt

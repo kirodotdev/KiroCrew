@@ -1679,3 +1679,366 @@ class TestPrivateStoreCallerIsolation:
         state.conversation_log.append(second_key, "user", "hello")
         assert state.conversation_log.delete_session(second_key)
         assert read_durable_vouch(second_key) is None
+
+
+class TestShadowedTemplateDispatch:
+    """``agent_kind`` lets a caller dispatch the TEMPLATE a same-named crew member shadows.
+
+    The shape is the stock conductor on a legacy install: an older agent sync
+    enrolled ``kirocrew-worker`` as a crew member with its own private store,
+    while the conductor's own DM thread stayed on the shared store. The conductor's
+    charter dispatches ``kirocrew-worker`` for every leaf item; a bare name selects
+    the MEMBER, and a shared-store member thread may not bind that member's store,
+    so the create is refused ``memory_delegation_denied`` -- for a worker that
+    needs no memory of its own. ``agent_kind="template"`` is the way to say
+    "the template, on my own memory", exactly as the chat create route's explicit
+    template pick never pins member memory. These pin:
+
+    * the bare name is still refused (the fence is untouched);
+    * the server-side cause names the shared-store condition, not a lost vouch;
+    * the template kind creates the child on the caller's own store with the
+      template persona, and records the namespace on the slot and at birth;
+    * a stated kind is validated (the closed set is ``template`` alone -- a bare
+      name already selects the member, so no ``member`` kind exists -- requires
+      ``agent``, never falls back to whoever answers by default);
+    * the REAL resolver, not the stand-in the other tests swap in, resolves a
+      member-shadowed name as the template under the stated kind.
+    """
+
+    _WORKER_TEMPLATE = "worker-template"
+
+    def _prepare(self, tmp_path, monkeypatch, *, fake_resolver=True):
+        from pathlib import Path
+
+        from member_memory_helpers import forget_declared_stores, write_member_home
+
+        from kiro_crew.config.sections import ResolvedBindings
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            MemoryStoreRef,
+            bind_session_execution,
+            resolve_member_execution,
+        )
+        from kiro_crew.history import ConversationLog
+
+        monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+        # `worker` is the crew member the old sync enrolled with a private store.
+        write_member_home(tmp_path, "worker")
+        forget_declared_stores(monkeypatch)
+        state = _make_state(tmp_path)
+        state.conversation_log = ConversationLog()
+
+        # The conductor: a crew member's DM thread whose record is on the SHARED
+        # store -- the id-less member shape a Global-V1 crewmate carries.
+        caller = _member_tab(state)
+        caller.agent = "conductor"
+        caller.memory_store = "default"
+        conductor = ExecutionContext(
+            None,
+            MemoryStoreRef("default"),
+            "member",
+            "conductor-template",
+            selection_name="conductor",
+        )
+        bind_session_execution(slot_history_key(caller), conductor)
+
+        template_name = self._WORKER_TEMPLATE
+        calls: list[str] = []
+
+        def resolve(_cfg, name, *_args, selection_kind="", **_kwargs):
+            calls.append(selection_kind)
+            if name == "worker" and selection_kind != "template":
+                selected = resolve_member_execution(_cfg, "worker")
+                return ResolvedBindings(
+                    workspace_dir=Path("workspace"),
+                    memory_store_name=selected.store.legacy_name,
+                    effective_memory_config={},
+                    kiro_agent=selected.template_id,
+                    selection_kind="member",
+                    resolved_alias="worker",
+                    execution_context=selected,
+                )
+            if name == "worker":
+                # The same name as a TEMPLATE: what `_resolve_agent_selection`
+                # answers for `selection_kind="template"` -- the installed spec,
+                # on the default store, with the alias hit skipped.
+                return ResolvedBindings(
+                    workspace_dir=Path("workspace"),
+                    memory_store_name="default",
+                    effective_memory_config={},
+                    kiro_agent=template_name,
+                    selection_kind="template",
+                    resolved_alias="",
+                    requested_resolved=True,
+                )
+            # Any other name under a stated kind does not resolve; a bare name
+            # falls to the default template as the real resolver does.
+            return ResolvedBindings(
+                workspace_dir=Path("workspace"),
+                memory_store_name="default",
+                effective_memory_config={},
+                kiro_agent="default",
+                selection_kind="template",
+                resolved_alias="",
+                requested_resolved=not bool(selection_kind),
+            )
+
+        if fake_resolver:
+            monkeypatch.setattr(sc, "resolve_agent_bindings", resolve)
+        monkeypatch.setattr(sc, "_workspace_name_for_dir", lambda *_: "default")
+        monkeypatch.setattr(sc, "session_control_enabled", lambda: True)
+        monkeypatch.setattr(sc, "member_dispatch_enabled", lambda: True)
+        return state, caller, conductor, calls
+
+    def test_the_bare_name_is_still_refused_and_the_cause_names_the_shared_store(
+        self, tmp_path, monkeypatch, _fresh_create_budget, caplog
+    ):
+        # The fence is untouched: a shared-store member thread naming a member
+        # with private memory is a peer-member dispatch and stays refused. What
+        # changes is the operator's log line -- this caller is never vouched, so
+        # "no vouched identity" pointed at a re-bind that cannot help.
+        import logging
+
+        state, caller, _conductor, _calls = self._prepare(tmp_path, monkeypatch)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.session_control"):
+            with pytest.raises(sc.SessionControlError) as error:
+                asyncio.run(
+                    sc.create_session(
+                        state, caller_session_key=slot_history_key(caller), agent="worker"
+                    )
+                )
+        assert error.value.code == "memory_delegation_denied"
+        assert error.value.status == 403
+        # The wire refusal still names neither the store nor the member.
+        assert "worker" not in error.value.message
+        assert "member-" not in error.value.message
+        assert state.creator_slot_count(caller.key) == 0
+        causes = [
+            r.getMessage() for r in caplog.records if "memory delegation refused" in r.getMessage()
+        ]
+        assert len(causes) == 1
+        assert "shared store" in causes[0]
+        assert "template" in causes[0]
+        assert "no vouched identity" not in causes[0]
+        # The log is not a second disclosure channel either.
+        assert "member-worker" not in causes[0]
+
+    def test_a_v1_member_on_its_own_store_is_not_logged_as_a_shared_store_caller(
+        self, tmp_path, monkeypatch, _fresh_create_budget, caplog
+    ):
+        # A missing id alone is not the shared-store condition. A memory_version-1
+        # crew member bound to its own NAMED store resolves with ``member_id=None``
+        # too (no persisted identity), while its store is the private one it
+        # declares, so the cause line must not describe that caller as running on
+        # the shared store. The bare-name dispatch of a V2 member stays refused.
+        import json
+        import logging
+
+        from member_memory_helpers import forget_declared_stores
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
+
+        state, caller, _conductor, _calls = self._prepare(tmp_path, monkeypatch)
+        # Declare the conductor as a V1 crew member on its own named store, beside
+        # the V2 ``worker`` member `_prepare` enrolled. A V1 declaration names no
+        # owner and its row persists no id; `require_memory_store` refuses either.
+        config_path = tmp_path / "config.json"
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        config["memory_stores"]["conductor-notes"] = {"memory_version": 1}
+        config["agents"]["conductor"] = {"memory_store": "conductor-notes"}
+        config_path.write_text(json.dumps(config), encoding="utf-8")
+        forget_declared_stores(monkeypatch)
+        legacy = resolve_member_execution(KiroCrewConfig.load(), "conductor")
+        # The exact shape the cause must not misname: id-less, on a private store.
+        assert legacy.member_id is None
+        assert legacy.store.store_id == "conductor-notes"
+        caller.memory_store = legacy.store.legacy_name
+        bind_session_execution(slot_history_key(caller), legacy, replace_existing=True)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.dashboard.session_control"):
+            with pytest.raises(sc.SessionControlError) as error:
+                asyncio.run(
+                    sc.create_session(
+                        state, caller_session_key=slot_history_key(caller), agent="worker"
+                    )
+                )
+        assert error.value.code == "memory_delegation_denied"
+        assert error.value.status == 403
+        assert "worker" not in error.value.message
+        assert "conductor-notes" not in error.value.message
+        assert state.creator_slot_count(caller.key) == 0
+        causes = [
+            r.getMessage() for r in caplog.records if "memory delegation refused" in r.getMessage()
+        ]
+        assert len(causes) == 1
+        assert "shared store" not in causes[0]
+        # This caller is never vouched (`bind_session_execution` vouches only a
+        # truthy member id), so the branch order falls to the vouch cause for it.
+        assert "no vouched identity" in causes[0]
+        # The log is not a second disclosure channel either.
+        assert "member-worker" not in causes[0]
+        assert "conductor-notes" not in causes[0]
+
+    def test_the_template_kind_dispatches_the_worker_on_the_callers_own_store(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        from kiro_crew.execution_context import MemoryStoreRef, read_session_execution
+
+        state, caller, conductor, calls = self._prepare(tmp_path, monkeypatch)
+
+        result = asyncio.run(
+            sc.create_session(
+                state,
+                caller_session_key=slot_history_key(caller),
+                agent="worker",
+                agent_kind="template",
+            )
+        )
+        # The resolver was asked in the stated namespace.
+        assert "template" in calls
+        child = state.get_slot(result["target"])
+        assert child is not None
+        assert child.agent == "worker"
+        # The namespace the pick resolved in, on the slot and in the birth record.
+        assert child.agent_kind == "template"
+        metadata = state.conversation_log.get_metadata(slot_history_key(child))
+        assert metadata["agent"] == "worker"
+        assert metadata["agent_kind"] == "template"
+        # The global store, in both spellings the record keeps for it.
+        assert metadata.get("memory_store", "") == ""
+        # The child runs the worker TEMPLATE on the conductor's own (shared)
+        # store; the member's private store is never touched. The id-less member
+        # caller keeps its selection and takes only the template, as the
+        # unshadowed template arm already does for that caller shape.
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.store == MemoryStoreRef("default")
+        assert actual.member_id is None
+        assert actual.template_id == self._WORKER_TEMPLATE
+        assert actual.selection_kind == conductor.selection_kind
+        assert actual.selection_name == conductor.selection_name
+        assert child.memory_store in ("", "default")
+        assert state.creator_slot_count(caller.key) == 1
+
+    def test_the_template_kind_rides_the_http_route(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        import json
+
+        from member_memory_helpers import make_request
+
+        from kiro_crew.dashboard.handlers.session_control import api_session_control_create
+
+        state, caller, _conductor, _calls = self._prepare(tmp_path, monkeypatch)
+
+        async def create(body):
+            return await api_session_control_create(
+                make_request(
+                    state,
+                    "/api/session-control/create",
+                    body=body,
+                    internal=True,
+                    session=slot_history_key(caller),
+                )
+            )
+
+        refused = asyncio.run(create({"agent": "worker"}))
+        assert refused.status == 403, refused.text
+        assert json.loads(refused.text)["code"] == "memory_delegation_denied"
+
+        response = asyncio.run(create({"agent": "worker", "agent_kind": "template"}))
+        assert response.status == 200, response.text
+        child = state.get_slot(json.loads(response.text)["target"])
+        assert child.agent_kind == "template"
+
+        bad_type = asyncio.run(create({"agent": "worker", "agent_kind": 1}))
+        assert bad_type.status == 400
+        assert json.loads(bad_type.text)["code"] == "invalid_field_type"
+
+    def test_a_stated_kind_is_validated_and_never_falls_back(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        state, caller, _conductor, calls = self._prepare(tmp_path, monkeypatch)
+        key = slot_history_key(caller)
+
+        # The closed set is "template" alone. "member" is not a kind this route
+        # takes -- a bare name already selects the member, so the value would only
+        # restate that resolution -- and nothing else is either. Refused before the
+        # resolver is consulted.
+        for kind in ("member", "crew"):
+            with pytest.raises(sc.SessionControlError) as error:
+                asyncio.run(
+                    sc.create_session(
+                        state, caller_session_key=key, agent="worker", agent_kind=kind
+                    )
+                )
+            assert error.value.code == "invalid_agent_kind", kind
+            assert '"template"' in error.value.message
+        assert calls == []
+
+        # A kind qualifies an explicit selection; the inherited caller agent is
+        # not one, so the request is refused rather than silently applied.
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=key, agent_kind="template"))
+        assert error.value.code == "agent_kind_requires_agent"
+
+        # A name that does not resolve in the stated namespace is refused, not
+        # answered by whoever resolves by default -- and the refusal names the
+        # namespace so the caller can tell "no such template" from "no such agent".
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(
+                sc.create_session(
+                    state, caller_session_key=key, agent="nobody", agent_kind="template"
+                )
+            )
+        assert error.value.code == "agent_unresolved"
+        assert "template" in error.value.message
+        assert state.creator_slot_count(caller.key) == 0
+
+    def test_the_real_resolver_resolves_a_member_shadowed_name_as_the_template(
+        self, tmp_path, monkeypatch, _fresh_create_budget
+    ):
+        """The REAL ``resolve_agent_bindings``, against the shape the class describes.
+
+        Every other test here swaps the resolver for a stand-in, so none of them
+        shows that the real one answers ``selection_kind="template"`` for a name
+        a crew member shadows. This one does: the config ``_prepare`` writes
+        carries ``worker`` as a crew member bound to its own private V2 store
+        (``member-worker``), and the installed-template catalog -- the one
+        external boundary, seeded the way the loader's own tests seed it --
+        declares a template of the same name. The bare name must still select
+        the member and be refused; the stated kind must create the child on the
+        caller's shared store, never the private one.
+        """
+        from kiro_crew.config import loader
+        from kiro_crew.execution_context import MemoryStoreRef, read_session_execution
+
+        state, caller, conductor, _calls = self._prepare(tmp_path, monkeypatch, fake_resolver=False)
+        assert sc.resolve_agent_bindings is loader.resolve_agent_bindings
+        monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset({"worker"}))
+        monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", True)
+        key = slot_history_key(caller)
+
+        with pytest.raises(sc.SessionControlError) as error:
+            asyncio.run(sc.create_session(state, caller_session_key=key, agent="worker"))
+        assert error.value.code == "memory_delegation_denied"
+        assert state.creator_slot_count(caller.key) == 0
+
+        result = asyncio.run(
+            sc.create_session(state, caller_session_key=key, agent="worker", agent_kind="template")
+        )
+        child = state.get_slot(result["target"])
+        assert child is not None
+        assert child.agent == "worker"
+        assert child.agent_kind == "template"
+        assert child.memory_store in ("", "default")
+        actual = read_session_execution(slot_history_key(child), required=True)
+        assert actual.store == MemoryStoreRef("default")
+        assert actual.store == conductor.store
+        assert actual.store.legacy_name != "member-worker"
+        assert actual.member_id is None
+        # The real passthrough: the template IS the name, grafted onto the
+        # caller's own store, as an unshadowed template child already is.
+        assert actual.template_id == "worker"
+        assert state.creator_slot_count(caller.key) == 1

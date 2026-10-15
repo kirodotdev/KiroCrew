@@ -250,6 +250,13 @@ async def api_session_control_create(request: web.Request) -> web.Response:
         dry_run = body.get("dry_run", False)
         if not isinstance(dry_run, bool):
             raise sc.SessionControlError("dry_run must be a boolean", code="invalid_field_type")
+        # The selection namespace for `agent`: "template", or absent for
+        # name-first resolution. Typed strictly here so a non-string never reaches
+        # the closed-set check in `create_session` as something that compares
+        # unequal and falls through.
+        agent_kind = body.get("agent_kind", "")
+        if not isinstance(agent_kind, str):
+            raise sc.SessionControlError("agent_kind must be a string", code="invalid_field_type")
         # Warmed AFTER the body read, which suspends: a config edit landing in that
         # window would change the fingerprint and leave `create_session`'s own
         # synchronous gate re-reading the file on the loop. Nothing suspends between
@@ -260,6 +267,7 @@ async def api_session_control_create(request: web.Request) -> web.Response:
             caller_session_key=_read_session_key(request),
             title=str(body.get("title") or ""),
             agent=str(body.get("agent") or ""),
+            agent_kind=agent_kind,
             folder_id=str(body.get("folder_id") or ""),
             model=str(body.get("model") or ""),
             dry_run=dry_run,
