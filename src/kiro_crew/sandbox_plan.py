@@ -101,6 +101,10 @@ class SandboxRequest:
     #: optionally followed by the kind the name reached and the referent's dev and ino.
     mask_occupants: tuple[tuple[str, tuple[int, ...]], ...] = ()
     crew_home_aliases: tuple[tuple[str, str, int, int], ...] = ()
+    #: A gateway-run step that installs Python packages into the gateway's own
+    #: environment (an optional extra, an app's Python build). Only such a step keeps
+    #: write access to that environment; every other spawn finds it read-only.
+    provisioning: bool = False
 
 
 @dataclass(frozen=True)
@@ -178,6 +182,12 @@ class PlanHost:
     #: Every rename-sensitive ancestor of those targets (Seatbelt only): a path-based
     #: deny on the package directory does not hold if a parent can be renamed away.
     install_root_ancestor_guards: tuple[str, ...] = ()
+    #: The Python environment that packaged install runs from (every spelling), sealed
+    #: read-only for every spawn but a provisioning one. Empty for an editable or
+    #: from-source checkout.
+    python_env_targets: tuple[str, ...] = ()
+    #: Every rename-sensitive ancestor of those targets (Seatbelt only).
+    python_env_ancestor_guards: tuple[str, ...] = ()
     #: The probes for each absolute ``extra_writable_dirs`` candidate.
     carveout_probes: tuple[CarveoutProbe, ...] = ()
     #: The real uid and gid the namespace launcher maps.
@@ -731,6 +741,18 @@ def plan_confinement(request: SandboxRequest, host: PlanHost) -> ConfinementPlan
     return _PLANNERS[request.backend](request, host, caps)
 
 
+def _python_env_seal(request: SandboxRequest, host: PlanHost) -> tuple[str, ...]:
+    """The gateway's own Python environment, as this spawn's read-only targets.
+
+    Every spawn but a provisioning one finds it read-only, in every tier: what that
+    environment holds (its ``site-packages``, ``.pth`` files, ``bin`` scripts,
+    ``pyvenv.cfg``) is what the gateway loads on its next start. Like the package
+    directory inside it, ``extra_visible_dirs`` does not lift it, and an
+    ``extra_writable_dirs`` carve-out inside it is refused.
+    """
+    return () if request.provisioning else host.python_env_targets
+
+
 def _namespace_plan(
     request: SandboxRequest, host: PlanHost, caps: RendererCapabilities
 ) -> ConfinementPlan:
@@ -815,6 +837,7 @@ def _namespace_plan(
     # liftable by ``extra_visible_dirs`` (that list lifts masks, never seals), and the
     # updater that legitimately writes it runs in the gateway process, unwrapped.
     readonly.extend(path for path in host.install_root_targets if path not in kept)
+    readonly.extend(path for path in _python_env_seal(request, host) if path not in kept)
     # The launcher re-applies a mask nested inside a private window after binding the
     # window, from a descriptor it already holds, so such a window is admitted here.
     windows, window_refusals = private_windows(
@@ -970,6 +993,7 @@ def _seatbelt_plan(
         + list(host.relocated_crew_readonly)
         + list(host.kiro_agents_targets)
         + list(host.install_root_targets)
+        + list(_python_env_seal(request, host))
     )
     caller_targets = list(
         dict.fromkeys(absolute(path, host.cwd) for path in request.extra_hidden_dirs)
@@ -1007,8 +1031,11 @@ def _seatbelt_plan(
     hide_ssh = tier == "strict"
     ssh_dir = os.path.join(home, ".ssh")
     runtime_parents = list(host.voice_runtime_parents)
+    env_guards = () if request.provisioning else host.python_env_ancestor_guards
     ancestor_guards = list(
-        dict.fromkeys((*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards))
+        dict.fromkeys(
+            (*host.voice_runtime_ancestor_guards, *host.install_root_ancestor_guards, *env_guards)
+        )
     )
     home_files = [os.path.join(home, f) for f in files]
     # Validated against every seal the profile emits, and emitted last: Seatbelt is

@@ -44,6 +44,10 @@ from kiro_crew.sandbox_leaves import (
     _RELOCATED_CREW_HIDDEN_LEAVES,
 )
 from kiro_crew.sandbox_plan import scrub_prefixes as _agent_scrub_prefixes
+from kiro_crew.sandbox_python_env import (
+    provisioning_spawn_requested,
+)
+from kiro_crew.sandbox_python_env import resolved_python_env_targets as _resolved_python_env_targets
 from kiro_crew.sandbox_seals import (
     SandboxCeilingUnsealable,
     _materialize_sealable_ceilings,
@@ -339,12 +343,18 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
     relocated_crew_readonly = tuple(_relocated_crew_targets(_CREW_READONLY_LEAVES))
     kiro_agents_targets = tuple(_resolved_kiro_agents_targets())
     install_root_targets = tuple(_resolved_install_root_targets())
+    python_env_targets = tuple(_resolved_python_env_targets())
     # The namespace launcher binds the package directory itself, so a renamed parent
     # carries the read-only mount with it; Seatbelt matches paths and needs the guards.
     install_root_ancestor_guards = (
         ()
         if namespace
         else _literal_ancestor_guards(tuple(os.path.dirname(t) for t in install_root_targets))
+    )
+    python_env_ancestor_guards = (
+        ()
+        if namespace
+        else _literal_ancestor_guards(tuple(map(os.path.dirname, python_env_targets)))
     )
     carveout_probes = tuple(_carveout_probes(sandbox_plan.carveout_candidates(request)).values())
     host_paths = [
@@ -360,6 +370,8 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         *kiro_agents_targets,
         *install_root_targets,
         *install_root_ancestor_guards,
+        *python_env_targets,
+        *python_env_ancestor_guards,
     ]
     return sandbox_plan.PlanHost(
         home=home,
@@ -386,6 +398,8 @@ def _live_plan_host(request: sandbox_plan.SandboxRequest) -> sandbox_plan.PlanHo
         kiro_agents_targets=kiro_agents_targets,
         install_root_targets=install_root_targets,
         install_root_ancestor_guards=install_root_ancestor_guards,
+        python_env_targets=python_env_targets,
+        python_env_ancestor_guards=python_env_ancestor_guards,
         carveout_probes=carveout_probes,
         uid=uid,
         gid=gid,
@@ -434,6 +448,7 @@ def _spawn_plan(
         required_mask_targets=tuple(required_mask_targets),
         mask_occupants=tuple((mask_occupants or {}).items()),
         crew_home_aliases=tuple(crew_home_aliases),
+        provisioning=provisioning_spawn_requested(),
     )
     plan = sandbox_plan.plan_confinement(request, _live_plan_host(request))
     _log_refusals(plan.refusals)

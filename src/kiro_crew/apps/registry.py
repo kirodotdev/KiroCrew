@@ -134,6 +134,7 @@ async def _run_app_build(
     app that needs no build still installs cleanly.
     """
     build_cmds: list[list[str]] = []
+    python_install: list[str] | None = None
 
     if (build_dir / "package.json").is_file():
         # Resolve to a full path, mirroring the pip branch below: on Windows npm
@@ -294,9 +295,10 @@ async def _run_app_build(
             if (build_dir / "requirements.txt").is_file() and not (
                 (build_dir / "pyproject.toml").is_file() or (build_dir / "setup.py").is_file()
             ):
-                build_cmds.append([*pip_cmd, "install", "-r", "requirements.txt"])
+                python_install = [*pip_cmd, "install", "-r", "requirements.txt"]
             else:
-                build_cmds.append([*pip_cmd, "install", "."])
+                python_install = [*pip_cmd, "install", "."]
+            build_cmds.append(python_install)
 
     if not build_cmds:
         log_lines.append("No build step detected — using source as-is")
@@ -304,7 +306,11 @@ async def _run_app_build(
 
     for cmd in build_cmds:
         log_lines.append(f"Running {' '.join(cmd)} in {build_dir}...")
-        sandboxed_cmd, _cleanup = await wrap_argv_async(cmd, mode="standard", _prepare=wrap_argv)
+        # The Python build installs into the gateway's own environment, which only a
+        # provisioning spawn may write.
+        sandboxed_cmd, _cleanup = await wrap_argv_async(
+            cmd, mode="standard", provisioning=cmd is python_install, _prepare=wrap_argv
+        )
         sandboxed_cmd = cgroup_scope_argv(sandboxed_cmd)  # cgroup DoS ceiling
         proc = await create_subprocess_limited(
             *sandboxed_cmd,
