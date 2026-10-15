@@ -129,20 +129,76 @@ _STREAM_DISCARD_RUN_RES = {
 _STREAM_DISCARD_MAX = 1 << 20
 
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
-# header prefix optionally followed by up to FOUR `.`-separated base64url segments
-# (the final segment may be empty mid-stream). Three segments = a JWS/JWT
-# (header.payload.sig); five = a compact JWE (header.key.iv.ciphertext.tag), so the
-# `{0,4}` trailing quantifier admits the full JWE shape too — matching the batch
-# `_CREDENTIAL_PATTERNS` JWE ceiling — instead of bisecting a >512-char JWE at the
-# 512 floor. Anchored to the buffer end (`\Z`).
+# header prefix followed by header bytes and up to FOUR `.`-separated base64url
+# segments (the final segment may be empty mid-stream). Three segments
+# = a JWS/JWT (header.payload.sig); five = a compact JWE
+# (header.key.iv.ciphertext.tag), so the `{0,4}` trailing quantifier admits the
+# full JWE shape too — matching the batch `_CREDENTIAL_PATTERNS` JWE ceiling —
+# instead of bisecting a >512-char JWE at the 512 floor. Anchored to the buffer
+# end (`\Z`).
 _PARTIAL_JWT_TAIL_RE = re.compile(
     rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
 )
 
 
+def _pako_candidate_with_tail(buf: str) -> tuple[tuple[int, int], int] | None:
+    """The last pako route whose payload is followed by a held credential-class tail.
+
+    Returns ``((route start, payload length), tail length)``. The tail is what the
+    stream's tail hold keeps after a payload: bytes of ``_CRED_CLASS`` that are not
+    payload bytes first, at most ``_STREAM_HOLDBACK_MAX`` of them, ending the buffer.
+    """
+    prefix = redaction._MERMAID_PAKO_URL_PREFIX
+    start = buf.rfind(prefix)
+    if start < 0:
+        return None
+    # The route's own look-behind: no ASCII letter, digit, `+`, `.` or `-` before it.
+    before = buf[start - 1] if start else ""
+    if before and before.isascii() and (before.isalnum() or before in "+.-"):
+        return None
+    payload_start = start + len(prefix)
+    payload = redaction._MERMAID_PAKO_PAYLOAD_CHUNK_RE.match(buf, payload_start)
+    payload_end = payload.end() if payload else payload_start
+    tail = buf[payload_end:]
+    if (
+        not tail
+        or len(tail) > _STREAM_HOLDBACK_MAX
+        or payload_end - payload_start > redaction._MERMAID_PAKO_PAYLOAD_CAP
+        or not _CRED_CLASS.issuperset(tail)
+    ):
+        return None
+    return (start, payload_end - payload_start), len(tail)
+
+
+def _late_jwt_anchor(held: list[str], chunk: str) -> bool:
+    """Whether *chunk* gives the held run an `eyJ` with a byte after it.
+
+    The last three held bytes are read with the chunk, so an `eyJ` split across
+    deltas is found, and one that ended the run so far is found once the byte
+    after it arrives: that byte decides whether the run ends in a partial JWT.
+    """
+    recent = "".join(part[-3:] for part in held[-3:])[-3:] + chunk
+    return 0 <= recent.find("eyJ") < len(recent) - 3
+
+
 def _partial_jwt_tail(buf: str) -> re.Match[str] | None:
     """The trailing partial JWT, skipping one whose finished header is not a JSON object."""
-    m = _PARTIAL_JWT_TAIL_RE.search(buf)
+    # A match holds only segment bytes and at most four dots, so it cannot start
+    # before the fifth dot or the last other byte counted back from the end.
+    # Searching from there finds the same leftmost match without retrying from
+    # every `eyJ` inside a long held run that cannot reach `\Z`.
+    start = len(buf)
+    dots = 0
+    while start > 0:
+        char = buf[start - 1]
+        if char == ".":
+            if dots == 4:
+                break
+            dots += 1
+        elif not (char.isascii() and (char.isalnum() or char in "_-")):
+            break
+        start -= 1
+    m = _PARTIAL_JWT_TAIL_RE.search(buf, start)
     while m is not None and "." in m.group():
         header = m.group().split(".", 1)[0]
         if header.find("eyJ", 1) != -1 or redaction._is_json_object_segment(header):
@@ -224,6 +280,20 @@ def _aws_label_cut(buf: str, key_start: int) -> tuple[int, bool]:
     return cut, inside
 
 
+def _credential_match_crosses(buf: str, cut: int) -> bool:
+    """Whether a batch credential match starts before *cut* and ends after it.
+
+    The pako hold commits ``buf[:cut]`` and keeps the rest, so such a match would
+    reach two batch calls apart: a Bearer header ahead of the cut, its value after.
+    """
+    for match in _submodule("redaction")._credential_matches(buf):
+        if match.start() >= cut:
+            return False
+        if match.end() > cut:
+            return True
+    return False
+
+
 def _token_start(buf: str, pos: int) -> int:
     while pos > 0 and not buf[pos - 1].isspace():
         pos -= 1
@@ -236,12 +306,24 @@ class StreamRedactor:
     Feed raw chunks in order; ``feed`` returns the redacted, safe-to-broadcast
     prefix (possibly empty while a partial credential is buffered). Call
     ``flush`` when the stream/segment ends to redact and return the remainder.
-    Adds at most one chunk of latency. A credential is never split across a
-    commit boundary because commits only ever end at a non-credential-class
-    character, while a credential is a contiguous credential-class run.
+    Ordinary trailing runs add at most one chunk of latency. A validated pako
+    candidate is held through its bounded payload until termination because its
+    compressed state cannot be judged piecemeal. A credential is never split
+    across a commit boundary because commits only ever end at a non-credential-
+    class character, while a credential is a contiguous credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
+    __slots__ = (
+        "_buf",
+        "_redact",
+        "_discarding",
+        "_discard_kind",
+        "_discarded",
+        "_pako_chunks",
+        "_pako_payload_len",
+        "_pako_tail_len",
+        "_pako_at_route",
+    )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
@@ -250,6 +332,13 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind: tuple[str, ...] | None = None
         self._discarded = 0
+        self._pako_chunks: list[str] | None = None
+        self._pako_payload_len = 0
+        # Length of the credential-class run held after the payload ended, or
+        # None while the payload itself is still arriving.
+        self._pako_tail_len: int | None = None
+        # Whether the held run opens at its route; set each time a hold begins.
+        self._pako_at_route = False
 
     def _redact_window(self, text: str) -> str:
         """Redact one context-incomplete window without URL-prefix exemptions."""
@@ -268,6 +357,44 @@ class StreamRedactor:
 
         if not chunk:
             return ""
+
+        # A Mermaid pako route candidate can be much larger than the ordinary
+        # holdback. Once its exact prefix is isolated, classify each new payload
+        # byte once and retain chunks without repeatedly joining or rescanning the
+        # prefix. Credential-class bytes after the payload (a sentence's `.`, a
+        # `:`) are no boundary yet, so they are held too, up to the ordinary
+        # holdback. On the first byte outside `_CRED_CLASS`, past that holdback,
+        # or at the payload ceiling, reassemble the entire candidate with the full
+        # current chunk before normal credential-safe cut selection. Splitting
+        # earlier would let a credential containing `/` straddle the payload
+        # alphabet boundary and reach live output as two safe-looking fragments,
+        # and cutting the joined run at the ordinary floor would corrupt the link.
+        # A run glued ahead of its route is also reassembled when an `eyJ` reaches
+        # it: it was held only while it carried no partial JWT, so normal scanning
+        # judges it under the JWT ceiling, as if the `eyJ` had been there first.
+        if self._pako_chunks is not None:
+            tail = chunk
+            within_cap = True
+            if self._pako_tail_len is None:
+                payload_end = _redaction._MERMAID_PAKO_PAYLOAD_CHUNK_RE.match(chunk).end()
+                self._pako_payload_len += payload_end
+                within_cap = self._pako_payload_len <= _redaction._MERMAID_PAKO_PAYLOAD_CAP
+                tail = chunk[payload_end:]
+            tail_len = (self._pako_tail_len or 0) + len(tail)
+            if (
+                within_cap
+                and tail_len <= _STREAM_HOLDBACK_MAX
+                and _CRED_CLASS.issuperset(tail)
+                and (self._pako_at_route or not _late_jwt_anchor(self._pako_chunks, chunk))
+            ):
+                self._pako_chunks.append(chunk)
+                if tail:
+                    self._pako_tail_len = tail_len
+                return ""
+            self._buf = "".join(self._pako_chunks)
+            self._pako_chunks = None
+            self._pako_payload_len = 0
+            self._pako_tail_len = None
         self._buf += chunk
 
         # Invariant: on entry while `_discarding`, `_buf` holds only the carried
@@ -386,6 +513,23 @@ class StreamRedactor:
         # holdback so a chunk boundary cannot split the name, but it is not yet a
         # credential and must never escalate the cap or authorize data loss.
         token_anchor = _redaction._TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        pako_anchor = _redaction._MERMAID_PAKO_PARTIAL_RE.search(self._buf)
+        pako_candidate: tuple[int, int] | None = None
+        pako_tail_len: int | None = None
+        if pako_anchor is not None:
+            pako_payload_len = len(pako_anchor.group()) - len(_redaction._MERMAID_PAKO_URL_PREFIX)
+            if pako_payload_len <= _redaction._MERMAID_PAKO_PAYLOAD_CAP:
+                pako_candidate = (pako_anchor.start(), pako_payload_len)
+        else:
+            # The payload and a credential-class tail (a sentence's `.`) can
+            # arrive in one delta, and the partial route ends on a payload byte.
+            # Read that tail off first, so the candidate is the one the tail hold
+            # above keeps, seeded with the tail it already has.
+            tailed = _pako_candidate_with_tail(self._buf)
+            if tailed is not None:
+                pako_candidate, pako_tail_len = tailed
+        if pako_candidate is not None:
+            safety_cuts.append(pako_candidate[0])
         weak_token_anchor = None
         strong_token_anchor = False
         if token_anchor is not None:
@@ -404,12 +548,29 @@ class StreamRedactor:
         if complete_token_crossing is not None:
             i = min(i, complete_token_crossing.start())
 
-        strong_anchored = (
-            partial_jwt is not None
-            or bearer_anchor is not None
+        strong_beside_jwt = (
+            bearer_anchor is not None
             or aws_keyed_anchor is not None
             or complete_token_crossing is not None
             or strong_token_anchor
+        )
+        strong_anchored = partial_jwt is not None or strong_beside_jwt
+        # A partial JWT that starts inside the pako payload is payload, not an
+        # anchor of its own: the payload alphabet holds no `.`, so no complete
+        # JWT fits inside it, and a `.` ends the candidate and sends the joined
+        # text through ordinary scanning. Only that match may ride the pako hold
+        # below; every other STRONG anchor, and the JWT ceiling outside a
+        # candidate, stay as they are. It may end in the candidate's held tail
+        # (a sentence's `.`), which is at most `_STREAM_HOLDBACK_MAX` bytes and
+        # is scanned in full with the payload when the held run terminates.
+        payload_start = (
+            pako_candidate[0] + len(_redaction._MERMAID_PAKO_URL_PREFIX) if pako_candidate else 0
+        )
+        jwt_in_pako_payload = (
+            partial_jwt is not None
+            and pako_candidate is not None
+            and partial_jwt.start() >= payload_start
+            and partial_jwt.end() <= payload_start + pako_candidate[1] + (pako_tail_len or 0)
         )
 
         # A partial canonical tag is already-redacted material. It lowers only
@@ -417,6 +578,41 @@ class StreamRedactor:
         # so the tag prefix itself can neither raise a cap nor authorize a drop.
         if partial_tag_start is not None:
             i = min(i, partial_tag_start)
+
+        # Isolate only a weak pako candidate whose run is the earliest cut. The
+        # run may open with credential-class bytes glued to the prefix (an
+        # `href="` or a JSON `"url":"`), held with it up to the ordinary holdback
+        # so the commit still ends outside `_CRED_CLASS`. Any STRONG anchor other
+        # than a partial JWT wholly inside the payload retains its 4096-byte
+        # fail-closed ceiling. The chunk list makes one-byte feeds linear: each
+        # byte is classified once here, joined once at termination, then scanned
+        # once by batch redaction. A credential match that starts in the commit
+        # and runs into the held run declines the hold: a scheme's `:` can end
+        # an `Authorization: Bearer` anchor early, and the cut would then send
+        # the header and its value to two batch calls. The partial JWT rides only
+        # a run that opens at the route: text glued before it may be a value
+        # whose header an earlier delta committed, so that run keeps the JWT
+        # ceiling and fails closed. Such a run is held only while its route,
+        # payload and tail hold no `eyJ`: one arriving later ends the hold (see
+        # the held branch above), and the run is not held again while it is buffered.
+        if (
+            pako_candidate is not None
+            and (
+                not strong_anchored
+                or (jwt_in_pako_payload and not strong_beside_jwt and pako_candidate[0] == i)
+            )
+            and i == natural_cut
+            and pako_candidate[0] - i <= _STREAM_HOLDBACK_MAX
+            and not _credential_match_crosses(self._buf, i)
+            and (pako_candidate[0] == i or self._buf.find("eyJ", pako_candidate[0]) < 0)
+        ):
+            commit, held = self._buf[:i], self._buf[i:]
+            self._buf = ""
+            self._pako_chunks = [held]
+            self._pako_payload_len = pako_candidate[1]
+            self._pako_tail_len = pako_tail_len
+            self._pako_at_route = pako_candidate[0] == i
+            return self._redact_window(commit) if commit else ""
 
         # PHASE B -- BOUNDS.
         # Invariant: STRONG anchors may fail closed instead of exposing a secret;
@@ -555,6 +751,11 @@ class StreamRedactor:
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
+        if self._pako_chunks is not None:
+            self._buf = "".join(self._pako_chunks)
+            self._pako_chunks = None
+            self._pako_payload_len = 0
+            self._pako_tail_len = None
         if self._discarding:
             self._buf = ""
             self._discarding = False
@@ -567,6 +768,8 @@ class StreamRedactor:
     @property
     def held(self) -> str:
         """The raw run withheld so far (``""`` while a value is being dropped)."""
+        if self._pako_chunks is not None:
+            return "".join(self._pako_chunks)
         return "" if self._discarding else self._buf
 
     @property
@@ -580,6 +783,9 @@ class StreamRedactor:
         self._discarding = False
         self._discard_kind = None
         self._discarded = 0
+        self._pako_chunks = None
+        self._pako_payload_len = 0
+        self._pako_tail_len = None
 
 
 def redact_and_truncate(text: str, max_chars: int = 4000) -> str:
