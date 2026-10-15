@@ -180,7 +180,9 @@ def test_consumed_hook_fires_on_update_approve(loader):
     seen: list[dict] = []
     S.set_pending_consumed_hook(seen.append)
     assert loader.approve_pending_update_checked("cand-upd") == "auto/cand-upd"
-    assert _payloads_sans_stamp(seen) == [{"slug": "cand-upd", "outcome": "approved", "name": "auto/cand-upd"}]
+    assert _payloads_sans_stamp(seen) == [
+        {"slug": "cand-upd", "outcome": "approved", "name": "auto/cand-upd"}
+    ]
 
 
 def test_consumed_hook_fires_when_private_claim_cleanup_is_blocked(loader, monkeypatch):

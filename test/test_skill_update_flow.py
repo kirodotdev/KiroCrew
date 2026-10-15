@@ -150,11 +150,13 @@ async def test_dedupe_maps_update_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda cand, existing, judge: (H.VERDICT_UPDATE, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("deploy-helper-2", "d", "t") == (
-        H.VERDICT_UPDATE, "auto/deploy-helper"
+        H.VERDICT_UPDATE,
+        "auto/deploy-helper",
     )
 
 
@@ -164,7 +166,8 @@ async def test_dedupe_maps_dup_verdict(monkeypatch):
     c = _mk(loader, judge_model="claude-haiku-4.5")
     c._event_loop = asyncio.get_running_loop()
     monkeypatch.setattr(
-        H, "metadata_dedupe_verdict",
+        H,
+        "metadata_dedupe_verdict",
         lambda *a: (H.VERDICT_DUP, "auto/deploy-helper"),
     )
     assert c._dedupe_candidate("x", "d", "t") == (H.VERDICT_DUP, "auto/deploy-helper")
@@ -673,7 +676,8 @@ def test_process_dup_still_rejects(monkeypatch):
     assert staged_update == []
     assert loader.staged == []
     rej = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") == "similar_exists"
     ]
@@ -692,7 +696,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
     c = _mk(loader)
     # _dedupe_candidate must never be consulted — there is no candidate.
     monkeypatch.setattr(
-        c, "_dedupe_candidate",
+        c,
+        "_dedupe_candidate",
         lambda *a, **k: pytest.fail("dedupe called for a null candidate"),
     )
     recorded: list[dict] = []
@@ -704,7 +709,8 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
         ctx.stop()
     assert loader.staged == []
     skipped = [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("tool_name") == "auto_skill_create"
         and r.get("outcome") == "skipped"
         and r.get("metadata", {}).get("reason") == "no_candidate_proposed"
@@ -776,9 +782,7 @@ def test_strip_skill_frontmatter_and_fence_helpers():
 async def test_merge_receives_prose_only_not_frontmatter():
     """The live SKILL.md header must be stripped before the merge turn, else the
     model echoes it back and a second ``---`` block nests in the procedure."""
-    loader = FakeLoader(
-        live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY
-    )
+    loader = FakeLoader(live_body="---\nname: auto/deploy-helper\nversion: 4\n---\n\n" + _LIVE_BODY)
     c = _mk(loader)
     c._event_loop = asyncio.get_running_loop()
     seen: dict = {}
@@ -1010,7 +1014,8 @@ async def test_update_verdict_on_pending_target_stages_a_new_candidate():
     assert st.get("target") is None
     # And it was NOT audited as a dropped/rejected candidate.
     assert not [
-        r for r in recorded
+        r
+        for r in recorded
         if r.get("outcome") == "rejected"
         and r.get("metadata", {}).get("reason") in ("target_not_live", "similar_exists")
     ]
@@ -1132,9 +1137,7 @@ def test_frontmatter_value_resolves_block_scalars():
         "  a, b\n"
         "---\n\n## Steps\n"
     )
-    assert (
-        H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
-    )
+    assert H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
     # `triggers` uses `|-`, whose strip chomping drops the trailing break, so it is
     # unaffected by the strip chomping -- the pair keeps the two modes visibly distinct here.
     assert H._frontmatter_value(body, "triggers") == "a, b"

@@ -553,6 +553,7 @@ def test_meta_credential_key_is_redacted(loader):
 def test_approve_refuses_symlink_in_candidate(loader):
     """A symlinked file in the candidate is refused at approve (TOCTOU guard)."""
     import os
+
     _stage(loader, "linky")
     pdir = loader._pending_root() / "linky"
     (pdir / "scripts").mkdir(parents=True, exist_ok=True)
@@ -581,7 +582,9 @@ def test_approve_revalidates_scripts_written_directly(loader):
     pdir = loader._pending_root() / "sneaky"
     (pdir / "scripts").mkdir(parents=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/sneaky\n---\nbody", encoding="utf-8")
-    (pdir / "scripts" / "wipe.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
+    (pdir / "scripts" / "wipe.py").write_text(
+        "import os\nos.system('rm -rf /')\n", encoding="utf-8"
+    )
     # Approve must refuse (dangerous script) and leave it live-free.
     with pytest.raises(PendingApprovalRefused) as refused:
         loader.approve_pending_skill_checked("sneaky")
@@ -648,8 +651,10 @@ def test_restage_does_not_clobber_candidate_under_review(loader):
     (approval-integrity guard) AND must NOT silently drop the distinct candidate
     (consolidation advances its offset regardless): the reviewed candidate stays
     immutable and the distinct one is queued under a unique sibling slug."""
-    assert _stage(loader, "race-cand", scripts=[{"filename": "a.py", "content": "print(1)\n"}]) \
+    assert (
+        _stage(loader, "race-cand", scripts=[{"filename": "a.py", "content": "print(1)\n"}])
         == "auto/race-cand"
+    )
     first = loader.get_pending_skill("race-cand")
     # Background consolidation re-detects a DISTINCT skill that slugifies the same.
     second_name = loader.stage_skill_candidate(
@@ -781,9 +786,7 @@ def test_pending_update_does_not_reserve_a_live_name(loader):
     unrelated skill and drop it, because consolidation advances its message
     offset whatever one candidate's outcome."""
     assert (
-        _stage_distinct(
-            loader, "topic-update", kind="update", target="auto/topic", base_version=1
-        )
+        _stage_distinct(loader, "topic-update", kind="update", target="auto/topic", base_version=1)
         == "auto/topic-update"
     )
     # A genuinely different skill slugifying to the queued update's name publishes.
@@ -849,13 +852,16 @@ def test_both_claim_paths_hold_the_shared_slug_lock(loader, monkeypatch):
     monkeypatch.setattr(SkillsLoader, "_auto_slug_claim_lock", counting)
     monkeypatch.setattr(SkillsLoader, "_auto_slug_available", record)
     assert _stage_distinct(loader, "locked") == "auto/locked"
-    assert loader.create_auto_skill(
-        "live-locked",
-        description="d",
-        triggers="t",
-        procedure_md="P",
-        provenance=_prov(),
-    ) == "auto/live-locked"
+    assert (
+        loader.create_auto_skill(
+            "live-locked",
+            description="d",
+            triggers="t",
+            procedure_md="P",
+            provenance=_prov(),
+        )
+        == "auto/live-locked"
+    )
     # Each availability test ran with the lock held (depth 1), one per path.
     assert held == ["pending-new:1", "live:1"]
     assert (loader._dir / ".auto-slug-claim.lock").exists()
@@ -897,6 +903,7 @@ def test_claim_without_the_lock_is_refused_not_attempted(loader, monkeypatch):
     the queued candidate, so an unacquired lock refuses the claim. It returns
     ``None`` rather than raising, because the callers audit ``None`` as a rejection
     while an exception would abort the consolidation pass."""
+
     def refusing(fd, **kw):
         raise OSError("lock held by another process")
 
@@ -1025,8 +1032,7 @@ def test_active_claim_inspection_io_failure_aborts_staging(loader, monkeypatch):
     assert not (loader._pending_root() / slug).exists()
     assert claim.exists()
     assert any(
-        row.get("metadata", {}).get("reason") == "active_claim_indeterminate"
-        for row in recorded
+        row.get("metadata", {}).get("reason") == "active_claim_indeterminate" for row in recorded
     )
 
 
@@ -1103,10 +1109,15 @@ def test_meta_credentials_are_redacted_in_list_and_detail(loader):
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/meta-leak\n---\n# x\n", encoding="utf-8")
     (pdir / ".meta.json").write_text(
-        _json.dumps({
-            "slug": slug, "name": f"auto/{slug}", "source": "crystallize",
-            "description": f"uses token {secret}", "triggers": "t",
-        }),
+        _json.dumps(
+            {
+                "slug": slug,
+                "name": f"auto/{slug}",
+                "source": "crystallize",
+                "description": f"uses token {secret}",
+                "triggers": "t",
+            }
+        ),
         encoding="utf-8",
     )
     listed = [s for s in loader.list_pending_skills() if s["slug"] == slug][0]
@@ -1167,10 +1178,14 @@ def test_nested_meta_credentials_redacted(loader):
     pdir.mkdir(parents=True, exist_ok=True)
     (pdir / "SKILL.md").write_text("---\nname: auto/nested-meta\n---\n# x\n", encoding="utf-8")
     (pdir / ".meta.json").write_text(
-        _json.dumps({
-            "slug": slug, "name": f"auto/{slug}",
-            "nested": {"note": f"token {secret}"}, "list": [f"x {secret}"],
-        }),
+        _json.dumps(
+            {
+                "slug": slug,
+                "name": f"auto/{slug}",
+                "nested": {"note": f"token {secret}"},
+                "list": [f"x {secret}"],
+            }
+        ),
         encoding="utf-8",
     )
     detail = loader.get_pending_skill(slug)
@@ -1343,7 +1358,9 @@ def test_attended_new_skill_promotes_fresh_validated_inode(loader, monkeypatch):
 
     monkeypatch.setattr(loader, "_validate_and_redact_snapshot", validate_then_mutate_claim)
     try:
-        assert loader.approve_pending_skill_checked("attended-new-inode") == "auto/attended-new-inode"
+        assert (
+            loader.approve_pending_skill_checked("attended-new-inode") == "auto/attended-new-inode"
+        )
     finally:
         if retained_fd is not None:
             os.close(retained_fd)
