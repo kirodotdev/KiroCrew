@@ -297,7 +297,16 @@ export default function CrewChatWindow({ target, onClose = closeCrewWindow }: { 
   // The newest turn row the transcript draws as a bubble: a system notice
   // (compaction, reload) and a say-nothing reply are not one.
   const lastTurn = [...messages].reverse().find(m => m.role === 'user' || (m.role === 'assistant' && !isSystemNoticeRow(m) && !isHiddenInvisibleAssistantRow(m)))
-  const title = slotQ.data?.title || detailQ.data?.title || key
+  // An untitled session shows a localized label, never the internal slot key.
+  // The key still routes every request (crewWindowSlot, slotPath); only the
+  // header text changes. The label is used ONLY once a query has resolved with
+  // an empty title. While the slot/detail reads are pending, errored, or gated
+  // off by a version mismatch (enabled: versionOk) there is no title to trust,
+  // so the header falls back to the crew's own name (the same identifier the
+  // load_failed / feed_lost notices use) rather than a blank header or a false
+  // "Untitled session" for what may be a titled session we could not read.
+  const titleResolved = slotQ.data !== undefined || detailQ.data !== undefined
+  const title = slotQ.data?.title || detailQ.data?.title || (titleResolved ? i18nT('pages.chat.crewWindow.untitled') : name)
   const loadError = detailQ.error ?? slotQ.error ?? instancesQ.error ?? capsQ.error
   const versionMismatch = capsQ.data && !capsQ.data.version_match ? capsQ.data : null
   const actionPending = action.isPending

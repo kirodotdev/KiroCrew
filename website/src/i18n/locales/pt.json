@@ -12303,6 +12303,7 @@
         "placeholder": "Mensagem para o agente em {{name}}…",
         "version_mismatch": "Esta equipe executa o {{productName}} {{peer}}, mas esta máquina executa {{local}}. Atualize um deles para que correspondam.",
         "create_unnamed": "A equipe abriu uma sessão, mas não a nomeou.",
+        "untitled": "Sessão sem título",
         "close_hint": "Fechar não interrompe o agente em {{name}}.",
         "feed_lost": "As atualizações ao vivo de {{name}} foram perdidas.",
         "feed_lost_hint": "As atualizações pararam. Tente novamente para se atualizar.",
