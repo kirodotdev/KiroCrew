@@ -25,7 +25,7 @@ const failing = (status: number, body: Record<string, unknown>) =>
   }) as unknown as Response
 
 describe('api.crewBoard', () => {
-  it('does NOT journal the 404 no_ledger: a crewmate with no goal is an answer, not a failure', async () => {
+  it('does NOT journal the 404 no_ledger: a mate with no goal is an answer, not a failure', async () => {
     fetchMock.mockResolvedValue(failing(404, { error: 'This session owns no work ledger.', code: 'no_ledger' }))
     await expect(api.crewBoard('member-ops')).rejects.toBeInstanceOf(ApiError)
     expect(recentErrors()).toHaveLength(0)

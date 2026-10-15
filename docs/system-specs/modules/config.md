@@ -479,9 +479,9 @@ none" is the single on-disk representation and a PATCH with `[]` clears it.
 The reserved `agents.default` assistant uses the existing Global Memory **V1**.
 Explicit creation of a new Crew Member allocates one **V2** memory store.
 Automatic discovery and existing V1 members retain their V1 bindings. Changing
-`default_agent` picks the roster's default crewmate (the badge, the undeletable
+`default_agent` picks the roster's default mate (the badge, the undeletable
 row) with its existing memory version and binding; it never converts member
-memory to Global, and it does not change what a session that picked no crewmate
+memory to Global, and it does not change what a session that picked no mate
 reads: that session is a template session on Global Memory V1 (see
 `resolve_agent_bindings` below). A materialized provider template which is not a Crew Member
 continues to use V1.
@@ -1872,7 +1872,7 @@ Resolution order:
    `template`) — use that alias's bindings: template, workspace, memory store
    and model pin.
 2. otherwise a **template session** (#18328): `default_workspace`, Global Memory
-   V1 (`DEFAULT_MEMORY_STORE`), no crewmate model pin, `resolved_alias` empty,
+   V1 (`DEFAULT_MEMORY_STORE`), no mate model pin, `resolved_alias` empty,
    `selection_kind="template"`. The template dispatched is `agent_name` when it
    is a **materialized kiro agent config** — a `*.json` under `~/.kiro/agents/`
    or, when `project_dir` is given, under `<project>/.kiro/agents/` — whose
@@ -1886,14 +1886,14 @@ Resolution order:
 
 A plain session — no `agent_name` — is rung 2 with the default template. It is
 never the `default` crewmate: `config.default_agent` names the roster's default
-crewmate and is not read here, so that row's workspace, store and model pin stay
+mate and is not read here, so that row's workspace, store and model pin stay
 its own. There is no "first available alias" fallback any more.
 
 Before plain sessions were template sessions they ran the template of the
 roster default's row (the top-level `default_agent`), and an upgraded document
-holds that template only there: the reserved `default` crewmate bound to a
+holds that template only there: the reserved `default` mate bound to a
 template of its own (`default` → `default-2`), a template a ★ enrolled as an
-alias, or an existing crewmate the ★ pointed at because it already ran the
+alias, or an existing mate the ★ pointed at because it already ran the
 chosen template. The write-back carries it into `agent.default_agent` once
 (`MIGRATE_STAR_DEFAULT_TEMPLATE`, predicate `migration.star_default_template_due`)
 when `agent.default_agent` is unset (any stored value, `kirocrew` included, is a
@@ -1902,9 +1902,9 @@ a row, and that row's template is not `kirocrew`: the load sets
 `agent.default_agent` to that `kiro_agent` (through `dispatch_kiro_agent`) in
 memory at once and in `config.json` under the write lock, re-detected there like
 every other delta. Only the template is carried, whatever the row is called: its
-folder, store and model pin stay the crewmate's own, so a plain session runs
-that template on the default workspace and Global memory with no crewmate model
-pin, and a crewmate with a store of its own keeps it for its DM thread and
+folder, store and model pin stay the mate's own, so a plain session runs
+that template on the default workspace and Global memory with no mate model
+pin, and a mate with a store of its own keeps it for its DM thread and
 explicit picks. The row and the roster default are left alone. One-shot by
 state: once the field holds any value the predicate is false, and the ★ writes
 the field directly, so resetting it to `kirocrew` is never undone by a later
@@ -1914,22 +1914,22 @@ once stored it is indistinguishable from a pick. The
 overlay wins where it supplies the field, so the seed is skipped there. The warm
 pool resolves a blank `session.pool_agent` through the same path as a plain
 session (`pool_kiro_agent`), never through the alias table, so an
-`agent.default_agent` that spells a crewmate alias binding another template
+`agent.default_agent` that spells a mate alias binding another template
 prewarms what the session runs.
 
 **Two "default agent" settings, two things.** `config.default_agent` (top-level)
-is a CREWMATE alias — a key of `config.agents` — naming the roster's default
-crewmate: the **Default** badge on the Crewmates page, its DM thread, and the
-row the crewmate-delete guard keeps. No agent-less dispatch path reads it.
+is a MATE alias — a key of `config.agents` — naming the roster's default
+crewmate: the **Default** badge on the Mates page, its DM thread, and the
+row the mate-delete guard keeps. No agent-less dispatch path reads it.
 `PUT /api/config/default-agent` writes it for `agent_kind: "member"` (or a bare
-crewmate alias) and writes `agent.default_agent` for `agent_kind: "template"`.
+mate alias) and writes `agent.default_agent` for `agent_kind: "template"`.
 `config.agent.default_agent` is a TEMPLATE name — what a plain chat, a CLI
 chat, a warm-pool process, or an agent-less schedule runs when nothing names
 one, and the runtime's own `kirocrew` when unset. The Custom agents tab reads
 that choice through `GET /api/config/default-agent` (see
 [learn-cron-dashboard](learn-cron-dashboard.md)). Its body is
 `{default_agent, default_template, overridden, override_path?}`:
-`default_agent` is the roster's default crewmate alias; `default_template` is
+`default_agent` is the roster's default mate alias; `default_template` is
 the effective template, including the managed-template fallback when a stored
 spec is gone; `overridden` says whether `config.local.json` pins
 `agent.default_agent`; and the absolute `override_path` appears only for the
@@ -1939,7 +1939,7 @@ picker writes the template through `PUT /api/config/default-agent` with
 [agent_admin/default_agent.py](../../../src/kiro_crew/dashboard/agent_admin/default_agent.py).
 The template roster reports the setting as a `used_by` reference of kind
 `default`; the writer accepts only an installed GLOBAL template, never a
-crewmate's private copy, a background-only runtime spec, an app's materialized
+mate's private copy, a background-only runtime spec, an app's materialized
 agent, or a name the browser mask would hide.
 
 `selection_kind="template"` restricts an existing conversation to the materialized
@@ -2159,8 +2159,8 @@ non-destructive other half — it names the agent that will actually answer, and
 `""` for "nothing to report". The name it reports is the one the runtime
 resolver binds an unhonored request to: the **default template**
 (`default_template(config)`, published in the alias snapshot at load), never a
-crewmate alias — a plain or unhonored session is a template session on the
-default workspace and Global memory, so a marker naming the `default` crewmate
+mate alias — a plain or unhonored session is a template session on the
+default workspace and Global memory, so a marker naming the `default` mate
 would advertise a store and a model pin the session does not use.
 
 Three properties, all pinned by tests:
@@ -2176,7 +2176,7 @@ Three properties, all pinned by tests:
   so silence during a boot window is the correct answer, not a guess.
 - **Agrees with `resolve_agent_bindings`.** The alias snapshot's fallback slot is
   `default_template(config)`, so the marker and the runtime name the same
-  template; the template's own name and every crewmate alias report `""`.
+  template; the template's own name and every mate alias report `""`.
 
 Consumers: the sidebar's session-row marker, and `mochi`'s `ensureSlot`, which
 refuses to send into a slot whose effective agent is someone else.
@@ -3105,7 +3105,7 @@ class DashboardConfig:
     onboarded: bool = False         # whether the "Choose your look" onboarding modal was completed
     import_onboarded: bool = False  # whether foreign-agent import was completed or skipped
     terminal: dict                  # the built-in Terminal tab: shell ("" = $SHELL), max_sessions (12, server-wide ceiling), cwd ("" = $HOME), reuse_current (false; true = Run-in-terminal focuses the selected terminal and copies the command, never runs it), completion.enabled (true). PATCH-able via /api/config/kirocrew
-    crewmates_onboarded: bool = False  # legacy record of the retired Meet CrewMates flow; nothing reads it
+    crewmates_onboarded: bool = False  # legacy record of the retired Meet Mates flow; nothing reads it
     tips_enabled: bool = True      # feature-discovery tips (GET /api/tips/next); live-read
     tips_cadence_hours: float = 6.0    # min hours between surfaced tips (server-side gate; clamped >= 0)
     tips_snooze_hours: float = 48.0    # hours before a snoozed tip is eligible again (clamped >= 0)
@@ -4021,12 +4021,12 @@ settings without copying them. Foreign credentials, security policy,
 approval/sandbox settings, agent/runtime state, hooks, and arbitrary unknown
 config sections cannot enter configuration through this path.
 
-### Meet CrewMates first-run state
+### Meet Mates first-run state
 
 `DashboardConfig.crewmates_onboarded` is a legacy completion record of the
 retired guided create flow. Nothing reads it to decide what to show: entering
-Crewmates opens Mate's chat or the remembered one, and creating a crewmate
-happens on the New crewmate card (see [crew-mode](crew-mode.md)), which neither
+Mates opens Mate's chat or the remembered one, and creating a mate
+happens on the New mate card (see [crew-mode](crew-mode.md)), which neither
 reads nor writes the flag. `GET /api/theme/boot` and `PUT /api/config/theme`
 keep carrying it for compatibility; the dashboard neither reads nor writes it.
 

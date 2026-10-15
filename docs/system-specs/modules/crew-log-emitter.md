@@ -283,7 +283,7 @@ default, while the pin is deliberately KEPT -- the composer chip still shows it,
 clearing it would delete an explicit user setting on the evidence of one session's
 advertised list. An unpinned slot is the mirror case: it names no model of its own,
 and the model it runs on is known only after the handle exists (when only its
-crewmate pins a model, its pin is backfilled from the provider then).
+mate pins a model, its pin is backfilled from the provider then).
 
 So `session/opened` and `request/configured` read `served_model`, the session fact,
 through one helper. It is empty when the backend serves its own default, and the entry

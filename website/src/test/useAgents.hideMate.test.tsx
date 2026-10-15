@@ -27,7 +27,7 @@ const catalog = [
 
 const names = (rows: { name: string }[]) => rows.map(r => r.name)
 
-describe('useAgents keeps Mate out of every agent list while the Crewmates preview is off', () => {
+describe('useAgents keeps Mate out of every agent list while the Mates preview is off', () => {
   beforeEach(() => {
     vi.mocked(api.agentCatalog).mockReset().mockResolvedValue({ agents: catalog, default_agent: 'default' } as never)
     vi.mocked(api.kirocrewConfig).mockReset().mockResolvedValue({ dashboard: { crewmates_in_agent_picker: true } } as never)
@@ -42,7 +42,7 @@ describe('useAgents keeps Mate out of every agent list while the Crewmates previ
     expect(names(result.current.displayAgents)).toEqual(['default', 'helper'])
   })
 
-  it('preview on: Mate is listed like any other crewmate', async () => {
+  it('preview on: Mate is listed like any other mate', async () => {
     localStorage.setItem(PREVIEW_CREW, '1')
     const { result } = renderHookWithProviders(() => useAgents(0))
     await waitFor(() => expect(names(result.current.choices)).toEqual(['default', 'mate', 'helper']))

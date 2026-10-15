@@ -123,7 +123,7 @@ beforeEach(() => {
   })
 })
 
-describe('a session link in a crewmate DM', () => {
+describe('a session link in a mate DM', () => {
   it("the reply's link switches in place instead of navigating", async () => {
     const onSessionOpen = vi.fn()
     await renderDm({ onSessionOpen, sessions: roster() })

@@ -232,7 +232,7 @@ def test_the_first_welcomes_follow_the_tools() -> None:
             entry, has_other_crewmates=others, has_mate_tools=False
         )
         assert "update_self" in mate
-        assert "update_self" not in plain and "crewmate page" in plain
+        assert "update_self" not in plain and "mate page" in plain
 
 
 GOAL = {"id": "g1", "text": "Keep the release notes current"}

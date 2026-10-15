@@ -19,7 +19,7 @@ describe('useCrewmateAwaitingReply: the turn identity ends a wait the pane never
     expect(hook.result.current.awaitingReply).toBe(true)
   })
 
-  it('a pane re-pointed at another crewmate does not end the wait with THAT slot\'s turn', () => {
+  it('a pane re-pointed at another mate does not end the wait with THAT slot\'s turn', () => {
     const hook = mount({ slot: 'member-a', all: [sent], live: false, turn: { turn: 4, turn_gen: 'gen-a' } })
     act(() => hook.result.current.markSent('send-1'))
     hook.rerender({ slot: 'member-b', all: [], live: false, turn: { turn: 9, turn_gen: 'gen-a' } })

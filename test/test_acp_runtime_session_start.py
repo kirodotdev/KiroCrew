@@ -780,7 +780,7 @@ def test_activation_refusal_is_a_harness_seam_kas_reads_the_stamp_kiro_answers_n
     kas = KasHarness()
     with caplog.at_level("WARNING", logger="kiro_crew.acp.harness.kas"):
         refusal = kas.activation_refusal("plan", stamped("bundled"))
-    assert refusal and refusal.startswith("Rename this crewmate's template: “plan” is reserved")
+    assert refusal and refusal.startswith("Rename this mate's template: “plan” is reserved")
     assert " -- " not in refusal
     assert "Agent Template tab" in refusal and "KAS" not in refusal
     # The raw stamp is logged: the refusal blames the name, so the log is the

@@ -831,7 +831,7 @@ owner is gone -- and it is asked through `eventlog.service`, not from the handle
 cached log for that slug is dropped in the same step as the files.
 
 **Exactly one member-delete path reclaims, and the others are named rather than implied.** The
-dashboard delete route is that path. `kirocrew agent delete`, the package-sync prune and the crewmate
+dashboard delete route is that path. `kirocrew agent delete`, the package-sync prune and the mate
 prune migration each remove a member record without collecting its unit, and a unit orphaned before
 this exists has no collector at all -- the first two already hold `memory_store_namespace_lock`, so
 reaching them is a call apiece, while the migration holds no such lock and reads a member's own

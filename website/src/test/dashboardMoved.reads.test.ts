@@ -39,7 +39,7 @@ afterEach(() => {
 })
 
 describe('handleDashboardMoved', () => {
-  it('starts one read for a burst of crewmate frames, and one more behind it', async () => {
+  it('starts one read for a burst of mate frames, and one more behind it', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
     const tab = openDashboard(client, ['member-dashboard', 'oncall', 'oncall', 'en', 'live'])
     stops.push(tab.stop)
@@ -72,7 +72,7 @@ describe('handleDashboardMoved', () => {
     expect(page.landings).toHaveLength(2)
   })
 
-  it('leaves another crewmate\'s open dashboard alone', async () => {
+  it('leaves another mate\'s open dashboard alone', async () => {
     const client = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } })
     const mine = openDashboard(client, ['member-dashboard', 'oncall', 'oncall', 'en', 'live'])
     const theirs = openDashboard(client, ['member-dashboard', 'release-captain', 'release-captain', 'en', 'live'])

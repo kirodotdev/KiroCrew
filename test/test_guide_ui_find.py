@@ -491,7 +491,7 @@ def test_one_label_in_several_places_is_guided_to_the_features_own_page(
     # Crewmates page is still behind its preview, which this tab does not show
     # as on, so the tie is not settled on it: the user is asked which one,
     # never sent to the first-ranked Customize button either.
-    out = _next_for(monkeypatch, "Where do I create a new crewmate?")
+    out = _next_for(monkeypatch, "Where do I create a new mate?")
     assert out["ambiguous"] is True and out["tied"] >= 2
     assert out["results"][0]["id"] == "agents.add"
     assert out["next"] == mcp_guide._AMBIGUOUS_NO_GUIDE_NOTE
@@ -907,7 +907,7 @@ def test_another_name_of_a_control_becomes_the_label_the_page_shows() -> None:
 def test_a_find_for_a_planned_control_becomes_its_walk() -> None:
     assert ui_index.planned_find(
         {
-            "label": "Delete crewmate",
+            "label": "Delete mate",
             "route": "/capabilities?tab=crews",
             "location_id": "agents.delete",
         }
@@ -918,9 +918,9 @@ def test_a_find_for_a_planned_control_becomes_its_walk() -> None:
         "id": "ui.show",
         "params": {"location_id": "members.add-menu.new"},
     }
-    assert ui_index.planned_find({"label": "New crewmate"}) is None
+    assert ui_index.planned_find({"label": "New mate"}) is None
     # A page the plan does not walk is not this control.
-    assert ui_index.planned_find({"label": "Delete crewmate", "route": "/members"}) is None
+    assert ui_index.planned_find({"label": "Delete mate", "route": "/members"}) is None
     # A control with no plan stays a find.
     assert ui_index.planned_find({"label": "Add Custom"}) is None
 
@@ -939,7 +939,7 @@ def test_route_compatibility_compares_the_tab_the_route_names() -> None:
 def test_a_control_on_another_tab_is_never_bound_or_walked() -> None:
     for label, lid in (
         ("Edit default model", "agents.model"),
-        ("Delete crewmate", "agents.delete"),
+        ("Delete mate", "agents.delete"),
     ):
         asked = {"label": label, "route": "/capabilities?tab=mcp"}
         assert ui_index.authoritative_find(dict(asked)) == asked

@@ -57,7 +57,7 @@ function build(rows: KiroCrewAgent[] = ROSTER, running: string[] = []) {
 }
 
 describe('createMatesProvider — matching', () => {
-  it('finds a crewmate on a PARTIAL name, which is the whole gesture', async () => {
+  it('finds a mate on a PARTIAL name, which is the whole gesture', async () => {
     const { provider } = build()
     const results = await provider.search('onc')
     expect(results.map(r => r.title)).toEqual(['oncall'])
@@ -71,7 +71,7 @@ describe('createMatesProvider — matching', () => {
     expect((await provider.search('acnt')).map(r => r.title)).toEqual(['accountant'])
   })
 
-  it('reaches a crewmate through the identity its display label hides, and ranks it below a label match', async () => {
+  it('reaches a mate through the identity its display label hides, and ranks it below a label match', async () => {
     const { provider } = build([
       mate({ name: 'qa-bot', display_name: 'reviewer' }),
       mate({ name: 'qa-helper' }),
@@ -201,7 +201,7 @@ describe('createMatesProvider — matching', () => {
     expect(row.subtitleIndices).toBeUndefined()
   })
 
-  it('drops crewmates that match neither the label nor the identity', async () => {
+  it('drops mates that match neither the label nor the identity', async () => {
     const { provider } = build()
     expect(await provider.search('zzzzz-no-such-crew')).toEqual([])
   })
@@ -224,7 +224,7 @@ describe('createMatesProvider — matching', () => {
     expect(await provider.search('shipper')).toEqual([])
   })
 
-  it('EXCLUDES the built-in default assistant, which the Crewmates page opens for nobody', async () => {
+  it('EXCLUDES the built-in default assistant, which the Mates page opens for nobody', async () => {
     // `default` arrives tagged as a member, and the page it would navigate to treats
     // a roster holding only `default` as EMPTY and never opens a thread for it. So a
     // row for it is a row whose Enter lands on a page that will not open what the row
@@ -258,7 +258,7 @@ describe('createMatesProvider — matching', () => {
     expect(results[0].subtitle).toBe('The member.')
   })
 
-  it('lists every crewmate alphabetically for an empty query', async () => {
+  it('lists every mate alphabetically for an empty query', async () => {
     const { provider } = build()
     const results = await provider.search('')
     // By the DISPLAYED label, case-insensitively: `reviewer` files under r, not
@@ -290,7 +290,7 @@ describe('createMatesProvider — running state', () => {
     expect(row.statusColorVar).toBe('--accent')
   })
 
-  it('marks a working crewmate with a DOT, never the pill reserved for what the reader owes', async () => {
+  it('marks a working mate with a DOT, never the pill reserved for what the reader owes', async () => {
     const { provider } = build(ROSTER, ['oncall'])
     const [row] = await provider.search('oncall')
     expect(row.statusStyle).toBe('dot')
@@ -301,7 +301,7 @@ describe('createMatesProvider — running state', () => {
     expect(row.statusStyle).not.toBe('pill')
   })
 
-  it('leaves an idle crewmate with no status at all', async () => {
+  it('leaves an idle mate with no status at all', async () => {
     const { provider } = build(ROSTER, ['oncall'])
     const [row] = await provider.search('accountant')
     expect(row.statusStyle).toBeUndefined()

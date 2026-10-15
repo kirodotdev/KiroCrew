@@ -351,7 +351,7 @@ beforeEach(() => {
 // React Query's microtask scheduler).
 afterEach(realCreateClock)
 
-describe('New crewmate dialog', () => {
+describe('New mate dialog', () => {
   const openDialog = async () => {
     await clickAddAdvanced()
     return await screen.findByTestId('crewmate-create-form')
@@ -373,7 +373,7 @@ describe('New crewmate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       expect(askToLeave()).toBe('false')
       // The modal's own leave-draft wording (the dialog closes; the page is left).
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       // Accepting the prompt lets the navigation through.
       confirmSpy.mockReturnValue(true)
@@ -383,7 +383,7 @@ describe('New crewmate dialog', () => {
     }
   })
 
-  it('the rail\'s Crewmates row over a typed card: Stay keeps the card and its text, Leave closes it; an untouched card closes unasked', async () => {
+  it('the rail\'s Mates row over a typed card: Stay keeps the card and its text, Leave closes it; an untouched card closes unasked', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     try {
       await renderPage([row()])
@@ -392,7 +392,7 @@ describe('New crewmate dialog', () => {
       fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
       // Stay: the row asked, the user kept the draft, nothing moved.
       clickRailMembers()
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       expect(currentUrl()).toBe('/members?member=oncall')
@@ -426,7 +426,7 @@ describe('New crewmate dialog', () => {
       // so the page asks the card's own guard before it would drop the text.
       clickRawMembers()
       await waitFor(() => expect(confirmSpy).toHaveBeenCalledTimes(1))
-      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New crewmate dialog closes and what you typed is lost.')
+      expect(confirmSpy).toHaveBeenCalledWith('Leave this page? The New mate dialog closes and what you typed is lost.')
       expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
       expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('radar')
       confirmSpy.mockReturnValue(true)
@@ -515,14 +515,14 @@ describe('New crewmate dialog', () => {
       fireEvent.click(screen.getByTestId('crewmate-create-submit'))
       await waitFor(() => expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1))
       expect(askToLeave()).toBe('false')
-      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the crewmate is being created\?/))
+      expect(confirmSpy).toHaveBeenLastCalledWith(expect.stringMatching(/^Leave while the mate is being created\?/))
       finish({ ok: true })
     } finally {
       confirmSpy.mockRestore()
     }
   })
 
-  it('creates through the crew manager\'s write path, opens the new crewmate\'s chat and asks for its first greeting', async () => {
+  it('creates through the crew manager\'s write path, opens the new mate\'s chat and asks for its first greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     // The one row auto-opens on arrival (most recently used), so the page
@@ -570,7 +570,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
   })
 
-  it('the + New crewmate creates from a name alone: built from the built-in agent, wearing its name\'s own face, and its chat opens asking its goal through the hidden greeting', async () => {
+  it('the + New mate creates from a name alone: built from the built-in agent, wearing its name\'s own face, and its chat opens asking its goal through the hidden greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -602,14 +602,14 @@ describe('New crewmate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a crewmate not created on the dashboard asks for no greeting when opened', async () => {
+  it('a mate not created on the dashboard asks for no greeting when opened', async () => {
     await renderPage([row({ name: 'synced', slug: 'synced' })], 'kirocrew', { route: '/members?member=synced' })
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-synced')
     await act(async () => {})
     expect(api.memberGreet).not.toHaveBeenCalled()
   })
 
-  it('a free-form name opens the crewmate under the id the server answered and asks its greeting by that id', async () => {
+  it('a free-form name opens the mate under the id the server answered and asks its greeting by that id', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     await renderPage([row()])
     expect(await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)).toHaveTextContent('member-oncall')
@@ -658,7 +658,7 @@ describe('New crewmate dialog', () => {
     // Capture the create modal while it is still the active dialog: once the
     // nested New workspace form opens, the create modal goes inert
     // (aria-hidden), which removes its `dialog` role from the a11y tree.
-    const outerDialog = screen.getByRole('dialog', { name: 'New crewmate' })
+    const outerDialog = screen.getByRole('dialog', { name: 'New mate' })
     unfoldAdvanced()
     const workspace = await screen.findByRole('combobox', { name: 'Workspace' })
     fireEvent.keyDown(workspace, { key: 'ArrowDown' })
@@ -716,7 +716,7 @@ describe('New crewmate dialog', () => {
     await waitFor(() => expect(screen.getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('staging'))
     // Dismiss and reopen while the refresh is still pending: the fresh form
     // says default, and the refresh landing later must not change that.
-    fireEvent.click(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' }))
+    fireEvent.click(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' }))
     await waitFor(() => expect(screen.queryByTestId('crewmate-create-form')).toBeNull())
     await openDialog()
     unfoldAdvanced()
@@ -788,7 +788,7 @@ describe('New crewmate dialog', () => {
     expect(cachedWorkspaceNames(queryClient)).toEqual(before)
     // And the parent modal's own exit (its header X, "Close") is live again:
     // the nested dialog is closed for good.
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form\'s X does not change the parent\'s pick or the cache', async () => {
@@ -804,7 +804,7 @@ describe('New crewmate dialog', () => {
     finish()
     await settle()
     expectStaleDropped(queryClient, readsSince, readsAtClose)
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
   })
 
   it('a workspace create that answers after the nested form was dismissed with Escape does not change the parent\'s pick', async () => {
@@ -917,7 +917,7 @@ describe('New crewmate dialog', () => {
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'radar' } })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent("Couldn't create the crewmate. Nothing was created — try again.")
+    expect(notice).toHaveTextContent("Couldn't create the mate. Nothing was created — try again.")
     expect(notice).not.toHaveTextContent(/Failed to fetch/)
     // "Nothing was created" was CHECKED, not assumed: the roster was re-read
     // (arrival + reconcile) and radar is not on it.
@@ -943,7 +943,7 @@ describe('New crewmate dialog', () => {
     })
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
     const notice = await screen.findByTestId('crewmate-create-error')
-    expect(notice).toHaveTextContent('A crewmate named radar already exists.')
+    expect(notice).toHaveTextContent('A mate named radar already exists.')
     // Dialog still open; no chat opened for radar, no greeting, one POST.
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.memberThread).not.toHaveBeenCalledWith('radar')
@@ -978,7 +978,7 @@ describe('New crewmate dialog', () => {
     // The attempted name leads the sentence, so the notice cannot be read as
     // the nameless retry-safe "couldn't create the crewmate" one.
     expect(notice).toHaveTextContent("Couldn't confirm whether radar was created. Check the list before trying again.")
-    expect(notice).not.toHaveTextContent(/the crewmate was created/)
+    expect(notice).not.toHaveTextContent(/the mate was created/)
     expect(notice).not.toHaveTextContent(/Nothing was created/)
     expect(screen.getByTestId('crewmate-create-form')).toBeInTheDocument()
     expect(api.sendChat).not.toHaveBeenCalled()
@@ -987,7 +987,7 @@ describe('New crewmate dialog', () => {
     // under the field with NO request — one POST in total.
     expect(await rosterRow('radar')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('crewmate-create-submit'))
-    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A crewmate named radar already exists.')
+    expect(await screen.findByTestId('crewmate-create-name-hint')).toHaveTextContent('A mate named radar already exists.')
     expect(screen.queryByTestId('crewmate-create-unconfirmed')).toBeNull()
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
   })
@@ -1025,7 +1025,7 @@ describe('New crewmate dialog', () => {
     expect(api.createKirocrewAgent).toHaveBeenCalledTimes(1)
     // Unlocked again: the mutation settled, so the modal's Close is live.
     expect(screen.getByTestId('crewmate-create-fieldset')).not.toBeDisabled()
-    expect(within(screen.getByRole('dialog', { name: 'New crewmate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
+    expect(within(screen.getByRole('dialog', { name: 'New mate' })).getByRole('button', { name: 'Close' })).toBeEnabled()
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
@@ -1086,7 +1086,7 @@ describe('New crewmate dialog', () => {
     expect(api.sendChat).not.toHaveBeenCalled()
   })
 
-  it('a chat open that fails right after the create frees the +, and the next successful open of that crewmate asks for its greeting', async () => {
+  it('a chat open that fails right after the create frees the +, and the next successful open of that mate asks for its greeting', async () => {
     const membersMock = api.members as ReturnType<typeof vi.fn>
     const threadMock = api.memberThread as ReturnType<typeof vi.fn>
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>

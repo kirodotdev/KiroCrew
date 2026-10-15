@@ -322,11 +322,11 @@ describe('FolderConfigModal', () => {
       return onSubmit
     }
 
-    it('shows a crewmate under its label and says which row is which', async () => {
+    it('shows a mate under its label and says which row is which', async () => {
       open({ installedAgents: PAIR })
       await openAgentPopup()
       const rows = screen.getAllByRole('option').map(o => o.textContent)
-      expect(rows).toContain('jira-ticket · Crewmates')
+      expect(rows).toContain('jira-ticket · Mates')
       expect(rows).toContain('jira-ticket · Custom agents')
       expect(rows.join('|')).not.toContain('Jira ticket')
     })
@@ -341,15 +341,15 @@ describe('FolderConfigModal', () => {
       expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'jira-ticket' }))
     })
 
-    it('names the crewmate in the closed picker after it is picked', async () => {
+    it('names the mate in the closed picker after it is picked', async () => {
       open({ installedAgents: PAIR })
-      await pick('Crewmates')
-      expect(agentTrigger()).toHaveTextContent('jira-ticket · Crewmates')
+      await pick('Mates')
+      expect(agentTrigger()).toHaveTextContent('jira-ticket · Mates')
     })
 
-    it('saves the crewmate key when the crewmate row is picked', async () => {
+    it('saves the mate key when the mate row is picked', async () => {
       const { onSubmit } = open({ installedAgents: PAIR })
-      await pick('Crewmates')
+      await pick('Mates')
       expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'Jira ticket' }))
     })
 
@@ -359,7 +359,7 @@ describe('FolderConfigModal', () => {
       expect(submit(onSubmit)).toHaveBeenCalledWith(expect.objectContaining({ defaultAgent: 'jira-ticket' }))
     })
 
-    it('finds a crewmate by its key in the filter', async () => {
+    it('finds a mate by its key in the filter', async () => {
       open({ installedAgents: [{ name: 'crew-7', display_name: 'Reviewer', selection_kind: 'member' as const }, { name: 'kirocrew', selection_kind: 'template' as const }] })
       fireEvent.change(await openAgentPopup(), { target: { value: 'crew-7' } })
       expect(screen.getAllByRole('option').map(o => o.textContent)).toEqual(['Reviewer'])

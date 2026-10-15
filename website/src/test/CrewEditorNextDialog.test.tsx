@@ -276,7 +276,7 @@ describe('CrewEditorModal — single editing experience', () => {
     await waitFor(() => expect(mockApi.agentsInstalled).toHaveBeenCalled())
     // No classic dialog, and the retired Classic/New toggle is gone. The one
     // dialog is the New editor, named for the crewmate it edits.
-    expect(screen.getAllByRole('dialog', { name: /Edit crewmate/ })).toEqual([next])
+    expect(screen.getAllByRole('dialog', { name: /Edit mate/ })).toEqual([next])
     expect(within(next).queryByTestId('crew-editor-experience-toggle')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-classic')).toBeNull()
     expect(within(next).queryByTestId('crew-editor-exp-next')).toBeNull()
@@ -645,7 +645,7 @@ describe('CrewEditorNextDialog — General edits, footer, danger', () => {
     expect(within(dialog).queryByTestId('next-confirm-delete-crew')).toBeNull()
   })
 
-  it('hides the Danger Zone for the default crewmate (the backend 409s its delete)', async () => {
+  it('hides the Danger Zone for the default mate (the backend 409s its delete)', async () => {
     // GPT guard-removal: the classic editor excluded the Danger Zone for the
     // default crew because DELETE /api/agents/{default} always 409s. Opening the
     // default crew must show no Danger Zone rail entry or panel.
@@ -682,7 +682,7 @@ describe('CrewEditorNextDialog — Memory', () => {
   it('names a private V2 store in the status line', async () => {
     const dialog = await openNew()
     fireEvent.click(within(dialog).getByTestId('next-rail-memory'))
-    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This crewmate has its own memory (V2).')
+    expect(await within(dialog).findByTestId('next-memory-status')).toHaveTextContent('This mate has its own memory (V2).')
   })
 
   it('shows only the diagnostic for a store another member owns', async () => {
@@ -743,7 +743,7 @@ describe('CrewEditorNextDialog — save, chat hand-off, and sharing collisions',
     await waitFor(() => expect(leaveSpy).toHaveBeenCalled())
   })
 
-  it('reports crewmates sharing the edited crew\u2019s workspace or memory store', async () => {
+  it('reports mates sharing the edited crew\u2019s workspace or memory store', async () => {
     // A third crew shares oncall's workspace AND a fourth shares its store, so
     // collidingCrews is their de-duplicated union.
     mockApi.kirocrewAgents.mockResolvedValue({

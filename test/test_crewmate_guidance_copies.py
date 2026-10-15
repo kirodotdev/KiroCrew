@@ -25,7 +25,7 @@ def test_collision_notices_offer_the_remedy_the_page_states() -> None:
     """Both short-name collision notices say delete-and-recreate, as the page does."""
     doc = DOC.read_text(encoding="utf-8")
     assert (
-        "never its short name" in doc and "delete the crewmate that shows this notice" in doc
+        "never its short name" in doc and "delete the mate that shows this notice" in doc
     ), "the page no longer states the collision remedy these notices are pinned to"
     copy = _members_page_copy()
     # Which crewmate to delete matters: the thread stays bound to its owner (the

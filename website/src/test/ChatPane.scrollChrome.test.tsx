@@ -244,7 +244,7 @@ describe('ChatPane shared scroll chrome', () => {
   })
 })
 
-describe('ChatPane crewmate greeting (`crewmateGreeting`)', () => {
+describe('ChatPane mate greeting (`crewmateGreeting`)', () => {
   const greeting = <div data-testid="host-greeting">Where we left off</div>
   // The greeting's "newer than me" test compares a row's stamp with the moment
   // it appeared, so the clock is pinned: Date only, the frame fakes above stay.
@@ -261,7 +261,7 @@ describe('ChatPane crewmate greeting (`crewmateGreeting`)', () => {
   // Drawn after the last row, so a reply landing after it (a patrol / wake
   // turn, which keeps the greeting up) must take it down: a stale summary
   // under a fresher reply would read as the newest word.
-  it("takes the greeting down once the crewmate says something newer, so it is never under a fresher reply", () => {
+  it("takes the greeting down once the mate says something newer, so it is never under a fresher reply", () => {
     const { store } = renderPane({ crewmate: { name: 'oncall' }, crewmateGreeting: greeting })
     expect(screen.getByTestId('host-greeting')).toBeInTheDocument()
     act(() => {
@@ -283,7 +283,7 @@ describe('ChatPane crewmate greeting (`crewmateGreeting`)', () => {
     expect(screen.getByTestId('host-greeting')).toBeInTheDocument()
   })
 
-  it('draws nothing for an ordinary chat: the greeting belongs to a crewmate', () => {
+  it('draws nothing for an ordinary chat: the greeting belongs to a mate', () => {
     renderPane({ crewmateGreeting: greeting })
     expect(screen.queryByTestId('host-greeting')).toBeNull()
   })

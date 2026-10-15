@@ -18,7 +18,7 @@ const frame = (slug: string, fields: { [k: string]: unknown }, version = 1) => (
 })
 
 describe('handleDashboardFields: which dashboard a field frame reaches', () => {
-  it('delivers a frame to the dashboard showing that crewmate', () => {
+  it('delivers a frame to the dashboard showing that mate', () => {
     const got = vi.fn()
     listen('atlas', got)
     handleDashboardFields(frame('atlas', { boards: 3 }))
@@ -26,7 +26,7 @@ describe('handleDashboardFields: which dashboard a field frame reaches', () => {
     expect((got.mock.calls[0][0] as { fields: unknown }).fields).toEqual({ boards: 3 })
   })
 
-  it('does not deliver one crewmate frame to another crewmate dashboard', () => {
+  it('does not deliver one mate frame to another mate dashboard', () => {
     // Two tabs can show two crewmates at once, and a frame belongs to exactly one:
     // delivering it to both would put one crewmate's work under the other's name.
     const atlas = vi.fn()
@@ -38,7 +38,7 @@ describe('handleDashboardFields: which dashboard a field frame reaches', () => {
     expect(nyx).not.toHaveBeenCalled()
   })
 
-  it('drops a frame for a crewmate nothing is showing', () => {
+  it('drops a frame for a mate nothing is showing', () => {
     // The ordinary case: the socket is per connection, not per tab.
     expect(() => handleDashboardFields(frame('nobody', { boards: 3 }))).not.toThrow()
   })

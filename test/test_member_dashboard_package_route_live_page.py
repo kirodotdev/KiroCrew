@@ -148,7 +148,7 @@ async def test_the_persons_lock_outranks_the_crewmates_package(
     assert "package_served" not in served
     assert PAGE not in (
         body.get("rendered_html") or ""
-    ), "the crewmate's own page was served over the page the person locked"
+    ), "the mate's own page was served over the page the person locked"
     assert (
         body.get("structure_locked") is True
     ), "the body does not tell the tab the layout is locked"

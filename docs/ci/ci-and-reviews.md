@@ -2789,7 +2789,7 @@ ends before the cut is judged on its text.
 The same-repo lane runs the PR's own copy of the prompt (`pull_request`), the fork
 lane the default branch's (`workflow_run`), so only a same-repo prompt change
 reviews itself under its own edit. #13273 (apps tree hidden from app
-crons) and #12798 (crewmate rows pruned under chat resume and subagents) are why:
+crons) and #12798 (mate rows pruned under chat resume and subagents) are why:
 both passed every lane on an unchecked compatibility claim.
 
 **Design Review owns the long-term / one-way-door lens** as its gate 8, "LONG-TERM

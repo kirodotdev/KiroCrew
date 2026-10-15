@@ -264,7 +264,7 @@ describe('ErrorCard — sibling capability refusals', () => {
     })
   }
 
-  it('names the crewmate on its editor button and the project to go to', () => {
+  it('names the mate on its editor button and the project to go to', () => {
     render(<ErrorCard content="foreign_private_copy: x" meta={{ code: 'foreign_private_copy', member: 'reviewer' }} onOpenCapabilities={() => {}} />)
     expect(screen.getByTestId('error-card-open-capabilities')).toHaveTextContent('reviewer')
     cleanup()
@@ -286,7 +286,7 @@ describe('ErrorCard — sibling capability refusals', () => {
     expect(card).not.toHaveTextContent(i18nT('pages.chat.errorCard.capabilities_project_changed', { project: '' }))
   })
 
-  it('names no empty crewmate when the foreign-copy row carries no member', () => {
+  it('names no empty mate when the foreign-copy row carries no member', () => {
     render(<ErrorCard content="foreign_private_copy: x" meta={{ code: 'foreign_private_copy', member: '' }} />)
     const card = screen.getByTestId('error-card')
     const field = i18nT('pages.kiroCrewAgentsPage.built_from')

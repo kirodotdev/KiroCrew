@@ -67,17 +67,17 @@ const typeCell = (jobName: string) => {
   return row.querySelectorAll('td')[3] as HTMLElement
 }
 
-describe('Schedule list crewmate schedules', () => {
+describe('Schedule list mate schedules', () => {
   beforeEach(async () => {
     vi.clearAllMocks()
     const { api } = await import('../api/client')
     vi.mocked(api).members.mockResolvedValue({ members: ROSTER })
   })
 
-  it('shows a crewmate job as Crewmate with a link to its Crewmates page', async () => {
+  it('shows a mate job as Mate with a link to its Mates page', async () => {
     await renderList()
     const cell = typeCell('Radar triage')
-    expect(within(cell).getByText('Crewmate')).toBeInTheDocument()
+    expect(within(cell).getByText('Mate')).toBeInTheDocument()
     const link = await within(cell).findByRole('link', { name: /radar/ })
     expect(link).toHaveAttribute('href', '/members?member=radar')
     expect(cell.getAttribute('title')).toContain('radar')
@@ -87,17 +87,17 @@ describe('Schedule list crewmate schedules', () => {
     await renderList()
     const cell = typeCell('Template job')
     expect(within(cell).getByText('kiro-review')).toBeInTheDocument()
-    expect(within(cell).queryByText('Crewmate')).toBeNull()
+    expect(within(cell).queryByText('Mate')).toBeNull()
     expect(within(cell).queryByRole('link')).toBeNull()
   })
 
-  it('drops a crewmate filter whose crewmate no longer owns a listed job', async () => {
+  it('drops a mate filter whose mate no longer owns a listed job', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: JOBS })
     const store = createTestStore()
     renderWithProviders(<SchedulePage />, { store })
     await screen.findByText('Radar triage')
-    fireEvent.click(await screen.findByLabelText('Filter by crewmate'))
+    fireEvent.click(await screen.findByLabelText('Filter by mate'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
 
@@ -107,10 +107,10 @@ describe('Schedule list crewmate schedules', () => {
 
     expect(await screen.findByText('Scout sweep')).toBeInTheDocument()
     expect(screen.getByText('Template job')).toBeInTheDocument()
-    expect(screen.getByLabelText('Filter by crewmate')).toHaveTextContent('All crewmates')
+    expect(screen.getByLabelText('Filter by mate')).toHaveTextContent('All mates')
   })
 
-  it('finds a crewmate job by the display name its row shows', async () => {
+  it('finds a mate job by the display name its row shows', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).members.mockResolvedValue({ members: [
       { ...ROSTER[0], display_name: 'Radar Bot' },
@@ -137,42 +137,42 @@ describe('Schedule list crewmate schedules', () => {
     expect(within(cell).queryByRole('link')).toBeNull()
   })
 
-  it('shows the raw id, unlinked, for a crewmate that is gone', async () => {
+  it('shows the raw id, unlinked, for a mate that is gone', async () => {
     await renderList()
     const cell = typeCell('Orphan job')
-    expect(within(cell).getByText('Crewmate')).toBeInTheDocument()
+    expect(within(cell).getByText('Mate')).toBeInTheDocument()
     expect(within(cell).getByText('member-gone')).toBeInTheDocument()
     expect(within(cell).queryByRole('link')).toBeNull()
   })
 
-  it('reports a failed crewmate roster, keeps raw ids, and recovers on retry', async () => {
+  it('reports a failed mate roster, keeps raw ids, and recovers on retry', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).members.mockRejectedValue(new Error('Members request failed (HTTP 500)'))
     await renderList()
 
     const notice = await screen.findByTestId('schedule-crewmate-roster-error')
     expect(notice).toHaveAttribute('role', 'alert')
-    expect(notice).toHaveTextContent('Could not load your crewmates.')
+    expect(notice).toHaveTextContent('Could not load your mates.')
     expect(notice).toHaveTextContent('Members request failed (HTTP 500)')
     for (const job of JOBS.filter(j => j.member_id)) {
       const cell = typeCell(job.name)
-      expect(within(cell).getByText('Crewmate')).toBeInTheDocument()
+      expect(within(cell).getByText('Mate')).toBeInTheDocument()
       expect(within(cell).getByText(job.member_id!)).toBeInTheDocument()
       expect(within(cell).queryByRole('link')).toBeNull()
     }
-    expect(screen.queryByLabelText('Filter by crewmate')).toBeNull()
+    expect(screen.queryByLabelText('Filter by mate')).toBeNull()
 
     vi.mocked(api).members.mockResolvedValue({ members: ROSTER })
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
 
     expect(await within(typeCell('Radar triage')).findByRole('link', { name: /radar/ })).toHaveAttribute('href', '/members?member=radar')
-    expect(await screen.findByLabelText('Filter by crewmate')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Filter by mate')).toBeInTheDocument()
     await waitFor(() => expect(screen.queryByTestId('schedule-crewmate-roster-error')).toBeNull())
   })
 
-  it('the crewmate filter narrows the list to one crewmate', async () => {
+  it('the mate filter narrows the list to one mate', async () => {
     await renderList()
-    fireEvent.click(await screen.findByLabelText('Filter by crewmate'))
+    fireEvent.click(await screen.findByLabelText('Filter by mate'))
     fireEvent.click(await screen.findByRole('option', { name: /radar/ }))
     await waitFor(() => expect(screen.queryByText('Scout sweep')).toBeNull())
     expect(screen.getByText('Radar triage')).toBeInTheDocument()
@@ -180,11 +180,11 @@ describe('Schedule list crewmate schedules', () => {
     expect(screen.queryByText('Orphan job')).toBeNull()
   })
 
-  it('offers no crewmate filter when no job belongs to a crewmate', async () => {
+  it('offers no mate filter when no job belongs to a mate', async () => {
     const { api } = await import('../api/client')
     vi.mocked(api).crons.mockResolvedValue({ jobs: [JOBS[0]] })
     renderWithProviders(<SchedulePage />)
     await screen.findByText('Template job')
-    expect(screen.queryByLabelText('Filter by crewmate')).toBeNull()
+    expect(screen.queryByLabelText('Filter by mate')).toBeNull()
   })
 })

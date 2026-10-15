@@ -157,11 +157,11 @@ waits for the turn to end, up to 30 minutes, while the owner keeps the thread
 on screen. Each skip logs one debug line with the thread key and a fixed reason.
 
 A qualifying return writes a hidden durable fingerprint claim, then posts a
-short fixed crewmate opener ("Welcome back, let me catch you up on where we
+short fixed mate opener ("Welcome back, let me catch you up on where we
 are."), picked by the script of the user's request. It starts
 one tool-free background model call. The fingerprint covers the original
 genuine user request, conversation task rows, session ledger, and work ledger.
-The model result is a second ordinary crewmate message in first-person prose:
+The model result is a second ordinary mate message in first-person prose:
 what the user asked for, where it stands, and one to three suggestions, with no
 headings or lists. These generated rows
 are excluded from the task fingerprint. A new user turn, a new away episode,
@@ -1142,24 +1142,24 @@ against sweep completeness, and are torn down at `close_all`.
   tool row: a tool row later than it means the model kept working past the
   directive, and a gateway that died in that work must not hide behind it.
   `test_nothing_to_do_directive.py` pins the two constants against the
-  selectors mirror. The Crewmate chat draws nothing for it: tool rows are
+  selectors mirror. The Mate chat draws nothing for it: tool rows are
   machinery there
   (`crewmateBubbles.MACHINERY_ROLES`), so the quiet turn leaves that surface
-  exactly as it was. The Crewmate chat drops a `notice` row by an ALLOWLIST of
+  exactly as it was. The Mate chat drops a `notice` row by an ALLOWLIST of
   machinery `meta.kind`s (`crewmateBubbles.CREWMATE_HIDDEN_NOTICE_KINDS`), never
   by role: the ladder's own cards — the continue and give-up rungs and the
   post-compaction resume — carry `meta.kind = "empty_turn"`
   (`chat_utils.EMPTY_TURN_NOTICE_KIND`), and the automation arm/revision/stop
   refusal carries `meta.kind = "arm_refusal"`
   (`session_directive_apply.ARM_REFUSAL_NOTICE_KIND`); both are the runtime
-  talking about its own machinery, so a person reading a crewmate has nothing to
+  talking about its own machinery, so a person reading a mate has nothing to
   do with them. Every notice OUTSIDE that allowlist still draws, because it
   names something the person may have to act on (a dropped queued message, a
   model-fallback hint). The refusal still reaches the crewmate: it is also
-  queued into the crewmate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
+  queued into the mate's NEXT turn with `chat_utils.AUTOMATION_NOTICE_KIND`,
   so it drains as an `inject` row (never a `user` row shown as the person's own
-  bubble) the turn carries, and the crewmate can stop and re-arm the loop
-  itself. That inject row is model-only machinery: the crewmate chat hides it
+  bubble) the turn carries, and the mate can stop and re-arm the loop
+  itself. That inject row is model-only machinery: the mate chat hides it
   via `MACHINERY_ROLES` and every other surface suppresses it too
   (`transcriptRenderers` `automation_notice_inject` draws nothing), so the raw
   `[Automation notice] …` text never appears as a row beside the refusal's own
@@ -2479,8 +2479,8 @@ The `side:` prefix is included so
 `/side` conversations never resume across KiroCrew restarts — each cold-start
 triggers `is_first_turn=True` in `build_side_message` which re-seeds the
 parent snapshot + accumulated side history.
-The `thread:` prefix (a reply thread on a crewmate chat message,
-[history](history.md#reply-threads-on-crewmate-chat-messages-dashboardchat_threadspy))
+The `thread:` prefix (a reply thread on a mate chat message,
+[history](history.md#reply-threads-on-mate-chat-messages-dashboardchat_threadspy))
 is included for the same reason: `build_thread_message` re-seeds the whole
 envelope on a cold session.
 
@@ -3422,7 +3422,7 @@ WeCom always steers regardless of `queue_mode`: its replies are bound to the
 inbound request, so a queued-then-drained reply can't be delivered later (see
 [messaging](messaging.md)).
 
-### Responsive human sends in a crewmate DM
+### Responsive human sends in a mate DM
 
 `POST /api/chat?ws=1` accepts optional JSON `responsive: true`. Only the
 middleware-authenticated dashboard owner on an existing local member DM earns
@@ -3555,7 +3555,7 @@ provider sees the expanded request and gateway guidance; the transcript keeps
 the person's original command.
 
 **Question answers.** A native question on a live turn keeps its existing steer
-answer route, behind the plain crewmate UI, with the same gateway reply-first
+answer route, behind the plain mate UI, with the same gateway reply-first
 guidance. An idle native/stateless card blocks no future, so its answer may start
 a responsive turn and the user-row append retires that exact stateless record.
 Blocking MCP asks keep their separate answer endpoint and live future; native

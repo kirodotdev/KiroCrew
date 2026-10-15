@@ -153,7 +153,7 @@ describe('MembersPage side panel: inline comments on a document', () => {
     expect(screen.getByLabelText('Add comment')).toBeInTheDocument()
   })
 
-  it('Submit All sends the batch into this crewmate\'s chat as the panel wrote it, then clears it', async () => {
+  it('Submit All sends the batch into this mate\'s chat as the panel wrote it, then clears it', async () => {
     sendChat.mockResolvedValue(accepted())
     await openDocument()
     await addComment()
@@ -342,7 +342,7 @@ describe('MembersPage side panel: inline comments on a document', () => {
     expect(storedComments()).toHaveLength(1)
   })
 
-  it('a batch typed on one crewmate\'s document is only ever sent to that crewmate', async () => {
+  it('a batch typed on one mate\'s document is only ever sent to that mate', async () => {
     sendChat.mockResolvedValue(accepted())
     ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({
       members: [row(), row({ name: 'fixer', slug: 'fixer' })],
@@ -428,7 +428,7 @@ describe('MembersPage side panel: inline comments on a document', () => {
     expect(screen.getByTestId('member-side-panel')).toBeInTheDocument()
   })
 
-  it('uses Your crewmate as fallback when crewmateLabel is empty', async () => {
+  it('uses Your mate as fallback when crewmateLabel is empty', async () => {
     // When the member has no display name, commentsRefusedCopy falls back to
     // the localized "Your crewmate" string, not an empty string.
     const { commentsRefusedCopy } = await import('../../chat-core/transport/receiptCopy')

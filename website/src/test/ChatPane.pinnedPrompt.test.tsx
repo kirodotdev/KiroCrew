@@ -223,7 +223,7 @@ describe('ChatPane pinned prompt (chat-core P5-d)', () => {
     expect(card.compareDocumentPosition(geom.scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it("a crewmate's chat never pins, whatever the setting says (#18346)", () => {
+  it("a mate's chat never pins, whatever the setting says (#18346)", () => {
     // The banner is for long agent runs in the main chat; in a DM with a
     // colleague the user's bubble is one row back and a floating card under
     // the floating glass header read as clutter. Setting on, pane frameless,

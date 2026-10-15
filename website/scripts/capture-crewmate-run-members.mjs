@@ -36,7 +36,7 @@ for (const theme of ['dark', 'light']) {
   await page.waitForTimeout(400)
 
   const rows = page.locator('[data-testid="crewmate-message"]')
-  check(`[${theme}] three crewmate bubbles drawn`, await rows.count() === 3)
+  check(`[${theme}] three mate bubbles drawn`, await rows.count() === 3)
   check(`[${theme}] no author line on any bubble`, await page.locator('[data-testid="crewmate-author"]').count() === 0)
   // The header names the speaker: the identity pill (face + name) at the top.
   const chip = page.getByTestId('member-identity-pill').first()

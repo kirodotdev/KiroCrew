@@ -27,7 +27,7 @@ import { check, podInfo, primeCrewPod } from './lib/crew-pod-harness.mjs'
 const OUT = process.argv[2] || '../temp-screenshots/avatar-entry-affordance'
 const CREW = 'oncall'
 const EDIT_AVATAR = 'Edit avatar'
-const EDIT_MEMBER = 'Edit crewmate' // the Members page's identity pill: its tooltip names what the click opens
+const EDIT_MEMBER = 'Edit mate' // the Members page's identity pill: its tooltip names what the click opens
 const BUILDER_TITLE = 'Customize avatar' // the builder DialogContent's aria-label
 
 mkdirSync(OUT, { recursive: true })
@@ -41,7 +41,7 @@ async function openEditor(page) {
   const card = page.locator(`[data-testid="crew-card"][aria-label="Edit crew ${CREW}"], [data-testid="crew-card"]:has-text("${CREW}")`).first()
   await card.waitFor({ state: 'visible', timeout: 20000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: `Edit crewmate ${CREW}` })
+  const sheet = page.getByRole('dialog', { name: `Edit mate ${CREW}` })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   return sheet
 }
@@ -102,7 +102,7 @@ async function stills(browser, theme) {
   // 5: the deep link lands in the crew manager on this crew's editor, with
   //    the editor's own "Edit avatar" entries in place and the builder closed.
   await pill.click()
-  const editor = page.getByRole('dialog', { name: `Edit crewmate ${CREW}` })
+  const editor = page.getByRole('dialog', { name: `Edit mate ${CREW}` })
   await editor.waitFor({ state: 'visible', timeout: 20000 })
   check(`[${theme}] deep link from Members opens the editor for ${CREW}`, true)
   check(`[${theme}] the builder is not open on top`, (await page.getByRole('dialog', { name: BUILDER_TITLE }).count()) === 0)

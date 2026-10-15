@@ -126,7 +126,7 @@ graph LR
 6. `_workflow_ready` (`_register_workflow_lifecycle`) answers 503 on `/api/workflows`
    until the workflow service is ready, and `_crewmate_prune_gate`
    (`_register_crewmate_prune_gate`, dashboard only) holds every mutating request,
-   and any request under `/api/members`, until the crewmate prune settles, 503
+   and any request under `/api/members`, until the mate prune settles, 503
    past its timeout.
    Both RETURN their refusal, inner to `sel_audit`.
 

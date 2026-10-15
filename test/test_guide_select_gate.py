@@ -245,7 +245,7 @@ def test_a_guides_public_record_carries_no_entity_data() -> None:
         "any:gate:preview_flag:mc-preview-crew": {
             "kind": "gate",
             "gate": "preview_flag:mc-preview-crew",
-            "setting_id": "developer.crewmates",
+            "setting_id": "developer.mates",
         },
         "any:select:crewmate_selected": {"kind": "select", "selection": "crewmate_selected"},
     }

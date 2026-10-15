@@ -82,7 +82,7 @@ function setup(overrides: Partial<Parameters<typeof CrewProfilePanel>[0]> = {}):
       automation={null}
       monitorReadState="ready"
       description="Watches the on-call queue and files what it finds. Escalates only when a page has gone unanswered."
-      memoryLabel="Private to this crewmate"
+      memoryLabel="Private to this mate"
       schedules={JOBS}
       schedulesLoading={false}
       nowTs={NOW}
@@ -296,7 +296,7 @@ describe('CrewProfilePanel Profile tab', () => {
     const h = setup()
     expect(screen.getByTestId('crew-profile-name')).toHaveTextContent('oncall')
     expect(screen.getByTestId('crew-profile-description')).toHaveTextContent(/Watches the on-call queue/)
-    expect(screen.getByTestId('crew-profile-memory')).toHaveTextContent('Private to this crewmate')
+    expect(screen.getByTestId('crew-profile-memory')).toHaveTextContent('Private to this mate')
     // The workspace tile names the configured workspace as-is: the value is a
     // NAME, not a path, so nothing is taken off it.
     expect(screen.getByTestId('crew-profile-workspace')).toHaveTextContent('oncall-desk')
@@ -315,7 +315,7 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(workspace).not.toHaveClass('border-dashed')
     fireEvent.click(workspace)
     expect(h.onOpenFiles).toHaveBeenCalledTimes(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Edit crewmate' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Edit mate' }))
     expect(h.onEdit).toHaveBeenCalledTimes(1)
   })
 
@@ -399,7 +399,7 @@ describe('CrewProfilePanel Profile tab', () => {
     expect(screen.queryByText('No description yet')).toBeNull()
   })
 
-  it('Read more and Notes push a page over the card with one back control naming the crewmate', async () => {
+  it('Read more and Notes push a page over the card with one back control naming the mate', async () => {
     setup()
     fireEvent.click(screen.getByTestId('crew-profile-read-more'))
     expect(screen.getByTestId('crew-profile-page-about')).toBeInTheDocument()

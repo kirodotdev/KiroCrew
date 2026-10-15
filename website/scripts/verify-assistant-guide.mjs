@@ -186,7 +186,7 @@ try {
     assert.equal(await page.getByTestId('guide-saved-server').count(), 0)
     await shot('guide-mcp-native-form')
     assert.deepEqual(mcpWrites, [])
-    console.log(`PASS ${width}px: explicit start, sequential actions, attributed crewmate save, MCP hand-off to the native form with zero MCP writes`)
+    console.log(`PASS ${width}px: explicit start, sequential actions, attributed mate save, MCP hand-off to the native form with zero MCP writes`)
     await ctx.close()
   }
 } finally {

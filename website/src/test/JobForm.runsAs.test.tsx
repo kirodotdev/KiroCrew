@@ -58,12 +58,12 @@ describe('cron JobForm "Runs as" switch', () => {
     expect(optionNames()).toEqual(['kiro-review', 'kiro-lite'])
   })
 
-  it('Crewmate lists only crewmates, names the pick, and sends it as the agent', async () => {
+  it('Mate lists only mates, names the pick, and sends it as the agent', async () => {
     vi.mocked(api.createCron).mockResolvedValue({})
     const onSaved = vi.fn()
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={onSaved} layout="vertical" />)
-    fireEvent.click(segment('Crewmate'))
-    expect(segment('Crewmate')).toHaveAttribute('aria-checked', 'true')
+    fireEvent.click(segment('Mate'))
+    expect(segment('Mate')).toHaveAttribute('aria-checked', 'true')
     // The stock `kirocrew` crew shares memory, so it never becomes a crewmate job.
     expect(optionNames()).toEqual(['radar', 'scout'])
     fireEvent.click(screen.getByLabelText('Switch agent'))
@@ -81,7 +81,7 @@ describe('cron JobForm "Runs as" switch', () => {
     vi.mocked(api.createCron).mockResolvedValue({})
     const onSaved = vi.fn()
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={onSaved} layout="vertical" />)
-    fireEvent.click(segment('Crewmate'))
+    fireEvent.click(segment('Mate'))
     fireEvent.click(segment('Custom agent'))
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'daily' } })
     fireEvent.change(screen.getByLabelText('Message'), { target: { value: 'run' } })
@@ -93,12 +93,12 @@ describe('cron JobForm "Runs as" switch', () => {
   it('holds a template job on Custom agent when editing, and says why in text', () => {
     renderWithProviders(<JobForm job={job('kiro-review')} agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
     expect(segment('Custom agent')).toHaveAttribute('aria-checked', 'true')
-    expect(segment('Crewmate')).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText("A job can't switch between custom agent and crewmate after it's created.")).toBeVisible()
+    expect(segment('Mate')).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText("A job can't switch between custom agent and mate after it's created.")).toBeVisible()
     expect(optionNames()).toEqual(['kiro-review', 'kiro-lite'])
   })
 
-  it('shows a crewmate job as its pinned crewmate, not the switch', async () => {
+  it('shows a mate job as its pinned mate, not the switch', async () => {
     // The create endpoint stores a crewmate pick as `member_id` and empties
     // `agent`, so the kind comes from `member_id`.
     const crewmateJob = { ...job(''), member_id: 'radar' } as CronJob
@@ -120,16 +120,16 @@ describe('cron JobForm "Runs as" switch', () => {
     expect(api.updateCron).toHaveBeenCalledWith('j1', expect.objectContaining({ agent: 'kiro-review' }))
   })
 
-  it('clicking Crewmate again keeps the crewmate picked', () => {
+  it('clicking Mate again keeps the mate picked', () => {
     renderWithProviders(<JobForm agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
-    fireEvent.click(segment('Crewmate'))
+    fireEvent.click(segment('Mate'))
     fireEvent.click(screen.getByLabelText('Switch agent'))
     fireEvent.click(within(screen.getByRole('listbox')).getByText('scout'))
-    fireEvent.click(segment('Crewmate'))
+    fireEvent.click(segment('Mate'))
     expect(screen.getByLabelText('Switch agent')).toHaveTextContent('scout')
   })
 
-  it('an older job naming a crewmate in agent, with no member_id, edits as Custom agent', async () => {
+  it('an older job naming a mate in agent, with no member_id, edits as Custom agent', async () => {
     // Such a job runs as a template, never in the crewmate's chat, so the
     // crewmate hint would be false for it; its stored agent is kept.
     renderWithProviders(<JobForm job={job('radar')} agents={catalog} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
@@ -141,22 +141,22 @@ describe('cron JobForm "Runs as" switch', () => {
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
 
-  it('greys out Crewmate when there are no crewmates', async () => {
+  it('greys out Mate when there are no mates', async () => {
     const templatesOnly = catalog.filter(a => a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={templatesOnly} defaultAgent="" onSaved={() => {}} layout="vertical" />)
-    expect(await screen.findByRole('radio', { name: 'Crewmate' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No crewmates yet. Add one on the Crewmates page.')).toBeVisible()
+    expect(await screen.findByRole('radio', { name: 'Mate' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('No mates yet. Add one on the Mates page.')).toBeVisible()
     // Barrier: let the form's mount-time reads settle inside the test.
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
 
-  it('a roster whose only crewmate is the shared-memory default crew greys out Crewmate', async () => {
+  it('a roster whose only mate is the shared-memory default crew greys out Mate', async () => {
     // `default` has no member_id, so the create endpoint would save it as a
     // custom-agent job; offering it under Crewmate would make the hint false.
     const defaultOnly = catalog.filter(a => a.name === 'kirocrew' || a.selection_kind === 'template')
     renderWithProviders(<JobForm agents={defaultOnly} defaultAgent="kirocrew" onSaved={() => {}} layout="vertical" />)
-    expect(await screen.findByRole('radio', { name: 'Crewmate' })).toHaveAttribute('aria-disabled', 'true')
-    expect(screen.getByText('No crewmates yet. Add one on the Crewmates page.')).toBeVisible()
+    expect(await screen.findByRole('radio', { name: 'Mate' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByText('No mates yet. Add one on the Mates page.')).toBeVisible()
     await waitFor(() => expect(api.models).toHaveBeenCalled())
   })
 

@@ -135,7 +135,7 @@ describe('listedByDefault / rosterShows', () => {
   it('hides an empty thread, whatever made the row: default, dashboard-created, app, sync, legacy', () => {
     for (const n of ['default', 'fresh', 'app-bot', 'pkg-tool', 'legacy-aim']) expect(listedByDefault(byName(n))).toBe(false)
   })
-  it('lists Mate, the first crewmate, from the start; a fresh roster shows Mate and not the default crewmate', () => {
+  it('lists Mate, the first mate, from the start; a fresh roster shows Mate and not the default mate', () => {
     const fresh = [
       { name: 'default', ...NO, source: 'builtin' },
       { name: 'mate', ...NO, source: 'builtin' },
@@ -255,7 +255,7 @@ describe('Recent order: the newest message in each thread, whoever sent it', () 
 })
 
 describe('hasNoCrewmates', () => {
-  it('treats a default-only roster as empty; the first crewmate is a crewmate', () => {
+  it('treats a default-only roster as empty; the first mate is a mate', () => {
     expect(hasNoCrewmates([])).toBe(true)
     expect(hasNoCrewmates([{ name: 'default' }])).toBe(true)
     expect(hasNoCrewmates([{ name: 'default' }, { name: 'mate' }])).toBe(false)

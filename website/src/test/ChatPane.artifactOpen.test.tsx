@@ -136,7 +136,7 @@ describe('ChatPane artifact open (issue #18320)', () => {
     expect(onArtifactOpen).toHaveBeenCalledWith('cr-queue')
   })
 
-  it('a crewmate bubble (member DM) opens the artifact through the host handler', async () => {
+  it('a mate bubble (member DM) opens the artifact through the host handler', async () => {
     const onArtifactOpen = vi.fn()
     await renderPane('pane-artifact-2', {
       onArtifactOpen,

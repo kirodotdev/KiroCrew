@@ -171,7 +171,7 @@ def clean_self_avatar(raw: object, current: Mapping[str, object]) -> dict:
     if current_kind in ("image", "pack"):
         raise SelfUpdateError(
             "avatar_not_ghost",
-            "this crewmate wears a picture or an appearance pack; that face is changed in "
+            "this mate wears a picture or an appearance pack; that face is changed in "
             "the crew editor, not from the chat",
         )
     unknown_axes = sorted(set(traits) - set(DEFAULT_GHOST_TRAITS))
@@ -206,9 +206,9 @@ def _self_target(member: str, expected_store: str):
     agent = cfg.agents.get(member)
     default_crew = getattr(cfg, "default_agent", "") or ""
     if agent is None or member == "default" or member == default_crew:
-        raise SelfUpdateError("not_a_crewmate", "only a crewmate can change its own settings")
+        raise SelfUpdateError("not_a_crewmate", "only a mate can change its own settings")
     if expected_store and agent.memory_store != expected_store:
-        raise SelfUpdateError("not_a_crewmate", "this chat belongs to a crewmate that was removed")
+        raise SelfUpdateError("not_a_crewmate", "this chat belongs to a mate that was removed")
     return cfg, agent
 
 
@@ -283,7 +283,7 @@ def update_member_self(
     unknown = sorted(set(fields) - SELF_EDITABLE_FIELDS)
     if unknown:
         raise SelfUpdateError(
-            "unknown_field", f"'{str(unknown[0])[:32]}' is not something a crewmate changes itself"
+            "unknown_field", f"'{str(unknown[0])[:32]}' is not something a mate changes itself"
         )
     cfg, agent = _self_target(member, expected_store)
     values: dict = {}
@@ -292,9 +292,7 @@ def update_member_self(
         try:
             check_crew_label(member, name, cfg.agents)
         except MemberNameTaken:
-            raise SelfUpdateError(
-                "name_taken", "another crewmate already goes by that name"
-            ) from None
+            raise SelfUpdateError("name_taken", "another mate already goes by that name") from None
         except MemberNameError as exc:
             raise SelfUpdateError("invalid_name", str(exc)) from None
         values["display_name"] = name
@@ -316,7 +314,7 @@ def update_member_self(
     except MemberFieldConflict as exc:
         raise SelfUpdateError(
             "changed_meanwhile",
-            f"the crewmate's {exc.field} was changed by someone else just now; try again",
+            f"the mate's {exc.field} was changed by someone else just now; try again",
         ) from None
     after = {k: _copy_value(getattr(agent, k)) for k in values}
     before = {k: was[k] for k in changed}
@@ -360,7 +358,7 @@ def undo_member_self(
     for key in before:
         if _copy_value(getattr(agent, key)) != after.get(key):
             raise SelfUpdateError(
-                "stale_undo", f"the crewmate's {key} was changed again since; nothing was undone"
+                "stale_undo", f"the mate's {key} was changed again since; nothing was undone"
             )
     values: dict = {}
     for key, value in before.items():
@@ -371,7 +369,7 @@ def undo_member_self(
                 check_crew_label(member, value, cfg.agents)
             except MemberNameTaken:
                 raise SelfUpdateError(
-                    "name_taken", "another crewmate now goes by the old name"
+                    "name_taken", "another mate now goes by the old name"
                 ) from None
             except MemberNameError as exc:
                 raise SelfUpdateError("invalid_name", str(exc)) from None
@@ -395,7 +393,7 @@ def undo_member_self(
         )
     except MemberFieldConflict as exc:
         raise SelfUpdateError(
-            "stale_undo", f"the crewmate's {exc.field} was changed again since; nothing was undone"
+            "stale_undo", f"the mate's {exc.field} was changed again since; nothing was undone"
         ) from None
     return {
         "member": member,

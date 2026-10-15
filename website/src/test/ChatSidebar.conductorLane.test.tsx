@@ -1121,7 +1121,7 @@ describe('chat sidebar — conductor lane', () => {
       expect(mocks.navigate).toHaveBeenCalledWith('/members?member=kirocrew-pipeline-conductor')
     })
 
-    it("shows the crewmate's name as the anchor title, not the stored generated one", () => {
+    it("shows the mate's name as the anchor title, not the stored generated one", () => {
       // The member's own DM thread is one long conversation with one crewmate; a stored
       // topic title ('Pipeline Work Focus On Issues') must not name its row.
       localStorage.setItem('mc-sidebar-lane', 'conductor')

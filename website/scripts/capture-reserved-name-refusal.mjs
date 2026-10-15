@@ -93,7 +93,7 @@ const CHAT_SLOT = {
     {
       role: 'error',
       content:
-        "Rename this crewmate's template: “default” is reserved for a built-in agent, so the crewmate's own prompt and tools would not run under it. Both fixes are on the crewmate's Agent Template tab: for the crewmate's own copy, 'Save as new template…' under another name (it keeps its customizations) or 'Reset my changes'; for a shared template, the template picker at the top of the tab.",
+        "Rename this mate's template: “default” is reserved for a built-in agent, so the mate's own prompt and tools would not run under it. Both fixes are on the mate's Agent Template tab: for the mate's own copy, 'Save as new template…' under another name (it keeps its customizations) or 'Reset my changes'; for a shared template, the template picker at the top of the tab.",
       cls: '',
       ts: '2026-09-22T09:12:03Z',
     },
@@ -198,7 +198,7 @@ try {
 
     // ── Chat: the session-start refusal as an error row ─────────────
     await page.goto('/chat', { waitUntil: 'domcontentloaded' })
-    await page.getByText(/Rename this crewmate's template/).first().waitFor({ state: 'visible', timeout: 20000 })
+    await page.getByText(/Rename this mate's template/).first().waitFor({ state: 'visible', timeout: 20000 })
     if (await page.getByRole('dialog').count()) throw new Error(`${theme} chat: a dialog is open over the transcript`)
     await page.waitForTimeout(600)
     out = `${OUT}/${PREFIX}-${theme}-chat-refusal.png`

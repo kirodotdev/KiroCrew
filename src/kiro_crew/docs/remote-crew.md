@@ -242,10 +242,10 @@ confused. They are unrelated.
 |---|---|---|
 | **Kiro Crew** | The product. | Everywhere |
 | **Remote Crew** — spelled `instance` in config, routes and code (`instances.json`, `/api/instances`) | Another machine running its own gateway, reached over a tunnel. This page. | Settings → Remote Crew, the header switcher |
-| **Crew Member**, or **crewmate** | A named assistant you keep: its own workspace, memory, agent template and model, with a standing thread. Not a machine. | The Crew Members page — see [crew-members.md](crew-members.md) |
+| **Crew Member**, or **mate** | A named assistant you keep: its own workspace, memory, agent template and model, with a standing thread. Not a machine. | The Crew Members page — see [crew-members.md](crew-members.md) |
 | **Issue Radar crew** | An automation worker configured on a repository that claims an issue and moves it through the triage phases. Not a machine and not an assistant you chat with. | The Issue Radar Pipeline tab — see [issue-radar-pipeline.md](issue-radar-pipeline.md) |
 
-The short test: a Remote Crew is a **host**, a crewmate is an **assistant**,
+The short test: a Remote Crew is a **host**, a mate is an **assistant**,
 an Issue Radar crew is a **worker on a repo**.
 
 ## Tuning
@@ -300,4 +300,4 @@ reports the first broken link, which is usually the whole answer.
 - [Native SSM vs legacy SSH](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/cloud-instance-ssm-vs-ssh.md) — how a cloud-launched machine is reached.
 - [Remote and mobile access](https://github.com/kirodotdev/KiroCrew/blob/main/docs/guides/remote-and-mobile.md) — installing and running a gateway on the far machine in the first place.
 - [dashboard.md](dashboard.md) — the dashboard the switcher sits in.
-- [crew-members.md](crew-members.md) — crewmates, which are not machines.
+- [crew-members.md](crew-members.md) — mates, which are not machines.

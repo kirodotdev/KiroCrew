@@ -27,7 +27,7 @@ const PAIR: AgentItem[] = [
 ]
 
 function rowOf(kind: 'member' | 'template', name: string): HTMLElement {
-  const group = screen.getByRole('group', { name: kind === 'member' ? 'Crewmates' : 'Custom agents' })
+  const group = screen.getByRole('group', { name: kind === 'member' ? 'Mates' : 'Custom agents' })
   const row = within(group).getAllByRole('option').find(o => o.textContent?.includes(name))
   if (!row) throw new Error(`no ${kind} row for ${name}`)
   return row
@@ -36,7 +36,7 @@ function rowOf(kind: 'member' | 'template', name: string): HTMLElement {
 const tagOf = (row: HTMLElement) => row.querySelector('[data-testid="agent-row-memory-tag"]')?.textContent ?? null
 
 describe('AgentDropdownList memory tag (#19472)', () => {
-  it('says "Own memory" on the crewmate and "Shared memory" on the custom agent', () => {
+  it('says "Own memory" on the mate and "Shared memory" on the custom agent', () => {
     render(<AgentDropdownList agents={PAIR} activeAgent="" defaultAgent="" onSelect={() => {}} />)
     expect(tagOf(rowOf('member', 'reviewer'))).toBe('Own memory')
     expect(tagOf(rowOf('template', 'reviewer'))).toBe('Shared memory')

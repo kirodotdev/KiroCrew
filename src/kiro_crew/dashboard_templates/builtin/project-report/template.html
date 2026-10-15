@@ -517,7 +517,7 @@
   <div class="pr-head">
     <div class="pr-titles">
       <div>
-        <div class="pr-eyebrow" id="pr-eyebrow" data-i18n="doing">What this crewmate is doing</div>
+        <div class="pr-eyebrow" id="pr-eyebrow" data-i18n="doing">What this mate is doing</div>
         <div class="pr-title" id="pr-title">Project report</div>
         <!-- Whether the page is being fed, and as of when. Under the title rather
              than in a footer: it qualifies every number above it. -->
@@ -557,10 +557,10 @@
     <span data-dashboard-field="items">&mdash;</span>,
     <span data-dashboard-field="omitted">&mdash;</span> <span data-i18n="note_more_not_shown">more not shown</span>,
     <span data-dashboard-field="series">&mdash;</span> <span data-i18n="note_with_spend">with spend</span>,
-    <span data-dashboard-field="for_you">&mdash;</span> <span data-i18n="note_raised">raised by the crewmate</span>,
+    <span data-dashboard-field="for_you">&mdash;</span> <span data-i18n="note_raised">raised by the mate</span>,
     <span data-dashboard-field="verdict">&mdash;</span> <span data-i18n="note_verdict">verdict</span>,
     <span data-dashboard-field="ci">&mdash;</span>,
-    <span id="pr-note-pub"><span data-dashboard-field="published">&mdash;</span> <span data-i18n="note_published">published by the crewmate</span>,</span>
+    <span id="pr-note-pub"><span data-dashboard-field="published">&mdash;</span> <span data-i18n="note_published">published by the mate</span>,</span>
     <span data-i18n="note_last_entry">last entry</span> <span data-dashboard-field="last_entry_at">&mdash;</span>.
   </div>
 </div>
@@ -576,24 +576,24 @@
   // override. The zh-CN strings are \u-escaped so the source stays ASCII.
   var I18N = {
     en: {
-      doing: 'What this crewmate is doing', doing_session: 'What this session is doing',
+      doing: 'What this mate is doing', doing_session: 'What this session is doing',
       page_title: 'Project report',
       note_more_not_shown: 'more not shown', note_with_spend: 'with spend',
-      note_raised: 'raised by the crewmate', note_verdict: 'verdict', note_last_entry: 'last entry',
+      note_raised: 'raised by the mate', note_verdict: 'verdict', note_last_entry: 'last entry',
       live_yes: 'Live', live_no: 'No new entry', updated: 'Updated', entry_label: 'entry',
       just_now: 'just now', ago: '{t} ago', quiet_prefix: 'quiet ',
       verdict_on_track: 'On track', verdict_needs_you: 'Needs you', verdict_blocked: 'Blocked',
       verdict_no_word: 'No word yet',
-      verdict_superseded_head: 'The crewmate has not posted since the log last advanced.',
-      verdict_none_head: 'The crewmate has not posted a verdict yet.',
+      verdict_superseded_head: 'The mate has not posted since the log last advanced.',
+      verdict_none_head: 'The mate has not posted a verdict yet.',
       verdict_past: 'Its last word was "{h}". Read it as a past reading.',
-      verdict_blocker_label: 'The one in the way: ', crewmate_wrote: 'crewmate wrote this',
-      note_published: 'published by the crewmate', pub_title: 'Published by the crewmate',
+      verdict_blocker_label: 'The one in the way: ', crewmate_wrote: 'mate wrote this',
+      note_published: 'published by the mate', pub_title: 'Published by the mate',
       pub_none: 'none', pub_shown: 'showing {n} of {m}', pub_a_board: 'a board',
       pub_cols: 'columns capped at {n}', pub_yes: 'yes', pub_no: 'no',
-      empty_hint_published: 'No tasks tracked yet. Below is what this crewmate last published.',
+      empty_hint_published: 'No tasks tracked yet. Below is what this mate last published.',
       vp_accepted: 'Accepted', vp_rejected: 'Rejected', vp_unblock: 'Unblock',
-      vp_answer: 'Answer', vp_awaiting: 'Awaiting crewmate review',
+      vp_answer: 'Answer', vp_awaiting: 'Awaiting mate review',
       lanes_red: '{n} red', lanes_did_not_run: '{n} did not run',
       lane_never_started: 'lane never started \u2014 not a finding',
       rerun_it: 'rerun it', owner_maintainer: 'maintainer', owner_yours: 'yours',
@@ -645,15 +645,15 @@
       dr_result_empty: 'No output yet. A pull request, a branch or a handoff summary appears here when the task produces one.',
       pull_request: 'Pull request', accepted_by: 'Accepted by the conductor.',
       dr_lanes: 'Lanes',
-      dr_lanes_green: 'Every lane green on the last board the crewmate read.',
-      dr_lanes_none: 'No lane board for this task. The crewmate writes one when it reads a pull request\u2019s checks.',
+      dr_lanes_green: 'Every lane green on the last board the mate read.',
+      dr_lanes_none: 'No lane board for this task. The mate writes one when it reads a pull request\u2019s checks.',
       events_label: 'Events', of_word: 'of', ev_recorded_pre: 'This task recorded ',
       ev_recorded_post: ', and the page is no longer carrying their text.',
       ev_none: 'No events recorded against this task yet.',
       round_word: 'round', close_word: 'Close', task_word: 'task',
       show_only: 'Show only this workstream', pill_all: 'All',
       empty_all: 'No workstream yet. Nothing needs you, and nothing has been spent.',
-      empty_hint: 'Give this crewmate a goal in the chat, and its work shows up here: what is in flight, what it cost, and anything waiting on you.',
+      empty_hint: 'Give this mate a goal in the chat, and its work shows up here: what is in flight, what it cost, and anything waiting on you.',
       empty_no_tree: 'No workstream yet, so there is no tree to show. What is below was not raised by a board.',
       no_workstream_dot: 'No workstream yet.',
       sent_done: 'done ', sent_spent: ', spent ', sent_in_flight: ' in flight, spent ',
@@ -1945,7 +1945,7 @@
       //: work out which is the one waiting.
       need.total
         ? (need.mine
-            ? need.mine + ' of them raised by the crewmate'
+            ? need.mine + ' of them raised by the mate'
             : need.total === 1 ? i18n('kpi_one_answer') : i18n('kpi_answers'))
         //: Cards written before the person last wrote in the chat are not counted here,
         //: but they are not "nothing": the subtitle says how many were asked before that.

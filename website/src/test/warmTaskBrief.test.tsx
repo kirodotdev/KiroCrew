@@ -16,7 +16,7 @@ describe('warm task brief transcript rows', () => {
     expect(isCrewmateChatRow(claim)).toBe(false)
   })
 
-  it('draws preparing and result rows as ordinary crewmate messages', () => {
+  it('draws preparing and result rows as ordinary mate messages', () => {
     const preparing = row('assistant', { kind: 'warm_task_brief_preparing' }, 'Welcome back, let me catch you up on where we are.')
     const result = row('assistant', { kind: 'warm_task_brief_result' }, 'You asked me to fix the test. It is ready now. Want to review it?')
     expect(isCrewmateChatRow(preparing)).toBe(true)

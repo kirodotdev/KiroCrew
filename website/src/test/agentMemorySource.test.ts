@@ -19,7 +19,7 @@ const TEMPLATE: MemorySourceRow = { name: 'reviewer', selection_kind: 'template'
 const OTHER_TEMPLATE: MemorySourceRow = { name: 'writer', selection_kind: 'template' }
 
 describe('rowMemorySource', () => {
-  it('reads a crewmate with its own store as own memory', () => {
+  it('reads a mate with its own store as own memory', () => {
     expect(rowMemorySource(OWN_MEMBER)).toBe('own')
   })
 
@@ -68,7 +68,7 @@ describe('sessionMemoryTag', () => {
     expect(sessionMemoryTag('reviewer', 'template', '', rows)).toBe('shared')
   })
 
-  it('reads a kind-less slot as the crewmate, like name-first resolution', () => {
+  it('reads a kind-less slot as the mate, like name-first resolution', () => {
     expect(sessionMemoryTag('reviewer', undefined, '', rows)).toBe('own')
     expect(sessionMemoryTag('reviewer', '', '', rows)).toBe('own')
   })

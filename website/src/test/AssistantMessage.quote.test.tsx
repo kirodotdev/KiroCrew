@@ -73,7 +73,7 @@ describe('AssistantMessage row with Quote offered', () => {
     expect(rowLabels()[3]).toBe('More actions')
   })
 
-  it('beside Reply in thread (a crewmate chat) the row is Reply, Copy, More and Quote is in More', () => {
+  it('beside Reply in thread (a mate chat) the row is Reply, Copy, More and Quote is in More', () => {
     const onQuote = vi.fn()
     render(<AssistantMessage content={LONG} isStreaming={false} slotRunning={false} onReplyInThread={() => {}} onQuoteMessage={onQuote} />)
     expect(rowLabels()).toEqual(['Reply in thread', 'Copy', 'More actions'])

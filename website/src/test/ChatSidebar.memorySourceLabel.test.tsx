@@ -155,13 +155,13 @@ afterEach(() => {
 })
 
 describe('chat sidebar session row — same-name memory mark (#19472)', () => {
-  it('says own memory on a crewmate session and shared memory on a custom-agent one', () => {
+  it('says own memory on a mate session and shared memory on a custom-agent one', () => {
     const { container } = renderSidebar(CHOICES)
     expect(label(sessionMetaLine(container, 'on-member'))).toBe('reviewer · own memory')
     expect(label(sessionMetaLine(container, 'on-template'))).toBe('reviewer · shared memory')
   })
 
-  it('reads a kind-less session as the crewmate, as name-first resolution does', () => {
+  it('reads a kind-less session as the mate, as name-first resolution does', () => {
     const { container } = renderSidebar(CHOICES)
     expect(label(sessionMetaLine(container, 'kindless'))).toBe('reviewer · own memory')
   })

@@ -471,9 +471,7 @@ class TestModeBinding:
             await runtime.spawn()
             with pytest.raises(Exception) as exc:
                 await runtime.create_session(cwd=tmp_path / "ws5", agent="review")
-            assert str(exc.value).startswith(
-                "Rename this crewmate's template: “review” is reserved"
-            )
+            assert str(exc.value).startswith("Rename this mate's template: “review” is reserved")
             assert "Agent Template tab" in str(exc.value)
             assert "kas-mode-session" not in str(exc.value)
         finally:

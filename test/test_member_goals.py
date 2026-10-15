@@ -659,9 +659,9 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
 @pytest.mark.parametrize(
     ("change", "outcome"),
     [
-        ("turn", "skipped: the crewmate is busy"),
-        ("queue", "skipped: the crewmate is busy"),
-        ("reopen", "skipped: the crewmate's thread is not open"),
+        ("turn", "skipped: the mate is busy"),
+        ("queue", "skipped: the mate is busy"),
+        ("reopen", "skipped: the mate's thread is not open"),
     ],
     ids=["a-turn-started", "a-message-queued", "the-thread-was-reopened"],
 )

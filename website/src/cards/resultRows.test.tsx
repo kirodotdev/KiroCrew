@@ -87,10 +87,10 @@ describe('an applied card says what now exists', () => {
     expect(resultSummary(sched)).toBe('Schedule created: Morning GitHub PR check · 9:00 AM · Every day')
   })
 
-  it('a setting, a crewmate, and the generic fallback', () => {
+  it('a setting, a mate, and the generic fallback', () => {
     expect(resultSummary(card())).toBe('Setting changed: Response verbosity')
-    expect(resultSummary(card({ kind: 'crewmate.create', title: 'Create crewmate “Scout”', params: { name: 'Scout', goal: 'g' } })))
-      .toBe('Crewmate created: Scout')
+    expect(resultSummary(card({ kind: 'crewmate.create', title: 'Create mate “Scout”', params: { name: 'Scout', goal: 'g' } })))
+      .toBe('Mate created: Scout')
     expect(resultSummary(card({ kind: 'mcp.install', title: 'Install MCP server “fetch”', params: { id: 'fetch' } })))
       .toBe('Applied: Install MCP server “fetch”')
   })
@@ -98,7 +98,7 @@ describe('an applied card says what now exists', () => {
   it('leaves undone, cancelled and a partial summary as they were', () => {
     expect(resultSummary(card({ status: 'undone' }))).toBe('Restored: Change Response verbosity')
     expect(resultSummary(card({ status: 'cancelled' }))).toBe('Declined: Change Response verbosity')
-    expect(resultSummary(card({ status: 'partial', result: { summary: 'Created crewmate “Scout”, but its schedule was not saved' } })))
-      .toBe('Created crewmate “Scout”, but its schedule was not saved')
+    expect(resultSummary(card({ status: 'partial', result: { summary: 'Created mate “Scout”, but its schedule was not saved' } })))
+      .toBe('Created mate “Scout”, but its schedule was not saved')
   })
 })

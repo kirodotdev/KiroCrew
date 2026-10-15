@@ -106,7 +106,7 @@ function makeExtra(state) {
         return json(route, { error: "No installed template is named 'reviewer'.", code: 'default_template_not_installed' }, 400), true
       }
       if (body.agent === 'pr-bot-copy') {
-        return json(route, { error: "Template 'pr-bot-copy' is crewmate 'pr-bot's private copy; it cannot be the default template.", code: 'foreign_private_copy' }, 409), true
+        return json(route, { error: "Template 'pr-bot-copy' is mate 'pr-bot's private copy; it cannot be the default template.", code: 'foreign_private_copy' }, 409), true
       }
       state.stored = body.agent
       return json(route, { ok: true, default_agent: 'default' }), true
@@ -166,7 +166,7 @@ try {
     for (const want of ['reviewer', 'atlas', 'papyrus-writer', 'kirocrew']) {
       if (!names.some(n => n.trim() === want)) throw new Error(`${theme} open: "${want}" missing from the picker (saw ${JSON.stringify(names)})`)
     }
-    if (names.some(n => n.trim() === 'pr-bot-copy')) throw new Error(`${theme} open: a crewmate's private copy leaked into the picker`)
+    if (names.some(n => n.trim() === 'pr-bot-copy')) throw new Error(`${theme} open: a mate's private copy leaked into the picker`)
     await page.waitForTimeout(300)
     out = `${OUT}/${PREFIX}-${theme}-open.png`
     await page.screenshot({ path: out }); wrote.push(out)

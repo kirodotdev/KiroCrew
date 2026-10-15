@@ -48,7 +48,7 @@ describe('AgentSelector', () => {
 })
 
 describe('crewDisplayName', () => {
-  it('names the first crewmate by its localized label on any template; default keeps its name', () => {
+  it('names the first mate by its localized label on any template; default keeps its name', () => {
     expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew' })).toBe('Mate')
     // A label of the user's own wins.
     expect(crewDisplayName({ name: 'mate', kiro_agent: 'kirocrew', display_name: 'Ada' })).toBe('Ada')

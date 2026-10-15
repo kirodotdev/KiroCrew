@@ -33,7 +33,7 @@ afterEach(() => {
 })
 
 describe('sendTurn receipt contract', () => {
-  it.each([undefined, false, true])('only an opted-in crewmate send carries responsive=%s on the wire', async (responsive) => {
+  it.each([undefined, false, true])('only an opted-in mate send carries responsive=%s on the wire', async (responsive) => {
     fetchMock.mockResolvedValue(jsonResponse(200, { ok: true }))
     await sendTurn({ message: 'hello', slot: 'member-radar', meta: { sendId: 's-fixed' }, responsive })
     const [url, init] = fetchMock.mock.calls[0]

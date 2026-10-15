@@ -248,12 +248,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Model",
-            "Model for the sessions this crewmate dispatches through "
+            "Model for the sessions this mate dispatches through "
             "session_create when the call names none. Empty copies the "
-            "crewmate's model pin when set; with both fields empty, no session "
+            "mate's model pin when set; with both fields empty, no session "
             "model is pinned and the worker's own agent or the global default "
             "decides. Unlike 'model', 'auto' is a real pin here: workers run "
-            "on the backend's own default, which is how a crewmate on a costly "
+            "on the backend's own default, which is how a mate on a costly "
             "model keeps its workers cheap. An explicit model on the call wins.",
         ),
     )
@@ -261,12 +261,12 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Worker Reasoning Effort",
-            "Reasoning effort for the sessions this crewmate dispatches through "
+            "Reasoning effort for the sessions this mate dispatches through "
             "session_create when the call names none. Empty means: while the "
-            "workers run the crewmate's own model (worker_model empty and no model "
-            "on the call) they take the crewmate's own effort (the field above); "
+            "workers run the mate's own model (worker_model empty and no model "
+            "on the call) they take the mate's own effort (the field above); "
             "under any other model no level is pinned and the worker's agent "
-            "decides as usual (its own crew pin if it runs as a crewmate, else "
+            "decides as usual (its own crew pin if it runs as a mate, else "
             "agent.reasoning_effort, else the model default). Set, one of the five "
             "standard levels. An explicit effort on the call wins.",
         ),
@@ -275,7 +275,7 @@ class KiroCrewAgentConfig:
         default="",
         metadata=_meta(
             "Approval Mode",
-            "Tool approval for this crewmate's own Crewmates-page thread: normal, "
+            "Tool approval for this mate's own Mates-page thread: normal, "
             "trust_reads or trust. Empty means the user never chose one, and the "
             "thread opens in trust.",
         ),

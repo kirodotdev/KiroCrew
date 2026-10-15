@@ -62,7 +62,7 @@ const capabilitiesTree = () => (
   </SidePanelLayout>
 )
 
-describe('Customize > Crewmates hosting the crewmate editor', () => {
+describe('Customize > Mates hosting the mate editor', () => {
   it('keeps the same editor and draft when the bare capabilities route becomes mobile', async () => {
     const tree = capabilitiesTree()
     const result = renderWithProviders(tree, { route: '/capabilities' })
@@ -85,12 +85,12 @@ describe('Customize > Crewmates hosting the crewmate editor', () => {
     const tree = capabilitiesTree()
     const result = renderWithProviders(tree, { route: '/capabilities' })
     fireEvent.click(await screen.findByTestId('new-crew'))
-    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const dialog = await screen.findByRole('dialog', { name: 'New mate' })
     const name = within(dialog).getByRole('textbox', { name: 'Name' })
     fireEvent.change(name, { target: { value: 'my-draft-crew' } })
     viewport.mobile = true
     result.rerender(cloneElement(tree))
-    expect(screen.getByRole('dialog', { name: 'New crewmate' })).toBe(dialog)
+    expect(screen.getByRole('dialog', { name: 'New mate' })).toBe(dialog)
     expect(within(dialog).getByRole('textbox', { name: 'Name' })).toHaveValue('my-draft-crew')
   })
 
@@ -104,7 +104,7 @@ describe('Customize > Crewmates hosting the crewmate editor', () => {
     const notice = await screen.findByTestId('crews-roster-load-error')
     expect(within(notice).getByRole('button', { name: 'Ask the agent' })).toBeInTheDocument()
     fireEvent.click(await screen.findByTestId('new-crew'))
-    const dialog = await screen.findByRole('dialog', { name: 'New crewmate' })
+    const dialog = await screen.findByRole('dialog', { name: 'New mate' })
     fireEvent.change(within(dialog).getByRole('textbox', { name: 'Name' }), { target: { value: 'my-draft-crew' } })
     await waitFor(() =>
       expect(within(screen.getByTestId('crews-roster-load-error')).queryByRole('button', { name: 'Ask the agent' })).toBeNull(),

@@ -1,8 +1,8 @@
-# Crewmate dashboard instances
+# Mate dashboard instances
 
-A template is shared. An **instance** is one crewmate's copy of one template, and the
+A template is shared. An **instance** is one mate's copy of one template, and the
 copy is the whole design. A built-in template shipping a new version does not change
-what a crewmate's Dashboard tab shows, and a crewmate editing its page is editing its
+what a mate's Dashboard tab shows, and a mate editing its page is editing its
 own copy rather than everybody's template.
 
 The instance store is two modules and one route, each with one job:
@@ -49,7 +49,7 @@ Each is spelled out and none is called "the" version, because conflating any two
 produces a page a reader cannot place:
 
 **Template version** is the version of the template that was copied. Frozen at adopt.
-An edit never moves it: editing a copy does not make the crewmate the template's author,
+An edit never moves it: editing a copy does not make the mate the template's author,
 and advancing it would make the instance claim a parity with a template it no longer
 matches.
 
@@ -83,30 +83,30 @@ every copy of it stale without touching one instance file, so the flag would say
 forever.
 
 `empty` and `error` are deliberately separate, and that distinction is the reason the
-read does not 404. A crewmate that never adopted a template answers 200 with `empty`,
-because having no dashboard yet is the ordinary first state of every crewmate and the
+read does not 404. A mate that never adopted a template answers 200 with `empty`,
+because having no dashboard yet is the ordinary first state of every mate and the
 frame's empty state IS that answer. `error` is a record that was damaged or hand-edited
-after it landed. The two need opposite answers from a human -- one is a fresh crewmate,
+after it landed. The two need opposite answers from a human -- one is a fresh mate,
 the other is a dashboard that stopped working -- so a 404, or one word for both, would
 hide the second behind the first.
 
-An `empty` crewmate is SHOWN a page only when one is named for it, from
-`default_instance(slug)`: the shipped page whose id is the crewmate's slug. Any other
-`empty` crewmate has no page in force: a generic page nobody chose would read as the
-crewmate's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped pages
+An `empty` mate is SHOWN a page only when one is named for it, from
+`default_instance(slug)`: the shipped page whose id is the mate's slug. Any other
+`empty` mate has no page in force: a generic page nobody chose would read as the
+mate's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped pages
 match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
 block both resolve through it, and nothing is written. No shipped page may be named
 `default`.
-With no page in force, the crewmate's Dashboard tab on `/members` shows the suggestions
+With no page in force, the mate's Dashboard tab on `/members` shows the suggestions
 page (`CrewDashboardEmpty`), and the turn block says so and lists no fields and no upkeep
-pointer. A shipped page named for the crewmate is drawn as before. The decision is made
+pointer. A shipped page named for the mate is drawn as before. The decision is made
 ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
 no page named for the slug, no package on screen): the read route sends it as
 `suggestions: true` and the website draws what that says, and `turn_block` asks the same
 function, with the same package lookup (`dashboard_agentic.bound_package`) and the same
 lock rule as the route. There is no field to write either: `dashboard_fields` says the
-crewmate has no dashboard yet, `dashboard_write` is refused `no_instance`, and the
-profile's upkeep view shows nothing. A value written before a crewmate lost its default
+mate has no dashboard yet, `dashboard_write` is refused `no_instance`, and the
+profile's upkeep view shows nothing. A value written before a mate lost its default
 stays in the crew log; nothing here deletes or migrates it.
 
 `stale` covers two cases with different sentences: the template moved ahead of the copy,
@@ -120,7 +120,7 @@ act on `stale`.
 ## The history is a fold, the record is a file
 
 `instance.json` is the current value. Every accepted change ALSO appends one
-`dashboard/instance_changed` entry to the crewmate's own DM session crew log, and the
+`dashboard/instance_changed` entry to the mate's own DM session crew log, and the
 history is a fold over those entries, resumed from a savepoint beside the record.
 
 The entry carries what CHANGED and never the page. That is what makes it bounded by
@@ -152,7 +152,7 @@ a directory the registry then has to report as broken.
 
 An import does not overwrite. A colliding id is refused and names the collision, and
 `as_id` is how both are kept. Overwriting silently would replace the template a
-crewmate's dashboard was copied from -- and because the instance holds its own copy, the
+mate's dashboard was copied from -- and because the instance holds its own copy, the
 dashboard would keep rendering while the registry no longer held what it was made from,
 which is the one failure nothing downstream could detect.
 
@@ -181,9 +181,9 @@ Without that check the field would be worth nothing to a surface reading it to m
 "this shipped in the product".
 
 **Two roots are scanned, and no agent can write either.** A page that renders runs its
-own script against the crewmate's values inside a frame that can navigate itself, so a
+own script against the mate's values inside a frame that can navigate itself, so a
 registry that scanned an agent-writable directory would let the agent choose what a
-crewmate's dashboard executes. The two roots:
+mate's dashboard executes. The two roots:
 
 | Root | Origin | Why a person put the page there |
 |---|---|---|
@@ -219,7 +219,7 @@ version, values, seq.
 
 Each is required. A bag of numbers with no template is a page nobody can redraw; a page
 with no seq cannot be placed against the log it came from; values with no instance
-version cannot be told from values the crewmate's next edit would have laid out
+version cannot be told from values the mate's next edit would have laid out
 differently. A snapshot that cannot name one is refused rather than stored with a gap a
 later reader fills in by guessing.
 
@@ -241,12 +241,12 @@ listing a chronology without opening every file.
 
 `?member=` is REQUIRED on every route, exactly as the briefing and rules reads require
 it. Slugification is lossy, so two crew names can reach one slug; an instance is one
-directory per slug, so for a colliding slug the instance belongs to neither crewmate, and
+directory per slug, so for a colliding slug the instance belongs to neither mate, and
 serving it to both -- with an editor -- would let them overwrite each other's dashboard.
 The exact name must derive this slug, exist in config, and be the only name that does.
 
 Both the READ and every WRITE are owner-gated, the same boundary `work_ledger_board`
-draws: the body carries this crewmate's work-ledger and crew-log data (task titles,
+draws: the body carries this mate's work-ledger and crew-log data (task titles,
 summaries, PR links), so arriving as rendered html does not make it a wider audience's. A
 non-owner is refused rather than served an empty read, which would show its numbers as
 stale when the truth is that they were withheld. A write mutates a stored page the
@@ -337,13 +337,13 @@ them, and the parity rule is about the pair being committed.
 
 **One size ceiling, and it is the frame's.** `MAX_INSTANCE_HTML_BYTES` reads
 `dashboard_frame.MAX_PAGE_BYTES` (3 MiB) rather than stating a number of its own. The
-`MAX_RETAINED_VERSIONS` (20) versions one crewmate keeps therefore hold at most 60 MiB
+`MAX_RETAINED_VERSIONS` (20) versions one mate keeps therefore hold at most 60 MiB
 of pages. A page passes
 two size checks -- this store's before it becomes a version, and the frame's before the
 document that renders it is assembled -- and two independent numbers meant the store
 could refuse a page the frame would happily draw. It did: `project-report` is over
 147,000 bytes and is `DEFAULT_TEMPLATE_ID`, so under a private 64 KiB ceiling no
-crewmate could adopt it, and a root session that adopted anything else could never come
+mate could adopt it, and a root session that adopted anything else could never come
 back to the page it starts on. The frame is where the cost is actually paid, which
 makes it the honest place for the number; `test_dashboard_templates_builtin.py` asserts
 the identity and takes every shipped template through preview and apply.
@@ -355,7 +355,7 @@ describe a change the existing three already name.
 The preview is discarded once the version lands, so "keep this one" cannot be answered
 twice and quietly write two versions of one page.
 
-**The person can answer from the tab too.** A crewmate's staged page is drawn under
+**The person can answer from the tab too.** A mate's staged page is drawn under
 **Keep** and **Discard** buttons in the host chrome (the Dashboard tab on `/members`
 and the chat side panel's preview tab), outside the sandboxed frame, so a page can
 never press them. Keep posts `POST /api/members/{slug}/dashboard/preview/apply` with
@@ -374,7 +374,7 @@ on. Both carry the lock route's gates: an internal-secret caller is
 refused `human_only` first, then the owner gate, then the CSRF middleware every
 cookie POST passes. On a successful Keep the host leaves preview mode at once
 (dropping `?dashboard=preview`) and refetches the live page, with one line saying
-the page was kept and that the crewmate can roll it back. When the staged page goes
+the page was kept and that the mate can roll it back. When the staged page goes
 any other way (the agent's `dashboard_apply`, a discard, expiry), the preview view
 hands over to the live page the same way, with a line that says so. Template
 previews only: a session's page has no person route.
@@ -382,7 +382,7 @@ previews only: a session's page has no person route.
 ## The structure lock is the person's, and only theirs
 
 The person's structure lock freezes WHICH page the tab shows. They set it with the
-**Lock dashboard layout** switch on the crewmate's Profile tab (the settings
+**Lock dashboard layout** switch on the mate's Profile tab (the settings
 rows under Permissions, Model and Effort); the Dashboard tab carries only a small
 **Layout locked — unlock on Profile** badge-button that opens the Profile tab when clicked, never a toggle. While it is set,
 `_commit` refuses every new version with `InstanceLocked`, so adopt, apply, edit
@@ -392,22 +392,22 @@ instance lock every writer already holds, so a lock set between a caller's read 
 its write still refuses it. Staging a preview and writing agentic values are not
 structure changes and keep working.
 
-`set_structure_lock` is the only writer of the flag for a live crewmate, and
+`set_structure_lock` is the only writer of the flag for a live mate, and
 `POST /api/members/{slug}/dashboard/lock` is its only caller: owner-gated, and it
 refuses an internal-secret caller (`human_only`) before anything else, because that
 caller is an MCP server acting for an agent. No MCP tool sets the lock.
 
-Deleting a crewmate (`DELETE /api/agents/{name}`) removes its lock file through
-`structure_lock_removal.remove_structure_lock`, so a later crewmate deriving the same slug does not start
+Deleting a mate (`DELETE /api/agents/{name}`) removes its lock file through
+`structure_lock_removal.remove_structure_lock`, so a later mate deriving the same slug does not start
 out locked to the old one's page. The slug comes from the config captured while the
 record existed, and the removal is decided the way the crew-log reclaim is: under
 `memory_store_namespace_lock` and the lock's own guard, and only while no crew in the
-roster on disk still derives that slug. A slug a live crewmate still claims keeps its
+roster on disk still derives that slug. A slug a live mate still claims keeps its
 lock. Only the lock file goes; its `.guard` file stays, because another writer may be
-holding it. A crewmate that never locked creates nothing in `crew-panels` on delete.
+holding it. A mate that never locked creates nothing in `crew-panels` on delete.
 
 The lock is a file, `crew-panels/<slug>.dashboard-lock`, and NOT a field of
-`instance.json`: `members/<slug>/` is writable by the crewmate's own sandboxed shell,
+`instance.json`: `members/<slug>/` is writable by the mate's own sandboxed shell,
 so a flag there could be cleared by editing a file. `crew-panels` is masked in the
 sandbox, fenced by the file-tool gate and refused when aliased, and the gateway is its
 only reader and writer. Locking SNAPSHOTS the current record into that file, and
@@ -415,25 +415,25 @@ while it exists `read` serves the snapshot, so copying an old version over
 `instance.json` cannot change the locked page. Only a missing file is unlocked; any
 other read error reads as locked, and a lock file with no readable snapshot serves
 the error state rather than `instance.json`. Unlocking removes the lock file and
-writes nothing under `members/<slug>/`, which the crewmate's shell can redirect.
+writes nothing under `members/<slug>/`, which the mate's shell can redirect.
 It is never part of a version, so a rollback cannot restore an old lock state, and
-it holds for a crewmate that never adopted. A lock change is NOT a history row: the
+it holds for a mate that never adopted. A lock change is NOT a history row: the
 history savepoint lives under `members/<slug>/`, and the lock file is the record.
 
-The lock is keyed by the member slug, which is the crewmate's immutable `member_id`
+The lock is keyed by the member slug, which is the mate's immutable `member_id`
 wherever one is persisted, so a rename keeps it. It is no part of any DM session or
 of `members/<slug>/`, so a cleared chat, a new DM, a wiped member dashboard folder
 and a gateway restart all leave it set. The member record does not grow.
-While locked, the crewmate's `[DASHBOARD]` turn block carries a LOCKED line telling
+While locked, the mate's `[DASHBOARD]` turn block carries a LOCKED line telling
 it not to apply, roll back or propose another page, while noting that previewing for
 the person to look at still works.
 ## Every commit syncs the upkeep helpers
 
-A fold field fills itself from the crew log; an agentic field is the crewmate's to
+A fold field fills itself from the crew log; an agentic field is the mate's to
 write. `dashboard_upkeep` supplies two things for the agentic fields, from the field's
 `upkeep` key (`means`, `when`, `how`, optional `helper`): the TEXT, which
 `dashboard_fields` puts on each agentic row of its reply when it is called
-(`dashboard_upkeep.upkeep_rows`), so it cannot go stale and a crewmate with no file
+(`dashboard_upkeep.upkeep_rows`), so it cannot go stale and a mate with no file
 tools reads it; and the HELPER SCRIPTS, copies of the shipped
 `builtin/<id>/helpers/<file>` under `<skills dir>/.dashboard-upkeep/<slug>/scripts/`,
 which fetch data the crew log does not hold (PR checks via `gh`) and print a ready
@@ -442,14 +442,14 @@ directory keeps the scripts out of the skills index, and it holds nothing else.
 
 `_commit` calls `dashboard_upkeep.sync` with the record it just wrote, so adopt, apply,
 rollback and edit each copy the helpers the new page names and drop one it does not.
-`turn_block` calls it too -- a crewmate on the page named for it never commits, and a gateway
+`turn_block` calls it too -- a mate on the page named for it never commits, and a gateway
 upgrade can change a shipped helper -- and, when the page has fields to write, adds the
 one pointer line saying `dashboard_fields` carries the upkeep text, which rides the
 member section through every compaction. `sync` writes only what differs, so it also
 puts back a hand edit. A root session's own dashboard (`is_session_key`) has no
-crewmate shell and gets no scripts and no helper path.
+mate shell and gets no scripts and no helper path.
 
-The text and the helpers are read from the SHIPPED catalog entry. The crewmate's copy
+The text and the helpers are read from the SHIPPED catalog entry. The mate's copy
 of the manifest is on the agent-writable side and `edit` may change it, so its `upkeep`
 is never read; only a `builtin` template may name a helper. The profile's Notes tab
 shows the same text (`GET /api/members/{slug}/briefing` `upkeep`). Decision:
@@ -460,12 +460,12 @@ shows the same text (`GET /api/members/{slug}/briefing` `upkeep`). Decision:
 
 The link `dashboard_preview` hands back (`instance.preview_url`) is a PAGE:
 `/members?member=<exact crew name>&dashboard=preview`. The Members page opens that
-crewmate, opens the side panel on its Dashboard tab, and draws the staged page in the
+mate, opens the side panel on its Dashboard tab, and draws the staged page in the
 same sandboxed frame as the live one, under the one preview label the chat's side
 panel also uses (`DashboardPreviewLabel`: **Preview, not applied**, and that nothing
 changes until the person answers in chat). The label drops once the staged page is
 applied or expires, and the tab says the preview has closed. Switching
-crewmate drops the query, so the preview never follows a person to another crewmate.
+mate drops the query, so the preview never follows a person to another mate.
 The tab shows the dynamic dashboard for a preview whether or not the Dynamic Dashboard
 Feature Preview is on: the staged page exists only in that form, and the person was
 sent to look at it.
@@ -480,7 +480,7 @@ live one, with `preview: true` in the body and `instance_version` left at the cu
 version. Nothing staged answers 404 `no_preview`, which the tab says in words (the page
 was kept, discarded or expired) with the same way back to the live page.
 
-One route and not two. A staged page carries the same crewmate's fold values as the page
+One route and not two. A staged page carries the same mate's fold values as the page
 it would replace, so a route of its own would be a second place to get that owner gate
 right; and a capability token would be a second credential for data its holder can
 already read. Serving it through a different renderer would be worse than either: the

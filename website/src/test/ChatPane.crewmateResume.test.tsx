@@ -118,7 +118,7 @@ beforeEach(() => {
   SLOT = `member-radar-${++slotSeq}`
 })
 
-describe("a crewmate's chat after a turn ends on a transient model error", () => {
+describe("a mate's chat after a turn ends on a transient model error", () => {
   it('offers Resume in the composer and on the error row, and pressing it continues that slot', async () => {
     const view = renderPane([
       row(0, 'user', 'Check the nightly build'),
@@ -168,7 +168,7 @@ describe("a crewmate's chat after a turn ends on a transient model error", () =>
     expect(view.getByTestId('error-card-continue')).toBeInTheDocument()
   })
 
-  it('offers nothing while the crewmate is working again', async () => {
+  it('offers nothing while the mate is working again', async () => {
     const view = renderPane([row(0, 'user', 'Check the nightly build'), row(1, 'assistant', 'On it.'), row(2, 'nudge', '[auto-nudge cycle 3]\nPatrol.'), errorRow(3)], { running: true })
 
     await view.findByTestId('error-card')
@@ -203,7 +203,7 @@ describe("a crewmate's chat after a turn ends on a transient model error", () =>
     expect(notice).toHaveTextContent('slot is running')
   })
 
-  it('retires the refusal and both Resume buttons once the slots frame reports the crewmate running', async () => {
+  it('retires the refusal and both Resume buttons once the slots frame reports the mate running', async () => {
     // A "slot is running" refusal means a turn started that this tab had not
     // heard of. The frame that says so takes the notice down and withholds
     // Resume, so the reason never sits beside a slot that reads idle.

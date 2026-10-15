@@ -92,10 +92,10 @@ async function openTemplatePane(page, crew) {
   await page.goto('/capabilities?tab=crews', { waitUntil: 'domcontentloaded' })
   await page.locator('#main-content').getByText('Your AI teammates', { exact: false })
     .waitFor({ state: 'visible', timeout: 15000 })
-  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|crewmate) ${crew}`, 'i') })
+  const card = page.getByRole('button', { name: new RegExp(`Edit (crew|agent|mate) ${crew}`, 'i') })
   await card.waitFor({ state: 'visible', timeout: 15000 })
   await card.click()
-  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|crewmate)/i })
+  const sheet = page.getByRole('dialog', { name: /edit (crew|agent|mate)/i })
   await sheet.waitFor({ state: 'visible', timeout: 10000 })
   await sheet.getByRole('button', { name: /^built from/i }).first().click()
   return sheet
@@ -187,10 +187,10 @@ try {
       if (!(await sheet.getByText(new RegExp(`^${expectBadge}$`)).count())) {
         throw new Error(`${crew}: template is not badged "${expectBadge}"`)
       }
-      if (!(await sheet.getByText(/give this crewmate its own copy/i).count())) {
+      if (!(await sheet.getByText(/give this mate its own copy/i).count())) {
         throw new Error(`${crew}: shared template shows no fork hint`)
       }
-      const usedText = crew === 'atlas' ? /used by 2 crewmates/i : /used by this crewmate only/i
+      const usedText = crew === 'atlas' ? /used by 2 mates/i : /used by this crewmate only/i
       if (!(await sheet.getByText(usedText).count())) {
         throw new Error(`${crew}: header is missing the used-by reach text`)
       }

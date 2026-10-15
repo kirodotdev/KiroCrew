@@ -210,7 +210,7 @@ describe('AgentBackendTab detail card', () => {
     await waitFor(() =>
       expect(screen.getByText('Kiro CLI supports 1 of 1 features')).toBeInTheDocument(),
     )
-    const saved = screen.getByText('Crewmates load their saved agent')
+    const saved = screen.getByText('Mates load their saved agent')
     const folded = saved.closest('details')
     expect(folded).not.toBeNull()
     expect(folded?.open).toBe(false)

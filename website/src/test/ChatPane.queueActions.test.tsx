@@ -257,7 +257,7 @@ afterEach(() => vi.useRealTimers())
 describe('cold-mount queue from slot detail', () => {
   beforeEach(() => __resetPaneDraftsForTests())
 
-  it('draws a crewmate queued entry as one plain bubble, never a queue card', async () => {
+  it('draws a mate queued entry as one plain bubble, never a queue card', async () => {
     vi.setSystemTime(new Date(COLD_TS))
     vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue(coldDetail as never)
     const store = configureStore({
@@ -275,7 +275,7 @@ describe('cold-mount queue from slot detail', () => {
     expect(screen.queryByRole('button', { name: 'Cancel queued message' })).toBeNull()
   })
 
-  it.each([false])('restores one cancellable card (crewmate=%s)', async (crewmate) => {
+  it.each([false])('restores one cancellable card (mate=%s)', async (crewmate) => {
     vi.setSystemTime(new Date(COLD_TS))
     vi.mocked(api.chatSlotDetail).mockReset().mockResolvedValue(coldDetail as never)
     vi.mocked(api.cancelQueuedMessage).mockReset().mockResolvedValue({ ok: true } as never)

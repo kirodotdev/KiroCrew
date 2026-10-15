@@ -1567,7 +1567,7 @@
       },
       "runnable": "excluded",
       "estimated_steps": 4,
-      "rationale": "Excluded: no workspace switcher exists on main. Named workspaces are edited in Developer > Config and picked per crewmate; the sidebar has no control that changes the active workspace.",
+      "rationale": "Excluded: no workspace switcher exists on main. Named workspaces are edited in Developer > Config and picked per mate; the sidebar has no control that changes the active workspace.",
       "source": [
         "src/kiro_crew/tests_fixtures/multi-workspace/fixture.yaml",
         "src/kiro_crew/tests_fixtures/multi-workspace/config.json"
@@ -1987,10 +1987,10 @@
     {
       "id": "crewmate-reply-thread",
       "feature": "members",
-      "title": "Reply in thread on a crewmate's bubble opens the thread panel and the bubble gains a replies footer",
-      "user_story": "As a user talking to a crewmate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the crewmate's findings up the main chat.",
+      "title": "Reply in thread on a mate's bubble opens the thread panel and the bubble gains a replies footer",
+      "user_story": "As a user talking to a mate, I want to ask about one thing it said in a reply thread on that message, so that the follow-up stays beside the message it is about instead of pushing the mate's findings up the main chat.",
       "start_url": "/settings",
-      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Settings > Developer > Crewmates > enable Reply threads on crewmate chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
+      "entry_path": "Settings > Developer > Feature Previews > enable Crew Members; Settings > Developer > Mates > enable Reply threads on mate chat messages; Rail > Crew Members > Nova Sky > send a message, get a reply > hover the reply bubble > Reply in thread > Thread panel (quoted parent, 'No replies yet') > send a reply in the panel",
       "preconditions": {
         "seed": "rich",
         "members": [
@@ -1999,7 +1999,7 @@
         "feature_flags": [
           "mc-preview-crew"
         ],
-        "notes": "Threads exist only on a crewmate's chat (a member-mode slot); the fake ACP backend answers the main-chat message so a finished crewmate bubble carries the Reply in thread action, and answers the thread reply too, so the footer reads '1 reply' then '2 replies'. Replies live in the slot's .threads sidecar, never in the transcript."
+        "notes": "Threads exist only on a mate's chat (a member-mode slot); the fake ACP backend answers the main-chat message so a finished mate bubble carries the Reply in thread action, and answers the thread reply too, so the footer reads '1 reply' then '2 replies'. Replies live in the slot's .threads sidecar, never in the transcript."
       },
       "runnable": "nightly",
       "estimated_steps": 8,
@@ -2051,17 +2051,17 @@
     {
       "id": "sidebar-crew-members-create-menu-entry",
       "feature": "members",
-      "title": "Sidebar create menu 'Crewmates' routes by preview flag",
-      "user_story": "As a user, I want the Crewmates menu entry to open the page or the setting that enables it, so that I can find the feature either way.",
+      "title": "Sidebar create menu 'Mates' routes by preview flag",
+      "user_story": "As a user, I want the Mates menu entry to open the page or the setting that enables it, so that I can find the feature either way.",
       "start_url": "/chat",
-      "entry_path": "Sidebar New button's chevron ('More create options') > Crewmates (data-testid open-crew-members) > lands on /members or Settings > Developer > Feature Previews (Crewmates card)",
+      "entry_path": "Sidebar New button's chevron ('More create options') > Mates (data-testid open-crew-members) > lands on /members or Settings > Developer > Feature Previews (Mates card)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
         "feature_flags": [
           "mc-preview-crew"
         ],
-        "notes": "Entry is always rendered; PREVIEW_CREW only decides destination (openCrewMembers in chat-sidebar/create.ts). Run once with the flag on and once off. The menu entry and the Feature Previews card are both labelled 'Crewmates'."
+        "notes": "Entry is always rendered; PREVIEW_CREW only decides destination (openCrewMembers in chat-sidebar/create.ts). Run once with the flag on and once off. The menu entry and the Feature Previews card are both labelled 'Mates'."
       },
       "runnable": "nightly",
       "estimated_steps": 3,
@@ -2083,7 +2083,7 @@
       "title": "Crews",
       "user_story": "As an operator, I want to define named crews binding an agent, model and workspace with a custom avatar, so that I can pick the right worker per task.",
       "start_url": "/capabilities",
-      "entry_path": "Rail → Customize → Crewmates tab (?tab=crews)",
+      "entry_path": "Rail → Customize → Mates tab (?tab=crews)",
       "preconditions": {
         "seed": "rich",
         "members": [],
@@ -2105,10 +2105,10 @@
     {
       "id": "capabilities-crews-templates-skills-tabs",
       "feature": "capabilities",
-      "title": "Navigate Customize tabs: Crewmates, Custom agents, Skills",
+      "title": "Navigate Customize tabs: Mates, Custom agents, Skills",
       "user_story": "As a user, I want to manage crews, agent templates, and skills in one panel, so that agent configuration is centralized.",
       "start_url": "/capabilities",
-      "entry_path": "Rail > Customize (bottom group) > tabs Crewmates | Custom agents | Skills; /agents and /mc-agents redirect here",
+      "entry_path": "Rail > Customize (bottom group) > tabs Mates | Custom agents | Skills; /agents and /mc-agents redirect here",
       "preconditions": {
         "seed": "skills-custom",
         "members": [],
@@ -2137,7 +2137,7 @@
       "title": "Agent templates inside a crew's Template pane",
       "user_story": "As an operator, I want to inspect the harness-level agent definitions crews bind to, so that I understand what a crew actually runs.",
       "start_url": "/capabilities",
-      "entry_path": "Customize → Crewmates tab → open a crewmate → Template pane (the shared definitions live on the Custom agents tab)",
+      "entry_path": "Customize → Mates tab → open a mate → Template pane (the shared definitions live on the Custom agents tab)",
       "preconditions": {
         "seed": "minimal",
         "members": [],
@@ -2162,7 +2162,7 @@
       "title": "Crew appearance library",
       "user_story": "As an operator, I want a Library tab of appearance packs a crew can wear, with import and guarded delete, so that crews look distinct.",
       "start_url": "/capabilities",
-      "entry_path": "Customize → Crewmates → a crewmate → Edit avatar → Library",
+      "entry_path": "Customize → Mates → a mate → Edit avatar → Library",
       "preconditions": {
         "seed": "rich",
         "members": [],

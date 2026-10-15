@@ -172,7 +172,7 @@ def test_import_shares_the_create_state_read_and_partial_line():
     assert state["exists"] is False and "inherited_auto_approve" in state
     assert [r["name"] for r in state["inherited_reach"]] == state["inherited_auto_approve"]
     line = catalog.result_summary("crewmate.import", {"name": "Q"}, "partial", "t", failed_step=1)
-    assert line == "Created crewmate “Q”, but its goal was not saved"
+    assert line == "Created mate “Q”, but its goal was not saved"
 
 
 def test_propose_writes_only_a_card_under_the_app_key_and_the_press_creates(

@@ -50,7 +50,7 @@ const open = async () => {
 const options = (list: HTMLElement) => within(list).getAllByRole('option')
 
 describe('CrewmateSwitcher closed chip', () => {
-  it('stacks the OTHER crewmates\' faces in roster order; no count, the roster word folded until hover', () => {
+  it('stacks the OTHER mates\' faces in roster order; no count, the roster word folded until hover', () => {
     setup()
     const faces = within(chip()).getAllByTestId('avatar-stub').map((f) => f.textContent)
     // Three faces at most, none of them the open crewmate: the identity pill
@@ -64,19 +64,19 @@ describe('CrewmateSwitcher closed chip', () => {
     // rest; it slides open on hover, focus or while the list is open. The
     // button is named by aria-label, so the fold changes nothing spoken.
     const label = screen.getByTestId('crewmate-switcher-label')
-    expect(label).toHaveTextContent('Crewmates')
+    expect(label).toHaveTextContent('Mates')
     expect(label.className).toContain('grid-cols-[0fr]')
     expect(label.className).toContain('group-hover:grid-cols-[1fr]')
     expect(label.className).toContain('group-focus-visible:grid-cols-[1fr]')
     expect(label.className).toContain('group-data-[state=open]:grid-cols-[1fr]')
     expect(label.className).toContain('motion-reduce:transition-none')
     expect((label.firstElementChild as HTMLElement).className).toContain('overflow-hidden')
-    expect(chip()).toHaveAccessibleName('Crewmates')
-    expect(chip()).toHaveAttribute('title', 'Switch crewmate')
+    expect(chip()).toHaveAccessibleName('Mates')
+    expect(chip()).toHaveAttribute('title', 'Switch mate')
     expect(chip()).toHaveAttribute('aria-expanded', 'false')
   })
 
-  it('falls back to the open crewmate\'s own face when it is the whole roster', () => {
+  it('falls back to the open mate\'s own face when it is the whole roster', () => {
     setup({ members: [MEMBERS[1]] })
     const faces = within(chip()).getAllByTestId('avatar-stub').map((f) => f.textContent)
     expect(faces).toEqual(['scribe'])
@@ -104,7 +104,7 @@ describe('CrewmateSwitcher roster action', () => {
 })
 
 describe('CrewmateSwitcher open list', () => {
-  it('lists every crewmate with the current one selected', async () => {
+  it('lists every mate with the current one selected', async () => {
     setup()
     const list = await open()
     expect(chip()).toHaveAttribute('aria-expanded', 'true')
@@ -121,7 +121,7 @@ describe('CrewmateSwitcher open list', () => {
     setup()
     const list = await open()
     const search = screen.getByTestId('crewmate-switcher-search')
-    expect(search).toHaveAccessibleName('Find a crewmate')
+    expect(search).toHaveAccessibleName('Find a mate')
 
     fireEvent.change(search, { target: { value: 'radar' } })
     // Matches the display name AND the agent template ("radar-template").
@@ -132,7 +132,7 @@ describe('CrewmateSwitcher open list', () => {
 
     fireEvent.change(search, { target: { value: 'nobody' } })
     expect(within(list).queryAllByRole('option')).toHaveLength(0)
-    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No crewmate matches')
+    expect(screen.getByTestId('crewmate-switcher-empty')).toHaveTextContent('No mate matches')
     // The create door is still offered under an empty result.
     expect(screen.getByTestId('crewmate-switcher-create')).toBeInTheDocument()
   })
@@ -150,7 +150,7 @@ describe('CrewmateSwitcher open list', () => {
     expect(options(list).map((o) => within(o).getByTestId('avatar-stub').textContent)).toEqual(['ghostwriter'])
   })
 
-  it('keeps the OPEN crewmate listed even when the hide rule would drop it', async () => {
+  it('keeps the OPEN mate listed even when the hide rule would drop it', async () => {
     const hidden = row('ghostwriter', { has_dm_message: false, dashboard_created: false } as Partial<MemberRosterRow>)
     setup({ members: [...MEMBERS, hidden], activeName: 'ghostwriter' })
     const list = await open()
@@ -159,7 +159,7 @@ describe('CrewmateSwitcher open list', () => {
     expect(opts[4]).toHaveAttribute('aria-selected', 'true')
   })
 
-  it('reports a pick by name and closes; picking the current crewmate reports nothing', async () => {
+  it('reports a pick by name and closes; picking the current mate reports nothing', async () => {
     const { onPick } = setup()
     let list = await open()
     fireEvent.click(options(list)[1]) // scribe, already open
@@ -185,7 +185,7 @@ describe('CrewmateSwitcher open list', () => {
     expect(options(list)).toHaveLength(4)
   })
 
-  it('the New crewmate footer opens the create dialog and closes the list', async () => {
+  it('the New mate footer opens the create dialog and closes the list', async () => {
     const { onCreate, onPick } = setup()
     await open()
     fireEvent.click(screen.getByTestId('crewmate-switcher-create'))
@@ -261,17 +261,17 @@ describe('CrewmateSwitcher live signals', () => {
     setup()
     const list = await open()
     expect(within(options(list)[1]).getByTestId('crewmate-switcher-presence-dot')).toBeInTheDocument()
-    expect(chip()).toHaveAccessibleName('Crewmates')
+    expect(chip()).toHaveAccessibleName('Mates')
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
   })
 
-  it('the closed chip shows a needs-you dot, and says so, only when a crewmate OTHER than the open one needs you', () => {
+  it('the closed chip shows a needs-you dot, and says so, only when a mate OTHER than the open one needs you', () => {
     const { unmount } = render(
       <CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} signals={signalsBy({ oncall: { needsYou: true } })} />,
     )
     expect(screen.getByTestId('crewmate-switcher-needs-you')).toBeInTheDocument()
     expect(chip()).toHaveAttribute('data-needs-you', 'true')
-    expect(chip()).toHaveAccessibleName('Crewmates, Needs your approval or answer')
+    expect(chip()).toHaveAccessibleName('Mates, Needs your approval or answer')
     unmount()
 
     // Only the OPEN crewmate needs you: its thread is on screen, so the chip
@@ -281,7 +281,7 @@ describe('CrewmateSwitcher live signals', () => {
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
     expect(chip()).not.toHaveAttribute('data-needs-you')
-    expect(chip()).toHaveAccessibleName('Crewmates')
+    expect(chip()).toHaveAccessibleName('Mates')
   })
 
   it('working and unread elsewhere do not light the chip — only needs-you does', () => {
@@ -289,7 +289,7 @@ describe('CrewmateSwitcher live signals', () => {
       <CrewmateSwitcher members={MEMBERS} activeName="scribe" onPick={vi.fn()} signals={signalsBy({ oncall: { running: true, unread: true } })} />,
     )
     expect(screen.queryByTestId('crewmate-switcher-needs-you')).toBeNull()
-    expect(chip()).toHaveAccessibleName('Crewmates')
+    expect(chip()).toHaveAccessibleName('Mates')
   })
 })
 
@@ -311,7 +311,7 @@ describe('CrewmateUnreadColumn', () => {
     return { onPick, onMore, ...view }
   }
 
-  it('one named pill per unread crewmate other than the open one, in roster order; a click picks it', () => {
+  it('one named pill per unread mate other than the open one, in roster order; a click picks it', () => {
     const { onPick } = column({ signals: signalsBy({ fixer: { unread: true }, oncall: { unread: true } }) })
     expect(screen.getByTestId('crewmate-switcher-unread-column')).toHaveAttribute('data-count', '2')
     expect(pills().map((p) => p.getAttribute('data-member'))).toEqual(['oncall', 'fixer'])
@@ -325,7 +325,7 @@ describe('CrewmateUnreadColumn', () => {
     expect(screen.queryByTestId('crewmate-switcher-unread-more')).toBeNull()
   })
 
-  it('draws nothing when nothing is unread, nor for the OPEN crewmate alone', () => {
+  it('draws nothing when nothing is unread, nor for the OPEN mate alone', () => {
     const { unmount } = column()
     expect(pills()).toHaveLength(0)
     expect(screen.getByTestId('crewmate-switcher-unread-column')).toHaveAttribute('data-count', '0')

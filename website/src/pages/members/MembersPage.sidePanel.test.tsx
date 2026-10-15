@@ -407,7 +407,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(slot.className).toContain('top-full')
   })
 
-  it('the Assistant lands with its docked panel hidden, remembered apart from every other crewmate', async () => {
+  it('the Assistant lands with its docked panel hidden, remembered apart from every other mate', async () => {
     localStorage.removeItem('mc-members-assistant-panel-open')
     const rows = [defaultRow(), assistantRow(), row({ name: 'oncall', slug: 'oncall', bound: true, slot_key: 'member-oncall' })]
     const utils = await renderPage(rows)
@@ -537,7 +537,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.queryByRole('tab', { name: 'Side Chat' })).toBeNull()
   })
 
-  it('the Dashboard is the crewmate\'s generated page, with no repeated identity row', async () => {
+  it('the Dashboard is the mate\'s generated page, with no repeated identity row', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     fireEvent.click(await rosterRow('oncall'))
     expect(await screen.findByTestId('member-dashboard')).toBeInTheDocument()
@@ -712,7 +712,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(faces[0]).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it('leaving the crewmate mid-flight drops the flight, so the next open starts with a painted pill face', async () => {
+  it('leaving the mate mid-flight drops the flight, so the next open starts with a painted pill face', async () => {
     // The copy unmounts with the crewmate before its onComplete; without the
     // clear, the stale flight replayed the old face and hid the next pill face.
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -805,7 +805,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('crew-profile-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it("Goals' track row sends a visible message to the crewmate and closes the floating card", async () => {
+  it("Goals' track row sends a visible message to the mate and closes the floating card", async () => {
     const sendMock = api.sendChat as ReturnType<typeof vi.fn>
     sendMock.mockClear()
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
@@ -870,7 +870,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-pill-face')).not.toHaveStyle({ visibility: 'hidden' })
   })
 
-  it('switching crewmates drops an open Profile instead of reopening it over the next one on the old tab', async () => {
+  it('switching mates drops an open Profile instead of reopening it over the next one on the old tab', async () => {
     // `profile` used to survive the switch, and the card is keyed on name + tab:
     // the next crewmate came up with the card already open — on Sessions.
     localStorage.setItem(PANEL_OPEN_KEY, '0')
@@ -989,7 +989,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(screen.getByTestId('member-identity-pill')).not.toHaveTextContent(/\boncall\b/)
   })
 
-  it('the profile pencil opens the existing editor for the exact crewmate', async () => {
+  it('the profile pencil opens the existing editor for the exact mate', async () => {
     localStorage.setItem(PANEL_OPEN_KEY, '0')
     await renderPage([row({ name: 'on call/2', slug: 'on-call-2', bound: true, slot_key: 'member-on-call-2' })])
     fireEvent.click(await rosterRow('on call/2'))
@@ -1074,15 +1074,15 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(pill).toHaveAccessibleName(/oncall/)
   })
 
-  it('the "+" menu offers New crewmate only: no Advanced or guided-flow rows', async () => {
+  it('the "+" menu offers New mate only: no Advanced or guided-flow rows', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     await openAddMenu()
     const menu = await screen.findByTestId('member-add-menu')
-    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New crewmate'])
+    expect(within(menu).getAllByRole('menuitem').map(el => el.textContent?.trim())).toEqual(['New mate'])
   })
 
-  it('the roster header "+" menu\'s New crewmate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
+  it('the roster header "+" menu\'s New mate opens the card as a modal with Advanced settings folded, and they unfold inline — no trip to the crew manager', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall' })])
     await rosterRow('oncall')
     // Creating a crewmate IS creating a crew record, and the write path is
@@ -1107,7 +1107,7 @@ describe('MembersPage side panel (Dashboard / Work log / Notes / Schedules) and 
     expect(await screen.findByRole('combobox', { name: 'Built from' })).toBeInTheDocument()
     expect(screen.getByTestId('crewmate-create-advanced-toggle')).toHaveAttribute('aria-expanded', 'true')
     // A modal named "New crewmate", holding the form — no in-place page region.
-    expect(screen.getByRole('dialog')).toHaveAccessibleName('New crewmate')
+    expect(screen.getByRole('dialog')).toHaveAccessibleName('New mate')
     expect(screen.getByRole('dialog')).toContainElement(screen.getByTestId('crewmate-create-form'))
     expect(navigateSpy).not.toHaveBeenCalledWith(expect.stringContaining('/capabilities'))
   })

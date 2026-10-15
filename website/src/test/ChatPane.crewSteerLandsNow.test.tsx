@@ -122,8 +122,8 @@ async function settle(body: object = { ok: true }, status = 200) {
   await act(async () => { settleSend(response(body, status)) })
 }
 
-describe('crewmate composer placeholder', () => {
-  it('names the crewmate without the sigil hint, while a plain chat keeps it', async () => {
+describe('mate composer placeholder', () => {
+  it('names the mate without the sigil hint, while a plain chat keeps it', async () => {
     renderCrewmate({ running: false })
     const box = await ready()
     expect(box).toHaveAttribute('placeholder', 'Message Radar…')
@@ -134,7 +134,7 @@ describe('crewmate composer placeholder', () => {
   })
 })
 
-describe('crewmate responsive Send', () => {
+describe('mate responsive Send', () => {
   it.each([
     { running: false, width: 320 },
     { running: true, width: 390 },
@@ -416,7 +416,7 @@ describe('responsive question and queue repairs', () => {
   })
 })
 
-describe('crewmate chat order and typing while a send waits', () => {
+describe('mate chat order and typing while a send waits', () => {
   const before = (a: HTMLElement, b: HTMLElement) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING)
 
   it('a queued message sits where it was sent: a later reply draws below it, and the drain keeps the order and the node', async () => {

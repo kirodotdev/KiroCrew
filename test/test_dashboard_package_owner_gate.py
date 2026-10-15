@@ -295,7 +295,7 @@ class TestAnAppTokenCannotWriteAPackage:
         from kiro_crew.dashboard.handlers import member_dashboard_fields as mdf
 
         said = mdf.package_write_refusal(self._AppReq(), _package_text("crewmate:atlas"))
-        assert said, "an app token can overwrite a crewmate's dashboard package"
+        assert said, "an app token can overwrite a mate's dashboard package"
         assert "app" in said.lower()
 
     def test_an_app_cannot_rebind_a_stored_package_to_itself(self, roster: None) -> None:

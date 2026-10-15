@@ -142,7 +142,7 @@ beforeEach(() => {
   built.drawn.length = 0
 })
 
-describe("a crewmate's chat with Resume wired into its rows", () => {
+describe("a mate's chat with Resume wired into its rows", () => {
   it('keeps the row set and the settled rows while the composer is typed into under an offered Resume', async () => {
     renderPane()
     // The turn ended on a model error: Resume is offered on the error row.

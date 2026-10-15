@@ -124,14 +124,14 @@ describe('session row menu: Regenerate title', () => {
   })
 })
 
-describe('session row: a crewmate\'s own thread', () => {
+describe('session row: a mate\'s own thread', () => {
   beforeEach(async () => {
     generateTitleMock.mockReset()
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
     await initI18n(); await i18next.changeLanguage('en')
   })
 
-  it('is named after the crewmate, and the row offers no menu to rename or regenerate it', () => {
+  it('is named after the mate, and the row offers no menu to rename or regenerate it', () => {
     renderSidebar()
     const row = document.querySelector(`[data-session-row="${MEMBER_KEY}"]`) as HTMLElement
     expect(row.querySelector('[data-session-title]')?.textContent).toBe('team-lead')

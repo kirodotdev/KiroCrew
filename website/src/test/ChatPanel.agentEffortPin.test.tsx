@@ -116,7 +116,7 @@ describe('ChatPanel — default agent reasoning-effort pin notice', () => {
     const notice = await screen.findByTestId('agent-effort-pin-notice', {}, CHAIN)
     expect(notice).toHaveAttribute('role', 'status')
     expect(notice).toHaveTextContent(
-      'New chats on the default agent use its own pinned reasoning effort Max, not this setting. You can pin an effort again later under Customize → Crewmates.'
+      'New chats on the default agent use its own pinned reasoning effort Max, not this setting. You can pin an effort again later under Customize → Mates.'
     )
     expect(screen.getByRole('button', CLEAR_BUTTON)).toBeEnabled()
     // The model notice is a separate row and stays hidden: the model matches.

@@ -44,7 +44,7 @@ test('the link dashboard_preview returns opens the staged page in the Dashboard 
   // carries the exact name (a slug alone is refused `missing_member`), and the
   // route answers the staged page, composed.
   const member = new URL(staged.url, baseURL).searchParams.get('member')
-  expect(member, 'the link names the crewmate').toBe(staged.member)
+  expect(member, 'the link names the mate').toBe(staged.member)
   const roster = await request.get('/api/members')
   expect(roster.ok(), await roster.text()).toBeTruthy()
   const row = ((await roster.json()).members as { name: string; slug: string }[])

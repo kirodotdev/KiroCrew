@@ -146,7 +146,7 @@ export type UiLocationId = keyof typeof UI_LOCATIONS
 export const PREVIEW_FLAG_ENABLERS: Record<string, string> = {
   [PREVIEW_ARTIFACT_DEPLOY]: 'developer.artifact-deploy',
   [PREVIEW_WEBHOOKS]: 'developer.webhooks',
-  [PREVIEW_CREW]: 'developer.crewmates',
+  [PREVIEW_CREW]: 'developer.mates',
 }
 
 /** Settings tabs `SettingsPage` hides behind a preview flag (its `buildTabs` filter). */

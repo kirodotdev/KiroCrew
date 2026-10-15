@@ -65,7 +65,7 @@ for (const theme of ['light', 'dark']) {
     await card.waitFor({ timeout: 10000 })
     if ((await card.getAttribute('data-capabilities-changed')) !== 'true') throw new Error('errorcard scene: the row did not take the capabilities_changed branch')
     const prose = await card.innerText()
-    for (const needle of ["This crewmate's custom agent file changed outside Customize, so new chats cannot start.", 'Open Customize, review and save the change, then start a new chat.']) {
+    for (const needle of ["This mate's custom agent file changed outside Customize, so new chats cannot start.", 'Open Customize, review and save the change, then start a new chat.']) {
       if (!prose.includes(needle)) throw new Error(`errorcard prose does not say ${needle}: ${prose}`)
     }
     if (prose.includes('materialization_changed')) throw new Error(`errorcard shows the wire code instead of the catalog copy: ${prose}`)

@@ -160,7 +160,7 @@ acting for. It is
 a host question rather than a declared seam — a harness declares nothing about it —
 and the answer does not vary by backend.
 
-`kirocrew-guide` is emitted into the default spec (every crewmate and dashboard
+`kirocrew-guide` is emitted into the default spec (every mate and dashboard
 session on kiro-cli and KAS mounts it from there; the CC projection carries it like
 any spec entry). It is not part of the control plane, so the codex, opencode and
 goose mirrors withhold it on the same rule they withhold every other managed Crew

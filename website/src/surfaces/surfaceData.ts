@@ -49,7 +49,7 @@ export const BUILTIN_SURFACE_NAV = {
     group: surfaceMachineValue('Main'), slotMode: '',
   },
   members: {
-    navId: 'members', route: '/members', label: surfaceMachineValue('Crewmates'), labelKey: 'nav.crew_members',
+    navId: 'members', route: '/members', label: surfaceMachineValue('Mates'), labelKey: 'nav.crew_members',
     group: surfaceMachineValue('Main'), slotMode: 'member', previewFlag: PREVIEW_CREW,
   },
   notifications: {

@@ -1743,7 +1743,7 @@ Managed servers, registered by `agent._MANAGED_MCP_SERVERS` and installed into
 | `kirocrew-mate` | `kirocrew mcp-mate` (`mcp_mate.py`) | `update_self`, `set_model`, `set_approval_mode`, `request_capabilities`, `goal_read`, `set_goal`, `set_key_results`, `key_result_progress`, `save_goal_report` |
 
 `kirocrew-guide` is a platform capability: it is always emitted (not `opt_in`),
-so the default `kirocrew` template, every crewmate built from it, the worker
+so the default `kirocrew` template, every mate built from it, the worker
 derived from it, and every dashboard session on them mount it, deferrable by
 Tool Search like any other MCP server. The conductor and background templates
 (`agent_materialization/conductor_agents.py`, the knowledge, research and
@@ -1771,25 +1771,25 @@ permissions derive from that final filtered list. A harness whose projection
 does not carry the server reports it through the ordinary unresolved-ref doctor
 row ([agent host contract](../system-specs/modules/agent-host-contract.md)); nothing special-cases its
 absence.
-`kirocrew-mate` (`mcp_mate.py`) is the crewmate's own record, mounted on the
+`kirocrew-mate` (`mcp_mate.py`) is the mate's own record, mounted on the
 same specs on the same terms (always emitted, no `autoApprove`, its own server so
 the set is withheld as one and the guide set stays the user's help with the
 dashboard; an existing spec gains the ref and `agent._MATE_AUTO_GRANTS` once,
 `mate_platform_granted.json`). Its tools are named for what they do and act on
-the CALLING crewmate only, never on a name passed in, in two tiers that follow
-who owns the field. `update_self` writes the presentation the crewmate owns (its
+the CALLING mate only, never on a name passed in, in two tiers that follow
+who owns the field. `update_self` writes the presentation the mate owns (its
 display name, description and ghost face, `members.SELF_EDITABLE_FIELDS`) at
 once through `POST /api/member/self/update`: the gateway resolves the member from
 the caller's pinned-thread slot, cleans each value by its own rule
 (`members.update_member_self`), publishes the record, writes `member/config` to
 the member's event log, keeps the previous values in its own bounded in-process
 record (`dashboard/member_self_changes.py`) and draws one `card` row of surface
-`self` in the crewmate's conversation (`chat_cards.record_self_change`) with the
+`self` in the mate's conversation (`chat_cards.record_self_change`) with the
 faces and labels to show and an **Undo**. The undo is the user's click,
 `POST /api/members/{slug}/self-changes/{id}/undo` with `{"slot"}` naming the
 conversation the page is showing, owner-only cookie auth off the strict prefix:
 it restores from the gateway's record, never from the row (the transcript is
-agent-writable, so a row copied into another crewmate's chat with its id and
+agent-writable, so a row copied into another mate's chat with its id and
 slug intact is refused: the record must have been made in the conversation the
 button was pressed in, and a request naming none is `400 slot_required`), and
 marks the row `undone`; a record the gateway no longer holds answers 410. The
@@ -1799,13 +1799,13 @@ path measures it; an avatar mapping by its serialized length). `set_model`, `set
 `request_capabilities` are the card tier: `POST /api/member/self/propose` fixes
 the kind (`crewmate.update`, `crewmate.capabilities`) and the member and runs
 the same propose body `propose_change` runs
-(`handlers.change_cards.propose_for_caller`), so the crewmate names the ask and
-the user presses the same card; the outcome reaches the crewmate on its next
+(`handlers.change_cards.propose_for_caller`), so the mate names the ask and
+the user presses the same card; the outcome reaches the mate on its next
 turn, as every card outcome does. A `set_approval_mode` for the mode the thread
 already runs in (a record pinning none opens in
 `MEMBER_APPROVAL_MODE_UNSET_EFFECTIVE`) is refused `no_change` rather than
 drawn as a card from an empty value.
-The crewmate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
+The mate's goal (`member_goals.py`, `trust/member-goals/<slug>.json`, never
 `member-rules/`) splits the same way. `set_goal` and `set_key_results` are card
 asks (`crewmate.goal`, `crewmate.key_results`, applied and undone through
 `PUT /api/members/{slug}/goals/long-term|key-results` with an `expected`
@@ -1817,20 +1817,20 @@ report or monthly review as a Markdown artifact under `Crewmates/<name>/Reports`
 and sends one notification linking it. These goal operations are deliberately
 NOT in `_USER_TURN_OPERATIONS`: the check-in turns of
 `dashboard/goal_reminder.py` are gateway-authored hidden turns in the
-crewmate's own thread, and recording readings and filing reports is what they
+mate's own thread, and recording readings and filing reports is what they
 are for. Every other admission check below still applies. Three card asks
-are admitted without a turn the user sent: any turn in the crewmate's own
+are admitted without a turn the user sent: any turn in the mate's own
 pinned thread (a check-in, a sub-agent's result coming back, the goal-setup
 nudge of `dashboard/goal_setup.py`) may call `set_goal`, `set_key_results` and
 `set_check_ins`. `_resolve_agent_caller(..., own_goal=True)` (passed only by
-`member.propose_self`) admits such a turn when the slot is a crewmate DM thread
+`member.propose_self`) admits such a turn when the slot is a mate DM thread
 and marks the request `REQ_OWN_GOAL_TURN`; a channel turn is still refused. The
 route then refuses every other request (`model`, `approval_mode`,
 `capabilities`) with `not_user_turn`. Each is a card: nothing changes until the
-user presses it, so the crewmate may raise its own goal, milestones and
+user presses it, so the mate may raise its own goal, milestones and
 check-ins whenever its work calls for it.
 The workspace, memory store, member id, key and template are not the
-crewmate's to change or to ask for.
+mate's to change or to ask for.
 Its guide and card tools, and every `kirocrew-mate` tool, work only for a turn
 the user sent from the dashboard. The gateway's admission
 (`dashboard.handlers.guide._resolve_agent_caller`, shared by the card and member
@@ -1843,12 +1843,12 @@ the provenance the turn runner recorded: the slot must be executing a turn now
 (`_turn_channel_origin`, set from `_run_chat`'s `_directive_channel_origin` at the
 turn's start and cleared at its end) nor have taken a channel steer since
 (`_turn_channel_narrowed`). Starting something on screen (`guide_start`,
-`propose_change`), changing the calling crewmate's own record (`update_self`,
+`propose_change`), changing the calling mate's own record (`update_self`,
 its card-backed asks), or taking
 `find_ui`'s live observation (`guide.observe`) also needs
 the turn to be one the person sent (`_turn_user_sent`, set from
 `_directive_user_origin` the same way): a loop wake, a cron or app injection, a
-`session_send`, a subagent completion and a crewmate's hidden first-welcome
+`session_send`, a subagent completion and a mate's hidden first-welcome
 kickoff are refused with 403 `not_user_turn`, while their reads still answer. A Slack or Discord conversation is mirrored into a
 dashboard slot, so a live slot alone is not enough: a message from the channel,
 whether the gateway runs it on the mirrored slot or on the channel's own session,
@@ -1884,7 +1884,7 @@ phrase, then tokens); otherwise the better-ranked find is offered. An
 place are guided to the first; otherwise the tied control the user's tab shows now
 (`live` `pointable`/`offscreen`) wins, else the tied results on the feature's own
 page (a page result itself, or a control whose id namespace names the page it is
-drawn on: the Crewmates page's "New crewmate" over the one on Customize),
+drawn on: the Mates page's "New mate" over the one on Customize),
 first-ranked. A tied result with no guide at all (a page the rail has no entry
 for) never wins over a tied control that has one: the Settings Webhooks tab is
 guided, not the Webhooks page. Candidates on two
@@ -1955,7 +1955,7 @@ step completes only through `handlers/guide.run_guided_crewmate_create`, which w
 existing owner-only `POST /api/agents`: the tab names the guide in
 `X-Guide-Id`/`X-Guide-Tab`/`X-Guide-Revision`, the request is associated before
 the handler runs, and the guide advances only from that handler's own 200
-response (the new crewmate's `member_id`). A cancel or expiry in between retires
+response (the new mate's `member_id`). A cancel or expiry in between retires
 the association. A step whose target does not appear within the tab's bounded
 wait is reported `target_missing`; that status is the gateway's and is
 recoverable: when the owning tab sees the SAME step's target again (the human
@@ -1963,7 +1963,7 @@ came back to its page, by the panel's "Go back to this step" -- the action's own
 enter navigation -- or any other way), it reports `target_found` and the gateway
 returns the guide to `active` on that step without advancing it. When the page
 instead comes back at an EARLIER step of the same action (a form that keeps its
-step in local state, like the Crewmates wizard, starts over once remounted),
+step in local state, like the Mates wizard, starts over once remounted),
 the tab reports `target_found` with `resume_step_index` and the gateway moves the
 guide back to that step -- never forward, never across a pending save
 (`invalid_resume_step`). A tab whose current target is absent while an earlier
@@ -1992,7 +1992,7 @@ the gateway's evidence and never a bare "cancelled"; the reason is kept on the
 conversation row (`meta.card.reason`), so the line reads the same after the
 store has forgotten the guide. A save the server refuses
 outright (a 4xx) clears the step's "submitted" state, and the guide stays on
-`crewmate.create`'s one step, the New crewmate card's Create, so the person can
+`crewmate.create`'s one step, the New mate card's Create, so the person can
 press it again. `target_found`
 is a no-op on an active guide, is refused on a terminal one, and needs the owner
 tab, so a cancelled, expired or completed guide never resumes; a reloaded tab
@@ -2120,10 +2120,10 @@ the first write (`409 changed_since_preview`; `changed_since_apply` for undo),
 runs the handler unchanged and records the step only from its own 2xx. A card
 applies once; undo restores the state before the change, and is refused once the
 thing the card made was edited afterwards: the post-apply snapshot carries a
-revision fingerprint (a crewmate's config entry and its spec's editable fields,
+revision fingerprint (a mate's config entry and its spec's editable fields,
 a created schedule's configuration (never what running it updates), an MCP
 server's definition in each scope an uninstall would delete it from (`env`/`headers` values as keyed digests under a vault subkey; an unreadable scope is never read as absent), a secret's stored ciphertext entry -- never its
-value). A `crewmate.create` Undo deletes the crewmate it made through
+value). A `crewmate.create` Undo deletes the mate it made through
 `DELETE /api/agents/<name>`, and that route is name-scoped, so it checks the
 immutable `member_id` the card's own create returned (step 0 evidence) against
 the live crew's own: `after_shows_the_write` offers the Undo only while they are
@@ -2131,7 +2131,7 @@ still equal, and the delete re-reads the raw `agents[<name>]["member_id"]` the
 locked config read returns and refuses before the `del` when it differs or is
 absent (`undo_identity_guard.identity_mismatch`; `None` on either side is not a
 match). An owner who deleted and recreated the same name between apply and Undo
-leaves a different crewmate wearing it, so the Undo answers `409
+leaves a different mate wearing it, so the Undo answers `409
 changed_since_apply` and keeps the replacement and its crew log. The check is
 armed on the owner-authed Undo step alone and runs inside `update_config_locked`
 against the cross-process advisory file lock -- never against the in-process
@@ -2142,7 +2142,7 @@ Undo's first inverse step deletes the schedule the create made, as a
 fingerprint compare the `schedule.create` Undo uses (below); a cron DELETE in an
 Undo that recorded no fingerprint fails closed on an impossible sentinel rather
 than deleting unconditionally. This identity re-read guards the two name-scoped
-deletes above (the crewmate's `member_id`, the schedule's fingerprint). Every
+deletes above (the mate's `member_id`, the schedule's fingerprint). Every
 other card whose inverse is a delete offers no Undo: an MCP add or install
 (uninstall), a connection connect (disconnect), a trusted app (revoke) and a
 denied-command addition (rule delete) reach stores that take no revision or
@@ -2155,7 +2155,7 @@ unconditionally, so it could overwrite an edit another tab saved. A
 `crewmate.update` Undo writes the old fields back with a `PUT /api/agents/<name>`
 armed with the `member_id` its apply snapshot recorded; the update route compares
 it with the live crew's under the config lock it saves under and answers
-`409 changed_since_apply` when a different crewmate now wears the name.
+`409 changed_since_apply` when a different mate now wears the name.
 A template card that changes skills snapshots
 the editor's skill mapping (projected from `resources`) and a fingerprint of
 `resources`, so Undo restores the prior mapping and a later skill edit makes it
@@ -2166,7 +2166,7 @@ while waiting -- and the identity fields earlier steps returned); the card then
 offers Continue, which sends the remaining steps only. An Undo that stopped
 between its steps publishes `undo_resume` the same way, and pressing Undo again
 continues it; every Undo step after the first re-checks what it still removes
-(the crewmate's revision; a capability Undo's second step is held by its own
+(the mate's revision; a capability Undo's second step is held by its own
 preview token and revision) before it runs. The card's body carries no
 free-text editor: a different value is a new card. Cards persist in
 `<data home>/change_cards.json` (24h proposal expiry, finished cards pruned after
@@ -2735,7 +2735,7 @@ Search Everywhere extra page whose route only redirects (`/mc-agents`, `/tasks`,
 `/instances`) is never returned as a destination: `LEGACY_PAGE_CANONICAL` in
 `descriptors.ts` names the location the redirect lands on, by explicit tab where
 the bare target would restore a remembered tab (`/mc-agents` -> Customize >
-Crewmates at `?tab=crews`), and the page's title becomes an `alias_keys` entry
+Mates at `?tab=crews`), and the page's title becomes an `alias_keys` entry
 of that location, which keeps its own route and prerequisites (Tasks keeps the
 Task Runner page's `app_enabled`). The generator refuses a redirecting page with
 no mapping, a mapping whose location is not where the redirect lands, and a
@@ -2838,7 +2838,7 @@ first placement's route (none for the shell), the role its kind implies and,
 for a control `guide_catalog.ui_find_location_ids` lists, its location id, plus,
 when that placement is a `menu` entry under another listed control, that
 control as `opener` (the notifications bell for Mark all as read, the
-Crewmates header "+" for its New crewmate item), as
+Mates header "+" for its New mate item), as
 `guide_catalog.ui_find_opener` gives it: never a control that removes
 something (a `caution` policy or an English label `REMOVAL_LABEL_RE` matches,
 `ui_find_cautions`) and never a trust-root control.
@@ -2861,11 +2861,11 @@ render-site marker proven), whose every placement requires only `viewport`,
 placements each take at most 7 steps (six pointing steps plus a preview gate;
 `GUIDE_MAX_STEPS`; placements may differ in length), with one placement per viewport, and which
 is not denied. `GUIDE_CAUTION_IDS` lists the destructive or data-replacing
-controls (crewmate delete, app uninstall, backup import, notification
+controls (mate delete, app uninstall, backup import, notification
 clear-all, schedule delete and cancel-run, stop monitor, sessions clean-up): each is planned
 like any other, and its last step carries `caution: true`. `GUIDE_DENY_IDS`
 lists the registered controls of the agent's own ceiling (the composer's
-approval-mode picker and the crewmate Permissions button today; the
+approval-mode picker and the mate Permissions button today; the
 Security, Computer Use and Secrets tabs are refused whole by
 `TRUST_ROOT_PARENTS`, the tabs `settings.show` refuses too). The script fails
 when either list names an id that is not registered, or one id is on both; a
@@ -3005,12 +3005,12 @@ Wired today: the sessions sidebar and drawer (`SessionsSidebarChrome`), the chat
 (`ChatPage`), the message box (`composer.box`, `ChatInput`), the navigation
 rail (`shell.nav-rail`, `RailBrandToggle`), the docked terminal panel
 (`shell.terminal-panel`, `BottomTerminalPanel`), the phone menu
-(`menu:shell.mobile-menu`, `App`), the crewmate roster on a wide screen and on
+(`menu:shell.mobile-menu`, `App`), the mate roster on a wide screen and on
 a phone (`members.roster`, `members.roster-phone`, `MembersPage`), the
-crewmate's profile card (`members.profile`, `MembersPage`, the scope of the
+mate's profile card (`members.profile`, `MembersPage`, the scope of the
 header pill that reveals its Permissions row, `members.permissions`), `menu:`
 scopes of the sessions list and create menus, the artifacts add menu, the
-terminal and side-panel menus, the crewmates add menu and switcher, App Store
+terminal and side-panel menus, the mates add menu and switcher, App Store
 sources, the composer add menu, the notifications sheet, and the Connections
 MCP tab (`open:connections.mcp-servers-tab`). A scope with no owner mounted reads
 `unknown` and a step on it keeps its `reach` fallback (a later target on

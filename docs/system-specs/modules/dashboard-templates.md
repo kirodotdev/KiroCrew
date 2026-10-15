@@ -160,7 +160,7 @@ asserts it against the kernel that owns them — so a fold added or renamed ther
 rather than drifting. `registry.py` keeps no copy of the names; it exports only
 `REGISTRY`, `html_path` and `spec_for`.
 
-## The crewmate
+## The mate
 
 The four artifacts are produced by a dedicated agent, `kirocrew-dashboard-author`, whose
 built-in prompt is this procedure. Its spec ships as a markdown agent spec beside the
@@ -193,7 +193,7 @@ three -- `label`, `fieldset`, `option` -- the host keeps, and this package refus
 its own ground: a dashboard states facts rather than offering a choice. No `form`, `input`, `button`, `textarea`,
 `select`, `option`, `label`, `fieldset`, `script`, `iframe`, `object`, `embed`, `link`,
 `meta`, `base`, `template`, `noscript`. That list is `CONTROL_TAGS` in `parity.py`, the
-one authoritative copy; the skill body and the crewmate's spec restate it, and a test in
+one authoritative copy; the skill body and the mate's spec restate it, and a test in
 `test_dashboard_templates.py` holds all three to the set so an addition cannot drift.
 Separately, and read by its own function `outbound_references`: no `src`, so no images;
 no `href` that is not a same-document fragment, matched on the attribute's local name so

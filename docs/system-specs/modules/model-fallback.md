@@ -181,7 +181,7 @@ families — a different model routinely accepts what another's filter declined
   preserves that recorded primary instead of overwriting it with the stale
   fallback the session is stranded on, so the eventual restore returns to the
   user's real model rather than to fallback A. While the record is live,
-  both `slot.model` backfill sites (which write only a slot whose crewmate
+  both `slot.model` backfill sites (which write only a slot whose mate
   pins a model, see model-selection.md) treat the
   session like an active throttle fallback: the provider's resolved model is
   the temporary candidate and must never be persisted into the durable pin,

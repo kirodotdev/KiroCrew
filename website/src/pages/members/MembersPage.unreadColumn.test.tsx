@@ -81,7 +81,7 @@ beforeEach(() => {
 })
 
 describe('MembersPage thread header unread column', () => {
-  it('opens the crewmate whose unread pill is picked', async () => {
+  it('opens the mate whose unread pill is picked', async () => {
     const { store } = await openOncall(['research'])
     act(() => { store.dispatch(markSlotUnread('member-research')) })
     const column = screen.getByTestId('crewmate-unread-column-slot')
@@ -92,7 +92,7 @@ describe('MembersPage thread header unread column', () => {
     expect(api.memberThread).toHaveBeenLastCalledWith('research')
   })
 
-  it('"+N" opens the switcher list rather than a crewmate', async () => {
+  it('"+N" opens the switcher list rather than a mate', async () => {
     const others = ['alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot']
     const { store } = await openOncall(others)
     act(() => { for (const n of others) store.dispatch(markSlotUnread(`member-${n}`)) })

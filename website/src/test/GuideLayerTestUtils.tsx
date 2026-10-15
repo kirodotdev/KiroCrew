@@ -37,7 +37,7 @@ export const guide = (over: Partial<Guide> = {}): Guide => ({
   action_index: 0,
   step_index: 0,
   actions: [{ id: 'crewmate.create', params: { name: 'radar', goal: 'watch the build' } }],
-  reason: 'You asked for a crewmate.',
+  reason: 'You asked for a mate.',
   expires_at: null,
   lease_expires_at: null,
   ...over,

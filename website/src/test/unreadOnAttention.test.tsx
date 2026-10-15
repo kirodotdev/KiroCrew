@@ -100,7 +100,7 @@ describe('chatMessageMarksUnread', () => {
 describe('memberThreadRowMarksUnread', () => {
   beforeEach(() => localStorage.clear())
 
-  it('off: badges only a row the crewmate wrote to the user', () => {
+  it('off: badges only a row the mate wrote to the user', () => {
     expect(memberThreadRowMarksUnread('assistant')).toBe(true)
     expect(memberThreadRowMarksUnread('permission')).toBe(true)
     for (const role of ['tool_call', 'tool_result', 'inject', 'subagent', 'user', 'chunk', 'streaming', undefined]) {
@@ -259,7 +259,7 @@ describe('unread badge over the dashboard socket', () => {
 
   // A crewmate's DM thread: the Crewmates rail dot means "they said something
   // to you". Its tool calls are its own work and never light it.
-  it("member thread: a crewmate's tool call and tool result badge nothing", () => {
+  it("member thread: a mate's tool call and tool result badge nothing", () => {
     const ws = mount()
     globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
     send(ws, row('tool_call', MEMBER))
@@ -268,7 +268,7 @@ describe('unread badge over the dashboard socket', () => {
     expect(unread()).not.toContain(MEMBER)
   })
 
-  it("member thread: a crewmate's message badges", () => {
+  it("member thread: a mate's message badges", () => {
     const ws = mount()
     globalStore.dispatch(sseSlots([{ key: MEMBER, messages: 1, running: true, mode: 'member', agent: 'ada' }]))
     send(ws, row('assistant', MEMBER))

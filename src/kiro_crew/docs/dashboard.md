@@ -60,7 +60,7 @@ Settings uses tabbed panels for Overview, Imports, Agent Harness, Chat, Display,
 
 ### Customize (`/capabilities`)
 
-Tabbed management for crewmates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
+Tabbed management for mates, custom agents, MCP connections, skills, the knowledge library, steering, hooks, prompts, and workflow libraries. `/agents`, `/connections` and `/knowledge` redirect here.
 
 ### Schedule (`/schedule`)
 

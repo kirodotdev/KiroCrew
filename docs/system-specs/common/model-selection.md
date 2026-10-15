@@ -466,20 +466,20 @@ its own once the cache refreshes with a list that carries it.
   across turns and across a restart: a metadata line whose `model` is `""` restores
   `""`. Only a line with no `model` key, saved before every save wrote one, takes the
   agent's configured model (`metadata_codec._read_model`). When neither the slot nor
-  its crewmate pins a model, the turn asks
+  its mate pins a model, the turn asks
   `get_or_create` for no model and the allocation resolves the ladder itself; the turn
   reads the same resolver over the session manager's config
   (`_inherited_default_model`) only to know which default the slot inherits. Neither
   `slot.model` backfill site writes the provider's served model into such a slot,
   whatever that default is, Auto included (every tier deferring to the backend); the
   composer chip reads it from `served_model`. The backfill writes only a slot whose
-  crewmate pins a model. A settings change to the default
+  mate pins a model. A settings change to the default
   rebuilds the provider factory but leaves live sessions alone, so the next turn of an
   inheriting slot compares its live session's allocation stamp
   (`allocation_requested_model`) with the default it inherits now. When they differ
   it queues the same reset a model pick queues, consumed with `skip_if_busy`, so a
   turn already streaming on that session is never cut. An empty stamp is unknown and
-  triggers nothing. A slot or crewmate pin never triggers it. A `slot.model` an
+  triggers nothing. A slot or mate pin never triggers it. A `slot.model` an
   earlier backfill stored is indistinguishable from a person's pick, so nothing
   clears it on its own: it stays until the user picks Auto in that chat, or presses
   **Make my chats follow the default** under Settings > Chat > Model. That action
@@ -501,9 +501,9 @@ its own once the cache refreshes with a list that carries it.
   being opened. A chat a
   throttle or refusal fallback is serving is not counted, so the press never strands
   it on the fallback: the fallback's restore still moves it back. A chat
-  `session_create` made (its line names a `created_by`), a crewmate's own chat, and
+  `session_create` made (its line names a `created_by`), a mate's own chat, and
   app, cron, channel and remote sessions are never counted. Neither is a chat on a
-  crewmate whose config pins a model: that pin outranks the default, and the chat's
+  mate whose config pins a model: that pin outranks the default, and the chat's
   next turn would write it back. A slot kind a person does not start must set a
   non-person origin or a `created_by`: the origin check is the guard that keeps it
   out. Config pins are read, never written. An open chat's clear is saved at once
@@ -545,13 +545,13 @@ its own once the cache refreshes with a list that carries it.
   `AgentConfig.resolve_model(role)` in `config/sections_agent.py`. Roles default to
   `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat model
   does not silently become the price of every background task. The sessions a
-  crewmate dispatches with `session_create` are the one decided exception
+  mate dispatches with `session_create` are the one decided exception
   ([rfc-worker-model-inheritance](../../request-for-change/rfc-worker-model-inheritance.md)):
   they take a copy, made at creation, of the CREWMATE profile's explicit model
-  and effort pins (the values the person chose on that crewmate's profile, never
+  and effort pins (the values the person chose on that mate's profile, never
   the user's chat model), so a later profile edit does not reach a worker
   already open.
-  An empty crewmate pin leaves that half unpinned, so the worker's selected agent
+  An empty mate pin leaves that half unpinned, so the worker's selected agent
   or the global default decides. The per-crewmate cost cap is that
   profile's `worker_model` / `worker_reasoning_effort`, where
   `"auto"` is a real pin on the backend default. `worker_session_defaults` in

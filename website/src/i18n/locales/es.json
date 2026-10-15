@@ -8485,8 +8485,8 @@
       "undo": "Deshacer",
       "undone": "deshecho",
       "undo_failed": "No se pudo deshacer este cambio: {{message}}",
-      "undo_unavailable": "Este cambio ya no se puede deshacer aquí. Ajusta el valor en el perfil de {{name}}: abre Crewmates, elige {{name}} y luego el lápiz junto a su nombre.",
-      "undo_stale": "Este valor se cambió de nuevo después, así que deshacer ya no aplica. Ajústalo en el perfil de {{name}}: abre Crewmates, elige {{name}} y luego el lápiz junto a su nombre.",
+      "undo_unavailable": "Este cambio ya no se puede deshacer aquí. Ajusta el valor en el perfil de {{name}}: abre Compañeros, elige {{name}} y luego el lápiz junto a su nombre.",
+      "undo_stale": "Este valor se cambió de nuevo después, así que deshacer ya no aplica. Ajústalo en el perfil de {{name}}: abre Compañeros, elige {{name}} y luego el lápiz junto a su nombre.",
       "field_display_name": "nombre",
       "field_description": "descripción",
       "field_avatar": "cara",
@@ -10030,7 +10030,7 @@
       "result_undone": "Restaurado: {{title}}",
       "retry": "Reintentar",
       "risk_code_exec": "Esto ejecuta código de terceros en esta máquina.",
-      "risk_widen": "Esto permite que los crewmates hagan más sin preguntarte.",
+      "risk_widen": "Esto permite que los compañeros hagan más sin preguntarte.",
       "risk_widen_import": "Este compañero usará {{servers}} sin preguntarte.",
       "risk_widen_ack": "Entiendo que esto amplía los permisos",
       "schedule_next_run": "Próxima ejecución",
@@ -12534,7 +12534,7 @@
       "comments_refused_overlay": "{{name}} no ha recibido estos comentarios — vuelve a abrir el panel lateral y envíalos de nuevo. Siguen en el documento.",
       "comments_sent_other": "{{count}} comentarios enviados",
       "comments_sent_many": "{{count}} comentarios enviados",
-      "your_crewmate": "Tu crewmate"
+      "your_crewmate": "Tu compañero"
     },
     "chatSidebar": {
       "1_skipped_currently_selected": "(1 omitida — seleccionada actualmente)",
@@ -18784,7 +18784,7 @@
       "filters_clear": "Borrar filtros",
       "star": "Destacar {{name}}",
       "unstar": "Quitar destacado de {{name}}",
-      "all_hidden_hint": "Los crewmates que aún no has usado están ocultos. Busca para encontrarlos.",
+      "all_hidden_hint": "Los compañeros que aún no has usado están ocultos. Busca para encontrarlos.",
       "hidden_named_hint_many": "{{names}} están ocultos porque aún no los has usado y no se cuentan arriba. Busca para encontrarlos.",
       "hidden_named_hint_one": "{{names}} está oculto porque aún no lo has usado y no se cuenta arriba. Busca para encontrarlo.",
       "hidden_named_hint_other": "{{names}} están ocultos porque aún no los has usado y no se cuentan arriba. Busca para encontrarlos.",

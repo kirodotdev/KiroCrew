@@ -165,7 +165,7 @@ async def _wait_and_send(state: Any, slug: str, member: str, build: Build) -> st
             if again is slot:
                 dispatch_hidden_turn(state, slot, prompt, human_seen=True)
                 return "started"
-        if skip == "skipped: the crewmate's thread is not open" or loop.time() >= deadline:
+        if skip == "skipped: the mate's thread is not open" or loop.time() >= deadline:
             return skip or "skipped: timed out"
         await asyncio.sleep(POLL_SECS)
 
