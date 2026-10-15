@@ -3614,7 +3614,7 @@ facade imports every owner at its own import, so an owner's `from ... import`
 bindings are taken once, as the one-module backend took them. `backend.py`
 re-exports every name an owner holds, one hop, so `routes.py`, `teardown.py`,
 `hooks_integration.py`, `bridges.py`, `manager_uninstall.py`, `interpreter.py`,
-`cli_commands.py`, `member_memory_auth.py`, `platform_compat.py`, `runtime_reconcile.py`
+`cli_commands.py`, `member_memory_auth.py`, `platform_compat_wintree.py`, `runtime_reconcile.py`
 and the dashboard server keep one import path.
 
 Every patch seam stays on the facade. A write to `backend.<name>` reaches every module

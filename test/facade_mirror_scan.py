@@ -65,6 +65,18 @@ _BINDING_TYPES = frozenset(
 )
 #: The statements :func:`patch_events` reads a target from.
 _WRITE_STATEMENTS = frozenset({ast.Assign, ast.AugAssign, ast.Delete})
+_WORD = re.compile(r"\w+")
+_FROM_IMPORT = re.compile(r"\bfrom\s+([\w.]+)\s+import\s+")
+
+
+def _dot_prefixes(dotted: str) -> Iterator[str]:
+    """*dotted* and each of its leading dotted segments, longest first: the spellings a
+    name can start with, looked up one by one instead of testing every spelling."""
+    yield dotted
+    at = dotted.rfind(".")
+    while at != -1:
+        yield dotted[:at]
+        at = dotted.rfind(".", 0, at)
 
 
 class _Bindings:
@@ -146,7 +158,7 @@ class _Bindings:
                 self._untrack(target.value)
 
     def _names_facade(self, dotted: str) -> bool:
-        return any(dotted == f or dotted.startswith(f + ".") for f in self._facades)
+        return any(prefix in self._facades for prefix in _dot_prefixes(dotted))
 
     def _bind(self, name: str, dotted: str) -> None:
         current = self.modules.get(name)
@@ -163,10 +175,11 @@ class _Bindings:
             self.strings[name] = text
 
     def canonical(self, dotted: str) -> str:
-        """*dotted* with a spelling of a facade replaced by the facade's own name."""
-        for spelling in sorted(self._facades, key=len, reverse=True):
-            if dotted == spelling or dotted.startswith(spelling + "."):
-                return self._facades[spelling] + dotted[len(spelling) :]
+        """*dotted* with a spelling of a facade replaced by the facade's own name (the
+        longest spelling that is *dotted* or one of its leading dotted segments)."""
+        for prefix in _dot_prefixes(dotted):
+            if prefix in self._facades:
+                return self._facades[prefix] + dotted[len(prefix) :]
         return dotted
 
     def dotted_of(self, node: ast.expr) -> str | None:
@@ -572,8 +585,18 @@ def _mentions(text: str, dotted_names: Iterable[str]) -> bool:
 
     A spelling of a module always contains its leaf, so a C-level substring check rejects
     almost every file before any pattern runs.
+
+    A plain module name (:func:`_is_plain`) is answered from readings of the text made once
+    per text and once per text and leaf (:func:`_mentions_plain`) instead: a facade imported
+    by hundreds of modules has hundreds of spellings sharing its leaf, and running the
+    patterns of each over the whole text is what a scan of the test tree would otherwise
+    cost.
     """
     for name in dotted_names:
+        if _is_plain(name):
+            if _mentions_plain(text, name):
+                return True
+            continue
         if name in text:
             return True
         head, _, leaf = name.rpartition(".")
@@ -624,6 +647,80 @@ def _alias_chain(text: str, dotted: str) -> bool:
     if "import_module" not in text:
         candidates = {word for word in candidates if re.search(rf"\bas\s+{word}\b", text)}
     return bool(candidates) and not candidates.isdisjoint(_text_aliases(text, head))
+
+
+#: The module names :func:`_mentions_plain` answers: dotted ASCII identifiers, no segment
+#: ``from`` or ``import``. Its readings split a text into words the way ``\w`` does, which is
+#: exactly what the patterns' ``\b`` boundaries see for such a name.
+_PLAIN_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+")
+
+
+@functools.lru_cache(maxsize=None)
+def _is_plain(dotted: str) -> bool:
+    """Whether :func:`_mentions` may answer *dotted* from :func:`_mentions_plain`."""
+    return _PLAIN_NAME.fullmatch(dotted) is not None and not {"from", "import"} & set(
+        dotted.split(".")
+    )
+
+
+def _mentions_plain(text: str, dotted: str) -> bool:
+    """:func:`_mentions` for one plain name, from :func:`_from_imports` and
+    :func:`_leaf_parts` instead of :func:`_spelling_patterns`."""
+    head, _, leaf = dotted.rpartition(".")
+    present, parents, relative = _leaf_parts(text, leaf)
+    if not present:
+        return False
+    if dotted in text or leaf in _from_imports(text).get(head, ()):
+        return True
+    return head.rpartition(".")[2] in parents or relative or _alias_chain(text, dotted)
+
+
+@functools.lru_cache(maxsize=64)
+def _from_imports(text: str) -> dict[str, frozenset[str]]:
+    """Each ``from <head> import`` head in *text* -> the words its import list holds: the
+    rest of that line, and the parenthesised list when one opens there."""
+    imports: dict[str, set[str]] = {}
+    for match in _FROM_IMPORT.finditer(text):
+        at = match.end()
+        line_end = text.find("\n", at)
+        words = set(_WORD.findall(text, at, len(text) if line_end == -1 else line_end))
+        if text.startswith("(", at):
+            close = text.find(")", at)
+            words.update(_WORD.findall(text, at, len(text) if close == -1 else close))
+        imports.setdefault(match.group(1), set()).update(words)
+    return {head: frozenset(words) for head, words in imports.items()}
+
+
+@functools.lru_cache(maxsize=1024)
+def _leaf_parts(text: str, leaf: str) -> tuple[bool, frozenset[str], bool]:
+    """``(present, parents, relative)`` for module leaf *leaf* in *text*: whether the leaf
+    occurs at all; every word ``<parent>`` the text writes as ``<parent> . <leaf>``, when
+    ``.<leaf>`` occurs somewhere in it; and whether it quotes ``'.<leaf>'`` or
+    ``".<leaf>"`` (a relative ``import_module``)."""
+    if leaf not in text:
+        return False, frozenset(), False
+    parents = set()
+    if f".{leaf}" in text:
+        for match in re.finditer(rf"\b{re.escape(leaf)}\b", text):
+            at = match.start() - 1
+            while at >= 0 and text[at].isspace():
+                at -= 1
+            if at < 0 or text[at] != ".":
+                continue
+            at -= 1
+            while at >= 0 and text[at].isspace():
+                at -= 1
+            end = at + 1
+            while at >= 0 and _is_word(text[at]):
+                at -= 1
+            if at + 1 < end:
+                parents.add(text[at + 1 : end])
+    relative = f"'.{leaf}'" in text or f'".{leaf}"' in text
+    return True, frozenset(parents), relative
+
+
+def _is_word(char: str) -> bool:
+    return char.isalnum() or char == "_"
 
 
 def _admitted(text: str, spellings: Mapping[str, str]) -> bool:
