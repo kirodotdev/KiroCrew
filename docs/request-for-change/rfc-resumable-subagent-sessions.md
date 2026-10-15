@@ -149,7 +149,7 @@ Retention is a **new** policy, not an inherited one: `_cleanup_old_archives` pru
 
 The sweeper runs on gateway start and on the existing reaper cadence, reads each record's terminal timestamp from metadata, and deletes expired records plus their retained kiro session files. If the store is unreadable it skips and logs, leaking files rather than destroying resumable state. The synchronous prune path needs no metadata parse — it only asks whether a record file exists for the id, and skips the unlink if one does.
 
-Retained kiro session files are excluded from `/api/usage`, which counts every `*.jsonl` under `~/.kiro/sessions/cli` (`dashboard/handlers/usage.py:389-462`), so usage tallies are unchanged.
+Retained kiro session files are excluded from `/api/usage`, which counts every `*.jsonl` under `~/.kiro/sessions/cli` (`dashboard/handlers/usage_sessions.py::_parse_sessions`), so usage tallies are unchanged.
 
 ### Promotion
 

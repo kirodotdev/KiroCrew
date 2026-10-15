@@ -249,7 +249,8 @@ class TestSwitchedOffOutsideOwnerView:
             if "/tests/" not in f.as_posix() and needle.search(f.read_text(encoding="utf-8"))
         }
         assert files == {
-            "src/kiro_crew/dashboard/handlers/files.py",  # api_file_read + api_file_diff, owner only
+            "src/kiro_crew/dashboard/file_api/editor.py",  # api_file_read + api_file_diff, owner only
+            "src/kiro_crew/dashboard/handlers/files.py",  # the facade binds the editor's redactor
             "src/kiro_crew/platform/context.py",
             "src/kiro_crew/security/redaction.py",
             "src/kiro_crew/security/redaction_switch.py",

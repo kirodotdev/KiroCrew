@@ -175,7 +175,7 @@ def _git_panel_argv_head() -> str | None:
     Read from the source rather than imported: the value lives inside a closure in
     the file-diff handler, which no caller can reach without spawning git.
     """
-    handlers = src_root() / "dashboard" / "handlers" / "files.py"
+    handlers = src_root() / "dashboard" / "file_api" / "editor.py"
     tree = ast.parse(handlers.read_text(encoding="utf-8"), str(handlers))
     for node in ast.walk(tree):
         if not isinstance(node, ast.Assign):

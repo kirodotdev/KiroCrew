@@ -10,8 +10,9 @@ runs every function they define on the facade's globals. These tests pin:
   seams other modules import keep their identity;
 * the composition: every owner function runs on the facade's globals, reads only
   names the facade binds, and captures no name a test rebinds on the facade;
-* the guards: what repository guards read in ``files.py`` by path stays there, and
-  each guard re-keyed or widened to the owners still sees the code it guards.
+* the guards: what a repository guard reads in a file of the family by path stays in
+  its named homes, and each guard re-keyed or widened to the owners still sees the code
+  it guards.
 """
 
 from __future__ import annotations
@@ -158,6 +159,11 @@ _OWNER_MODULES = (
     "git_panel",
     "project_tree",
     "dashboard_config",
+    "path_probe",
+    "outbox",
+    "channel_upload",
+    "desktop",
+    "editor",
 )
 
 #: Each moved definition and the owner its responsibility puts it in.
@@ -197,7 +203,7 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "grep": tuple("""
         _grep_doc_segments _grep_docs _grep_hit _grep_pdf_segments _grep_python
         _grep_resolve_root _grep_rg _grep_rg_argv _grep_rg_executable _grep_rg_hit_of
-        _grep_rg_teardown _grep_sensitive_globs _grep_xlsx_segments
+        _grep_rg_teardown _grep_sensitive_globs _grep_xlsx_segments api_file_grep
         """.split()),
     "browse": tuple("""
         _browse_dirs_sync _browse_drives_sync _browse_entry_is_dir _browse_files_sync
@@ -220,6 +226,22 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _project_tree_scandir_entries _project_tree_walk api_project_tree
         """.split()),
     "dashboard_config": ("api_dashboard_config",),
+    "path_probe": tuple("""
+        _PathProbe _PathProbeBusy _probe_busy_response _probe_request_path _run_path_probe
+        _validate_dashboard_path
+        """.split()),
+    "outbox": tuple("""
+        _audit_consented_download _audit_owner_grant_refusal _owner_grant_releases_flagged
+        _read_outbox_file api_outbox_download api_outbox_list api_outbox_notify
+        """.split()),
+    "channel_upload": tuple("""
+        _gate_upload_file api_channel_upload_file api_slack_upload_file is_tracked_channel
+        """.split()),
+    "desktop": ("_screenshot_dir", "api_reveal_path", "api_screenshot", "api_upload"),
+    "editor": tuple("""
+        _read_safe_end _resolve_diff_path api_file_diff api_file_raw api_file_read
+        api_file_write
+        """.split()),
 }
 
 #: The one module-level value an owner defines: ``_run_git_bounded`` reads it as a
@@ -231,55 +253,22 @@ _OWNER_CONSTANTS = {"git_panel": ("_GIT_PANEL_STDOUT_CAP",)}
 #: ``_BASE_OWNERS``, captured from the one-module file before the split: each moved
 #: name keeps the kind and signature it had there. Recaptured when the bounded
 #: project-tree walk replaced the ``project_tree`` helpers.
-_BASE_SHAPE_DIGEST = "a38dad08c49dfab78f74315fde5ad9471c9cd53df1463bdb75380ca0aa397b6d"
-
-#: Definitions that stay in the facade file. The seams and the path-probe
-#: chokepoint every owner and two sibling handlers call; file delivery, kept whole
-#: (the outbox routes, which hold the security-posture census site, and the Slack
-#: and channel uploads with their shared admission gate); and each route a guard
-#: reads in ``files.py`` by path: the reveal and upload routes (the JSON-body
-#: register; the upload routes' except block, which
-#: ``test_cse_2026_08_07_fixes`` slices from this file), the two native-dialog
-#: routes (``BENIGN_SPAWNS``), the file read and diff with their owner-view helper
-#: (the credential-redaction switch's exact file set, the spawn key of the diff's
-#: ``_run``, the git argv the desktop-binary audit reads), the raw route (the SVG
-#: policy literal the appearance library compares against), and the write and grep
-#: routes (the JSON-body register).
+#: Recaptured with the ``path_probe``, ``outbox``, ``channel_upload``, ``desktop`` and
+#: ``editor`` owners, from the base file, where each of their names had the same shape.
+_BASE_SHAPE_DIGEST = "65c4f9e11ec674f56489bb76f0c456811a262047983e711248ab01ad828beeca"
+#: Definitions that stay in the facade file: the seams the owners share -- the SEL
+#: accessor, the file-send audit, the sub-agent session mapping and the request-body
+#: error code -- the search walk's clock, the file viewer's owner-view verdict, whose
+#: body-scope ``source_providers`` import is the sibling-gate idiom the handlers
+#: package's modules cite by this file's name, and the two directory-picker routes,
+#: whose skip sets hold a literal the internal content scan refuses on an added line.
 _FACADE_DEFS = (
-    "is_tracked_channel",
     "_subagent_parent_session_key",
     "_sel",
     "_audit_file_send",
     "_body_err_code",
-    "api_reveal_path",
-    "_read_outbox_file",
-    "api_outbox_notify",
-    "_owner_grant_releases_flagged",
-    "_audit_owner_grant_refusal",
-    "_audit_consented_download",
-    "api_outbox_download",
-    "api_outbox_list",
-    "_gate_upload_file",
-    "api_slack_upload_file",
-    "api_channel_upload_file",
-    "api_upload",
-    "_screenshot_dir",
-    "api_screenshot",
-    "_validate_dashboard_path",
-    "_PathProbeBusy",
-    "_run_path_probe",
     "_walk_monotonic",
-    "_probe_busy_response",
-    "_PathProbe",
-    "_probe_request_path",
     "_owner_view_bypasses_credential_pass",
-    "_read_safe_end",
-    "api_file_read",
-    "api_file_raw",
-    "_resolve_diff_path",
-    "api_file_write",
-    "api_file_grep",
-    "api_file_diff",
     "api_browse_dirs",
     "api_browse_files",
 )
@@ -494,7 +483,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 103
+    assert len(names) == len(set(names)) == 131
 
 
 def test_the_moved_names_keep_their_base_shapes() -> None:
@@ -503,7 +492,7 @@ def test_the_moved_names_keep_their_base_shapes() -> None:
         for names in _BASE_OWNERS.values()
         for name in names
     )
-    assert len(lines) == 103
+    assert len(lines) == 131
     digest = hashlib.sha256("\n".join(lines).encode()).hexdigest()
     assert digest == _BASE_SHAPE_DIGEST, "\n".join(lines)
 
@@ -1230,42 +1219,53 @@ def test_no_owner_captures_a_name_tests_rebind_on_the_facade() -> None:
 
 # ── the guards keep their reach ───────────────────────────────────────────────
 
-#: Constructs repository guards read in ``dashboard/handlers/files.py`` by path or
-#: as an exact file set: the SVG policy literal the appearance library compares
-#: against, the owner-view seam the credential-redaction switch confines to this
-#: file, the git argv the desktop-binary audit reads from the diff route, and the
-#: two native-dialog spawns ``BENIGN_SPAWNS`` keys by this path. An owner that grew
-#: one would move it out of the guard's sight, so each stays in the facade.
-_STAYS_IN_THE_FACADE = (
-    r"script-src 'none'; style-src 'unsafe-inline'",
-    r"owner_view(?:_scope)?\(|redact_owner_view_via_context",
-    r"(?m)^\s+_git = \[",
-    r"create_subprocess_exec\(",
-)
+#: Constructs repository guards read in one file of the family by path or as an
+#: exact file set, and the files (``files`` for the facade, else an owner stem) that
+#: hold them: the SVG policy literal the appearance library compares against, the
+#: owner-view seam the credential-redaction switch confines to its named files (the
+#: facade binds the seam's redactor for the composed viewer routes), the git argv the
+#: desktop-binary audit reads from the diff route, and the two native-dialog spawns
+#: ``BENIGN_SPAWNS`` keys by path. A construct that spread to another file would move
+#: out of the guard's sight, so each stays in exactly its homes.
+_GUARDED_CONSTRUCT_HOMES: dict[str, frozenset[str]] = {
+    r"script-src 'none'; style-src 'unsafe-inline'": frozenset({"editor"}),
+    r"owner_view(?:_scope)?\(|redact_owner_view_via_context": frozenset({"files", "editor"}),
+    r"(?m)^\s+_git = \[": frozenset({"editor"}),
+    r"create_subprocess_exec\(": frozenset({"desktop"}),
+}
 
 
-@pytest.mark.parametrize("pattern", _STAYS_IN_THE_FACADE)
-def test_a_construct_a_guard_reads_in_the_facade_stays_there(pattern: str) -> None:
-    assert re.search(pattern, _FACADE_PATH.read_text(encoding="utf-8"))
-    holders = [stem for stem, source in _owner_sources().items() if re.search(pattern, source)]
-    assert holders == []
+def _family_sources() -> dict[str, str]:
+    """The facade (``files``) and every owner the package discovery finds, by stem."""
+    sources = {"files": _FACADE_PATH.read_text(encoding="utf-8")}
+    for owner in _owners():
+        sources[owner.__name__.rsplit(".", 1)[-1]] = Path(owner.__file__).read_text(
+            encoding="utf-8"
+        )
+    return sources
 
 
-def test_the_census_site_stays_in_the_facade() -> None:
+@pytest.mark.parametrize("pattern", sorted(_GUARDED_CONSTRUCT_HOMES))
+def test_a_construct_a_guard_reads_by_path_stays_in_its_home(pattern: str) -> None:
+    holders = {stem for stem, source in _family_sources().items() if re.search(pattern, source)}
+    assert holders == _GUARDED_CONSTRUCT_HOMES[pattern]
+
+
+def test_the_census_site_stays_in_the_outbox_owner() -> None:
     """``test_security_posture``'s census pins the one gate-side baseline log site
-    (in ``api_outbox_notify``) to this path; it stays here, no owner grows one, and
-    the census scan sees a site planted in an owner."""
+    (in ``api_outbox_notify``) to ``file_api/outbox.py``; it stays there, no other
+    file of the family grows one, and the census scan sees a site planted in an
+    owner."""
     from test_security_posture import _BASELINE_LOG_SITE_CENSUS, _gate_side_baseline_log_sites
 
-    sites = _gate_side_baseline_log_sites(_FACADE_PATH.read_text(encoding="utf-8"))
-    assert len(sites) == _BASELINE_LOG_SITE_CENSUS["dashboard/handlers/files.py"] == 1
-    sources = _owner_sources()
-    grown = {
-        stem: len(found)
-        for stem, source in sources.items()
-        if (found := _gate_side_baseline_log_sites(source))
+    census = _BASELINE_LOG_SITE_CENSUS["dashboard/file_api/outbox.py"]
+    found = {
+        stem: len(sites)
+        for stem, source in _family_sources().items()
+        if (sites := _gate_side_baseline_log_sites(source))
     }
-    assert grown == {}
+    assert found == {"outbox": census} == {"outbox": 1}
+    sources = _owner_sources()
     planted = sources["search"] + '\n\ndef _planted(x):\n    logger.error("%s", redact(x))\n'
     assert len(_gate_side_baseline_log_sites(planted)) == 1
 
@@ -1354,6 +1354,12 @@ _REKEYED_REGISTER_ROWS = (
     "file_api/workspaces.py::api_workspaces_create",
     "file_api/workspaces.py::api_workspaces_update",
     "file_api/dashboard_config.py::api_dashboard_config",
+    "file_api/desktop.py::api_reveal_path",
+    "file_api/outbox.py::api_outbox_notify",
+    "file_api/channel_upload.py::api_slack_upload_file",
+    "file_api/channel_upload.py::api_channel_upload_file",
+    "file_api/editor.py::api_file_write",
+    "file_api/grep.py::api_file_grep",
 )
 
 
@@ -1373,7 +1379,7 @@ def test_the_json_body_register_names_the_owners() -> None:
         == []
     )
     kept = sorted(key for key in sites if key.startswith("handlers/files.py::"))
-    assert len(kept) == 6
+    assert kept == []
 
 
 def test_the_resolved_gate_dicts_name_the_owners() -> None:

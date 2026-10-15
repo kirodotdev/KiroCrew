@@ -807,7 +807,7 @@ mean nothing. The parameter exists and is tested for a caller that has a real
 system prompt; no ACP site supplies one.
 
 `context/composed` reports CHARACTERS as measured and tokens as an ESTIMATE, at
-four characters per token, the same figure `dashboard/handlers/usage.py` uses. The
+four characters per token, the same figure `dashboard/handlers/usage_sessions.py` uses. The
 entry says so in `tokens_estimated`. The only exact tokenizer available is the
 wrong one for the served model, and a fabricated exact count would be worse than
 an admitted estimate. Three blocks the design names -- steering, tool specs and

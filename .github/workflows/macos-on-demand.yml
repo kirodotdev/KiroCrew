@@ -176,6 +176,12 @@ jobs:
               - "src/kiro_crew/pod/**"
               # darwin PTY behaviour.
               - "src/kiro_crew/dashboard/handlers/terminal.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_complete.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_lifecycle.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_routes.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_session.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_shell.py"
+              - "src/kiro_crew/dashboard/handlers/terminal_transport.py"
               - "src/kiro_crew/dashboard/terminal_commands.py"
               - "src/kiro_crew/subagent_manager/terminal.py"
               # The contracts themselves, and the two darwin gap lists a change

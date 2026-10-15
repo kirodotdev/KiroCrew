@@ -3188,7 +3188,7 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "dashboard.terminal.shell": {"type": "str", "max_len": 512},
     # The Terminal tab's completion popup (Settings → Display → Terminal).
     # Default on; the completion route reads it per request (handlers/
-    # terminal.py `_completion_disabled`), so a toggle takes effect on the
+    # terminal_session.py `_completion_disabled`), so a toggle takes effect on the
     # next keystroke with no restart. The whole-panel `terminal.enabled`
     # stays config-file-only: it also kills the PTY, which is not a display
     # preference.

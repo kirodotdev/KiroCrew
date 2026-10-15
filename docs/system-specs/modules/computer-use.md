@@ -2584,8 +2584,8 @@ computer use.
 - **The shell plane is a separate plane.** `osascript` / `cliclick` / `xdotool` /
   `screencapture` typed into a Bash tool are `commands`-scope items, never
   re-parsed into GUI sub-effects, and the **web terminal PTY**
-  (`dashboard/handlers/terminal.py`) contains no deny-floor or governance call at
-  all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
+  (`dashboard/handlers/terminal.py` and its `terminal_*` owners) contains no
+  deny-floor or governance call at all — it is an operator-only, ungoverned plane today. `playwright-cli screenshot`
   is a second pixel channel and lands on this same plane: it is a shell command,
   so an `mcp`-scope deny cannot reach it. None of these are covered by any
   `computer_use.*` scope, and the spec says so rather than implying coverage.

@@ -1275,7 +1275,7 @@ def _folder_picker_available(request: web.Request) -> bool:
     # would appear on the gateway operator's screen, not the requester's, and
     # block there for up to `_FOLDER_DIALOG_TIMEOUT`. Require a DIRECT local
     # request too, so a proxied one fails the gate and falls back to the
-    # typed-path route. The sibling project picker in `handlers/files.py`
+    # typed-path route. The sibling project picker in `file_api/desktop.py`
     # gates on the same helper for the same reason.
     return is_direct_local_request(request)
 

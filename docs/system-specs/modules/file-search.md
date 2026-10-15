@@ -7,11 +7,11 @@ directories by NAME and backs the `@`-mention picker; `POST /api/file-grep` find
 them by CONTENT and backs the chat side panel's Files tab; `GET /api/path-complete`
 lists ONE directory level and backs the composer's shell-style `./` completion.
 They share the `handlers/files.py` facade (the routes' import path and patch
-surface, which also keeps the grep route and the `_run_path_probe` chokepoint),
+surface), the `_run_path_probe` chokepoint (`dashboard/file_api/path_probe.py`),
 the sensitive-path fence and the off-loop probe discipline, and nothing else:
 separate roots, separate budgets, separate result shapes. Each endpoint's code
 lives in its own `dashboard/file_api/` owner: `search.py`, `path_complete.py`, and
-`grep.py` for the engines behind the grep route.
+`grep.py` for the grep route and the engines behind it.
 
 File search backs the `@`-mention picker in the dashboard chat composer. A user types `@` followed by a query that meets the endpoint minimum, picks a result, and the composer inserts a token that serializes into the prompt as an attachment marker; `test_short_query_returns_empty` pins the minimum-query refusal.
 
@@ -399,10 +399,11 @@ shows literally — the same trade-off inline file mentions make.
 
 | File | Role |
 |---|---|
-| `src/kiro_crew/dashboard/handlers/files.py` | Facade the routes bind; `api_file_grep` endpoint; `_run_path_probe` |
+| `src/kiro_crew/dashboard/handlers/files.py` | Facade the routes bind |
+| `src/kiro_crew/dashboard/file_api/path_probe.py` | `_run_path_probe`, the bounded off-loop probe chokepoint |
 | `src/kiro_crew/dashboard/file_api/search.py` | `api_file_search` endpoint, fuzzy scorer, walk fallback |
 | `src/kiro_crew/dashboard/file_api/path_complete.py` | `api_path_complete` endpoint, lexical containment walk, no-follow per-component open |
-| `src/kiro_crew/dashboard/file_api/grep.py` | rg argv + stdin pattern channel, python fallback, document pass |
+| `src/kiro_crew/dashboard/file_api/grep.py` | `api_file_grep` endpoint; rg argv + stdin pattern channel, python fallback, document pass |
 | `website/src/pages/chat/FileBrowserRail.tsx` | Files tab: Name/Content toggle, result rows, status row |
 | `website/src/api/fileGrep.ts` | `/api/file-grep` client and result types |
 | `src/kiro_crew/dashboard/file_index.py` | `FileIndex`, `FileIndexRegistry` |

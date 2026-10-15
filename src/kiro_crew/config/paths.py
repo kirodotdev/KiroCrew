@@ -1202,7 +1202,7 @@ def kiro_home() -> Path:
     WHOLE user directory (agents, prompts, skills, steering, settings, sessions),
     but KiroCrew currently resolves the host ``~/.kiro`` for most of those readers
     (session transcripts in ``session_map.py`` / ``acp/*`` / ``providers/acp_*.py``
-    / ``dashboard/handlers/usage.py``, and the ``settings/mcp.json`` registry).
+    / ``dashboard/handlers/usage_sessions.py``, and the ``settings/mcp.json`` registry).
     Setting ``KIRO_HOME`` therefore moves where kiro-cli WRITES sessions without
     moving where KiroCrew READS them, which breaks session resume. Only the agents
     directory follows it today, so this is not yet a supported way to isolate an

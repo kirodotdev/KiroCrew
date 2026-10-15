@@ -1159,7 +1159,7 @@ class TestUntrustedSvgIsServedInert:
         from kiro_crew.dashboard.handlers import appearances as handlers_mod
 
         source = Path(
-            Path(handlers_mod.__file__).resolve().parents[1] / "handlers" / "files.py"
+            Path(handlers_mod.__file__).resolve().parents[1] / "file_api" / "editor.py"
         ).read_text(encoding="utf-8")
         assert f'"{handlers_mod._SVG_CSP}"' in source
 

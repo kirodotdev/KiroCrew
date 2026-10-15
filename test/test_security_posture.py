@@ -270,8 +270,10 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     # The native sub-agent card sync's gate-side log, moved out of chat_runner.py with
     # its helper; the same gateway process as the runner's sites.
     "dashboard/chat_turn/native_cards.py": 1,
+    # The outbox owner composed into dashboard/handlers/files.py: api_outbox_notify's
+    # refusal audit, in the same gateway process as the facade.
+    "dashboard/file_api/outbox.py": 1,
     "dashboard/handlers/discover.py": 3,
-    "dashboard/handlers/files.py": 1,
     "dashboard/handlers/hooks.py": 1,
     "dashboard/handlers/messaging.py": 12,
     "dashboard/session_control_parts/target_authorization.py": 1,

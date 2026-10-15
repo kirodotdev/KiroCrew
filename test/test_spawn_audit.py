@@ -1412,14 +1412,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # probe is to read the HOST's own macOS TCC grants, which a sandbox that
         # rewrites the process identity would answer wrongly.
         "dashboard/handlers/computer_use.py::_probe_permissions",
-        "dashboard/handlers/files.py::_run",
+        "dashboard/file_api/editor.py::_run",
         # The file panel diff: fixed list-argv `git diff --no-index -- a b`
         # (no shell) with the same textconv/attributes/fsmonitor hardening as
         # `_run`, over two files the gateway itself wrote into a fresh private
         # temp dir. No argument, path or cwd comes from the request.
-        "dashboard/handlers/files.py::_diff_redacted_bodies",
-        "dashboard/handlers/files.py::api_screenshot",
-        "dashboard/handlers/files.py::api_upload",
+        "dashboard/file_api/editor.py::_diff_redacted_bodies",
+        "dashboard/file_api/desktop.py::api_screenshot",
+        "dashboard/file_api/desktop.py::api_upload",
         "dashboard/handlers/knowledge.py::_run_folder_dialog",
         # Terminal live-cwd probe on hosts without /proc (macOS/BSD): fixed
         # `lsof -a -p <pid> -d cwd -Fn` list-argv (no shell=True) where <pid>

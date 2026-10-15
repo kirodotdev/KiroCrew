@@ -54,7 +54,7 @@ authoritative nav table (label, group, badge, preview gate). A surface marked
 `hiddenFromNav` there has a working route but no rail row — it is reached from
 somewhere else, noted per row below.
 
-A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `handlers/files.py`, `handlers/messaging.py`) points at the route surface; the code that owns the behaviour sits behind it in `chat_api/`, `agent_admin/`, `file_api/` or `messaging_api/`.
+A Handler cell that names a facade (`chat_handlers.py`, `handlers/agents.py`, `handlers/files.py`, `handlers/messaging.py`, `handlers/terminal.py`, `handlers/usage.py`) points at the route surface; the code that owns the behaviour sits behind it in `chat_api/`, `agent_admin/`, `file_api/`, `messaging_api/`, or the `handlers/terminal_*.py` and `handlers/usage_*.py` owners.
 
 ---
 

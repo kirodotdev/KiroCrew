@@ -2531,8 +2531,9 @@ denials leave the same forensic trail.
   copy-pasteable fleet-ban policy below); a deny-mode `commands` pattern also
   becomes an un-opt-out-able force-pin via `resolve_pinned_commands`.
 - **The web terminal PTY is an ungoverned plane today.**
-  `dashboard/handlers/terminal.py` spawns a real PTY and contains **no**
-  `is_denied` / `is_sensitive_bash_command` / governance call, so
+  `dashboard/handlers/terminal.py` spawns a real PTY, and neither it nor its
+  `terminal_*` owners contain any `is_denied` / `is_sensitive_bash_command` /
+  governance call, so
   `screencapture` typed into it is bounded by neither the `commands` scope nor
   any `computer_use.*` scope. It is an operator-only surface. Routing PTY input
   through the same effective-deny floor as `on_tool_call` is tracked as its own

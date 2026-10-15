@@ -1107,7 +1107,8 @@ per-turn occupancy percentiles plus a per-session peak ranking (own
 shard-fingerprint + 30s-TTL cache, same contract as `_parse_token_history`), and
 `handlers/telemetry.py` serves it as the `context` block of
 `GET /api/telemetry/startup` (a plain module-scope import — `handlers.usage`
-imports nothing from `dashboard.handlers`, so there is no cycle to dodge).
+imports nothing from `dashboard.handlers` beyond its own `usage_*` owners, which
+import nothing back, so there is no cycle to dodge).
 `usage.context_trace(slot, days)` is the per-session drill-down, and it reads the
 slot's `usage` PROJECTION rather than the shards: one memoised fold of the crew log's
 `context/composed` entries, where the scan it replaced opened every shard in the
@@ -1186,11 +1187,11 @@ indistinguishable `404` (`code: not_found`) and the refusal is SEL-audited
 (deny-by-default, App Kit §5.2). An app that needs its own turns' billing has
 `/api/usage/turns`.
 
-**Row-timestamp parsing has one owner.** `usage._parse_row_dt` is the single
+**Row-timestamp parsing has one owner.** `usage._parse_row_dt` (in `usage_store.py`) is the single
 spelling for reading a stored row timestamp (`Z` rewritten to `+00:00` for
 py3.10's `fromisoformat`; a naive stamp left naive so a caller's
 `.timestamp()` reads it in local time); `_parse_row_ts` derives the epoch form,
-and every shard/row reader in the module (`slot_spend`, `context_occupancy`,
+and every shard/row reader in the usage handlers (`slot_spend`, `context_occupancy`,
 `cost_breakdown`, `slot_turn_usage`, the token-history and transcript-day
 readers) resolves timestamps through them. Two readers of the same rows must
 not disagree about which rows a window contains. `_usage_number` is likewise

@@ -123,8 +123,20 @@
     "dashboard/chat_voice.py": {
       "missing_code": 3
     },
+    "dashboard/file_api/channel_upload.py": {
+      "missing_code": 3
+    },
     "dashboard/file_api/dashboard_config.py": {
       "missing_code": 9
+    },
+    "dashboard/file_api/desktop.py": {
+      "missing_code": 7
+    },
+    "dashboard/file_api/editor.py": {
+      "missing_code": 12
+    },
+    "dashboard/file_api/outbox.py": {
+      "missing_code": 11
     },
     "dashboard/file_api/pinned_io.py": {
       "missing_code": 6
@@ -164,9 +176,6 @@
     },
     "dashboard/handlers/discover.py": {
       "missing_code": 15
-    },
-    "dashboard/handlers/files.py": {
-      "missing_code": 33
     },
     "dashboard/handlers/kiro_prerequisite.py": {
       "missing_code": 1

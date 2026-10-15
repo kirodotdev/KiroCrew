@@ -24,7 +24,9 @@ one-module file was. Three consequences follow:
   before the split, so reprs and pickling by reference are unchanged, and it logs
   through that module's ``logger``. Its source file differs, so a log record's
   ``module``, ``filename`` and ``lineno`` name the owner file. An owner's classes
-  keep their own module, which is where ``inspect`` looks for a class's source.
+  keep their own module, which is where ``inspect`` looks for a class's source,
+  except ``path_probe._PathProbeBusy``: a traceback renders an error by its module,
+  so it reports ``kiro_crew.dashboard.handlers.files``, the path callers catch it by.
 * State stays on the handlers module. Every module-level value (the upload and
   screenshot directories, the size caps, the extension tables, the probe pool
   budgets, ``logger``) is a handlers global that owner functions reach by name, so
@@ -33,8 +35,8 @@ one-module file was. Three consequences follow:
   as a parameter default, which Python evaluates when the owner loads, so the
   constant is defined beside that function and the handlers module imports it.
 
-Which responsibility each owner holds, and which constructs stay in the handlers
-module because repository guards read them there, is recorded in
+Which responsibility each owner holds, and the files that hold each construct a
+repository guard reads by path, are recorded in
 ``docs/system-specs/modules/learn-cron-dashboard.md`` (the "Dashboard file API
 owners" paragraph under Key Endpoints).
 """

@@ -73,7 +73,6 @@
 4286 src/kiro_crew/dashboard/handlers/core.py
 2431 src/kiro_crew/dashboard/handlers/crew_log.py
 4067 src/kiro_crew/dashboard/handlers/cron.py
-3133 src/kiro_crew/dashboard/handlers/files.py
 2473 src/kiro_crew/dashboard/handlers/hooks.py
 3271 src/kiro_crew/dashboard/handlers/knowledge.py
 5058 src/kiro_crew/dashboard/handlers/mcp.py
@@ -83,9 +82,7 @@
 3586 src/kiro_crew/dashboard/handlers/prompts.py
 2807 src/kiro_crew/dashboard/handlers/security.py
 5451 src/kiro_crew/dashboard/handlers/sessions.py
-2895 src/kiro_crew/dashboard/handlers/terminal.py
 3358 src/kiro_crew/dashboard/handlers/updates.py
-2807 src/kiro_crew/dashboard/handlers/usage.py
 2158 src/kiro_crew/dashboard/handlers/work_ledger.py
 2856 src/kiro_crew/dashboard/handlers_instances.py
 2818 src/kiro_crew/dashboard/server.py
