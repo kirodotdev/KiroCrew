@@ -45,7 +45,7 @@ SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 #: The module that DEFINES the primitives. Its own calls are the primitives'
 #: implementation -- ``kill_pid_pinned`` delegating to ``kill_pid``, which issues
 #: the group signal -- not a caller deciding a process should die.
-PRIMITIVE_HOME = "platform_compat.py"
+PRIMITIVE_HOME = "platform_compat_kill.py"
 
 #: Assembled, not written: this file must not contain the names it scans for.
 _KILL = "kill"

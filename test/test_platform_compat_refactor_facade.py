@@ -1,17 +1,24 @@
 """``kiro_crew.platform_compat`` stays the compatibility layer's import and patch surface.
 
 The cross-process file locks and the owner-only access helpers are defined in
-``platform_lock_compat`` and ``platform_owner_compat``. Every name that moved stays
+``platform_lock_compat`` and ``platform_owner_compat``. Every name that moved there stays
 readable under its old path and is FORWARDED, so a patch through the facade lands on the
-owner, where the owner's own callers read it. The owners read the platform flags, the
+owner, where the owner's own callers read it. Those two owners read the platform flags, the
 lock modules, the clock, ``ctypes`` and the Win32 struct layouts from the facade when they
-run, so a test that rebinds one of those there still reaches them. The checks shared with
-the sandbox facade, and the one census of facade patches both run on, live in
+run, so a test that rebinds one of those there still reaches them.
+
+The rest of what platform_compat.py defined is carved into the owners in ``_CARVED``, which
+import each other lowest layer first (``_CARVED_IMPORTS``) and never the facade. Their code
+read one namespace before the carve, so the facade MIRRORS a write through it
+(``kiro_crew._facade_mirror``): it lands on every carved owner that binds the same object,
+and on the facade when the facade binds the name too. The checks shared with the sandbox
+facade, and the one census of facade patches both run on, live in
 ``test_sandbox_refactor_facade``.
 """
 
 from __future__ import annotations
 
+import enum
 import os
 import sys
 import zlib
@@ -22,18 +29,57 @@ from typing import Any
 import pytest
 import test_sandbox_refactor_facade as shared
 
-from kiro_crew import platform_compat, platform_lock_compat, platform_owner_compat
+from kiro_crew import (
+    platform_compat,
+    platform_compat_descendants,
+    platform_compat_files,
+    platform_compat_identity,
+    platform_compat_kill,
+    platform_compat_liveness,
+    platform_compat_native,
+    platform_compat_ports,
+    platform_compat_proctable,
+    platform_compat_runtime,
+    platform_compat_trust,
+    platform_compat_winproc,
+    platform_compat_wintree,
+    platform_lock_compat,
+    platform_owner_compat,
+)
 
 # The patch census parses every test file once; keep it on the sandbox file's worker.
 pytestmark = pytest.mark.xdist_group(name="tree_scan_sandbox_refactor_facade")
 
+#: The owners carved out of platform_compat.py, lowest layer first, as the facade imports
+#: them.
+_CARVED: dict[str, ModuleType] = {
+    m.__name__: m
+    for m in (
+        platform_compat_native,
+        platform_compat_proctable,
+        platform_compat_runtime,
+        platform_compat_files,
+        platform_compat_trust,
+        platform_compat_liveness,
+        platform_compat_identity,
+        platform_compat_ports,
+        platform_compat_descendants,
+        platform_compat_winproc,
+        platform_compat_wintree,
+        platform_compat_kill,
+    )
+}
+
 _OWNERS: dict[str, ModuleType] = {
-    m.__name__: m for m in (platform_lock_compat, platform_owner_compat)
+    **{m.__name__: m for m in (platform_lock_compat, platform_owner_compat)},
+    **_CARVED,
 }
 
 #: Every module-level name the split moved out of platform_compat.py, by its owner, plus
 #: ``tempfile``: only the persistence probe reads it now, and a test reaches the stdlib
-#: module through ``platform_compat.tempfile``, so the binding moved with its reader.
+#: module through ``platform_compat.tempfile``, so the binding moved with its reader. The
+#: files owner's two libc temporaries are not listed: they exist only where the C library
+#: loaded, and the facade binds them under the same condition.
 _MOVED: dict[str, tuple[str, ...]] = {
     "kiro_crew.platform_lock_compat": (
         "_LOCK_POLL_SECS",
@@ -73,6 +119,228 @@ _MOVED: dict[str, tuple[str, ...]] = {
         "restrict_to_owner",
         "restrict_dir_to_owner",
         "_apply_owner_only_dacl",
+    ),
+    "kiro_crew.platform_compat_native": tuple("""
+        IS_WINDOWS IS_POSIX IS_LINUX IS_MACOS _WINDOWS_PID_MAX SIGKILL _OWN_PGID SIGTERM SIGHUP
+        CREATE_NEW_PROCESS_GROUP DETACHED_PROCESS CREATE_SUSPENDED _SUBPROCESS_NO_WINDOW
+        _ProcessEntry32 _ProcessMemoryCounters _MemoryStatusEx _SidAndAttributes _TokenUser
+        _IoCounters _JobObjectBasicLimitInformation _JobObjectExtendedLimitInformation
+        _ThreadEntry32 _windows_last_error _open_process_query_handle _close_process_handle
+        _PROCESS_QUERY_LIMITED_INFORMATION _ACCESS_HONOURS_EFFECTIVE_IDS
+        """.split()),
+    "kiro_crew.platform_compat_proctable": tuple("""
+        _DARWIN_PROC_PIDVNODEPATHINFO _DARWIN_VNODE_INFO_SIZE _DARWIN_MAXPATHLEN
+        _DARWIN_VNODE_INFO_PATH_SIZE _DARWIN_PROC_VNODEPATHINFO_SIZE _DARWIN_PROC_PIDTBSDINFO
+        _DARWIN_PROC_BSDINFO_SIZE _DARWIN_PBI_PPID_OFFSET _DARWIN_PBI_START_TVSEC_OFFSET
+        _DARWIN_PBI_START_TVUSEC_OFFSET ProcessStartIdentity _DARWIN_PROC_PIDTASKINFO
+        _DARWIN_PROC_TASKINFO_SIZE _DARWIN_PTI_TOTAL_USER_OFFSET _DARWIN_PTI_TOTAL_SYSTEM_OFFSET
+        _DARWIN_RUSAGE_INFO_V2 _DARWIN_RUSAGE_INFO_V2_SIZE _DARWIN_RI_PHYS_FOOTPRINT_OFFSET
+        _darwin_libproc _darwin_libproc_loaded _darwin_libproc_handle _darwin_process_cwd
+        _darwin_process_start_identity _darwin_process_phys_footprint_bytes
+        proc_phys_footprint_bytes_for_pid darwin_libproc_available darwin_footprint_tree_mb
+        _darwin_process_start_microtime _darwin_process_cpu_nanos _DARWIN_PBI_STATUS_OFFSET
+        _DARWIN_SZOMB _DARWIN_PIDPATH_MAXSIZE _DARWIN_CTL_KERN _DARWIN_KERN_PROCARGS2
+        _DARWIN_PROCARGS_BUFSIZE _DARWIN_PROCARGS_ENV_BUFSIZE _DARWIN_KERN_PROC
+        _DARWIN_KERN_PROC_PID _DARWIN_KERN_PROC_PGRP _DARWIN_KINFO_PROC_SIZE
+        _DARWIN_KP_START_TVSEC_OFFSET _DARWIN_KP_START_TVUSEC_OFFSET _DARWIN_KP_STAT_OFFSET
+        _DARWIN_KP_PID_OFFSET _DARWIN_KINFO_PGRP_SLACK _DARWIN_KINFO_PGRP_ATTEMPTS
+        _DARWIN_CHILD_LIST_INITIAL DarwinProcessFacts _darwin_libproc_tree_bound
+        _darwin_libproc_tree_handle darwin_child_pids darwin_process_facts darwin_process_path
+        _DARWIN_PROC_PIDLISTFDS _DARWIN_PROC_FDINFO_SIZE _DARWIN_PROX_FDTYPE_SOCKET
+        _DARWIN_PROC_PIDFDSOCKETINFO _DARWIN_SOCKET_FDINFO_SIZE _DARWIN_SOI_KIND_OFFSET
+        _DARWIN_TCPSI_STATE_OFFSET _DARWIN_SOCKINFO_TCP _DARWIN_TSI_S_ESTABLISHED
+        _DARWIN_INSI_VFLAG_OFFSET _DARWIN_INSI_FADDR_OFFSET _DARWIN_INI_IPV4 _DARWIN_INI_IPV6
+        _DARWIN_IN6_LOOPBACK _DARWIN_IN6_V4MAPPED_PREFIX _DARWIN_MAX_FDS
+        _darwin_libproc_fd_bound _darwin_libproc_fd_handle _darwin_peer_is_loopback
+        darwin_established_tcp_count _darwin_libc_sysctl _darwin_libc_sysctl_loaded
+        _darwin_libc_sysctl_lock _darwin_sysctl_handle darwin_process_argv
+        darwin_process_environ DarwinKinfoProc _darwin_kinfo_proc_parse
+        _darwin_kinfo_size_mismatch_logged _darwin_kinfo_query darwin_kinfo_proc
+        darwin_pid_is_zombie darwin_pgroup_members _DARWIN_BSDINFO_SIZE _DARWIN_OFF_START_TVSEC
+        _DARWIN_OFF_START_TVUSEC _DarwinLibprocUnavailable _darwin_libproc_start_id
+        _file_identity flock_owner_pid _flock_acquirer_row _flock_acquirer_in_proc_locks
+        _flock_acquirer_in_fdinfo parent_pid pids_holding_file _descriptors_on
+        _proc_status_rss_kb _stat_tokens _STAT_TOKEN_MAX_DIGITS _stat_token_int _parse_ppid
+        ProcStat _linux_proc_root read_proc_stat _LINUX_EXITED_STATES linux_pgroup_members
+        read_proc_status_int proc_child_map proc_cpu_jiffies_for_pids _proc_children
+        _parse_cpu_jiffies _proc_cpu_jiffies
+        """.split()),
+    "kiro_crew.platform_compat_runtime": tuple("""
+        _UTF8_PROCESS_ENV _ensure_utf8_process_environment _KEPT_FOR_REEXEC keep_for_reexec
+        kept_for_reexec _WHEEL_APPLY_MODULE cancel_wheel_applies_in_flight hard_exit
+        _disarm_process_alarm_before_exec reexec_launcher reexec_python_module
+        execv_target_available _POST_DRAIN_EXEC_FAILURE_EXIT _EXIT_FLUSH_DEADLINE_SECS
+        exit_after_failed_restart_exec _drain_event_log_for_exit _WINDOWS_ARM_MACHINES
+        is_windows_on_arm BUNDLED_BACKEND_DIST_DIRNAME is_bundled_interpreter
+        _PYTHON_OPTIONS_WITH_VALUES isolated_python_argv ensure_utf8_console
+        ensure_line_buffered_stdout process_alarm_available arm_process_alarm boottime_now
+        awake_now process_start_boot_secs process_age_secs
+        """.split()),
+    "kiro_crew.platform_compat_files": tuple("""
+        _RENAME_NOREPLACE_FN _RENAME_NOREPLACE_FLAG _SYS_RENAMEAT2_BY_MACHINE
+        _build_renameat2_via_syscall RENAME_NOREPLACE_AVAILABLE TCC_PROTECTED_HOME_DIRS
+        TCC_LIBRARY_WALKABLE_CHILDREN _LIBRARY_DIR rename_noreplace publish_dir_noreplace
+        tcc_protected_dirs_for_walk tcc_prune_walk_dirs
+        """.split()),
+    "kiro_crew.platform_compat_trust": tuple("""
+        _folded_env_allowlist env_key_allowed _TRUSTED_SYSTEM_BIN_DIRS _WINDOWS_BIN_SUFFIXES
+        _windows_system_dirs _FOLDERID_DOCUMENTS _POWERSHELL_USER_PROFILES windows_documents_dir
+        windows_powershell_profile_paths _UNPINNED_TOOL_PROBED _log_tool_outside_trusted_dirs
+        _WINDOWS_GIT_DIRS trusted_git_bin trusted_system_bin _trusted_bin_search
+        trusted_system_bin_quiet _LOCAL_SYSTEM_BIN_DIR _UNTRUSTED_AWS_BIN_LOGGED
+        _MAX_SYMLINK_HOPS _root_owned_entry traversed_components traversed_components_and_links
+        _group_shared_with_another_account _ACL_XATTR_VERSION _ACL_USER _ACL_GROUP _ACL_MASK
+        _ACL_WRITE _NO_ACL_ERRNOS _acl_admits_another_account group_write_admits_another_account
+        _is_root_owned_path _local_aws_bin_candidate _is_native_program
+        _local_aws_bin_is_trusted trusted_aws_bin aws_bin_declined_on_ownership
+        trusted_system_path reveal_in_file_manager open_with_default_app _reveal_env
+        tool_outside_trusted_dirs short_path_name
+        """.split()),
+    "kiro_crew.platform_compat_liveness": tuple("""
+        PID_DEAD PID_ALIVE PID_UNSIGNALABLE live_thread_group_leaders is_thread_group_leader
+        pid_liveness pgroup_of pgroup_of_leader pid_exists pid_is_zombie process_thread_count
+        """.split()),
+    "kiro_crew.platform_compat_identity": tuple("""
+        process_cwd get_ppid _ANCESTRY_MAX_DEPTH _PYTHON_INTERPRETER_NAME
+        process_executable_path _is_python_interpreter_path is_exec_supervisor_of_this_process
+        get_process_start_identity get_process_start_id process_namespaces_match
+        process_is_sandboxed process_can_read_under_sandbox ProcessIdentitySource
+        _WINDOWS_EXIT_FILETIME_TIMEOUT_SECS _WINDOWS_EXIT_FILETIME_POLL_SECS
+        _windows_process_handle_identity process_matches process_image_name
+        _win_process_image_name process_argv_matches_exact process_argv_fingerprint
+        linux_process_name process_cgroups_match process_command_line process_owner_uid
+        effective_uid _START_TIME_PS_TIMEOUT _process_lstart process_start_time
+        process_start_id_for_source _OWN_START_TIME _linux_boot_id _own_identity_token
+        process_incarnation_id own_process_start_time
+        """.split()),
+    "kiro_crew.platform_compat_ports": tuple("""
+        _normalized_tcp_endpoint _linux_tcp_peer_pid _macos_tcp_peer_pid _WindowsTcpOwnerRow
+        _WINDOWS_TCP_TABLE_OWNER_PID_LISTENER _WINDOWS_TCP_TABLE_OWNER_PID_CONNECTIONS
+        _WINDOWS_TCP_STATE_LISTEN _WINDOWS_TCP_STATE_ESTABLISHED _WINDOWS_TCP_TABLE_MAX_BYTES
+        _WINDOWS_ERROR_INSUFFICIENT_BUFFER _windows_tcp_owner_rows get_tcp_peer_pid
+        listening_pid_tool listening_pid_tool_available PortListener
+        _LOOPBACK_COVERING_ADDRESSES _LSOF_TIMEOUT_SECS _normalize_local_address
+        address_covers_loopback loopback_owner_pids probe_port_listeners
+        _linux_loopback_listener_inodes _windows_loopback_listener_owner_pids
+        process_owns_loopback_listener find_port_listeners find_listening_pids
+        """.split()),
+    "kiro_crew.platform_compat_descendants": tuple("""
+        _descendants_from_parent_map _posix_process_parent_map ProcessDescendantIdentity
+        _ProcessStartOrder _process_start_order _PosixProcessSnapshotRow
+        _linux_direct_child_pids _direct_child_pids_for_identity_walk
+        _atomic_process_descendant_identities _posix_process_snapshot
+        _posix_process_identity_map _ordered_posix_descendant_identities _windows_chain_to_root
+        _windows_process_descendant_identities process_descendant_identities process_descendants
+        attributed_descendants created_after _windows_process_parent_map
+        _WINDOWS_CLEANUP_ROOT_LIMIT _WINDOWS_CLEANUP_IDENTITY_LIMIT
+        _WINDOWS_CLEANUP_SNAPSHOT_LIMIT WindowsCleanupCapacityError _WindowsTreeOverflow
+        """.split()),
+    "kiro_crew.platform_compat_winproc": tuple("""
+        _open_process_termination_handle open_process_termination_handle
+        duplicate_asyncio_process_handle _windows_lineage_matches_lifetimes
+        _windows_process_query_diagnostic _windows_descendant_failure_details
+        _windows_process_query_creation _windows_foreign_descendant_pids
+        descendant_termination_handles close_process_handle descendant_termination_handles_async
+        """.split()),
+    "kiro_crew.platform_compat_wintree": tuple("""
+        _WINDOWS_TERMINATE_REFUSAL_WAIT_MS terminate_process_handle process_handle_active
+        _WINDOWS_TREE_REAP_TIMEOUT_SECS _WINDOWS_TREE_REAP_POLL_SECS
+        _PENDING_WINDOWS_TREE_RETRY_LIMIT _WINDOWS_CAPTURE_MEASURED_VERSIONS
+        WindowsTreeDrainPending _PendingWindowsTreeCleanup _PENDING_WINDOWS_TREE_CLEANUPS
+        _PENDING_WINDOWS_TREE_CLEANUPS_LOCK _WINDOWS_TREE_ADMISSIONS
+        reserve_windows_tree_cleanup release_windows_tree_reservation _manual_windows_tree
+        _bind_windows_cleanup_process create_windows_cleanup_owned_process
+        finish_windows_cleanup_owned_spawn _drain_windows_process_tree
+        _advance_owned_windows_tree terminate_windows_process_tree_owned
+        retry_pending_windows_process_trees terminate_windows_asyncio_tree
+        """.split()),
+    "kiro_crew.platform_compat_kill": tuple("""
+        pgroup_exists _raise_taskkill_error kill_pid kill_process_group kill_process_tree
+        kill_process_tree_pinned kill_pid_pinned kill_pid_async kill_process_tree_async
+        REAP_TIMEOUT_SECS _shares_own_process_group kill_popen_tree kill_and_reap
+        _run_cleanup_shielded _isolated_group_of_live_child _discard_output_until_exit
+        terminate_and_reap terminate_and_reap_sync
+        """.split()),
+}
+
+#: Moved names the facade binds again, by import from their owner: code still in
+#: platform_compat.py reads them as its own globals, the lock and owner-only modules import
+#: them from the facade when they run, or a test reads them from ``vars(platform_compat)``.
+#: The mirror holds the facade's binding and the owner's as one name, so a patch through the
+#: facade reaches both.
+_BOUND_HERE: frozenset[str] = frozenset("""
+    IS_LINUX IS_MACOS IS_POSIX IS_WINDOWS _ACCESS_HONOURS_EFFECTIVE_IDS
+    _JobObjectExtendedLimitInformation _MemoryStatusEx _PENDING_WINDOWS_TREE_CLEANUPS
+    _PENDING_WINDOWS_TREE_CLEANUPS_LOCK _PROCESS_QUERY_LIMITED_INFORMATION
+    _PendingWindowsTreeCleanup _ProcessMemoryCounters _ThreadEntry32 _TokenUser
+    _WINDOWS_CAPTURE_MEASURED_VERSIONS _WINDOWS_TREE_ADMISSIONS _close_process_handle
+    _darwin_process_cpu_nanos _darwin_sysctl_handle _open_process_query_handle
+    _open_process_termination_handle _proc_children _proc_cpu_jiffies _proc_status_rss_kb
+    _windows_last_error _windows_process_handle_identity close_process_handle
+    descendant_termination_handles kill_pid process_matches process_thread_count
+    publish_dir_noreplace
+    """.split())
+
+#: Carved owner -> the owners it imports. Explicit, so a new edge between owners is a
+#: decision; each edge points to an owner earlier in ``platform_compat._CARVED_OWNERS`` (so
+#: the graph has no cycle) or to a lock or owner-only module.
+_CARVED_IMPORTS: dict[str, frozenset[str]] = {
+    "kiro_crew.platform_compat_proctable": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_runtime": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_files": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_trust": frozenset({"kiro_crew.platform_compat_native"}),
+    "kiro_crew.platform_compat_liveness": frozenset(
+        {
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_proctable",
+        }
+    ),
+    "kiro_crew.platform_compat_identity": frozenset(
+        {
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_proctable",
+            "kiro_crew.platform_compat_trust",
+        }
+    ),
+    "kiro_crew.platform_compat_ports": frozenset(
+        {
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_trust",
+        }
+    ),
+    "kiro_crew.platform_compat_descendants": frozenset(
+        {
+            "kiro_crew.platform_compat_identity",
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_proctable",
+            "kiro_crew.platform_compat_trust",
+        }
+    ),
+    "kiro_crew.platform_compat_winproc": frozenset(
+        {
+            "kiro_crew.platform_compat_descendants",
+            "kiro_crew.platform_compat_identity",
+            "kiro_crew.platform_compat_native",
+        }
+    ),
+    "kiro_crew.platform_compat_wintree": frozenset(
+        {
+            "kiro_crew.platform_compat_descendants",
+            "kiro_crew.platform_compat_identity",
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_winproc",
+            "kiro_crew.platform_lock_compat",
+        }
+    ),
+    "kiro_crew.platform_compat_kill": frozenset(
+        {
+            "kiro_crew.platform_compat_identity",
+            "kiro_crew.platform_compat_liveness",
+            "kiro_crew.platform_compat_native",
+            "kiro_crew.platform_compat_trust",
+            "kiro_crew.platform_compat_winproc",
+            "kiro_crew.platform_compat_wintree",
+        }
     ),
 }
 
@@ -116,8 +384,8 @@ def test_every_moved_name_is_defined_by_its_owner_and_read_through_the_facade(
     shared.check_moved_name(platform_compat, _OWNERS, owner, name)
 
 
-def test_every_moved_name_is_forwarded_and_none_is_bound_here() -> None:
-    shared.check_forwarded_and_bound_are_disjoint(platform_compat, _MOVED, frozenset())
+def test_every_moved_name_is_forwarded_unless_code_still_here_reads_it() -> None:
+    shared.check_forwarded_and_bound_are_disjoint(platform_compat, _MOVED, _BOUND_HERE)
 
 
 def test_the_forwarding_table_names_each_owner_by_its_dotted_name() -> None:
@@ -188,7 +456,7 @@ def test_each_seam_is_a_binding_of_the_facade() -> None:
 
 
 def test_the_owners_depend_on_nothing_above_them() -> None:
-    shared.check_owner_dependency_direction(_OWNERS, platform_compat)
+    shared.check_owner_dependency_direction(_OWNERS, platform_compat, _CARVED_IMPORTS)
 
 
 def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
@@ -196,22 +464,60 @@ def test_the_owners_log_under_the_compatibility_layer_s_name() -> None:
 
 
 #: Names a test patches through ``kiro_crew.platform_compat`` that the facade AND an owner
-#: both bind, each importing its own, so the patch reaches only the facade's code. ``Path``
-#: is rebound for the process-identity and trusted-binary helpers, which stay here; no test
-#: fakes it for a lock or an owner-only helper. A new entry is a decision that the patch
-#: needs no forwarding.
+#: both bind, each importing its own, so the patch reaches the facade's and the carved
+#: owners' code (the mirror carries it there) but not the lock or owner-only module's.
+#: ``Path`` is rebound for the process-identity and trusted-binary helpers, in the carved
+#: identity and trust owners; no test fakes it for a lock or an owner-only helper. A new
+#: entry is a decision that the patch needs no forwarding.
 _PC_SHARED_BINDINGS_PATCHED: frozenset[str] = frozenset({"Path"})
 
 
 @pytest.mark.parametrize("part", range(shared.CENSUS_PARTS))
 def test_a_patched_name_bound_by_the_facade_and_an_owner_is_a_listed_one(part: int) -> None:
-    shared.check_shared_bindings(platform_compat, _SEAM_IMPORTS, _PC_SHARED_BINDINGS_PATCHED, part)
+    shared.check_shared_bindings(
+        platform_compat,
+        _SEAM_IMPORTS,
+        _PC_SHARED_BINDINGS_PATCHED,
+        part,
+        mirrored=platform_compat._MIRROR.holders,
+        carved=_CARVED,
+    )
 
 
 def test_every_listed_shared_binding_is_still_patched() -> None:
     shared.check_listed_bindings_are_patched(
-        platform_compat, _SEAM_IMPORTS, _PC_SHARED_BINDINGS_PATCHED
+        platform_compat,
+        _SEAM_IMPORTS,
+        _PC_SHARED_BINDINGS_PATCHED,
+        mirrored=platform_compat._MIRROR.holders,
+        carved=_CARVED,
     )
+
+
+def test_the_mirror_indexes_exactly_the_carved_owners() -> None:
+    assert platform_compat._CARVED_OWNERS == tuple(_CARVED)
+    assert platform_compat._MIRROR.owners == platform_compat._CARVED_OWNERS
+    assert platform_compat._MIRROR.excluded == ()
+    assert platform_compat._MIRROR.divergent() == ()
+    carved = {name: owner for name, owner in platform_compat._EXPORTS.items() if owner in _CARVED}
+    assert carved == dict(platform_compat._MIRROR.exports)
+
+
+def test_the_lock_and_owner_only_modules_stay_out_of_the_mirror() -> None:
+    """They owned their names before the carve, and a write through the facade never
+    reached them: patching ``platform_compat.Path`` for the code that stays here and in the
+    carved owners leaves the lock and owner-only modules' own ``Path`` alone, as it did."""
+    assert all(set(found) <= set(_CARVED) for found in platform_compat._MIRROR.holders.values())
+    unmirrored = {name for name, owner in platform_compat._EXPORTS.items() if owner not in _CARVED}
+    assert unmirrored and not any(unmirrored & set(vars(m)) for m in _CARVED.values())
+    real = platform_lock_compat.Path
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(platform_compat, "Path", "stub")
+        assert vars(platform_compat)["Path"] == "stub"
+        assert platform_lock_compat.Path is real and platform_owner_compat.Path is real
+        for dotted in platform_compat._MIRROR.holders.get("Path", ()):
+            assert vars(sys.modules[dotted])["Path"] == "stub"
+    assert platform_compat.Path is real
 
 
 # --------------------------------------------------------------------------- #
@@ -361,3 +667,41 @@ def test_a_patched_effective_ids_flag_reaches_the_writability_check(
     monkeypatch.setattr(platform_compat, "_ACCESS_HONOURS_EFFECTIVE_IDS", honoured)
     assert platform_compat.path_writable_by_current_user(target) is honoured
     assert asked == ([True] if honoured else [])
+
+
+#: The moved exception and enum classes. A traceback, a log line, a pickle and every
+#: ``module.qualname`` rendering read their module, so each keeps the facade's: the
+#: rendered path is one callers import, and it resolves to the very class.
+_FACADE_NAMED_CLASSES: dict[str, tuple[str, ...]] = {
+    "kiro_crew.platform_compat_proctable": ("_DarwinLibprocUnavailable",),
+    "kiro_crew.platform_compat_identity": ("ProcessIdentitySource",),
+    "kiro_crew.platform_compat_descendants": (
+        "_ProcessStartOrder",
+        "WindowsCleanupCapacityError",
+        "_WindowsTreeOverflow",
+    ),
+    "kiro_crew.platform_compat_wintree": ("WindowsTreeDrainPending",),
+}
+
+
+def test_every_moved_exception_and_enum_class_is_listed() -> None:
+    found = {
+        owner: tuple(
+            name
+            for name in _MOVED[owner]
+            if isinstance(value := vars(module).get(name), type)
+            and issubclass(value, (BaseException, enum.Enum))
+        )
+        for owner, module in _CARVED.items()
+    }
+    assert {k: v for k, v in found.items() if v} == _FACADE_NAMED_CLASSES
+
+
+@pytest.mark.parametrize(
+    ("owner", "name"),
+    [(owner, name) for owner, names in _FACADE_NAMED_CLASSES.items() for name in names],
+)
+def test_a_moved_exception_or_enum_class_keeps_the_facade_s_module(owner: str, name: str) -> None:
+    cls = vars(_CARVED[owner])[name]
+    assert cls.__module__ == platform_compat.__name__
+    assert getattr(sys.modules[cls.__module__], cls.__qualname__) is cls

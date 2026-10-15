@@ -524,7 +524,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # from ``trusted_system_bin`` rather than PATH, and the sole interpolated
         # value is a pid the gateway itself recorded, rendered through ``str()``.
         # Nothing here is agent-influenced.
-        "platform_compat.py::_process_lstart",
+        "platform_compat_identity.py::_process_lstart",
         "apps/backend.py::_resolve_nvm_path",
         # py-spy attach for `kirocrew perf sample --pid`: fixed list-argv (no
         # shell=True), binary resolved via shutil.which rather than from input,
@@ -1579,26 +1579,26 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # spawn gets a PATH pinned to the trusted system directories, and the
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
-        "platform_compat.py::open_with_default_app",
+        "platform_compat_trust.py::open_with_default_app",
         # Read-only process-table snapshot through the trusted absolute ``ps``
         # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
         # It cannot route through sandbox because sandbox imports this module.
-        "platform_compat.py::_posix_process_snapshot",
-        "platform_compat.py::probe_port_listeners",
+        "platform_compat_descendants.py::_posix_process_snapshot",
+        "platform_compat_ports.py::probe_port_listeners",
         # Read-only kernel socket attribution: trusted absolute lsof binary,
         # fixed flags and a validated numeric port, no shell/user command.
-        "platform_compat.py::_macos_tcp_peer_pid",
+        "platform_compat_ports.py::_macos_tcp_peer_pid",
         "platform_compat.py::find_python_interpreter",
-        "platform_compat.py::kill_pid",
-        "platform_compat.py::kill_process_tree",
-        "platform_compat.py::reveal_in_file_manager",
-        "platform_compat.py::process_command_line",
+        "platform_compat_kill.py::kill_pid",
+        "platform_compat_kill.py::kill_process_tree",
+        "platform_compat_trust.py::reveal_in_file_manager",
+        "platform_compat_identity.py::process_command_line",
         # Same class as process_command_line: a read-only process-attribute query
         # (``ps -o uid=`` / ``/proc/<pid>`` stat) in the platform leaf module,
         # with a fixed argv containing only an int-coerced pid. It cannot route
         # through the sandbox helper because sandbox imports platform_compat.
-        "platform_compat.py::process_owner_uid",
-        "platform_compat.py::process_matches",
+        "platform_compat_identity.py::process_owner_uid",
+        "platform_compat_identity.py::process_matches",
         # Same class as process_matches: a read-only process-attribute query
         # (macOS ``ps -ww -o command= -p <pid>``; Linux reads /proc without
         # spawning) whose only interpolated value is an int-guarded pid — the
@@ -1606,7 +1606,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the strict identity check consulted before reclaiming a recorded
         # forwarder pid, and cannot route through the sandbox helper because
         # sandbox imports platform_compat.
-        "platform_compat.py::process_argv_matches_exact",
+        "platform_compat_identity.py::process_argv_matches_exact",
         # OS keep-awake helper for the prevent-sleep feature (power.py). FIXED
         # argv — `caffeinate -i -w <pid>` on macOS, `systemd-inhibit
         # --what=idle:sleep --mode=block … /bin/sh -c 'while kill -0 <pid> …'`

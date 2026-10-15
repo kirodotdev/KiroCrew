@@ -53,8 +53,8 @@ GATED_PROBES: dict[str, str] = {
     # platform_compat IS the shim — its POSIX branch is the real implementation
     # that every other caller is supposed to route through, and it is reached
     # only under `if IS_POSIX`.
-    "platform_compat.py::pid_exists": "the shim's own POSIX branch (under IS_POSIX)",
-    "platform_compat.py::pid_liveness": "the shim's own POSIX branch (under IS_POSIX)",
+    "platform_compat_liveness.py::pid_exists": "the shim's own POSIX branch (under IS_POSIX)",
+    "platform_compat_liveness.py::pid_liveness": "the shim's own POSIX branch (under IS_POSIX)",
 }
 
 
