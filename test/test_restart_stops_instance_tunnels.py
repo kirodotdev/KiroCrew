@@ -490,6 +490,88 @@ class TestTheSleepInhibitorJoinsTheSeam:
         assert seen[-1] == "exec:False", "the block was held, or engaged again, at the exec"
 
 
+# ── the browser view is the seam's third owner ────────────────────────────
+
+
+class TestTheBrowserViewJoinsTheSeam:
+    """`playwright-cli show` is spawned detached (``start_new_session``), so an
+    in-place restart's exec would leave it running parented to the new image,
+    which then starts a second tree on the next view request. The on_cleanup
+    hook that reaps it is skipped by the exec, so the startup hook registers the
+    same reap with the seam and the cleanup hook drops it."""
+
+    @pytest.mark.asyncio
+    async def test_startup_registers_the_view_stop_and_cleanup_drops_it(self, monkeypatch):
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+
+        monkeypatch.setattr(server.browser_cli_view, "stop", Mock())
+        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
+        monkeypatch.setattr(server.browser_cli_launcher, "close_all", Mock())
+        monkeypatch.setattr(server.handlers, "close_relay_client", AsyncMock())
+        state = SimpleNamespace(_background_tasks=set())
+        app = web.Application()
+        server._register_browser_view_cleanup(app, state)
+        app.freeze()
+
+        await app.on_startup.send(app)
+        for task in list(state._background_tasks):
+            await task
+        assert list(pre_exec_stops._stops) == ["Browser view"]
+
+        await app.on_cleanup.send(app)
+        assert pre_exec_stops._stops == {}
+
+    @pytest.mark.asyncio
+    async def test_the_seam_reaps_the_view_child(self, monkeypatch):
+        """The registered stop calls view.stop(), the only reaper of the child."""
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+
+        view_stop = Mock()
+        monkeypatch.setattr(server.browser_cli_view, "stop", view_stop)
+        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
+        state = SimpleNamespace(_background_tasks=set())
+        app = web.Application()
+        server._register_browser_view_cleanup(app, state)
+        app.freeze()
+        await app.on_startup.send(app)
+        for task in list(state._background_tasks):
+            await task
+
+        await run_pre_exec_stops()
+
+        view_stop.assert_called_once_with()
+
+    @pytest.mark.asyncio
+    async def test_a_restart_reaps_the_view_before_the_exec(self, monkeypatch, tmp_path):
+        from aiohttp import web
+
+        from kiro_crew.dashboard import server
+
+        order: list[str] = []
+        monkeypatch.setattr(server.browser_cli_view, "stop", lambda: order.append("view"))
+        monkeypatch.setattr(server.browser_cli_launcher, "reclaim_stranded", Mock())
+        state = SimpleNamespace(_background_tasks=set())
+        app = web.Application()
+        server._register_browser_view_cleanup(app, state)
+        app.freeze()
+        await app.on_startup.send(app)
+        for task in list(state._background_tasks):
+            await task
+
+        _dashboard_exec_seams(monkeypatch, order)
+        monkeypatch.setattr(updates, "reexec_python_module", lambda *_a, **_k: order.append("exec"))
+
+        await updates._restart_gateway(
+            _dashboard_state(order), resolver=lambda: _executable(tmp_path)
+        )
+
+        assert order == ["close_all", "broker", "view", "exec"]
+
+
 # ── the instances hooks register and drop the manager's teardown ──────────
 
 
