@@ -1145,3 +1145,50 @@ def test_the_host_token_scan_can_fail() -> None:
         "adapter = KiroHarness()\n",
     ):
         assert not _host_tokens(spelling, hosts), spelling
+
+
+def _sealed_environment_workspace(monkeypatch, tmp_path: Path) -> Path:
+    """A Linux host whose gateway environment is *tmp_path*/kc-venv; its workspace inside."""
+    from kiro_crew import sandbox
+
+    env = tmp_path / "kc-venv"
+    workspace = env / "lib" / "site-packages"
+    workspace.mkdir(parents=True)
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(sandbox, "_resolved_python_env_targets", lambda: [str(env)])
+    return workspace
+
+
+def test_a_confined_launch_inside_the_sealed_environment_is_refused_for_any_harness(
+    monkeypatch, tmp_path
+) -> None:
+    """The check sits in the tail every harness shares, after the wrap says CONFINED.
+
+    A child created inside the environment would stand on the writable mount beneath
+    its seal. The host here is not kiro-cli, whose own preflight never runs for it.
+    """
+    _launch_env(monkeypatch)
+    host = _FakeHost(_sealed_environment_workspace(monkeypatch, tmp_path))
+    rec = _Recording()
+
+    with pytest.raises(RuntimeError, match="Python environment"):
+        _run_launch(host, _request(backend="goose"), _launch_tools(rec, scratch=_Scratch(None)))
+
+    assert "create_subprocess_limited" not in rec.calls
+    # The launcher the wrap wrote is reclaimed, not left behind by the refusal.
+    assert host.cleanup_discards == 1
+
+
+def test_an_unconfined_launch_inside_the_environment_is_not_refused(monkeypatch, tmp_path) -> None:
+    """Sandbox off: the wrap returns the bare command, there is no seal to stand under."""
+    _launch_env(monkeypatch)
+    host = _FakeHost(_sealed_environment_workspace(monkeypatch, tmp_path))
+    rec = _Recording()
+    tools = dataclasses.replace(
+        _launch_tools(rec, scratch=_Scratch(None)), wrapped_by_crew_sandbox=lambda argv: False
+    )
+
+    _run_launch(host, _request(backend="goose", sandbox_mode="off"), tools)
+
+    assert host._sandbox_wrapped_by_crew is False
+    assert "create_subprocess_limited" in rec.calls
