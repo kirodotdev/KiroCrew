@@ -998,7 +998,11 @@ class TestThereIsNoCliGrantSurface:
 
         import kiro_crew.cli as cli_mod
 
-        source = _pathlib.Path(cli_mod.__file__).read_text(encoding="utf-8")
+        # cli.py and every module split out of it.
+        family = [_pathlib.Path(cli_mod.__file__)]
+        family += [family[0].with_name(f"{name.rsplit('.', 1)[1]}.py") for name in cli_mod._OWNERS]
+        family += sorted(family[0].parent.glob("cli_parser_*.py"))
+        source = "\n".join(path.read_text(encoding="utf-8") for path in family)
         assert "aws-consent" not in source
         assert "aws_consent_yes" not in source
 

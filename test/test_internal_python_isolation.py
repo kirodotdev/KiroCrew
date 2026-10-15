@@ -27,7 +27,7 @@ _INTERNAL_PYTHON_SPAWN_SITES = (
     ("apps/builtins/auto_improvement/backend/deps.py", "install_deps"),
     ("apps/builtins/dev_fleet/runtime.py", "_find_cli"),
     ("apps/registry.py", "_run_app_build"),
-    ("cli.py", "_child_argv"),
+    ("cli_jail.py", "_child_argv"),
     ("cli_server.py", "_spawn_detached_gateway"),
     ("cli_server.py", "_refresh_agent_config"),
     ("computer_use/overlay.py", "CursorOverlay._spawn"),

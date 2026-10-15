@@ -185,7 +185,7 @@ def validate_name(name: str) -> str:
 # Approval modes a pod's gateway may boot with, mirroring the choices on
 # ``kirocrew gateway --approval``. This tuple is the ENFORCEMENT point: the env
 # file is hand-editable, so ``boot`` re-validates against it instead of trusting
-# whatever ``pod up`` wrote. The top-level ``cli.py`` repeats the literal for its
+# whatever ``pod up`` wrote. The top-level ``cli_parser_admin.py`` repeats the literal for its
 # argparse ``choices`` because that parser deliberately imports no pod module at
 # startup; argparse is the UX layer, this tuple is the invariant.
 APPROVAL_MODES: tuple[str, ...] = ("reads", "yolo", "interactive")

@@ -104,7 +104,7 @@ _CONTEXT_FACTORIES = frozenset(
 )
 
 # Local variable names that conventionally hold a ``PlatformContext``, for the
-# ``ctx = current_context(); ctx.jail`` two-step (used by ``cli.py`` and
+# ``ctx = current_context(); ctx.jail`` two-step (used by ``cli_jail.py`` and
 # ``cli_doctor.py``). Kept narrow on purpose: a broad name set would count
 # unrelated ``ctx.foo`` reads (e.g. an aiohttp request ctx) as seam wiring and
 # make this gate pass vacuously.
@@ -375,7 +375,7 @@ class TestScannerCoherence:
 
     def test_scanner_finds_two_step_ctx_var_shape(self, field_reads) -> None:
         """``ctx = current_context()`` then ``ctx.jail`` must be recognized."""
-        assert any("cli.py" in site for site in field_reads["jail"]), field_reads["jail"]
+        assert any("cli_jail.py" in site for site in field_reads["jail"]), field_reads["jail"]
 
     def test_scanner_finds_method_level_reads(self, method_reads) -> None:
         assert method_reads.get("identity.status_line"), "method-level scan found nothing"

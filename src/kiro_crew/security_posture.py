@@ -2743,7 +2743,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # CLI bootstrap: the ``install_log_redaction()`` call in
         # ``_setup_cli_logging`` matches the drift-guard's redaction regex.
         # The CLI is not an egress boundary — it's an installer, not a sink.
-        "cli.py",
+        "cli_logging.py",
         # Defensive scrub: hooks.py redacts a persisted last_error as it loads a
         # hook (ScriptHook.from_dict), and hook_runtime/script_hooks.py redacts a
         # hook's output before storing it in last_error (an internal model field).

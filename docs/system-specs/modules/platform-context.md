@@ -964,7 +964,7 @@ Wired sites:
   `current_context().knowledge.extra_connectors(cfg)` after the built-ins
   (`local_folder`/`obsidian_vault`); Default returns `{}` so standalone is
   unchanged.
-- `cli.py` `main` (jail gate, factored into `_jail_reexec_gate`) +
+- `cli.py` `main` (jail gate, factored into `cli_jail._jail_reexec_gate`) +
   `cli_doctor.py` — for `_JAILED_COMMANDS`
   (`chat`/`run`/`consolidate`/`eval` — the rule is "every command that
   builds a provider factory / runs in-process agent work"; `gateway` is excluded

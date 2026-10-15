@@ -296,9 +296,16 @@ class TestKeystoneFencing:
         caller could take): it reads the armed nonce from the keystone file and
         POSTs it to the approve endpoint, so it authorizes nothing on its own.
         """
-        from kiro_crew import cli, cli_server
+        from kiro_crew import (
+            cli,
+            cli_parser_admin,
+            cli_parser_agent,
+            cli_parser_gateway,
+            cli_server,
+        )
 
-        cli_src = inspect.getsource(cli)
+        parser_modules = (cli, cli_parser_gateway, cli_parser_agent, cli_parser_admin)
+        cli_src = "\n".join(inspect.getsource(module) for module in parser_modules)
         assert '"file-delivery"' in cli_src
         assert "_file_delivery_approve" in cli_src
 

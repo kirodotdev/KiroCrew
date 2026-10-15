@@ -1983,7 +1983,7 @@ the session, the number of dropped messages and the failure reason, and
 saying their history, preferences and lessons were not extracted. A marked
 span no longer appears in any pending listing, so this notification is the
 only user-visible record of the loss; with no dashboard state the method
-posts nothing. A consolidator built outside the gateway (`cli.py`,
+posts nothing. A consolidator built outside the gateway (`cli_knowledge.py`,
 `cli_server.py`, `dashboard/server_runtime/skill_learning.py`,
 `eval/runner.py`) leaves the callback unset and abandons with the WARNING
 alone.

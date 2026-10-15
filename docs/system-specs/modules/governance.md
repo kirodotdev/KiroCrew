@@ -3695,7 +3695,7 @@ carve-out stay as code. It expects `CONTRACT_VERSION == 1` (pinned pre-launch).
   plus the audit-only seam `computer_use/gate.py` (not a governance chokepoint:
   `require_computer_use` always proceeds and audits, and `apply_observation_ceiling`
   passes the payload through).
-- `cli.py` / `cli_commands.py` — the `policy` command.
+- `cli_parser_admin.py` (its arguments), `cli.py` (dispatch) / `cli_commands.py` — the `policy` command.
 
 ## Tests
 

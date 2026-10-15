@@ -22,7 +22,7 @@ def _draining(mock_log):
 
 
 class TestConsolidateCmd:
-    """Cover _consolidate_cmd paths in cli.py."""
+    """Cover _consolidate_cmd paths in cli_knowledge.py."""
 
     def _make_session_file(self, tmp_path: Path, name: str = "test_session") -> Path:
         sessions_dir = tmp_path / "sessions"

@@ -539,7 +539,7 @@ class TestIndexIsPerStore:
 
         A bare ``MemoryStore()`` and ``MemoryStore(workspace=workspace_dir())``
         share one ``_workspace`` and one markdown tree yet name two different
-        index files, and both forms are live (``cli.py`` takes the first,
+        index files, and both forms are live (``cli_knowledge.py`` takes the first,
         ``context.py`` the second). Neither answer is wrong — ``rebuild_index``
         reads no index state, so the cost is a duplicated rebuild — but only the
         root copy is in the snapshot. Closing it means giving every caller a

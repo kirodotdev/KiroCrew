@@ -248,7 +248,7 @@ class MemoryStore:
         ``MemoryStore()`` indexes to ``<home>/memory_index.db`` while
         ``MemoryStore(workspace=workspace_dir())`` indexes to
         ``<home>/workspace/memory_index.db``, though both share one
-        ``_workspace`` and one markdown tree. Both forms are in use (``cli.py``
+        ``_workspace`` and one markdown tree. Both forms are in use (``cli_knowledge.py``
         takes the first, ``context.py`` the second) and both work, because
         ``rebuild_index`` regenerates the whole index from preferences.md,
         projects.md and history/*.md and reads no index state — so the cost is a

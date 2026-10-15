@@ -1378,7 +1378,13 @@ def test_the_cli_prologue_never_walks_the_data_home() -> None:
     before ``asyncio.run()``. Read from the source because ``main()`` boots a
     whole gateway; any call into the sweep from ``cli.py`` would be on that path.
     """
-    tree = ast.parse((REPO_ROOT / "src" / "kiro_crew" / "cli.py").read_text(encoding="utf-8"))
+    from kiro_crew import cli
+
+    package = REPO_ROOT / "src" / "kiro_crew"
+    # cli.py and every module split out of it.
+    family = [package / "cli.py", *(package / f"{n.rsplit('.', 1)[1]}.py" for n in cli._OWNERS)]
+    family += sorted(package.glob("cli_parser_*.py"))
+    tree = ast.parse("\n".join(path.read_text(encoding="utf-8") for path in family))
     called = {
         getattr(node.func, "id", None) or getattr(node.func, "attr", None)
         for node in ast.walk(tree)

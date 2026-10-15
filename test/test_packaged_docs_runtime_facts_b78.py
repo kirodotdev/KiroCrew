@@ -39,7 +39,10 @@ def test_decisions_doc_documents_the_wake_judge_providers() -> None:
 
 
 def test_feishu_doc_names_only_registered_security_subcommands() -> None:
-    cli = (ROOT / "src" / "kiro_crew" / "cli.py").read_text(encoding="utf-8")
+    package = ROOT / "src" / "kiro_crew"
+    # The parser is cli.py plus the cli_parser_* registrars it calls.
+    parser_files = [package / "cli.py", *sorted(package.glob("cli_parser_*.py"))]
+    cli = "\n".join(path.read_text(encoding="utf-8") for path in parser_files)
     registered = set(re.findall(r'sec_sub\.add_parser\(\s*"([a-z-]+)"', cli))
     assert registered, "security subcommands not found in cli.py"
     named = set(re.findall(r"`kirocrew security ([a-z-]+)`", _doc("feishu-integration.md")))

@@ -1180,7 +1180,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # request but the page refused, no listening port, and its process group killed
         # at the end.
         "dashboard_verify.py::_spawn",
-        "cli.py::_consolidate_cmd",
+        "cli_knowledge.py::_consolidate_cmd",
         "cli.py::_ensure_node",
         "cli.py::_node_ok",
         "cli.py::main",

@@ -8625,7 +8625,14 @@ class TestBannerBranding:
         import kiro_crew.cli as cli_mod
         import kiro_crew.cli_chat as chat_mod
 
-        for mod in (cli_mod, chat_mod):
+        # cli.py, every module split out of it, and cli_chat.
+        split_out = [sys.modules[name] for name in cli_mod._OWNERS]
+        split_out += [
+            cli_mod.cli_parser_gateway,
+            cli_mod.cli_parser_agent,
+            cli_mod.cli_parser_admin,
+        ]
+        for mod in (cli_mod, *split_out, chat_mod):
             src = Path(mod.__file__).read_text(encoding="utf-8")
             assert "BANNER = r" not in src, f"{mod.__name__} re-inlined the banner literal"
 

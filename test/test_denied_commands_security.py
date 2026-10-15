@@ -562,18 +562,19 @@ class TestSelfProtectionFlagInterposition:
         A verb added to the CLI without a decision here would otherwise walk past
         the floor silently, which is the failure mode the enumeration invites.
 
-        Read by AST rather than by calling a builder, because ``cli.py`` builds its
-        parser inline in ``main()``; and by AST rather than by grepping the source,
-        because a substring assertion stays green when the construct it names moves
-        or is wrapped.
+        Read by AST rather than by calling a builder, because ``cli.main()`` builds
+        its parser inline from the ``cli_parser_*`` registrars; and by AST rather
+        than by grepping the source, because a substring assertion stays green when
+        the construct it names moves or is wrapped.
         """
         import ast
         import inspect
 
-        from kiro_crew import cli
+        from kiro_crew import cli, cli_parser_admin, cli_parser_agent, cli_parser_gateway
         from kiro_crew.security import argv_floor
 
-        tree = ast.parse(inspect.getsource(cli))
+        parser_modules = (cli, cli_parser_gateway, cli_parser_agent, cli_parser_admin)
+        tree = ast.parse("\n".join(inspect.getsource(module) for module in parser_modules))
         choices: "list[str] | None" = None
         required = None
         for node in ast.walk(tree):

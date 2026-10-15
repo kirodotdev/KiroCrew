@@ -4,6 +4,44 @@
 
 The CLI module (`kiro_crew/cli.py`) provides the `kirocrew` command using stdlib `argparse`.
 
+## Module layout
+
+`kiro_crew/cli.py` is the entry point and the one import path callers and tests use.
+`main()` keeps the prologue, the top-level parser with the `gateway` command's own
+arguments (`pod.runtime_boot.target_supports_flag` reads them from this file's text)
+and the internal `mcp-*` server verbs, the boot steps, and the dispatch chain. The
+rest lives in sibling modules, and new work for each part goes to its module:
+
+| Module | Owns |
+|---|---|
+| `cli_parser_gateway.py` | the argparse registrars of the `Start here`, `Run the gateway` and `Set it up` commands, all but `gateway` |
+| `cli_parser_agent.py` | the registrars of the `Work with the agent`, `Memory and knowledge` and `Extend it` commands |
+| `cli_parser_admin.py` | the registrars of the `Security and privacy`, `Move it and back it up` and `Develop Kiro Crew itself` commands, but `bench`, `perf` and `desktop`, which register from `cli_bench.py`, `cli_perf.py` and `cli_desktop.py` |
+| `cli_logging.py` | console and `gateway.log` logging: `_setup_cli_logging`, the log queue listener and its drains |
+| `cli_jail.py` | the process-isolation jail gate: `_JAILED_COMMANDS`, `_jail_reexec_gate` |
+| `cli_gateway_boot.py` | what the `gateway` branch prepares before `asyncio.run`: `_resolve_gateway_args`, `_install_child_watcher`, the lock-refusal diagnostics |
+| `cli_knowledge.py` | the `knowledge` and `consolidate` handlers |
+
+A registrar is one `register_<command>_parser(sub)` function per command (`chat`,
+`run`, `eval` and `consolidate` also take the shared `--no-jail` parent parser), in
+the module of the command's `cli_help.COMMAND_GROUPS` section. `main()` calls every
+registrar in registration order between the parser preamble and
+`cli_help.hide_internal_commands`, so a new command gets a registrar, a call in
+`main()` and its section row. The registrars build parsers only and read no name a
+test patches through `kiro_crew.cli`. `bench`, `perf` and `desktop` keep their
+registrars in `cli_bench.py`, `cli_perf.py` and `cli_desktop.py`, beside their
+handlers. The owner-only log file handlers that the slim `mcp-*` entry
+(`kiro_crew.mcp_entry`) shares stay in `cli_log_files.py`; the wiring that attaches them
+for a command goes in `cli_logging.py`.
+
+`kiro_crew.cli` is a mirror facade (`kiro_crew._facade_mirror`) over the last four
+modules, its owners. Every name `cli.py` held before the split still resolves as
+`kiro_crew.cli.<name>` and is the same object, and a patch through it
+(`monkeypatch.setattr`, `mock.patch`) reaches every owner that binds the name. No
+owner imports `kiro_crew.cli` or another owner, the owners log as `kiro_crew.cli`,
+and the facade declares no exclusion. `test/test_cli_split_facade.py` pins the
+contract.
+
 ## Member memory commands
 
 `kirocrew agent create --name <name>` explicitly creates a stable member identity
@@ -2134,7 +2172,7 @@ source is most appropriate:
    and tail nothing.
 4. `~/.kiro/crew/gateway.log` for foreground gateways
 
-`gateway.log` itself is opened by `cli._setup_cli_logging`. Only the `gateway`
+`gateway.log` itself is opened by `cli_logging._setup_cli_logging`. Only the `gateway`
 command rotates it (2 MiB, three backups). Every other process that logs there —
 the `mcp-*` stdio servers, `kirocrew chat`, short CLI verbs — writes through
 `_AppendOnlyLogFileHandler`, which opens the file for one record, closes it again

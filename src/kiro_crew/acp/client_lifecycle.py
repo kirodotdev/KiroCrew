@@ -105,7 +105,7 @@ _T = TypeVar("_T")
 #
 # Why drop rather than just downgrade the level:
 #   1. Log hygiene — gateway.log uses a RotatingFileHandler(maxBytes=2MB,
-#      backupCount=3) (see cli.py), so a sustained burst rolls genuine
+#      backupCount=3) (see cli_logging.py), so a sustained burst rolls genuine
 #      diagnostics out of the retained 8MB window.
 #   2. Event-loop load — the file handler is a plain *synchronous* handler and
 #      _drain_stderr runs as a task on the gateway event loop, so each forwarded
@@ -164,7 +164,7 @@ def rekey(
     """Re-key this client for a different session (used by warm pool).
 
     ``crew_agent`` and ``watchdog`` exist only for signature parity with
-    AcpSessionProvider.rekey (session_allocation.py calls
+    AcpSessionProvider.rekey (session_allocation_parts/get_or_create.py calls
     provider.client.rekey uniformly): this client's dispatch loop carries no
     per-agent watchdog snapshot, so both are accepted and deliberately not
     stored."""

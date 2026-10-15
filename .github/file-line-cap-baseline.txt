@@ -52,7 +52,6 @@
 2232 src/kiro_crew/builtin_skills/kirocrew-dev/kirocrew-prepare-pr/scripts/push_guard.py
 2998 src/kiro_crew/builtin_skills/pipeline-conductor/scripts/fleet_probe.py
 2058 src/kiro_crew/change_card_catalog.py
-3848 src/kiro_crew/cli.py
 5223 src/kiro_crew/cli_commands.py
 2478 src/kiro_crew/cli_doctor.py
 3552 src/kiro_crew/cli_server.py

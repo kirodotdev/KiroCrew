@@ -8059,7 +8059,7 @@ class TestBootTimeSettings:
     ) -> None:
         # Behavioural pin only: each mode in the enforcement tuple round-trips
         # through the env file into argv. This does NOT guard parser drift --
-        # a mode present in cli.py but absent from APPROVAL_MODES is never
+        # a mode present in cli_parser_admin.py but absent from APPROVAL_MODES is never
         # iterated here. test_cli_approval_choices_match_the_enforcement_tuple
         # covers that.
         for mode in rt.APPROVAL_MODES:
@@ -8072,11 +8072,14 @@ class TestBootTimeSettings:
         # encoding is explicit: cli.py contains non-ASCII (emoji in guard
         # messages), and read_text() defaults to the platform locale codec,
         # which is cp1252 on Windows CI and raises UnicodeDecodeError there.
-        src = (Path(rt.__file__).parent.parent / "cli.py").read_text(encoding="utf-8")
+        # The top-level parser is cli.py plus the cli_parser_* registrars it calls.
+        package = Path(rt.__file__).parent.parent
+        files = [package / "cli.py", *sorted(package.glob("cli_parser_*.py"))]
+        src = "\n".join(path.read_text(encoding="utf-8") for path in files)
         return ast.parse(src)
 
     def test_cli_approval_choices_match_the_enforcement_tuple(self) -> None:
-        # cli.py repeats the choices literal instead of importing pod.runtime
+        # cli_parser_admin.py repeats the choices literal instead of importing pod.runtime
         # (the top-level parser must not import pod modules at startup), so the
         # duplication is real. Read the literal argparse actually registers, so a
         # mode added on one side only fails HERE rather than being accepted by

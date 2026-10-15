@@ -770,7 +770,7 @@ async def _prepare_projection_to_completion(
 # unbounded STEADY STATE, not a burst. Measured on an operator host: ~60
 # lines/second for 6+ hours from one gateway PID, taking 33–59% of every
 # gateway.log rotation — which, at RotatingFileHandler(maxBytes=2MB,
-# backupCount=3) (see cli.py), rolls the genuine diagnostics needed for an
+# backupCount=3) (see cli_logging.py), rolls the genuine diagnostics needed for an
 # incident out of the retained 8MB window before anyone can read them.
 #
 # So the per-frame line is collapsed into a periodic count keyed by
