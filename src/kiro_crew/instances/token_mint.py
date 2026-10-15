@@ -76,7 +76,7 @@ _TOKEN_RE = re.compile(r"[?&]token=([^\s&]+)")
 # outside a URL before a stdout tail is put into an exception message.
 #
 # The segment count is `{1,4}` REPEATED, not a fixed `head.payload.sig` triple:
-# `generate_token` (dashboard/token_auth.py) mints `payload.signature` — only
+# `generate_token` (dashboard/token_auth_tokens.py) mints `payload.signature` — only
 # TWO segments — so a three-segment pattern would never match the shape this app
 # actually produces, leaving the scrub layer inert against its own tokens. The
 # upper bound covers a compact JWE (five segments) so a partial match cannot

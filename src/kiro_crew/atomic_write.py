@@ -207,7 +207,7 @@ def _is_access_control_xattr(attr: str) -> bool:
 #: ``"raise"`` refuses to write a secret it cannot protect. ``"warn"`` logs and
 #: writes anyway. Both are deliberate, established conventions in this codebase,
 #: which is why this is a parameter and not a fixed policy: ``webhooks.py`` and
-#: ``dashboard/token_auth.py`` let the OSError propagate, while ``sel.py`` and
+#: ``dashboard/token_auth_tokens.py`` let the OSError propagate, while ``sel.py`` and
 #: ``dashboard/refresh_tokens.py`` catch it and continue, because a read-only
 #: filesystem must not brick SecurityEventLog init or stop refresh-token state
 #: from being persisted. Losing reuse-detection state is a worse outcome there

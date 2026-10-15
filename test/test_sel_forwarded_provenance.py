@@ -173,6 +173,9 @@ async def test_a_boundary_refusal_records_forwarded_beside_the_kept_suffix(monke
 # is outside the rule and stays keyless.
 _REQUEST_BOUND_WRITERS = (
     "dashboard/token_auth.py",
+    "dashboard/token_auth_paths.py",
+    "dashboard/token_auth_app_scope.py",
+    "dashboard/token_auth_callers.py",
     "dashboard/server_runtime/middleware_chain.py",
     "dashboard/server_runtime/security_middleware.py",
 )

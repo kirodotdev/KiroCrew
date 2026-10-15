@@ -697,7 +697,7 @@ async def test_cli_local_secret_endpoints_bypass_auth(path: str) -> None:
     assert resp.status == 200, (
         f"{path} was denied by the auth middleware; the CLI sends no dashboard "
         f"token, so the handler's own loopback + local-secret check never runs. "
-        f"Add {path!r} to _BYPASS_EXACT in token_auth.py."
+        f"Add {path!r} to _BYPASS_EXACT in token_auth_paths.py."
     )
 
 
@@ -731,7 +731,7 @@ async def test_update_revalidate_post_bypasses_auth() -> None:
         "POST /api/update/revalidate was denied by the auth middleware; the CLI "
         "sends no dashboard token, so the handler's own loopback + local-secret "
         "check never runs and the post-update badge poke can never succeed. Add "
-        "the path to _BYPASS_EXACT_METHODS (POST) in token_auth.py."
+        "the path to _BYPASS_EXACT_METHODS (POST) in token_auth_paths.py."
     )
 
 
@@ -974,7 +974,7 @@ def test_apps_server_routes_are_excluded_from_shell() -> None:
     assert not offenders, (
         f"/apps/ route(s) with a real handler are NOT excluded from the SPA "
         f"shell and would be shadowed by index.html: {offenders}. Extend "
-        f"_APPS_SPA_EXCLUDED_RE in token_auth.py to cover their sub-namespace."
+        f"_APPS_SPA_EXCLUDED_RE in token_auth_paths.py to cover their sub-namespace."
     )
 
 
@@ -2631,7 +2631,7 @@ def test_no_get_route_outside_shell_exclusions() -> None:
         f"GET route(s) outside the shell-exclusion set would be served the SPA "
         f"shell unauthenticated: {offenders}. Add their namespace to "
         f"SPA_FALLBACK_EXCLUDED_PREFIXES (or _APPS_SPA_EXCLUDED_RE for /apps/ "
-        f"sub-paths) in token_auth.py."
+        f"sub-paths) in token_auth_paths.py."
     )
 
 
@@ -2674,7 +2674,7 @@ def test_apps_routes_get_paths_are_matched_by_the_apps_spa_regex() -> None:
         f"/apps/ GET route(s) in apps/routes.py that _APPS_SPA_EXCLUDED_RE does not "
         f"match: {unmatched}. The middleware will answer these with the SPA shell "
         f"instead of the handler — add the sub-namespace verb to the regex in "
-        f"token_auth.py."
+        f"token_auth_paths.py."
     )
 
 

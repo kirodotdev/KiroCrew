@@ -2,7 +2,7 @@
 
 The slot-detail render runs the display battery (``redact_exfiltration_urls`` then
 ``redact_credentials``) over every non-user string of a session. The in-memory
-verdict cache in ``chat_utils`` makes a repeat render in the same process cheap,
+verdict cache in ``chat_utils_display`` makes a repeat render in the same process cheap,
 but a gateway restart, or the first open of a long session, still pays the whole
 scan. This module keeps the verdicts on disk:
 

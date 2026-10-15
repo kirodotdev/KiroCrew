@@ -2626,7 +2626,7 @@ async def api_chat_folder_delete(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
-# The authorization-identity helper is homed in ``token_auth`` beside the rule it
+# The authorization-identity helper is homed in ``token_auth_callers`` beside the rule it
 # wraps; this module keeps its historical private name because
 # ``chat_folder_scaffold`` imports it from here and
 # ``test_internal_secret_app_identity_3690`` addresses it as

@@ -1474,7 +1474,7 @@ no longer destroy older turns.
   its receipt carrier, the human-turn marker and the turn-actor stamp), plus
   `mid` on an app's send to a user session through `permissions.sessionApproval`,
   where the gateway mints the row id (see
-  [app-kit-platform](app-kit-platform.md)); `_redact_meta` (`chat_utils.py`) redacts credential- and exfiltration-shaped
+  [app-kit-platform](app-kit-platform.md)); `_redact_meta` (`chat_utils_display.py`) redacts credential- and exfiltration-shaped
   STRING values recursively and is not a key allowlist, `slot.append` broadcasts
   the row's `meta` on the WebSocket `chat_message` echo
   (`include_metadata=True`), `_save_slot_to_history` writes it verbatim on the

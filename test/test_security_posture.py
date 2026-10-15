@@ -930,10 +930,13 @@ class TestOmissionDetection:
     def test_token_auth_controls_name_live_mechanisms(self):
         """Each advertised auth control must have its enforcement present."""
         import inspect
+        import sys
 
         from kiro_crew.dashboard import token_auth
 
-        src = inspect.getsource(token_auth)
+        # The facade and the owner modules it serves the moved code from.
+        family = (token_auth.__name__, *token_auth._OWNERS)
+        src = "\n".join(inspect.getsource(sys.modules[name]) for name in family)
         for marker in (
             "hmac.new",  # HMAC-SHA256 signature
             "bind_peer",  # session pinning (peer-keyed: ip:<addr> / ts:… identity)

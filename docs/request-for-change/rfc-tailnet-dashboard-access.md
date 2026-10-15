@@ -97,7 +97,7 @@ correctly treated as remote and the config-write surfaces return `read_only`
 
 ### Problem 1 — the IP pin is inert behind every recommended tunnel
 
-`check_token_ip()` (`token_auth.py`) compares against the value captured at
+`check_token_ip()` (`token_auth_tokens.py`) compares against the value captured at
 session creation, which is `request.remote`. For cloudflared, ngrok, and
 `tailscale serve` alike the immediate peer is `127.0.0.1`, so:
 

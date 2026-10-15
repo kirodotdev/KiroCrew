@@ -44,7 +44,8 @@ POD_CLI = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/cli.py"
 #: module re-exports it.
 POD_RUNTIME_CLIENT = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/runtime_client.py"
 POD_CONFIG = Path(__file__).resolve().parent.parent / "src/kiro_crew/pod/config.py"
-TOKEN_AUTH = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/token_auth.py"
+#: ``generate_token`` is defined in the token-auth tokens owner; the token_auth facade serves it.
+TOKEN_AUTH = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/token_auth_tokens.py"
 TOKEN_HANDLER = Path(__file__).resolve().parent.parent / "src/kiro_crew/dashboard/handlers/core.py"
 WORKTREE_OPS = (
     Path(__file__).resolve().parent.parent / "src/kiro_crew/apps/builtins/dev_fleet/worktree_ops.py"

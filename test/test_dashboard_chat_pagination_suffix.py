@@ -535,8 +535,8 @@ class TestSlotDetailPaginationPersistedSuffix:
         """A live ``chunk`` row must reach the bounded response.
 
         ``_prepare_messages`` does not discard chunk rows, it ACCUMULATES them and
-        emits one ``streaming`` row (``chat_utils.py:1651-1660``). That is the only
-        way in-flight assistant text reaches the client through this endpoint,
+        emits one ``streaming`` row (``chat_utils_display._prepare_messages_scoped``).
+        That is the only way in-flight assistant text reaches the client through this endpoint,
         because the client filters raw ``chunk`` itself (``store/chat/wire.ts``
         ``SKIP_ROLES``). So skipping chunk rows in the owed set does not merely omit
         noise — it destroys the partial answer.

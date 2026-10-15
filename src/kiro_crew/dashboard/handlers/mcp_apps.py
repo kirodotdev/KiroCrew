@@ -322,7 +322,7 @@ async def api_mcp_apps_call(request: web.Request) -> web.Response:
 #: classification is by the queue entry's ``kind`` tag (unforgeable, set at
 #: enqueue time); the banner exists for the MODEL and the transcript reader,
 #: so the turn's text says who authored it. Mirrors ``CRON_NOTIFY_PREFIX``.
-#: Provenance banner constants live in ``chat_utils`` beside
+#: Provenance banner constants live in ``chat_utils_injected_rows`` beside
 #: ``MCP_APP_MESSAGE_KIND`` (the drain reads them too); re-exported here for
 #: the endpoint's tests and callers.
 from kiro_crew.dashboard.chat_utils import (  # noqa: E402

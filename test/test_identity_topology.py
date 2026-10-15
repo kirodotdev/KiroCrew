@@ -1248,10 +1248,10 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
         "plus the host ancestor chain (gatewayd indexes the chain for "
         "claim-push matching); .txt reads via "
         "session_pid_sig.read_session_pid_txt (hardened, unsigned). Consumed "
-        "by gatewayd (stub register) and dashboard/token_auth (unix-socket "
+        "by gatewayd (stub register) and dashboard/token_auth_callers (unix-socket "
         "peer verification)"
     ),
-    "dashboard/token_auth.py": (
+    "dashboard/token_auth_callers.py": (
         "reader (via peer_resolve.resolve_peer_identity, no inline walk): "
         "kernel-attests internal-API requests arriving on the dashboard's "
         "AF_UNIX socket — SO_PEERCRED peer pid → host-namespace ancestry walk "

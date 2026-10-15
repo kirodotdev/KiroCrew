@@ -673,7 +673,7 @@ class TestInlinePayloadNamesTheMintSurface:
             return found - seed_names
 
         # Hop 1: the modules that import the key reader, and which of THEIR functions
-        # reach it (in ``token_auth``: ``_sign`` and every ``generate_*`` built on it --
+        # reach it (in ``token_auth_tokens``: ``_sign`` and every ``generate_*`` built on it --
         # not ``validate_token`` or ``is_csrf_exempt``, which never touch the key).
         hop1 = importers_of(seeds)
         hop1_producers: dict[str, set[str]] = {}
@@ -682,7 +682,7 @@ class TestInlinePayloadNamesTheMintSurface:
         for mod, seed_names in list(hop1_producers.items()):
             hop1_producers[mod] = producers_in(mod, seed_names) | seed_names
         assert "generate_token" in hop1_producers.get(
-            "kiro_crew.dashboard.token_auth", set()
+            "kiro_crew.dashboard.token_auth_tokens", set()
         ), hop1_producers
         # Hop 2: every module that imports one of those producers.
         hop2 = [

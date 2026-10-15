@@ -297,7 +297,6 @@ line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:8
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	context.py:897-902
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/chat_folders.py:130
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/chat_persistence.py:326,476
-line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/chat_utils.py:369-375
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/handlers/artifacts.py:696
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/handlers/cron.py:141
 line-ref	docs/request-for-change/rfc-resumable-subagent-sessions.md	dashboard/handlers/sessions.py:401,693

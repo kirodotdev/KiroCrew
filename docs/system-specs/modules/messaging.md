@@ -2667,7 +2667,7 @@ Four constraints shape those signatures:
   already-extracted ARGUMENT, never the message, because indexing into the split
   text would read one channel's grammar on another's behalf.
 - **`parse_duration` is injected, not imported.** It lives in
-  `dashboard/token_auth.py`, and `kiro_crew.messaging` imports nothing from
+  `dashboard/token_auth_tokens.py`, and `kiro_crew.messaging` imports nothing from
   `kiro_crew.dashboard` at any nesting depth (`test_messaging_commands.py`
   scans for it, deferred in-function imports included).
 

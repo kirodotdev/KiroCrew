@@ -127,7 +127,7 @@ them.
    therefore lands unfiled and touches the folder store not at all — it does not
    create, and it does not adopt a folder the person owns. Identity comes from
    the shared `effective_request_app` rule in
-   `src/kiro_crew/dashboard/token_auth.py`, never from the request body.
+   `src/kiro_crew/dashboard/token_auth_callers.py`, never from the request body.
 
 2. **Placement is resolved only after the slot exists.** The import handler
    re-checks the live-slot cap after its last `await` and can answer `429` there.

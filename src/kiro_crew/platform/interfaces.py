@@ -1911,7 +1911,7 @@ class DashboardContributor(Protocol):
     ) -> None:
         """Observe a dashboard-session token being consumed on a verified device.
 
-        WIRED: ``dashboard/token_auth.py::bind_token_ip`` calls this once, right
+        WIRED: ``dashboard/token_auth.py::token_auth_middleware`` calls this once, right
         after it binds the token to the consuming IP, inside a fail-safe guard so
         an observer error never blocks token consumption. Fire-and-forget: the
         observer must not block.

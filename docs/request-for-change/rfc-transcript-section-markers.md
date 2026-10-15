@@ -527,7 +527,7 @@ existing write-boundary redaction rather than needing its own: because the role 
 not `user`, `_build_message_entry_uncached` runs `redact_exfiltration_urls` and
 `redact_credentials` over `content` (`dashboard/chat_persistence.py`),
 and `meta` goes through `_redact_meta_for_role`
-(`dashboard/chat_utils.py`, called at `chat_persistence.py`). Validation
+(`dashboard/chat_utils_display.py`, called at `chat_persistence.py`). Validation
 is still required at the boundary — length cap and control-character rejection
 (§5.6) — and the rendered label must go through the same markdown/escaping path as
 other row content rather than being injected as markup.

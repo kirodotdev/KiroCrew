@@ -78,7 +78,6 @@
 3617 src/kiro_crew/dashboard/chat_persistence.py
 18473 src/kiro_crew/dashboard/chat_runner.py
 2283 src/kiro_crew/dashboard/chat_tags.py
-4616 src/kiro_crew/dashboard/chat_utils.py
 4097 src/kiro_crew/dashboard/handlers/_shared.py
 2690 src/kiro_crew/dashboard/handlers/agent_panel.py
 6397 src/kiro_crew/dashboard/handlers/artifacts.py
@@ -105,7 +104,6 @@
 2255 src/kiro_crew/dashboard/session_directive_apply.py
 3095 src/kiro_crew/dashboard/session_transfer.py
 11318 src/kiro_crew/dashboard/state.py
-3885 src/kiro_crew/dashboard/token_auth.py
 2795 src/kiro_crew/deploy/handlers.py
 2177 src/kiro_crew/discord/client.py
 2103 src/kiro_crew/discord/renderer.py

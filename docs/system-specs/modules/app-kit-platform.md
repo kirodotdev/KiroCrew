@@ -917,7 +917,7 @@ produce two identical routes, so a hit means the convention changed under us.
 
 Writer: `dashboard/server_runtime/static_assets.py::discover_app_window_entries`
 (`APP_WINDOW_URL_PREFIX = "app-windows"`);
-exclusion: `dashboard/token_auth.py::register_app_window_paths`.
+exclusion: `dashboard/token_auth_paths.py::register_app_window_paths`.
 
 The dashboard service worker also declines every `/app-windows/` request. These are standalone top-level documents, not SPA routes, so a failed app-window navigation must never fall back to the cached dashboard shell. In Electron that fallback can put the full dashboard inside a frameless, non-focusable, full-display overlay with no close controls.
 
@@ -2108,7 +2108,7 @@ implicit ownership of its own namespace on both the reverse-proxy/UI surface
 via a path-boundary match so `foo` cannot reach `foo-bar`. That implicit grant is
 carved back on the `/api/apps` surface for the literal first path segments that
 resolve to a SHARED route registered before the `/api/apps/{name}` catch-all:
-`RESERVED_APP_PATH_SEGMENTS` in `token_auth` holds `registry`, `registries`,
+`RESERVED_APP_PATH_SEGMENTS` in `token_auth_app_scope` holds `registry`, `registries`,
 `blob`, `install`, and `register`, and the `/api/apps/<name>` branch of
 `_app_owns_path` refuses to match when the app name is one of them. Without the
 carve-out an app that named itself after such a segment, for example `registries`,
@@ -2129,7 +2129,7 @@ already-published one. The two sets are duplicated rather than shared to avoid a
 
 Writers: `dashboard/ws_event_scope.py`, `dashboard/ws.py` (connect-time scope
 resolution), `dashboard/state.py` (`_send_ws_all`, `_ws_client_allowed`,
-`_serialize_for_client`, `SlotOrigin`), `dashboard/token_auth.py`
+`_serialize_for_client`, `SlotOrigin`), `dashboard/token_auth_app_scope.py`
 (`_APP_TOKEN_IMPLICIT_ALLOW`, `app_token_path_allowed`, `_app_owns_path`,
 `RESERVED_APP_PATH_SEGMENTS`), `apps/manifest.py`
 (`_granted_list`, `RESERVED_APP_PATH_SEGMENTS`), `dashboard/slot_ownership.py`

@@ -106,7 +106,7 @@ Not a goal:
 - MCP servers the gateway does not front. Without a pooled backend there is
   nothing for a holder to attach to.
 - Sessions without a dashboard slot, in the first version. `dashboard_slot_key`
-  returns an empty string for them (`src/kiro_crew/dashboard/chat_utils.py`).
+  returns an empty string for them (`src/kiro_crew/dashboard/chat_utils_slots.py`).
 - Changing how kiro-cli's own subscriptions behave.
 
 ## 4. Design

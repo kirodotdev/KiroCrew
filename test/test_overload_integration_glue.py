@@ -2174,7 +2174,7 @@ class TestStoreOffLoop:
         """
         import ast
 
-        allowed = {("chat_utils.py", "_queued_depth_off_loop", "_queued_depth")}
+        allowed = {("chat_utils_completion.py", "_queued_depth_off_loop", "_queued_depth")}
         src = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
         offenders: list[str] = []
         for path in sorted(src.rglob("*.py")):

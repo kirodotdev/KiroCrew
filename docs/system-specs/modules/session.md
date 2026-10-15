@@ -4466,7 +4466,7 @@ a trust root on its own; publication therefore also writes a
   declared key, because the `.txt` is agent-readable — a co-tenant could read a
   sibling's key out of the roster and declare it. A pid demonstrably hosting
   several sessions therefore also requires an `X-Session-Token` resolving to
-  exactly the declared key (`dashboard/token_auth.py`); the token's MAC uses the
+  exactly the declared key (`dashboard/token_auth_callers.py`); the token's MAC uses the
   agent-unreadable SEL trust root and names one session, which the kernel's
   proof of the PROCESS cannot do on a shared runtime. A 1:1 pid requires no
   token: only one session lives there, so there is no other identity to mistake

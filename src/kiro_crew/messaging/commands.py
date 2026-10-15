@@ -395,10 +395,10 @@ def parse_dashboard_ttl(arg: str, *, parse_duration: DurationParser) -> int:
     ignored rather than making the whole argument unparseable.
 
     *parse_duration* supplies the duration vocabulary and is injected rather than
-    imported: it lives in ``dashboard/token_auth.py``, and ``kiro_crew.messaging``
+    imported: it lives in ``dashboard/token_auth_tokens.py``, and ``kiro_crew.messaging``
     imports nothing from ``kiro_crew.dashboard`` -- that one-way direction is what
     keeps the transport layer independent of the surfaces built on top of it.
-    Callers already import that module for ``generate_token``.
+    Callers already import its facade, ``dashboard/token_auth.py``, for ``generate_token``.
 
     Returns :data:`DEFAULT_DASHBOARD_TTL_SECS` when *arg* names no duration or the
     duration does not parse: a mistyped TTL should still hand the user a working

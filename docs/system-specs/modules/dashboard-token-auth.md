@@ -152,6 +152,18 @@ gates (`_workflow_ready`, `_crewmate_prune_gate`, each a 503).
 
 Location: `src/kiro_crew/dashboard/token_auth.py`
 
+`token_auth.py` keeps the middleware and is the import path for every name below: a
+mirror facade (`kiro_crew._facade_mirror`) that serves what its owners bind and sends a
+patch of `token_auth.<name>` to every owner holding it. Owners never import it. New work
+goes to the owner of its responsibility:
+
+| Owner | Responsibility |
+|---|---|
+| `token_auth_paths.py` | Requests that skip token auth (static assets, self-authenticating webhooks, CSRF exemptions, the SPA shell and app-window paths), and the refusal and auth-log helpers |
+| `token_auth_tokens.py` | Minting, validating, pinning and revoking session tokens; app secrets; the per-process token state |
+| `token_auth_app_scope.py` | What an app token may reach: its namespace and its manifest `permissions.api` prefixes |
+| `token_auth_callers.py` | Unix-socket peer verification, and attributing a request to its app, cron job, sub-agent or member |
+
 #### Token Format
 
 `base64url(payload).base64url(HMAC-SHA256-signature)` where payload is compact JSON:
@@ -435,7 +447,7 @@ If `index()` cannot read the static bundle, its `FileNotFoundError` fallback
 body (`_DASHBOARD_HTML_NOT_FOUND` in `handlers/core.py`) is likewise static and
 secret-free, honoring the same unauthenticated cold-start contract.
 
-**One predicate, no drift:** `_is_spa_shell_request` in `token_auth.py` is the
+**One predicate, no drift:** `_is_spa_shell_request` in `token_auth_paths.py` is the
 single source of truth for "paths that are never the SPA shell". It combines
 three exclusions:
 

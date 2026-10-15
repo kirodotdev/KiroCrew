@@ -228,7 +228,7 @@ dashboard load into header-only round trips.
   INSTALLED pack, the consent modal shows the persona text **verbatim** and the
   user's grant is keyed to `sha256(persona_text)`, stored in the browser's
   localStorage. On every first-turn chat the frontend threads that hash as
-  `theme_consent_sha`; `_maybe_inject_persona` (`chat_utils.py`)
+  `theme_consent_sha`; `_maybe_inject_persona` (`chat_utils_slots.py`)
   injects the pack's persona **only when `theme_consent_sha` equals sha256 of
   the persona text it reads from disk at that moment** (constant-time compare).
   A missing hash, or a stale one after a reinstall rewrote `persona.md`, **fails

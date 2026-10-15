@@ -209,7 +209,7 @@ def loopback_urlopen(
     When *unix_socket_path* is given and the file exists, the request is sent
     over that ``AF_UNIX`` socket instead of TCP (the URL -- and therefore the
     ``Host`` header -- is unchanged). This lets the gateway kernel-verify the
-    caller's identity via ``SO_PEERCRED``; see ``dashboard/token_auth``. The
+    caller's identity via ``SO_PEERCRED``; see ``dashboard/token_auth_callers``. The
     TCP fallback triggers ONLY when nobody answers on the socket at connect
     time (``FileNotFoundError`` / ``ConnectionRefusedError``, i.e. a stale
     file left by a dead gateway): those cases provably never delivered the

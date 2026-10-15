@@ -625,7 +625,7 @@ desktop-style command menu first.
 ### Session duration
 
 Three clocks. The first two are signed into the access token payload
-(`dashboard/token_auth.py`), the third into the refresh cookie
+(`dashboard/token_auth_tokens.py`), the third into the refresh cookie
 (`dashboard/refresh_tokens.py`):
 
 | Clock | Value | What it governs |

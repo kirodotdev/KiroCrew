@@ -624,7 +624,7 @@ def _append_unflushed_tail_from_offset(
         # mirrors it.
         #
         # Two symptoms, one cause. A trailing ``done`` reaches the bounded response and
-        # ``_prepare_messages`` then drops it while rendering (``chat_utils.py``), so a
+        # ``_prepare_messages`` then drops it while rendering (``chat_utils_display.py``), so a
         # page whose only row is that ``done`` renders EMPTY and replaces the transcript.
         # A trailing answered ``permission`` is instead re-ordered after every persisted
         # row -- the misordering ``_is_answered_permission`` exists to prevent.
