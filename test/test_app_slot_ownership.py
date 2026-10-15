@@ -838,7 +838,7 @@ async def test_a_teardown_that_raises_still_leaves_the_suppression_durable(tmp_p
     ``discard_conversation`` clears the sid and sets the in-memory suppression INSIDE
     its registry lock, and only then awaits ``provider.shutdown()`` — whose own
     ``finally`` deliberately lets an exception propagate rather than carry it past the
-    child cancel (``session_lifecycle.py``). So by the time this can raise, the pointer
+    child cancel (``session_lifecycle_parts/teardown.py``). So by the time this can raise, the pointer
     is already gone and the ONLY thing standing between the user and the bug this step
     exists to prevent is the suppression flag.
 

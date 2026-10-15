@@ -95,7 +95,7 @@ INDEX_OPTIMIZE_EVERY_PASSES = 60
 #: Longest the child sleeps without re-checking that the gateway is still there.
 #: The check cannot be left to the end of a pause, because the gateway's shutdown
 #: and restart paths can end the process with ``os._exit`` (see cli.py and
-#: session_lifecycle.py), which runs NO ``atexit`` handler. That skips both of the
+#: session_lifecycle_parts/fleet.py), which runs NO ``atexit`` handler. That skips both of the
 #: parent-side ways this child would otherwise be retired -- the supervisor's own
 #: ``terminate`` and ``multiprocessing``'s daemon reaping -- so the only thing
 #: that can retire an orphan is the orphan. Slicing the wait bounds how long one

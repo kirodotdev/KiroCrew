@@ -12,7 +12,7 @@ TIME, not for its whole life. A plain resume reuses the persisted id
 (``AcpSessionHandle`` replays it into ``session/load``), but a reset, an
 agent/model/effort switch, a compaction that recycles the session, and a provider
 swap all tear the ACP session down, and the successor cold-starts a NEW id --
-``session_lifecycle`` says so at the teardown itself. So the honest question this
+``session_lifecycle_parts/teardown.py`` (``reset``) says so at the teardown itself. So the honest question this
 module answers is "which unit is this slot's work landing in *now*", and the
 answer is only valid at the moment it is asked. That is exactly the guarantee an
 emit site needs, because every entry records what was observed at that site when

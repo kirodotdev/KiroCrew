@@ -74,7 +74,7 @@ is to scroll past everything or open a new session.
 the slot a fresh *model* conversation while keeping the slot open. With
 `{"replay": false}` it also suppresses the `[CONVERSATION HISTORY]` re-injection
 that would otherwise rebuild what was just discarded
-(`session_lifecycle.py`). It does not
+(`session_lifecycle_parts/teardown.py`). It does not
 solve this, for two independent reasons.
 
 **It deliberately does not touch the view**, per its own docstring:

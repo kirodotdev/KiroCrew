@@ -8925,10 +8925,16 @@ class TestParentEndCancelsItsChildren:
         """
         import ast
         import inspect
+        import sys
 
         from kiro_crew import session_lifecycle
 
-        tree = ast.parse(inspect.getsource(session_lifecycle))
+        tree = ast.parse(
+            "".join(
+                inspect.getsource(sys.modules[name])
+                for name in (session_lifecycle.__name__, *session_lifecycle._OWNERS)
+            )
+        )
         # EVERY method that reaches the teardown names itself, with no exemption: the
         # conversation-ended primitive hardcodes its own name too, so there is one rule here
         # rather than a rule plus a carve-out whose own correctness needed checking.
@@ -9563,7 +9569,10 @@ class TestParentEndCancelsItsChildren:
         root = pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
         offenders: list[str] = []
         for path in root.rglob("*.py"):
-            if path.name == "session_lifecycle.py":
+            if path.relative_to(root).as_posix() in {
+                "session_lifecycle.py",
+                "session_lifecycle_parts/teardown.py",
+            }:
                 continue  # defines both keywords; its own docstrings name them
             text = path.read_text(encoding="utf-8")
             for match in re.finditer(r"clear_conversation=True", text):
@@ -9593,7 +9602,7 @@ class TestParentEndCancelsItsChildren:
         root = pathlib.Path(__file__).resolve().parent.parent / "src" / "kiro_crew"
         # The module that DEFINES ``reset`` names the keyword in its own docstring, which
         # is not a call site.
-        defines_it = {"session_lifecycle.py"}
+        defines_it = {"session_lifecycle.py", "session_lifecycle_parts/teardown.py"}
         found = set()
         for path in root.rglob("*.py"):
             rel = path.relative_to(root).as_posix()
@@ -9671,10 +9680,16 @@ class TestParentEndCancelsItsChildren:
         """
         import ast
         import inspect
+        import sys
 
         from kiro_crew import session_lifecycle
 
-        tree = ast.parse(inspect.getsource(session_lifecycle))
+        tree = ast.parse(
+            "".join(
+                inspect.getsource(sys.modules[name])
+                for name in (session_lifecycle.__name__, *session_lifecycle._OWNERS)
+            )
+        )
         required = {"_snapshot_parent_children", "_cancel_parent_children"}
 
         def called_names(node):

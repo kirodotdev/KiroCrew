@@ -174,9 +174,48 @@ state are composed behind that facade:
 - `session_compaction.py` — context gates, compaction execution, verdicts,
   cooldowns, and guarded escalation
 - `session_lifecycle.py` — refresh/reload, reset/remove/destroy/discard,
-  identity retirement, stop, drain, and close ordering
+  identity retirement, stop, drain, and close ordering, composed from the
+  `session_lifecycle_parts/` owners below
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
   policy, and process/filesystem sweeps
+
+`SessionLifecycleService` is defined in `session_lifecycle.py`; its behaviour lives in
+the `session_lifecycle_parts/` owner modules, one responsibility each. A member's body is
+a module-level function there whose first parameter is `self` (annotated
+`SessionLifecycleService` for type checkers only), and the class binds it by name under
+one comment header per owner (`reset = _teardown.reset`, `staticmethod(...)` for a static
+method), so `SessionManager`'s delegation and an instance patch of a member reach the same
+function, and the service's state stays on the instance; each owner's docstring names the
+instance fields its members write and read. A bound member's `__qualname__` and
+`__module__` name its owner (nothing reads them); `_ReplayGap`, the one class an owner
+defines, keeps `kiro_crew.session_lifecycle` as its `__module__`. Owners never import
+`session_lifecycle.py` at run time and import only the owners listed before them in its
+`_OWNERS`; the members log through the facade's `deps.logger` and the moved module helpers
+under the `kiro_crew.session_lifecycle` logger. `session_lifecycle.py` keeps binding every
+module-level name of the lifecycle service, with its explicit `__all__`, and a write
+through it reaches every owner binding the same object (`kiro_crew._facade_mirror`); the
+two drop counters the owners rebind at run time are served from their owner.
+`test/test_session_lifecycle_bindings.py` pins the member inventory, the binding and the
+reach.
+
+| Lifecycle owner | Owns |
+|---|---|
+| `session_lifecycle_parts/stop_decline.py` | a Stop declined while the session's own compaction holds it: `compaction_in_flight`, `decline_stop`, the per-presser escalation markers and their bounds |
+| `session_lifecycle_parts/parked_queue.py` | queued messages a stop or reset keeps for the key's successor: `force_stop_keeping_others`, `hand_queue_to_successor`, the bounded parked store, `adopt_parked_queue`, `allocation_identity` |
+| `session_lifecycle_parts/parent_end.py` | ending a parent's sub-agent runs: the in-lock snapshot, the bounded shielded cancel, the teardown fence and the owes-child-work reads |
+| `session_lifecycle_parts/teardown.py` | the per-key teardown verbs: `reset`, `remove`, `remove_if_unclaimed`, `destroy` / `destroy_if`, `discard_conversation` |
+| `session_lifecycle_parts/identity_retirement.py` | account-identity retirement: `retire_kiro_identity_sessions`, `flag_identity_stamp_mismatches` and the two idle-runtime reapers |
+| `session_lifecycle_parts/turn_stop.py` | a key's turn across a Stop or a reset: Stop records, replay gaps, orphaned permits, `cancel_current` / `cancel_owned_turn`, `stop_turn` and the successor respawns |
+| `session_lifecycle_parts/fleet.py` | every session at once: `refresh_defaults`, `reload_provider_factory`, `drain_active_turns`, `close_all`, `drain_all_providers` |
+
+New lifecycle work goes to the owner whose row above names its responsibility, not to
+`session_lifecycle.py`: the facade keeps only the owner protocols, the
+`SessionLifecycleConstants` / `SessionLifecycleDeps` / `SessionLifecycleState`
+dataclasses, `TornDown` and `_TeardownScope`, the class shell and its binding block. A new
+`SessionLifecycleService` member's body goes to that owner, bound in the class under the
+owner's header; a responsibility no row names gets a new `session_lifecycle_parts/`
+module, appended to `_OWNERS` in import-layer order (an owner imports only the owners
+listed before it).
 
 `POST /api/chat/slots` refuses to create a slot bound to a remote crew: a body
 carrying `instance_id` or `adopt_remote_slot` is refused with
@@ -635,8 +674,9 @@ send time.
 A kiro-backed child authenticates from the CLI credential store as its process
 starts and keeps that account for life, so an out-of-band account switch or
 logout leaves running children answering turns on the previous account. The
-retirement machinery detects and recycles them, in `session_lifecycle.py`
-(`retire_kiro_identity_sessions`) driven by the per-turn gate in
+retirement machinery detects and recycles them, in
+`session_lifecycle_parts/identity_retirement.py` (`retire_kiro_identity_sessions`,
+bound on `SessionLifecycleService`) driven by the per-turn gate in
 `chat_runner.py` (`_retire_sessions_on_identity_change`), against baselines
 owned by `KiroPrerequisiteService`. The gate runs before each dashboard chat
 turn acquires its session (`_run_chat`) and before each agent cron run does

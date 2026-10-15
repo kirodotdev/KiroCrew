@@ -181,7 +181,7 @@ flowchart LR
 
 ### Phase 0: Prove whether `session/load` works for the default path
 
-The resume upgrade assumes a sid created as an extra session on a **parent's** runtime is loadable from a new kiro-cli process after that session is terminated, while the parent process is still alive. Nothing in this repo asserts that: `terminate_session`'s contract is kiro-cli's in-memory session map (`acp/runtime.py:905-926`), and `drain_active_turns` documents kiro-cli releasing an on-disk session lock only on a subsequent SIGTERM (the `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS` comment in `session.py`; the drain itself is `drain_active_turns` in `session_lifecycle.py`).
+The resume upgrade assumes a sid created as an extra session on a **parent's** runtime is loadable from a new kiro-cli process after that session is terminated, while the parent process is still alive. Nothing in this repo asserts that: `terminate_session`'s contract is kiro-cli's in-memory session map (`acp/runtime.py:905-926`), and `drain_active_turns` documents kiro-cli releasing an on-disk session lock only on a subsequent SIGTERM (the `_DRAIN_ACTIVE_TURNS_TIMEOUT_SECS` comment in `session.py`; the drain itself is `drain_active_turns` in `session_lifecycle_parts/fleet.py`).
 
 - Manual probe against real kiro-cli: create a shared session, terminate it, keep the files, `session/load` the sid from a second process while the first lives.
 - Deliverable: a **recorded verdict**, plus — if the lock is process-scoped — a decision on whether a lock held by the run's *own parent* relaxes branch 2's refusal into a labelled replay, or stays a refusal.

@@ -1360,8 +1360,8 @@ class TestEveryRegistryRemovalRecordsAnEnd:
     def test_the_gate_can_actually_fail(self):
         """A gate that has stopped detecting anything reads as a green signal."""
         modules = self._owning_modules()
-        assert "session_lifecycle" in modules, "discovery missed the lifecycle module"
-        removals = self._removal_functions("session_lifecycle")
+        assert "session_lifecycle_parts.fleet" in modules, "discovery missed the lifecycle module"
+        removals = self._removal_functions("session_lifecycle_parts.fleet")
         assert removals, "the AST walk found no registry removals at all"
         assert "drain_all_providers" in removals, "the mass-pop path must be in scope"
 
@@ -1425,11 +1425,17 @@ class TestTeardownPathsAreWired:
         """
         import ast
         import inspect
+        import sys
 
         from kiro_crew import session_lifecycle
 
         recorders = {"record_session_ended", "record_sessions_ended"}
-        tree = ast.parse(inspect.getsource(session_lifecycle))
+        tree = ast.parse(
+            "".join(
+                inspect.getsource(sys.modules[name])
+                for name in (session_lifecycle.__name__, *session_lifecycle._OWNERS)
+            )
+        )
         found: list[str] = []
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef) or node.name != method_name:
