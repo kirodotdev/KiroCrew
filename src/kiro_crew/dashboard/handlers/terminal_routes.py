@@ -120,15 +120,9 @@ async def api_terminal_delete(request: web.Request) -> web.Response:
     owner_denied = await require_owner_dashboard_request(request, "terminal.session.delete")
     if owner_denied is not None:
         return owner_denied
-    if not _is_enabled(request):
-        _sel().log_api_access(
-            caller=caller,
-            operation="terminal.session.delete",
-            outcome="denied",
-            source="dashboard",
-            resources="feature_disabled",
-        )
-        return web.Response(status=403, text="Terminal panel disabled")
+    # Cleanup stays available while creation and use are disabled. A setting
+    # change can leave a published PTY in the registry; refusing DELETE would
+    # leave that shell running until the delayed orphan reaper collects it.
 
     session_id = request.match_info.get("session_id", "")
     # Same bound ``api_terminal_ws`` applies when a session is created, so an id
