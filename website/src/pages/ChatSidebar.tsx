@@ -454,6 +454,13 @@ function ChatSidebar({
   }, previousRowsRef.current)
   previousRowsRef.current = sidebarRows
   const { listNarrowed, revealBlockingFilters, laneOrder, isRowFolderHidden, isRowStatusHidden } = sidebarRows
+  // Caption shown at the top of the pinned band only when a tag filter or active
+  // status chip (not the model filter or status hides) narrows the list and the
+  // search box is empty. Passed into scope so createListLanes can render it.
+  const pinnedBandCaption = (activeTagIds.size > 0 || (activeFilters.size > 0 && !filtersPaused))
+    && slotFilter.trim() === ''
+    ? i18nT('pages.chatSidebar.pinned_always_shown')
+    : undefined
   // `laneSlots` is the Local lanes' rows: `filteredSlots` minus every row a crew
   // group holds. `shownCrewRows` is each crew group's rows, the folder hide applied.
   const {
@@ -803,7 +810,7 @@ function ChatSidebar({
     laneSwitchLabel, lineage, listNarrowed, localSlots, missingLanes, modelFilterInverted, modelFilterRows,
     moveByDrag, moveFolderTo, nativeSessionDrag, navigate, newChatError, newChatMenuOpen, nextLane,
     onDropSessionRef, onMenuCloseAutoFocus, onOpenSlotInNewTab, onSelectSlot, openCrewMembers,
-    openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedOrderError, popoverPos, queryClient, rawColumns,
+    openHistoryPane, orderedColumns, paintedSidebarWidth, pinned, pinnedBandCaption, pinnedOrderError, popoverPos, queryClient, rawColumns,
     recentAmountDraft, recentUnitDraft, recentWindowMs, refetchColumns, refetchFolders, refetchTags,
     remoteCrewChatPreview, remoteCrewError, remoteCrewErrorId, remoteSessionsError, renameCommit,
     renameError, reorderColumnsMutation, reportDndActive, restorePreBoardWidth, revealedContainers,

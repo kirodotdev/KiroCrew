@@ -12395,6 +12395,7 @@
       "clear_filter": "Filter zurücksetzen",
       "clear_named_filter": "Filter „{{filter}}“ zurücksetzen",
       "pause_all_filters": "Alle Filter pausieren",
+      "pinned_always_shown": "Angepinnt · immer angezeigt",
       "resume_all_filters": "Alle Filter fortsetzen",
       "clear_search": "Suche leeren",
       "close": "Schließen",

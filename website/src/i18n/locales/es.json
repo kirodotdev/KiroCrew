@@ -12584,6 +12584,7 @@
       "clear_filter": "Borrar el filtro",
       "clear_named_filter": "Borrar el filtro {{filter}}",
       "pause_all_filters": "Pausar todos los filtros",
+      "pinned_always_shown": "Fijado · siempre visible",
       "resume_all_filters": "Reanudar todos los filtros",
       "clear_search": "Borrar la búsqueda",
       "close": "Cerrar",

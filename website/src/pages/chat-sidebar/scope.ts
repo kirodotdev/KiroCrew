@@ -325,6 +325,7 @@ export interface SidebarScope {
   pinned: ReturnType<typeof usePinnedSessionOrder>['pinned']
   pinnedOrderError: ReturnType<typeof usePinnedSessionOrder>['pinnedOrderError']
   setPinnedOrderError: ReturnType<typeof usePinnedSessionOrder>['setPinnedOrderError']
+  pinnedBandCaption: string | undefined
 
   // From `useStaleCollapse`
   staleCollapseMs: ReturnType<typeof useStaleCollapse>['staleCollapseMs']
