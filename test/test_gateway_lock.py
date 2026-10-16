@@ -11,6 +11,7 @@ import os
 import socket
 import stat
 import sys
+import threading
 from itertools import islice
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -915,6 +916,22 @@ class TestLockFileIdentity:
         assert isinstance(error, OSError)
 
 
+def _record_anchor_readings(monkeypatch) -> list[bool]:
+    """Wrap the real home-anchor probe; the returned list collects every reading it gives."""
+    from kiro_crew import gateway_lock
+
+    real_probe = gateway_lock._home_is_anchored
+    readings: list[bool] = []
+
+    def recorded(home, path):
+        anchored = real_probe(home, path)
+        readings.append(anchored)
+        return anchored
+
+    monkeypatch.setattr(gateway_lock, "_home_is_anchored", recorded)
+    return readings
+
+
 class TestLockHolder:
     """The non-destructive lock-owner oracle: a caller that must not ACQUIRE
     (``cli_perf``'s profiler target, and the CLI ``_stop``/``_restart``
@@ -1188,62 +1205,81 @@ class TestLockHolder:
         assert holder == LockHolder(pid=222, alive=True, source="flock_owner")
 
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
-    def test_a_transiently_anchored_home_is_reprobed_and_reads_as_nobody(
+    def test_two_overlapping_read_probes_of_an_idle_home_both_read_nobody(
         self, tmp_path, monkeypatch
     ):
-        # Two non-destructive readers on an idle home (`stop` beside `cli_perf`)
-        # each hold the anchor for two syscalls, so either can see the other's
-        # hold. One anchored reading is a candidate, not a verdict: a later free
-        # reading is positive evidence and the answer is nobody.
-        readings: list[bool] = []
+        # Two non-destructive readers on an idle home (`stop` beside `cli_perf`),
+        # each probing while the other still holds its probe of the anchor:
+        # neither reads the other as a holder, so both answer nobody on their one
+        # reading and neither ends in an indeterminate probe.
+        if _directory_locks_supported(tmp_path)[0] is not _DirectoryLockSupport.SUPPORTED:
+            pytest.skip("this filesystem does not implement directory locks")
+        real_try = platform_compat.try_acquire_lock
+        both_probing = threading.Barrier(2, timeout=30)
+        parked = threading.local()
 
-        def anchored_once(_home, _path):
-            readings.append(True)
-            return len(readings) == 1
+        def held_until_both_probed(fd, *, exclusive=False):
+            taken = real_try(fd, exclusive=exclusive)
+            if not getattr(parked, "done", False):
+                # Each reader's first probe keeps what it took until the other
+                # has probed too, so the second probe lands inside the first.
+                parked.done = True
+                both_probing.wait()
+            return taken
 
-        monkeypatch.setattr("kiro_crew.gateway_lock._home_is_anchored", anchored_once)
-        monkeypatch.setattr("kiro_crew.gateway_lock.time.sleep", lambda _s: None)
-        holder = lock_holder(tmp_path)
-        assert holder == LockHolder(pid=None, alive=False, source="none")
-        assert len(readings) > 1  # the first reading was re-probed, not believed
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", held_until_both_probed)
+        readings = _record_anchor_readings(monkeypatch)
+        answers: list[LockHolder] = []
+        errors: list[Exception] = []
+
+        def read():
+            try:
+                answers.append(lock_holder(tmp_path))
+            except Exception as exc:
+                errors.append(exc)
+
+        readers = [threading.Thread(target=read) for _ in range(2)]
+        for reader in readers:
+            reader.start()
+        for reader in readers:
+            reader.join(timeout=30)
+            assert not reader.is_alive()
+        assert errors == []
+        assert answers == [LockHolder(pid=None, alive=False, source="none")] * 2
+        assert readings == [False, False]
 
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
-    def test_a_home_anchored_on_every_probe_is_still_indeterminate(self, tmp_path, monkeypatch):
-        # The other half: an incumbent holds the anchor for its lifetime, so
-        # every probe reads held. Re-probing must not soften that into nobody
-        # when no surface can name the holder.
-        readings: list[bool] = []
+    def test_a_shared_probe_still_reads_a_held_home_as_held(self, tmp_path, monkeypatch):
+        # An incumbent holds the anchor exclusive for its lifetime, which the
+        # shared probe cannot take: its one reading says held. With no surface
+        # naming the holder that is indeterminate, never nobody, and nothing the
+        # lock file names will release the anchor, so it is not ``held`` either.
+        anchor = os.open(tmp_path, os.O_RDONLY)
+        try:
+            if not platform_compat.try_acquire_lock(anchor, exclusive=True):
+                pytest.skip("this filesystem does not implement directory locks")
+            readings = _record_anchor_readings(monkeypatch)
+            monkeypatch.setattr(
+                "kiro_crew.gateway_lock.platform_compat.flock_owner_pid", lambda _p: None
+            )
+            with pytest.raises(LockProbeError, match="no longer names") as excinfo:
+                lock_holder(tmp_path)
+            assert readings == [True]
+            assert excinfo.value.held is False
+        finally:
+            platform_compat.release_lock(anchor)
+            os.close(anchor)
 
-        def always_anchored(_home, _path):
-            readings.append(True)
-            return True
+    def test_the_windows_arm_answers_without_probing_the_home(self, tmp_path, monkeypatch):
+        # Windows takes no home anchor, so the read side answers before it opens
+        # or locks the home directory.
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
 
-        monkeypatch.setattr("kiro_crew.gateway_lock._home_is_anchored", always_anchored)
-        monkeypatch.setattr("kiro_crew.gateway_lock.time.sleep", lambda _s: None)
-        monkeypatch.setattr(
-            "kiro_crew.gateway_lock.platform_compat.flock_owner_pid", lambda _p: None
-        )
-        with pytest.raises(LockProbeError, match="no longer names") as excinfo:
-            lock_holder(tmp_path)
-        assert len(readings) == _IDENTITY_ATTEMPTS
-        # Nothing the lock file names will release the anchor: held=False.
-        assert excinfo.value.held is False
+        def no_lock_expected(*_args, **_kwargs):
+            raise AssertionError("the Windows arm locked the home")
 
-    @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="no home anchor on Windows")
-    def test_an_anchor_probe_error_propagates_without_a_retry(self, tmp_path, monkeypatch):
-        # An unopenable home or an unmeasurable filesystem is a different fact
-        # from a held anchor: it is not a transient another reader will release,
-        # so it is raised on the attempt that produced it.
-        readings: list[bool] = []
-
-        def probe_fails(_home, path):
-            readings.append(True)
-            raise LockProbeError(path, OSError(errno.EMFILE, "cannot open home anchor"))
-
-        monkeypatch.setattr("kiro_crew.gateway_lock._home_is_anchored", probe_fails)
-        with pytest.raises(LockProbeError, match="cannot open home anchor"):
-            lock_holder(tmp_path)
-        assert len(readings) == 1
+        monkeypatch.setattr(platform_compat, "try_acquire_lock", no_lock_expected)
+        assert lock_holder(tmp_path) == LockHolder(pid=None, alive=False, source="none")
 
 
 class TestTheLockFileIsARegularFile:

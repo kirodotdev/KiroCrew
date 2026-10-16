@@ -163,8 +163,7 @@ LOCK_FILENAME = "gateway.lock"
 LIVE_HOLDER_EXIT_CODE = 78
 
 # How many times ``acquire`` re-opens the lock path and re-takes the home
-# anchor, and how many times :func:`_anchor_holder_or_nobody` re-probes an
-# anchor that read as held. It bounds two transient causes: the inode
+# anchor. It bounds two transient causes: the inode
 # ``acquire`` locked differing from the inode the path names, and the home
 # anchor being held for the two syscalls :func:`_home_is_anchored` needs for
 # its non-destructive probe. Either clearing takes microseconds, while a real
@@ -1301,27 +1300,18 @@ def _anchor_holder_or_nobody(home: Path, path: Path) -> LockHolder:
     cannot be measured, the same indeterminate answer the lock file's own
     unnameable-holder case produces.
 
-    An anchored reading is a candidate, not a verdict. Another non-destructive
-    reader (a ``stop`` beside a ``cli_perf`` probe) holds the anchor for two
-    syscalls, and two such readers on an idle home can each see the other's
-    hold. The anchor is therefore re-probed up to ``_IDENTITY_ATTEMPTS`` times,
-    ``_RETRY_BACKOFF_SECS`` apart, and only a home that reads anchored on every
-    attempt goes on to the owner lookup: a passing reader has released within
-    one backoff, an incumbent never does. A single free reading is positive
-    evidence and returns ``nobody`` at once. A :class:`LockProbeError` from the
-    probe itself (an unopenable home, an unmeasurable filesystem) is a different
-    fact and propagates on the attempt that raised it.
+    The anchor is read once. :func:`_home_is_anchored` probes it shared, so
+    another non-destructive reader (a ``stop`` beside a ``cli_perf`` probe)
+    never reads as a holder, and an anchored reading is an exclusive hold: the
+    one a gateway takes in ``acquire`` and keeps until it releases.
 
     Probing the anchor can create and remove one throwaway directory inside
     *home* to tell an unsupported directory lock from a held one. That is a
     write, but it disturbs no holder, which is the sense in which this oracle
     is non-destructive.
     """
-    for attempt in range(_IDENTITY_ATTEMPTS):
-        if attempt:
-            time.sleep(_RETRY_BACKOFF_SECS)
-        if not _home_is_anchored(home, path):
-            return _NO_HOLDER
+    if not _home_is_anchored(home, path):
+        return _NO_HOLDER
     owner = platform_compat.flock_owner_pid(home)
     if owner is not None and platform_compat.pid_exists(owner):
         return LockHolder(pid=owner, alive=True, source="home_anchor")
@@ -1461,10 +1451,13 @@ def _directory_locks_supported(
 def _home_is_anchored(home: Path, path: Path) -> bool:
     """True iff something holds the exclusive ``flock`` on *home* itself.
 
-    Non-destructive: a free directory is unlocked again immediately. Windows,
-    an absent home, or positively unsupported directory locks report False.
-    Other failures to open or measure the home raise :class:`LockProbeError`,
-    because callers must not read missing evidence as nobody running.
+    The probe takes the anchor shared, which only an exclusive hold refuses:
+    two readers probing at once both get it, so neither reads the other as a
+    holder. Non-destructive: a free directory is unlocked again immediately.
+    Windows, an absent home, or positively unsupported directory locks report
+    False. Other failures to open or measure the home raise
+    :class:`LockProbeError`, because callers must not read missing evidence as
+    nobody running.
     """
     if platform_compat.IS_WINDOWS:
         return False
@@ -1475,7 +1468,7 @@ def _home_is_anchored(home: Path, path: Path) -> bool:
     except OSError as exc:
         raise LockProbeError(path, exc) from exc
     try:
-        if platform_compat.try_acquire_lock(fd, exclusive=True):
+        if platform_compat.try_acquire_lock(fd, exclusive=False):
             platform_compat.release_lock(fd)
             return False
     finally:
