@@ -6,6 +6,7 @@
 # `python test/test_wait_discipline_ratchet.py --write-baseline` lowers every line to
 # its real count and drops files that are gone; it never raises or adds an entry.
 # `... --move OLD NEW` carries a line to a renamed file's path.
+ 1 app_backend_helpers.py
  2 chat_test_helpers.py
  1 e2e/scenarios/conftest.py
  4 e2e/test_gateway_boot_matrix.py
@@ -53,7 +54,6 @@
  2 test_ai_pr_watchers_coverage.py
  2 test_ai_runner_coverage.py
  2 test_api_agent_config_put_succeeds.py
- 1 test_app_backend.py
  3 test_app_dev_mode.py
  1 test_app_manager.py
  6 test_app_route_trust_gate.py
@@ -213,13 +213,13 @@
  1 test_kiro_prerequisite_readiness_state.py
  2 test_kiro_prerequisite_supervisor.py
  1 test_kiro_probe_spawn_off_loop.py
- 2 test_knowledge.py
  1 test_knowledge_add_source.py
  2 test_knowledge_agent_sync_off_loop.py
  2 test_knowledge_cross_thread.py
  3 test_knowledge_handlers_coverage.py
  7 test_knowledge_handlers_off_loop.py
  1 test_knowledge_ingest_magic_byte.py
+ 2 test_knowledge_store_sources.py
  1 test_knowledge_sync_local_file.py
  3 test_lessons_context_embedding_deadline.py
  1 test_listener_guard.py

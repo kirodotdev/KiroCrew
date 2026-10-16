@@ -182,7 +182,6 @@
 2896 test/test_agent_home_isolation.py
 3538 test/test_agent_panel_routes.py
 2359 test/test_ai_spine_driver_coverage.py
-4737 test/test_app_backend.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
 2324 test/test_app_manifest.py
@@ -283,7 +282,6 @@
 2092 test/test_issue_radar_tagging.py
 4427 test/test_job_sdk.py
 2377 test/test_kas_agents.py
-4721 test/test_knowledge.py
 2332 test/test_knowledge_bundle_ownership.py
 2409 test/test_knowledge_handlers_coverage.py
 2549 test/test_lesson_write_outcome.py

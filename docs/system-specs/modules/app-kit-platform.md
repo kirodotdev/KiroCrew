@@ -3566,7 +3566,7 @@ names `apps/backend.py::_start_app_backend_body`, `test_spawn_audit.py` names
 `apps/backend.py::_resolve_nvm_path`, and `test_app_off_contract.py`,
 `test_dev_fleet_app.py`, `test_frontend_edition_build.py`,
 `test_sandbox_dev_fleet_live_target.py`, `test_app_bridges.py` and
-`test_app_backend.py` read the spawn's record constructions and environment in the
+`test_app_backend_spawn_env.py` read the spawn's record constructions and environment in the
 facade's source -- including what must NOT be there, so every record construction and
 none of the texts they forbid lives in an owner either. `_pid_alive` stays there because `test_windows_kill_probe_audit.py`
 reads it by path. Four owner call sites reach those residents at call time through
