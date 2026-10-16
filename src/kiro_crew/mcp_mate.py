@@ -311,7 +311,10 @@ def _tool_definitions() -> list[dict[str, Any]]:
                 "daily is the Daily Goal Reminder (you read your goal and record where "
                 "each milestone stands), weekly the Weekly report (on weekday, 0 = "
                 "Sunday), monthly the Monthly review (on month_day, 1-28); all run at "
-                "time (HH:MM, 24-hour). Give only what changes. Explain in one plain "
+                "time (HH:MM, 24-hour). heartbeat wakes you every interval minutes "
+                "(15, 30, 60, 120 or 240) to move your work forward on your own and "
+                "uses credits on each wake, so propose it only when the work suits "
+                "it. Give only what changes. Explain in one plain "
                 "sentence what each one you propose does for the user before you call "
                 "it; they need a goal first. " + _CARD_NOTE
             ),
@@ -321,9 +324,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "daily": {"type": "boolean"},
                     "weekly": {"type": "boolean"},
                     "monthly": {"type": "boolean"},
+                    "heartbeat": {"type": "boolean"},
                     "weekday": {"type": "integer", "minimum": 0, "maximum": 6},
                     "month_day": {"type": "integer", "minimum": 1, "maximum": _goals.MAX_MONTH_DAY},
                     "time": {"type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"},
+                    "interval": {"type": "integer", "enum": list(_goals.HEARTBEAT_INTERVALS)},
                     "reason": {"type": "string", "maxLength": 500},
                 },
                 "additionalProperties": False,

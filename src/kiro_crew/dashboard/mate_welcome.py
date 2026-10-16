@@ -355,7 +355,9 @@ def _dispatch_greeting(state: Any, slot: Any, kickoff: str) -> None:
     dispatch_hidden_turn(state, slot, kickoff, human_seen=True)
 
 
-def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool) -> None:
+def dispatch_hidden_turn(
+    state: Any, slot: Any, prompt: str, *, human_seen: bool, heartbeat: bool = False
+) -> None:
     """Run *prompt* as one gateway-authored turn in *slot*, with no user row for it.
 
     Shared by the first welcome and the goal check-ins
@@ -363,7 +365,9 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     sent (``_turn_user_sent`` stays false), so the operations only a user's turn
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
-    admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+    admitted (``handlers.guide.REQ_OWN_GOAL_TURN``). *heartbeat* marks the
+    heartbeat wake alone, whose quiet end folds its text into its steps
+    (:mod:`kiro_crew.dashboard.heartbeat_quiet_end`).
     """
     # Deferred: chat_handlers / chat import this package's handlers at load.
     from kiro_crew.dashboard.chat import _run_chat
@@ -375,20 +379,21 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     slot._has_reader = False  # delivered over the WebSocket, like a ws send
     slot._file_changes = []
     _sweep_stale_permissions(slot)
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        state.run_background_turn(
+    # The heartbeat flag is passed only when set, so every other hidden turn
+    # reaches the runner with exactly the arguments it always had.
+    turn = (
+        _run_chat(
+            state,
             slot,
-            _run_chat(
-                state,
-                slot,
-                prompt,
-                _synthetic_payload=True,
-                _turn_actor="gateway",
-            ),
-        ),
+            prompt,
+            _synthetic_payload=True,
+            _turn_actor="gateway",
+            _heartbeat_turn=True,
+        )
+        if heartbeat
+        else _run_chat(state, slot, prompt, _synthetic_payload=True, _turn_actor="gateway")
     )
+    task = spawn_guarded_turn(state, slot, state.run_background_turn(slot, turn))
     slot.task = task
     state.push_slots_update()
     logger.info("hidden gateway turn started on %s", slot.key)

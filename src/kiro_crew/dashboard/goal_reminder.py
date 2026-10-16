@@ -1,6 +1,6 @@
-"""A crewmate's check-ins: Daily Goal Reminder, Weekly report, Monthly review.
+"""A crewmate's check-ins: Daily Goal Reminder, Weekly report, Monthly review, Heartbeat.
 
-The Goals tab's three switches (``PUT /api/members/{slug}/goals/schedules``) are
+The Goals tab's four switches (``PUT /api/members/{slug}/goals/schedules``) are
 stored in the goal record (:mod:`kiro_crew.member_goals`), and each switch keeps
 exactly ONE gateway-owned schedule in step with it, through the cron store's
 installer key (``managed_by``, ``goal-<cadence>:<slug>``), so no switch can ever
@@ -8,7 +8,9 @@ have two schedules and none touches another's:
 
 * on -> that cadence's old schedule (if any) is removed and a fresh one created
   at the shared time of day: daily ``M H * * *``, weekly ``M H * * <weekday>``,
-  monthly ``M H <day> * *``, in the user's timezone;
+  monthly ``M H <day> * *``, in the user's timezone; the heartbeat runs on its
+  interval instead (``*/15 * * * *``, ``*/30 * * * *``, ``0 * * * *``,
+  ``0 */2 * * *``, ``0 */4 * * *``, :func:`cron_expr_for`);
 * off -> that cadence's schedule is removed.
 
 When a schedule fires, the gateway's cron callback hands the job here
@@ -29,6 +31,22 @@ period, read from its work ledger (the same items the Crew board shows,
 report as an artifact under ``Crewmates/<name>/Reports`` (:func:`save_report`),
 remembers it on the goal record, and sends one notification linking it; the
 crewmate's reply in the thread is one short line, never the report itself.
+
+The heartbeat (RFC "Crewmate heartbeat") is the one check-in that does the work
+rather than reporting on it: its turn looks at the goals, milestones and open
+work-ledger items, moves forward what it can, records the result where the
+user looks (the work ledger, the Dashboard tab, milestone readings) and ends
+with ``nothing_to_do`` unless the user would lose something by not hearing now
+(:func:`heartbeat_prompt`). That quiet end is admitted because a hidden turn is
+opened by the gateway, not by a person (``session_directive_apply._nothing_to_do``
+refuses it only on a user-facing or channel turn), and the reply text of a
+heartbeat turn that ends that way is folded into its steps rather than shown
+as a chat message (``dispatch_hidden_turn(heartbeat=True)``, settled by
+:mod:`kiro_crew.dashboard.heartbeat_quiet_end`). Long work goes to a worker
+session when the crewmate's member backend mounts the ``session_*`` tools
+(:func:`member_has_session_tools`); otherwise it is done in small steps across
+wakes. Either way the next wake is the patrol. Only the owner's route and an applied card write the switch, so the
+crewmate cannot turn its own heartbeat on.
 
 A check-in that fires with the thread closed, a turn already running, its switch
 off or no goal left does nothing that time.
@@ -79,7 +97,7 @@ def cadence_of(job: Any) -> str | None:
 
 
 def is_reminder_job(job: Any) -> bool:
-    """Whether *job* is one of a crewmate's goal check-ins (daily, weekly, monthly).
+    """Whether *job* is one of a crewmate's goal check-ins (daily, weekly, monthly, heartbeat).
 
     The one predicate every list that leaves them out reads: the Goals tab's
     switches are their only control, so ``GET /api/crons`` (the Schedule page and
@@ -89,8 +107,29 @@ def is_reminder_job(job: Any) -> bool:
     return cadence_of(job) is not None
 
 
+#: The heartbeat's cron expression per interval (minutes), on the clock's own
+#: marks: a 30-minute heartbeat runs at :00 and :30.
+_HEARTBEAT_EXPRS = {
+    15: "*/15 * * * *",
+    30: "*/30 * * * *",
+    60: "0 * * * *",
+    120: "0 */2 * * *",
+    240: "0 */4 * * *",
+}
+
+
+def heartbeat_interval(schedules: dict[str, Any]) -> int:
+    """The record's heartbeat interval in minutes, the default when it holds none."""
+    value = schedules.get("interval")
+    if isinstance(value, int) and member_goals.is_heartbeat_interval(value):
+        return value
+    return member_goals.DEFAULT_HEARTBEAT_INTERVAL
+
+
 def cron_expr_for(cadence: str, schedules: dict[str, Any]) -> str:
-    """The cron expression for *cadence* at the record's shared time."""
+    """The cron expression for *cadence* at the record's shared time (or interval)."""
+    if cadence == member_goals.CADENCE_HEARTBEAT:
+        return _HEARTBEAT_EXPRS[heartbeat_interval(schedules)]
     hour, minute = (int(x) for x in str(schedules["time"]).split(":"))
     if cadence == member_goals.CADENCE_WEEKLY:
         return f"{minute} {hour} * * {int(schedules['weekday'])}"
@@ -112,6 +151,7 @@ _NAMES = {
     member_goals.CADENCE_DAILY: "Daily goal reminder",
     member_goals.CADENCE_WEEKLY: "Weekly report",
     member_goals.CADENCE_MONTHLY: "Monthly review",
+    member_goals.CADENCE_HEARTBEAT: "Heartbeat",
 }
 
 
@@ -286,6 +326,111 @@ def reminder_prompt(
     )
 
 
+def _interval_words(minutes: int) -> str:
+    """``"30 minutes"`` / ``"hour"`` / ``"2 hours"``, for "every ..." in the prompt."""
+    if minutes < 60:
+        return f"{minutes} minutes"
+    hours = minutes // 60
+    return "hour" if hours == 1 else f"{hours} hours"
+
+
+#: How a heartbeat hands off long work, with the ``session_*`` tools and without.
+_HEARTBEAT_WORKERS = (
+    "Long or heavy work belongs in a worker session rather than this thread or "
+    "a sub-agent: open one with session_create and give it a self-contained "
+    "brief with session_send, so this thread stays free and the user can see "
+    "the work in the sidebar and take it over. On your next wake, read how the "
+    "worker is doing with session_read_message rather than starting the same "
+    "work again. "
+)
+_HEARTBEAT_SMALL_STEPS = (
+    "Long or heavy work goes in small steps, one piece per wake, so this thread "
+    "stays free between them; note in your work ledger where you stopped, so the "
+    "next wake picks it up from there. "
+)
+#: Both hand-offs: the cadence itself is the patrol, and a hidden turn is not
+#: one a person opened, so ``monitor_start`` refuses inside it.
+_HEARTBEAT_PATROL = (
+    "Your next heartbeat is the patrol: it brings you back to this work on its "
+    "own, so this wake ends once its step is done, with no monitor loop or "
+    "wait to arm (a heartbeat turn cannot start a monitor loop). "
+)
+
+
+def heartbeat_prompt(rec: dict[str, Any], *, has_session_tools: bool) -> str:
+    """The hidden turn of one heartbeat wake, built from the current goal record.
+
+    Written as principles the crewmate phrases itself (RFC "Crewmate heartbeat"
+    3.2-3.5): find what it can move forward, do it, record it where the user
+    looks, and write in the chat only when the user would lose something by not
+    knowing now. *has_session_tools* picks how long work is handed off
+    (:func:`member_has_session_tools`).
+    """
+    every = _interval_words(heartbeat_interval(rec["schedules"]))
+    return (
+        "[Heartbeat] "
+        + _PREAMBLE
+        + f"{member_goals.progress_block(rec)}\n\n"
+        + f"This is your heartbeat, a wake every {every} that lets you keep your "
+        "work moving while the user is away. Look at your goals and milestones "
+        "above and at the open items in your work ledger, then move forward "
+        "whatever you can without the user: one thing or several, as the work "
+        "calls for. "
+        + (_HEARTBEAT_WORKERS if has_session_tools else _HEARTBEAT_SMALL_STEPS)
+        + _HEARTBEAT_PATROL
+        + "Record what you did where the user looks: a tracked item's progress "
+        "in your work ledger, the fields your Dashboard tab asks you to fill with "
+        "dashboard_write, and a fresh milestone reading with key_result_progress. "
+        "The user follows your work on your Dashboard tab, so the chat stays "
+        "quiet.\n\n"
+        "Write in the chat only when the user would lose something by not "
+        "knowing now: you are blocked on a decision only they can make, "
+        "something they asked for is done, or there is a surprise or a risk they "
+        "would want to hear about at once, such as a broken build or a security "
+        "problem. Everything else waits for the Weekly report. Otherwise end the "
+        "turn with nothing_to_do and post nothing, which is also how a wake with "
+        "nothing to move forward ends. Every word you write in this thread is "
+        "shown to the user, so on a quiet end call nothing_to_do with no text "
+        "before it; put any reason in its note.\n\n"
+        "When you need the user's answer, ask about one thing, once, with an "
+        "[OPTIONS: ...] line at the end of your message rather than an "
+        "ask_question card, and leave it at that rather than asking again in "
+        "other words. No answer means not now: when the step can be undone, go "
+        "ahead with the safe default and note that on your Dashboard tab; when "
+        "it cannot, leave it and record it on your Dashboard tab as waiting on "
+        "the user."
+    )
+
+
+def member_has_session_tools(member: str) -> bool:
+    """Whether *member*'s thread is expected to hold the ``session_*`` tools.
+
+    The same answer the context builder gives a member turn with no live session
+    evidence, when it decides whether to inject the operating-mode block
+    (``context._member_dispatch_held(None, cfg)``: the configured member backend
+    is one that mounts the dispatch server per session), narrowed by the
+    user-level switch-off of that server, which the mount itself also honours
+    (``session_mcp_server_is_disabled``). It only chooses the heartbeat's
+    wording, so any failure answers False: small steps in the thread work with
+    or without the tools. Blocking IO.
+    """
+    try:
+        from kiro_crew.acp.session_mcp import session_mcp_server_is_disabled
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.context import _member_dispatch_held
+        from kiro_crew.members import MEMBER_DISPATCH_SERVER
+
+        cfg = KiroCrewConfig.load()
+        if not _member_dispatch_held(None, cfg):
+            return False
+        binding = cfg.agents.get(member)
+        agent = getattr(binding, "kiro_agent", "") or None
+        return not session_mcp_server_is_disabled(MEMBER_DISPATCH_SERVER, agent)
+    except Exception:
+        logger.debug("session tools check failed for %r", member, exc_info=True)
+        return False
+
+
 def _idle_thread(state: Any, slot_key: str, member: str) -> tuple[Any, str]:
     """``(slot, "")`` when *member*'s open thread is idle, else ``(None, reason)``."""
     slot = state.get_slot(slot_key)
@@ -342,11 +487,22 @@ async def fire(state: Any, job: Any) -> str:
             return skip
         if again is not slot:
             return "skipped: the crewmate's thread is not open"
+    if cadence == member_goals.CADENCE_HEARTBEAT:
+        has_tools = await asyncio.to_thread(member_has_session_tools, member)
+        again, skip = _idle_thread(state, slot_key, member)
+        if skip:
+            return skip
+        if again is not slot:
+            return "skipped: the crewmate's thread is not open"
+        prompt = heartbeat_prompt(rec, has_session_tools=has_tools)
+    else:
+        prompt = reminder_prompt(rec, cadence, finished=finished)
     dispatch_hidden_turn(
         state,
         slot,
-        reminder_prompt(rec, cadence, finished=finished),
+        prompt,
         human_seen=False,
+        heartbeat=cadence == member_goals.CADENCE_HEARTBEAT,
     )
     return "started"
 

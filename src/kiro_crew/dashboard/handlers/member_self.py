@@ -229,7 +229,16 @@ async def api_member_self_propose(request: web.Request) -> web.Response:
             return _deny(400, "invalid_params", "'key_results' takes only items")
         params = {"member": member, "items": raw.get("items")}
     elif name == "check_ins":
-        allowed_ci = {"daily", "weekly", "monthly", "weekday", "month_day", "time"}
+        allowed_ci = {
+            "daily",
+            "weekly",
+            "monthly",
+            "heartbeat",
+            "weekday",
+            "month_day",
+            "time",
+            "interval",
+        }
         if not raw or set(raw) - allowed_ci:
             _audit(sk, OP_PROPOSE_SELF, "denied", "invalid_params")
             return _deny(

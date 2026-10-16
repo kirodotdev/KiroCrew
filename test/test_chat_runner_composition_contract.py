@@ -1057,6 +1057,7 @@ def test_run_chat_keeps_its_entry_signature() -> None:
         "_directive_channel_origin",
         "_commands_off",
         "_turn_actor",
+        "_heartbeat_turn",
         "regenerate_hint",
         "_on_consumed",
         "_on_irreversibly_consumed",

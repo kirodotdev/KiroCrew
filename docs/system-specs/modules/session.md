@@ -1068,6 +1068,19 @@ against sweep completeness, and are torn down at `close_all`.
   (`_directive_user_origin` True, or any channel turn) is REFUSED
   (`QUIET_END_REFUSED_USER_TURN`), so the ladder, Resume and the channel notice
   run as before and a model that dodged a question fails VISIBLY, not silently.
+  **Text BEFORE the quiet end** is the turn's ordinary output (cut into an
+  assistant row at the tool call) on every turn but one: a crewmate HEARTBEAT
+  wake (`_run_chat(_heartbeat_turn=True)`, set only by
+  `mate_welcome.dispatch_hidden_turn(heartbeat=True)` from
+  `goal_reminder.fire`). There each pre-tool cut is persisted with
+  `quiet_persist` (no `chat_message`, no `_on_row` roster event, no card
+  event) and held in `dashboard/heartbeat_quiet_end.HeldRows`; at completion an
+  applied quiet end with no person's steer folds the held text onto the applied
+  `nothing_to_do` row (`meta.folded_reply` and `meta.output`, patched live over
+  `chat_message_update`) and rewrites each held row to the say-nothing U+200B
+  body in place, and any other ending delivers the held rows then. Cron, monitor
+  wakes, user turns and the other check-ins never set the flag and are
+  unchanged.
   A quiet end is also a FINISHED turn for the interrupted-turn scan: its tail
   (`[nudge, tool…]`) is shape-identical to a gateway that died mid-turn, so
   `state.is_turn_interrupted` and its mirror `selectTurnInterrupted` treat the

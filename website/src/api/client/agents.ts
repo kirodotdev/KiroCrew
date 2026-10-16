@@ -131,7 +131,8 @@ export interface MemberGoal {
   updated_by: 'user' | 'crewmate' | null
 }
 
-/** The check-in switches and their shared timing. weekday: 0 = Sunday. */
+/** The check-in switches and their shared timing. weekday: 0 = Sunday.
+ *  The heartbeat runs every `interval` minutes (15, 30, 60, 120 or 240), not at `time`. */
 export interface GoalSchedules {
   time: string
   timezone: string
@@ -140,6 +141,8 @@ export interface GoalSchedules {
   weekday: number
   monthly: boolean
   month_day: number
+  heartbeat: boolean
+  interval: number
 }
 
 /** A saved weekly report or monthly review (an artifact). */

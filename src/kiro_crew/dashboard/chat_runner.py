@@ -433,6 +433,7 @@ from kiro_crew.dashboard.handlers.usage import (
     read_effective_agent,
     read_turn_model,
 )
+from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows
 from kiro_crew.dashboard.poisoned_escalation import POISONED_SESSION_CYCLES  # noqa: F401
 from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
 from kiro_crew.dashboard.recovery_replays import SESSION_NOT_FOUND_CANCELLED_TEXT  # noqa: F401
@@ -2183,6 +2184,7 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
+    held: HeldRows | None = None,
 ) -> None:
     """Finalize current text block as a segment and persist it.
 
@@ -2194,6 +2196,8 @@ def _flush_segment(
     would render a DUPLICATE copy of the pre-steer text below the steer
     bubble. Normal end-of-segment flushes keep the broadcast — there the
     clients still hold a live streaming message for it to reconcile into.
+    A heartbeat turn's pre-tool cut also passes it, with *held* to keep the row
+    until the turn end settles it (``heartbeat_quiet_end.HeldRows``).
 
     The append-only log's identity for this segment is DERIVED here, not passed
     in: the ACP session id comes from the slot's own client, the turn from the
@@ -2278,7 +2282,7 @@ def _flush_segment(
     # the chat_segment event tells it to finalize streaming → assistant.
     _note_reply_row(
         slot,
-        slot.append(
+        reply_row := slot.append(
             "assistant",
             redacted,
             "msg msg-a",
@@ -2351,6 +2355,8 @@ def _flush_segment(
     # dashboard-surfaced copy of the widget, so it must not persist a credential
     # the segment redaction just stripped out of chat.
     _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+    if held is not None:
+        held.hold(reply_row)
 
 
 def _schedule_widget_registration(
@@ -6474,6 +6480,10 @@ async def _run_chat(
     # crew log's whole premise is that a reader takes it as fact. Empty means no
     # dispatch claimed it, which the crew log records as ``user``.
     _turn_actor: str = "",
+    # This turn is a crewmate heartbeat wake (set only by
+    # ``mate_welcome.dispatch_hidden_turn(heartbeat=True)``): a quiet end then
+    # folds the turn's pre-tool text into its steps (``heartbeat_quiet_end``).
+    _heartbeat_turn: bool = False,
     regenerate_hint: str = "",
     _on_consumed: "Callable[[bool], None] | None" = None,
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None" = None,
@@ -7670,6 +7680,9 @@ async def _run_chat(
     # not. The runner's own in-band notices never register in
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
+    # A heartbeat wake's pre-tool text, cut without delivery until the turn
+    # shows whether it ended quietly. None on every other turn.
+    _heartbeat_held = HeldRows() if _heartbeat_turn and _prompt_depth == 0 else None
 
     def _record_terminal_directive(kind: str, outcome: DirectiveOutcome, tcid: str) -> None:
         if not outcome.ends_turn:
@@ -10907,6 +10920,17 @@ async def _run_chat(
                             slot.key,
                             _open_construct,
                         )
+                    elif _heartbeat_held is not None:
+                        _flush_segment(
+                            state,
+                            slot,
+                            turn.assistant_text,
+                            broadcast=False,
+                            quiet_persist=True,
+                            held=_heartbeat_held,
+                        )
+                        turn.assistant_text = ""
+                        _turn_flushed_visible_text = True
                     else:
                         _flush_segment(state, slot, turn.assistant_text, broadcast=False)
                         turn.assistant_text = ""
@@ -15127,6 +15151,14 @@ async def _run_chat(
                 slot.key,
                 _activity_after_terminal,
                 turn._terminal_directive_kind,
+            )
+
+        if _heartbeat_held is not None:
+            _heartbeat_held.settle(
+                state,
+                slot,
+                quiet_end_applied=turn._terminal_directive_applied and not _person_steered_turn,
+                quiet_end_tcids=_terminal_directive_tcids,
             )
 
         if _answer_text:

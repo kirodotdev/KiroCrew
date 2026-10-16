@@ -377,6 +377,48 @@ def test_a_check_ins_card_applies_and_undoes_through_the_card_hook(
     assert len(_schedules(state, slug, "monthly")) == 1
 
 
+def test_a_heartbeat_card_turns_it_on_at_its_interval_and_undo_turns_it_off(
+    tmp_path: Path, _card_owner
+) -> None:
+    """The heartbeat turns on through an applied card, and the card names its cost."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _CardState(tmp_path)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    card = _propose_check_ins(state, {"heartbeat": True, "interval": 60})
+    from kiro_crew.dashboard import change_cards as cards
+
+    kind = catalog.KIND_CREWMATE_CHECK_INS
+    params = catalog.validate_params(kind, {"member": ORDINARY, "heartbeat": True, "interval": 60})
+    before = asyncio.run(cards.read_state(kind, params, [], state=state, app=None))
+    preview = catalog.build_preview(kind, params, before, {"label": "Scout"})
+    rows = {c["field"]: c for c in preview["changes"]}
+    assert rows["heartbeat"]["after"] == "On" and "credits" in rows["heartbeat"]["label"]
+    assert rows["interval"]["before"] == "Every 30 min"
+    assert rows["interval"]["after"] == "Every 1 h"
+    ((status, body),) = _run_card(state, card["id"], catalog.OP_APPLY)
+    assert status == 200, body
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["heartbeat"], sched["interval"]) == (True, 60)
+    (job,) = _schedules(state, slug, "heartbeat")
+    assert job.schedule.cron_expr == "0 * * * *"
+    ((status, body),) = _run_card(state, card["id"], catalog.OP_UNDO)
+    assert status == 200, body
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["heartbeat"], sched["interval"]) == (False, 30)
+    assert _schedules(state, slug, "heartbeat") == []
+
+
+@pytest.mark.parametrize("interval", [0, 45, True, "30"])
+def test_a_heartbeat_card_refuses_an_interval_outside_the_list(interval: Any) -> None:
+    with pytest.raises(Exception) as exc:
+        catalog.validate_params(
+            catalog.KIND_CREWMATE_CHECK_INS,
+            {"member": ORDINARY, "heartbeat": True, "interval": interval},
+        )
+    assert "interval" in str(exc.value)
+
+
 def test_a_path_fill_takes_only_the_identifier_the_earlier_step_returned() -> None:
     from kiro_crew.dashboard.handlers.change_cards import match_step
 

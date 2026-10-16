@@ -653,7 +653,7 @@ def test_each_check_in_is_dispatched_as_a_plain_hidden_turn(
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
     assert args[1] is slot
-    assert kwargs == {"human_seen": False}
+    assert kwargs == {"human_seen": False, "heartbeat": False}
 
 
 @pytest.mark.parametrize(
@@ -960,6 +960,8 @@ def test_each_switch_creates_and_removes_exactly_its_own_schedule(
         "daily": "15 7 * * *",
         "weekly": "15 7 * * 3",
         "monthly": "15 7 12 * *",
+        # The heartbeat ignores the time of day and runs on its interval.
+        "heartbeat": "*/30 * * * *",
     }[cadence]
     assert job.schedule.cron_expr == expected
     status, body = _owner(state, "PUT", path, {"member": ORDINARY, cadence: False})
@@ -980,7 +982,8 @@ def test_turning_one_switch_off_leaves_the_others(tmp_path: Path) -> None:
         {"member": ORDINARY, "daily": True, "weekly": True, "monthly": True},
     )
     first = {c: [j.id for j in v] for c, v in _jobs_by_cadence(state, slug).items()}
-    assert all(len(v) == 1 for v in first.values())
+    assert all(len(first[c]) == 1 for c in ("daily", "weekly", "monthly"))
+    assert first["heartbeat"] == []
     _owner(state, "PUT", base + "/schedules", {"member": ORDINARY, "weekly": False})
     after = _jobs_by_cadence(state, slug)
     assert after["weekly"] == []
@@ -1284,7 +1287,7 @@ def test_the_reminder_fires_one_hidden_turn_in_the_crewmates_own_thread(_floor_m
     member_goals.set_schedules(slug, ORDINARY, {"daily": True})
     assert asyncio.run(goal_reminder.fire(state, Job())) == "started"
     ((args, kwargs),) = sent
-    assert args[1] is slot and kwargs == {"human_seen": False}
+    assert args[1] is slot and kwargs == {"human_seen": False, "heartbeat": False}
     prompt = args[2]
     assert "Keep docs current" in prompt
     assert "pages reviewed" in prompt and "key_result_progress" in prompt
