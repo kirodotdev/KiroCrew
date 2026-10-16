@@ -25,7 +25,7 @@ import pytest
 import yaml
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import beacon, diagnostics, release_channel
+from kiro_crew import agent_scratch, beacon, diagnostics, release_channel
 from kiro_crew.dashboard.handlers import diagnostics as dh
 from kiro_crew.diagnostics import BundleResult
 
@@ -66,6 +66,9 @@ def _isolate(monkeypatch, home: Path) -> None:
     """Point the collector at a temp home and stub host-specific probes."""
     home.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr("kiro_crew.diagnostics.config_dir", lambda: home)
+    # The per-process kiro-cli logs are read from the agent scratch root, which
+    # sits under the data home too.
+    monkeypatch.setattr(agent_scratch, "config_dir", lambda: home)
     # Pin Path.home() too: on Windows the real host home is a PARENT of tmp_path,
     # so without this the real home would collapse the tmp prefix and the
     # fixtures' home paths would never match. Both the collector's home and
@@ -587,6 +590,90 @@ def test_symlinked_source_is_not_followed(tmp_path, monkeypatch):
         assert "gateway.log" not in z.namelist()
         joined = "".join(z.read(n).decode(errors="replace") for n in z.namelist())
     assert "TOPSECRETsymlinkVALUE123" not in joined
+
+
+def _scratch_chat_log(root: Path, name: str, body: str, mtime: float) -> None:
+    """Write ``<root>/<name>/kiro-log/kiro-chat.log`` with its mtime pinned."""
+    log = root / name / agent_scratch.KIRO_CLI_LOG_SUBDIR / agent_scratch.KIRO_CLI_CHAT_LOG_NAME
+    log.parent.mkdir(parents=True)
+    log.write_text(body, encoding="utf-8")
+    os.utime(log, (mtime, mtime))
+
+
+def test_bundle_takes_the_newest_per_process_chat_logs(tmp_path, monkeypatch):
+    """The bundle carries the newest per-process kiro-cli chat logs from scratch.
+
+    Each spawned kiro-cli logs into its own scratch dir, which no shared
+    ``kiro-log`` location reaches. The bundle takes the newest of those logs by
+    mtime, up to the cap, as ``kiro-chat/<scratch dir>.log`` beside the shared
+    ``kiro-chat.log``, and scrubs them like every other member.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    shared = tmp_path / "kiro-chat.log"
+    shared.write_text("shared log line\n", encoding="utf-8")
+    monkeypatch.setattr(diagnostics, "_kiro_cli_chat_log", lambda: shared)
+    monkeypatch.setattr(diagnostics, "_MAX_SCRATCH_CHAT_LOGS", 2)
+    root = agent_scratch.scratch_root()
+    # Neither the name order nor the write order is the newest-first order.
+    _scratch_chat_log(root, "chat-a-00000001", "middle log line\n", 1_700_000_100)
+    _scratch_chat_log(root, "chat-b-00000002", "oldest log line\n", 1_700_000_000)
+    _scratch_chat_log(root, "chat-c-00000003", f"newest log line\n{_GATEWAY}", 1_700_000_200)
+
+    r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+
+    with zipfile.ZipFile(r.zip_path) as z:
+        assert [n for n in z.namelist() if n.startswith("kiro-chat/")] == [
+            "kiro-chat/chat-c-00000003.log",
+            "kiro-chat/chat-a-00000001.log",
+        ]
+        newest = z.read("kiro-chat/chat-c-00000003.log").decode()
+        assert "shared log line" in z.read("kiro-chat.log").decode()
+    assert "newest log line" in newest
+    for secret in _SECRETS:
+        assert secret not in newest, f"secret leaked from a scratch chat log: {secret!r}"
+    assert r.redaction_summary["kiro-chat/chat-c-00000003.log"] >= 3
+
+
+def test_bundle_never_walks_a_linked_scratch_level(tmp_path, monkeypatch):
+    """A linked scratch root, scratch dir or ``kiro-log`` is skipped, never walked.
+
+    ``Path.is_dir()`` follows a link, and the log on its far side is a regular
+    file the per-file check passes, so each DIRECTORY level needs its own guard
+    to keep an off-tree ``kiro-chat.log`` out of a bundle bound for a public
+    issue. ``make_dir_link`` stages a junction on Windows and a directory symlink
+    elsewhere, so the guard is exercised on every platform.
+    """
+    home = tmp_path / "home"
+    _isolate(monkeypatch, home)
+    root = agent_scratch.scratch_root()
+    off_tree = tmp_path / "off-tree"
+    _scratch_chat_log(root, "real-00000001", "kept log line\n", 1_700_000_000)
+    _scratch_chat_log(off_tree, "dir", "OFFTREEscratchDIR\n", 1_700_000_100)
+    _scratch_chat_log(off_tree, "log", "OFFTREEkiroLOG\n", 1_700_000_200)
+    make_dir_link(root / "linked-dir-00000002", off_tree / "dir")
+    (root / "linked-log-00000003").mkdir()
+    make_dir_link(
+        root / "linked-log-00000003" / agent_scratch.KIRO_CLI_LOG_SUBDIR,
+        off_tree / "log" / agent_scratch.KIRO_CLI_LOG_SUBDIR,
+    )
+
+    def scratch_members() -> tuple[list[str], bytes]:
+        r = diagnostics.collect_bundle(output_dir=tmp_path / "out")
+        with zipfile.ZipFile(r.zip_path) as z:
+            names = z.namelist()
+            blob = b"".join(z.read(n) for n in names)
+        return [n for n in names if n.startswith("kiro-chat/")], blob
+
+    members, blob = scratch_members()
+    assert members == ["kiro-chat/real-00000001.log"]
+    assert b"OFFTREE" not in blob
+
+    # The same tree reached through a linked ROOT is not walked at all.
+    root.rename(tmp_path / "moved-root")
+    make_dir_link(root, tmp_path / "moved-root")
+    members, _ = scratch_members()
+    assert members == []
 
 
 @pytest.mark.skipif(
@@ -1212,6 +1299,48 @@ class TestUsableDirRejectsEveryDirLink:
         real.mkdir()
         monkeypatch.setattr(diagnostics.platform_compat, "is_link_or_junction", lambda p: True)
         assert diagnostics._usable_dir(real) is False
+
+    def test_a_link_is_refused_before_anything_follows_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # `is_dir()` follows a link to answer, and on Windows following one whose
+        # target is a UNC share authenticates to that host before the answer is
+        # thrown away, so the link check has to come first.
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        link = tmp_path / "kiro-log"
+        make_dir_link(link, outside)
+        followed: list[Path] = []
+        real_is_dir = Path.is_dir
+
+        def recording_is_dir(self, *args, **kwargs):
+            followed.append(self)
+            return real_is_dir(self, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "is_dir", recording_is_dir)
+
+        assert diagnostics._usable_dir(link) is False
+        assert link not in followed
+
+
+@requires_symlinks
+def test_a_linked_log_is_refused_before_anything_follows_it(tmp_path, monkeypatch):
+    """``_usable_log`` checks for a link before ``is_file()``, which follows one."""
+    target = tmp_path / "real.log"
+    target.write_text("log line\n", encoding="utf-8")
+    link = tmp_path / "kiro-chat.log"
+    link.symlink_to(target)
+    followed: list[Path] = []
+    real_is_file = Path.is_file
+
+    def recording_is_file(self, *args, **kwargs):
+        followed.append(self)
+        return real_is_file(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "is_file", recording_is_file)
+
+    assert diagnostics._usable_log(link) is False
+    assert link not in followed
 
 
 # ── API handlers (mode-independent: stub request + asyncio.run) ──────────────

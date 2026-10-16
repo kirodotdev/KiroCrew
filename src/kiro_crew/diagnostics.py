@@ -36,7 +36,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import quote, urlencode
 
-from kiro_crew import __version__, platform_compat, release_channel
+from kiro_crew import __version__, agent_scratch, platform_compat, release_channel
 from kiro_crew.config.loader import config_dir
 from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.security import (
@@ -56,6 +56,9 @@ _ISSUE_NEW_URL = f"https://github.com/{_ISSUE_REPO}/issues/new"
 # the bundle (or, worse, the redaction pass).
 _MAX_CRASH_DUMPS = 5
 _MAX_IPS_REPORTS = 5
+# Same bound for the per-process kiro-cli chat logs read from agent scratch:
+# one per spawned process, so a host running many agents has many.
+_MAX_SCRATCH_CHAT_LOGS = 5
 # Keep only the newest N bundles in the output dir so a repeatedly-clicked
 # "Report a Problem" can't grow the diagnostics dir unbounded.
 _MAX_KEPT_BUNDLES = 10
@@ -347,7 +350,8 @@ def _kiro_log_dirs() -> list[Path]:
 
 
 def _usable_log(p: Path) -> bool:
-    return p.is_file() and not p.is_symlink()
+    # Link check first: `is_file()` follows a link (see `_usable_dir`).
+    return not p.is_symlink() and p.is_file()
 
 
 def _usable_dir(p: Path) -> bool:
@@ -366,8 +370,13 @@ def _usable_dir(p: Path) -> bool:
     ``SeCreateSymbolicLinkPrivilege``). A symlink-only guard is therefore open
     on exactly the platform where planting one is easiest, and what leaks
     through it is a bundle the user then attaches to a public issue.
+
+    The link check runs BEFORE ``is_dir()``, because ``is_dir()`` follows the
+    link to answer: on Windows, following a link whose target is a UNC share
+    opens an SMB connection that authenticates as this process, even when the
+    answer is then thrown away.
     """
-    return p.is_dir() and not platform_compat.is_link_or_junction(p)
+    return not platform_compat.is_link_or_junction(p) and p.is_dir()
 
 
 def _kiro_cli_chat_log() -> Path | None:
@@ -403,6 +412,38 @@ def _kiro_cli_extra_logs() -> list[Path]:
             # zip would carry two different `mcp.log` entries under one name.
             break
     return out
+
+
+def _scratch_kiro_chat_logs() -> list[Path]:
+    """Per-process kiro-cli chat logs under agent scratch, newest first.
+
+    On Linux and macOS ``agent_scratch.scratch_env`` pins the log of every
+    kiro-cli Kiro Crew spawns to ``<scratch root>/<dir>/kiro-log/kiro-chat.log``,
+    which none of :func:`_kiro_log_dirs`' shared candidates reach. Each directory
+    level must pass :func:`_usable_dir` and the log :func:`_usable_log`, so a
+    linked scratch dir or ``kiro-log`` is skipped rather than walked out of the
+    tree. Sorted by the log's mtime and capped at :data:`_MAX_SCRATCH_CHAT_LOGS`.
+    A dead process's directory is swept once it has been idle about an hour
+    (``agent_scratch.sweep_dead_scratch``), so its log is collectable until then.
+    """
+    root = agent_scratch.scratch_root()
+    if not _usable_dir(root):
+        return []
+    try:
+        children = list(root.iterdir())
+    except OSError:
+        return []
+    found: list[tuple[float, Path]] = []
+    for child in children:
+        log_dir = child / agent_scratch.KIRO_CLI_LOG_SUBDIR
+        log = log_dir / agent_scratch.KIRO_CLI_CHAT_LOG_NAME
+        try:
+            if _usable_dir(child) and _usable_dir(log_dir) and _usable_log(log):
+                found.append((log.lstat().st_mtime, log))
+        except OSError:
+            continue
+    found.sort(key=lambda entry: entry[0], reverse=True)
+    return [log for _, log in found[:_MAX_SCRATCH_CHAT_LOGS]]
 
 
 # ── Live log reader (kiro_cli_logs MCP tool) ─────────────────────────────────
@@ -1257,6 +1298,9 @@ def collect_bundle(
         chat = _kiro_cli_chat_log()
         if chat is not None:
             text_sources.append(("kiro-chat.log", chat, True))
+        for log in _scratch_kiro_chat_logs():
+            # Named for its scratch dir: every per-process log is `kiro-chat.log`.
+            text_sources.append((f"kiro-chat/{log.parent.parent.name}.log", log, True))
         for extra in _kiro_cli_extra_logs():
             text_sources.append((f"kiro-cli-{extra.name}", extra, True))
 
