@@ -556,6 +556,9 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # Read by shell words, never by the regex tier: see ``_GH_FILE_BODY_PATTERN``.
+    gh_file_body_enabled = _rules._GH_FILE_BODY_PATTERN in regex_patterns
+    regex_patterns = [p for p in regex_patterns if p != _rules._GH_FILE_BODY_PATTERN]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from
@@ -789,6 +792,25 @@ def is_denied(
             # The raw input, not ``lower``: see the audit note below.
             _emit_deny_event(tool_name, pattern, tool_name)
             return _reason(pattern, note, rule=rule_id, component="argv-floor")
+    # ── gh body-from-file (the exfil gate's shell-word matcher) ──
+    # Script hooks reach only this function, so the row is enforced here too, while
+    # it is enabled. A matcher that cannot read the command fails closed.
+    _gh = _submodule("exfil_bash")
+    if gh_file_body_enabled and _gh._may_run_gh(tool_name):
+        try:
+            gh_flag = _gh._gh_file_body_flag(tool_name)
+        except Exception as exc:  # incl. RecursionError
+            logger.warning("gh file-body matcher could not read the command: %r", exc)
+            gh_flag = "?"
+        if gh_flag:
+            _emit_deny_event(tool_name, _rules._GH_FILE_BODY_PATTERN, tool_name)
+            note = f"gh {gh_flag} reads a local file (matched on shell words)."
+            return _reason(
+                _rules._GH_FILE_BODY_PATTERN,
+                note,
+                rule="data-exfil-gh-file-body",
+                component="argv-floor",
+            )
     # All windows cleared the deny passes — the input is allowed.  If it was a
     # feature-branch push, emit the deferred allow audit now (final outcome).
     #

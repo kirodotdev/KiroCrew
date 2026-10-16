@@ -2762,6 +2762,24 @@ through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
 `date` conversion run on its own is.
 
+gh's own body-from-file flags (`data-exfil-gh-file-body`) are read on shell
+words, only where `gh` is a command's program word: `gh api|repo --input <file>`,
+`--field k=@<file>`, `gh release --notes-file <file>`. Each command's argv comes
+from `shell_commands.read_commands(heredoc_bodies=True)`, so a redirection (a
+leading `2>/dev/null`) is never the program word, and a here-document tag or
+here-string word is not an argument. In that opt-in mode the reader reads `<<` /
+`<<-` as a redirection, skips each body (ending at its tag, tab-stripped only
+after `<<-`) once its line ends, and resumes after it, in one pass. An UNQUOTED
+tag's body adds the commands of its `$( … )` and backtick substitutions, read
+once each with the body's quotes as literal text; a quoted tag's body adds
+nothing. A body no line closes is not skipped, so the rest is still read
+(`x=$((1<<2))` hides nothing). The default read, used by the `rm` floor, still
+stops at a live `<<`. A known option's value is data. Stdin (`-`, `/dev/stdin`, `/dev/fd/N`,
+`<( … )`, `k=@-`) is allowed, so a pipe still carries a file: the row is
+friction, not containment. The row's `pattern` is a readable subset kept out of
+the regex tier (`_GH_FILE_BODY_PATTERN`); the exfil gate and an `is_denied`
+floor (the path script hooks take) run the same matcher while the row is enabled.
+
 ### SEL Forward Callback (`sel.py`)
 
 `set_forward_callback()` enables centralized log integration (basin/ktap). Events are redacted via `redact()` before forwarding to strip credentials and exfiltration URLs from string fields. Callback failures are logged at debug level (never silently swallowed).
