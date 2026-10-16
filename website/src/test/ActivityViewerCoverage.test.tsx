@@ -18,12 +18,16 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 import type { ReactNode } from 'react'
 
+/** The coordinator request a pending fixture was raised for. */
+const tgt = (id: string) => ({ origin: 'coordinator' as const, id, slot: 'chat-1', instance: `inst-${id}` })
+
 vi.mock('../api/client', () => ({
   api: {
     spawnStatus: vi.fn().mockResolvedValue({ result: '' }),
     spawnDelete: vi.fn().mockResolvedValue({}),
     spawnRetry: vi.fn().mockResolvedValue({}),
     resolveApproval: vi.fn().mockResolvedValue({}),
+    decideApproval: vi.fn().mockResolvedValue({}),
     approveChatSlot: vi.fn().mockResolvedValue({}),
     fileDiff: vi.fn().mockResolvedValue({ diff: '' }),
     artifacts: vi.fn().mockResolvedValue({ artifacts: [] }),
@@ -166,7 +170,7 @@ beforeEach(() => {
   vi.mocked(api.spawnStatus).mockResolvedValue({ result: 'the transcript' })
   vi.mocked(api.spawnDelete).mockResolvedValue({})
   vi.mocked(api.spawnRetry).mockResolvedValue({})
-  vi.mocked(api.resolveApproval).mockResolvedValue({})
+  vi.mocked(api.decideApproval).mockResolvedValue({})
   vi.mocked(api.fileDiff).mockResolvedValue({ diff: '' })
   vi.mocked(api.artifacts).mockResolvedValue({ artifacts: [] })
   stubFetch()
@@ -332,7 +336,7 @@ describe('ActivityViewer — subagent card controls', () => {
       <ActivityViewer
         {...baseProps}
         view="subagents"
-        subagents={{ p1: mkAgent('p1', { status: 'pending', approval_id: 'ap-1' }) }}
+        subagents={{ p1: mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') }) }}
       />,
     )
     expect(screen.getByText('Pending Approval')).toBeInTheDocument()
@@ -340,18 +344,18 @@ describe('ActivityViewer — subagent card controls', () => {
     // name contains every label inside it, including this one.
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
 
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-1', 'approve'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(tgt('ap-1'), 'approve'))
   })
 
   it('terminates the card locally when a pending agent is rejected', async () => {
-    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') })
     const { store } = renderPanel(
       <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
       storeTracking(pending),
     )
     fireEvent.click(screen.getByRole('button', { name: 'Reject' }))
 
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-1', 'reject'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(tgt('ap-1'), 'reject'))
     // A rejected spawn emits nothing further, so the card is finished locally.
     await waitFor(() => {
       expect(store.getState().chat.subagents.p1?.status).toBe('error')
@@ -359,8 +363,8 @@ describe('ActivityViewer — subagent card controls', () => {
   })
 
   it('releases the approving flag when the approval call fails', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new Error('nope'))
-    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    vi.mocked(api.decideApproval).mockRejectedValue(new Error('nope'))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') })
     const { store } = renderPanel(
       <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
       storeTracking(pending),
@@ -372,8 +376,8 @@ describe('ActivityViewer — subagent card controls', () => {
 
   it('withdraws the buttons and names a terminal refusal (#11180)', async () => {
     // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
-    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
-    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    vi.mocked(api.decideApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') })
     renderPanel(
       <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
       storeTracking(pending),
@@ -384,15 +388,22 @@ describe('ActivityViewer — subagent card controls', () => {
       expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // A refused decide is a failed request (errors-use-error-notice): the
+    // refusal sentence renders through ErrorNotice under the header, so the
+    // header's "No longer pending" says why on screen, not only to assistive tech.
+    expect(screen.getByRole('alert')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+    // Nothing is pending any more, so the header no longer says so.
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.pending_approval'))).not.toBeInTheDocument()
+    // The card keeps a title: a settled label in place of the pending one,
+    // which does not claim the press went through.
+    expect(screen.getByText(i18nT('pages.chat.activityViewer.no_longer_pending'))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.resolved'))).not.toBeInTheDocument()
   })
 
   it('re-offers the buttons when the pane gets a NEW approval id (#11180)', async () => {
     // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
-    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
-    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1' })
+    vi.mocked(api.decideApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') })
     const { rerender } = renderPanel(
       <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
       storeTracking(pending),
@@ -408,11 +419,34 @@ describe('ActivityViewer — subagent card controls', () => {
       <ActivityViewer
         {...baseProps}
         view="subagents"
-        subagents={{ p1: { ...pending, approval_id: 'ap-2' } }}
+        subagents={{ p1: { ...pending, approval_id: 'ap-2', approval_target: tgt('ap-2') } }}
       />,
     )
     expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Reject' })).toBeInTheDocument()
+  })
+
+  it('re-offers the buttons when a replacement request reuses the same approval id', async () => {
+    // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
+    vi.mocked(api.decideApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    const pending = mkAgent('p1', { status: 'pending', approval_id: 'ap-1', approval_target: tgt('ap-1') })
+    const { rerender } = renderPanel(
+      <ActivityViewer {...baseProps} view="subagents" subagents={{ p1: pending }} />,
+      storeTracking(pending),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() => {
+      expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument()
+    })
+    // Request A was refused; request B reuses its recurring id with a new instance.
+    rerender(
+      <ActivityViewer
+        {...baseProps}
+        view="subagents"
+        subagents={{ p1: { ...pending, approval_target: { ...tgt('ap-1'), instance: 'inst-replacement' } } }}
+      />,
+    )
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument()
   })
 
   it('does nothing for a pending agent with no approval id', () => {
@@ -424,7 +458,7 @@ describe('ActivityViewer — subagent card controls', () => {
       />,
     )
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 
   it('collapses a finished card from the keyboard, ignoring other keys', () => {
@@ -559,6 +593,7 @@ describe('ActivityViewer — spawn approval entries', () => {
     text: 'Running: git push origin feature',
     ts: 1_700_000_000_000,
     approval_id: 'ap-9',
+    approval_target: tgt('ap-9'),
     approval_type: 'spawn',
   }
 
@@ -571,7 +606,7 @@ describe('ActivityViewer — spawn approval entries', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
 
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-9', 'approve'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(tgt('ap-9'), 'approve'))
     expect(await screen.findByText('Approved')).toBeInTheDocument()
   })
 
@@ -579,12 +614,12 @@ describe('ActivityViewer — spawn approval entries', () => {
     renderPanel(<ActivityViewer {...baseProps} view="subagents" toolLog={[pending]} />)
     fireEvent.click(screen.getByRole('button', { name: /Reject/ }))
 
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-9', 'reject'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(tgt('ap-9'), 'reject'))
     expect(await screen.findByText('Rejected')).toBeInTheDocument()
   })
 
   it('restores the buttons when resolving the approval fails', async () => {
-    vi.mocked(api.resolveApproval).mockRejectedValue(new Error('offline'))
+    vi.mocked(api.decideApproval).mockRejectedValue(new Error('offline'))
     renderPanel(<ActivityViewer {...baseProps} view="subagents" toolLog={[pending]} />)
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
 
@@ -594,7 +629,7 @@ describe('ActivityViewer — spawn approval entries', () => {
 
   it('withdraws the buttons and names a terminal refusal (#11180)', async () => {
     // Duck-typed 404 (api/apiError.ts): the mocked client is not ApiError.
-    vi.mocked(api.resolveApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
+    vi.mocked(api.decideApproval).mockRejectedValue(Object.assign(new Error('not found or expired'), { status: 404 }))
     renderPanel(<ActivityViewer {...baseProps} view="subagents" toolLog={[pending]} />)
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
 
@@ -602,9 +637,13 @@ describe('ActivityViewer — spawn approval entries', () => {
       expect(screen.queryByRole('button', { name: /Approve/ })).not.toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: /Reject/ })).not.toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      i18nT('components.approvalCard.approval_no_longer_pending'),
-    )
+    // A refused decide is a failed request (errors-use-error-notice): the
+    // refusal sentence renders through ErrorNotice under the header, so the
+    // header's "No longer pending" says why on screen, not only to assistive tech.
+    expect(screen.getByRole('alert')).toHaveTextContent(i18nT('components.approvalCard.approval_no_longer_pending'))
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.approval_needed'))).not.toBeInTheDocument()
+    expect(screen.getByText(i18nT('pages.chat.activityViewer.no_longer_pending'))).toBeInTheDocument()
+    expect(screen.queryByText(i18nT('pages.chat.activityViewer.resolved'))).not.toBeInTheDocument()
   })
 
   it('offers only Approve / Reject and never reports a trust grant (#5400)', async () => {
@@ -618,7 +657,7 @@ describe('ActivityViewer — spawn approval entries', () => {
     expect(screen.queryByText('Trust')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: /Approve/ }))
-    await waitFor(() => expect(api.resolveApproval).toHaveBeenCalledWith('ap-9', 'approve'))
+    await waitFor(() => expect(api.decideApproval).toHaveBeenCalledWith(tgt('ap-9'), 'approve'))
     expect(await screen.findByText('Approved')).toBeInTheDocument()
     expect(screen.queryByText(/Trusted/)).not.toBeInTheDocument()
   })

@@ -222,4 +222,26 @@ describe('NotificationsPage deep link (?note=<ts>)', () => {
     expect(store.getState().notifications.items.find(n => n.ts === bystander.ts)?.acked).toBe(false)
     expect(scrollSpy).not.toHaveBeenCalled()
   })
+
+  // The page's split carries data-notif-scope: without it the panel's
+  // Dismiss has no list to hand focus to and focus falls to <body>.
+  it('Dismiss on a retired approval hands focus to the page\'s own feed list', async () => {
+    const approval: Notification = {
+      kind: 'approval', ts: '2026-05-29T10:02:00Z', title: 'Tool approval: shell',
+      body: 'ls', approval_id: 'apr-gone', acked: true, _local: true,
+    }
+    const store = createTestStore({
+      notifications: { items: [approval], retiredApprovals: { [approval.ts]: true } } as RootState['notifications'],
+    })
+    renderWithProviders(<NotificationsPage />, {
+      store,
+      route: `/notifications?${NOTE_DEEP_LINK_PARAM}=${encodeURIComponent(approval.ts)}`,
+    })
+    const dismiss = await screen.findByTestId('notif-detail-dismiss')
+    dismiss.focus()
+    act(() => { dismiss.click() })
+    await waitFor(() => {
+      expect(document.activeElement).toBe(screen.getByTestId('notification-feed-list'))
+    })
+  })
 })

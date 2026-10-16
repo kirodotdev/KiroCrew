@@ -128,8 +128,9 @@ export default function NotificationsPage() {
           <StatCard label={i18nT('pages.notificationsPage.heartbeat')} value={byCat('heartbeat')} />
         </div>
 
-        {/* Split layout: feed + detail */}
-        <div className={`flex gap-4 ${isMobile ? '' : 'flex-1 min-h-0'}`}>
+        {/* Split layout: feed + detail. data-notif-scope: the panel's Dismiss
+            hands focus back to THIS feed's list (NotificationDetailPanel). */}
+        <div data-notif-scope className={`flex gap-4 ${isMobile ? '' : 'flex-1 min-h-0'}`}>
           {/* Left: feed */}
           <div className={`flex flex-col shrink-0 ${isMobile ? 'w-full' : 'min-w-[320px] max-w-[420px] w-[40%]'} ${isMobile && selected ? 'hidden' : ''}`}>
             <Card className="flex flex-col flex-1 min-h-0">

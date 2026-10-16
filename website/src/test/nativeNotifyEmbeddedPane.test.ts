@@ -123,7 +123,7 @@ describe('embedded instance pane relays native notifications to the parent', () 
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-pane-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
+        data: { id: 'ap-pane-1', instance: 'inst-ap-pane-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
 

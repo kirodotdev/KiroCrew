@@ -5,9 +5,7 @@ import type { UseVirtualChatReturn, VirtualItem } from '../../../hooks/virtualiz
 import type { ChatSlot, ChatMessage } from '../../../types'
 import type { PinnedPromptState } from '../../../utils/pinnedPrompt'
 import type { TurnItem, DisplayItem } from '../types'
-import { toApiDecision } from '../../../utils/approvalDecision'
 import { isHiddenInvisibleAssistantRow } from '../../../utils/invisibleText'
-import { api } from '../../../api/client'
 import { ChatTranscriptSkeleton } from '../../../components/ChatTranscriptSkeleton'
 import CollapsibleToolGroup from '../CollapsibleToolGroup'
 import { MeasureFarm } from '../../../hooks/virtualizer/MeasureFarm'
@@ -63,8 +61,8 @@ interface ChatTranscriptViewProps {
   handleSurveyLayoutChange: () => void
   onScrollPin: () => void
   pinned: PinnedPromptState | null
-  approve: (action: string) => Promise<void>
-  dismissApproval: (aid: string, decision?: string) => void
+  /** Decides a collapsed tool group's pending row, bound to the request it names. */
+  decideRow: (meta: Record<string, unknown> | undefined, action: string) => Promise<void>
   currentSlot: ChatSlot | undefined
   regenerating: boolean
   sendUnconfirmed: boolean
@@ -93,7 +91,7 @@ interface ChatTranscriptViewProps {
 export default function ChatTranscriptView({
   embedded, popout, activeSlot, appToolCallIds, titleInTopbar, activityOpen, completedTurnCount, cursorIsForActiveSlot, kiroCrewVersion, loadingOlder, olderFailed, setTurnDisclosureFor, slotHasMore,
   slotLoading, slotRunning, slotState, slotStopping, slotSwitchTarget, turnDisclosure, turnRowMayBeLive, setInput, isWelcomeState, chatConfig, scrollerRef, bindScroller, handleSurveyLayoutChange,
-  onScrollPin, pinned, approve, dismissApproval, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
+  onScrollPin, pinned, decideRow, currentSlot, regenerating, sendUnconfirmed, dockH, lastRole, streamTick, toggleAct, renderedDisplayItems, stableMsgKey, virtualKey, handleLoadEarlier,
   spinnerNearTop, virt, visibleDisplayItems, chatNav, navigateToTurn, turnStepAnnouncement, renderFarmItem, renderMessage, renderTurnItem,
 }: ChatTranscriptViewProps) {
   return (
@@ -310,12 +308,8 @@ export default function ChatTranscriptView({
             permissionMeta={unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined}
             pendingPermCount={unresolvedGroupPerms.length}
             onApprove={(() => {
-              const aid = unresolvedGroupPerms.at(-1)?.meta?.approval_id as string | undefined
-              if (!aid) return approve
-              return async (action: string) => {
-                await api.resolveApproval(aid, toApiDecision(action))
-                dismissApproval(aid)
-              }
+              const meta = unresolvedGroupPerms.at(-1)?.meta as Record<string, unknown> | undefined
+              return (action: string) => decideRow(meta, action)
             })()}
             onViewActivity={toggleAct}
             activityOpen={activityOpen}

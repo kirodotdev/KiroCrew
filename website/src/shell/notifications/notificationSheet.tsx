@@ -358,6 +358,10 @@ export function NotificationSheet({ sheet }: { sheet: ReturnType<typeof useNotif
     {(open || closing) && createPortal(
       <div
         ref={popoverRef}
+        // The scope a Dismiss in this sheet's detail panel hands focus back
+        // within (NotificationDetailPanel's dismissRow), so it lands on this
+        // sheet's list, not on a page's list behind the sheet.
+        data-notif-scope
         // Anchored 48px below the viewport top, which the shell has pushed
         // down by the top inset — top-safe-offset-[48px] adds both.
         //

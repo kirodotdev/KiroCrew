@@ -2,10 +2,10 @@
  * Source contract for #5434: ChatPage's CollapsibleToolGroup mounts must not
  * declare the standing-trust tier.
  *
- * Both mounts resolve approvals through the shared `toApiDecision`
- * (`utils/approvalDecision.ts`, single-sourced by #8193 — ChatPage held its own
- * copy until then) into the one-shot `api.resolveApproval` endpoint, which has no
- * trust verb. The group component is fail-closed (`canTrust` opt-in), so the
+ * Both mounts decide approvals through `lib/decidePermissionRow`, which maps
+ * with the shared `toApiDecision` (`utils/approvalDecision.ts`, single-sourced
+ * by #8193 — ChatPage held its own copy until then) into the one-shot
+ * `api.decideApproval`, which has no trust verb. The group component is fail-closed (`canTrust` opt-in), so the
  * regression this pins is someone flipping `canTrust` on a ChatPage mount: the
  * Trust button would render, and because that mapping is fail-closed
  * (`'approved' -> approve`, else `reject`), a user's Trust click would resolve as
@@ -35,6 +35,7 @@ const source = [
   ...readdirSync(PAGES_DIR).filter(f => /^useChatPage.*\.ts$/.test(f) && !/\.test\./.test(f)).sort()
     .map(f => readFileSync(resolve(PAGES_DIR, f), 'utf-8')),
 ].join('\n')
+const decider = readFileSync(resolve(__dirname, '../lib/decidePermissionRow.ts'), 'utf-8')
 
 /** Every `<CollapsibleToolGroup ...>` opening tag's attribute block. */
 function mountAttributeBlocks(src: string): string[] {
@@ -72,7 +73,7 @@ describe('ChatPage CollapsibleToolGroup mounts (#5434 contract)', () => {
     expect(mounts).toHaveLength(3)
   })
 
-  it('no mount declares canTrust — their resolve path is the one-shot resolveApproval', () => {
+  it('no mount declares canTrust — their resolve path is the one-shot decideApproval', () => {
     for (const block of mounts) {
       // toApiDecision maps anything but 'approved' to 'reject', so a canTrust
       // mount here would turn a user's Trust click into a silent denial.
@@ -82,5 +83,25 @@ describe('ChatPage CollapsibleToolGroup mounts (#5434 contract)', () => {
       // author doing so must re-read the toApiDecision constraint comment.
       expect(block).toContain('hasPermission={false}')
     }
+  })
+
+  it('a chat decision is bound to the row\'s request and hands its outcome to that request\'s feed row', () => {
+    // Both resolving mounts decide the row they show, never a bare id: the id
+    // recurs and a chat runner's can collide with a coordinator one.
+    const calls = source.match(/return \(action: string\) => decideRow\(meta, action\)/g) ?? []
+    expect(calls).toHaveLength(2)
+    // A row with no approval id is not decided by bare slot either: it goes
+    // through the same decider, which refuses a row that names no request.
+    expect(source).not.toMatch(/return approve\b/)
+    expect(source).not.toMatch(/api\.approveChatSlot\(/)
+    expect(source).not.toMatch(/api\.resolveApproval\(/)
+    expect(decider).toMatch(/const target = permissionRowTarget\(meta, slot\)/)
+    expect(decider).toMatch(/await api\.decideApproval\(target, a\)/)
+    // The chat row records the decision that was sent: a missing one defaults
+    // to `approved` and would overwrite a rejection the backend frame wrote.
+    expect(decider).toMatch(/dispatch\(resolveApprovalRow\(\{ target, decision \}\)\)/)
+    // And the feed row for THAT request goes with the decision.
+    expect(decider).toMatch(/approvalRowsFor\(notifications, target\)/)
+    expect(decider).toMatch(/dispatch\(removeNotificationByTs\(n\.ts\)\)/)
   })
 })

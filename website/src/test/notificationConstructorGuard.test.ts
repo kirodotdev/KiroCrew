@@ -106,7 +106,7 @@ describe('page-context Notification construction is best-effort', () => {
     act(() => {
       ws.simulateMessage({
         type: 'approval',
-        data: { id: 'ap-android-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
+        data: { id: 'ap-android-1', instance: 'inst-ap-android-1', source: 'cron', tool: 'Bash', tool_input: '{}', ts: 1.0 },
       })
     })
 

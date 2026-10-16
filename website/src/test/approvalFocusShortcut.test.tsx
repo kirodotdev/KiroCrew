@@ -22,7 +22,7 @@ vi.mock('../api/client', () => {
   }
   return {
     api: {
-      resolveApproval: vi.fn(() => Promise.resolve({})),
+      decideApproval: vi.fn(() => Promise.resolve({})),
       approveChatSlot: vi.fn(() => Promise.resolve({})),
     },
     ApiError: MockApiError,
@@ -211,7 +211,7 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     // one-shot endpoint or the slot-scoped trust endpoint.
     renderWithProviders(<Harness />, { store: createTestStore(stateWithApproval()) })
     pressChord()
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
     expect(api.approveChatSlot).not.toHaveBeenCalled()
   })
 
@@ -227,6 +227,6 @@ describe('Alt+Shift+Enter focuses the pending approval', () => {
     const before = document.activeElement
     pressChord()
     expect(document.activeElement).toBe(before)
-    expect(api.resolveApproval).not.toHaveBeenCalled()
+    expect(api.decideApproval).not.toHaveBeenCalled()
   })
 })

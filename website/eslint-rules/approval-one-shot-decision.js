@@ -18,7 +18,7 @@
  *
  * Two chokepoints already exist and neither can fire:
  *
- *   - `api.resolveApproval` is typed to the three honored actions.
+ *   - `api.decideApproval` is typed to the three honored actions.
  *   - `api_approval_resolve` returns 400 for anything outside them.
  *
  * Both reject a trust verb SENT to the endpoint, but the verb never arrives as
@@ -35,7 +35,7 @@
  * the guarantee it was written for. Two re-introduction paths passed it in
  * silence:
  *
- *   - a module-private mapper -- `resolveApproval(id, myMap(action))` -- which
+ *   - a module-private mapper -- `decideApproval(target, myMap(action))` -- which
  *     is the shape ALL THREE cited defects actually took, so a ternary-only
  *     denylist would have caught none of them; and
  *   - the same ternary hoisted one line up into a local, which changes the node
@@ -43,7 +43,7 @@
  *
  * So the argument is checked against an allowlist instead, and an unrecognized
  * shape is REPORTED rather than admitted. That direction is deliberate: every
- * `resolveApproval` decision argument in the repo today is one of exactly three
+ * `decideApproval` decision argument in the repo today is one of exactly three
  * shapes (a string literal, a plain identifier, or a `toApiDecision` call), so a
  * fourth shape is a thing to judge deliberately, not to wave through.
  *
@@ -155,7 +155,9 @@ const noInlineOneShotDecision = {
             : callee.type === 'Identifier'
               ? callee.name
               : null
-        if (name !== 'resolveApproval') return
+        // The dashboard decides only through `decideApproval`; a bare-id
+        // `resolveApproval` is refused outright by approvalBareIdGuard.test.ts.
+        if (name !== 'decideApproval') return
         const decision = node.arguments[1]
         if (!decision) return
         const scope = sourceCode.getScope ? sourceCode.getScope(decision) : context.getScope()

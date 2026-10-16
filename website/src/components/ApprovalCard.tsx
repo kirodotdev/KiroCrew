@@ -140,8 +140,9 @@ function ApprovalCardBody({ title, toolInput, showButtons, showTrust = true, has
         </div>
       )}
       {failure !== null && (
-        // The card holds no draft: the pending buttons are not user input and the
-        // failed decision is retryable, so the hand-off loses nothing.
+        // A refused decide is a failed request (errors-use-error-notice), the
+        // gone refusal included. The card holds no draft: the pending buttons
+        // are not user input, so the hand-off loses nothing.
         <ErrorNotice variant="inline" className="mt-1.5" askAgent testId="approval-card-failure" message={failure.terminal
           ? i18nT('components.approvalCard.approval_no_longer_pending')
           : failure.message

@@ -104,7 +104,7 @@ describe('useWebSocket unowned approval routing', () => {
   const cronApproval = (extra: Record<string, unknown> = {}) => ({
     type: 'approval',
     data: {
-      id: 'ap-cron-1',
+      id: 'ap-cron-1', instance: 'inst-ap-cron-1',
       source: 'cron',
       tool: 'Running: cd /work/repo && git status',
       tool_input: '{"command":"git status"}',
