@@ -9,11 +9,14 @@ the first prompt. Bounding only the Crew prompt cannot bound that native cost.
 from __future__ import annotations
 
 import asyncio
+import atexit
 import errno
+import functools
 import hashlib
 import json
 import logging
 import os
+import queue
 import re
 import secrets
 import stat
@@ -1118,9 +1121,12 @@ class NativeSkillProjection:
         self._lease_finalizer = None
         with _ACTIVE_PROJECTIONS_LOCK:
             _ACTIVE_PROJECTIONS.pop(id(self), None)
-        if finalizer is not None and finalizer.alive:
-            # Runs ``_end_projection`` once, now, and detaches it from GC.
-            finalizer()
+        # Detaching is atomic, so the end runs once: here, or from the finalizer
+        # if garbage collection got to it first. This is ordinary code, not a GC
+        # callback, so the end may run on this thread (see _end_projection).
+        detached = finalizer.detach() if finalizer is not None else None
+        if detached is not None:
+            _end_projection(*detached[2])
 
 
 _ACTIVE_PROJECTIONS: weakref.WeakValueDictionary[int, NativeSkillProjection] = (
@@ -1168,12 +1174,12 @@ def _eager_prune_in(side_dir: Path, directory: Path, crew_home_id: str) -> None:
 def _end_projection(
     lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
 ) -> None:
-    """The lease finalizer: release the lease, then prune eagerly.
+    """End a released projection: release the lease, then prune eagerly.
 
     Called by :meth:`NativeSkillProjection.release` (the client's shutdown path
-    calls that on the event-loop thread) or, for a projection that was merely
-    dropped, by garbage collection -- which can run on that thread too. Off the
-    loop the whole sequence runs inline. On the loop ALL of it goes to a daemon
+    calls that on the event-loop thread). A projection that was dropped is
+    ended by :func:`_end_collected_projection` on the worker instead, never on
+    the thread the garbage collector interrupted. Off the loop the whole sequence runs inline. On the loop ALL of it goes to a daemon
     thread: the prune waits on a file lock (up to the publication lock's
     ceiling), and the lease release itself unlocks and closes the holder, then
     stats, opens and unlinks two files -- blocking calls whose cost on a slow or
@@ -1206,6 +1212,208 @@ def _end_projection_off_loop(
         lease_stack.close()
     finally:
         _eager_prune_in(side_dir, directory, crew_home_id)
+
+
+#: Ends of projections that were dropped rather than released, waiting for
+#: :func:`_ended_projection_worker`. A ``SimpleQueue`` because its ``put`` is
+#: safe to call from a garbage-collection callback: it takes no lock the
+#: interrupted thread could already hold.
+_ENDED_PROJECTIONS: queue.SimpleQueue[Callable[[], None]] = queue.SimpleQueue()
+_ENDED_PROJECTION_WORKER: threading.Thread | None = None
+_ENDED_PROJECTION_WORKER_LOCK = threading.Lock()
+_LIVE_RELEASE_ARMED = False
+#: How long each exit hook keeps starting ends. One end is bounded by the
+#: publication lock's ceiling plus the prune's time budget; whatever is left
+#: when this runs out stays on disk like a crash's residue, and the next spawn's
+#: prune reclaims it.
+_EXIT_DRAIN_SECS = 10.0
+
+
+def _end_collected_projection(
+    lease_stack: ExitStack, directory: Path, crew_home_id: str, side_dir: Path
+) -> None:
+    """The lease finalizer of a projection that was dropped rather than released.
+
+    Garbage collection runs this on whichever thread allocated when the
+    collector fired, at whatever point that thread had reached -- possibly
+    inside a non-reentrant lock the end itself takes: an executor's submit
+    lock on the path-resolution route the prune's reads go through, the
+    in-process projection locks, or the unlink-warning lock. Ending the
+    projection there deadlocks that thread for good. So this only queues the
+    end for :func:`_ended_projection_worker` and returns; it takes no lock and
+    does no I/O.
+
+    That holds at interpreter exit too. A collection can fire while the exit
+    release holds ``_ACTIVE_PROJECTIONS_LOCK`` for its snapshot, which the
+    prune takes again, so the release runs the end afterwards, outside every
+    lock.
+    """
+    _ENDED_PROJECTIONS.put(
+        functools.partial(_end_projection_off_loop, lease_stack, side_dir, directory, crew_home_id)
+    )
+
+
+def _ended_projection_worker(ended: queue.SimpleQueue[Callable[[], None]]) -> None:
+    """Run the queued ends of dropped projections, one at a time, forever."""
+    while True:
+        end = ended.get()
+        try:
+            end()
+        except Exception:
+            logger.warning("skill projection: ending a dropped projection failed", exc_info=True)
+
+
+def _ensure_ended_projection_worker() -> bool:
+    """Start the worker that ends dropped projections, if it is not running.
+
+    Called when a projection arms its finalizer -- ordinary code, never a GC
+    callback, which must not start a thread. Liveness is checked, not just
+    presence: an end that raises a ``BaseException`` ends the worker thread,
+    and the next arm starts another. A thread that cannot be started
+    (interpreter shutdown) leaves the queue to the exit drain and to the next
+    spawn's prune. True when a worker is running on return.
+    """
+    global _ENDED_PROJECTION_WORKER
+    with _ENDED_PROJECTION_WORKER_LOCK:
+        if _ENDED_PROJECTION_WORKER is not None and _ENDED_PROJECTION_WORKER.is_alive():
+            return True
+        worker = threading.Thread(
+            target=_ended_projection_worker,
+            args=(_ENDED_PROJECTIONS,),
+            name="kirocrew-skill-view-end",
+            daemon=True,
+        )
+        try:
+            worker.start()
+        except RuntimeError:
+            logger.debug("skill projection: ended-projection worker not started", exc_info=True)
+            return False
+        _ENDED_PROJECTION_WORKER = worker
+        return True
+
+
+def _settle_ended_projections(timeout: float) -> bool:
+    """Wait until every dropped projection queued so far has been ended.
+
+    True when they all were within *timeout* seconds. The exit drain calls this
+    so the worker finishes what it was handed; tests call it to wait for a
+    dropped projection's lease and views to go. False at once when no worker
+    can run.
+    """
+    if not _ensure_ended_projection_worker():
+        return False
+    settled = threading.Event()
+    _ENDED_PROJECTIONS.put(settled.set)
+    return settled.wait(timeout)
+
+
+def _run_queued_ends(deadline: float) -> None:
+    """Run every queued end on this thread until the queue is empty or *deadline*."""
+    while time.monotonic() < deadline:
+        try:
+            end = _ENDED_PROJECTIONS.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            end()
+        except Exception:
+            logger.warning("skill projection: ending a dropped projection failed", exc_info=True)
+
+
+def _drain_ended_projections_at_exit() -> None:
+    """Run the queued ends of dropped projections, at interpreter exit.
+
+    The worker is a daemon, so nothing waits for what is still queued. Without
+    this, each dropped projection's lease record, sidecar and views would stay
+    on disk as if the process had crashed, until a later spawn's prune. This
+    runs every queued end itself until the queue is empty, then waits for the
+    end the worker may be part-way through, all within ``_EXIT_DRAIN_SECS``.
+    Their prunes need the thread pools, so this is a ``threading`` exit hook
+    (:func:`_register_exit_drain`). It leaves projections that are still
+    referenced alone: a non-daemon thread may still be using one, and the
+    interpreter joins those threads only after this hook. Those are released
+    later, by :func:`_release_live_projections_at_exit`. A projection dropped
+    after this returns is queued as at any other time, and the worker ends it.
+    """
+    deadline = time.monotonic() + _EXIT_DRAIN_SECS
+    _run_queued_ends(deadline)
+    _settle_ended_projections(max(0.0, deadline - time.monotonic()))
+
+
+def _release_live_projections_at_exit() -> None:
+    """Release the lease of every projection still referenced, at interpreter exit.
+
+    A plain ``atexit`` hook, so it runs after the interpreter has joined every
+    non-daemon thread, and a thread still using a projection keeps its lease
+    until it ends. Only the lease is released, so no later process takes this
+    one's views as claimed. The views stay on disk, and the next spawn's prune
+    reclaims them. Nothing is ended while the snapshot lock is held: a
+    projection collected during the snapshot is only queued
+    (:func:`_end_collected_projection`), and the queue is run after it.
+    """
+    deadline = time.monotonic() + _EXIT_DRAIN_SECS
+    with _ACTIVE_PROJECTIONS_LOCK:
+        alive = tuple(_ACTIVE_PROJECTIONS.values())
+    for projection in alive:
+        if time.monotonic() >= deadline:
+            return
+        finalizer = projection._lease_finalizer
+        projection._lease_finalizer = None
+        detached = finalizer.detach() if finalizer is not None else None
+        if detached is None:
+            continue
+        lease_stack = detached[2][0]
+        try:
+            lease_stack.close()
+        except Exception:
+            logger.warning("skill projection: releasing a lease at exit failed", exc_info=True)
+    _run_queued_ends(deadline)
+
+
+def _arm_live_release_at_exit() -> None:
+    """Register :func:`_release_live_projections_at_exit` once, after a finalizer exists.
+
+    ``weakref.finalize`` registers its own ``atexit`` hook when the first one in
+    the process is created, and once that hook has run no finalizer fires
+    again. ``atexit`` runs last-registered first, so registering here, after
+    this projection's finalizer, puts the release ahead of that hook: a
+    projection collected during the release's snapshot still has its end
+    queued.
+    """
+    global _LIVE_RELEASE_ARMED
+    with _ENDED_PROJECTION_WORKER_LOCK:
+        if _LIVE_RELEASE_ARMED:
+            return
+        _LIVE_RELEASE_ARMED = True
+    atexit.register(_release_live_projections_at_exit)
+
+
+def _register_exit_drain() -> None:
+    """Run :func:`_drain_ended_projections_at_exit` while thread pools still take work.
+
+    The drain's prune resolves paths through the sensitive-path resolver, and on
+    Windows every bounded answer from its child is read on a pool thread. An
+    ordinary ``atexit`` hook runs after ``concurrent.futures`` has shut every
+    pool for good, so there each resolution raises, the prune fails closed and
+    every view stays on disk. ``threading``'s own exit hooks run before that
+    shutdown, last-registered first, so the drain is registered there AFTER
+    ``concurrent.futures.thread`` (imported here so its hook exists) and runs
+    ahead of it. Where that hook is missing, ``atexit`` still runs the queued
+    ends, and each one's lease release.
+    """
+    import concurrent.futures.thread  # noqa: F401 -- registers the pools' shutdown hook first
+
+    register = getattr(threading, "_register_atexit", None)
+    if register is not None:
+        try:
+            register(_drain_ended_projections_at_exit)
+            return
+        except RuntimeError:  # already shutting down
+            pass
+    atexit.register(_drain_ended_projections_at_exit)
+
+
+_register_exit_drain()
 
 
 def _active_aliases() -> set[str]:
@@ -4006,14 +4214,19 @@ def prepare_native_skill_projection(
                     # Releases the lease and prunes this home's unleased views
                     # as soon as the projection ends -- explicitly through
                     # ``release()`` at session end, or when it is dropped.
+                    _ensure_ended_projection_worker()
                     prepared._lease_finalizer = weakref.finalize(
                         prepared,
-                        _end_projection,
+                        _end_collected_projection,
                         lease_stack,
                         directory,
                         crew_home_id,
                         _projection_side_dir(),
                     )
+                    # A projection still referenced at exit is released by
+                    # _release_live_projections_at_exit, not by finalize's hook.
+                    prepared._lease_finalizer.atexit = False
+                    _arm_live_release_at_exit()
                 except BaseException:
                     lease_stack.close()
                     raise

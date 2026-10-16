@@ -25,6 +25,7 @@ from conftest import requires_symlinks
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.hooks import FileTooLargeError
+from kiro_crew.testing.wait import default_timeout
 
 
 def _hold_the_prune_clock(monkeypatch):
@@ -94,6 +95,17 @@ def _no_eager_prune(_floor_monkeypatch):
     the real one back (:data:`_REAL_EAGER_PRUNE`).
     """
     _floor_monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
+
+
+def _collect_dropped_projections():
+    """Collect, then wait until every dropped projection has been ended.
+
+    A dropped projection is ended on the ended-projection worker, never on the
+    collecting thread, so a test that asserts what a drop released waits for it.
+    """
+    gc.collect()
+    settled = projection._settle_ended_projections(default_timeout())
+    assert settled, "a dropped projection was never ended"
 
 
 @pytest.fixture
@@ -1070,7 +1082,7 @@ def test_prune_reclaims_alias_whose_agent_file_was_deleted(native_tree, monkeypa
     stale = _alias_file(agents, first)
     assert stale.exists()
     del first
-    gc.collect()
+    _collect_dropped_projections()
     # The agent stops resolving, and a spawn for a DIFFERENT live agent runs.
     (agents / "custom.json").unlink()
     monkeypatch.setattr(
@@ -1108,7 +1120,7 @@ def test_every_reclaim_stage_admits_an_ordinary_local_alias(native_tree):
     # Drop the projection: its lease must be released and reclaimed, which is
     # what makes the alias unused. Nothing about the authored source changes.
     del prepared
-    gc.collect()
+    _collect_dropped_projections()
 
     assert projection._active_aliases() == set(), "a dropped projection still claims its aliases"
     assert not _alias_is_live(
@@ -1537,7 +1549,7 @@ def test_editing_an_agent_publishes_a_new_alias_and_reclaims_the_old(native_tree
     first = projection.prepare_native_skill_projection(project)
     stale = _alias_file(agents, first)
     del first
-    gc.collect()
+    _collect_dropped_projections()
     source.write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
     second = projection.prepare_native_skill_projection(project)
     assert _alias_file(agents, second) != stale
@@ -1562,7 +1574,7 @@ def test_prune_reclaims_unused_alias_whose_work_dir_still_exists(native_tree, tm
     alias = _alias_file(agents, ended)
     metadata = _metadata_file(agents, ended)
     del ended
-    gc.collect()
+    _collect_dropped_projections()
     assert run_dir.is_dir(), "the run directory is deliberately left in place"
 
     source.write_text('{"name":"custom","prompt":"new"}', encoding="utf-8")
@@ -1597,7 +1609,7 @@ def test_prune_reclaims_at_least_as_many_aliases_as_one_spawn_publishes(
     ended = projection.prepare_native_skill_projection(run_dir)
     left_behind = [_alias_file(agents, ended, n) for n in names]
     del ended
-    gc.collect()
+    _collect_dropped_projections()
     for name in names:
         (agents / f"{name}.json").write_text(
             json.dumps({"name": name, "prompt": "edited"}), encoding="utf-8"
@@ -1638,7 +1650,7 @@ def test_prune_drains_headroom_beyond_one_spawn_publishes(native_tree, monkeypat
     edit("live")
     backlog = [_alias_file(agents, prepared, name) for prepared in ended for name in names]
     del ended
-    gc.collect()
+    _collect_dropped_projections()
     assert sum(path.exists() for path in backlog) == 6
 
     live = projection.prepare_native_skill_projection(project)
@@ -1660,7 +1672,7 @@ def test_alias_count_stays_bounded_across_many_ended_runs(native_tree, tmp_path)
         prepared = projection.prepare_native_skill_projection(run_dir)
         assert prepared is not None
         del prepared
-        gc.collect()
+        _collect_dropped_projections()
     live = projection.prepare_native_skill_projection(project)
     aliases = sorted(p.name for p in agents.glob(f"{projection.NATIVE_SKILL_ALIAS_PREFIX}*.json"))
     assert aliases == [f"{live.agent('custom')}.json"]
@@ -1674,7 +1686,7 @@ def test_prune_keeps_alias_replaced_after_unused_classification(native_tree, mon
     unused = _alias_file(agents, first)
     replacement = unused.read_text(encoding="utf-8")
     del first
-    gc.collect()
+    _collect_dropped_projections()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
     monkeypatch.setattr(
@@ -1882,7 +1894,7 @@ def test_projection_lock_failure_keeps_aliases_and_preserves_startup(
     assert json.loads(settings.read_text(encoding="utf-8"))[projection._INHERIT_SETTING] is True
     settings_before = settings.read_bytes()
     del first
-    gc.collect()
+    _collect_dropped_projections()
     source.unlink()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
@@ -2235,7 +2247,7 @@ def test_prune_keeps_alias_while_an_external_projection_lease_is_locked(native_t
     stale = _alias_file(agents, first)
     external = projection._acquire_projection_lease(agents, {stale.stem})
     del first
-    gc.collect()
+    _collect_dropped_projections()
     source.unlink()
 
     (agents / "other.json").write_text('{"name":"other"}', encoding="utf-8")
@@ -2261,7 +2273,7 @@ def test_projection_finalizer_removes_its_lease_sidecar(native_tree):
     assert len(list(lease_dir.glob("*.json"))) == 1
 
     del prepared
-    gc.collect()
+    _collect_dropped_projections()
 
     assert list(lease_dir.glob("*.json")) == []
 
@@ -2503,7 +2515,7 @@ def test_lease_scan_overflow_is_uncertain_and_retains_stale_alias(native_tree, m
     first = projection.prepare_native_skill_projection(project)
     stale = _alias_file(agents, first)
     del first
-    gc.collect()
+    _collect_dropped_projections()
     source.unlink()
 
     # The scan ceiling bounds EVERY directory entry, not just the ``.json``
@@ -2782,7 +2794,7 @@ def test_census_counts_what_the_reclaim_would_keep_and_remove(native_tree, tmp_p
     assert ended is not None
     published = len(ended.aliases)
     del ended
-    gc.collect()
+    _collect_dropped_projections()
     live = projection.prepare_native_skill_projection(project)
     assert live is not None
 
@@ -2875,7 +2887,7 @@ def _released_backlog(agents, project, count):
         held.append(projection.prepare_native_skill_projection(project))
     backlog = [(_alias_file(agents, p), _metadata_file(agents, p)) for p in held]
     del held
-    gc.collect()
+    _collect_dropped_projections()
     assert all(alias.exists() and meta.exists() for alias, meta in backlog)
     return backlog
 
@@ -3518,7 +3530,7 @@ def test_deeply_nested_ownership_sidecar_reads_as_unowned_in_the_prune(
     alias_path = _alias_file(agents, first)
     metadata_path = _metadata_file(agents, first)
     del first
-    gc.collect()
+    _collect_dropped_projections()
 
     metadata_path.write_text("[" * 100000 + "]" * 100000, encoding="utf-8")
     alias_raw = alias_path.read_bytes()
@@ -4593,7 +4605,7 @@ def test_a_relaunched_alias_stays_owned_and_is_reclaimed_as_a_pair(native_tree, 
     _launcher_reserialize(alias, nonce=str(uuid.uuid4()))
     assert projection._managed_metadata_for_alias(agents, alias, alias.read_bytes()) is not None
     del old
-    gc.collect()
+    _collect_dropped_projections()
     _hold_the_prune_clock(monkeypatch)
     source.write_text(json.dumps(_launcher_spec("n1", {"V": "1", "W": "2"})), encoding="utf-8")
 
@@ -5374,11 +5386,64 @@ def test_a_dropped_projection_prunes_too_and_spares_what_another_projection_hold
     assert live_alias != ended_alias and live_alias.exists() and ended_alias.exists()
 
     del ended
-    gc.collect()
+    _collect_dropped_projections()
 
     assert not ended_alias.exists(), "a dropped projection's view waited for the next spawn"
     assert live_alias.exists(), "a view a live projection holds was pruned"
     assert live.agent("custom") == live_alias.stem
+
+
+@pytest.mark.parametrize("on_loop", [False, True], ids=["off-loop", "on-loop"])
+def test_a_dropped_projection_never_runs_its_end_on_the_collecting_thread(
+    native_tree, monkeypatch, on_loop
+):
+    """The garbage collector runs a dropped projection's finalizer on whichever
+    thread allocated when it fired, wherever that thread had got to -- including
+    inside a non-reentrant lock the end itself needs, such as the shared
+    path-resolution executor's submit lock. Ending the projection there
+    deadlocks that thread for good, and any session start waiting on it with it.
+    The finalizer only hands the end over: lease release and prune run on another
+    thread once the collecting thread lets go of its locks.
+
+    The on-loop case is a regression pin: the worker never looks at the loop, and
+    that case already passed before the hand-over. It keeps a later change from
+    ending a dropped projection on the loop thread again."""
+    held = threading.Lock()
+    ended_on: list[str] = []
+    stuck_on: list[str] = []
+    collecting_thread = threading.current_thread()
+
+    def prune_needing_the_held_lock(directory, crew_home_id):
+        name = threading.current_thread().name
+        ended_on.append(name)
+        if threading.current_thread() is collecting_thread:
+            # The collecting thread holds the lock; a blocking acquire here
+            # would deadlock, which is the bug this test pins.
+            stuck_on.append(name)
+            return
+        # Any other thread waits for the collecting thread to let go. The
+        # settle below bounds that wait, so no timing decides the verdict.
+        with held:
+            pass
+
+    monkeypatch.setattr(projection, "_eager_prune", prune_needing_the_held_lock)
+    monkeypatch.setattr(projection, "on_event_loop", lambda: on_loop)
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    lease_dir = projection._projection_lease_dir()
+    assert any(lease_dir.iterdir())
+    collecting = threading.current_thread().name
+
+    with held:
+        del prepared
+        gc.collect()
+
+    settled = projection._settle_ended_projections(default_timeout())
+    assert settled, "the handed-over end of a dropped projection never ran"
+    assert stuck_on == [], f"the end ran on the collecting thread, inside its lock: {stuck_on}"
+    assert ended_on and collecting not in ended_on, f"the end never ran on the worker: {ended_on}"
+    assert not list(lease_dir.iterdir()), "the dropped projection's lease was never released"
 
 
 def test_two_gateways_still_cannot_both_own_a_view(native_tree, monkeypatch):
@@ -5542,6 +5607,28 @@ def test_a_projection_ending_later_prunes_the_home_it_published_into(
     monkeypatch.setattr(projection, "data_home", refuse_to_resolve)
 
     prepared.release()
+
+    assert not alias.exists()
+    assert not list((published_under / "leases").iterdir())
+
+
+def test_a_dropped_projection_prunes_the_home_it_published_into(native_tree, monkeypatch):
+    """The test above for a projection that is dropped instead: its end runs on
+    the ended-projection worker, and pins the side directory there too."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    prepared = projection.prepare_native_skill_projection(project)
+    alias = _alias_file(agents, prepared)
+    published_under = projection._projection_side_dir()
+
+    def refuse_to_resolve():
+        raise AssertionError("the ending projection asked which data home is current")
+
+    monkeypatch.setattr(projection, "data_home", refuse_to_resolve)
+
+    del prepared
+    _collect_dropped_projections()
 
     assert not alias.exists()
     assert not list((published_under / "leases").iterdir())

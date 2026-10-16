@@ -18,6 +18,7 @@ import pytest
 from kiro_crew import execution_context, session_agent_selection
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
 from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+from kiro_crew.testing.wait import default_timeout
 
 AGENT = "docs-author"
 VIEW = "kirocrew-skill-view-" + "c" * 24
@@ -231,6 +232,7 @@ def published_view(tmp_path, monkeypatch):
     view = prepared.agent(AGENT)
     del prepared
     gc.collect()  # the lease goes and no projection in this process holds the view
+    assert projection._settle_ended_projections(default_timeout()), "the dropped end never ran"
     metadata = projection._projection_metadata_dir()
     # A build that predates the ledger never wrote it; the sidecar is the
     # only record of which agent the view was built from.

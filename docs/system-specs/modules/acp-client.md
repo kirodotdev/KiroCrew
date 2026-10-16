@@ -688,10 +688,30 @@ bounded prune, under the same lock and gates (lease scan, `_per_spawn_prune_due`
 spacing, time budget), so this home's now-unleased views leave the agents
 directory at once instead of waiting for the next spawn. The eager prune never
 queues behind this process's own in-process lock (a start holding it runs its
-own prune), and when the finalizer runs on an event-loop thread the lease release
-stays inline while the prune goes to a daemon thread, so no session start is
-stalled behind a file-lock wait. Pruning runs ONE bounded lease scan for the whole
-run -- not one scan per candidate, which multiplied the candidate cap by the
+own prune). A `release()` on an event-loop thread hands the whole end (lease
+release and prune) to a daemon thread, so no session start is stalled behind a
+file-lock wait. The finalizer of a dropped projection never ends it on the thread
+the garbage collector interrupted, which may already hold a non-reentrant lock the
+end takes (the path-resolution executor's submit lock, the in-process projection
+locks): it only queues the end on a `SimpleQueue`, and one daemon worker started
+when the finalizer is armed runs it. That holds at interpreter exit too, so a collection that fires while the
+exit release holds the active-projections lock cannot end a projection under it.
+Exit work is split by what it needs. The ends of DROPPED projections, already
+queued, need the thread pools for their prune: a `threading` exit hook, which runs
+before `concurrent.futures` shuts its pools, runs every queued end itself outside
+any lock until the queue is empty and lets the worker finish what it holds, within
+a fixed budget. On Windows every bounded resolver answer the prune needs is read
+on a pool thread, so an `atexit` drain would fail closed there and leave every
+view. A projection dropped after that hook is queued for the worker. Projections
+still REFERENCED are released by a plain `atexit` hook, which runs after the
+interpreter has joined every non-daemon thread, so a thread still driving a
+session keeps its lease until it ends. That hook releases only the lease; the
+views stay for the next spawn's prune. It is registered when the first
+finalizer is armed, so it runs ahead of `weakref.finalize`'s own exit hook (after
+which no finalizer fires), and each finalizer has `atexit` off. The gateway exits
+through `os._exit`, so neither hook runs there: what is left is reclaimed by the
+next spawn's prune, as after a crash. Pruning runs ONE
+bounded lease scan for the whole run -- not one scan per candidate, which multiplied the candidate cap by the
 scan cap into a quadratic sweep under the held publication lock -- streaming lease
 records without materializing the directory and stopping at a fixed scan ceiling.
 The scan covers TWO directories under one deadline: this home's own lease

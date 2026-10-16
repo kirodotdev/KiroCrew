@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import asyncio.proactor_events
 import errno
+import gc
 import json
 import os
 import pathlib
@@ -25,6 +26,7 @@ from kiro_crew.safety_override import reset_singleton as _reset_safety_override
 from kiro_crew.safety_override import reset_yolo_policy_state as _reset_yolo_policy_state
 from kiro_crew.slack.client import SlackClientOps
 from kiro_crew.slack.handler import _PHASE_EMOJIS, _build_phase_emojis
+from kiro_crew.testing.wait import default_timeout
 
 if os.name == "nt":
 
@@ -1045,6 +1047,29 @@ def _release_stt_engine():
     from kiro_crew.stt import engine as stt_engine
 
     stt_engine._engine = None
+
+
+@pytest.fixture(autouse=True)
+def _settle_dropped_skill_projections():
+    """Never let a dropped skill projection's end run during the NEXT test.
+
+    A dropped projection is ended on a worker thread, not where it was
+    collected, so its lease release and prune would otherwise run whenever the
+    worker got to it: inside a later test, against the earlier test's temp tree
+    and with whatever ``_eager_prune`` that later test patched in, logging into
+    its ``caplog``. Free for a process that never armed a projection; a
+    collection only when one is still uncollected.
+    """
+    yield
+    projection = sys.modules.get("kiro_crew.acp.skill_projection")
+    if projection is None or projection._ENDED_PROJECTION_WORKER is None:
+        return
+    if len(projection._ACTIVE_PROJECTIONS):
+        gc.collect()
+    if not projection._settle_ended_projections(default_timeout()):
+        raise TimeoutError(
+            "a dropped skill projection's end did not finish; it would run during a later test"
+        )
 
 
 def absent_sysconf(name):

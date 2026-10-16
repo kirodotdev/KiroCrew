@@ -19,6 +19,7 @@ import pytest
 
 from kiro_crew.acp import skill_projection as projection
 from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeError, _format_runtime_rpc_error
+from kiro_crew.testing.wait import default_timeout
 
 VIEW = "kirocrew-skill-view-" + "a" * 24
 OTHER_VIEW = "kirocrew-skill-view-" + "b" * 24
@@ -102,6 +103,7 @@ def _pre_ledger_backlog(agents, project, count, spec=None):
     views = [prepared.agent("custom") for prepared in held]
     del held
     gc.collect()
+    assert projection._settle_ended_projections(default_timeout()), "a dropped end never ran"
     metadata = projection._projection_metadata_dir()
     (metadata / projection._VIEW_LEDGER_NAME).unlink()
     projection._VIEW_SOURCES.clear()
@@ -341,6 +343,7 @@ def test_set_mode_never_sends_a_stale_view_name(native_tree):
     stale = first.agent("custom")
     del first
     gc.collect()
+    assert projection._settle_ended_projections(default_timeout()), "the dropped end never ran"
     (agents / "custom.json").write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
     current = projection.prepare_native_skill_projection(project)
     assert current.agent("custom") != stale
