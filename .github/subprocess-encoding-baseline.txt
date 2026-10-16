@@ -64,7 +64,6 @@
 1 test/test_issue_summary_workflow.py
 2 test/test_issue_triage_workflow.py
 2 test/test_kiro_prerequisite.py
-1 test/test_md_notebook.py
 2 test/test_memory_benchmark_workflow.py
 5 test/test_papyrus_gitops.py
 1 test/test_per_file_coverage_gate.py

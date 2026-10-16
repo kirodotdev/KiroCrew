@@ -143,7 +143,6 @@
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
 5489 test/test_apps_backend_coverage.py
-5277 test/test_apps_registry.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 4053 test/test_auto_research.py
@@ -213,7 +212,6 @@
 3224 test/test_mcp_gateway_stub_session_token.py
 2449 test/test_mcp_gatewayd_coverage.py
 2543 test/test_mcp_launch_approval.py
-5390 test/test_md_notebook.py
 3249 test/test_member_essential_context.py
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py

@@ -763,7 +763,7 @@ class TestRunAppBuild:
         installs it -- so absence is let through now, nothing pip-installed either
         way, and the final pass (``final=True``, on the post-script checkout)
         refuses if the file never appeared: see the end-to-end cases in
-        ``test_apps_registry.py``.
+        ``test_apps_registry_desktop_layout.py``.
         """
         (tmp_path / "server.py").unlink()  # the fixture's entry file: this case is about its absence
         (tmp_path / "requirements.txt").write_text("fastapi\n", encoding="utf-8")
@@ -1183,7 +1183,7 @@ class TestRunAppBuild:
         assert spawned == []
         assert [p.name for p in (home / "app-sources").iterdir()] == ["demo"]
         # The bare gate raises the install's own refusal; the final pass's caller
-        # converts it the same way (see test_apps_registry.py, end to end).
+        # converts it the same way (see test_apps_registry_desktop_layout.py, end to end).
         with pytest.raises(InstalledTreeRefused, match=re.escape(_DATA_IS_A_FILE)):
             registry._desktop_build_refusal(
                 source, _asgi_backend(), self_managed=False, final=True

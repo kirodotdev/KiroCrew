@@ -3685,7 +3685,7 @@ shipped `data` link, the root `data` file refused before the record),
 `TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
 (and its link and junction siblings),
 `TestCopyAppTreeAsInstalled`,
-`test/test_apps_registry.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
+`test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
 
 
