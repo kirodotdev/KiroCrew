@@ -77,7 +77,11 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
 
-function makeStore(activeSlot: string, slots: { key: string; project?: string }[]) {
+function makeStore(
+  activeSlot: string,
+  slots: { key: string; project?: string }[],
+  messages: { role: string; content: string; cls: string }[] = [{ role: 'assistant', content: 'hi', cls: '' }],
+) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -87,7 +91,7 @@ function makeStore(activeSlot: string, slots: { key: string; project?: string }[
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
       chat: {
-        activeSlot, messages: [{ role: 'assistant', content: 'hi', cls: '' }],
+        activeSlot, messages,
         slotRunning: false, slotStopping: false, slotState: 'idle',
         history: [], historyHasMore: false, pendingInput: null,
         subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools',
@@ -629,6 +633,41 @@ describe('ChatPage file chip remove + undo', { timeout: 15_000 }, () => {
       await act(async () => { release(null) })
       vi.stubGlobal('fetch', realFetch)
     }
+  })
+
+  it('a follow-up chip Send-now sends the staged file AND clears it so the next turn does not re-send it', async () => {
+    // The follow-up chip's immediate send routes through send(optionText), which
+    // skips the normal composer clear to protect the user's typed DRAFT -- but the
+    // staged attachments ARE consumed and transmitted on that path, so leaving
+    // them staged re-attached the same media to the next human turn. Stage a
+    // file, type some plain draft text, fire the chip's "Send now", then assert
+    // the file went out once, the attachment chip is gone, AND the typed draft
+    // the !optionText gate exists to protect is still in the composer.
+    const store = makeStore(
+      'slot-a',
+      [{ key: 'slot-a', project: '/repo' }],
+      [{ role: 'user', content: 'go', cls: '' }, { role: 'assistant', content: 'Pick one [OPTIONS: Alpha | Beta]', cls: '' }],
+    )
+    await renderPage(store)
+    const ta = await pickFile()
+    // Plain text the user is still composing; it must survive the chip send.
+    fireEvent.change(ta, { target: { value: ta.value + 'keep me' } })
+
+    // The chip's Send-now segment (not a plain chip click, which only appends to
+    // the composer). aria-label carries the option text -- target Alpha's.
+    const sendNow = await screen.findByRole('button', { name: /send now.*Alpha/i })
+    await act(async () => { fireEvent.click(sendNow) })
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
+    const sent = vi.mocked(api.sendChat).mock.calls.at(-1)![0] as string
+    // The option text and the staged file both went out in this one send.
+    expect(sent).toContain('Alpha')
+    expect(sent).toContain('[attached_file 1] /repo/src/main.ts')
+
+    // The attachment is cleared: its chip is gone, so a subsequent human send
+    // cannot silently re-attach it.
+    await waitFor(() => expect(screen.queryByLabelText('Remove')).not.toBeInTheDocument())
+    // ...but the user's typed draft the gate protects is untouched.
+    expect(ta.value).toContain('keep me')
   })
 })
 
