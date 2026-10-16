@@ -12,8 +12,9 @@ target and the wire has one owner rather than a copy per leg.
 
 What this owns, in order:
 
-1. **Strip trailing control-tag lines.** These legs carry output authored under
-   dashboard rules to a client that renders HTML comments literally.
+1. **Strip protocol lines.** Remove goal markers and trailing control tags. These
+   legs carry output authored under dashboard rules to clients that render these
+   protocols literally.
    Strip-then-redact matches ``display_safe``.
 2. **Redact in DISPLAY form** (``redact_for_display``). No renderer runs on this
    path, and a renderer is where a turn normally gets that floor; a literal-only

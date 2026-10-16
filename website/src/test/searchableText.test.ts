@@ -10,6 +10,18 @@ describe('searchableText', () => {
     expect(t).not.toContain('OPTIONS')
   })
 
+  it('strips a standalone [GOAL:] line, which full chat draws as a card, not transcript text', () => {
+    const t = searchableText(msg('assistant', 'Ready.\n[GOAL: Deliver the result]'))
+    expect(t).toBe('Ready.')
+    expect(t).not.toContain('Deliver')
+  })
+
+  it('strips a [GOAL:] line that precedes an [OPTIONS:] block', () => {
+    const t = searchableText(msg('assistant', 'Ready.\n[GOAL: Deliver the result]\n[OPTIONS: Start it | Not now]'))
+    expect(t).toBe('Ready.')
+    expect(t).not.toContain('GOAL')
+  })
+
   it('strips <mcwidget> blocks (iframe content the highlighter cannot reach)', () => {
     const t = searchableText(msg('assistant', 'before widget <mcwidget title="x"><div>Green status</div></mcwidget> after widget'))
     expect(t).toContain('before widget')

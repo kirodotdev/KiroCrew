@@ -1,5 +1,5 @@
 import type { ChatMessage } from '../types'
-import { stripOptionMarkers } from '../app-sdk/protocol/optionMarker'
+import { parseOptions } from '../app-sdk/protocol/options'
 import { stripKeepVisibleMarker } from '../app-sdk/protocol/keepVisibleMarker'
 import { warmBriefOf, warmBriefVisibleText } from '../components/chat/WarmBriefCard'
 
@@ -27,9 +27,11 @@ export function searchableText(m: ChatMessage): string {
   const brief = warmBriefOf(m)
   if (brief) return warmBriefVisibleText(brief)
   if (m.role === 'assistant' || m.role === 'streaming') {
-    // stripKeepVisibleMarker: the marker is an HTML comment the renderer never
-    // shows (#7948), so a search hit inside it would be a phantom match.
-    return stripKeepVisibleMarker(stripOptionMarkers(m.content.replace(MCWIDGET_RE, ''))).trimEnd()
+    // parseOptions is the parser AssistantMessage renders through: it drops the
+    // accepted [OPTIONS:] markers and the [GOAL:] line full chat draws as a card,
+    // so a hit inside either would be a phantom match. stripKeepVisibleMarker:
+    // the marker is an HTML comment the renderer never shows (#7948).
+    return stripKeepVisibleMarker(parseOptions(m.content.replace(MCWIDGET_RE, '')).text).trimEnd()
   }
   return m.content
 }

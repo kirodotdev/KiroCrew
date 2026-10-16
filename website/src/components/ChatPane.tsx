@@ -443,7 +443,7 @@ export default function ChatPane({
   // only the card can answer the blocked tool call.
   const pendingQuestion = useAppSelector((s) => pendingQuestionFor(s.chat.pendingQuestions, slotKey))
   // A crewmate chat never offers a chip that asks it for a card (crewmateChips).
-  const { followUpOptions, followUpSourceKey, followUpMulti } = useMemo(() => {
+  const { followUpOptions, followUpGoal, followUpSourceKey, followUpMulti } = useMemo(() => {
     const derived = deriveFollowUpOptions(allMessages, busy, !!pendingQuestion)
     return crewmate ? crewmateFollowUps(derived) : derived
   }, [allMessages, busy, pendingQuestion, crewmate])
@@ -472,7 +472,7 @@ export default function ChatPane({
     followUpInsertedRef.current = null
     setInput(next)
   }, [setInput])
-  const followUpOptionsKey = followUpOptions.join('\x00')
+  const followUpOptionsKey = [followUpGoal ?? '', ...followUpOptions].join('\x00')
   // A single-select offer is keyed on its source row too: a newer reply can repeat
   // the same labels, and a single-select pick must not replace text the user picked
   // from the older offer. Multi-select rows keep the label-only reset.
@@ -1228,6 +1228,7 @@ export default function ChatPane({
             && !(paneHasUserMessage && !!paneSlot?.crew_mode_root) && provider.capabilities.agentTemplates ? (rect, trigger) => { anchorAgentBtn(rect, trigger); agentDD.setOpen(!agentDD.open) } : undefined}
           onModelClick={(rect, trigger) => { anchorModelBtn(rect, trigger); modelDD.setOpen(!modelDD.open) }}
           approvalMode={displayMode}
+          followUpGoal={followUpGoal}
           followUpOptions={followUpOptions}
           followUpPicked={followUpPicked}
           followUpLayout={chatConfig.followUpLayout}
