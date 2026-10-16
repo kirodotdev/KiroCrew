@@ -34,7 +34,9 @@ def _fresh_view_memory(monkeypatch, tmp_path):
     # These tests build pre-ledger backlogs by dropping projections; the eager
     # prune a dropped projection runs would retire them before the drain under
     # test does. Pinned by test_native_skill_projection.
-    monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
+    monkeypatch.setattr(
+        projection, "_eager_prune", lambda directory, crew_home_id, *, force=False: None
+    )
 
 
 @pytest.fixture

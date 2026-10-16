@@ -1134,21 +1134,35 @@ def _register_active_projection(projection: NativeSkillProjection) -> None:
         _ACTIVE_PROJECTIONS[id(projection)] = projection
 
 
-def _eager_prune(directory: Path, crew_home_id: str) -> None:
+def _eager_prune(directory: Path, crew_home_id: str, *, force: bool = False) -> None:
     """Prune this home's unleased views once, right after a projection ended.
 
     The per-spawn prune reclaims a session's views only when the NEXT spawn
     comes, so on a host that is winding down they sit in the agents directory
     (and in the Kiro IDE's agent list) until then. This runs the same bounded
-    prune under the same lock as soon as the lease is gone. It never waits for
-    this process's own queue: a start that holds the in-process lock runs its own
-    prune, so a busy queue means the work is covered, not skipped. Every other
-    gate of the per-spawn prune holds: the cross-process lock ceiling, the lease
-    scan, the ``_per_spawn_prune_due`` spacing and the time budget. Never raises.
+    prune under the same lock as soon as the lease is gone.
+
+    A per-spawn eager prune (``force=False``) never waits for this process's own
+    queue -- a start that holds the in-process lock runs its own prune, so a busy
+    queue means the work is covered, not skipped -- and honours the
+    ``_per_spawn_prune_due`` spacing.
+
+    An END (``force=True``: a release or a drop) is a terminal event with no
+    other party covering it, so it both bypasses the spacing AND QUEUES for the
+    in-process lock rather than skipping when it is busy. That matters when
+    sessions end together -- a gateway stop runs each end on its own
+    ``kirocrew-skill-view-prune`` thread -- or when one ends inside the spacing
+    window a recent spawn opened: a zero-wait end would fail the lock the first
+    end holds and leave its own view on disk until the next spawn or boot drain,
+    the very "gateway stop" case this reclaim exists for. Queueing serialises the
+    ends behind one another, and because each end releases its lease before it
+    prunes, the walk that runs after the wait already sees this end's lease gone.
+    Every other gate still holds: the cross-process lock ceiling, the lease scan
+    and the time budget. Never raises (the queue timeout is an ``OSError``).
     """
     try:
-        with _projection_alias_lock(directory, in_process_wait=0.0):
-            if _per_spawn_prune_due(directory):
+        with _projection_alias_lock(directory, in_process_wait=None if force else 0.0):
+            if force or _per_spawn_prune_due(directory):
                 _prune_stale_managed_aliases(directory, crew_home_id, keep=set())
     except OSError as exc:
         logger.debug("skill projection: eager prune skipped; lock or I/O error: %s", exc)
@@ -1156,11 +1170,13 @@ def _eager_prune(directory: Path, crew_home_id: str) -> None:
         logger.warning("skill projection: eager prune failed", exc_info=True)
 
 
-def _eager_prune_in(side_dir: Path, directory: Path, crew_home_id: str) -> None:
+def _eager_prune_in(
+    side_dir: Path, directory: Path, crew_home_id: str, *, force: bool = False
+) -> None:
     """:func:`_eager_prune` against *side_dir*, the side directory the projection used."""
     _PINNED_SIDE_DIR.path = side_dir
     try:
-        _eager_prune(directory, crew_home_id)
+        _eager_prune(directory, crew_home_id, force=force)
     finally:
         _PINNED_SIDE_DIR.path = None
 
@@ -1201,11 +1217,16 @@ def _end_projection(
 def _end_projection_off_loop(
     lease_stack: ExitStack, side_dir: Path, directory: Path, crew_home_id: str
 ) -> None:
-    """:func:`_end_projection`'s work, on a thread that is not the event loop."""
+    """:func:`_end_projection`'s work, on a thread that is not the event loop.
+
+    This runs for a release or a drop -- both terminal -- so the prune is forced
+    past the per-spawn spacing: a burst of ends must reclaim every home, not just
+    the first within the spacing window (see :func:`_eager_prune`).
+    """
     try:
         lease_stack.close()
     finally:
-        _eager_prune_in(side_dir, directory, crew_home_id)
+        _eager_prune_in(side_dir, directory, crew_home_id, force=True)
 
 
 def _active_aliases() -> set[str]:

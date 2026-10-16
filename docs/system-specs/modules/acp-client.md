@@ -103,7 +103,7 @@ Crew process environment and restart Crew's native sessions to roll back to
 authored native agents. Disabled launches restore the Crew-owned inheritance
 overlay before spawning and bypass alias translation and projected search
 requirements. A spawn-time ceiling takes the same fallback automatically: when
-the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (2,000, the
+the agents directory already holds `SKILL_VIEW_PROJECTION_CEILING` (128, the
 constant the doctor's backlog warning also reads) or more
 `kirocrew-skill-view-*.json` files, a fresh preparation stops minting new views
 and runs the authored agent, so a regression that reopens the leak cannot deepen

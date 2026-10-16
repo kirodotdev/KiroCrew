@@ -93,7 +93,9 @@ def _no_eager_prune(_floor_monkeypatch):
     them. It is switched off by default and pinned by its own tests, which put
     the real one back (:data:`_REAL_EAGER_PRUNE`).
     """
-    _floor_monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
+    _floor_monkeypatch.setattr(
+        projection, "_eager_prune", lambda directory, crew_home_id, *, force=False: None
+    )
 
 
 @pytest.fixture
@@ -5356,6 +5358,80 @@ def test_releasing_a_projection_prunes_this_homes_unleased_views_at_once(native_
     assert prepared.agent("custom") == alias.stem
 
 
+def test_a_burst_of_releases_prunes_every_home_despite_the_per_spawn_spacing(
+    native_tree, monkeypatch, tmp_path
+):
+    """A gateway stop ends many sessions at once. The per-spawn spacing throttles
+    the prune WALK so a burst of spawns does not pay for one walk each, but a
+    release is a terminal event and must always reclaim: under the production
+    spacing, two projections released back to back must leave neither view on
+    disk, not just the first one's. Without the release path bypassing the
+    spacing, the second release is skipped by ``_per_spawn_prune_due`` and its
+    view lingers in the Kiro IDE's agent list until the next spawn or boot drain."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    # Restore the real spacing the autouse fixture zeroes, so the burst is real.
+    monkeypatch.setattr(projection, "_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS", 5.0)
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    # Two distinct views of this home: a content rewrite between the prepares
+    # gives each projection its own alias, as two separate sessions would have.
+    source.write_text('{"name":"custom","prompt":"v1"}', encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project)
+    source.write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
+    second = projection.prepare_native_skill_projection(tmp_path / "second-run")
+    first_alias = _alias_file(agents, first)
+    second_alias = _alias_file(agents, second)
+    assert first_alias != second_alias
+    assert first_alias.exists() and second_alias.exists()
+
+    # Both views are leased and on disk. Clear the per-spawn clock so the FIRST
+    # release's prune is due -- the burst bug is that the SECOND release, within
+    # the spacing window the first one just opened, is the one that gets skipped.
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+
+    first.release()
+    second.release()
+
+    assert not first_alias.exists(), "the first release's view lingered"
+    assert not second_alias.exists(), (
+        "the second release in the burst was throttled by the per-spawn spacing "
+        "and its view waited for the next spawn's prune"
+    )
+    assert not list(projection._projection_lease_dir().iterdir()), "a lease outlived its release"
+
+
+def test_client_reset_state_releases_the_projection_and_prunes_its_view(native_tree, monkeypatch):
+    """The client's shutdown reset is the explicit release at session end: without
+    it a session's views wait for garbage collection or the next spawn's prune,
+    and on a host winding down they sit in the Kiro IDE's agent list. Removing the
+    ``projection.release()`` call from ``AcpClient`` shutdown reds this test."""
+    from kiro_crew.acp import client as acp_client
+
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    _home, agents, project = native_tree
+    (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
+    client = acp_client.AcpClient(agent="custom", work_dir=project)
+    client._native_skill_projection = projection.prepare_native_skill_projection(
+        project, per_session_element=False
+    )
+    alias = _alias_file(agents, client._native_skill_projection)
+    assert alias.exists()
+    assert list(projection._projection_lease_dir().iterdir()), "no lease was taken"
+    # No live child: _reset_state's PID bookkeeping is not what this pins. Off the
+    # event loop the release's prune runs inline, so its effect is observable here.
+    client._process = None
+    client._pid = None
+    client._child_pids = {}
+
+    client._reset_state()
+
+    assert not alias.exists(), "the view outlived the session's shutdown reset"
+    assert not list(
+        projection._projection_lease_dir().iterdir()
+    ), "the lease outlived the session's shutdown reset"
+
+
 def test_a_dropped_projection_prunes_too_and_spares_what_another_projection_holds(
     native_tree, monkeypatch, tmp_path
 ):
@@ -5430,14 +5506,14 @@ def test_a_projection_ended_on_the_event_loop_releases_and_prunes_off_it(native_
     done = threading.Event()
     gate = threading.Event()
 
-    def recording_prune(directory, crew_home_id):
+    def recording_prune(directory, crew_home_id, *, force=False):
         current = threading.current_thread()
         ran_on.append((current.name, current.daemon))
         # The release ran before the prune, on this same thread.
         lease_present_at_prune.append(any(lease_dir.iterdir()))
         gate.wait(10)
         try:
-            _REAL_EAGER_PRUNE(directory, crew_home_id)
+            _REAL_EAGER_PRUNE(directory, crew_home_id, force=force)
         finally:
             done.set()
 
@@ -5465,7 +5541,9 @@ def test_a_projection_ended_on_the_event_loop_releases_inline_when_no_thread_can
     the next spawn's prune to cover."""
     pruned: list[Path] = []
     monkeypatch.setattr(
-        projection, "_eager_prune", lambda directory, _home_id: pruned.append(directory)
+        projection,
+        "_eager_prune",
+        lambda directory, _home_id, *, force=False: pruned.append(directory),
     )
     _home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
@@ -5489,16 +5567,18 @@ def test_a_projection_ended_on_the_event_loop_releases_inline_when_no_thread_can
     assert alias.exists(), "a prune ran with no thread to run it on"
 
 
-def test_the_eager_prune_skips_rather_than_queues_behind_this_processs_own_lock(
+def test_the_per_spawn_eager_prune_skips_rather_than_queues_but_an_end_waits(
     native_tree, monkeypatch
 ):
-    """A start in this process holding the in-process lock runs its own prune;
-    the eager one must not wait the full in-process budget behind it."""
+    """Two different contracts on the in-process lock. A per-spawn eager prune
+    must NOT wait the full in-process budget: a start that holds the lock runs
+    its own prune, so a busy queue means the work is covered. A terminal END has
+    no other party covering it, so it QUEUES for the lock rather than skipping --
+    otherwise a second end that arrives while a first is walking would drop its
+    own prune and leave its view on disk."""
     monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
     _home, agents, project = native_tree
     (agents / "custom.json").write_text('{"name":"custom"}', encoding="utf-8")
-    prepared = projection.prepare_native_skill_projection(project)
-    alias = _alias_file(agents, prepared)
     waits: list[float | None] = []
     real_lock = projection._projection_alias_lock
 
@@ -5507,21 +5587,60 @@ def test_the_eager_prune_skips_rather_than_queues_behind_this_processs_own_lock(
         return real_lock(directory, in_process_wait=in_process_wait)
 
     monkeypatch.setattr(projection, "_projection_alias_lock", recording_lock)
-    local = projection._in_process_projection_lock(agents)
-    assert local.acquire(blocking=False)
-    try:
-        prepared.release()
-    finally:
-        local.release()
-    # The lock was asked for with no wait at all, so the busy queue was skipped
-    # rather than waited out; nothing was pruned without it.
+
+    # Per-spawn (force=False): asked for with no wait, so a busy queue is skipped.
+    projection._eager_prune(agents, _crew_home_id(), force=False)
     assert waits == [0.0]
-    assert alias.exists(), "pruned without the lock"
-    assert not list(projection._projection_lease_dir().iterdir()), "the lease was not released"
-    # With the queue free the same release prunes.
-    prepared = projection.prepare_native_skill_projection(project)
-    prepared.release()
-    assert not alias.exists()
+
+    # An end (force=True): asked for with the default in-process budget, so it
+    # queues behind a concurrent end instead of dropping its prune.
+    waits.clear()
+    projection._eager_prune(agents, _crew_home_id(), force=True)
+    assert waits == [None], "an end skipped the lock instead of queueing for it"
+
+
+def test_two_concurrent_releases_each_prune_their_own_view(native_tree, monkeypatch, tmp_path):
+    """A gateway stop ends sessions concurrently: client shutdown runs each
+    ``release()`` on the event loop, which hands each end to its own
+    ``kirocrew-skill-view-prune`` daemon thread. If the second end skipped its
+    prune on the in-process lock the first still holds, its view would linger
+    until the next spawn or boot drain -- the gateway-stop case the issue names.
+    The end path queues for the lock, so both ends prune and neither view
+    survives, even when they overlap on separate threads."""
+    monkeypatch.setattr(projection, "_eager_prune", _REAL_EAGER_PRUNE)
+    monkeypatch.setattr(projection, "_PER_SPAWN_PRUNE_MIN_INTERVAL_SECS", 5.0)
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+    monkeypatch.setattr(projection, "on_event_loop", lambda: True)
+    _home, agents, project = native_tree
+    source = agents / "custom.json"
+    source.write_text('{"name":"custom","prompt":"v1"}', encoding="utf-8")
+    first = projection.prepare_native_skill_projection(project)
+    source.write_text('{"name":"custom","prompt":"v2"}', encoding="utf-8")
+    second = projection.prepare_native_skill_projection(tmp_path / "second-run")
+    first_alias = _alias_file(agents, first)
+    second_alias = _alias_file(agents, second)
+    assert first_alias != second_alias
+    assert first_alias.exists() and second_alias.exists()
+    monkeypatch.setattr(projection, "_LAST_PER_SPAWN_PRUNE", {})
+
+    # on_event_loop() is patched True, so each release spawns its own prune
+    # thread; the threads race for the in-process lock.
+    threads_before = {t.name for t in threading.enumerate()}
+    first.release()
+    second.release()
+    # Join the prune threads directly instead of polling threading.enumerate():
+    # each release spawns a kirocrew-skill-view-prune daemon, so wait on those
+    # handles to finish rather than sleeping in a loop.
+    for prune_thread in [t for t in threading.enumerate() if t.name == "kirocrew-skill-view-prune"]:
+        prune_thread.join(timeout=30)
+
+    assert not first_alias.exists(), "the first release's view lingered"
+    assert not second_alias.exists(), (
+        "the second concurrent release skipped its prune on the busy in-process "
+        "lock and its view lingered"
+    )
+    assert not list(projection._projection_lease_dir().iterdir()), "a lease outlived its release"
+    _ = threads_before
 
 
 def test_a_projection_ending_later_prunes_the_home_it_published_into(
