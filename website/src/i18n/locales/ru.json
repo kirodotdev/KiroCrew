@@ -12694,6 +12694,7 @@
       "clear_filter": "Сбросить фильтр",
       "clear_named_filter": "Сбросить фильтр «{{filter}}»",
       "pause_all_filters": "Приостановить все фильтры",
+      "pinned_always_shown": "Закреплено · всегда отображается",
       "resume_all_filters": "Возобновить все фильтры",
       "clear_search": "Очистить поиск",
       "close": "Закрыть",

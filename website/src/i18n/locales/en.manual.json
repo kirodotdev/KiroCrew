@@ -5847,6 +5847,7 @@
       "sort_sessions_by": "Sort sessions by",
       "clear_named_filter": "Clear {{filter}} filter",
       "pause_all_filters": "Pause all filters",
+      "pinned_always_shown": "Pinned · always shown",
       "resume_all_filters": "Resume all filters",
       "collapse_source_links": "Show fewer",
       "source_links_expand_failed": "Could not load the rest. Click to retry.",

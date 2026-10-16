@@ -22,8 +22,27 @@ export function isOpenInTabModifierClick(e: React.MouseEvent): boolean {
  *  Starts 2px left of the row content column: `mx-3` 12 against the rows' 14px
  *  pad (`ROW_BOX_CLS` `pl-3.5`), which is the same pad inside a folder body, so
  *  no per-body override is needed. `mr-3` keeps the right edge on the rows'
- *  `pr-3`. */
-export function PinnedSessionDivider() {
+ *  `pr-3`.
+ *
+ *  When a tag filter or status chip narrows the list, `caption` is set to
+ *  "Pinned · always shown" (or its locale equivalent). The captioned form labels
+ *  the band so the viewer knows why the pinned rows are exempt from the active
+ *  filter. The plain form (no caption) renders `aria-hidden` because it is purely
+ *  decorative; the captioned form omits it so the text is reachable. */
+export function PinnedSessionDivider({ caption }: { caption?: string } = {}) {
+  if (caption) {
+    return (
+      <div
+        data-testid="pinned-session-divider"
+        data-pinned-divider=""
+        className="mx-3 my-1 shrink-0 flex items-center gap-1.5"
+      >
+        <span className="flex-1 h-px bg-border-strong opacity-70" aria-hidden="true" />
+        <span className="text-[11px] text-text/70 select-none leading-none">{caption}</span>
+        <span className="flex-1 h-px bg-border-strong opacity-70" aria-hidden="true" />
+      </div>
+    )
+  }
   return (
     <div
       data-testid="pinned-session-divider"

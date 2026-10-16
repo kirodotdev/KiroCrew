@@ -12507,6 +12507,7 @@
       "clear_filter": "Cancella filtro",
       "clear_named_filter": "Cancella il filtro {{filter}}",
       "pause_all_filters": "Sospendi tutti i filtri",
+      "pinned_always_shown": "Fissata · sempre visibile",
       "resume_all_filters": "Riattiva tutti i filtri",
       "clear_search": "Cancella ricerca",
       "close": "Chiudi",

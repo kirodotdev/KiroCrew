@@ -74,7 +74,7 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
     renderOlderSessionsHint, renderSessionRow, renderStaleSection, reportDndActive, rootFolderIds,
     rootFolders, rowAnimEnabled, searchRanked, setLaneScrollEl, shownCrewGroups, shownCrewRowCount,
     sidebarRows, slotFilter, slotFolders, sortKey, splitStale, staleExpanded, startsAutomaticSection,
-    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders } = shell
+    subagentApprovalCounts, ungroupedSlots, unreadSet, visibleRootFolders, pinnedBandCaption } = shell
   // True while actively dragging a session that currently lives in a folder.
   // Used to reveal the empty-state drop placeholder inside the "No folder"
   // group so there's always a reachable ungroup target.
@@ -334,6 +334,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                *  never console-only in this layout. */}
               {folderCreateError && renderFolderCreateError(folderCreateError.folderId, folderCreateError.columnId)}
               {localGroupHeader}
+              {/* Caption header before the pinned band when a property filter narrows the list. */}
+              {pinnedBandCaption && flatSlots.length > 0 && pinned.has(flatSlots[0].key) && (
+                <PinnedSessionDivider caption={pinnedBandCaption} />
+              )}
               {(() => {
                 // Date segments (Today / Yesterday / Last 7 Days / …) between
                 // rows — resurrects the 9bb0f71 active-list pattern: only for
@@ -483,6 +487,10 @@ export function createListLanes(shell: SidebarScope & LaneRows & FolderBlocks) {
                               const { rows: freshRoot, navScope: treeRootScope, container: treeRootContainer } = heldLane(freshRootRaw, 'list', 'tree:root')
                               return (
                                 <>
+                                  {/* Caption header before the pinned band when a property filter narrows the list. */}
+                                  {pinnedBandCaption && freshRoot.length > 0 && pinned.has(freshRoot[0].key) && (
+                                    <PinnedSessionDivider caption={pinnedBandCaption} />
+                                  )}
                                   {freshRoot.map((s, i) => {
                                     const nextIsActive = isActiveRow(freshRoot[i + 1])
                                     const isActive = isActiveRow(s)
