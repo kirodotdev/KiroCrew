@@ -20,7 +20,7 @@ from kiro_crew.knowledge.store import KnowledgeStore
 class TestCjkKeywordRecall:
     """CJK recall on the FTS keyword leg.
 
-    Vocabulary is shared with ``TestCjkSearch`` in test_history.py so the two
+    Vocabulary is shared with ``TestCjkSearch`` in test_history_session_search.py so the two
     search surfaces are read against the same examples. The query is the
     four-character Chinese phrase for "memory leak"; the decoys reuse its four
     characters inside other words ("internal", "to save", "relief valve",

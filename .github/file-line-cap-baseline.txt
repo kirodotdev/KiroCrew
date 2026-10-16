@@ -227,7 +227,6 @@
 3102 test/test_handlers_memory_coverage.py
 2261 test/test_handlers_messaging_coverage.py
 2026 test/test_handlers_taskrunner_coverage.py
-6945 test/test_history.py
 2809 test/test_history_consolidation_retry.py
 2547 test/test_history_locking_remediation.py
 4353 test/test_hooks.py
