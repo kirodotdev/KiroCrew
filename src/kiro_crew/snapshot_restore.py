@@ -1646,3 +1646,92 @@ def _restore_everything_from_rollback(
     else:
         print("↩️  Previous state restored.")
     return failed
+
+
+def _replace_omissions(snap: Path, components: list[str] | None, mc: Path) -> list[str]:
+    """The manifest's recorded omissions that ``--mode replace`` would turn into deletions.
+
+    Snapshot tolerates an entry it could not read by leaving it out and naming it in
+    ``MANIFEST.json``'s ``skipped`` list. Replace clears a component's live tree before
+    installing the bundle's copy, so a file the bundle omitted leaves the live data home
+    and survives only in the ``pre-restore-<ts>/`` rollback directory. This function is
+    the reader that acts on the declaration.
+
+    Asked as a CLASS through :func:`pinned_fs.omits_wanted_data`, the same predicate the
+    snapshot's prune guard uses: a symlink or non-regular entry is screened by design and
+    is not something the bundle lacks, while every other reason -- including one this
+    build has never seen -- counts. Only omissions under a component being restored are
+    returned: an omitted ``skills/`` file is no reason to refuse ``--components memory``.
+    A path no component claims is kept rather than dropped, because "could not place it"
+    must not read as "safe to clear". A ``skipped`` that is not a list, or an entry that
+    is not an object, is unreadable rather than empty, so it counts as an omission too.
+    An omission with nothing at that path in the live data home *mc* is dropped:
+    replace has nothing there to remove.
+    """
+    mf = snap / "MANIFEST.json"
+    if not mf.is_file():
+        return []
+    try:
+        manifest = json.loads(mf.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        # `_manifest_components` has already refused an unparseable manifest by now.
+        return []
+    if not isinstance(manifest, dict):
+        return []
+    skipped = manifest.get("skipped")
+    if skipped is None:
+        return []
+    if not isinstance(skipped, list):
+        return ["(MANIFEST.json 'skipped' is not a list)"]
+
+    wanted = list(COMPONENTS) if components is None else components
+    restored = [(set(s.files), set(s.trees)) for n, s in COMPONENTS.items() if n in wanted]
+    every = [(set(s.files), set(s.trees)) for s in COMPONENTS.values()]
+
+    def _claimed(rel: str, by: list[tuple[set[str], set[str]]]) -> bool:
+        # An omitted DIRECTORY that is an ancestor of a tree counts too: a backup that
+        # selects both `memory` and `workspace` stages memory's subtrees through
+        # `workspace`, so an unreadable `workspace` is recorded under that one path.
+        return any(
+            rel in files
+            or any(rel == t or rel.startswith(t + "/") or t.startswith(rel + "/") for t in trees)
+            for files, trees in by
+        )
+
+    found: list[str] = []
+    for entry in skipped:
+        if not isinstance(entry, dict):
+            found.append("(unreadable 'skipped' entry)")
+            continue
+        if not pinned_fs.omits_wanted_data(str(entry.get("reason", ""))):
+            continue
+        # Recorded with the snapshot host's separator, so a Windows bundle says `skills\x`.
+        # A backslash is also a legal character in a POSIX filename, so the literal path
+        # is kept alongside the normalised one and both are asked about.
+        literal = str(entry.get("path", ""))
+        raw = literal.replace("\\", "/")
+        rel = raw.strip("/")
+        if not (_claimed(rel, restored) or not _claimed(rel, every)):
+            continue
+        if _live_path_absent(mc, raw) and (
+            literal == raw or not os.path.lexists(mc / literal.rstrip("/"))
+        ):
+            # Nothing live at that path, so replace has nothing there to remove -- the
+            # fresh-machine recovery restore is the case this keeps working.
+            continue
+        found.append(rel or "(no path recorded)")
+    return found
+
+
+def _live_path_absent(mc: Path, raw: str) -> bool:
+    """Whether the data home provably has nothing at the manifest path *raw*.
+
+    *raw* comes out of an untrusted manifest, so an empty path, an absolute one or one
+    with a ``..`` part is never answered "absent": it cannot be placed under *mc*, and
+    the caller then keeps the omission.
+    """
+    rel = raw.rstrip("/")
+    parts = rel.split("/")
+    if not rel or rel.startswith("/") or ":" in parts[0] or ".." in parts:
+        return False
+    return not os.path.lexists(mc / rel)
