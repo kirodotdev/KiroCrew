@@ -154,17 +154,25 @@ export default function McpToolsPanel({
           </span>
         </div>
       )}
-      {!loading && servers.length > 0 && hasSessionReport && (
+      {!loading && servers.length > 0 && (hasSessionReport || enabledCount > 0) && (
         // The tool rows' dots and the server rows' dots share a shape but not a
         // vocabulary, so the tool legend alone would invite reading a server dot
         // as a tool state. No `title` on these swatches: the per-server dot owns
         // that, and duplicating it would make the tooltip ambiguous.
+        //
+        // With no report, only an enabled row draws a session mark, and it is
+        // always `no_report`. So the legend shows when such a row exists and
+        // lists that state alone: the other three would read as though a report
+        // had ruled them out. Each swatch takes the size the rows draw it at.
         <div className="flex items-center gap-2.5 flex-wrap text-[10px] text-muted mb-2">
-          {(
-            ['started', 'failed', 'awaiting_auth', 'no_report'] as McpSessionServerState[]
+          {(hasSessionReport
+            ? (['started', 'failed', 'awaiting_auth', 'no_report'] as McpSessionServerState[])
+            : (['no_report'] as McpSessionServerState[])
           ).map(st => (
             <span key={st} className="inline-flex items-center gap-1">
-              <span className={`w-2 h-2 rounded-full ${SESSION_DOT_CLASS[st]}`} />
+              <span
+                className={`${hasSessionReport ? 'w-2 h-2' : 'w-1.5 h-1.5'} rounded-full ${SESSION_DOT_CLASS[st]}`}
+              />
               {i18nT(SESSION_LABEL_KEY[st])}
             </span>
           ))}
@@ -224,12 +232,18 @@ export default function McpToolsPanel({
               >
                 <span
                   className={`rounded-full shrink-0 ${serverDotClass}`}
+                  // With no report, `sessionState` is `no_report`, so the label
+                  // names the dashed ring. A disabled row with no report stays
+                  // untitled: its filled dot means "disabled", which a
+                  // report-shaped caption would contradict.
                   title={
                     hasSessionReport
                       ? sessionReason
                         ? `${sessionLabel}: ${sessionReason}`
                         : sessionLabel
-                      : undefined
+                      : serverDim
+                        ? undefined
+                        : sessionLabel
                   }
                 />
                 <code className="text-text flex-1 inline-flex items-center gap-1 min-w-0">
