@@ -16938,6 +16938,8 @@
         "terminal_cursor_style_block": "块状",
         "terminal_cursor_style_bar": "竖线",
         "terminal_cursor_style_underline": "下划线",
+        "terminal_copy_on_select": "选中即复制",
+        "terminal_copy_on_select_desc": "用鼠标选中文本后立即复制到剪贴板。选区工具栏仍会打开，“发送到聊天”依然一键可用。",
         "terminal_shell": "默认 Shell",
         "terminal_shell_hint": "内置终端启动的 Shell。",
         "terminal_shell_desc": "绝对路径或 PATH 中的命令。留空则使用系统默认值（$SHELL）。",

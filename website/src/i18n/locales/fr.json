@@ -17528,6 +17528,8 @@
         "terminal_cursor_style_block": "Bloc",
         "terminal_cursor_style_bar": "Barre",
         "terminal_cursor_style_underline": "Soulignement",
+        "terminal_copy_on_select": "Copier à la sélection",
+        "terminal_copy_on_select_desc": "Copie le texte dans le presse-papiers dès que tu le sélectionnes à la souris. La barre de sélection s’ouvre toujours, donc Envoyer au chat reste à un clic.",
         "terminal_shell": "Shell par défaut",
         "terminal_shell_hint": "Shell lancé par le terminal intégré.",
         "terminal_shell_desc": "Un chemin absolu ou une commande du PATH. Vide = valeur par défaut du système ($SHELL).",

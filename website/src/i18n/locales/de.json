@@ -17233,6 +17233,8 @@
         "terminal_cursor_style_block": "Block",
         "terminal_cursor_style_bar": "Strich",
         "terminal_cursor_style_underline": "Unterstrich",
+        "terminal_copy_on_select": "Beim Markieren kopieren",
+        "terminal_copy_on_select_desc": "Kopiert Text in die Zwischenablage, sobald du ihn mit der Maus markierst. Die Auswahlleiste öffnet sich weiterhin, sodass „An den Chat senden“ nur einen Klick entfernt bleibt.",
         "terminal_shell": "Standard-Shell",
         "terminal_shell_hint": "Shell, die das integrierte Terminal startet.",
         "terminal_shell_desc": "Ein absoluter Pfad oder ein Befehl im PATH. Leer lassen, um den Systemstandard ($SHELL) zu verwenden.",

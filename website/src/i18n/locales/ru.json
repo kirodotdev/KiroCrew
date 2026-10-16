@@ -17823,6 +17823,8 @@
         "terminal_cursor_style_block": "Блок",
         "terminal_cursor_style_bar": "Черта",
         "terminal_cursor_style_underline": "Подчёркивание",
+        "terminal_copy_on_select": "Копировать при выделении",
+        "terminal_copy_on_select_desc": "Копирует текст в буфер обмена сразу после выделения мышью. Панель выделения по-прежнему открывается, так что «Отправить в чат» остаётся в одном клике.",
         "terminal_shell": "Оболочка по умолчанию",
         "terminal_shell_hint": "Оболочка, которую запускает встроенный терминал.",
         "terminal_shell_desc": "Абсолютный путь или команда из PATH. Пустое значение — системная оболочка по умолчанию ($SHELL).",
