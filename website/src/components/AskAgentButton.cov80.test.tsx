@@ -74,6 +74,18 @@ describe('AskAgentButton', () => {
     expect(send.mock.calls[0][1]).toEqual({ hard: false, leaveGranted: true })
   })
 
+  it('stages a request prompt verbatim, under the caller\'s label and title', () => {
+    recordError({ message: 'zzq-request', source: 'api', detail: 'zzq-journal-detail' })
+    render(<AskAgentButton prompt="zzq-request" label="zzq-label" title="zzq-title" tone="accent" />)
+    const button = screen.getByRole('button', { name: 'zzq-label' })
+    expect(button).toHaveAttribute('title', 'zzq-title')
+    expect(button.className).toContain('text-accent')
+    expect(button.className).not.toContain('text-danger-text')
+    fireEvent.click(button)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0]).toEqual(['zzq-request', { hard: false, leaveGranted: false }])
+  })
+
   it('the solid variant carries the accent skin, the link variant the danger skin', () => {
     const { unmount } = render(<AskAgentButton message="zzq-a" variant="solid" />)
     expect(screen.getByRole('button').className).toContain('bg-accent')
