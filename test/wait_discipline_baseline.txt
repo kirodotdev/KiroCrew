@@ -82,7 +82,8 @@
  3 test_chat_fork_member_memory.py
  3 test_chat_mode_security.py
  2 test_chat_nav.py
- 5 test_chat_regenerate_cov80.py
+ 4 test_chat_regenerate_cov80.py
+ 1 test_chat_regenerate_cov80_edit_resend_boundary.py
  9 test_chat_runner_coverage.py
  1 test_chat_runner_folder_steering.py
  2 test_chat_send_client_meta_survival.py
@@ -97,7 +98,8 @@
  1 test_codex_session_mcp.py
  4 test_cold_start_concurrency_config.py
  9 test_compaction_failure_pause.py
- 6 test_conductor_wake.py
+ 3 test_conductor_wake.py
+ 3 test_conductor_wake_pushed_ticks.py
  1 test_config_api.py
  6 test_config_live.py
  1 test_config_loader.py

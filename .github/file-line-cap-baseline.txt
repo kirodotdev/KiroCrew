@@ -175,7 +175,6 @@
 2336 test/test_chat_agent_selection.py
 2475 test/test_chat_mirror.py
 2267 test/test_chat_mode_security.py
-2058 test/test_chat_regenerate_cov80.py
 6983 test/test_chat_runner_coverage.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
@@ -183,7 +182,6 @@
 2288 test/test_cloud_source.py
 2106 test/test_computer_use_api.py
 2166 test/test_computer_use_snapshot_macos.py
-2074 test/test_conductor_wake.py
 2260 test/test_config_live.py
 8527 test/test_config_loader.py
 2868 test/test_connections_mint.py
@@ -205,7 +203,6 @@
 2194 test/test_deploy_web_handlers.py
 4648 test/test_dev_fleet_server_coverage.py
 2020 test/test_discord_resumed_busy.py
-2065 test/test_dynamic_dashboard_cards.py
 2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
@@ -311,7 +308,6 @@
 5921 test/test_taskrunner.py
 2918 test/test_taskrunner_v2_scenarios.py
 6082 test/test_telegram_parity.py
-2055 test/test_telegram_sessions.py
 8129 test/test_terminal_handler.py
 2494 test/test_theme_install.py
 4674 test/test_token_auth.py
