@@ -7,8 +7,8 @@ filed in the configured default folder (with the configured agent, model and
 reasoning effort), shows "Working..." in the channel while a turn runs, and
 answers there top-level -- no @mention needed. A one-message question is still
 answered in place. It runs when the ``slack.code_channels`` setting is on AND the
-install can run code channels (see :mod:`.settings`); otherwise the gateway
-behaves exactly as it does without this package.
+install can run code channels (``slack.features.code_channels_enabled``);
+otherwise the gateway behaves exactly as it does without this package.
 
 Modules
 -------
@@ -19,10 +19,9 @@ Modules
 ``creation``              eligibility, session ids, Slack's origin echo
 ``recognition``           is a channel a code channel, and ours?
 ``store``                 durable routes + bindings
-``binding``               the bound dashboard session; mirror bridges
+``binding``               the gate; the bound dashboard session; mirror bridges
 ``hooks`` / ``status``    turn hooks; the native status subscriber
 ``routing``               the seams ``slack/events.py`` calls
-``settings``              the toggle and the defaults
 ``workspace`` (package)   diff view / context bar (separate feature)
 ========================= ================================================
 
@@ -45,6 +44,16 @@ Interface for other features
     with no origin).
 ``created_by_us``
     False for a channel opened from Slack's UI that this gateway adopted.
+``channel_name``
+    the Slack channel name at bind time ("" when unknown).
+``archived_at``, ``wrapped_up_at``
+    wall-clock stamps the wrap-up feature sets (``0.0`` = not yet).
+
+Change fields with ``store.store().update_binding(channel_id, **fields)``: one
+atomic read-change-write under the store lock, ``channel_id`` fixed, an unknown
+field refused, ``None`` for an unbound channel. A rebind (the dashboard session
+was closed and reopened) keeps ``channel_name``, ``archived_at`` and
+``wrapped_up_at``.
 
 **Turn hooks** -- :mod:`.hooks`::
 
@@ -76,8 +85,9 @@ def install(slack_provider: Any) -> None:
         return
     from kiro_crew.slack.agent_sessions.session_events import register_channel_stop_handler
     from kiro_crew.slack.code_channels import status
-    from kiro_crew.slack.code_channels.routing import handle_session_stopped
+    from kiro_crew.slack.code_channels.routing import handle_session_stopped, install_temp_cleanup
 
     status.install(slack_provider)
+    install_temp_cleanup()
     register_channel_stop_handler(handle_session_stopped)
     _INSTALLED = True

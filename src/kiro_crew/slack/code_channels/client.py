@@ -16,7 +16,7 @@ Rules every method follows:
 * **Never retry a write.** A write that failed in transport may have landed,
   so it raises with ``maybe_applied=True`` and the caller reconciles (for
   ``create``, by repeating it with the same ``session_id``, which Slack
-  treats as idempotent). ``channel_canvas_already_exists`` is final.
+  treats as idempotent).
 * **Redact.** Anything logged goes through :func:`redact_credentials`, so a
   token echoed in an SDK error never reaches the log.
 """
@@ -29,17 +29,9 @@ from typing import Any
 
 from kiro_crew.security import redact_credentials
 from kiro_crew.slack.code_channels.models import (
-    MAX_TITLE_CHARS,
-    SESSION_STATUSES,
     ChannelInfo,
     CodeChannelApiError,
-    CodeChannelRequestError,
     CreateRequest,
-    SetCommandsRequest,
-    SetPropertiesRequest,
-    SetViewRequest,
-    ViewRecord,
-    _check_content,
     _check_id,
 )
 
@@ -48,9 +40,7 @@ logger = logging.getLogger(__name__)
 ApiCall = Callable[..., Awaitable[Any]]
 
 #: Read-only methods: a transport failure on these means nothing was written.
-_READS = frozenset(
-    {"agents.conversations.listViews", "agents.conversations.getCanvas", "conversations.info"}
-)
+_READS = frozenset({"conversations.info"})
 
 
 def _response_data(resp: Any) -> dict[str, Any]:
@@ -67,10 +57,16 @@ def _error_code(exc: BaseException) -> str:
 
 
 def _report(code: str, method: str) -> None:
-    """Every refusal passes the latch, which acts only on the install-wide ones."""
-    from kiro_crew.slack.code_channels.settings import report_slack_refusal
+    """Hand every refusal to the shared capability latch.
 
-    report_slack_refusal(code, method=method)
+    ``features.latch_unavailable`` keeps only the install-wide codes
+    (``feature_disabled`` / ``missing_scope`` / ``not_allowed_token_type``) and
+    switches code channels off for the process on the first one.
+    """
+    from kiro_crew.slack import features
+
+    if features.latch_unavailable(features.CODE_CHANNELS, code):
+        logger.info("%s latched code channels off (%s)", method, code)
 
 
 def _safe(text: str) -> str:
@@ -78,7 +74,7 @@ def _safe(text: str) -> str:
 
 
 class CodeChannelsClient:
-    """``agents.conversations.*`` (+ channel-level ``agents.sessions.setStatus``)."""
+    """``agents.conversations.create`` and ``conversations.info`` for code channels."""
 
     def __init__(self, api_call: ApiCall, *, team_for: Callable[[str], str] | None = None) -> None:
         self._api_call = api_call
@@ -137,106 +133,6 @@ class CodeChannelsClient:
         if not channel_id:
             raise CodeChannelApiError("agents.conversations.create", "missing_channel_id")
         return channel_id
-
-    async def archive(self, channel_id: str, *, summary_message_ts: str = "") -> None:
-        _check_id(channel_id, "channel_id")
-        body: dict[str, Any] = {"channel_id": channel_id}
-        if summary_message_ts:
-            body["summary_message_ts"] = summary_message_ts
-        await self._call("agents.conversations.archive", body)
-
-    async def set_properties(self, request: SetPropertiesRequest) -> None:
-        request.validate()
-        await self._call("agents.conversations.setProperties", request.body())
-
-    async def set_commands(self, request: SetCommandsRequest) -> int:
-        """Replace this agent's commands; returns Slack's ``command_count``."""
-        request.validate()
-        data = await self._call("agents.conversations.setCommands", request.body())
-        count = data.get("command_count")
-        return count if isinstance(count, int) else len(request.commands)
-
-    # ── Views ────────────────────────────────────────────────────────────
-
-    async def set_view(self, request: SetViewRequest) -> ViewRecord:
-        request.validate()
-        data = await self._call("agents.conversations.setView", request.body())
-        return ViewRecord.parse(data)
-
-    async def list_views(self, channel_id: str) -> list[ViewRecord]:
-        _check_id(channel_id, "channel_id")
-        data = await self._call("agents.conversations.listViews", {"channel_id": channel_id})
-        views = data.get("views")
-        return (
-            [ViewRecord.parse(v) for v in views if isinstance(v, dict)]
-            if isinstance(views, list)
-            else []
-        )
-
-    async def remove_view(self, channel_id: str, *, view_key: str = "", view_id: str = "") -> None:
-        _check_id(channel_id, "channel_id")
-        if bool(view_key) == bool(view_id):
-            raise CodeChannelRequestError("exactly one of view_key or view_id")
-        body: dict[str, Any] = {"channel_id": channel_id}
-        body["view_key" if view_key else "view_id"] = view_key or view_id
-        await self._call("agents.conversations.removeView", body)
-
-    # ── Canvases ─────────────────────────────────────────────────────────
-
-    async def create_canvas(self, channel_id: str, markdown: str, *, title: str = "") -> str:
-        """``conversations.canvases.create``; returns the canvas id.
-
-        ``channel_canvas_already_exists`` is raised like any other refusal and
-        must not be retried: the channel can hold only one.
-        """
-        _check_id(channel_id, "channel_id")
-        _check_content(markdown, "markdown")
-        body: dict[str, Any] = {
-            "channel_id": channel_id,
-            "document_content": {"type": "markdown", "markdown": markdown},
-        }
-        if title:
-            body["title"] = title[:MAX_TITLE_CHARS]
-        data = await self._call("conversations.canvases.create", body)
-        return str(data.get("canvas_id") or "")
-
-    async def get_canvas(
-        self, channel_id: str, canvas_id: str, *, include_resolved: bool = False
-    ) -> dict[str, Any]:
-        _check_id(channel_id, "channel_id")
-        _check_id(canvas_id, "canvas_id")
-        body = {
-            "channel": channel_id,
-            "canvas_id": canvas_id,
-            "content_format": "markdown",
-            "include_resolved": include_resolved,
-        }
-        return await self._call("agents.conversations.getCanvas", body)
-
-    async def set_canvas_content(self, channel_id: str, canvas_id: str, content: str) -> int:
-        """Replace a canvas's markdown; returns ``sections_changed_count``."""
-        _check_id(channel_id, "channel_id")
-        _check_id(canvas_id, "canvas_id")
-        _check_content(content)
-        data = await self._call(
-            "agents.conversations.setCanvasContent",
-            {"channel": channel_id, "canvas_id": canvas_id, "content": content},
-        )
-        changed = data.get("sections_changed_count")
-        return changed if isinstance(changed, int) else 0
-
-    # ── Session status (whole channel = one session) ─────────────────────
-
-    async def set_channel_status(self, channel_id: str, status: str) -> None:
-        """``agents.sessions.setStatus`` for a code channel: never a thread_ts.
-
-        Slack refuses a ``thread_ts`` in a code channel
-        (``thread_ts_not_allowed``), so this method has no parameter for one.
-        """
-        _check_id(channel_id, "channel_id")
-        if status not in SESSION_STATUSES:
-            raise CodeChannelRequestError(f"unknown session status {status!r}")
-        await self._call("agents.sessions.setStatus", {"channel_id": channel_id, "status": status})
 
     # ── Recognition ──────────────────────────────────────────────────────
 

@@ -15,15 +15,13 @@ from typing import Any
 import pytest
 
 from kiro_crew.config.loader import ACTIVATION_MENTION, ChannelConfig
+from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as binding_mod
-from kiro_crew.slack.code_channels import recognition, routing
-from kiro_crew.slack.code_channels import settings as cc_settings
-from kiro_crew.slack.code_channels import status
+from kiro_crew.slack.code_channels import recognition, routing, status
 from kiro_crew.slack.code_channels.classifier import RouteDecision
-from kiro_crew.slack.code_channels.client import CodeChannelsClient
-from kiro_crew.slack.code_channels.settings import REQUIRED_SCOPE
 from kiro_crew.slack.code_channels.store import CodeChannelStore, set_store
 
+REQUIRED_SCOPE = features.REQUIRED_SCOPE[features.CODE_CHANNELS]
 SELF_USER = "UBOT"
 SELF_BOT = "BBOT"
 OWNER = "UOWNER"
@@ -54,18 +52,36 @@ class FakeSlack:
         self.posts: list[tuple[str, str, str | None]] = []
         self.ephemerals: list[tuple[str, str, str]] = []
         self.thread: list[dict[str, Any]] = []
+        self.reactions: list[tuple[str, str, str]] = []
         self._n = 0
+
+    async def add_reaction(self, channel: str, ts: str, emoji: str) -> None:
+        self.reactions.append((channel, ts, emoji))
 
     async def post_message(self, channel: str, text: str, thread_ts: str | None = None) -> str:
         self._n += 1
         self.posts.append((channel, text, thread_ts))
         return f"200.{self._n:06d}"
 
+    def _inject_team(self, channel: str, params: dict[str, Any]) -> None:
+        team = self._channel_team.get(channel)
+        if team and "team_id" not in params:
+            params["team_id"] = team
+
     async def post_ephemeral(self, channel: str, user: str, text: str, **_k: Any) -> None:
         self.ephemerals.append((channel, user, text))
 
     async def fetch_thread_replies(self, channel: str, ts: str, **_k: Any) -> list[dict[str, Any]]:
         return list(self.thread)
+
+    async def fetch_message_detail(self, channel: str, ts: str) -> dict[str, str] | None:
+        for message in self.thread:
+            if message.get("ts") == ts:
+                return {
+                    "text": str(message.get("text") or ""),
+                    "user": str(message.get("user") or ""),
+                }
+        return None
 
 
 class FakeState:
@@ -117,6 +133,7 @@ def _reset_routing() -> None:
     routing._gate_seen.clear()
     routing._creating.clear()
     routing._bind_locks.clear()
+    routing._PENDING_TEMPS.clear()
 
 
 class Env:
@@ -134,13 +151,14 @@ class Env:
         self.classified: list[str] = []
         self.routed: list[tuple[str, str, str]] = []
         self.created_sessions: list[dict[str, Any]] = []
+        self.folders_created: list[str] = []
         self.route_result = True
         set_store(self.store)
         recognition.clear_cache()
         _reset_routing()
         # The install was granted the scope (connect-time probe stand-in).
-        cc_settings.reset_capability()
-        cc_settings.note_granted_scopes(["chat:write", REQUIRED_SCOPE])
+        features.reset_capabilities()
+        features.record_granted_scopes(["chat:write", REQUIRED_SCOPE])
 
         def cfg(_orch: Any = None) -> Any:
             return SimpleNamespace(
@@ -177,16 +195,34 @@ class Env:
             self.created_sessions.append({"spec": spec, **kwargs})
             slot = SimpleNamespace(key=f"chat-{len(self.created_sessions)}-1", running=False)
             state.linked[kwargs["anchor_ts"]] = slot
+            if kwargs.get("before_publish") is not None:
+                await kwargs["before_publish"](slot)
             return slot
 
         monkeypatch.setattr(routing, "create_bound_session", create_bound_session)
 
+        async def ensure_folder_path(state: Any, path: str, *, default_agent: str = "") -> str:
+            # The fake store's mkdir -p: one top-level folder per name.
+            for folder in state.folders:
+                if folder["name"] == path and not folder.get("parent_id"):
+                    return str(folder["id"])
+            folder_id = f"f{len(state.folders) + 1:08x}"
+            state.folders.append(
+                {"id": folder_id, "name": path, "parent_id": "", "default_agent": default_agent}
+            )
+            self.folders_created.append(path)
+            return folder_id
+
+        monkeypatch.setattr(binding_mod, "ensure_folder_path", ensure_folder_path)
+
         async def route_to_slot(_orch: Any, binding: Any, text: str, sender: str) -> bool:
             self.routed.append((binding.channel_id, text, sender))
+            if self.route_result:
+                routing._adopt_temps(binding.session_key)
             return self.route_result
 
         monkeypatch.setattr(routing, "_route_to_slot", route_to_slot)
-        status.set_client_factory(lambda: CodeChannelsClient.from_slack(self.slack))
+        status.set_slack_provider(lambda: self.slack)
 
     def info(self, channel: str, **kwargs: Any) -> None:
         self.api.responses["conversations.info"] = channel_info(channel, **kwargs)
@@ -198,9 +234,9 @@ def make_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> Iterator[Env]:
     e = Env(monkeypatch, tmp_path)
     yield e
     set_store(None)
-    status.set_client_factory(None)
+    status.set_slack_provider(None)
     recognition.clear_cache()
-    cc_settings.reset_capability()
+    features.reset_capabilities()
     _reset_routing()
 
 

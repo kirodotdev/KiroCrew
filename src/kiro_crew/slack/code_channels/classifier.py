@@ -130,7 +130,10 @@ def parse_answer(answer: str) -> RouteDecision:
         return STAY
     if data.get("route") != "code_channel":
         return RouteDecision("stay", reason="off_contract")
-    title = clean_title(str(data.get("title") or ""))
+    raw_title = data.get("title")
+    if raw_title is not None and not isinstance(raw_title, str):
+        return RouteDecision("stay", reason="off_contract")
+    title = clean_title(raw_title or "")
     if not title:
         return RouteDecision("stay", reason="no_title")
     return RouteDecision("code_channel", title=title)

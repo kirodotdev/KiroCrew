@@ -15,13 +15,13 @@ import pytest
 from slack_code_channels_helpers import OWNER, SELF_USER, Env, FakeState, make_env, mention
 
 from kiro_crew.config.loader import ACTIVATION_OFF
+from kiro_crew.slack import features
 from kiro_crew.slack.code_channels import binding as binding_mod
 from kiro_crew.slack.code_channels import routing
-from kiro_crew.slack.code_channels import settings as cc_settings
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.creation import ORIGIN_CONTEXT_BLOCK_ID, session_id_for
 from kiro_crew.slack.code_channels.routing import Gate
-from kiro_crew.slack.code_channels.store import Binding
+from kiro_crew.slack.code_channels.store import Binding, StoreWriteError
 
 pytestmark = pytest.mark.asyncio
 
@@ -114,6 +114,7 @@ async def test_multi_step_mention_opens_a_code_channel_with_the_thread_as_contex
     binding = env.store.get_binding("C0CODE")
     assert binding is not None and binding.anchor_ts == "200.000001"
     assert binding.session_key == "chat-1-1" and binding.created_by_us
+    assert binding.channel_name == "fix-flaky-login-test"
     assert binding.origin_link == ("C0ORIGIN", event["ts"])
     assert [r["outcome"] for r in env.sel.ops("slack.code_channel.create")] == ["allowed"]
 
@@ -122,6 +123,45 @@ async def test_one_line_question_is_answered_in_place(env: Env) -> None:
     env.decision = RouteDecision("stay")
     assert await _open(env) is False
     assert _created(env) == [] and env.slack.posts == [] and env.routed == []
+
+
+async def test_the_mention_is_acknowledged_before_the_decision_is_made(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seen_at_decision: list[list[tuple[str, str, str]]] = []
+
+    async def classify(_sessions: Any, _text: str, _context: Any = ()) -> RouteDecision:
+        seen_at_decision.append(list(env.slack.reactions))
+        return RouteDecision("stay")
+
+    monkeypatch.setattr(routing, "classify", classify)
+    event = mention()
+    assert await _open(env, event) is False
+    # The normal turn's "queued" reaction is on the message while the
+    # classifier runs, so the up-to-timeout wait is never silent.
+    assert seen_at_decision == [[("C0ORIGIN", event["ts"], "eyes")]]
+    # A re-delivered event reuses the stored decision and reacts no second time.
+    assert await _open(env, event) is False
+    assert len(env.slack.reactions) == 1
+
+
+async def test_no_acknowledgement_with_reactions_off_or_the_gate_shut(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.decision = RouteDecision("stay")
+    base = env.cfg
+
+    def no_reactions(_orch: Any = None) -> Any:
+        cfg = base()
+        cfg.slack.reactions_enabled = False
+        return cfg
+
+    monkeypatch.setattr(routing, "live_config", no_reactions)
+    assert await _open(env, mention(ts="1.000001")) is False
+    monkeypatch.setattr(routing, "live_config", base)
+    env.on = False
+    assert await _open(env, mention(ts="1.000002")) is False
+    assert env.slack.reactions == []
 
 
 async def test_retried_event_opens_no_second_channel(env: Env) -> None:
@@ -180,7 +220,7 @@ async def test_feature_unavailable_degrades_to_an_in_place_answer(env: Env, code
 
 
 async def test_toggle_on_without_the_scope_makes_no_slack_call_and_no_decision(env: Env) -> None:
-    cc_settings.note_granted_scopes(["chat:write", "app_mentions:read"])
+    features.record_granted_scopes(["chat:write", "app_mentions:read"])
     assert await _open(env) is False
     _bind(env)
     result = await _gate(env, {**mention(channel="C0CODE"), "type": "message"})
@@ -199,8 +239,9 @@ async def test_first_feature_disabled_latches_code_channels_off_for_the_process(
     _bind(env)
     result = await _gate(env, {**mention(channel="C0CODE"), "type": "message"})
     assert result.gate is Gate.PASS
-    # A reconnect re-probes and clears the latch.
-    cc_settings.note_granted_scopes([cc_settings.REQUIRED_SCOPE])
+    # A reconnect re-probes from scratch (scope_probe clears the latch first).
+    features.clear_latch()
+    features.record_granted_scopes([features.REQUIRED_SCOPE[features.CODE_CHANNELS]])
     env.info("C0CODE")
     later = {**mention(channel="C0CODE", ts="1700000000.000300"), "type": "message"}
     assert (await _gate(env, later)).gate is Gate.DIRECTED
@@ -209,7 +250,7 @@ async def test_first_feature_disabled_latches_code_channels_off_for_the_process(
 async def test_a_per_user_refusal_does_not_latch(env: Env) -> None:
     env.api.responses["agents.conversations.create"] = _SlackError("user_not_enabled")
     assert await _open(env) is False
-    assert cc_settings.code_channels_on(env.cfg()) is True
+    assert features.code_channels_enabled(env.cfg()) is True
 
 
 async def test_toggle_off_makes_no_slack_call_and_no_decision(env: Env) -> None:
@@ -249,12 +290,57 @@ async def test_bot_messages_never_open_a_channel(env: Env) -> None:
 # ── Session settings for a new channel ───────────────────────────────────────
 
 
-async def test_no_default_folder_files_at_top_level_on_slacks_default_agent(env: Env) -> None:
+async def test_zero_config_files_into_code_channels_led_by_the_conductor(env: Env) -> None:
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
     assert await _open(env) is True
     spec = env.created_sessions[0]["spec"]
-    assert spec.folder_id == "" and spec.agent == "slack-default"
+    # No default folder: "Code channels" is created with the conductor as its
+    # agent, and the folder's agent applies (nothing set explicitly).
+    assert env.folders_created == ["Code channels"]
+    assert env.state is not None
+    [folder] = env.state.folders
+    assert folder["default_agent"] == "kirocrew-conductor"
+    assert spec.folder_id == folder["id"] and spec.agent == "kirocrew-conductor"
     assert spec.model == "" and spec.reasoning_effort == "" and spec.project_dir == ""
+
+
+async def test_an_explicit_default_agent_still_wins_over_the_code_channels_folder(
+    env: Env,
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    env.defaults.update(
+        agent="kirocrew-team-lead", model="claude-opus-4.5", reasoning_effort="high"
+    )
+    assert await _open(env) is True
+    spec = env.created_sessions[0]["spec"]
+    assert spec.agent == "kirocrew-team-lead"
+    assert spec.model == "claude-opus-4.5" and spec.reasoning_effort == "high"
+    assert env.state is not None and spec.folder_id == env.state.folders[0]["id"]
+
+
+async def test_a_second_code_channel_reuses_the_code_channels_folder(env: Env) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    assert await _open(env) is True
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE2"}
+    assert await _open(env, mention(ts="1700000000.000200")) is True
+    assert env.folders_created == ["Code channels"]
+    first, second = (s["spec"].folder_id for s in env.created_sessions)
+    assert first == second
+
+
+async def test_no_default_folder_files_at_top_level_when_the_folder_cannot_be_made(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def refused(*_a: Any, **_k: Any) -> str:
+        raise ValueError("folder cap reached")
+
+    monkeypatch.setattr(binding_mod, "ensure_folder_path", refused)
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    assert await _open(env) is True
+    spec = env.created_sessions[0]["spec"]
+    # Unfiled, but still the agent the auto folder would have carried: the
+    # resolver answers for a not-yet-created auto folder as if it existed.
+    assert spec.folder_id == "" and spec.agent == features.AUTO_FOLDER_AGENT
 
 
 async def test_defaults_choose_folder_agent_model_and_effort(env: Env) -> None:
@@ -284,8 +370,8 @@ async def test_folder_default_agent_wins_over_slacks_and_folder_without_project(
     assert env.state is not None
     env.state.folders.extend(
         [
-            {"id": "parent", "name": "P", "default_agent": "parent-agent"},
-            {"id": "f1", "name": "Child", "parent_id": "parent"},
+            {"id": "parent", "name": "P"},
+            {"id": "f1", "name": "Child", "parent_id": "parent", "default_agent": "folder-agent"},
         ]
     )
     env.defaults = {"folder": "f1"}
@@ -293,7 +379,7 @@ async def test_folder_default_agent_wins_over_slacks_and_folder_without_project(
     env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
     assert await _open(env) is True
     spec = env.created_sessions[0]["spec"]
-    assert spec.agent == "parent-agent"
+    assert spec.agent == "folder-agent"
     # The folder declares no project, so the origin thread's bound one is used.
     assert spec.project_dir == "/work/origin-repo"
 
@@ -381,6 +467,7 @@ async def test_channel_opened_from_slacks_ui_is_adopted_on_first_message(env: En
     )
     binding = env.store.get_binding("C0UI")
     assert binding is not None and not binding.created_by_us
+    assert binding.channel_name == "ui-task"
     assert binding.origin_link == ("C0ORIGIN", "1700000000.000100")
     assert env.routed == [("C0UI", "start", OWNER)]
     assert env.sel.ops("slack.code_channel.adopt")[0]["outcome"] == "allowed"
@@ -415,6 +502,33 @@ async def test_lookup_failure_keeps_the_binding_but_takes_the_normal_path(env: E
     # Unknown is never read as ours: fail closed to today's behaviour.
     assert (await _gate(env, event)).gate is Gate.PASS
     assert env.store.get_binding("C0CODE") is not None
+
+
+@pytest.mark.parametrize("failure", ["timeout", "feature_disabled"])
+@pytest.mark.parametrize("activation", ["review", "off"])
+async def test_a_failed_lookup_still_honours_the_stored_origins_gate(
+    env: Env, failure: str, activation: str
+) -> None:
+    from kiro_crew.config.loader import ACTIVATION_REVIEW
+
+    _bind(env, origin_channel_id="C0ORIGIN")
+    env.activation["C0ORIGIN"] = ACTIVATION_REVIEW if activation == "review" else ACTIVATION_OFF
+    env.api.responses["conversations.info"] = (
+        TimeoutError() if failure == "timeout" else _SlackError(failure)
+    )
+    event = {
+        "type": "app_mention",
+        "user": OWNER,
+        "channel": "C0CODE",
+        "ts": "301.0",
+        "thread_ts": "300.000001",
+        "text": f"<@{SELF_USER}> ship it",
+    }
+    # Unrecognized is not ours, but the bound origin's review/off still holds:
+    # the reply must not take the normal path and publish unreviewed.
+    assert (await _gate(env, event)).gate is Gate.DROP
+    [row] = env.sel.ops("slack.code_channel.message")
+    assert row["outcome"] == "denied" and "origin=C0ORIGIN" in row["resources"]
 
 
 @pytest.mark.parametrize("code", ["feature_disabled", "missing_scope"])
@@ -454,6 +568,7 @@ async def test_authorization_follows_the_origin_conversation(env: Env) -> None:
 
 async def test_closed_dashboard_session_is_reopened_on_the_next_message(env: Env) -> None:
     _bind(env)
+    env.store.update_binding("C0CODE", channel_name="fix-login", wrapped_up_at=7.0)
     assert env.state is not None
     env.state.linked.clear()  # the user closed the tab
     env.info("C0CODE")
@@ -470,6 +585,8 @@ async def test_closed_dashboard_session_is_reopened_on_the_next_message(env: Env
     )
     binding = env.store.get_binding("C0CODE")
     assert binding is not None and binding.session_key == "chat-1-1"
+    # The channel's own facts carry over; only the session is new.
+    assert binding.channel_name == "fix-login" and binding.wrapped_up_at == 7.0
     assert env.routed == [("C0CODE", "continue", OWNER)]
 
 
@@ -579,3 +696,174 @@ async def test_whole_channel_stop_reaches_us_through_the_agent_session_runtime(
         "agents.sessions.setStatus",
         {"channel_id": "C0CODE", "status": "active"},
     ) in env.api.calls
+
+
+async def test_the_first_message_is_the_request_alone_with_the_framing_as_context(
+    monkeypatch: pytest.MonkeyPatch,
+    env: Env,
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    queued: list[dict[str, Any]] = []
+    real_create = routing.create_bound_session
+
+    async def create_with_a_context_queue(state: Any, spec: Any, **kwargs: Any) -> Any:
+        slot = await real_create(state, spec, **kwargs)
+        slot._pending_context = queued
+        slot._deferred_notes = []
+        slot.append_pending_context = lambda entry: queued.append(entry) is None
+        return slot
+
+    monkeypatch.setattr(routing, "create_bound_session", create_with_a_context_queue)
+    assert await _open(env, mention(thread_ts="1700000000.000001")) is True
+    # The code channel's echo (and the dashboard row) show only what was asked.
+    [(_, message, _)] = env.routed
+    assert message == CLEAN.strip()
+    [entry] = queued
+    assert entry["source"] == routing.SEED_CONTEXT_SOURCE
+    assert entry["content"].startswith("[Slack code channel]")
+
+
+async def test_a_binding_that_cannot_be_saved_leaves_no_session_behind(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+
+    def put_fails(_binding: Any) -> Any:
+        raise StoreWriteError("disk full")
+
+    monkeypatch.setattr(env.store, "put_binding", put_fails)
+    # The error reaches create_bound_session's before_publish, which is where
+    # the real implementation retracts the slot and its link.
+    assert await _open(env) is True
+    assert env.store.get_binding("C0CODE") is None
+    assert env.routed == []
+    assert "could not start its session" in env.slack.posts[-1][1]
+
+
+@pytest.mark.parametrize("modifier", ["!temporary", "!incognito"])
+async def test_a_privacy_modifier_keeps_the_request_on_the_normal_path(
+    env: Env, modifier: str
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    text = f"{modifier} {CLEAN}"
+    event = mention(text=f"<@{SELF_USER}> {text}")
+    # Classified or not, a request that asks for no persistent memory never
+    # lands in a code channel's persistent session.
+    assert await routing.maybe_open_code_channel(env.orch, event, text, OWNER) is False
+    assert _created(env) == [] and env.classified == [] and env.routed == []
+    [row] = env.sel.ops("slack.code_channel.open")
+    assert row["outcome"] == "denied"
+
+
+async def test_a_thread_already_in_a_privacy_mode_keeps_the_request_on_the_normal_path(
+    env: Env,
+) -> None:
+    from kiro_crew.messaging import privacy_mode
+
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+    event = mention(thread_ts="1700000000.000001")
+    privacy_mode.mark_incognito("slack:1700000000.000001")  # the key handle_message marks
+    try:
+        assert await routing.maybe_open_code_channel(env.orch, event, CLEAN, OWNER) is False
+    finally:
+        privacy_mode.reset()
+    assert _created(env) == [] and env.classified == []
+
+
+async def test_a_trusted_bot_in_a_bound_channel_honours_the_stored_origin(env: Env) -> None:
+    _bind(env, origin_channel_id="C0ORIGIN")
+    env.activation["C0ORIGIN"] = ACTIVATION_OFF
+    event = {"type": "message", "bot_id": "BOTHER", "channel": "C0CODE", "ts": "301.0"}
+    event["text"] = "refactor the login module"
+    result = await routing.inbound_gate(
+        env.orch,
+        event,
+        text=event["text"],
+        sender_id="BOTHER",
+        authorized=True,
+        from_trusted_bot=True,
+    )
+    assert result.gate is Gate.DROP
+    [row] = env.sel.ops("slack.code_channel.message")
+    assert row["outcome"] == "denied" and "origin=C0ORIGIN" in row["resources"]
+
+
+async def test_attachment_temps_of_a_message_no_session_took_are_deleted(
+    env: Env, tmp_path: Any
+) -> None:
+    _bind(env)
+    env.info("C0CODE")
+    env.route_result = False
+    upload = tmp_path / "log.txt"
+    upload.write_text("x")
+    event = mention(channel="C0CODE")
+    result = await _gate(env, event)
+    assert await routing.dispatch(
+        env.orch,
+        result,
+        event=event,
+        clean_text=CLEAN,
+        sender_id=OWNER,
+        was_mention=True,
+        attachment_paths=[str(upload)],
+    )
+    assert not upload.exists()
+
+
+async def test_queued_uploads_survive_the_turns_ahead_of_them(env: Env, tmp_path: Any) -> None:
+    binding = _bind(env)
+    env.info("C0CODE")
+    assert env.state is not None
+    slot = env.state.linked[binding.anchor_ts]
+    queued = [0]
+    slot.queue_depth = lambda: queued[0]
+    uploads = []
+    for n in (1, 2):
+        upload = tmp_path / f"shot{n}.png"
+        upload.write_bytes(b"png")
+        uploads.append(upload)
+        event = mention(channel="C0CODE", ts=f"30{n}.0")
+        result = await _gate(env, event)
+        assert await routing.dispatch(
+            env.orch,
+            result,
+            event=event,
+            clean_text=CLEAN,
+            sender_id=OWNER,
+            was_mention=True,
+            attachment_paths=[str(upload)],
+        )
+    # A's turn ends while B is still queued behind it: B's upload must survive
+    # (and A's too, since the files are released together when the queue drains).
+    turn = routing.hooks.TurnEvent(channel_id="C0CODE", session_key="chat-9-1", source="slack")
+    queued[0] = 1
+    await routing._temps_on_turn_end(binding, turn)
+    assert all(u.exists() for u in uploads)
+    # B's turn ends with nothing queued: both are released.
+    queued[0] = 0
+    await routing._temps_on_turn_end(binding, turn)
+    assert not any(u.exists() for u in uploads)
+
+
+async def test_a_lost_seed_receipt_is_reconciled_from_the_session_not_replayed(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    env.api.responses["agents.conversations.create"] = {"ok": True, "channel_id": "C0CODE"}
+
+    def receipt_fails(_session_id: str) -> Any:
+        raise StoreWriteError("disk full")
+
+    real_record = env.store.record_seeded
+    monkeypatch.setattr(env.store, "record_seeded", receipt_fails)
+    assert await _open(env) is True
+    assert len(env.routed) == 1
+    # The session accepted the request: its transcript holds the message.
+    assert env.state is not None
+    [slot] = [s for s in env.state.linked.values() if s.key == "chat-1-1"]
+    slot.messages = [{"role": "user", "content": CLEAN}]
+    monkeypatch.setattr(env.store, "record_seeded", real_record)
+    routing._gate_seen.clear()
+    assert await _open(env) is True  # re-delivered after a restart
+    assert len(env.routed) == 1  # not replayed
+    route = next(iter(env.store._routes.values()))
+    assert route.seeded_at  # and the receipt is now recorded

@@ -16,7 +16,7 @@ import pytest
 from slack_code_channels_helpers import OWNER, SELF_USER, Env, make_env, mention
 
 from kiro_crew.config.loader import KiroCrewConfig, MessagingConfig
-from kiro_crew.slack.code_channels import settings as cc_settings
+from kiro_crew.slack import features
 from kiro_crew.slack.code_channels.classifier import RouteDecision
 from kiro_crew.slack.code_channels.store import Binding
 from kiro_crew.slack.events import SeenCache, _route_message
@@ -102,9 +102,9 @@ async def test_toggle_off_mention_takes_the_normal_path(env: Env) -> None:
 @pytest.mark.parametrize("why", ["scope_missing", "latched"])
 async def test_toggle_on_but_unavailable_is_identical_to_main(env: Env, why: str) -> None:
     if why == "scope_missing":
-        cc_settings.note_granted_scopes(["chat:write"])
+        features.record_granted_scopes(["chat:write"])
     else:
-        cc_settings.report_slack_refusal("feature_disabled", method="agents.conversations.create")
+        features.latch_unavailable(features.CODE_CHANNELS, "feature_disabled")
     _bind(env)
     handle = await _route(env, _plain("C0CODE"), is_mention=False)
     handle.assert_not_called()  # mention-mode channel, no mention: ignored as on main
