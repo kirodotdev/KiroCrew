@@ -2211,6 +2211,20 @@ async def start_dashboard(
     # It is installed here rather than on a first request because the frame exists
     # so a watching client learns of a growth it did not ask for.
     handlers.install_crew_log_publisher(state)
+    # The OTel usage export's own subscription to the same bus, gated on telemetry
+    # consent rather than on the crew-log flag above: a no-op when
+    # ``telemetry.enabled`` is off (the default), so an unopted host installs no
+    # subscriber and sends nothing.
+    #
+    # WHAT THE GATE DOES NOT COVER, said plainly: the ``otel_usage`` FOLD itself is a
+    # member of the crew log's own ``_FOLDS``, so it advances in the eager worker's
+    # pass and is written into the savepoint on every host that keeps a crew log,
+    # consent or none. That cost is a handful of integers per session and the enum
+    # this fold folds an agent name down to; only the egress is behind the consent
+    # flag. See ``crew_log_export.install_otel_crew_log_subscriber``.
+    from kiro_crew.metrics.crew_log_export import install_otel_crew_log_subscriber
+
+    install_otel_crew_log_subscriber()
 
     # Event-loop heartbeat and its off-loop stall watchdog (see the heartbeat owner).
     _loop_watchdog = await _open_loop_watchdog(_launch_environment)

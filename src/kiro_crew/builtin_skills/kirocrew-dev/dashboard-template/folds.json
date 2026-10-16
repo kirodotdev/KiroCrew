@@ -574,6 +574,40 @@
       ]
     },
     {
+      "name": "otel_usage",
+      "mode": "session",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "session/opened",
+        "turn/started"
+      ],
+      "answers": "Whether this session opened and which closed agent_kind value it opened under -- never the raw agent name, which the fold folds to that enum and does not keep -- and how many turns it has started per actor: the counts the OTel usage export reads to mint session and turn counters",
+      "fields": [
+        {
+          "name": "opened",
+          "type": "boolean",
+          "optional": false
+        },
+        {
+          "name": "opened_agent_kind",
+          "type": "string",
+          "optional": false
+        },
+        {
+          "name": "opened_ts",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        },
+        {
+          "name": "turns",
+          "type": "object",
+          "optional": false
+        }
+      ]
+    },
+    {
       "name": "ledger",
       "mode": "slot",
       "advertised": true,

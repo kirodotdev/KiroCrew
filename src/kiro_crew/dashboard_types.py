@@ -194,6 +194,7 @@ _OPAQUE: Final[dict[str, str]] = {
     "radar.phase_lines": "an item id",
     "panel.data": "a key the publishing crew chose",
     "panel.owners": "an owning crew key",
+    "otel_usage.turns": "an actor value",
     # Built from the fold's own registry constant rather than spelled out, because a
     # key naming a fold under a name the registry does not carry is not an error here:
     # ``_node`` looks this table up with a plain ``in``, misses, and falls through to
