@@ -269,7 +269,6 @@
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
 5822 test/test_onboarding_import.py
-3135 test/test_onboarding_import_coverage.py
 2190 test/test_onboarding_import_refactor_contract.py
 3579 test/test_overload_integration_glue.py
 2429 test/test_pinned_staging.py
@@ -323,7 +322,6 @@
 2211 test/test_stt_engine.py
 3093 test/test_subagent.py
 4522 test/test_subagent_continuable.py
-3158 test/test_subagent_coverage.py
 3616 test/test_subagent_panel_durable_replay.py
 2561 test/test_subagent_persistence.py
 3177 test/test_subagent_scale.py
@@ -337,10 +335,8 @@
 2494 test/test_theme_install.py
 4674 test/test_token_auth.py
 4193 test/test_transcribe.py
-3143 test/test_trusted_apps_api.py
 5831 test/test_vector_memory.py
 2014 test/test_vector_memory_coverage.py
-3145 test/test_voice_reply.py
 2549 test/test_wake_judge_feedback.py
 3521 test/test_webex_dispatch.py
 2006 test/test_webhooks_api.py

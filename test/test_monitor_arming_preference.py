@@ -456,7 +456,7 @@ class TestTheSettingsPromiseHasWiringBehindIt:
     repository already asserts this for the same reason -- see
     ``test_agent_backend_editable.py`` ("must be PATCH-able or the switch cannot
     save"), and the membership pins in ``test_computer_use_api.py`` and
-    ``test_trusted_apps_api.py``.
+    ``test_trusted_apps_api_withdrawal.py``.
     """
 
     def test_the_key_is_patchable_from_settings(self) -> None:

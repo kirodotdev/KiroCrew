@@ -376,7 +376,7 @@
  4 test_stub_broker_reconnect.py
  2 test_stub_writer_death.py
  4 test_subagent_config_hot_reload.py
- 1 test_subagent_coverage.py
+ 1 test_subagent_coverage_live_runs.py
  1 test_subagent_error_detail.py
  3 test_subagent_memory_bounds_concurrency.py
  1 test_subagent_no_tool_calls_note.py
