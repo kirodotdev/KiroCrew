@@ -6376,7 +6376,8 @@
       "ver": "Ver",
       "widgets_files_and_snippets_live_tracked_with_ver": "Widgets, files, and snippets — live-tracked with version history",
       "your_artifacts": "Your Artifacts",
-      "local_preview": "Local preview"
+      "local_preview": "Local preview",
+      "folder_renamed_to": "Folder renamed to {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Customize"
@@ -7080,7 +7081,8 @@
       "broadcast_col_result": "Result",
       "broadcast_open_unknown": "Not confirmed · open",
       "broadcast_delivery_hint": "No running work is interrupted: a running turn reads it after its current tool call; an idle session starts a new turn.",
-      "broadcast_retry": "Retry {{n}} failed"
+      "broadcast_retry": "Retry {{n}} failed",
+      "folder_renamed_to": "Folder renamed to {{name}}"
     },
     "contextBreakdown": {
       "axis_turn_n": "Turn {{n}}",
@@ -8697,7 +8699,8 @@
       "workspace": "Workspace:",
       "workspace_folder": "Workspace folder",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML files should be uploaded via the \"From YAML\" tab.",
-      "yaml_workflows_bypass_the_llm_decomposer": "YAML workflows bypass the LLM decomposer —"
+      "yaml_workflows_bypass_the_llm_decomposer": "YAML workflows bypass the LLM decomposer —",
+      "project_renamed_to": "Project renamed to {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Back",

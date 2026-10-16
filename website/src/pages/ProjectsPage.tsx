@@ -107,6 +107,13 @@ export default function ProjectsPage() {
   const [planError, setPlanError] = useState('')
   const [editingName, setEditingName] = useState(false)
   const [editNameValue, setEditNameValue] = useState('')
+  const [projectRenameAnnouncement, setProjectRenameAnnouncement] = useState('')
+  // Close-reason contract for project rename: Enter and Escape restore focus to
+  // the title trigger; a pointer blur moves nothing (WCAG 3.2.2). Mirrors the
+  // pattern in SessionTitleControl.
+  const nameTriggerRef = useRef<HTMLSpanElement | null>(null)
+  const enterRenameRef = useRef(false)
+  const cancelRenameRef = useRef(false)
   const [refined, setRefined] = useState('')
   const [autoApprove, setAutoApprove] = useState(false)
   // Compose-panel auto-approve intent. Distinct from `autoApprove` above, which
@@ -636,21 +643,60 @@ export default function ProjectsPage() {
             edits (compose) or the run's task-edit drafts (`pendingEdits` in the
             detail pane) — unsaved local state the hand-off would unmount. */}
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
+        {/* Project rename announcement — always mounted so it is present before any run is selected. */}
+        <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
               {editingName ? (
-                <input aria-label={i18nT('pages.projectsPage.project_name')} className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring" autoFocus maxLength={200} value={editNameValue} onChange={e => setEditNameValue(e.target.value)} {...ime.bindComposition({ onBlur: () => { const v = editNameValue.trim(); if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) { void runAction(() => api.renameTaskRun(selectedRun.task_id, v), load) }; setEditingName(false) } })} onKeyDown={e => {
-                  if (e.key === 'Enter') {
-                    // Early-return BEFORE the blur: a committing IME Enter must not commit.
-                    if (ime.isComposing(e)) return
-                    ;(e.target as HTMLInputElement).blur()
-                  } else if (e.key === 'Escape') setEditingName(false)
-                }} />
+                <input
+                  aria-label={i18nT('pages.projectsPage.project_name')}
+                  className="text-[13px] font-semibold bg-transparent border border-accent rounded px-1 py-0 text-text-strong outline-hidden min-w-[120px] focus-ring"
+                  autoFocus maxLength={200} value={editNameValue}
+                  onChange={e => setEditNameValue(e.target.value)}
+                  data-testid="project-rename-input"
+                  {...ime.bindComposition({ onBlur: () => {
+                    const viaEnter = enterRenameRef.current
+                    const cancelled = cancelRenameRef.current
+                    enterRenameRef.current = false
+                    cancelRenameRef.current = false
+                    if (!cancelled) {
+                      const v = editNameValue.trim()
+                      if (v && v !== (selectedRun.name || selectedRun.spec_name || '')) {
+                        setProjectRenameAnnouncement('')
+                        void runAction(
+                          () => api.renameTaskRun(selectedRun.task_id, v),
+                          () => { load(); setProjectRenameAnnouncement(i18nT('pages.projectsPage.project_renamed_to', { name: v })) },
+                        )
+                      }
+                    }
+                    setEditingName(false)
+                    if (viaEnter && !cancelled) {
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  } })}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') {
+                      if (ime.isComposing(e)) return
+                      enterRenameRef.current = true
+                      ;(e.target as HTMLInputElement).blur()
+                    } else if (e.key === 'Escape') {
+                      cancelRenameRef.current = true
+                      // Explicitly blur so onBlur fires while the input is still
+                      // mounted — only onBlur clears cancelRenameRef, and React
+                      // does not reliably fire it on an element it is removing.
+                      ;(e.target as HTMLInputElement).blur()
+                      setEditingName(false)
+                      requestAnimationFrame(() => nameTriggerRef.current?.focus({ preventScroll: true }))
+                    }
+                  }}
+                />
               ) : (
                 <span
+                  ref={nameTriggerRef}
                   role="button"
                   tabIndex={0}
+                  data-testid="project-name-trigger"
                   aria-label={i18nT('pages.projectsPage.rename_project')}
                   className="text-[13px] font-semibold text-text-strong truncate cursor-pointer hover:text-accent transition-all"
                   onClick={() => { setEditingName(true); setEditNameValue(selectedRun.name || selectedRun.spec_name || 'Project') }}

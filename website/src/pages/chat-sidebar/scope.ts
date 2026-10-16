@@ -219,7 +219,7 @@ export interface SidebarScope {
   activeDrag: { type: string; id: string } | null
   derivedHintCol: string | null
   setDerivedHintCol: SetState<string | null>
-  renameCommit: (id: string, name: string) => void
+  renameCommit: (id: string, name: string) => boolean
   closeRefused: RootState['chat']['closeRefused']
   rowActions: React.ComponentProps<typeof SessionRow>['actions']
   tintAgents: AgentInfo[]

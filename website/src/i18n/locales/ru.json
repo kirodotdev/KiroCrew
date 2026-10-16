@@ -11246,7 +11246,8 @@
       "save_to_artifacts": "Сохранить в артефакты",
       "saved_to_library_notice": "«{{name}}» сохранён в ваших артефактах.",
       "open_doc_in_editor": "Открыть {{path}} в редакторе",
-      "open_doc_in_editor_failed": "Не удалось открыть этот файл в редакторе: {{reason}}. Нажми на его имя, чтобы открыть предпросмотр."
+      "open_doc_in_editor_failed": "Не удалось открыть этот файл в редакторе: {{reason}}. Нажми на его имя, чтобы открыть предпросмотр.",
+      "folder_renamed_to": "Папка переименована в {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Кастомизация",
@@ -13101,7 +13102,8 @@
       "broadcast_col_result": "Итог",
       "broadcast_open_unknown": "Не подтверждено · открыть",
       "broadcast_delivery_hint": "Текущая работа не прерывается: активный ход прочитает сообщение после текущего вызова инструмента, простаивающая сессия начнёт новый ход.",
-      "broadcast_retry": "Повторить неудавшиеся ({{n}})"
+      "broadcast_retry": "Повторить неудавшиеся ({{n}})",
+      "folder_renamed_to": "Папка переименована в {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Не удалось выполнить действие: {{error}}",
@@ -15746,7 +15748,8 @@
       "workspace_folder": "Папка рабочей области",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Файлы YAML нужно загружать на вкладке «Из YAML».",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML-воркфлоу обходят LLM-декомпозитор —",
-      "action_failed": "Действие не выполнено"
+      "action_failed": "Действие не выполнено",
+      "project_renamed_to": "Проект переименован в {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Назад",

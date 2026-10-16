@@ -35,7 +35,12 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   // Set when the server refuses a rename; rendered through the sidebar-root
   // ErrorNotice cluster so the revert (below) never happens silently.
   const [renameError, setRenameError] = useState('')
+  const [renameAnnouncement, setRenameAnnouncement] = useState('')
   const cancelRenameRef = useRef(false)
+  // Set by the textarea's onEnter so onRenameCommit (fired via the blur that
+  // follows) can distinguish an Enter commit from a pointer-blur commit and
+  // restore focus to the session row accordingly.
+  const slotRenameEnterRef = useRef(false)
   // Per-slot rename recovery state, keyed by slot. `gen` is a monotonic attempt
   // counter: a refused rename's delayed recovery may apply ONLY while its own
   // generation is still the latest (`rec.gen === myGen`). This defeats the
@@ -48,6 +53,14 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     new Map<string, { baseline: string; inflight: Set<string>; gen: number }>()
   )
   const renameInputRef = useRef<HTMLTextAreaElement | null>(null)
+  // Mirror of renamingSlot for use in stable useCallback closures that
+  // cannot list it as a dependency without remounting on every keystroke.
+  const renamingSlotRef = useRef<string | null>(null)
+  useEffect(() => { renamingSlotRef.current = renamingSlot }, [renamingSlot])
+  // Mirror of renameScope for stable rAF closures — the scope must outlive the
+  // setRenamingSlot(null) call so the focus query targets the right lane instance.
+  const renameScopeRef = useRef<string | null>(null)
+  useEffect(() => { renameScopeRef.current = renameScope }, [renameScope])
   // The rename field is a wrapping, auto-growing <textarea> (not a single-line
   // <input>) so a long session title is fully visible while editing instead of
   // being clipped at the right edge — you can see and edit words that a
@@ -78,9 +91,25 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [])
   const onRenameCancel = useCallback(() => {
     cancelRenameRef.current = true
+    // The key is in renamingSlotRef; query for the row INSIDE the rAF so
+    // the query runs after React has finished the re-render triggered by
+    // setRenamingSlot(null). Querying before the re-render risks a stale
+    // DOM node if the component tree remounts (e.g., animated list mocks).
+    const key = renamingSlotRef.current
+    const scope = renameScopeRef.current
     setRenamingSlot(null)
+    requestAnimationFrame(() => {
+      if (!key) return
+      ;(document.querySelector(
+        scope
+          ? `[data-session-row="${CSS.escape(key)}"][data-session-scope="${CSS.escape(scope)}"]`
+          : `[data-session-row="${CSS.escape(key)}"]`,
+      ) as HTMLElement | null)?.focus({ preventScroll: true })
+    })
   }, [])
   const onRenameCommit = useCallback((key: string, value: string) => {
+    const viaEnter = slotRenameEnterRef.current
+    slotRenameEnterRef.current = false
     if (!cancelRenameRef.current && value.trim()) {
       const refused = value.trim()
       // Take a generation for THIS attempt before any async work. A later
@@ -98,6 +127,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
         rec.inflight.delete(refused)
         if (rec.inflight.size === 0 && rec.gen === myGen) renameRecoveryRef.current.delete(key)
       }
+      setRenameAnnouncement('')
       dispatch(sseSlotTitle({ key, title: refused }))
       // Recovery on a refused rename must go through Redux: slot titles live in
       // the dashboard slice (written by `sseSlots` / `fetchSlots.fulfilled`),
@@ -121,7 +151,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
       const mayRecover = () =>
         rec.gen === myGen &&
         store.getState().dashboard.slots.find(s => s.key === key)?.title === refused
-      api.renameSlot(key, refused).then(() => settle(), async e => {
+      api.renameSlot(key, refused).then(() => { settle(); setRenameAnnouncement(i18nT('pages.chatPage.session_renamed_to', { title: refused })) }, async e => {
         setRenameError(errMessage(e) || i18nT('pages.chatPage.unknown_error'))
         try {
           const server = (await queryClient.fetchQuery({
@@ -142,6 +172,19 @@ export function useSessionRename({ dispatch, store, queryClient }: {
     }
     cancelRenameRef.current = false
     setRenamingSlot(null)
+    // Query for the row INSIDE the rAF, after React has finished the re-render
+    // triggered by setRenamingSlot(null), so the query finds the live element.
+    // Pointer blur does NOT restore focus (WCAG 3.2.2).
+    if (viaEnter) {
+      const scope = renameScopeRef.current
+      requestAnimationFrame(() => {
+        ;(document.querySelector(
+          scope
+            ? `[data-session-row="${CSS.escape(key)}"][data-session-scope="${CSS.escape(scope)}"]`
+            : `[data-session-row="${CSS.escape(key)}"]`,
+        ) as HTMLElement | null)?.focus({ preventScroll: true })
+      })
+    }
   }, [dispatch, queryClient, store])
   // Input modality tracker for menu-close focus handling: true while the most
   // recent interaction was a keyboard press. Capture-phase listeners so Radix's
@@ -205,6 +248,7 @@ export function useSessionRename({ dispatch, store, queryClient }: {
   }, [])
   return {
     renamingSlot, renameScope, renameValue, renameError, setRenameError, renameInputRef,
+    renameAnnouncement, slotRenameEnterRef,
     suppressMenuRestoreRef, onRenameStart, onRenameChange, onRenameCancel, onRenameCommit,
     onMenuCloseAutoFocus,
   }

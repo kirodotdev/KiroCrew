@@ -256,6 +256,7 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
   const [creatingFolder, setCreatingFolder] = useState(false)
   const [newFolderColor, setNewFolderColor] = useState('')
   const [renamingFolderId, setRenamingFolderId] = useState<string | null>(null)
+  const [folderRenameAnnouncement, setFolderRenameAnnouncement] = useState('')
 
   // The emoji icon is derived by a background LLM task server-side after
   // create/rename — refetch shortly after so it pops in without a reload.
@@ -319,7 +320,10 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
     onRenameSubmit: (f, name) => {
       setRenamingFolderId(null)
       if (name && name !== f.name) {
-        updateFolderMut.mutate({ id: f.id, body: { name } })
+        setFolderRenameAnnouncement('')
+        updateFolderMut.mutate({ id: f.id, body: { name } }, {
+          onSuccess: () => setFolderRenameAnnouncement(i18nT('pages.artifactsPage.folder_renamed_to', { name })),
+        })
         scheduleIconRefetch()
       }
     },
@@ -1127,6 +1131,8 @@ export default function ArtifactsPage() {  const navigate = useNavigate()
             {view === 'grid' && !filtersActive && scopeFolderId && (
               <FolderBreadcrumbBar folders={folders} currentFolderId={scopeFolderId} onNavigate={openFolder} />
             )}
+            {/* Folder rename announcement — always mounted so the live region is present for any view. */}
+            <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="folder-rename-status">{folderRenameAnnouncement}</span>
             {view === 'grid' && (subfolders.length > 0 || (creatingFolder && !filtersActive)) && (
               <FolderCardGrid>
                 {creatingFolder && !filtersActive && (

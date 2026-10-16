@@ -11090,7 +11090,8 @@
       "save_to_artifacts": "Guardar en los artefactos",
       "saved_to_library_notice": "Se guardó “{{name}}” en tus artefactos.",
       "open_doc_in_editor": "Abrir {{path}} en el editor",
-      "open_doc_in_editor_failed": "No se pudo abrir este archivo en tu editor: {{reason}}. Haz clic en su nombre para ver una vista previa."
+      "open_doc_in_editor_failed": "No se pudo abrir este archivo en tu editor: {{reason}}. Haz clic en su nombre para ver una vista previa.",
+      "folder_renamed_to": "Carpeta renombrada a {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Personalizar",
@@ -12892,7 +12893,8 @@
       "broadcast_col_result": "Resultado",
       "broadcast_open_unknown": "Sin confirmar · abrir",
       "broadcast_delivery_hint": "No se interrumpe ningún trabajo en curso: un turno activo lo lee tras la llamada de herramienta actual; una sesión inactiva empieza un turno nuevo.",
-      "broadcast_retry": "Reintentar {{n}} fallidos"
+      "broadcast_retry": "Reintentar {{n}} fallidos",
+      "folder_renamed_to": "Carpeta renombrada a {{name}}"
     },
     "connectionsPage": {
       "action_failed": "La acción falló: {{error}}",
@@ -15500,7 +15502,8 @@
       "workspace_folder": "Carpeta del espacio de trabajo",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Los archivos YAML deben subirse desde la pestaña \"Desde YAML\".",
       "yaml_workflows_bypass_the_llm_decomposer": "Los flujos de trabajo YAML omiten el descompositor del LLM —",
-      "action_failed": "Acción fallida"
+      "action_failed": "Acción fallida",
+      "project_renamed_to": "Proyecto renombrado a {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Atrás",

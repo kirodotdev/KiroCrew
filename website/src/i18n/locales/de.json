@@ -10934,7 +10934,8 @@
       "save_to_artifacts": "In den Artefakten speichern",
       "saved_to_library_notice": "„{{name}}“ wurde in Ihren Artefakten gespeichert.",
       "open_doc_in_editor": "{{path}} im Editor öffnen",
-      "open_doc_in_editor_failed": "Diese Datei konnte nicht im Editor geöffnet werden: {{reason}}. Klicke stattdessen auf den Namen, um eine Vorschau zu sehen."
+      "open_doc_in_editor_failed": "Diese Datei konnte nicht im Editor geöffnet werden: {{reason}}. Klicke stattdessen auf den Namen, um eine Vorschau zu sehen.",
+      "folder_renamed_to": "Ordner umbenannt in {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Anpassen",
@@ -12683,7 +12684,8 @@
       "broadcast_col_result": "Ergebnis",
       "broadcast_open_unknown": "Nicht bestätigt · öffnen",
       "broadcast_delivery_hint": "Laufende Arbeit wird nicht unterbrochen: Ein laufender Turn liest sie nach dem aktuellen Tool-Aufruf, eine ruhende Sitzung startet einen neuen Turn.",
-      "broadcast_retry": "{{n}} fehlgeschlagene erneut senden"
+      "broadcast_retry": "{{n}} fehlgeschlagene erneut senden",
+      "folder_renamed_to": "Ordner umbenannt in {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Aktion fehlgeschlagen: {{error}}",
@@ -15254,7 +15256,8 @@
       "workspace_folder": "Workspace-Ordner",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML-Dateien sollten über den Tab „Aus YAML“ hochgeladen werden.",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML-Workflows umgehen den LLM-Zerleger —",
-      "action_failed": "Aktion fehlgeschlagen"
+      "action_failed": "Aktion fehlgeschlagen",
+      "project_renamed_to": "Projekt umbenannt in {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Zurück",

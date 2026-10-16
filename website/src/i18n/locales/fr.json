@@ -11090,7 +11090,8 @@
       "save_to_artifacts": "Enregistrer dans les artefacts",
       "saved_to_library_notice": "« {{name}} » a été enregistré dans vos artefacts.",
       "open_doc_in_editor": "Ouvrir {{path}} dans l’éditeur",
-      "open_doc_in_editor_failed": "Impossible d’ouvrir ce fichier dans ton éditeur : {{reason}}. Clique sur son nom pour afficher un aperçu."
+      "open_doc_in_editor_failed": "Impossible d’ouvrir ce fichier dans ton éditeur : {{reason}}. Clique sur son nom pour afficher un aperçu.",
+      "folder_renamed_to": "Dossier renommé en {{name}}"
     },
     "capabilitiesPage": {
       "agent_capabilities": "Personnaliser",
@@ -12892,7 +12893,8 @@
       "broadcast_col_result": "Résultat",
       "broadcast_open_unknown": "Non confirmé · ouvrir",
       "broadcast_delivery_hint": "Aucun travail en cours n’est interrompu : un tour actif le lit après l’appel d’outil en cours ; une session inactive commence un nouveau tour.",
-      "broadcast_retry": "Réessayer {{n}} en échec"
+      "broadcast_retry": "Réessayer {{n}} en échec",
+      "folder_renamed_to": "Dossier renommé en {{name}}"
     },
     "connectionsPage": {
       "action_failed": "Échec de l’action : {{error}}",
@@ -15500,7 +15502,8 @@
       "workspace_folder": "Dossier de l'espace de travail",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "Les fichiers YAML doivent être importés via l'onglet « Depuis YAML ».",
       "yaml_workflows_bypass_the_llm_decomposer": "Les workflows YAML contournent le décomposeur LLM —",
-      "action_failed": "Action échouée"
+      "action_failed": "Action échouée",
+      "project_renamed_to": "Projet renommé en {{name}}"
     },
     "remoteArtifactDetailPage": {
       "back": "Retour",

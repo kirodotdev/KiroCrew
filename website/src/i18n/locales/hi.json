@@ -10934,7 +10934,8 @@
       "save_to_artifacts": "आर्टिफ़ैक्ट में सहेजो",
       "saved_to_library_notice": "“{{name}}” तुम्हारे आर्टिफ़ैक्ट में सहेजा गया।",
       "open_doc_in_editor": "{{path}} को एडिटर में खोलो",
-      "open_doc_in_editor_failed": "यह फ़ाइल तुम्हारे एडिटर में नहीं खुल सकी: {{reason}}। इसके बजाय प्रीव्यू देखने के लिए इसके नाम पर क्लिक करो।"
+      "open_doc_in_editor_failed": "यह फ़ाइल तुम्हारे एडिटर में नहीं खुल सकी: {{reason}}। इसके बजाय प्रीव्यू देखने के लिए इसके नाम पर क्लिक करो।",
+      "folder_renamed_to": "फ़ोल्डर का नाम बदलकर {{name}} कर दिया गया"
     },
     "capabilitiesPage": {
       "agent_capabilities": "कस्टमाइज़",
@@ -12683,7 +12684,8 @@
       "broadcast_col_result": "नतीजा",
       "broadcast_open_unknown": "पुष्टि नहीं · खोलो",
       "broadcast_delivery_hint": "चल रहा काम नहीं रुकता: चालू टर्न इसे मौजूदा टूल कॉल के बाद पढ़ता है; खाली सेशन नया टर्न शुरू करता है।",
-      "broadcast_retry": "{{n}} विफल फिर से भेजो"
+      "broadcast_retry": "{{n}} विफल फिर से भेजो",
+      "folder_renamed_to": "फ़ोल्डर का नाम बदलकर {{name}} कर दिया गया"
     },
     "connectionsPage": {
       "action_failed": "कार्रवाई विफल: {{error}}",
@@ -15254,7 +15256,8 @@
       "workspace_folder": "वर्कस्पेस फ़ोल्डर",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML फ़ाइलें \"YAML से\" टैब के ज़रिए अपलोड करनी चाहिए।",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML वर्कफ़्लो LLM डीकंपोज़र को बायपास करते हैं —",
-      "action_failed": "कार्रवाई विफल"
+      "action_failed": "कार्रवाई विफल",
+      "project_renamed_to": "प्रोजेक्ट का नाम बदलकर {{name}} कर दिया गया"
     },
     "remoteArtifactDetailPage": {
       "back": "वापस",

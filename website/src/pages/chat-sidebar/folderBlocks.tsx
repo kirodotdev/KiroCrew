@@ -362,6 +362,9 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
     // `button` when the row toggles something, a plain `span` when it does not.
     const HeaderShell = (emptyRow ? 'span' : 'button') as 'button'
     const hasUnread = folderTreeHasUnread(folder.id)
+    const focusListFolderRow = () => {
+      document.querySelector<HTMLElement>(`[data-folder-row="${folder.id}"]`)?.focus({ preventScroll: true })
+    }
     const draggable = !!dragHandleProps && editingId !== folder.id
     // Valid "Move folder to" destinations: everything outside this folder's
     // own subtree (cycle guard). One O(1) lookup, computed once per row.
@@ -393,6 +396,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         // copy sorts first in the DOM — the same ambiguity the session reveal
         // avoids by targeting `data-session-row` instead of `data-slot-key`.
         data-folder-row={folder.id}
+        tabIndex={-1}
         // Non-interactive container (role="group"): the row holds a collapse
         // toggle button + action buttons, so it must NOT itself be a button —
         // an interactive element can't legally contain other interactive
@@ -465,7 +469,7 @@ export function createFolderBlocks(shell: SidebarScope & LaneRows) {
         {editingId === folder.id && editScope === 'list' ? (
           <>
             <FolderGlyph color={folder.color} icon={folder.icon} size={14} open={!collapsed} />
-            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => renameCommit(folder.id, editName), onEscape: () => setEditingId(null), onBlur: () => renameCommit(folder.id, editName) })} />
+            <Input ref={folderEditInputRef} className="flex-1 py-0.5 text-[13px] min-w-0" value={editName} onChange={e => setEditName(e.target.value)} onClick={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} {...ime.bindEnter<HTMLInputElement>({ onEnter: () => { if (renameCommit(folder.id, editName)) requestAnimationFrame(focusListFolderRow) }, onEscape: () => { setEditingId(null); requestAnimationFrame(focusListFolderRow) }, onBlur: () => renameCommit(folder.id, editName) })} />
             <span className="text-[11px] text-muted tabular-nums shrink-0">{count}</span>
           </>
         ) : (

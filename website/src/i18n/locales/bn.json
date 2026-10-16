@@ -10934,7 +10934,8 @@
       "save_to_artifacts": "আর্টিফ্যাক্টে সংরক্ষণ করো",
       "saved_to_library_notice": "“{{name}}” তোমার আর্টিফ্যাক্টে সংরক্ষিত হয়েছে।",
       "open_doc_in_editor": "{{path}} এডিটরে খোলো",
-      "open_doc_in_editor_failed": "এই ফাইলটি এডিটরে খোলা যায়নি: {{reason}}। এর বদলে প্রিভিউ দেখতে নামের উপর ক্লিক করো।"
+      "open_doc_in_editor_failed": "এই ফাইলটি এডিটরে খোলা যায়নি: {{reason}}। এর বদলে প্রিভিউ দেখতে নামের উপর ক্লিক করো।",
+      "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে"
     },
     "capabilitiesPage": {
       "agent_capabilities": "কাস্টমাইজ",
@@ -12683,7 +12684,8 @@
       "broadcast_col_result": "ফলাফল",
       "broadcast_open_unknown": "নিশ্চিত নয় · খোলো",
       "broadcast_delivery_hint": "চলমান কাজ থামে না: চালু টার্ন বর্তমান টুল কলের পরে এটি পড়ে; অলস সেশন নতুন টার্ন শুরু করে।",
-      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও"
+      "broadcast_retry": "ব্যর্থ {{n}}টি আবার পাঠাও",
+      "folder_renamed_to": "ফোল্ডারের নাম পরিবর্তন করে {{name}} করা হয়েছে"
     },
     "connectionsPage": {
       "action_failed": "অ্যাকশন ব্যর্থ: {{error}}",
@@ -15254,7 +15256,8 @@
       "workspace_folder": "ওয়ার্কস্পেস ফোল্ডার",
       "yaml_files_should_be_uploaded_via_the_from_yaml": "YAML ফাইল \"YAML থেকে\" ট্যাব দিয়ে আপলোড করা উচিত।",
       "yaml_workflows_bypass_the_llm_decomposer": "YAML ওয়ার্কফ্লো LLM ডিকম্পোজার এড়িয়ে যায় —",
-      "action_failed": "কাজটি ব্যর্থ হয়েছে"
+      "action_failed": "কাজটি ব্যর্থ হয়েছে",
+      "project_renamed_to": "প্রকল্পের নাম পরিবর্তন করে {{name}} করা হয়েছে"
     },
     "remoteArtifactDetailPage": {
       "back": "ফিরুন",
