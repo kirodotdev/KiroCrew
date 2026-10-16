@@ -101,6 +101,7 @@ from kiro_crew.messaging.queue_drain import (
     tag_entry,
 )
 from kiro_crew.messaging.queue_receipt import ReceiptQueue, ReceiptSurface, receipt_address_key
+from kiro_crew.mirror_admission import sign_mirror_admission
 from kiro_crew.safety_override import describe_grant_lifetime, safety_override
 from kiro_crew.sel import sel
 from kiro_crew.session_lifecycle import (
@@ -1662,6 +1663,8 @@ class WebexDispatcher:
         """
         key = self._session_key(_route_of(inbound))
         link = self._origin_mirror_link(inbound.room_id)
+        # The room's own peer binds the room it writes from: this MINTS the admission.
+        link = replace(link, admission=sign_mirror_admission(key, link) or None)
 
         # One write for the whole sequence (``batched_save`` rewrites the session
         # map once on the way out), and off-loop because that rewrite is blocking

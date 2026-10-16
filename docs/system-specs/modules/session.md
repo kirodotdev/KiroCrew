@@ -3663,7 +3663,10 @@ only when a `mirror` `ChannelLink` exists on the dashboard-side key:
   in-sandbox code, such a row carries an `admission` — HMAC-SHA256 over the
   canonical session key and the whole location under a key derived from the
   sandbox-masked `token_signing.key` (`kiro_crew.mirror_admission`) — minted ONLY
-  by those two creation paths before they hand the link over. `set_mirror_link`
+  by those two creation paths before they hand the link over. A key-named
+  session's row carries one even with no peer, minted also by the binds its own
+  conversation makes from inside (the origin bind and the in-channel link), so its
+  stored `channel_id` cannot be repointed. `set_mirror_link`
   never mints or repairs one: it stores the caller's bytes verbatim, so a rollback
   that re-sets a row it read back keeps a verifying admission byte-for-byte and can
   never sign a planted one

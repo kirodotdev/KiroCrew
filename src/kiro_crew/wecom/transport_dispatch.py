@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.config import live
@@ -66,6 +67,7 @@ from kiro_crew.messaging.link import (
     seed_generation,
 )
 from kiro_crew.messaging.queue_drain import entries_queued_by, owner_token
+from kiro_crew.mirror_admission import sign_mirror_admission
 from kiro_crew.safety_override import safety_override
 from kiro_crew.session_lifecycle import (
     STOP_DECLINED_COMPACTING_TEXT,
@@ -690,10 +692,14 @@ class WeComDispatcher:
         # whose loop-aware branch marks the map dirty and schedules ONE debounced
         # flush that itself writes in a worker thread. Wrapping THOSE in a batch
         # would reintroduce the inline write this line exists to avoid.
+        # The conversation's own authorized peer is binding the chat it writes
+        # from, so this link MINTS the row's admission (``kiro_crew.mirror_admission``).
+        location = self._origin_mirror_link(inbound)
+        location = replace(location, admission=sign_mirror_admission(key, location) or None)
         await asyncio.to_thread(self.sessions.set_mirror_opt_out, key, False)
         self.sessions.set_mirror_link(
             key,
-            self._origin_mirror_link(inbound),
+            location,
             reason=UNBIND_REASON_ORIGIN_REBIND,
         )
         # Drop any pre-unification row so a stale binding cannot outlive the rebind.

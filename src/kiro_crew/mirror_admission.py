@@ -23,11 +23,14 @@ row while the binding existed writes it back, and after a restart nothing contra
 it until the transport learns the DM's pairing. Refusing that replay needs revocation
 state the agent cannot write back, which this file cannot hold; that is the
 agent-writable-row class tracked in its own issue, and sealing a store is the
-operator's sandbox decision, not this module's. It is MINTED in exactly
-two places, the two paths that authorize a peer for a conversation: the dashboard's
-mirror-link handler (``dashboard.chat_mirror.api_chat_slot_mirror_link``) and the
-session-resume controller's pick commit
-(``messaging.session_resume.SessionResumeController.choose``). Every other writer of
+operator's sandbox decision, not this module's. It is MINTED only by the paths
+that authorize a conversation for a session: the dashboard's mirror-link handler
+(``dashboard.chat_mirror.api_chat_slot_mirror_link``), the session-resume
+controller's pick commit (``messaging.session_resume.SessionResumeController.choose``),
+and, for a key-named session, the binds the conversation's own peer makes from
+inside it -- the origin bind on an inbound turn and the in-channel link
+(``messaging.link.bind_origin_mirror`` / ``rebind_conversation_location``, and the
+Webex and WeCom link handlers). Every other writer of
 a mirror row -- the map itself, a rollback, a restore -- carries the stored bytes
 through verbatim and never mints, because a writer that signs whatever it is handed
 would launder a forged row into a valid one the moment any path re-set it
@@ -42,9 +45,19 @@ type -- verifies ``False``, because this decision sits on the send path of a
 dashboard turn and an exception there would abort the turn on exactly the row the
 check exists to reject.
 
-Only the row class this record exists for is signed: a link that names no peer
-(an origin bind, a thread or room target, an in-channel ``/link``) carries no
-principal and no MAC, and its recipient decision is unchanged.
+Two row classes are signed. A dashboard-born row is signed when it names a peer;
+one that names none (a thread or room target) carries no MAC and its recipient
+decision is unchanged. A KEY-NAMED row (:func:`admission_required`) is signed
+whether or not it names a peer, because there the key supplies the peer and the
+stored ``channel_id`` alone decides where the send lands: unsigned, a row rewritten
+to another allow-listed user's conversation would pass a roster check made for the
+key's peer. The ladder refuses a key-named row whose admission does not verify
+unless it is the gateway's own in-memory record of the conversation the session is
+being read in. A row written before key-named rows were signed is therefore refused
+until it is re-bound -- the user's next message in that same conversation (the
+origin bind re-signs a row that already points there, and only such a row), the
+channel's link command, a ``!sessions`` pick, or a re-link from the dashboard --
+and the refusal says so.
 """
 
 from __future__ import annotations
@@ -57,7 +70,7 @@ import re
 from typing import Any
 
 from kiro_crew.dashboard import token_secret
-from kiro_crew.messaging.link import canonical_key
+from kiro_crew.messaging.link import canonical_key, parse_session_key
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -105,15 +118,29 @@ def _material(session_key: str, link: Any) -> bytes:
     return "\0".join(parts).encode("utf-8", "surrogatepass")
 
 
+def admission_required(session_key: str) -> bool:
+    """Whether every mirror row of *session_key* must carry a valid admission.
+
+    True for a KEY-NAMED session: a channel-born key in the canonical grammar
+    (``{surface}:{agent}:{chat_type}:{scope}``), whose key names the audience the
+    recipient check is handed. For such a row the stored ``channel_id`` is the
+    only thing deciding WHERE the send lands, so a row in-sandbox code rewrote to
+    another allow-listed user's conversation would pass a check that reads the
+    peer off the key. Dashboard-born and legacy keys parse to nothing and keep the
+    principal rule: their row is admitted only when it names a peer.
+    """
+    return parse_session_key(str(session_key or "")) is not None
+
+
 def sign_mirror_admission(session_key: str, link: Any) -> str:
     """The admission MAC for *link* as *session_key*'s mirror, hex-encoded.
 
-    For the two authorized creation paths only (see the module docstring); a test
-    pins that no other call site exists. A link that names no peer has nothing to
-    admit and gets ``""``, so an unsigned principal-less row is the ordinary shape
-    and never reads as a broken one.
+    For the authorized creation paths only (see the module docstring); a test
+    pins the call sites. A link that names no peer on a session whose key names
+    none has nothing to admit and gets ``""``, so an unsigned principal-less
+    dashboard row is the ordinary shape and never reads as a broken one.
     """
-    if not getattr(link, "principal", None):
+    if not getattr(link, "principal", None) and not admission_required(session_key):
         return ""
     return hmac.new(_purpose_key(), _material(session_key, link), hashlib.sha256).hexdigest()
 
@@ -135,7 +162,11 @@ def verify_mirror_admission(session_key: str, link: Any) -> bool:
         if not isinstance(recorded, str) or not _HEX_DIGEST.fullmatch(recorded):
             return False
         principal = getattr(link, "principal", None)
-        if not isinstance(principal, str) or not principal:
+        if principal is None:
+            # Admissible with no peer only on a key-named row, whose key names it.
+            if not admission_required(session_key):
+                return False
+        elif not isinstance(principal, str) or not principal:
             return False
         expected = sign_mirror_admission(session_key, link)
         return bool(expected) and hmac.compare_digest(expected, recorded)

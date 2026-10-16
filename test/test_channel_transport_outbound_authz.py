@@ -725,7 +725,12 @@ class TestTheLadderConsultsTheTransport:
         self, transport: Any, link: ChannelLink, key: str = "telegram:kirocrew:direct:111"
     ) -> Any:
         from kiro_crew.dashboard.chat_runner import _resolve_channel_target
+        from kiro_crew.mirror_admission import admission_required
 
+        # A key-named row is signed as the gateway's own bind stores it (the row rule
+        # is test_mirror_admission_key_named's); these pin the transport leg.
+        if admission_required(key) and not link.admission:
+            link = _admitted(key, link)
         return _resolve_channel_target(_StubState(transport), key, link)
 
     def test_a_permitted_recipient_resolves(self) -> None:
@@ -1433,6 +1438,14 @@ class TestMirrorAdmission:
         assert sites == {
             ("dashboard/chat_mirror.py", "api_chat_slot_mirror_link"),
             ("messaging/session_resume.py", "commit_binding"),
+            # A key-named session's own conversation binding itself from inside.
+            ("messaging/link.py", "_resign_own_location"),
+            ("messaging/link.py", "bind_origin_mirror"),
+            ("messaging/link.py", "rebind_conversation_location"),
+            ("webex/transport_dispatch.py", "_handle_link"),
+            ("wecom/transport_dispatch.py", "_handle_link"),
+            # The gateway's in-memory origin record, signed before a reset evicts it.
+            ("slack/gateway_runtime/delivery.py", "_channel_reply_link"),
         }, sites
 
     def test_the_map_itself_never_signs(self) -> None:
@@ -1505,21 +1518,22 @@ class TestMirrorAdmission:
         assert signers == {
             ("dashboard/chat_mirror.py", "_claim_binding"),
             ("messaging/session_resume.py", "commit_binding"),
+            ("messaging/link.py", "bind_origin_mirror"),
+            ("messaging/link.py", "rebind_conversation_location"),
+            ("webex/transport_dispatch.py", "_rebind"),
+            ("wecom/transport_dispatch.py", "_handle_link"),
         }, signers
         assert sanitized == {
             ("dashboard/chat_mirror.py", "_release_binding"),
             ("messaging/session_resume.py", "release"),
             ("messaging/session_resume.py", "rollback_binding"),
         }, sanitized
-        # Peer-less writers: the origin binds and in-channel links (a bare location),
-        # and the manager's passthrough. None of these may grow a principal without
-        # moving into one of the two sets above.
+        # The manager's passthrough, the only writer left that neither signs nor
+        # restores: it carries its caller's bytes. A new writer must join a set above.
         assert others == {
-            ("messaging/link.py", "bind_origin_mirror"),
-            ("messaging/link.py", "rebind_conversation_location"),
             ("session.py", "set_mirror_link"),
-            ("webex/transport_dispatch.py", "_rebind"),
-            ("wecom/transport_dispatch.py", "_handle_link"),
+            # The store's own compare-and-set: stores the caller's bytes verbatim.
+            ("session_map.py", "replace_mirror_link_if"),
         }, others
 
     def test_restorable_link_carries_a_verified_row_and_strips_an_unverified_one(

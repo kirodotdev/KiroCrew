@@ -8850,11 +8850,17 @@ class TestSubagentChannelTransportDelivery:
         carries the forum Topic thread id."""
         transport = self._fake_transport("telegram")
         orch, mock_sm = self._setup(parent_channel="telegram:12345", transport=transport)
-        from kiro_crew.messaging.link import ChannelLink
+        import dataclasses
 
-        orch.sessions.get_mirror_link = MagicMock(
-            return_value=ChannelLink("telegram", channel_id="987", thread_id="5")
+        from kiro_crew.messaging.link import ChannelLink
+        from kiro_crew.mirror_admission import sign_mirror_admission
+
+        # Signed as the in-channel /link stores it: a key-named row must be.
+        topic = ChannelLink("telegram", channel_id="987", thread_id="5")
+        topic = dataclasses.replace(
+            topic, admission=sign_mirror_admission("telegram:kirocrew:forum:987:5", topic)
         )
+        orch.sessions.get_mirror_link = MagicMock(return_value=topic)
         on_done = mock_sm.call_args[1]["on_done"]
         info = self._make_info("telegram:kirocrew:forum:987:5")
 

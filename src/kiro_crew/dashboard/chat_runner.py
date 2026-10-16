@@ -611,7 +611,7 @@ from kiro_crew.messaging.renderer import chunk_for_transport  # noqa: F401
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
-from kiro_crew.mirror_admission import verify_mirror_admission  # noqa: F401
+from kiro_crew.mirror_admission import admission_required, verify_mirror_admission  # noqa: F401
 from kiro_crew.monitoring.completion import (
     MonitorCompletionHook,
     disposition_for_stop_reason,

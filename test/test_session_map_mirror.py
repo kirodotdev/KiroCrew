@@ -292,14 +292,16 @@ class TestRecordedPrincipal:
         assert got is not None and got.admission == "f" * 64
         assert verify_mirror_admission(self._KEY, got) is False
 
-    def test_a_row_without_a_peer_carries_no_admission(self, session_map):
+    def test_a_row_without_a_peer_keeps_its_admission_verbatim(self, session_map):
+        """A key-named session's row is signed with no peer, so the map carries the
+        bytes through like any other admission; it never judges or repairs them."""
         session_map.set_mirror_link(
             self._KEY,
             ChannelLink(channel_type="discord", channel_id="dm-9", admission="f" * 64),
         )
-        assert "admission" not in session_map._data[self._KEY]["mirror"]
+        assert session_map._data[self._KEY]["mirror"]["admission"] == "f" * 64
         got = session_map.get_mirror_link(self._KEY)
-        assert got is not None and got.admission is None and got.principal is None
+        assert got is not None and got.admission == "f" * 64 and got.principal is None
 
 
 class TestCompareAndClear:

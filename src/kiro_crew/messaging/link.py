@@ -14,7 +14,7 @@ import hashlib
 import logging
 import re
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 # ``SLACK_NAMESPACE`` and ``CHANNEL_SESSION_NAMESPACES`` are RE-EXPORTED from
@@ -220,6 +220,11 @@ class ChannelLink:
     reach its roster only through a principal, and a dashboard-born session key
     names no peer to supply one.
 
+    A key-named session's row (a channel-born key in the canonical grammar) is
+    signed even when it records no peer: its key names the audience, and the
+    admission ties the stored location to that key, so a ``channel_id`` rewritten
+    to another allow-listed user's conversation fails to verify.
+
     A HINT on its own, and an admission once signed. The session map this rides
     in is writable by in-sandbox code, so the per-send recipient check hands a
     principal to the roster only when ``admission`` -- a MAC the gateway alone can
@@ -269,13 +274,14 @@ class ChannelLink:
             "channel_id": self.channel_id,
             "thread_id": self.thread_id,
         }
-        # Emitted only when recorded, so a link that names no peer serializes
-        # exactly as one always has and a stored row is not rewritten for it. An
-        # admission is only ever meaningful beside the peer it admits.
+        # Each emitted only when recorded, so a link that names no peer and carries
+        # no admission serializes exactly as one always has. A key-named session's
+        # row carries an admission with no peer: its key names the peer, and the
+        # admission binds the location to that key.
         if self.principal:
             d["principal"] = self.principal
-            if self.admission:
-                d["admission"] = self.admission
+        if self.admission:
+            d["admission"] = self.admission
         return d
 
     @classmethod
@@ -739,8 +745,16 @@ def rebind_conversation_location(
     the user, and a channel that cannot reach the state should not carry a
     handler for it.
     """
+    # Lazy: mirror_admission imports this module.
+    from kiro_crew.mirror_admission import sign_mirror_admission
+
+    # An in-channel link is the conversation's own authorized peer binding the
+    # location it writes from, so it MINTS the row's admission (see
+    # :mod:`kiro_crew.mirror_admission`), which is also how a row written before
+    # rows were signed is re-bound.
+    admitted = replace(location, admission=sign_mirror_admission(key, location) or None)
     with sessions.batched_save():
-        sessions.set_mirror_link(key, location, reason=UNBIND_REASON_ORIGIN_REBIND)
+        sessions.set_mirror_link(key, admitted, reason=UNBIND_REASON_ORIGIN_REBIND)
         sessions.set_mirror_opt_out(key, False)
         # Drop any pre-unification row so a stale binding cannot outlive the
         # rebind (reads prefer the channel key, but a leftover row would still
@@ -752,6 +766,47 @@ def rebind_conversation_location(
         "✅ Linked. Replies from the dashboard for this conversation will also "
         f"show up here. Send {unlink_command} to stop."
     )
+
+
+def _resign_own_location(
+    sessions: Any, *, key: str, existing: ChannelLink, location: ChannelLink
+) -> None:
+    """Re-sign a key-named row that already points at the conversation being read.
+
+    The inbound turn is this conversation's authorized peer writing from
+    *location*, so a stored row at that SAME location is re-bound by it: a row
+    written before key-named rows were signed heals on the user's next message
+    instead of staying refused after every restart. A row aimed anywhere else is
+    left exactly as it is (and stays refused if unsigned): a location match is
+    the only thing that vouches. The gateway's own *location* is what gets signed,
+    never the stored row's other fields. Written once per stale row; the steady
+    state is one MAC check. Never raises.
+    """
+    # Lazy: mirror_admission imports this module.
+    from kiro_crew.mirror_admission import (
+        admission_required,
+        sign_mirror_admission,
+        verify_mirror_admission,
+    )
+
+    try:
+        if existing != location or not admission_required(key):
+            return
+        if verify_mirror_admission(key, existing):
+            return
+        admitted = replace(location, admission=sign_mirror_admission(key, location) or None)
+        # Compare-and-set in the store: a rebind that landed since *existing* was
+        # read is kept, and the row's inbound flag and mute carry over. Only the
+        # row stored on the session's own key qualifies; a legacy ``dashboard:``
+        # row heals through the in-channel link, which also retires that spelling.
+        sessions.replace_mirror_link_if(key, existing, admitted)
+    except Exception:
+        logger.debug(
+            "%s: re-signing the origin mirror skipped for %s",
+            location.channel_type,
+            key,
+            exc_info=True,
+        )
 
 
 def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> bool:
@@ -824,10 +879,19 @@ def bind_origin_mirror(sessions: Any, *, key: str, location: ChannelLink) -> boo
         return False
     if sessions.mirror_opt_out(key):
         return False
-    if sessions.get_mirror_link(key) is not None:
+    existing = sessions.get_mirror_link(key)
+    if existing is not None:
+        _resign_own_location(sessions, key=key, existing=existing, location=location)
         return False
+    # Lazy: mirror_admission imports this module.
+    from kiro_crew.mirror_admission import sign_mirror_admission
+
+    # The inbound turn is the conversation's authorized peer writing from this
+    # very location, so the bind MINTS the row's admission for this key: a row
+    # in-sandbox code later rewrites to another conversation fails to verify.
     try:
-        sessions.set_mirror_link(key, location)
+        admitted = replace(location, admission=sign_mirror_admission(key, location) or None)
+        sessions.set_mirror_link(key, admitted)
     except Exception:
         logger.debug(
             "%s: origin mirror bind skipped for %s", location.channel_type, key, exc_info=True

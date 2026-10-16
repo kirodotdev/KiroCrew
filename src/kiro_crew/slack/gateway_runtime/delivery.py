@@ -145,12 +145,30 @@ def _channel_reply_link(
     namespace = channel_namespace_of(parent_key)
     if not namespace or namespace == SLACK_NAMESPACE or self.sessions is None:
         return None
-    for getter in (self.sessions.get_origin_link, self.sessions.get_mirror_link):
+    for from_origin, getter in (
+        (True, self.sessions.get_origin_link),
+        (False, self.sessions.get_mirror_link),
+    ):
         try:
             link = getter(parent_key)
         except Exception:
             link = None
         if link is not None and link.channel_id and link.channel_type != SLACK_NAMESPACE:
+            if from_origin:
+                # The gateway's in-memory origin record, signed for *parent_key*
+                # HERE: callers snapshot this link before an injection retry whose
+                # ``sessions.reset()`` evicts the record, and the send ladder admits a
+                # key-named link only under a valid admission or as the live origin
+                # record (``mirror_admission``). Unsigned on a signing failure:
+                # refused at send, fail-closed.
+                from dataclasses import replace
+
+                from kiro_crew.mirror_admission import sign_mirror_admission
+
+                try:
+                    link = replace(link, admission=sign_mirror_admission(parent_key, link) or None)
+                except Exception:
+                    logger.debug("origin link for %s left unsigned", parent_key, exc_info=True)
             return link, False
     try:
         stored = self.sessions.get_channel(parent_key)

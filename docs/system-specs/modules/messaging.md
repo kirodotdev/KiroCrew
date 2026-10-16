@@ -1364,8 +1364,8 @@ Four properties are load-bearing:
   That key is masked from every agent plane by the sandbox and already certifies the
   tag-grant store's key (`dashboard.chat_tag_grants._key_cert`), so this is the
   repository's established way to make an agent-writable record unforgeable — no new
-  seal, no widening of what the sandbox masks. **Exactly two paths mint an admission**
-  (pinned by AST), the two that authorize a peer for a conversation: the dashboard's
+  seal, no widening of what the sandbox masks. **Two paths mint a peer's admission**
+  (pinned by AST, beside the key-named binds below), the two that authorize a peer for a conversation: the dashboard's
   mirror-link handler (`chat_mirror.api_chat_slot_mirror_link`), which resolves a
   `user:<id>` target into exactly this conversation, admits it through
   `_authorize_recipient` and signs the link before writing; and the resume
@@ -1391,10 +1391,34 @@ Four properties are load-bearing:
   (`SessionMap.has_mirror_row`) — is still absent, never judged on `get_mirror_link`,
   which also answers for bindings the clear never touched (a Slack link synthesized
   from a surviving thread id, the legacy `dashboard:` row it falls back to) and on
-  such a slot would read as "still bound" and skip the promised restore. An origin
-  bind, a room or thread target, and
-  an in-channel `/link` record no peer and are not signed; their recipient decision is
-  unchanged. The ladder (`chat_runner._recipient_principal`) hands the roster the
+  such a slot would read as "still bound" and skip the promised restore. On a
+  dashboard-born key a room or thread target records no peer and is not signed; its
+  recipient decision is unchanged.
+
+  **A key-named session's row is signed too, peer or not**
+  (`mirror_admission.admission_required`: a channel-born key in the canonical
+  grammar). There the roster check is handed the peer off the KEY, so it cannot tell
+  which conversation the row points at, and a `channel_id` rewritten to another
+  allow-listed user's DM would deliver the session's replies, cron results and
+  notices there. Such a row is minted by the paths where the conversation's own peer
+  binds it from inside — the origin bind on an inbound turn
+  (`link.bind_origin_mirror`), the in-channel link (`link.rebind_conversation_location`
+  and the Webex and WeCom link handlers) — as well as by the two creation paths above.
+  The ladder (`chat_runner._key_named_row_admitted`) sends to a key-named link only when
+  its admission verifies, when it IS the conversation the gateway saw the session read
+  in (`SessionManager.get_origin_link`, held in gateway memory), or when it addresses
+  the key's own peer by id, on the key's own channel, with no thread (Telegram's DM
+  id, the cron leg's stored user-id rung; the same digits on another channel are
+  another person). Anything else is refused, audited (`channel.mirror_admission` /
+  `unverified`) and logged once naming the remedy: a row written before key-named rows
+  were signed is refused until it is re-bound — the user's next message in that same
+  conversation (the origin bind re-signs a row that already points there, keeping its
+  inbound flag, and never one aimed elsewhere), the channel's link command, a
+  `!sessions` pick, or a re-link from the dashboard. A caller that
+  supplies its own principal (the drop notice, from in-memory entry metadata) is not
+  held to the row rule.
+
+  The ladder (`chat_runner._recipient_principal`) hands the roster the
   recorded peer only when the admission verifies for THIS session and THIS location
   (`hmac.compare_digest`), and only when the transport's own record of the
   conversation — `direct_peer_of` (Layer 1), for Discord the `dm_channel_id ->

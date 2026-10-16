@@ -226,6 +226,9 @@ def _discord_orch(*, slack: Any = None, transport: Any = None) -> tuple[Any, Mag
     orch.subagent_mgr = None
     orch.dashboard_state = _dashboard_state(tr)
     orch.sessions = _sessions(origin=gw.ChannelLink("discord", channel_id=DISCORD_CONVERSATION))
+    # One SessionManager behind both, as at boot (start_dashboard(sessions=...)):
+    # the ladder vouches for a key-named link by the gateway's origin record.
+    orch.dashboard_state.sessions = orch.sessions
     orch.ctx_builder = MagicMock()
     orch.ctx_builder.build_message = MagicMock(return_value=("msg", None))
     return orch, tr

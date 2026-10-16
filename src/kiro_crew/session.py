@@ -3869,6 +3869,10 @@ class SessionManager:
         """
         return self._session_map.clear_mirror_link_if(key, channel_type, token, reason=reason)
 
+    def replace_mirror_link_if(self, key: str, expected: ChannelLink, link: ChannelLink) -> bool:
+        """Store *link* iff the row is still exactly *expected*; see ``SessionMap.replace_mirror_link_if``."""
+        return self._session_map.replace_mirror_link_if(key, expected, link)
+
     def clear_slack_link_if(self, key: str, channel_type: str, token: str) -> bool:
         """Clear the Slack thread iff it is the binding ``(channel_type, token)`` names.
 

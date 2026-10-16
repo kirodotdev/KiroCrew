@@ -360,16 +360,15 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
     # rewritten by in-sandbox code (the session map is writable there) fails to
     # verify and is refused. The transport's own record of the DM -- the pairing
     # the ``resolve_configured_target`` call above just left when it opened it --
-    # must agree whenever it exists. Empty for a room or thread target, which
-    # names nobody and is not signed.
+    # must agree whenever it exists. A room or thread target names nobody and is
+    # signed only when the session is key-named, whose every row is signed.
     link = ChannelLink(
         channel_type=channel_type,
         channel_id=conversation_id,
         thread_id=thread_id,
         principal=recipient_principal or None,
     )
-    if link.principal:
-        link = dataclasses.replace(link, admission=sign_mirror_admission(session_key, link))
+    link = dataclasses.replace(link, admission=sign_mirror_admission(session_key, link) or None)
     accepts_inbound = _resumes_inbound(transport, conversation_id, thread_id)
 
     # Refuse an occupied conversation BEFORE anything is posted into it. The

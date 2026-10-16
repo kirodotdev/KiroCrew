@@ -16,7 +16,7 @@ import secrets
 import tempfile
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from pathlib import Path
 from typing import ParamSpec, TypeVar
 
@@ -2294,6 +2294,40 @@ class SessionMap:
         if binding_token(current, self.mirror_link_nonce(key)) != token:
             return False
         return self.clear_mirror_link(key, reason=reason)
+
+    @_guarded
+    def replace_mirror_link_if(self, key: str, expected: ChannelLink, link: ChannelLink) -> bool:
+        """Store *link* as *key*'s mirror iff the stored row is still exactly *expected*.
+
+        A repair, not a rebind: the compare (whole row, :meth:`ChannelLink.same_row`,
+        on the row stored under the canonical key itself) and the write are one
+        guarded step, so a rebind landing between the caller's read and this write
+        is kept and False is returned. The row's inbound flag and mute are carried
+        over in the same step. Bytes are stored verbatim, as by :meth:`set_mirror_link`.
+        """
+        canon = canonical_key(key)
+        entry = self._data.get(canon)
+        if not entry:
+            return False
+        stored = entry.get("mirror")
+        if not isinstance(stored, dict) or not ChannelLink.from_dict(stored).same_row(expected):
+            return False
+        inbound = entry.get("mirror_accepts_inbound") is True
+        paused = entry.get("mirror_paused") is True
+        try:
+            # On a loop each save is a deferred off-loop flush that sees both
+            # mutations; a batch there would write inline on the loop.
+            asyncio.get_running_loop()
+            batch: AbstractContextManager[None] = nullcontext()
+        except RuntimeError:
+            # Off a loop each save writes inline, so batch the pair into one write.
+            batch = self.batched_save()
+        with batch:
+            self.set_mirror_link(canon, link, accepts_inbound=inbound)
+            if paused:
+                entry["mirror_paused"] = True
+                self._save()
+        return True
 
     @_guarded
     def clear_slack_link_if(self, key: str, channel_type: str, token: str) -> bool:

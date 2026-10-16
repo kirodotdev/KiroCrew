@@ -12,6 +12,7 @@ if TYPE_CHECKING:
         _RECIPIENT_LOGGED_CAP,
         CHAT_TYPE_DIRECT,
         SLACK_NAMESPACE,
+        admission_required,
         logger,
         parse_session_key,
         sel,
@@ -166,6 +167,92 @@ def _recipient_principal(session_key: str, link: Any, transport: Any) -> str:
         )
         return ""
     return hint
+
+
+def _is_origin_location(state: Any, session_key: str, link: Any) -> bool:
+    """Whether *link* is the conversation the gateway saw *session_key* read in.
+
+    ``SessionManager.get_origin_link`` is held in gateway memory and written only
+    by a transport's inbound path from the conversation's real send target, so it
+    is out of reach of in-sandbox code. Compared by location; any failure to read
+    it answers ``False``.
+    """
+    getter = getattr(getattr(state, "sessions", None), "get_origin_link", None)
+    if getter is None:
+        return False
+    try:
+        origin = getter(session_key)
+    except Exception:
+        return False
+    if origin is None:
+        return False
+    try:
+        return all(
+            getattr(origin, name, None) == getattr(link, name, None)
+            for name in ("channel_type", "channel_id", "thread_id")
+        )
+    except Exception:
+        return False
+
+
+def _key_named_row_admitted(state: Any, session_key: str, link: Any) -> bool:
+    """Whether a send to *link* on behalf of *session_key* may proceed past the row.
+
+    Answers ``True`` outright for a session whose key names nobody (a dashboard
+    ``chat-*`` key): its row is judged by :func:`_recipient_principal`. For a
+    KEY-NAMED session (``mirror_admission.admission_required``) the recipient check
+    is handed the peer off the KEY, so it cannot tell which conversation the row
+    points at, and the session map is writable by in-sandbox code: a row whose
+    ``channel_id`` was rewritten to another allow-listed user's DM would pass and
+    deliver this session's replies, cron results and notices there. Such a row is
+    admitted only when
+
+    * its admission verifies (:func:`verify_mirror_admission`): a MAC the gateway
+      minted over this key and this whole location when the conversation's own peer
+      bound it or a dashboard / ``!sessions`` link authorized it; or
+    * it IS the conversation the gateway saw this session read in
+      (:func:`_is_origin_location`), a record no agent can write; or
+    * it addresses the key's own peer by id, on the key's own channel, with no
+      thread: the peer the roster check is handed is then the very destination,
+      so a rewrite cannot move it.
+
+    Anything else -- an unsigned row from before rows were signed, a rewritten or
+    moved one, one signed under a rotated key -- is refused, audited, and logged
+    once naming the remedy: re-bind it from the conversation or the dashboard.
+    """
+    if not admission_required(session_key):
+        return True
+    if verify_mirror_admission(session_key, link):
+        return True
+    if _is_origin_location(state, session_key, link):
+        return True
+    peer = _session_principal(session_key)
+    parsed = parse_session_key(session_key)
+    if (
+        peer
+        and parsed is not None
+        # A user id means that user only on its own surface: the same digits on
+        # another channel are someone else, so a cross-channel row stays signed.
+        and getattr(link, "channel_type", None) == parsed.surface
+        and not getattr(link, "thread_id", None)
+        and getattr(link, "channel_id", None) == peer
+    ):
+        # Addressed to the key's own peer by id: where a conversation id IS the
+        # user id (Telegram, iMessage) and the cron leg's user-id rung, which
+        # resolves the postable DM through the transport for exactly this peer.
+        return True
+    channel_type = str(getattr(link, "channel_type", "") or "channel")
+    _audit_admission_refusal(session_key, link)
+    _log_once(
+        ("unadmitted-key-named", channel_type, str(getattr(link, "channel_id", "") or "")),
+        logging.WARNING,
+        "cross-surface: a %s channel session's mirror row carries no valid gateway "
+        "admission (written before rows were signed, rewritten outside the gateway, or "
+        "signed under a rotated key); refusing the send. Re-bind it: send a message or "
+        "the channel's link command in that conversation, or re-link from the dashboard",
+        channel_type,
+    )
+    return False
 
 
 def _audit_admission_refusal(session_key: str, link: Any, *, outcome: str = "unverified") -> None:
@@ -385,6 +472,12 @@ def _resolve_channel_target(
     # every dashboard-driven reply into such a mirror would be refused right here.
     if not check_recipient:
         return link, transport
+    # A KEY-NAMED session's principal comes off its key, so the roster check
+    # below cannot tell WHICH conversation the row points at: the row itself must
+    # be one the gateway wrote (``_key_named_row_admitted``). A caller-supplied
+    # principal came with its own in-memory conversation id and is judged as is.
+    if principal is None and not _key_named_row_admitted(state, session_key, link):
+        return None
     if not _authorize_recipient(
         transport,
         link.channel_type,
