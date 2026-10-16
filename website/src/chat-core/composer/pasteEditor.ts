@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import type { PasteHoverHandle } from '../PasteHoverLayer'
-import { clipboardFiles, hasPlainClipboardText, stripTrailingBlankLines } from '../composerPastePolicy'
-import type { useImeGuard } from '../../hooks/useImeGuard'
+import type { PasteHoverHandle } from '../../components/PasteHoverLayer'
+import { clipboardFiles, hasPlainClipboardText, stripTrailingBlankLines } from '../../components/composerPastePolicy'
 import { isTouchDevice } from '../../utils/isTouchDevice'
 import {
   type PasteBlock,
@@ -15,10 +14,14 @@ import {
   findTokenRanges,
 } from '../../utils/pasteTokens'
 
-/* Collapsed-paste tokens and the clipboard: a big paste becomes a
-   `[ Paste #N · M lines ]` chip backed by a PasteBlock, the chip moves and
-   deletes as one unit, copy and cut hand out the expanded text, and a file
-   on the clipboard (or from the picker) goes to the upload path. */
+/* The Paste atom's editor half (chat-core RFC §3 layer 4, P3-c; the block
+   state is `composerPastes.ts`). Collapsed-paste tokens and the clipboard: a
+   big paste becomes a `[ Paste #N · M lines ]` chip backed by a PasteBlock,
+   the chip moves and deletes as one unit, copy and cut hand out the expanded
+   text, and a file on the clipboard (or from the picker) goes to the upload
+   path. The dashboard `ChatInput` and the app-sdk `ChatEmbed` both bind their
+   textarea to this one hook, so nothing here may import the Redux store
+   (pinned by `ChatEmbed.composerStoreFree.test`). */
 /** True when the text on the caret's line, before the caret, is ONLY markdown
  *  blockquote markers — `>`, `> > `, optionally indented. A collapsed-paste
  *  chip then flows on that line (`> [ Paste #1 · N lines ]`) instead of being
@@ -83,7 +86,9 @@ export function usePasteTokens({ value, onChange, pasteBlocks, onPasteBlocksChan
   valueRef: React.MutableRefObject<string>
   valueFromUserRef: React.MutableRefObject<boolean>
   recordCaret: () => void
-  ime: ReturnType<typeof useImeGuard>
+  /** Only the IME check is read: a key committing a composition is never a
+   *  token edit. `useImeGuard()` and `useComposerDraft()` both supply it. */
+  ime: { isComposing: (e: React.KeyboardEvent<HTMLTextAreaElement>) => boolean }
 }) {
   // Backdrop mirror that paints chip backgrounds behind paste tokens; its scroll
   // is kept in lockstep with the textarea (see syncMirrorScroll on the textarea).

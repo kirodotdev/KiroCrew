@@ -133,13 +133,13 @@ export function useComposerKeyDown({ rawPasteRef, handleUndoKey, endUndoBurst, h
     // Self-clearing: any other keydown resets the flag so it only ever affects
     // the paste that immediately follows this exact shortcut. We do NOT
     // preventDefault — the browser still fires the paste event `handlePaste`
-    // (chat-input/paste.ts) consumes.
+    // (chat-core/composer/pasteEditor.ts) consumes.
     rawPasteRef.current = isRawPasteChord(e)
     // Undo / redo first (chat-input/draftHistory.ts): the gesture is the
     // composer's on every path, including a textarea whose native undo stack a
     // programmatic reset already wiped.
     if (handleUndoKey(e)) return
-    // Atomic paste-token handling (chat-input/paste.ts) runs before
+    // Atomic paste-token handling (chat-core/composer/pasteEditor.ts) runs before
     // Enter/history, so edits on or around a token never reach the default
     // textarea handling.
     if (handleTokenKey(e)) return

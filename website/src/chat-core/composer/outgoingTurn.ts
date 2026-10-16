@@ -73,6 +73,11 @@ export interface OutgoingTurnInput {
   quote?: MessageQuote | null
   /** Project root `@rel/` folder tokens resolve against (send only). */
   project?: string
+  /** Send only: leave `@rel/` folder tokens as typed and carry no
+   *  `meta.dirs`. For a surface with no project root to resolve them against
+   *  (the app-sdk `ChatEmbed`), where a marker would name a path nothing
+   *  travels with; every other part of the send shape is unchanged. */
+  keepFolderTokens?: boolean
 }
 
 /** The knowledge card's record on `meta.knowledge`. */
@@ -147,7 +152,7 @@ export function buildOutgoingTurn(input: OutgoingTurnInput, mode: OutgoingTurnMo
   const send = mode === 'send'
   const quote = input.quote ?? null
   const { txt, displayTxt, filePaths } = prepareSendPayload(input.text.trim(), [...(input.files ?? [])])
-  const { llm: typedWire, dirPaths } = send ? serializeDirTokens(txt, input.project || '') : { llm: txt, dirPaths: [] }
+  const { llm: typedWire, dirPaths } = send && !input.keepFolderTokens ? serializeDirTokens(txt, input.project || '') : { llm: txt, dirPaths: [] }
   const refs = send ? [...(input.sessionRefs ?? [])] : []
   const linked = appendSessionRefLinks(typedWire, refs)
   // On a send the bubble text is what the user sees, so it decides which

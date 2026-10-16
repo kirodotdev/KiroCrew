@@ -92,7 +92,24 @@ describe('ChatEmbed composer is store-free (static)', () => {
     expect(src).not.toMatch(/\buploadComposerFiles\b/)
   })
 
-  it.each(['Composer.tsx', 'atoms.tsx', 'useComposerAttachments.ts'])('nothing chat-core/composer/%s imports reaches the Redux store', (entry) => {
+  it('the embed collapses long pastes through the chat-core Paste atom, not its own', () => {
+    const src = readFileSync(join(SRC, 'app-sdk', 'ChatEmbed.tsx'), 'utf8')
+    expect(src).toMatch(/from '\.\.\/chat-core\/composer\/pasteEditor'/)
+    expect(src).toMatch(/from '\.\.\/chat-core\/composer\/composerPastes'/)
+    expect(src).toMatch(/usePasteTokens\(/)
+    expect(src).toMatch(/useComposerPastes\(/)
+    expect(src).toMatch(/<Composer\b[^>]*\bpastes=\{pastes\}/)
+    // The dashboard composer binds the same hook: one implementation.
+    const input = readFileSync(join(SRC, 'components', 'ChatInput.tsx'), 'utf8')
+    expect(input).toMatch(/import \{ usePasteTokens \} from '\.\.\/chat-core\/composer\/pasteEditor'/)
+    expect(existsSync(join(SRC, 'components', 'chat-input', 'paste.ts'))).toBe(false)
+    // Undo/redo, which restores a deleted chip's block, is the same hook too.
+    expect(src).toMatch(/from '\.\.\/chat-core\/composer\/undoHistory'/)
+    expect(src).toMatch(/useUndoHistory\(/)
+    expect(input).toMatch(/import \{ useUndoHistory \} from '\.\.\/chat-core\/composer\/undoHistory'/)
+  })
+
+  it.each(['Composer.tsx', 'atoms.tsx', 'useComposerAttachments.ts', 'pasteEditor.ts', 'undoHistory.ts', 'composerPastes.ts', '../../components/PasteHighlightLayer.tsx', '../../components/PasteHoverLayer.tsx'])('nothing chat-core/composer/%s imports reaches the Redux store', (entry) => {
     const g = importGraph(join(SRC, 'chat-core', 'composer', entry))
     const storeFiles = g.files.filter(f => relative(SRC, f).startsWith('store/') || relative(SRC, f) === 'store.ts')
     expect(storeFiles.map(g.chain)).toEqual([])
