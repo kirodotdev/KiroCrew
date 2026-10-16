@@ -486,6 +486,7 @@ async def notify_turn_start(
     *,
     source: str,
     on_bound: Callable[[], None] | None = None,
+    prompt: str = "",
 ) -> bool:
     """Fire turn-start hooks for a bound channel; True when it is one.
 
@@ -494,13 +495,16 @@ async def notify_turn_start(
     when the turn is cancelled part way through the start subscribers.
     """
     binding = active_binding(channel_id, thread_ts)
-    if binding is None:
+    if binding is None or binding.archived_at:
+        # An archived channel takes no turns: its session is a plain chat now.
         return False
     if on_bound is not None:
         on_bound()
     from kiro_crew.slack.code_channels.hooks import TurnEvent, fire_turn_start
 
-    await fire_turn_start(binding, TurnEvent(binding.channel_id, session_key, source=source))
+    await fire_turn_start(
+        binding, TurnEvent(binding.channel_id, session_key, source=source, prompt=prompt)
+    )
     return True
 
 

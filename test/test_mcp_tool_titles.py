@@ -20,8 +20,11 @@ def test_every_listed_tool_carries_its_declared_title(server: str, monkeypatch) 
     # tools only while that app is enabled, and the isolated test home has
     # none installed, so the gate is held open here to compare the whole table.
     from kiro_crew.mcp_tools import apps as apps_tools
+    from kiro_crew.mcp_tools import code_channels as code_channel_tools
 
     monkeypatch.setattr(apps_tools, "app_enabled_state", lambda _name: True)
+    # Likewise the code-channel tools, listed only while slack.code_channels is on.
+    monkeypatch.setattr(code_channel_tools, "_toggle_on", lambda: True)
     listed = _SERVERS[server]._list_tools()
     assert {t["name"]: t.get("title") for t in listed} == _table()[server]
 
