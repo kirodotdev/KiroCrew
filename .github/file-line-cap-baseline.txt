@@ -99,7 +99,6 @@
 2096 src/kiro_crew/webex/transport_dispatch.py
 2641 test/conftest.py
 2780 test/test_admission_gate.py
-5489 test/test_apps_backend_coverage.py
 5531 test/test_apps_routes_coverage.py
 3299 test/test_artifacts_handlers.py
 6303 test/test_aws_control_backup.py
@@ -118,7 +117,6 @@
 2240 test/test_eager_spawn.py
 2765 test/test_fargate_launch_engine.py
 4437 test/test_github_pull_request_monitor.py
-5410 test/test_governance_distribution.py
 3102 test/test_handlers_memory_coverage.py
 2809 test/test_history_consolidation_retry.py
 4353 test/test_hooks.py
