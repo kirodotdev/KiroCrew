@@ -2013,8 +2013,8 @@ def _credential_shaped_names(package: Mapping[str, Any]) -> str:
     rules, and the first thing the second one would do is drift.
 
     It sits in the read's module rather than here because that is where the name
-    rule belongs: a staged page is an ordinary file under the crewmate's own
-    directory, so the save route is not its only writer and the rule must not be
+    rule belongs: a saved page is an artifact its owner can also write through the
+    artifact API, so the save route is not its only writer and the rule must not be
     one this route privately owns. Imported inside the function, like
     ``read_fields`` above, because that module imports nothing from this one and
     the pair must not become a cycle.
@@ -2073,7 +2073,7 @@ async def _await_check(work: Awaitable[dict[str, Any] | None]) -> dict[str, Any]
 async def _page_check(
     slug: str, crew_name: str, slot: str, package: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """The check of a staged page, which this save never waits on past its limit.
+    """The check of a saved page, which this save never waits on past its limit.
 
     The work (the record read, the copy, the browser) runs on a thread and holds the
     gateway's single check slot until it is over. The wait here ends at

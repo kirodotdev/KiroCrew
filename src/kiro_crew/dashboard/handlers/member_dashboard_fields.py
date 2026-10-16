@@ -549,7 +549,7 @@ def verify_package_page(
     :class:`~kiro_crew.dashboard_verify.Verification`, which says ``passed``, ``failed``
     with each error and where it was thrown, ``timed_out`` or ``skipped`` with the reason.
 
-    The page is staged and no person has approved it, so it is never given the record: the
+    The page is only saved and may never go live, so it is never given the record: the
     read is taken here exactly as the tab is served it (:meth:`LivePage.arm` over the same
     manifest, redaction and folds, then disarmed), and ``dashboard_verify`` copies it into
     a record of the same shape with invented values and runs the page over that. *package*

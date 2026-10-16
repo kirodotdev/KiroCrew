@@ -5014,8 +5014,8 @@ DASHBOARD_PREVIEW_SCHEMA = ToolSchema(
 DASHBOARD_APPLY_SCHEMA = ToolSchema(
     tool_name="dashboard_apply",
     fields=[
-        # Optional. Present, the template is applied directly -- a preview is an
-        # optional look, not a gate. Absent, the staged preview is applied.
+        # Optional. Present, that template goes live -- a preview is an optional
+        # look, not a gate. Absent, the crewmate's own saved package goes live.
         FieldSpec("template_id", str, max_len=64),
     ],
 )
