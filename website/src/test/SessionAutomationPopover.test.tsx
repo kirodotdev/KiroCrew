@@ -1572,8 +1572,11 @@ describe('SessionAutomationPopover', () => {
     /* Warn-coloured, as it was when this form was opt-in. On the view every
        reader now lands on, this sentence is the only cost cue the surface
        carries, so muting it would have weakened that cue in the same change
-       that made the surface the default. */
-    expect(notice).toHaveClass('border-warn/30', 'bg-warn-subtle', 'text-warn-fg')
+       that made the surface the default. It wears `text-warn-text` -- the
+       warn hue that keeps 4.5:1 on the `bg-warn-subtle` tint in both modes --
+       not `text-warn-fg`, which is the on-solid-`--warn` black that read as
+       dark-on-dark here in the dark theme. */
+    expect(notice).toHaveClass('border-warn/30', 'bg-warn-subtle', 'text-warn-text')
     expect(panel).toHaveClass(
       'w-[min(calc(100vw-1rem),26.25rem)]',
       'max-h-[min(80vh,42rem)]',
