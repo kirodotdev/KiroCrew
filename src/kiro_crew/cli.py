@@ -47,7 +47,7 @@ from logging.handlers import QueueHandler, QueueListener, RotatingFileHandler
 from pathlib import Path
 from typing import NoReturn
 
-from kiro_crew import __version__, cli_help, platform_compat
+from kiro_crew import cli_help, platform_compat, version_line
 from kiro_crew.apps import builtins as _builtins_pkg
 from kiro_crew.apps.builtins import BUILTIN_NAMES as _BUILTIN_NAMES
 from kiro_crew.cli_log_files import (  # noqa: F401 -- re-exported for existing callers
@@ -1393,7 +1393,7 @@ def main() -> None:
         epilog=cli_help.render_epilog(),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--version", action="version", version=f"kirocrew {__version__}")
+    parser.add_argument("--version", action="version", version=version_line())
     parser.add_argument(
         "--verbose",
         "-v",

@@ -23,7 +23,7 @@ body:
     id: version
     attributes:
       label: KiroCrew version
-      description: Output of `kirocrew --version`.
+      description: Output of `kirocrew --version`. If it ends in "(source checkout, not a release build)", keep that note and add the commit you built from (`git rev-parse --short HEAD`).
       placeholder: 1.2.3
     validations:
       required: true
