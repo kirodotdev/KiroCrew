@@ -312,6 +312,69 @@ def carveout_chain_has_planted_link(path: str) -> bool:
     return False
 
 
+def _tier_mask_dirs(mode: str) -> list[str]:
+    """Absolute directories the EFFECTIVE tier of *mode* masks, relocated crew entries included.
+
+    The union of every tier when the tier cannot be resolved, which only widens the
+    set. Raises when the home cannot be resolved.
+    """
+    home = str(Path.home())
+    try:
+        effective = effective_sandbox_mode(mode)
+        policy = _sandbox_policy()
+        if effective == "strict":
+            tier_dirs = list(policy.strict_dirs())
+        elif effective == "cc":
+            tier_dirs = list(policy.cc_dirs())
+        else:
+            # "standard" — and "off", where no mask exists and ``wrap_argv``
+            # ignores ``extra_visible_dirs`` entirely, so the verdict is inert.
+            tier_dirs = list(_STANDARD_DIRS)
+    except Exception:
+        # Deliberately swallows PlatformCompositionError, which
+        # ``_governance_sandbox_floor`` otherwise propagates so a floor never
+        # silently downgrades DENY to ALLOW: here the union fallback is a
+        # SUPERSET of every tier (refusal-leaning, the opposite of a
+        # downgrade), and ``wrap_argv`` re-reads the floor at wrap time and
+        # still raises for real.
+        tier_dirs = list(dict.fromkeys([*_STRICT_DIRS, *_CC_DIRS, *_STANDARD_DIRS]))
+    ancestors = [os.path.abspath(os.path.join(home, rel)) for rel in dict.fromkeys(tier_dirs)]
+    # The builders extend every mode's hidden set with the relocated crew
+    # entries; mirror that (on both the resolved-tier and fallback paths) so a
+    # relocated wholesale mask still counts. Both helpers never raise.
+    ancestors.extend(
+        os.path.abspath(entry)
+        for entry in (
+            *_relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES)),
+            *_relocated_policy_cache_dirs(),
+        )
+    )
+    return list(dict.fromkeys(ancestors))
+
+
+def path_within_tier_mask(path: str, mode: str) -> bool:
+    """Whether *path* is, or sits beneath, a directory *mode*'s effective tier masks.
+
+    A spawn that enters its working directory before the launcher mounts the masks
+    keeps the unmasked directory as its cwd, so a relative open there reads through
+    the mask. Both spellings of each mask count. Fails toward True, never raises.
+    """
+    try:
+        candidate = os.path.abspath(path)
+        masked = _tier_mask_dirs(mode)
+        masked += [os.path.realpath(entry) for entry in masked]
+    except Exception:
+        logger.debug("could not resolve the tier masks for %s", path, exc_info=True)
+        return True
+    for entry in dict.fromkeys(masked):
+        try:
+            if os.path.commonpath((entry, candidate)) == entry:
+                return True
+        except ValueError:
+            continue
+    return False
+
+
 def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool:
     """Whether carving *path* out of the sandbox masks would unmask a foreign tree.
 
@@ -372,42 +435,12 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
     reported shadowed and the spawn proceeds with the mask intact.
     """
     try:
-        home = str(Path.home())
         candidate = os.path.abspath(path)
+        ancestors = _tier_mask_dirs(mode)
     except Exception:
         logger.debug("could not resolve home for the carve-out shadow check", exc_info=True)
         return True
-    try:
-        effective = effective_sandbox_mode(mode)
-        policy = _sandbox_policy()
-        if effective == "strict":
-            tier_dirs = list(policy.strict_dirs())
-        elif effective == "cc":
-            tier_dirs = list(policy.cc_dirs())
-        else:
-            # "standard" — and "off", where no mask exists and ``wrap_argv``
-            # ignores ``extra_visible_dirs`` entirely, so the verdict is inert.
-            tier_dirs = list(_STANDARD_DIRS)
-    except Exception:
-        # Deliberately swallows PlatformCompositionError, which
-        # ``_governance_sandbox_floor`` otherwise propagates so a floor never
-        # silently downgrades DENY to ALLOW: here the union fallback is a
-        # SUPERSET of every tier (refusal-leaning, the opposite of a
-        # downgrade), and ``wrap_argv`` re-reads the floor at wrap time and
-        # still raises for real.
-        tier_dirs = list(dict.fromkeys([*_STRICT_DIRS, *_CC_DIRS, *_STANDARD_DIRS]))
-    ancestors = [os.path.abspath(os.path.join(home, rel)) for rel in dict.fromkeys(tier_dirs)]
-    # The builders extend every mode's hidden set with the relocated crew
-    # entries; mirror that (on both the resolved-tier and fallback paths) so a
-    # relocated wholesale mask still counts. Both helpers never raise.
-    ancestors.extend(
-        os.path.abspath(entry)
-        for entry in (
-            *_relocated_crew_targets((*_CREW_HIDDEN_LEAVES, *_RELOCATED_CREW_HIDDEN_LEAVES)),
-            *_relocated_policy_cache_dirs(),
-        )
-    )
-    for ancestor in dict.fromkeys(ancestors):
+    for ancestor in ancestors:
         if candidate == ancestor:
             continue
         try:

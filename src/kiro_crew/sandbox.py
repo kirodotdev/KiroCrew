@@ -8044,12 +8044,14 @@ if TYPE_CHECKING:  # the forwarded names, visible to type checkers and IDEs
         _install_root_targets_with,
         _pod_os_home_targets,
         _resolves_to,
+        _tier_mask_dirs,
         app_backend_visible_targets,
         carveout_chain_has_planted_link,
         carveout_shadowed_by_foreign_mask,
         configured_sandbox_mode,
         crew_home_visible_spellings,
         install_root_targets_for,
+        path_within_tier_mask,
     )
     from kiro_crew.sandbox_workspace import (  # noqa: F401
         _VOICE_GUARD_REMEDY,

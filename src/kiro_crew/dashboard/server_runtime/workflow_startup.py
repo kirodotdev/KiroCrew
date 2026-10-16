@@ -27,8 +27,13 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
     service = None
     attachment_started = False
     try:
+        from kiro_crew.background_commands import BackgroundCommandService
         from kiro_crew.dashboard.handlers import workflows as wf_handlers
-        from kiro_crew.dashboard.workflow_inject import inject_bound_workflow_result
+        from kiro_crew.dashboard.workflow_inject import (
+            await_open_tabs,
+            deliver_command_outcome,
+            inject_bound_workflow_result,
+        )
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
         from kiro_crew.workflows.service import WorkflowService
 
@@ -91,6 +96,71 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             except Exception:
                 logger.debug("workflow on_done injection failed", exc_info=True)
 
+        booted = time.monotonic()
+
+        async def _deliver_command_outcome(run_id: str, snapshot: dict) -> bool:
+            from kiro_crew.dashboard.chat import _run_chat
+            from kiro_crew.dashboard.chat_runner import _parked_queue_drain_admitted
+
+            name, _ = redact_exfiltration_urls(str(snapshot.get("name") or run_id))
+            name, _ = redact_credentials(name)
+            status, _ = redact_exfiltration_urls(str(snapshot.get("status", "")))
+            status, _ = redact_credentials(status)
+            # The run id makes the wake one of a kind, so a replay can tell it is there.
+            prompt = (
+                f"[Background command `{name}` ({run_id}) {status}] Its outcome was just "
+                "posted above. Continue the work that was waiting on it: read the exit "
+                "status and output, then carry on with the task, or tell the user plainly "
+                "what failed and what you will do next. Do not start the command again "
+                "unless the outcome shows a rerun is needed."
+            )
+
+            def _wake(slot: Any) -> bool:
+                # An idle chat runs the wake at once, and `_run_chat` refuses a turn
+                # before memory is prepared or once shutdown starts.
+                if not _parked_queue_drain_admitted():
+                    return False
+                started = slot.enqueue_or_run_prompt(prompt, _run_chat, state)
+                state.push_slots_update()
+                logger.info(
+                    "background command %s -> chat slot %s: agent turn %s",
+                    run_id,
+                    getattr(slot, "key", "?"),
+                    "started" if started else "queued",
+                )
+                return True
+
+            await await_open_tabs(state, booted)
+            # Asking during memory preparation would spend the delivery's retries.
+            memory = getattr(state, "memory_startup_task", None)
+            if isinstance(memory, asyncio.Future) and not memory.done():
+                await asyncio.wait({memory})
+            return await deliver_command_outcome(
+                state, run_id, snapshot, prompt=prompt, wake=_wake, dispatch=_run_queued_wake
+            )
+
+        async def _run_queued_wake(slot: Any, queue_id: str) -> bool:
+            """Run one queued wake in an idle chat, as the Run-now and parked drains do."""
+            from kiro_crew.dashboard.chat_runner import (
+                _parked_queue_drain_admitted,
+                _start_next_queued_turn,
+            )
+
+            if slot.executor == "remote":
+                return False
+            async with slot._lock:
+                if (
+                    state.get_slot(slot.key) is not slot
+                    or slot.running
+                    or slot._stop_state != "idle"
+                    or not _parked_queue_drain_admitted()
+                ):
+                    return False
+                started = await _start_next_queued_turn(state, slot, required_queue_id=queue_id)
+            if started:
+                state.push_slots_update()
+            return started
+
         # Workflow agent concurrency stays at this fixed cap ON PURPOSE. Sizing it
         # from resolve_max_subagents() looks tempting (it is the sizing authority
         # in mcp_core / slack gateway / context), but the warm pool keeps a
@@ -136,12 +206,26 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             nudge_authorizer=_wf_nudge_authorizer,
             timeout_secs=_wf_timeout_secs,
         )
+        # Before any run is admitted: an admitted run evicts the oldest terminal
+        # handle, and a restored command's run is one until reconcile reopens it.
+        background = BackgroundCommandService(
+            service,
+            admitting=False,
+            deliver=_deliver_command_outcome,
+            context_builder=state.context_builder,
+        )
+        try:
+            reconciled = await background.reconcile_before_admission()
+        except BaseException:
+            await background.stop()
+            raise
         # Cancellation cannot stop a to_thread worker. Even if the factory
         # finishes while shutdown drains it, its result must remain unpublished.
         if (
             state.workflow_startup_stopping
             or getattr(state.sessions, "admission_closed", False) is True
         ):
+            await background.stop()
             state.workflow_startup_status = "stopped"
             return
         if state.task_runner is not None:
@@ -150,11 +234,19 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
             state.task_runner.attach_workflow_service(service)
         # No await between attachment, publication and opening admission.
         state.workflow_service = service
+        state.background_commands = background
         state.workflow_startup_status = "ready"
         logger.info("WorkflowService ready (run ceiling=%ss)", service.timeout_secs)
         # The chats of runs the restart ended were promised a result on
         # completion; each gets the failure through the normal completion notice.
         service.registry.notify_runs_ended_by_restart()
+        if not reconciled:
+            # The records could not be listed: retry, with commands' admission closed.
+            reconcile = asyncio.create_task(
+                background.reconcile_at_boot(), name="background-command-reconcile"
+            )
+            state._background_tasks.add(reconcile)
+            reconcile.add_done_callback(state._background_tasks.discard)
     except asyncio.CancelledError:
         state.workflow_startup_status = "stopped" if state.workflow_startup_stopping else "failed"
         raise
@@ -164,6 +256,7 @@ async def _initialize_workflow_service(state: DashboardState) -> None:
     finally:
         if state.workflow_startup_status != "ready":
             state.workflow_service = None
+            state.background_commands = None
             if state.task_runner is not None:
                 try:
                     if attachment_started:
@@ -205,10 +298,17 @@ def _register_workflow_lifecycle(app: web.Application, state: DashboardState) ->
     async def _workflow_stop_publication(_app: web.Application) -> None:
         state.workflow_startup_stopping = True
         state.workflow_startup_status = "stopped"
+        background = getattr(state, "background_commands", None)
+        if background is not None:
+            background.begin_shutdown()
         if state.task_runner is not None:
             state.task_runner.defer_workflow_attachment()
 
     async def _workflow_shutdown(_app: web.Application) -> None:
+        background = getattr(state, "background_commands", None)
+        if background is not None:
+            # Supervisors stand down without killing: the next boot re-adopts.
+            await background.stop()
         task = state.workflow_startup_task
         if task is None:
             return

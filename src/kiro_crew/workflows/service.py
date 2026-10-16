@@ -554,23 +554,29 @@ class WorkflowService:
             )
         await self.registry.mark_terminal_async(run_id, STATUS_FINISHED, result=result)
 
-    async def fail(self, run_id: str, error: str, *, where: str = "host") -> None:
+    async def fail(
+        self, run_id: str, error: str, *, where: str = "host", result: Any = None
+    ) -> None:
         stream = self._host_streams.pop(run_id, None)
         if stream is not None:
             await self.registry.record_event_async(
                 run_id,
                 stream.run_failed(self._now_fn(), error=error, where=where),
             )
-        await self.registry.mark_terminal_async(run_id, STATUS_FAILED, error=error)
+        await self.registry.mark_terminal_async(run_id, STATUS_FAILED, result=result, error=error)
 
-    async def cancel_host_run(self, run_id: str, reason: str = "cancelled") -> None:
+    async def cancel_host_run(
+        self, run_id: str, reason: str = "cancelled", *, result: Any = None
+    ) -> None:
         stream = self._host_streams.pop(run_id, None)
         if stream is not None:
             await self.registry.record_event_async(
                 run_id,
                 stream.run_cancelled(self._now_fn(), reason=reason),
             )
-        await self.registry.mark_terminal_async(run_id, STATUS_CANCELLED, error=reason)
+        await self.registry.mark_terminal_async(
+            run_id, STATUS_CANCELLED, result=result, error=reason
+        )
 
     async def delete_run(self, run_id: str) -> bool:
         """Delete a shared run after its owning product has stopped it."""

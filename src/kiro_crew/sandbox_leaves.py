@@ -419,6 +419,9 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # The second root holds the same authority for retained V1 runs only.
     "subagents",
     "member-memory-bindings",
+    # Background command records, exit statuses and logs. Agents read the logs;
+    # only the gateway writes, so a forged record cannot aim its kill or unlink.
+    "background",
     # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
     # code from rewriting that learning authority while allowing reads; this
     # ordinary sandbox rule is not a cross-member confidentiality boundary.
@@ -917,6 +920,9 @@ _CREW_CHILD_READABLE_LEAVES: tuple[str, ...] = (
     # effect: this leaf is not on the read-gate floor, so the mask never covers it and
     # neither classification changes what any child can open.
     "subagents",
+    # Background command records and logs: the same shape, read by the agent and
+    # written only by the gateway.
+    "background",
     # The decision log. Same shape as the entry above, and for the reason this module
     # gives it: read stays open on purpose, every legitimate writer is the gateway
     # outside the sandbox, and nothing writes a decision row from inside one. Also off

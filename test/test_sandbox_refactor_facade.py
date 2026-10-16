@@ -153,7 +153,7 @@ _MOVED: dict[str, tuple[str, ...]] = {
         _AGENT_DENIED_ENV_KEYS _sandbox_policy _SANDBOX_MODE_FALLBACK configured_sandbox_mode
         _IN_SANDBOX_MARKER _IN_SANDBOX_LEVEL_VAR _TIER_ORDINALS _mode_to_level _SANDBOX_MODE_ALIASES
         effective_sandbox_mode _governance_sandbox_floor _clamp_sandbox_mode _floor_mandates_sandbox
-        _clamp_sandbox_mode_to_floor
+        _clamp_sandbox_mode_to_floor _tier_mask_dirs path_within_tier_mask
         """.split()),
     "kiro_crew.sandbox_precreate": tuple("""
         _CREW_PRECREATE_READONLY_DIR_LEAVES _CREW_NOFOLLOW_READONLY_DIR_LEAVES

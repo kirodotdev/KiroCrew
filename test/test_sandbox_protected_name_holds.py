@@ -363,7 +363,13 @@ class TestLeafOnlyPopulationIsRecorded:
     #:   sandboxed session cannot rewrite the engine code and Node runtime its
     #:   next session runs. At the data-home root beside writable siblings, so
     #:   leaf-only is the only hold available.
-    EXPECTED: dict[str, int] = {"standard": 281, "cc": 288, "strict": 289}
+    #:
+    #: ``background`` -- the gateway-owned background command records, exit
+    #: statuses and logs, sealed read-only so a forged record cannot aim the
+    #: gateway's kill -- is one more data-home root leaf, three entries per tier.
+    #: The gateway only ever creates names beneath it and never republishes the
+    #: leaf itself.
+    EXPECTED: dict[str, int] = {"standard": 284, "cc": 291, "strict": 292}
 
     @pytest.mark.parametrize("tier", TIERS)
     def test_leaf_only_count_has_not_grown(self, tier: str) -> None:
