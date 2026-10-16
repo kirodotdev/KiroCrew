@@ -2316,9 +2316,9 @@ The chat SidePanel has two standing entries on this page: the leading
 dashboard (`CrewDashboardTab`, read from `GET /api/members/{slug}/dashboard`) for
 every reader: the page fills the tab, with no summary card, Contained bar, Expand
 control, identity row or Command Center around it. A crewmate with no adopted
-page (the read answers `state: "empty"` with the generic default, no bound
-package, and no shipped page named for its slug) shows the SUGGESTIONS page
-instead of the default template the read still carries (`CrewDashboardEmpty`): the
+page (the read answers `state: "empty"` with no template, no bound package, and
+no shipped page named for its slug) has no page in force and shows the
+SUGGESTIONS page (`CrewDashboardEmpty`): the
 crewmate's face under a first-person bubble and three prompts that only fill its
 chat box (`onAct`); a staged preview and a root session's Overview are not
 affected. A refresh opens the Dashboard tab rather than the strip's persisted

@@ -42,6 +42,18 @@ def _home(tmp_path, _floor_monkeypatch):
     _floor_monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
 
 
+@pytest.fixture
+def _named_page(_floor_monkeypatch):
+    """``project-report`` as the page named for the crewmate: shown, never adopted.
+
+    Such a page never commits, so only the turn block's sync gives it its helpers --
+    the path these cases pin. A crewmate with no page named for it has none in force.
+    """
+    _floor_monkeypatch.setattr(
+        instance, "default_template_id", lambda _slug, _ids: "project-report"
+    )
+
+
 def _raw(**field: Any) -> dict[str, Any]:
     return {
         "id": "demo",
@@ -139,6 +151,7 @@ class TestTheManifestKey:
         assert missing == [], f"built-in agentic fields with no upkeep: {missing}"
 
 
+@pytest.mark.usefixtures("_named_page")
 class TestTheUpkeepRows:
     def test_each_agentic_row_carries_its_shipped_upkeep(self) -> None:
         rows = _rows(_fields())
@@ -249,6 +262,7 @@ class TestTheSessionGuard:
         assert "helper" not in upkeep
 
 
+@pytest.mark.usefixtures("_named_page")
 class TestThePointer:
     def test_the_block_ends_with_the_pointer_and_the_scripts_exist(self) -> None:
         # An ADOPTED page: an unadopted one shows the suggestions page and offers no fields.

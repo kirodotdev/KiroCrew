@@ -587,15 +587,16 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
     if record.state == instance.STATE_EMPTY:
         fallback = await _run(lambda: instance.default_instance(slug))
         if fallback is not None:
-            # The default page is served for an unadopted crewmate, and the person
-            # may have locked it: the lock is the stored record's, not the default's.
+            # The page named for an unadopted crewmate, or a root session's default, is
+            # served, and the person may have locked it: the lock is the stored
+            # record's, not the default's.
             record = dataclasses.replace(fallback, structure_locked=record.structure_locked)
         else:
             # NOTHING TO COMPOSE, so nothing is attempted. An empty record carries
             # `manifest={}`, which `parse_manifest` refuses, so `_render` would log a
             # warning with a traceback for a crewmate that has simply adopted
             # nothing -- on every poll and every projection frame, which is the
-            # ordinary state of a build whose registry ships no default. The frame's
+            # ordinary state of a crewmate with no page named for it. The frame's
             # own empty state IS the answer here, and it needs no html.
             renderable = False
     body = await _run(lambda: _safe_body(record.wire()))

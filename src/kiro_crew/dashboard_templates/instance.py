@@ -145,11 +145,10 @@ STATE_LIVE: Final[str] = "live"
 STATE_STALE: Final[str] = "stale"
 STATE_ERROR: Final[str] = "error"
 
-#: What a crewmate that never adopted a template renders. "No dashboard yet" is the
-#: first state of EVERY crewmate, and an empty frame answers none of the questions a
-#: person opened the tab with, so the default is served instead of nothing -- read from
-#: the registry on demand, never written to disk, so adopting nothing stays adopting
-#: nothing and a later version of this template reaches the reader without a migration.
+#: What a ROOT session that never adopted a template renders in its Overview, read from
+#: the registry on demand and never written to disk. A crewmate gets no such default
+#: (:func:`default_template_id`): a generic page nobody chose, full of empty values,
+#: reads as the crewmate's own, so its tab has no page until one is adopted.
 DEFAULT_TEMPLATE_ID: Final[str] = "project-report"
 
 #: What one accepted change can be. Closed, and clamped at every writer here, so the
@@ -164,9 +163,9 @@ ACTIONS: Final[tuple[str, ...]] = DASHBOARD_INSTANCE_ACTIONS
 #: ``dashboard_frame``'s before it is composed into the document that renders it. Two
 #: independent numbers meant the store could refuse a page the frame would happily
 #: draw, and it did: ``project-report`` is 147,345 bytes and ships as
-#: :data:`DEFAULT_TEMPLATE_ID`, so a crewmate that adopted anything else could never
-#: come back to the page every crewmate starts on. A default that only a crewmate who
-#: never left can see is not a default.
+#: :data:`DEFAULT_TEMPLATE_ID`, so no crewmate could adopt it, and a root session that
+#: adopted anything else could never come back to the page it starts on. A shipped
+#: page the store cannot hold is not one a reader can choose.
 #:
 #: So the frame's ceiling IS this ceiling, read from the one constant that states it.
 #: The frame is where the cost is actually paid -- it assembles the document the
@@ -647,29 +646,30 @@ def _empty(slug: str, reason: str) -> Instance:
 
 
 def default_template_id(slug: str, known: Iterable[str]) -> str | None:
-    """The page an unadopted crewmate named *slug* gets, out of the ids in *known*.
+    """The page an unadopted store key *slug* gets, out of the ids in *known*, or ``None``.
 
-    The page whose id IS the slug, when a shipped page has that id, and
-    :data:`DEFAULT_TEMPLATE_ID` otherwise. This is the crew panel's rule that a
-    template named after a crew is that crew's view, side effect included: a crewmate
-    named like a shipped page gets that page. The slug is only ever compared against
-    ids the catalog already loaded, and never names a directory.
+    The page whose id IS the slug, when a shipped page has that id: the crew panel's rule
+    that a template named after a crew is that crew's view, side effect included, and how
+    ``kirocrew-conductor`` gets its board. Otherwise a root session gets
+    :data:`DEFAULT_TEMPLATE_ID` and a crewmate gets nothing. The slug is only ever
+    compared against ids the catalog already loaded, and never names a directory.
     """
     ids = set(known)
     if slug and slug in ids:
         return slug
-    return DEFAULT_TEMPLATE_ID if DEFAULT_TEMPLATE_ID in ids else None
+    return DEFAULT_TEMPLATE_ID if is_session_key(slug) and DEFAULT_TEMPLATE_ID in ids else None
 
 
-def default_instance(slug: str) -> Instance | None:
-    """The default page for *slug* as an UNADOPTED instance, or ``None`` if it is absent.
+def default_instance(slug: str, *, for_package: bool = False) -> Instance | None:
+    """The page *slug* is shown before it adopts one, as an UNADOPTED instance, or ``None``.
 
-    The page is :func:`default_template_id`'s pick: one named for the crewmate, else
-    :data:`DEFAULT_TEMPLATE_ID`. Both the read route and the ``[DASHBOARD]`` turn
-    block resolve through here, so the page a reader sees and the page the crewmate
-    is told about are one page.
+    The page is :func:`default_template_id`'s pick: one named for the crewmate, or a root
+    session's :data:`DEFAULT_TEMPLATE_ID`; ``None`` for any other crewmate, except that
+    *for_package* (:func:`apply_package`'s template copy beside a pin) gets the default.
+    Both the read route and the ``[DASHBOARD]`` turn block resolve through here, so the
+    page a reader sees and the page the crewmate is told about are one page.
 
-    What a crewmate renders before it adopts anything. Deliberately not part of
+    The page shown before anything is adopted. Deliberately not part of
     :func:`read`, which answers for the STORED record and nothing else: a fresh read
     saying "no template, version 0" is a fact two other surfaces need -- the snapshot
     route refuses on it, and the registry's own tests pin it -- and folding the default
@@ -678,21 +678,23 @@ def default_instance(slug: str) -> Instance | None:
     So the default is resolved by the surface that serves a PAGE to a reader, and it is
     marked for what it is: ``instance_version`` stays 0 and the state stays
     :data:`STATE_EMPTY`, because nothing was adopted and nothing was written to disk.
-    Nothing is persisted either, which is the point -- a later version of the default
-    template reaches every crewmate that never adopted one, with no migration.
+    Nothing is persisted either, which is the point -- a later version of the page
+    reaches every reader that never adopted one, with no migration.
     """
     by_id = catalog.list_templates().by_id
     # Shipped pages only: an operator's page is adopted by a person, never picked up
     # because its folder name happens to match a crewmate's slug.
     shipped = [tid for tid, e in by_id.items() if e.origin == catalog.BUILTIN_SOURCE]
     template_id = default_template_id(slug, shipped)
+    if template_id is None and for_package and DEFAULT_TEMPLATE_ID in shipped:
+        template_id = DEFAULT_TEMPLATE_ID
     if template_id is None:
-        # A build that shipped the loader without the templates, which is the quiet
-        # failure the packaging gates exist for. The caller's own empty state is the
-        # right answer here, so this is reported and not raised.
-        logger.warning(
-            "dashboard: the default template %r is not in the registry", DEFAULT_TEMPLATE_ID
-        )
+        if is_session_key(slug) or for_package:
+            # A missing default is the packaging gates' quiet failure: reported, not
+            # raised. A crewmate with no page of its own is polled, so it logs nothing.
+            logger.warning(
+                "dashboard: the default template %r is not in the registry", DEFAULT_TEMPLATE_ID
+            )
         return None
     entry = by_id[template_id]
     return Instance(
@@ -1384,10 +1386,10 @@ def apply_package(
     digest, so the page in force is exactly the bytes saved -- whatever later happens
     to the artifact.
 
-    The version also stores a template copy -- the current one, or the default page
-    for a crewmate that never adopted one -- so the record stays readable by every
-    reader of a template instance, and a rollback to this version has a page to
-    re-check.
+    The version also stores a template copy -- the current one, or, for a crewmate that
+    never adopted one, the page named for it or else :data:`DEFAULT_TEMPLATE_ID` -- so
+    the record stays readable by every reader of a template instance, and a rollback to
+    this version has a page to re-check.
     """
     if not package_slug or isinstance(package_version, bool) or package_version < 1:
         raise InstanceRefused("a package apply needs the package's slug and a version")
@@ -1406,7 +1408,7 @@ def apply_package(
             STATE_LIVE,
             STATE_STALE,
         ):
-            base = default_instance(slug)
+            base = default_instance(slug, for_package=True)
         if base is None:
             raise InstanceRefused(
                 "this gateway ships no default dashboard page to keep beside the package"

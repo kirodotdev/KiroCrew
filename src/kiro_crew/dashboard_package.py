@@ -369,8 +369,9 @@ def _from_template_instance(member: str) -> PackageRead:
             )
             fallback = None
         if fallback is None:
-            # ``default_instance`` ANSWERS None when the registry ships no default
-            # rather than raising, so this covers both halves.
+            # ``default_instance`` ANSWERS None rather than raising -- for a crewmate
+            # with no page named for it, and when the registry ships no default -- so
+            # this covers both halves.
             return PackageRead(None, STATE_EMPTY, f"{member or slug} has no dashboard package yet")
         record = fallback
         reason = str(getattr(record, "state_reason", "") or "")

@@ -90,22 +90,24 @@ after it landed. The two need opposite answers from a human -- one is a fresh cr
 the other is a dashboard that stopped working -- so a 404, or one word for both, would
 hide the second behind the first.
 
-An `empty` crewmate is still SHOWN a page, from `default_instance(slug)`: the shipped page
-whose id is the crewmate's slug, else `DEFAULT_TEMPLATE_ID`. Only shipped pages match by
-name; an operator's page never does. The read route and the `[DASHBOARD]` turn block both
-resolve through it, and nothing is written. No shipped page may be named `default`.
-The crewmate's Dashboard tab on `/members` does not draw the generic `DEFAULT_TEMPLATE_ID`
-fallback: it shows the suggestions page (`CrewDashboardEmpty`) instead, and the turn block
-says so and lists no fields and no upkeep pointer (a value written there would land on a
-page nobody sees). A shipped page named for the crewmate is drawn as before. The decision
-is made ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record
-`empty`, template not named for the slug, no package on screen): the read route sends it as
-`suggestions: true` and the website draws what that says, and `turn_block` and the
-profile's upkeep view ask the same function, with the same package lookup
-(`dashboard_agentic.bound_package`) and the same lock rule as the route.
-`dashboard_fields` and `dashboard_write` are NOT changed by this: a crewmate or script that
-still writes to the default while the suggestions page shows is accepted and the value is
-kept as before, only not drawn. Nothing here deletes or migrates it.
+An `empty` crewmate is SHOWN a page only when one is named for it, from
+`default_instance(slug)`: the shipped page whose id is the crewmate's slug. Any other
+`empty` crewmate has no page in force: a generic page nobody chose would read as the
+crewmate's own. An `empty` root session is shown `DEFAULT_TEMPLATE_ID`. Only shipped pages
+match by name; an operator's page never does. The read route and the `[DASHBOARD]` turn
+block both resolve through it, and nothing is written. No shipped page may be named
+`default`.
+With no page in force, the crewmate's Dashboard tab on `/members` shows the suggestions
+page (`CrewDashboardEmpty`), and the turn block says so and lists no fields and no upkeep
+pointer. A shipped page named for the crewmate is drawn as before. The decision is made
+ONCE, by `dashboard_agentic.shows_suggestions` (template instance served, record `empty`,
+no page named for the slug, no package on screen): the read route sends it as
+`suggestions: true` and the website draws what that says, and `turn_block` asks the same
+function, with the same package lookup (`dashboard_agentic.bound_package`) and the same
+lock rule as the route. There is no field to write either: `dashboard_fields` says the
+crewmate has no dashboard yet, `dashboard_write` is refused `no_instance`, and the
+profile's upkeep view shows nothing. A value written before a crewmate lost its default
+stays in the crew log; nothing here deletes or migrates it.
 
 `stale` covers two cases with different sentences: the template moved ahead of the copy,
 and the template left the registry. Nothing is missing from the copy in either case --
@@ -340,11 +342,11 @@ of pages. A page passes
 two size checks -- this store's before it becomes a version, and the frame's before the
 document that renders it is assembled -- and two independent numbers meant the store
 could refuse a page the frame would happily draw. It did: `project-report` is over
-147,000 bytes and is `DEFAULT_TEMPLATE_ID`, so under a private 64 KiB ceiling a
-crewmate that adopted anything else could never come back to the page every crewmate
-starts on. The frame is where the cost is actually paid, which makes it the honest place
-for the number; `test_dashboard_templates_builtin.py` asserts the identity and takes
-every shipped template through preview and apply.
+147,000 bytes and is `DEFAULT_TEMPLATE_ID`, so under a private 64 KiB ceiling no
+crewmate could adopt it, and a root session that adopted anything else could never come
+back to the page it starts on. The frame is where the cost is actually paid, which
+makes it the honest place for the number; `test_dashboard_templates_builtin.py` asserts
+the identity and takes every shipped template through preview and apply.
 
 The recorded action is `adopted`, which keeps the history's vocabulary closed -- the
 entry type declares `action` with `enum_closed=True`, so no fourth value ships to
@@ -431,7 +433,7 @@ directory keeps the scripts out of the skills index, and it holds nothing else.
 
 `_commit` calls `dashboard_upkeep.sync` with the record it just wrote, so adopt, apply,
 rollback and edit each copy the helpers the new page names and drop one it does not.
-`turn_block` calls it too -- a crewmate on the default page never commits, and a gateway
+`turn_block` calls it too -- a crewmate on the page named for it never commits, and a gateway
 upgrade can change a shipped helper -- and, when the page has fields to write, adds the
 one pointer line saying `dashboard_fields` carries the upkeep text, which rides the
 member section through every compaction. `sync` writes only what differs, so it also
