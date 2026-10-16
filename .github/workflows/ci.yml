@@ -1197,7 +1197,7 @@ jobs:
           for pass in $(seq 1 "$REPEAT"); do
             python -m pytest -q -n0 --timeout=120 -m ipv6_required \
               ${COVERAGE[@]+"${COVERAGE[@]}"} --junitxml="$RUNNER_TEMP/ipv6.xml" \
-              test/test_meetings_providers.py test/test_platform_compat.py
+              test/test_meetings_providers.py test/test_platform_compat.py test/test_platform_compat_listening_ports.py
             python - <<'PY'
           import os
           from pathlib import Path

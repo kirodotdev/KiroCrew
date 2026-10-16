@@ -1033,7 +1033,7 @@ class TestApiTerminalCreate:
     Windows build host too — the Windows-specific 501 gate has its own suite in
     ``TestApiTerminalCreateWindowsFailFast``. Mirrors the umbrella-wide
     monkeypatch pattern used by ``TestRestrictToOwnerArgvOnLinux`` in
-    ``test_platform_compat.py``."""
+    ``test_platform_compat_owner_only.py``."""
 
     @pytest.fixture(autouse=True)
     def _force_posix(self, monkeypatch):
@@ -1126,7 +1126,8 @@ class TestApiTerminalCreateWindowsFailFast:
     """POST /api/terminal/sessions must fail fast on Windows with a 501.
 
     Mirrors the ``TestTaskkillErrorMapping`` / ``TestRestrictToOwnerArgvOnLinux``
-    monkeypatch pattern from ``test_platform_compat.py``: patch
+    monkeypatch pattern from ``test_platform_compat_kill_reap.py`` /
+    ``test_platform_compat_owner_only.py``: patch
     ``platform_compat.IS_WINDOWS`` so the branch is exercised on the Linux build
     fleet. PTY/fork are POSIX-only and the ConPTY port is deferred — until then
     the create endpoint MUST refuse on Windows with the same wording the WS

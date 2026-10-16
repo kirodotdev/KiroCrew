@@ -269,7 +269,6 @@
 3579 test/test_overload_integration_glue.py
 2429 test/test_pinned_staging.py
 4048 test/test_pipeline_conductor_fleet_probe.py
-9045 test/test_platform_compat.py
 3012 test/test_playwright_cli_installer.py
 2725 test/test_plugin_import.py
 8519 test/test_pod.py

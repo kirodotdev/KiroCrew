@@ -2518,7 +2518,7 @@ class TestFfmpegCandidateDirsWindows:
     """Regression guards for the Windows ffmpeg discovery fix.
 
     Runs on POSIX CI by monkeypatching ``platform_compat.IS_WINDOWS`` (same
-    pattern as ``TestTaskkillErrorMapping`` in ``test_platform_compat.py``) —
+    pattern as ``TestTaskkillErrorMapping`` in ``test_platform_compat_kill_reap.py``) —
     the branch construction is platform-independent code.
     """
 

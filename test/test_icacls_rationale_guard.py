@@ -44,7 +44,7 @@ _STALE_RATIONALE = re.compile(r"""(?ix)
 _KEEP = {
     # Spawns ``icacls <path>`` on Windows to VERIFY the applied DACL, and
     # parses realistic icacls dump/argv shapes on every platform.
-    "test/test_platform_compat.py",
+    "test/test_platform_compat_owner_only.py",
     # References icacls flag syntax as DACL vocabulary next to the in-process
     # constants it documents.
     "test/test_windows_acl.py",

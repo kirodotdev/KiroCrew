@@ -368,7 +368,7 @@ class TestSourceCheckout:
         resolves, the pinned absolute path -- not the bare name -- reaches argv[0].
 
         The resolver itself (system dirs plus the Windows install-root fallback)
-        is tested in `test_platform_compat`; this asserts what the doctor does
+        is tested in `test_platform_compat_pinned_tools`; this asserts what the doctor does
         with each OUTCOME, which is why it patches the resolver rather than the
         directories behind it.
         """

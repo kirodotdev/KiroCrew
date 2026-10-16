@@ -614,7 +614,7 @@ class TestReserveDashboardPort:
             # the ordinary Linux shards are not such a host. Without a pin that every
             # lane evaluates, deleting `server.py`'s
             # `setsockopt(IPPROTO_IPV6, IPV6_V6ONLY, 1)` would red nothing -- the hosted
-            # `backend-test-ipv6` lane runs a bounded five-case population out of two
+            # `backend-test-ipv6` lane runs a bounded five-case population out of three
             # other files, so it does not cover this one either.
             assert "IPV6_V6ONLY" in inspect.getsource(srv._bind_once)
             assert "SO_EXCLUSIVEADDRUSE" in inspect.getsource(srv._bind_once)

@@ -1382,7 +1382,7 @@ def test_signing_secret_persisted_across_loads(tmp_path, monkeypatch) -> None:
     # Owner-only permissions. POSIX enforces this via chmod 0o600; Windows applies
     # an owner DACL that does not surface in st_mode (files report
     # 0o666), so the POSIX-bit assertion is only meaningful off Windows (the
-    # Windows DACL path is covered by test_platform_compat::TestRestrictToOwner).
+    # Windows DACL path is covered by test_platform_compat_owner_only::TestRestrictToOwner).
     if os.name != "nt":
         assert (key_file.stat().st_mode & 0o777) == 0o600
     # Second load returns the SAME secret (persistence).
@@ -1446,7 +1446,7 @@ def test_signing_secret_concurrent_first_init_converges(tmp_path, monkeypatch) -
     # this via chmod 0o600; Windows applies an owner-only DACL that does
     # NOT surface in st_mode (files report 0o666), so the POSIX-bit assertion is
     # only meaningful off Windows — the Windows DACL path has direct coverage in
-    # test_platform_compat::TestRestrictToOwner.
+    # test_platform_compat_owner_only::TestRestrictToOwner.
     if os.name != "nt":
         assert (key_file.stat().st_mode & 0o777) == 0o600
 
@@ -3144,7 +3144,7 @@ def test_revoked_store_locks_the_file_down_to_its_owner(tmp_path, monkeypatch) -
     if platform_compat.IS_POSIX:
         # Windows locks the file down via an owner DACL, which does not surface
         # in st_mode (files report 0o666) — that path is covered by
-        # test_platform_compat::TestRestrictToOwner.
+        # test_platform_compat_owner_only::TestRestrictToOwner.
         assert (state_path.stat().st_mode & 0o777) == 0o600
 
 

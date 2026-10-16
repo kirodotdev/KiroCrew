@@ -5,8 +5,8 @@ and the process-session contracts that need a real process. This file targets
 the branches that the host platform alone never reaches on the Linux CI fleet:
 
 * the Windows ``ctypes``/``msvcrt`` paths, exercised by flipping ``IS_WINDOWS``
-  and standing in for the DLL entry points (the same technique the sibling file
-  already uses for the Toolhelp snapshot),
+  and standing in for the DLL entry points (the same technique
+  ``test_platform_compat_process_tree.py`` uses for the Toolhelp snapshot),
 * the macOS ``libproc`` paths, exercised by faking ``ctypes.CDLL``,
 * the macOS TCC walk-pruning rules,
 * the failure/degradation paths of the ``/proc`` readers.

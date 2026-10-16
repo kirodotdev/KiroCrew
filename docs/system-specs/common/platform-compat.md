@@ -424,7 +424,7 @@ rejected newly opened handles are closed before returning the proven subset.
 This covers an **already observed, handle-pinned** chain. An intermediary that died
 before it was ever observed/pinned remains unverifiable; a single numeric snapshot
 is not enough to recover that chain. The deterministic and self-owned native
-regressions are in `test/test_platform_compat.py`, `TestProcessDescendants`.
+regressions are in `test/test_platform_compat_process_tree.py`, `TestProcessDescendants`.
 
 ## Windows session-tree teardown
 
@@ -611,7 +611,7 @@ handle that cannot be waited on while its exit code reads `STILL_ACTIVE`. So doe
 other error. Real-process regressions force both interleavings:
 `test/test_runtime_cleanup_windows.py::test_a_member_exiting_inside_the_terminate_window_reads_as_exited`
 and `test/test_runtime_cleanup_windows.py::test_a_member_refused_before_its_object_signals_reads_as_exited`;
-`test/test_platform_compat.py::TestTerminateRefusedOnAnExitingMember` pins each
+`test/test_platform_compat_windows_tree.py::TestTerminateRefusedOnAnExitingMember` pins each
 branch on a virtual clock. `pod._windows_job.retire_identity` meets the same refusal
 when it ends a pod publisher, and judges it by its own bounded retirement wait.
 

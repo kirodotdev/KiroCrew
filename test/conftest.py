@@ -796,6 +796,18 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
     """
     if not platform_compat.IS_WINDOWS or request.module.__name__ in (
         "test_platform_compat",
+        # The topic siblings of test_platform_compat: every test of that family runs
+        # against the real lockdown, whichever file holds it.
+        "test_platform_compat_filesystem",
+        "test_platform_compat_kill_reap",
+        "test_platform_compat_listening_ports",
+        "test_platform_compat_owner_only",
+        "test_platform_compat_pinned_tools",
+        "test_platform_compat_process_identity",
+        "test_platform_compat_process_tree",
+        "test_platform_compat_resources",
+        "test_platform_compat_trusted_bins",
+        "test_platform_compat_windows_tree",
         # Exempted for the same reason as test_platform_compat: these modules own
         # the direct Windows-branch coverage for the owner-only lockdown, so a
         # stub would make their assertions vacuous. They were passing on Linux

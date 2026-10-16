@@ -411,7 +411,7 @@ wholesale so single- and dual-backend layouts both package.
 > "am I the bundled interpreter?" via
 > `platform_compat.is_bundled_interpreter()`
 > (`BUNDLED_BACKEND_DIST_DIRNAME`), which is what stops `pip` from writing
-> into the signed bundle during app builds. `test/test_platform_compat.py`
+> into the signed bundle during app builds. `test/test_platform_compat_pinned_tools.py`
 > pins that constant to both `extraResources` here and
 > `packaging/build-desktop.sh`, so a rename fails a test — update the constant
 > and the packaging layer in the same change.
