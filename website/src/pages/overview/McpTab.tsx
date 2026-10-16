@@ -4,7 +4,9 @@ import { RefreshCw, Plug, AlertTriangle, Check, ChevronRight, Zap, X, Download, 
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trans } from 'react-i18next'
 import { Link } from 'react-router-dom'
+import { configuredAcpBackend, mcpWholeServerDeny, type AcpBackendConfig } from '../../api/acpBackend'
 import { api } from '../../api/client'
+import type { AcpBackendProbe } from '../../api/client'
 import { Card, Btn, Badge, SearchInput, ContentSkeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -479,6 +481,31 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
     queryFn: async () => (await api.mcpGlobalScopes()).scopes || [],
     staleTime: Infinity,
   })
+
+  // What turning one tool off costs on the harness in use (#11969): the same
+  // sentences Settings → Agent Harness shows on that harness's card, read
+  // through the same helper so the two cannot disagree. It only DECLARES: the
+  // toggles below stay exactly as they are.
+  //
+  // Both queries share their keys with the pages that own them, so this adds no
+  // request when either is cached. `retry: false` on the probe because its two
+  // expected failures, 403 for a non-owner and 404 on an older gateway, are
+  // permanent answers; either leaves `data` undefined and nothing renders, as
+  // it does while a query is still in flight.
+  const { data: harnessCfg } = useQuery<AcpBackendConfig>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  const { data: harnessProbe } = useQuery<{ backends: AcpBackendProbe[] }>({
+    queryKey: ['acpBackends'],
+    queryFn: () => api.acpBackends(),
+    retry: false,
+  })
+  const denyReach = useMemo(() => {
+    if (!harnessCfg || !harnessProbe) return { rule: '', exception: '' }
+    const active = configuredAcpBackend(harnessCfg)
+    return mcpWholeServerDeny(harnessProbe.backends?.find(b => b.id === active))
+  }, [harnessCfg, harnessProbe])
 
   const pendingCount = useMemo(() => {
     return servers.reduce((count, s) => {
@@ -1067,7 +1094,18 @@ export default function McpTab({ onManagedProviderClick }: McpTabProps = {}) {
                     </div>
                   ) : s.tools?.length ? (<div>
                     <button className="flex items-center gap-1 text-[12px] text-accent hover:text-accent-hover cursor-pointer transition-colors mb-1" onClick={() => setExpandedTools(prev => { const next = new Set(prev); if (next.has(s.name)) next.delete(s.name); else next.add(s.name); return next })}>{s.tools.length} {i18nT('pages.overview.mcpTab.tools_2')}{!expandedTools.has(s.name) && (s.disabledTools?.length || 0) > 0 && <span className="text-muted ml-1">{i18nT('pages.overview.mcpTab.off_count', { count: s.disabledTools!.length })}</span>}<ChevronRight size={14} className={`transition-transform duration-200 ${expandedTools.has(s.name) ? 'rotate-90' : ''}`} /></button>
-                    <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden"><div className="space-y-0.5">{s.tools.map(t => {
+                    <AnimatePresence>{expandedTools.has(s.name) && <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2 }} className="overflow-hidden">
+                    {/* The cost of a tool-off, above the tools and before any click,
+                        at the card's weight: the rule strong, its exception muted
+                        right under it. Shown whenever the list is open on a harness
+                        whose reach can cost a whole server; nothing otherwise. */}
+                    {(denyReach.rule || denyReach.exception) && (
+                      <div className="mb-1 max-w-prose text-[12px] leading-relaxed" data-testid="mcp-deny-reach">
+                        {denyReach.rule && <p className="m-0 text-text-strong">{denyReach.rule}</p>}
+                        {denyReach.exception && <p className="m-0 text-muted">{denyReach.exception}</p>}
+                      </div>
+                    )}
+                    <div className="space-y-0.5">{s.tools.map(t => {
                       const currentlyDisabled = (s.disabledTools || []).includes(t)
                       const toolOverride = pendingTools[s.name]?.[t]
                       const effectivelyEnabled = toolOverride !== undefined ? toolOverride : !currentlyDisabled

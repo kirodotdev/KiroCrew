@@ -7,7 +7,8 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, reportsCredits } from './acpBackend'
+import { ACP_BACKEND_KAS, ACP_BACKEND_KIRO, configuredAcpBackend, DEFAULT_ACP_BACKEND, isKiroBackend, mcpWholeServerDeny, reportsCredits } from './acpBackend'
+import type { AcpBackendProbe } from './client/config'
 
 describe('isKiroBackend', () => {
   it('is false while the config has not loaded: nothing Kiro-only renders on a guess', () => {
@@ -54,5 +55,38 @@ describe('reportsCredits', () => {
     for (const backend of ['claude', 'codex', 'opencode', 'pi', 'goose', 'deepseek', 'some-future-harness']) {
       expect(reportsCredits({ agent: { acp_backend: backend } }), backend).toBe(false)
     }
+  })
+})
+
+describe('mcpWholeServerDeny', () => {
+  // The one reader of a probe row's deny reach. Settings → Agent Harness and the
+  // MCP Servers tool list both render what it returns, so these cases are what
+  // both surfaces say (#11969).
+  const row = (mcp: AcpBackendProbe['mcp'], id = 'goose', policy_id = 'Goose'): AcpBackendProbe =>
+    ({ id, policy_id, mcp } as AcpBackendProbe)
+
+  it('says nothing without a row: in flight, 403 and 404 all look like this', () => {
+    expect(mcpWholeServerDeny(undefined)).toEqual({ rule: '', exception: '' })
+  })
+
+  it('states the rule, naming the harness, where the server classed the reach as whole-server', () => {
+    const out = mcpWholeServerDeny(row({ per_tool_deny: 'whole-server', costs_whole_server: true, ineffective: [] }))
+    expect(out.rule).toMatch(/^Turning off one MCP tool on Goose stops every tool on the same server/)
+    expect(out.exception).toBe('')
+  })
+
+  it('adds the exception on a per-call reach', () => {
+    const out = mcpWholeServerDeny(row({ per_tool_deny: 'per-call', costs_whole_server: true, ineffective: [] }, 'codex', 'Codex'))
+    expect(out.rule).toContain('on Codex')
+    expect(out.exception).toMatch(/^One exception: .*kirocrew-core.* on Codex\.$/)
+  })
+
+  it('says nothing on a reach that stops only the named tool', () => {
+    expect(mcpWholeServerDeny(row({ per_tool_deny: 'settings-file', costs_whole_server: false, ineffective: [] })).rule).toBe('')
+  })
+
+  it('reads the server flag, not the reach name: no flag (an older gateway) is no rule', () => {
+    expect(mcpWholeServerDeny(row({ per_tool_deny: 'whole-server', ineffective: [] })).rule).toBe('')
+    expect(mcpWholeServerDeny(row(undefined)).rule).toBe('')
   })
 })

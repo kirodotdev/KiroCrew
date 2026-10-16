@@ -75,6 +75,40 @@ export function acpBackendName(backend: { id: string; policy_id?: string }): str
 }
 
 /**
+ * What turning ONE MCP tool off costs on a harness, as the two sentences the
+ * reader sees, from that harness's `GET /api/acp-backends` row.
+ *
+ * Settings → Agent Harness (the card for each harness) and Connections → MCP
+ * Servers (the tool list, for the harness in use) both read it here, so the two
+ * surfaces cannot say different things about the same harness (#11969).
+ *
+ * - `rule`: only where the server classed the reach as able to cost a whole
+ *   server (`mcp.costs_whole_server === true`). The classification is the
+ *   server's (`agent_sdk/backend_mcp_ability.COSTS_WHOLE_SERVER`, held to the
+ *   reach vocabulary by a completeness test), never re-derived from the reach
+ *   name here: today it is `whole-server` and `per-call`. Compared against
+ *   `true`, so a missing flag (an older gateway) or a truthy string says nothing.
+ * - `exception`: only on a `per-call` reach, which spares Crew's own servers.
+ *
+ * Each is `''` where it does not hold. No row (query in flight, 403, 404) is
+ * both `''`: the absence of probe facts is not something to tell the reader.
+ */
+export function mcpWholeServerDeny(
+  probe: AcpBackendProbe | undefined,
+): { rule: string; exception: string } {
+  if (!probe) return { rule: '', exception: '' }
+  const name = acpBackendName(probe)
+  return {
+    rule: probe.mcp?.costs_whole_server === true
+      ? i18nT('pages.developer.agentBackendTab.mcp_deny_rule', { name })
+      : '',
+    exception: probe.mcp?.per_tool_deny === 'per-call'
+      ? i18nT('pages.developer.agentBackendTab.mcp_deny_exception', { name })
+      : '',
+  }
+}
+
+/**
  * The parsed body of a 503 `setup_marker_write_failed`, or `null` for any other
  * error. Both the first-run gate and Settings → Agent Harness read it, so it
  * lives here rather than in either screen: the config PATCH and the backend
