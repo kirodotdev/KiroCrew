@@ -417,6 +417,11 @@ async def _bind_channel(
         anchor_ts=anchor,
         before_publish=record_binding,
     )
+    # The channel's own git worktree, before the first turn captures the
+    # session's project (no-op off git or with the feature off; never raises).
+    from kiro_crew.slack.code_channels.workspace.core import prepare as prepare_workspace
+
+    await prepare_workspace(stored[0])
     return stored[0]
 
 

@@ -31,6 +31,7 @@ from kiro_crew.security import redact_credentials
 from kiro_crew.slack.code_channels.models import (
     ChannelInfo,
     CodeChannelApiError,
+    CodeChannelRequestError,
     CreateRequest,
     _check_id,
 )
@@ -41,6 +42,10 @@ ApiCall = Callable[..., Awaitable[Any]]
 
 #: Read-only methods: a transport failure on these means nothing was written.
 _READS = frozenset({"conversations.info"})
+
+#: ``agents.conversations.setView`` refuses ``content`` over this many bytes
+#: (``content_too_large``); checked here so the request never leaves.
+MAX_VIEW_CONTENT_BYTES = 1_000_000
 
 
 def _response_data(resp: Any) -> dict[str, Any]:
@@ -133,6 +138,43 @@ class CodeChannelsClient:
         if not channel_id:
             raise CodeChannelApiError("agents.conversations.create", "missing_channel_id")
         return channel_id
+
+    # ── Context bar and views (the workspace feature's writes) ───────────
+
+    async def set_context_bar(self, channel_id: str, items: list[dict[str, str]]) -> None:
+        """``agents.conversations.setProperties`` with ``code_channel.context_bar_items``.
+
+        A full replacement: the list sent is the whole bar. The caller builds
+        items within Slack's limits (at most five, unique keys, known icons).
+        """
+        _check_id(channel_id, "channel_id")
+        body = {"channel_id": channel_id, "code_channel": {"context_bar_items": list(items)}}
+        await self._call("agents.conversations.setProperties", body)
+
+    async def set_diff_view(
+        self, channel_id: str, content: str, *, base_branch: str = "", head_branch: str = ""
+    ) -> str:
+        """``agents.conversations.setView`` ``type=diff`` (a per-channel singleton).
+
+        Returns the ``view_id`` Slack answers with ("" when it sent none).
+        """
+        _check_id(channel_id, "channel_id")
+        if len(content.encode("utf-8")) > MAX_VIEW_CONTENT_BYTES:
+            raise CodeChannelRequestError(f"diff exceeds {MAX_VIEW_CONTENT_BYTES} bytes")
+        body: dict[str, Any] = {"channel_id": channel_id, "type": "diff", "content": content}
+        if base_branch:
+            body["base_branch"] = base_branch
+        if head_branch:
+            body["head_branch"] = head_branch
+        data = await self._call("agents.conversations.setView", body)
+        return str(data.get("view_id") or "")
+
+    async def remove_view(self, channel_id: str, view_id: str) -> None:
+        """``agents.conversations.removeView`` by ``view_id``."""
+        _check_id(channel_id, "channel_id")
+        _check_id(view_id, "view_id")
+        body = {"channel_id": channel_id, "view_id": view_id}
+        await self._call("agents.conversations.removeView", body)
 
     # ── Recognition ──────────────────────────────────────────────────────
 
