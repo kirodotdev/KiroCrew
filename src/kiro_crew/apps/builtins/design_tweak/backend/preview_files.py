@@ -12,6 +12,10 @@ from http.server import BaseHTTPRequestHandler
 from typing import Any
 
 from kiro_crew.security import DENIED_ROOT_PARTS
+from kiro_crew.security.pem_fast import (
+    CREDENTIAL_PATTERNS_SANS_PEM,
+    contains_pem_private_key,
+)
 
 Response = tuple[int, str, bytes]
 
@@ -183,8 +187,6 @@ PROJECT_SECRET_SUFFIXES: tuple[str, ...] = (
 # Filename classifiers cannot cover arbitrary private-key names, so the bytes
 # also carry a cheap, first-line PEM backstop.
 PEM_PRIVATE_KEY_RE = re.compile(rb"^-{5}BEGIN (?:[A-Z0-9 ]+ )?PRIVATE KEY-{5}")
-PEM_MARKER_RE = re.compile(r"-{5}(?:BEGIN|END)[A-Z0-9 ]*PRIVATE KEY-{5}")
-PEM_BODY_RE = re.compile(r"[A-Za-z0-9+/=]{16,}")
 
 
 def guess_ctype(runtime: Any, path: Any) -> str:
@@ -445,17 +447,18 @@ def contains_credential(runtime: Any, data: bytes) -> bool:
         # Images, fonts, and wasm have no text credentials to scan and must not
         # become false positives merely because they are arbitrary bytes.
         return False
-    for pattern in runtime.get_credential_patterns():
-        for match in pattern.finditer(text):
-            hit = match.group()
-            if "PRIVATE KEY" in hit and not runtime._PEM_BODY_RE.search(
-                runtime._PEM_MARKER_RE.sub("", hit)
-            ):
-                # Documentation often quotes a PEM marker without carrying key
-                # material; require an armoured body before refusing that case.
-                continue
-            return True
-    return False
+    # The PEM branch of the canonical combined pattern lazily scans forward to a
+    # matching END header, which the regex engine retries at every BEGIN header;
+    # a file quoting many `BEGIN PRIVATE KEY` headers with no END makes iterating
+    # it O(n^2) (seconds of blocking on a few thousand headers in this uncapped
+    # scan). The non-PEM branches are not pathological, so they run through the
+    # combined pattern with the PEM branch removed, and the PEM case is answered
+    # by a single linear pass with identical accept/reject semantics -- a quoted
+    # marker without an armoured body is allowed, a real (complete or truncated)
+    # key is refused.
+    if runtime._CREDENTIAL_PATTERNS_SANS_PEM.search(text) is not None:
+        return True
+    return runtime._contains_pem_private_key(text)
 
 
 def is_project_secret(runtime: Any, root: Any, target: Any) -> bool:
@@ -697,13 +700,12 @@ __all__ = [
     "ATTR_SRC_RE",
     "ATTR_TYPE_MODULE_RE",
     "CLIENT_READ_TIMEOUT",
+    "CREDENTIAL_PATTERNS_SANS_PEM",
     "CTYPE_DEFAULT",
     "CTYPE_OVERRIDES",
     "ENTRY_CANDIDATES",
     "MAX_STATIC_BYTES",
     "OVERLAY_PATH",
-    "PEM_BODY_RE",
-    "PEM_MARKER_RE",
     "PEM_PRIVATE_KEY_RE",
     "PROJECT_SECRET_DIRS",
     "PROJECT_SECRET_NAMES",
@@ -714,6 +716,7 @@ __all__ = [
     "StaticInjectHandlerBase",
     "UNBUNDLED_EXTS",
     "contains_credential",
+    "contains_pem_private_key",
     "find_entry",
     "guess_ctype",
     "is_project_secret",

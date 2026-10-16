@@ -348,7 +348,13 @@ def _url_payload_command(n: int) -> str:
 #: spares an ordered alphabet and a data URI payload, the flag it sets, the one place pass 3
 #: reads it, and the two checks that tell those shapes from a key. No credential branch, gate
 #: verdict or other pass moved.
-_PACKAGE_LINE_BUDGET = 29_411
+#:
+#: Raised again, from 29,411, for the new ``pem_fast`` module: a sans-PEM view of the
+#: combined credential pattern plus a linear one-pass PEM detector that the content
+#: scanners use so a text file quoting many PEM headers keeps their scan linear rather
+#: than quadratic. The detector carries the correctness-critical reasoning for its
+#: complete vs truncated classification. No credential branch, gate verdict or other pass moved.
+_PACKAGE_LINE_BUDGET = 29_586
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

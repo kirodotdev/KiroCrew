@@ -258,8 +258,10 @@ _PROJECT_SECRET_NAMES = preview_files.PROJECT_SECRET_NAMES
 _PROJECT_SECRET_DIRS = preview_files.PROJECT_SECRET_DIRS
 _PROJECT_SECRET_SUFFIXES = preview_files.PROJECT_SECRET_SUFFIXES
 _PEM_PRIVATE_KEY_RE = preview_files.PEM_PRIVATE_KEY_RE
-_PEM_MARKER_RE = preview_files.PEM_MARKER_RE
-_PEM_BODY_RE = preview_files.PEM_BODY_RE
+# Linear PEM credential detection: the combined pattern with its quadratic PEM
+# branch removed, plus a one-pass PEM check with identical accept/reject rules.
+_CREDENTIAL_PATTERNS_SANS_PEM = preview_files.CREDENTIAL_PATTERNS_SANS_PEM
+_contains_pem_private_key = preview_files.contains_pem_private_key
 # Each loaded server-module instance owns its listener handles; detached or
 # reloaded instances never share them.
 _STATIC_SRV: dict[str, dict[str, Any]] = {}

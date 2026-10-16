@@ -15,12 +15,19 @@ import logging
 import re
 from dataclasses import dataclass
 
-from kiro_crew.security import get_credential_patterns
+from kiro_crew.security.pem_fast import CREDENTIAL_PATTERNS_SANS_PEM
 
 logger = logging.getLogger(__name__)
 
-# Canonical credential patterns from the security module (single combined regex).
-_CANONICAL_CRED = get_credential_patterns()
+# Canonical credential patterns from the security module, with the quadratic PEM
+# branch removed. That branch lazily scans forward to a matching END header, and
+# the regex engine retries it at every BEGIN header, so iterating it over content
+# quoting many `BEGIN PRIVATE KEY` headers with no END is O(n^2) (one such walk
+# per header, up to the findings cap). PEM private keys stay detected: _DEPLOY_EXTRA
+# below carries a plain, linear `-----BEGIN [A-Z ]*PRIVATE KEY-----` header regex
+# that fires on exactly the headers the canonical PEM branch matches, and
+# _DEPLOY_EXTRA is asserted to be a superset of the canonical set.
+_CANONICAL_CRED = [CREDENTIAL_PATTERNS_SANS_PEM]
 
 # Deploy-specific patterns that MUST be covered even if the canonical set evolves.
 # These are a SUPERSET of the canonical set — covers base64-encoded AKIA keys,
