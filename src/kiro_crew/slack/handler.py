@@ -72,6 +72,7 @@ from kiro_crew.constants import (  # noqa: F401 - read by the owners
     STEER_NOTICE_BOUND_SECS,
     is_control_tag_tail,
     strip_control_comments,
+    strip_trailing_control_tags,
 )
 from kiro_crew.context import (
     ContextBuilder,

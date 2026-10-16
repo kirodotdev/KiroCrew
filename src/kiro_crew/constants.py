@@ -821,6 +821,70 @@ class _MarkerMatcher:
 OPTIONS_RE_LINE = _MarkerMatcher(_RAW_OPTIONS_RE_LINE)
 OPTIONS_RE_TRAILER = _MarkerMatcher(_RAW_OPTIONS_RE_TRAILER)
 
+# A goal suggestion is a single standalone line. It is rendered as a card only
+# by the full dashboard chat, but every transcript projection must remove the
+# protocol line rather than expose it as prose. This bounded scanner, rather than
+# a pattern with overlapping whitespace quantifiers, keeps an unterminated marker
+# linear in the length of an untrusted assistant reply.
+_GOAL_PREFIX = "[GOAL:"
+#: Fast-path probe: a text without the prefix is returned as the same object, so
+#: marker-free output stays byte-identical and a streaming frame costs one search.
+_GOAL_PREFIX_PROBE = re.compile(r"\[goal:", re.IGNORECASE)
+_GOAL_BODY_DELIMITER = re.compile(r"[\[\]\r]")
+
+
+def _is_goal_marker_line(line: str) -> bool:
+    """Return whether *line* is one complete standalone goal marker.
+
+    A trailing ``\r`` is the CRLF line terminator, not content, so a reply with
+    Windows line endings strips the same as one without.
+    """
+    start = 0
+    while start < len(line) and line[start] in " \t":
+        start += 1
+    if line[start : start + len(_GOAL_PREFIX)].upper() != _GOAL_PREFIX:
+        return False
+
+    body_start = start + len(_GOAL_PREFIX)
+    # The closer is the line's last ``]``; only spaces, tabs and a CRLF ``\r``
+    # may follow it, matching the frontend parser.
+    close = len(line.rstrip(" \t\r")) - 1
+    if close <= body_start or line[close] != "]":
+        return False
+    # The objective's own brackets must balance, so ``[GOAL: a] b]`` stays prose.
+    depth = 0
+    for match in _GOAL_BODY_DELIMITER.finditer(line, body_start, close):
+        char = match.group()
+        if char == "\r":
+            return False
+        depth += 1 if char == "[" else -1
+        if depth < 0:
+            return False
+    return depth == 0
+
+
+def strip_goal_marker_lines(text: str) -> str:
+    """Remove complete standalone ``[GOAL: ...]`` lines in one forward scan.
+
+    Projections reach this through :func:`strip_control_comments`; call it
+    directly only on a path that does not strip control tags.
+    """
+    if _GOAL_PREFIX_PROBE.search(text) is None:
+        return text
+    out: list[str] = []
+    start = 0
+    while start < len(text):
+        newline = text.find("\n", start)
+        line_end = len(text) if newline < 0 else newline
+        line = text[start:line_end]
+        if not _is_goal_marker_line(line):
+            out.append(line)
+        if newline < 0:
+            break
+        out.append("\n")
+        start = newline + 1
+    return "".join(out)
+
 
 #: The GLUE candidate: a line-leading complete marker whose closer is IMMEDIATELY
 #: followed by non-whitespace on the same line -- the one shape
@@ -1216,7 +1280,7 @@ def is_control_tag_tail(text: str) -> bool:
 
     For an append-only streaming sink (Slack) that holds a candidate span
     byte by byte and must decide per byte whether to keep holding. Same
-    answer as ``strip_control_comments(text, hide_partial=True) == ""``, but
+    answer as ``strip_trailing_control_tags(text, hide_partial=True) == ""``, but
     ANCHORED: the two grammars are applied with ``fullmatch`` at the span's
     own start and at its last line break, so a call costs one linear pass
     over the span rather than a search from every position -- a hold is
@@ -1234,8 +1298,27 @@ def is_control_tag_tail(text: str) -> bool:
 
 
 def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
-    """Remove trailing control-tag lines from *text* for a plain-text
-    projection (preview, TTS, channel delivery).
+    """Remove dashboard protocol lines from *text* for a plain-text projection
+    (preview, TTS, channel delivery, mirror backfill).
+
+    The ONE projection boundary for the two line protocols only the dashboard
+    renders: complete standalone ``[GOAL: ...]`` lines anywhere in the text
+    (:func:`strip_goal_marker_lines`), then the trailing control-tag lines
+    (:func:`strip_trailing_control_tags`). Goal lines go first so one sitting
+    after a tag cannot shield that tag from the tail anchor. Both modes of
+    *hide_partial* strip complete goal lines the same way; the flag only
+    governs a still-arriving control tag. A text carrying neither protocol is
+    returned unchanged.
+
+    The result is NOT a prefix of *text* once a goal line is removed, so a
+    caller measuring a tail offset (``len(...)``) or asking "did a tag end this
+    reply" calls :func:`strip_trailing_control_tags` instead.
+    """
+    return strip_trailing_control_tags(strip_goal_marker_lines(text), hide_partial=hide_partial)
+
+
+def strip_trailing_control_tags(text: str, *, hide_partial: bool = False) -> str:
+    """Remove trailing control-tag lines from *text*; always a prefix of it.
 
     TAIL-ANCHORED with a FENCE-PARITY guard — the same grammar as the
     frontend recognizer (``keepVisibleMarker.ts``), case-insensitive on
@@ -1248,7 +1331,7 @@ def strip_control_comments(text: str, *, hide_partial: bool = False) -> str:
     fence dialect) is structurally untouchable rather than guarded by a
     code-span grammar this module would have to keep re-deriving (rounds
     5–8 each found another dialect). Stacked trailing tags are all
-    removed. This is the ONE backend strip implementation.
+    removed. This is the ONE backend control-tag grammar.
 
     *hide_partial* is the STREAMING question, and it is a parameter for the
     same reason ``split_options_trailer`` makes it one: a tail that is a
@@ -1376,7 +1459,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     whose tail cannot extend into a complete marker stays visible, instead of
     being detached and silently dropped from the rendered cut.
     """
-    suffix_start = len(strip_control_comments(text))
+    suffix_start = len(strip_trailing_control_tags(text))
     idx = _rightmost_unfinished_marker(text[:suffix_start])
     # DELIBERATELY ASCII-ONLY -- do not widen the helper's gate to
     # ``MARKER_CLOSERS``. It asks "is the tail an UNFINISHED marker?", and
@@ -1408,7 +1491,7 @@ def split_trailing_protocol_suffix(text: str) -> tuple[str, str]:
     # does not reach a tag prefix: the splitter cuts at line boundaries first,
     # and a tag line is far shorter than any transport's message cap, so it
     # is never cut through unless it alone exceeds the cap.
-    suffix_start = len(strip_control_comments(text[:suffix_start]))
+    suffix_start = len(strip_trailing_control_tags(text[:suffix_start]))
 
     if suffix_start == len(text):
         return text, ""

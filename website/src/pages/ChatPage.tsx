@@ -596,7 +596,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const isStreaming = lastMsg?.role === 'streaming'
   // Follow-up option chips and the ownership of the text they append.
   const {
-    followUpOptions, followUpSourceKey, followUpMulti,
+    followUpOptions, followUpGoal, followUpSourceKey, followUpMulti,
     followUpPicked, followUpPickedRef, toggleFollowUpOption,
     composerRootChange, composerUserEdit,
   } = useFollowUpChips({
@@ -1073,7 +1073,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
               pendingDirs={pendingDirs} composerRef={composerRef} composerVoiceOptions={composerVoiceOptions} isMac={isMac} cancelUpload={cancelUpload} composerUploadFiles={composerUploadFiles}
               dropTargetProps={dropTargetProps} handleCapture={handleCapture} handleFileOpen={handleFileOpen} handleOptimizeResult={handleOptimizeResult} search={search} tabsCtl={tabsCtl}
               uploadCount={uploadCount} sendHeld={sendHeld} composerBandRef={composerBandRef} scrollBottom={scrollBottom} handleResumeSession={handleResumeSession}
-              composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
+              composerRootChange={composerRootChange} composerUserEdit={composerUserEdit} followUpMulti={followUpMulti} followUpGoal={followUpGoal} followUpOptions={followUpOptions} followUpPicked={followUpPicked}
               followUpPickedRef={followUpPickedRef} followUpSourceKey={followUpSourceKey} toggleFollowUpOption={toggleFollowUpOption} dashCfg={dashCfg} jevAutoConsented={jevAutoConsented}
               refusedPress={refusedPress} setRefusedPress={setRefusedPress} send={send} pickModel={pickModel} setProject={setProject} switchAgent={switchAgent} currentSlot={currentSlot}
               activeFolderName={activeFolderName} anchorSessionControl={anchorSessionControl} openSessionControl={openSessionControl} refreshSessionControlStatuses={refreshSessionControlStatuses}
