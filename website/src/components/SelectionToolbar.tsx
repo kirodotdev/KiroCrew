@@ -409,6 +409,16 @@ interface SelectionToolbarProps {
    * action rows only -- a `composer` host keeps its floating box.
    */
   dock?: boolean
+  /**
+   * Copy on select: when a MOUSE drag opens the row, run its own Copy action
+   * at once, so the selection is on the clipboard without a second click (the
+   * checkmark and a refused write show exactly as they do for a click). The
+   * row still opens, so the other actions stay one click away. Keyboard and
+   * touch selections are left alone: a Shift+Arrow walk would copy every
+   * intermediate step, and the touch platform has its own Copy callout. A row
+   * with no `copy` action copies nothing.
+   */
+  copyOnSelect?: boolean
 }
 
 /** Gap between the docked row and whatever it sits on (composer or screen edge). */
@@ -447,7 +457,7 @@ function safeAreaBottomPx(): number {
 
 /** Generic floating toolbar that appears when user selects text within a container.
  *  Extensible — pass any actions (quote, copy, etc.) via the `actions` prop. */
-export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended = false, externalOnly = false, dock: dockProp = false }: SelectionToolbarProps) {
+export default function SelectionToolbar({ containerRef, actions, externalSelection, composer, suspended = false, externalOnly = false, dock: dockProp = false, copyOnSelect = false }: SelectionToolbarProps) {
   // The composer is a floating annotation box by design; it never docks.
   const dock = dockProp && !composer
   const [visible, setVisible] = useState(false)
@@ -459,6 +469,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
   suspendedRef.current = suspended
   const externalOnlyRef = useRef(externalOnly)
   externalOnlyRef.current = externalOnly
+  const copyOnSelectRef = useRef(copyOnSelect)
+  copyOnSelectRef.current = copyOnSelect
+  // Runs the row's Copy action; set below once `handleAction` exists.
+  const autoCopyRef = useRef<() => void>(() => {})
   // The composer's draft text lives HERE, not in `ComposerBox`, so it survives
   // a suspension (the box unmounts while its tab is hidden) and comes back
   // with the tab. Reset on submit and on every close.
@@ -678,6 +692,8 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       restoreDraft(text)
     }
     setVisible(true)
+    // Tells the mouseup path a selection was actually taken (copy on select).
+    return true
   }, [containerRef, restoreDraft])
 
   // After the toolbar mounts/repositions, measure it and clamp its position so
@@ -793,8 +809,10 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       if (toolbarRef.current && toolbarRef.current.contains(e.target as Node)) return
       triggeredByMouseRef.current = true
       lastMouseRef.current = { x: e.clientX, y: e.clientY }
-      // Small delay to let selection finalize
-      defer(checkSelection, 50)
+      // Small delay to let selection finalize. Only a selection the check took
+      // is copied: a collapsed click, a whitespace-only drag, one outside the
+      // container, or one under a typed draft returns without it.
+      defer(() => { if (checkSelection() && copyOnSelectRef.current) autoCopyRef.current() }, 50)
     }
 
     const onKeyUp = (e: KeyboardEvent) => {
@@ -948,6 +966,13 @@ export default function SelectionToolbar({ containerRef, actions, externalSelect
       window.getSelection()?.removeAllRanges()
     }
   }, [flashCopied])
+
+  useEffect(() => {
+    autoCopyRef.current = () => {
+      const copy = actions.find(a => a.id === 'copy')
+      if (copy) handleAction(copy)
+    }
+  }, [actions, handleAction])
 
   // Cancel a pending "copied!" reset timer on unmount so it can never fire
   // after the component (or a test's jsdom environment) is torn down.

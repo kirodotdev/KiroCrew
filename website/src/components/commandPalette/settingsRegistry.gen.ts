@@ -960,6 +960,18 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "configKey": "agent.refusal_fallback_model"
   },
   {
+    "id": "chat.copy-on-select",
+    "label": "Copy on select",
+    "labelKey": "pages.settings.chatPanel.copy_on_select",
+    "hint": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens.",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1,
+    "params": {
+      "sub": "transcript"
+    }
+  },
+  {
     "id": "chat.default-memory-mode",
     "label": "Default Memory Mode",
     "labelKey": "settings.chat.defaultMemoryMode.label",
