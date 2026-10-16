@@ -240,7 +240,7 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     }))
     renderTree()
     const notice = await screen.findByTestId('workspace-tree-root-truncated')
-    expect(notice).toHaveTextContent('Workspace too large to list: limit of 10,000 items reached')
+    expect(notice).toHaveTextContent('Nothing is wrong. This project has too many files and folders to list here (the limit is 10,000).')
     expect(screen.queryByText('No files in this workspace yet')).not.toBeInTheDocument()
   })
 
