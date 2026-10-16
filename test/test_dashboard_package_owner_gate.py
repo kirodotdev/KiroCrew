@@ -1077,9 +1077,9 @@ class TestAContentLessWriteIsFencedForAPackage:
     """THE WINDOW, CLOSED UNDER THE STORE'S OWN LOCK.
 
     The update route authorizes a dashboard-package write against the snapshot it READ
-    (`handlers/artifacts.py` reads at :2028, gates at :2081, writes at :2111) and hands
-    the store that read's ``content_token`` so a rebind landing in the gap becomes a
-    conflict rather than a silent overwrite.
+    (`api_artifact_update` in `handlers/artifacts_parts/create_update.py` reads, gates,
+    then writes) and hands the store that read's ``content_token`` so a rebind landing
+    in the gap becomes a conflict rather than a silent overwrite.
 
     A comparison limited to writes that carry CONTENT leaves a ``kind``-only PATCH
     arriving with the token attached and ignored, so an agent de-authorized by a rebind

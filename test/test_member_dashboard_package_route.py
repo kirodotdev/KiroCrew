@@ -781,7 +781,7 @@ class TestTheRenderPathServesAnAppliedVersion:
     carrying ``by=actor`` (``artifacts_writes.update``), and that actor is derived from HOW
     the request authenticated -- ``actor = "agent" if is_mcp else "user"`` where
     ``is_mcp`` is the presence of the ``X-Internal-Secret`` header
-    (``dashboard/handlers/artifacts.py:1960``). So:
+    (``dashboard/handlers/artifacts_parts/create_update.py``). So:
 
         applied version := the newest version whose event has ``by == "user"``
 

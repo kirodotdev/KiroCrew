@@ -421,7 +421,14 @@ class TestTheWorkerIsRefusedAtTheRealWritePath:
         """The gate is only a gate if the route asks it. Pinned on the SOURCE of the
         three write paths, because a route that stopped asking would leave every test
         above passing."""
-        source = Path(artifacts_handler.__file__).read_text(encoding="utf-8")
+        # The routes and the gate live in the facade's owner modules. The gate's own
+        # module is read last, so every other module's text sits in the head below.
+        facade = Path(artifacts_handler.__file__)
+        parts = [facade] + sorted(
+            (facade.parent / "artifacts_parts").glob("*.py"),
+            key=lambda path: path.stem == "dashboard_package_gate",
+        )
+        source = "".join(path.read_text(encoding="utf-8") for path in parts)
         # Counted as CALLS, excluding the accessor's own definition line, because one
         # call wraps its arguments across lines and a single-spelling count misses it.
         calls = source.count("_package_write_refusal(") - source.count(

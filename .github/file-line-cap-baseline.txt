@@ -45,7 +45,6 @@
 2283 src/kiro_crew/dashboard/chat_tags.py
 4097 src/kiro_crew/dashboard/handlers/_shared.py
 2690 src/kiro_crew/dashboard/handlers/agent_panel.py
-6397 src/kiro_crew/dashboard/handlers/artifacts.py
 4286 src/kiro_crew/dashboard/handlers/core.py
 2431 src/kiro_crew/dashboard/handlers/crew_log.py
 4067 src/kiro_crew/dashboard/handlers/cron.py

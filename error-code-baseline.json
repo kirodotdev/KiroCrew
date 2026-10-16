@@ -156,7 +156,7 @@
     "dashboard/handlers/agents.py": {
       "missing_code": 4
     },
-    "dashboard/handlers/artifacts.py": {
+    "dashboard/handlers/artifacts_parts/route_plumbing.py": {
       "dynamic_status": 2
     },
     "dashboard/handlers/auth_refresh.py": {

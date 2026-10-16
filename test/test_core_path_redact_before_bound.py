@@ -189,6 +189,8 @@ _SCANNED_PACKAGES = {
     "src/kiro_crew/mcp_tools/spawn_parts": 2,
     # The owners of the ACP dispatch facade, acp/_dispatch.py.
     "src/kiro_crew/acp/_dispatch_parts": 5,
+    # The owners behind the dashboard artifact routes' facade, dashboard/handlers/artifacts.py.
+    "src/kiro_crew/dashboard/handlers/artifacts_parts": 10,
 }
 
 # Every module the issue names, then every module of the packages scanned whole,
