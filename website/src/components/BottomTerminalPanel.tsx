@@ -160,6 +160,12 @@ function TabChip({ tab, active, closing = false, hintId, closeActions, onSelect,
               if (!closing) onSelect()
             }
           }}
+          // Chromium on Windows enters middle-click autoscroll on the
+          // middle-button MOUSEDOWN when the target sits in a scroll container
+          // (the tab strip is overflow-x-auto), and then `auxclick` never fires,
+          // so the close below never runs. Not while renaming: the field inside
+          // this chip must keep its own middle-button behaviour.
+          onMouseDownCapture={(e) => { if (e.button === 1 && !editing) e.preventDefault() }}
           onAuxClick={(e) => {
             if (e.button === 1 && !closing && !editing) {
               e.preventDefault()
