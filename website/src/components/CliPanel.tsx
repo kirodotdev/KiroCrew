@@ -510,6 +510,14 @@ function TerminalView({ sessionId, cwd, remoteSlot, chatSlot, visible, onSendToC
         setCopied('idle')
         setSending('idle')
         setSel({ x: e.clientX - rect.left, y: e.clientY - rect.top, text })
+        // Copy-on-select (Settings → Display → Terminal): the same write the
+        // toolbar's Copy runs, reported through the same Copied / Copy failed
+        // state. The toolbar stays up, so Send to chat is still one click away.
+        // Still inside the mouseup's user activation, which the helper's
+        // execCommand fallback needs on a plain-HTTP origin.
+        if (getTerminalFont().copyOnSelect) {
+          void copyToClipboard(text).then(ok => setCopied(ok ? 'done' : 'failed'))
+        }
       })
     }
     wrap.addEventListener('mouseup', onMouseUp)

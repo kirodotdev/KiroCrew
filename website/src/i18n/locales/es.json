@@ -17640,6 +17640,8 @@
         "terminal_cursor_style_block": "Bloque",
         "terminal_cursor_style_bar": "Barra",
         "terminal_cursor_style_underline": "Subrayado",
+        "terminal_copy_on_select": "Copiar al seleccionar",
+        "terminal_copy_on_select_desc": "Copia el texto al portapapeles en cuanto lo seleccionas con el ratón. La barra de selección sigue abriéndose, así que Enviar al chat sigue a un clic.",
         "terminal_shell": "Shell predeterminado",
         "terminal_shell_hint": "Shell que inicia el terminal integrado.",
         "terminal_shell_desc": "Una ruta absoluta o un comando en el PATH. Déjalo vacío para usar el valor predeterminado del sistema ($SHELL).",
