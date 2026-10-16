@@ -36,6 +36,8 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { goalSuggestionReplyFallback } from '../app-sdk/protocol/options'
+import { loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
@@ -258,6 +260,7 @@ function ChatInput({
   automationSnapshotFailed,
   sessionMode,
   sendOnEnter: sendOnEnterProp,
+  followUpGoal,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -338,6 +341,50 @@ function ChatInput({
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  const [failedSuggestedGoal, setFailedSuggestedGoal] = useState<string | null>(null)
+  const canReviewSuggestedGoal = !!onAutomationClick && !!slotId
+  const displayedFollowUpGoal = followUpGoal ?? null
+  const displayedFollowUpOptions = useMemo(
+    () => canReviewSuggestedGoal
+      ? (followUpOptions ?? [])
+      : goalSuggestionReplyFallback(followUpOptions ?? [], followUpGoal ?? null),
+    [followUpGoal, followUpOptions, canReviewSuggestedGoal],
+  )
+  const automationIsActive = !!automation?.active
+    && !(automation.kind === 'structured_monitor' && automation.terminal)
+  // Paused is the sidebar's "Waiting on you" signal: an armed loop, no turn
+  // running, and a newest reply that asks the user to choose. The card must
+  // say the same thing about the loop as that row does.
+  const automationPaused = automationIsActive && !isRunning && displayedFollowUpOptions.length > 0
+  const sessionModeBlocksGoal = sessionMode === 'crew' || sessionMode === 'member'
+  const suggestedGoalDisabledReason = automation
+    ? i18nT(automationIsActive
+      ? automation.kind === 'legacy_goal_loop'
+        ? automationPaused
+          ? 'components.followUpBar.goal_paused'
+          : 'components.followUpBar.goal_running'
+        : automationPaused
+          ? 'components.followUpBar.monitor_paused'
+          : 'components.followUpBar.monitor_running'
+      : 'components.followUpBar.automation_stopped')
+    : sessionModeBlocksGoal
+      ? i18nT('components.sessionAutomationPopover.session_mode_unavailable')
+      : undefined
+  const reviewSuggestedGoal = useCallback((goal: string) => {
+    if (!slotId || !canReviewSuggestedGoal || suggestedGoalDisabledReason) return
+    const remembered = loadGoalDraft(slotId)
+    if (!saveGoalDraft(slotId, {
+      message: goal,
+      idleSecs: remembered?.idleSecs ?? 60,
+      maxCycles: remembered?.maxCycles ?? 0,
+    })) {
+      setFailedSuggestedGoal(goal)
+      return
+    }
+    setFailedSuggestedGoal(null)
+    onAutomationClick?.(true)
+  }, [slotId, canReviewSuggestedGoal, onAutomationClick, suggestedGoalDisabledReason])
+  const openGoalControl = useCallback(() => onAutomationClick?.(true), [onAutomationClick])
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
   // can pull THIS pane's slot messages without re-rendering every composer on
   // each streamed frame. useAppStore returns the Provider-injected store, the
@@ -847,9 +894,32 @@ function ChatInput({
         </div>
       )}
 
-      {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {/* Autonomous goal card plus ordinary follow-up replies. */}
+      {!showGhost && (
+        (displayedFollowUpOptions.length > 0 && onFollowUpSelect)
+        || (displayedFollowUpGoal && canReviewSuggestedGoal)
+      ) && (
+        <FollowUpBar
+          options={displayedFollowUpOptions}
+          goal={canReviewSuggestedGoal ? displayedFollowUpGoal : null}
+          onGoal={canReviewSuggestedGoal ? reviewSuggestedGoal : undefined}
+          goalError={failedSuggestedGoal === displayedFollowUpGoal
+            ? i18nT('components.followUpBar.goal_save_failed')
+            : null}
+          onDismissGoalError={() => setFailedSuggestedGoal(null)}
+          goalDisabledReason={suggestedGoalDisabledReason}
+          onOpenGoal={canReviewSuggestedGoal && !sessionModeBlocksGoal ? openGoalControl : undefined}
+          picked={followUpPicked ?? new Set()}
+          onSelect={selectFollowUp}
+          onSend={fireFollowUp}
+          quickSend={quickSend}
+          multi={followUpMulti}
+          layout={followUpLayout}
+          sourceKey={followUpSourceKey}
+          pendingOptions={followUpPendingOptions}
+          refusedOptions={followUpRefusedOptions}
+          error={followUpError}
+        />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

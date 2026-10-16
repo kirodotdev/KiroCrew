@@ -56,7 +56,8 @@ export interface SlotDraftStoreOpts<T> {
 
 export interface SlotDraftStore<T> {
   load(): Record<string, T>
-  save(drafts: Record<string, T>): void
+  /** Persist drafts and report whether the storage write succeeded. */
+  save(drafts: Record<string, T>): boolean
   set(drafts: Record<string, T>, slot: string, value: T): void
   /** @internal test-only: reset module state between tests. `undefined` in the
    *  prod bundle (gated on `!import.meta.env.PROD`). */
@@ -203,17 +204,19 @@ export function createSlotDraftStore<T>(opts: SlotDraftStoreOpts<T>): SlotDraftS
     }
   }
 
-  function save(drafts: Record<string, T>): void {
+  function save(drafts: Record<string, T>): boolean {
     ensureTimestampsLoaded()
-    if (!evictAfterWrite) { persistNow(drafts); return }
+    if (!evictAfterWrite) return persistNow(drafts)
     // Evict-after-write: cap a copy, persist it, and only mirror the evictions
     // back to the caller once the write actually stuck. A failed persist leaves
     // the caller's in-memory drafts whole so nothing that never reached storage
     // is silently dropped.
     const toSave = { ...drafts }
-    if (persistNow(toSave)) {
+    const persisted = persistNow(toSave)
+    if (persisted) {
       for (const k of Object.keys(drafts)) if (!(k in toSave)) delete drafts[k]
     }
+    return persisted
   }
 
   /** Mutate `drafts` for `slot`: delete-then-reinsert a sanitized deep copy if

@@ -7,7 +7,7 @@ import re
 from functools import partial
 from typing import Callable, NamedTuple
 
-from kiro_crew.constants import OPTIONS_RE_LINE, relocate_glued_tail_marker
+from kiro_crew.constants import OPTIONS_RE_LINE, relocate_glued_tail_marker, strip_goal_marker_lines
 from kiro_crew.messaging.display_safety import (
     DISPLAY_SETTLING_PASSES,
     SLACK_MARKDOWN_LINK,
@@ -79,7 +79,9 @@ def extract_options(text: str) -> tuple[str, list[str]]:
     ``OPTIONS_RE_LINE``. Returns (cleaned_text, choices). If no OPTIONS is found,
     choices is empty.
     """
-    text = relocate_glued_tail_marker(text)
+    relocated = relocate_glued_tail_marker(text)
+    without_goal = strip_goal_marker_lines(relocated)
+    text = without_goal.strip() if without_goal != relocated else relocated
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []

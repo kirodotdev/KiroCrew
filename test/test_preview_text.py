@@ -12,8 +12,27 @@ from __future__ import annotations
 
 import time
 
+from conftest import assert_rejected_without_backtracking
+from kiro_crew.constants import strip_goal_marker_lines
 from kiro_crew.dashboard.state import _ChatSlot
 from kiro_crew.preview_text import strip_markdown_preview
+
+
+class TestGoalMarkerLineScanner:
+    def test_removes_only_complete_standalone_markers(self):
+        text = "Before\n  [gOaL: Deliver it]\t\nAfter [GOAL: keep as prose]"
+        assert strip_goal_marker_lines(text) == "Before\n\nAfter [GOAL: keep as prose]"
+
+    def test_crlf_terminated_marker_is_removed_from_previews(self):
+        text = "The repair is ready.\r\n[GOAL: Deliver it]\r\n"
+        assert strip_goal_marker_lines(text) == "The repair is ready.\r\n\n"
+        assert strip_markdown_preview(text) == "The repair is ready."
+
+    def test_unterminated_whitespace_run_stays_linear(self):
+        def reject(text: str) -> None:
+            assert strip_goal_marker_lines(text) == text
+
+        assert_rejected_without_backtracking(reject, lambda n: "[GOAL:" + ("\t" * n) + "x")
 
 
 class TestStripMarkdownPreview:
@@ -120,6 +139,9 @@ class TestStripMarkdownPreview:
 
     def test_options_block_removed(self):
         assert strip_markdown_preview("pick one [OPTIONS: A | B]") == "pick one"
+
+    def test_goal_card_marker_removed(self):
+        assert strip_markdown_preview("Next step.\n[GOAL: Deliver it]") == "Next step."
 
     def test_snake_case_survives(self):
         # Single underscores are NOT emphasis in intra-word positions; the
