@@ -171,7 +171,7 @@ _KNOWN_HYDRATION_SITES = frozenset(
     {
         ("channel_slots", "surface_channel_session"),
         ("cron_inject", "_bind_cron_slot"),
-        ("cron", "api_cron_to_chat"),
+        ("cron_runs", "api_cron_to_chat"),
     }
 )
 

@@ -329,7 +329,7 @@ def learn_add(name: str, args: dict[str, Any]) -> str:
         # Map the backend session-scope error to a user-actionable
         # message so the LLM can explain the situation instead of
         # leaking an opaque HTTP 400 as a "transport failed" error.
-        # See api_lessons_create in dashboard/handlers/cron.py: the
+        # See api_lessons_create in dashboard/handlers/cron_lessons.py: the
         # "unknown session" response is returned when the X-Session-Key
         # matches neither a live in-memory slot, a restricted key, the
         # slack: namespace, nor a persisted session JSONL — so the

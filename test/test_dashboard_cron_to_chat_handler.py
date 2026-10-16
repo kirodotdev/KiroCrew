@@ -1,4 +1,4 @@
-"""Tests for api_cron_to_chat HTTP handler (handlers/cron.py L169-L205)."""
+"""Tests for api_cron_to_chat HTTP handler (handlers/cron_runs.py, api_cron_to_chat)."""
 
 from __future__ import annotations
 

@@ -35,6 +35,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+from kiro_crew import _facade_mirror
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.handlers.cron import api_crons_create
@@ -161,7 +162,9 @@ def config_reads_on_the_loop(source: str) -> list[str]:
 
 
 def test_no_cron_route_reads_the_configuration_on_the_loop():
-    source = inspect.getsource(sys.modules[api_crons_create.__module__])
+    facade = sys.modules["kiro_crew.dashboard.handlers.cron"]
+    family = (facade.__name__, *vars(facade)[_facade_mirror.INDEX_ATTRIBUTE].owners)
+    source = "\n".join(inspect.getsource(sys.modules[name]) for name in family)
     routes = {route.name for route in cron_routes(source)}
     assert api_crons_create.__name__ in routes, "the rule no longer finds the cron routes"
     assert config_reads_on_the_loop(source) == []
