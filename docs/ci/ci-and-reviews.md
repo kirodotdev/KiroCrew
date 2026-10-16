@@ -1775,7 +1775,7 @@ more than `MAX_DECLARED` (20) distinct issues is a finding, not a read: each
 declared issue is an API call against the shared hourly token pool, from a body an
 author controls, and a PR for that many issues is a PR to split.
 `test/test_issue_gate_refs.py` and the `declared_issue_numbers` tests in
-`test/test_prepare_pr_status.py` pin all of this.
+`test/test_prepare_pr_status_issue_links.py` pin all of this.
 
 **The grammar comes from the default branch, not the PR.** The workflow checks
 out the repository's default branch at run time -- which the PR cannot write -- and

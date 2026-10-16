@@ -205,7 +205,6 @@
 4193 test/test_aws_control_routes.py
 3281 test/test_browser_cli_install.py
 3564 test/test_browser_cli_view.py
-4133 test/test_change_cards.py
 2032 test/test_channel_folders.py
 2002 test/test_channel_turns.py
 2336 test/test_chat_agent_selection.py
@@ -329,7 +328,6 @@
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
 3225 test/test_portability.py
-4068 test/test_prepare_pr_status.py
 2673 test/test_publish_personal_drive.py
 2215 test/test_publish_sync.py
 2016 test/test_push_branch_gate.py
@@ -406,7 +404,6 @@
 3521 test/test_webex_dispatch.py
 2006 test/test_webhooks_api.py
 2238 test/test_wheel_engine.py
-4130 test/test_work_ledger_projection.py
 2944 website/electron/gateway-supervisor.js
 2903 website/scripts/lib/ui-index.mjs
 2967 website/src/App.tsx

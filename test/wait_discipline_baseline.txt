@@ -472,7 +472,8 @@
  1 test_windows_job_limits.py
  2 test_windows_tree_reap.py
  8 test_work_ledger_board_lock.py
- 7 test_work_ledger_projection.py
+ 1 test_work_ledger_projection.py
+ 6 test_work_ledger_projection_rebuild_guards.py
  1 test_workflow_agent_spawn_governance.py
  2 test_workflow_execution_capture_async.py
  4 test_workflow_memory_backend_reset.py
