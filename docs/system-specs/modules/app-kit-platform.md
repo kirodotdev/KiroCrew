@@ -109,12 +109,12 @@ only the app adapter that supplies the declared-path grant and the scoped
 pins the shared hook as store-free. A pasted or dropped file on an
 ungranted host is refused in the composer with a visible notice; a drop with
 files is always default-prevented so the browser never navigates to the file.
-The send reuses chat-core's `buildOutgoingTurn`, so the wire text and
-`meta.files` match the main chat's, with `meta.sendId` alongside. It uses the
-text-only `'steer'` serialization: this surface carries no `meta.dirs`, so an
-`@rel/` folder token stays as typed instead of becoming an `[attached_dir N]`
-marker naming a path nothing travels with -- the same text a send without a
-file carries. The refusal notice names the page that accepts files by its rail
+The send reuses chat-core's `buildOutgoingTurn`, so the wire text,
+`meta.files` and `meta.pastes` match the main chat's, with `meta.sendId`
+alongside. It is a `'send'` turn with `keepFolderTokens`: this surface has no
+project root and carries no `meta.dirs`, so an `@rel/` folder token stays as
+typed instead of becoming an `[attached_dir N]` marker naming a path nothing
+travels with -- the same text a send without a file carries. The refusal notice names the page that accepts files by its rail
 label (`nav.sessions`), as text, never a link that would leave the unsaved
 draft. While an upload runs, the composer shows the files' names, refuses the
 picker (its label reads "Uploading files…") and refuses Send through the Send
@@ -166,6 +166,26 @@ folder cut from the start, so same-named results stay apart in the narrow
 menu. Both menus are opt-in and fail closed per path: a host that declares
 only `/api/slash-commands` gets the `/` menu and an `@` that stays plain text,
 with no file search sent. Tests: `ChatEmbed.pickers.test.tsx`.
+
+Long pastes collapse through the same chat-core Paste atom the main composer
+uses, not a copy: `ChatEmbed` binds its textarea to
+`chat-core/composer/pasteEditor.ts` (`usePasteTokens`, which `ChatInput` also
+binds), keeps the blocks in `useComposerPastes` and hands them to the
+`Composer` root as `pastes`. The chip background is the shared
+`PasteHighlightLayer` mirror behind a transparent textarea, given the embed's
+own box classes through its `typo` prop, and the hover/caret preview is the
+shared `PasteHoverLayer`. A file paste goes to the attach path first; only a
+paste it leaves alone can collapse. The user's `showFullPastes` chat setting
+and the `Cmd/Ctrl+Shift+V` raw chord are honoured as in the main chat. On send
+each live token expands on the wire and its block rides `meta.pastes` (and the
+paste side table, `storeSentPastes`), and the optimistic row carries the same
+blocks so it draws the chip. Recovery hands the blocks back with the text
+(`restorePastes` on the parked receipt), carried through
+`useComposerPastes().carry` so a block whose number the composer already uses
+is renumbered. `ChatEmbed.longPaste.test.tsx` covers collapse, the wire shape,
+the optimistic row, the refused-send hand-back, atomic delete and the setting;
+the import-graph test pins `pasteEditor.ts`, `composerPastes.ts` and both layers
+as store-free.
 
 The host owns session attribution. Chat hosts bind their session; routed app
 pages bind the established `dashboard:ui` page identity. A provided host key

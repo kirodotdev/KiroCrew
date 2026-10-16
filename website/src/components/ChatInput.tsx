@@ -71,7 +71,7 @@ import { useComposerFocus, useComposerKeyDown, useEditorInput } from './chat-inp
 import { INPUT_DRAG_MIN_H, useManualHeight, useStripHeights, useTextareaAutosize } from './chat-input/sizing'
 import { usePromptHistory, useUndoHistory } from './chat-input/draftHistory'
 import { usePromptOptimizer } from './chat-input/optimizer'
-import { usePasteTokens } from './chat-input/paste'
+import { usePasteTokens } from '../chat-core/composer/pasteEditor'
 import { FilePreviewStrip } from './chat-input/FilePreviewStrip'
 import { ComposerAttach } from '../chat-core/composer/Attach'
 
