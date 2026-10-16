@@ -6083,7 +6083,7 @@ class TestAppAgentDispatch(unittest.TestCase):
         # memory. The roster's default crewmate may carry a private store of its own;
         # that store is reached only by the crewmate (its DM thread, or an
         # explicit pick), never inherited by a session that picked nobody. The
-        # doctor line beside the binding (test_cli_doctor) says so.
+        # doctor line beside the binding (test_cli_doctor_config_sections) says so.
         import kiro_crew.config.loader as loader
         from kiro_crew.config.loader import KiroCrewAgentConfig
 
