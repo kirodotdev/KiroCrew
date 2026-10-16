@@ -428,4 +428,21 @@ describe('ChatPane plan-shaped follow-ups', () => {
     expect(wireText).toBe('Alpha')
     expect(slot).toBe('pane-sendnow-plain')
   })
+
+  // A split pane and the companion chat have no goal review (no automation
+  // popover), so a [GOAL:] line degrades to an ordinary editable reply pill:
+  // no Autonomous goal card, no raw marker, the objective ahead of the options.
+  it('degrades a goal suggestion to an ordinary reply pill, never a card', async () => {
+    const goal = 'Deliver the result'
+    await renderPane('pane-goal', {}, [
+      { role: 'user', content: 'hi', ts: '2026-08-25T00:00:00Z' },
+      { role: 'assistant', content: `Ready to proceed.\n\n[GOAL: ${goal}]\n[OPTIONS: Alpha | Beta]`, ts: '2026-08-25T00:00:01Z' },
+    ])
+    await waitFor(() => expect(screen.getByRole('button', { name: goal })).toBeTruthy())
+    expect(screen.queryByTestId('autonomous-goal-card')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Review & start' })).toBeNull()
+    expect(screen.queryByText(/\[GOAL:/)).toBeNull()
+    const pills = screen.getAllByRole('button').map(b => b.getAttribute('aria-label') ?? b.textContent)
+    expect(pills.indexOf(goal)).toBeLessThan(pills.indexOf('Alpha'))
+  })
 })

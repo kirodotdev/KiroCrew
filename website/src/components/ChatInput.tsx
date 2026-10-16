@@ -39,6 +39,8 @@ import { useImeGuard } from '../hooks/useImeGuard'
 import PasteHighlightLayer, { INPUT_TYPO } from './PasteHighlightLayer'
 import PasteHoverLayer from './PasteHoverLayer'
 import FollowUpBar from './FollowUpBar'
+import { goalSuggestionReplyFallback } from '../app-sdk/protocol/options'
+import { loadGoalDraft, saveGoalDraft } from '../utils/goalDrafts'
 import { platformShortcut } from '../utils/platform'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 import { useComposerDraftText, useComposerPasteSlice, useComposerVoiceSlice, type ComposerVoiceInputProps } from '../chat-core/composer/Composer'
@@ -282,6 +284,7 @@ function ChatInput({
   automationSnapshotFailed,
   sessionMode,
   sendOnEnter: sendOnEnterProp,
+  followUpGoal,
   followUpOptions,
   followUpPicked,
   onFollowUpSelect,
@@ -363,6 +366,59 @@ function ChatInput({
   const project = sessionOnPeer ? undefined : projectProp
   const dispatch = useAppDispatch()
   const slotId = useSlotId()
+  const [failedSuggestedGoal, setFailedSuggestedGoal] = useState<string | null>(null)
+  const canReviewSuggestedGoal = !!onAutomationClick && !!slotId
+  const displayedFollowUpGoal = followUpGoal ?? null
+  const displayedFollowUpOptions = useMemo(
+    () => canReviewSuggestedGoal
+      ? (followUpOptions ?? [])
+      : goalSuggestionReplyFallback(followUpOptions ?? [], followUpGoal ?? null),
+    [followUpGoal, followUpOptions, canReviewSuggestedGoal],
+  )
+  const automationIsActive = !!automation?.active
+    && !(automation.kind === 'structured_monitor' && automation.terminal)
+  // The sidebar's "Waiting on you" signal: an armed loop, no turn running, and
+  // a newest reply that asks the user to choose. The loop stays armed with its
+  // next cycle scheduled, so the card calls it active, as the goal panel does.
+  const automationWaitingOnReply = automationIsActive && !isRunning && displayedFollowUpOptions.length > 0
+  // The reply that offered the goal stays on screen after Review & start, so
+  // an active loop carrying this very objective is the user's own start, not
+  // a competing automation to stop.
+  const suggestedGoalStarted = automationIsActive
+    && automation?.kind === 'legacy_goal_loop'
+    && !!displayedFollowUpGoal
+    && automation.message.trim() === displayedFollowUpGoal.trim()
+  const sessionModeBlocksGoal = sessionMode === 'crew' || sessionMode === 'member'
+  const suggestedGoalDisabledReason = suggestedGoalStarted
+    ? undefined
+    : automation
+      ? i18nT(automationIsActive
+        ? automation.kind === 'legacy_goal_loop'
+          ? automationWaitingOnReply
+            ? 'components.followUpBar.goal_paused'
+            : 'components.followUpBar.goal_running'
+          : automationWaitingOnReply
+            ? 'components.followUpBar.monitor_paused'
+            : 'components.followUpBar.monitor_running'
+        : 'components.followUpBar.automation_stopped')
+      : sessionModeBlocksGoal
+        ? i18nT('components.sessionAutomationPopover.session_mode_unavailable')
+        : undefined
+  const reviewSuggestedGoal = useCallback((goal: string) => {
+    if (!slotId || !canReviewSuggestedGoal || suggestedGoalStarted || suggestedGoalDisabledReason) return
+    const remembered = loadGoalDraft(slotId)
+    if (!saveGoalDraft(slotId, {
+      message: goal,
+      idleSecs: remembered?.idleSecs ?? 60,
+      maxCycles: remembered?.maxCycles ?? 0,
+    })) {
+      setFailedSuggestedGoal(goal)
+      return
+    }
+    setFailedSuggestedGoal(null)
+    onAutomationClick?.(true)
+  }, [slotId, canReviewSuggestedGoal, onAutomationClick, suggestedGoalStarted, suggestedGoalDisabledReason])
+  const openGoalControl = useCallback(() => onAutomationClick?.(true), [onAutomationClick])
   // The store handle, read at click time (not subscribed) so "Optimize prompt"
   // can pull THIS pane's slot messages without re-rendering every composer on
   // each streamed frame. useAppStore returns the Provider-injected store, the
@@ -497,6 +553,9 @@ function ChatInput({
     setSawSlot(slotId)
     setSawRunning(isRunning)
     setTurnStartProject(projectProp)
+    // A goal card's save failure belongs to the chat that tried to save it; the
+    // next chat may offer the same objective and has not failed anything.
+    setFailedSuggestedGoal(null)
   } else if (isRunning !== sawRunning) {
     setSawRunning(isRunning)
     if (isRunning) setTurnStartProject(projectProp)
@@ -987,9 +1046,33 @@ function ChatInput({
         </div>
       )}
 
-      {/* Ghost follow-up bubbles floating above input */}
-      {!showGhost && followUpOptions && followUpOptions.length > 0 && onFollowUpSelect && (
-          <FollowUpBar options={followUpOptions} picked={followUpPicked ?? new Set()} onSelect={selectFollowUp} onSend={fireFollowUp} quickSend={quickSend} multi={followUpMulti} layout={followUpLayout} sourceKey={followUpSourceKey} pendingOptions={followUpPendingOptions} refusedOptions={followUpRefusedOptions} error={followUpError} />
+      {/* Autonomous goal card plus ordinary follow-up replies. */}
+      {!showGhost && (
+        (displayedFollowUpOptions.length > 0 && onFollowUpSelect)
+        || (displayedFollowUpGoal && canReviewSuggestedGoal)
+      ) && (
+        <FollowUpBar
+          options={displayedFollowUpOptions}
+          goal={canReviewSuggestedGoal ? displayedFollowUpGoal : null}
+          onGoal={canReviewSuggestedGoal ? reviewSuggestedGoal : undefined}
+          goalError={failedSuggestedGoal === displayedFollowUpGoal
+            ? i18nT('components.followUpBar.goal_save_failed')
+            : null}
+          onDismissGoalError={() => setFailedSuggestedGoal(null)}
+          goalDisabledReason={suggestedGoalDisabledReason}
+          goalStarted={suggestedGoalStarted}
+          onOpenGoal={canReviewSuggestedGoal && !sessionModeBlocksGoal ? openGoalControl : undefined}
+          picked={followUpPicked ?? new Set()}
+          onSelect={selectFollowUp}
+          onSend={fireFollowUp}
+          quickSend={quickSend}
+          multi={followUpMulti}
+          layout={followUpLayout}
+          sourceKey={followUpSourceKey}
+          pendingOptions={followUpPendingOptions}
+          refusedOptions={followUpRefusedOptions}
+          error={followUpError}
+        />
       )}
 
       {/* Tip / folder-suggestion band — LAST above the composer so it always

@@ -390,7 +390,12 @@ def build_message(
                 # insurance against output-format drift. Same variant
                 # selection and per-agent opt-out gate as session start.
                 _resume_rules = (
-                    ctx._critical_rules_for(session_key, runtime_source)
+                    ctx._critical_rules_for(
+                        session_key,
+                        runtime_source,
+                        mode=mode,
+                        execution_context=execution_context,
+                    )
                     if ctx._agent_includes_crew_context(agent)
                     else ""
                 )

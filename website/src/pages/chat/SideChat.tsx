@@ -11,6 +11,7 @@ import QueueStack from '../../components/QueueStack'
 import ChatMessageList from '../../app-sdk/ChatMessageList'
 import FollowUpBar from '../../components/FollowUpBar'
 import { deriveFollowUpOptions } from '../../app-sdk/protocol'
+import { goalSuggestionReplyFallback } from '../../app-sdk/protocol/options'
 import { useComposerDraft, draftByteSize } from '../../app-sdk/useComposerDraft'
 import ChatInput from '../../components/ChatInput'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -234,9 +235,13 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
 
   /** Derived from the same helper the main chat uses, so "options only after the answer
    *  settles" and "a later user message clears them" behave identically. */
-  const { followUpOptions, followUpMulti, followUpSourceKey } = useMemo(
+  const { followUpOptions, followUpGoal, followUpMulti, followUpSourceKey } = useMemo(
     () => deriveFollowUpOptions(transcript, isStreaming),
     [transcript, isStreaming]
+  )
+  const followUpReplies = useMemo(
+    () => goalSuggestionReplyFallback(followUpOptions, followUpGoal),
+    [followUpOptions, followUpGoal],
   )
 
   /** The composer's draft behaviour, owned by the chat SDK rather than by this file: what a
@@ -264,7 +269,7 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
   // remount restores both, and neither outlives the page), are expanded at
   // send, and clear with the text.
   const onPasteBlocksChange = useCallback((next: PasteBlock[]) => { writeSideChatPastes(slot, next) }, [slot])
-  const composer = useComposerDraft({ followUpOptions, multi: followUpMulti, sourceKey: followUpSourceKey, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
+  const composer = useComposerDraft({ followUpOptions: followUpReplies, multi: followUpMulti, sourceKey: followUpSourceKey, maxBytes: MAX_QUESTION_BYTES, maxHeight: MAX_INPUT_H, draft: storedDraft, onDraftChange })
   const {
     draft, setDraft,
     picked: pickedOptions, toggleOption, mergeIntoDraft, exceedsByteLimit,
@@ -1047,10 +1052,10 @@ export default function SideChat({ slot, onFileOpen, onArtifactOpen }: {
           </button>
         </div>
       )}
-      {followUpOptions.length > 0 && (
+      {followUpReplies.length > 0 && (
         <div className="shrink-0 px-2 pb-1">
           <FollowUpBar
-            options={followUpOptions}
+            options={followUpReplies}
             picked={pickedOptions}
             onSelect={toggleOption}
             onSend={text => { void send(text) }}
