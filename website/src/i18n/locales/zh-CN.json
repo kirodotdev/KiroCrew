@@ -16125,6 +16125,8 @@
         "display_time_on_each_message": "在每条消息上显示时间",
         "double_click_to_edit": "双击编辑你的消息",
         "double_click_to_edit_desc": "关闭时，双击你的消息会像在任何文本中一样选中一个词。",
+        "copy_on_select": "选中即复制",
+        "copy_on_select_desc": "在对话中用鼠标选中文本后立即复制到剪贴板。“引用”“随手问”“复制”这一行仍会打开。",
         "display_usage_percentage_next_to_the_context_pro": "在上下文进度条旁显示使用百分比",
         "display_used_and_total_tokens_next_to_the_contex": "在上下文进度条旁显示已用和总令牌数",
         "e_g_solutions_architect_sre_founder": "例如：解决方案架构师、SRE、创始人",
