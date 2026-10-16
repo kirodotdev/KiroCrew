@@ -114,3 +114,14 @@ describe('applyStatusDelta', () => {
     })).toBe(conflicting)
   })
 })
+
+describe('ciPending — a failed rollup with checks still in flight', () => {
+  it('keeps the marker only beside a failed rollup', () => {
+    expect(parseStatusDelta({ url: URL_A, ci: 'failed', ciPending: '1' }))
+      .toEqual({ url: URL_A, ci: 'failed', ciPending: '1' })
+    // Beside any other rollup, or with a non-canonical value, it would claim
+    // CI is still moving when the delta says otherwise.
+    expect(parseStatusDelta({ url: URL_A, ci: 'passed', ciPending: '1' })).toEqual({ url: URL_A, ci: 'passed' })
+    expect(parseStatusDelta({ url: URL_A, ci: 'failed', ciPending: true })).toEqual({ url: URL_A, ci: 'failed' })
+  })
+})

@@ -467,6 +467,25 @@ describe('ChatSidebar – conflicted PR chips', () => {
     expect(glyph('Merge conflicts')).toBeNull()
   })
 
+  it('keeps a failed chip visibly in flight while other checks still run', () => {
+    renderSidebar({ rows: chipRows({ ci: 'failed', ciPending: '1' }) })
+    const group = glyph('Checks failed; others still running')
+    expect(group).not.toBeNull()
+    // The group is icon-only, so its tooltip carries the same words.
+    expect(group!.getAttribute('title')).toBe(group!.getAttribute('aria-label'))
+    // The failure glyph plus the static pending dot — never a spinner, which
+    // on a session card reads as agent activity.
+    expect(group!.querySelectorAll('svg')).toHaveLength(2)
+    expect(group!.innerHTML).not.toMatch(/animate/)
+    expect(glyph('Checks failed')).toBeNull()
+  })
+
+  it('drops the in-flight dot once the failed run has finished', () => {
+    renderSidebar({ rows: chipRows({ ci: 'failed' }) })
+    expect(glyph('Checks failed')).not.toBeNull()
+    expect(glyph('Checks failed; others still running')).toBeNull()
+  })
+
   it('outranks a pending rollup', () => {
     // Pending is not a verdict; a settled conflict is.
     renderSidebar({ rows: chipRows({ ci: 'running', mergeable: 'conflicting' }) })

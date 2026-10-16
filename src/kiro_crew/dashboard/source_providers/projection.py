@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from kiro_crew.dashboard.source_providers import contract
+
 # One page of a secondary read (files, comments, commits, jobs). A full page is
 # reported as possibly truncated rather than paged further.
 _SECONDARY_PAGE_SIZE = 100
@@ -66,6 +68,42 @@ def _rollup_ci(buckets: list[str]) -> str | None:
     if "pending" in buckets:
         return "running"
     return "passed"
+
+
+# Chip-status key set when a FAILED rollup still has checks in flight. ``ci``
+# alone cannot say it: failure wins the rollup, so "one check failed, the rest
+# are still running" and "every check finished, one failed" both read
+# ``failed``, and the chip had no way to show that CI is still moving. The
+# value is the string ``"1"`` because the chip cache is ``dict[str, str]``;
+# the key is absent otherwise, never ``"0"``.
+CI_PENDING_KEY = "ciPending"
+
+# The providers whose chip read computes ``ciPending``. A registered plugin's
+# chip status is ``ci`` and ``state`` only, so the full-payload write-through
+# must not project the marker for one either, or the two would disagree on
+# every chip refresh and refetch the full payload.
+CI_PENDING_PROVIDERS = frozenset({"github", contract.BITBUCKET_SERVER_PROVIDER})
+
+# The CI fields a degraded read carries forward together: a kept ``ci`` with
+# a dropped ``ciPending`` would silently claim the run had finished.
+CI_STATUS_FIELDS = ("ci", CI_PENDING_KEY)
+
+
+def _record_ci(result: dict[str, str], checks: list[dict[str, Any]]) -> None:
+    """Write the rolled-up CI fields for the check rows *checks* into a chip entry.
+
+    The single writer of ``ci`` + ``ciPending`` from per-check rows, so the chip
+    read and the full-payload write-through cannot disagree about either. ``ci``
+    rolls up the buckets; ``ciPending`` is set on a ``failed`` rollup that still
+    has a row bucketed ``pending``.
+    """
+    buckets = [str(check.get("bucket") or "") for check in checks]
+    ci = _rollup_ci(buckets)
+    if ci is None:
+        return
+    result["ci"] = ci
+    if ci == "failed" and "pending" in buckets:
+        result[CI_PENDING_KEY] = "1"
 
 
 def _project_state(raw_state: str, *, draft: bool) -> str | None:

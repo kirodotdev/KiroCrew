@@ -1420,7 +1420,7 @@ def filter_slots_for_app(
 # an app token must never receive provider status — its scope is slot metadata,
 # not the operator's credential-backed view of a repository. Stripped here so
 # widening the general list for dashboard users cannot leak into an app frame.
-_SOURCE_LINK_STATUS_KEYS = ("ci", "state", "mergeable", "mergeStateStatus")
+_SOURCE_LINK_STATUS_KEYS = ("ci", "ciPending", "state", "mergeable", "mergeStateStatus")
 
 
 def _strip_source_link_status(slot_dict: dict[str, Any]) -> dict[str, Any]:

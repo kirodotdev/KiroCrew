@@ -378,7 +378,7 @@ export function handleSourceStatus(dispatch: AppDispatch, queryClient: QueryClie
   // that only touched the query caches would leave the sidebar glyph
   // stale until an unrelated slots broadcast — the same chip↔panel
   // divergence this feature removes, recreated on the sidebar.
-  dispatch(patchSlotSourceLinks({ url: delta.url, state: delta.state, ci: delta.ci }))
+  dispatch(patchSlotSourceLinks({ url: delta.url, state: delta.state, ci: delta.ci, ciPending: delta.ciPending }))
   // Invalidate the detail payload for EVERY changed delta, regardless
   // of origin. A 'detail'-origin delta is produced by one window's full
   // fetch; only that window received the fresh HTTP payload, so other
