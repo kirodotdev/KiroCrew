@@ -589,7 +589,17 @@ channel-first ladder above and keep Slack as the fallback:
 - `_alert_cron_failure` — the script/command arms, which signal failure by mutating
   the job and returning normally, plus fire-time policy denials;
 - the `message` arm's failure path, `_cron_single_failure` (`slack/gateway_runtime/cron_failure.py`), which
-  the single-agent turn's `except` branch calls before it re-raises.
+  the single-agent turn's `except` branch calls before it re-raises;
+- a run its deadline ended, of any kind. `_execute_with_timeout`'s `wait_for` and
+  the reaper's force-reap never return to the callback above, so the service
+  calls `_alert_timeout`, which starts the alert `_init_cron` set with
+  `CronService.set_timeout_alert` (`_alert_cron_failure`, detail = the run's
+  `last_error`) as its own task: a slow delivery never holds the run's claim
+  past its deadline into the reaper's. It alerts exactly the timeouts that
+  count toward auto-pause, so a run that already recorded its failure is not
+  told twice and a run whose payload never started is not told at all. The
+  `wait_for` arm clears the dedup anchor first, so consecutive timeouts each
+  alert, up to `_AUTO_PAUSE_THRESHOLD` before the job auto-pauses.
 
 An alert reaching only the dashboard bell while the results reach a chat is worse
 than a uniform gap: the success path is what taught the operator to watch the
