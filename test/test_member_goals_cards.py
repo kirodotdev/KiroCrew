@@ -377,6 +377,103 @@ def test_a_check_ins_card_applies_and_undoes_through_the_card_hook(
     assert len(_schedules(state, slug, "monthly")) == 1
 
 
+def test_a_heartbeat_card_turns_it_on_at_its_interval_and_undo_turns_it_off(
+    tmp_path: Path, _card_owner
+) -> None:
+    """The heartbeat turns on through an applied card, and the card names its cost."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _CardState(tmp_path)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    card = _propose_check_ins(state, {"heartbeat": True, "interval": 120})
+    from kiro_crew.dashboard import change_cards as cards
+
+    kind = catalog.KIND_CREWMATE_CHECK_INS
+    params = catalog.validate_params(kind, {"member": ORDINARY, "heartbeat": True, "interval": 120})
+    before = asyncio.run(cards.read_state(kind, params, [], state=state, app=None))
+    preview = catalog.build_preview(kind, params, before, {"label": "Scout"})
+    rows = {c["field"]: c for c in preview["changes"]}
+    assert rows["heartbeat"]["after"] == "On, every 2 hr (up to 12 wakes a day)"
+    assert "credits" in rows["heartbeat"]["label"]
+    assert rows["interval"]["before"] == "Every 1 hr (up to 24 wakes a day)"
+    assert rows["interval"]["after"] == "Every 2 hr (up to 12 wakes a day)"
+    ((status, body),) = _run_card(state, card["id"], catalog.OP_APPLY)
+    assert status == 200, body
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["heartbeat"], sched["interval"]) == (True, 120)
+    (job,) = _schedules(state, slug, "heartbeat")
+    assert job.schedule.cron_expr == "0 */2 * * *"
+    ((status, body),) = _run_card(state, card["id"], catalog.OP_UNDO)
+    assert status == 200, body
+    sched = member_goals.read_goals(slug, ORDINARY)["schedules"]
+    assert (sched["heartbeat"], sched["interval"]) == (False, 60)
+    assert _schedules(state, slug, "heartbeat") == []
+
+
+def test_a_heartbeat_card_at_the_default_interval_still_says_how_often(
+    tmp_path: Path, _card_owner
+) -> None:
+    """Consent to a recurring spend names how often it recurs, the default 60 too."""
+    _seed()
+    slug = _slug(ORDINARY)
+    state = _CardState(tmp_path)
+    member_goals.set_goal(slug, ORDINARY, "Ship", by="user")
+    from kiro_crew.dashboard import change_cards as cards
+
+    kind = catalog.KIND_CREWMATE_CHECK_INS
+    for params in ({"heartbeat": True}, {"heartbeat": True, "interval": 60}):
+        p = catalog.validate_params(kind, {"member": ORDINARY, **params})
+        before = asyncio.run(cards.read_state(kind, p, [], state=state, app=None))
+        preview = catalog.build_preview(kind, p, before, {"label": "Scout"})
+        rows = {c["field"]: c for c in preview["changes"]}
+        assert rows["heartbeat"]["before"] == "Off"
+        assert rows["heartbeat"]["after"] == "On, every 1 hr (up to 24 wakes a day)"
+    # Turning it off names no interval.
+    member_goals.set_schedules(slug, ORDINARY, {"heartbeat": True})
+    p = catalog.validate_params(kind, {"member": ORDINARY, "heartbeat": False})
+    before = asyncio.run(cards.read_state(kind, p, [], state=state, app=None))
+    preview = catalog.build_preview(kind, p, before, {"label": "Scout"})
+    (row,) = [c for c in preview["changes"] if c["field"] == "heartbeat"]
+    assert row["after"] == "Off"
+
+
+def test_every_surface_writes_the_interval_one_way() -> None:
+    """The card, the tool text and the wake prompt share ``member_goals.interval_label``."""
+    from kiro_crew import mcp_mate
+
+    assert [member_goals.interval_label(m) for m in member_goals.HEARTBEAT_INTERVALS] == [
+        "30 min",
+        "1 hr",
+        "2 hr",
+        "4 hr",
+    ]
+    assert catalog._check_in_value("interval", 60) == "Every 1 hr (up to 24 wakes a day)"
+    # The bound the user consents to, the same numbers the Goals tab shows.
+    assert [member_goals.wakes_per_day(m) for m in member_goals.HEARTBEAT_INTERVALS] == [
+        48,
+        24,
+        12,
+        6,
+    ]
+    (tool,) = [t for t in mcp_mate._list_tools() if t["name"] == "set_check_ins"]
+    for text in (tool["description"], catalog.KINDS[catalog.KIND_CREWMATE_CHECK_INS].summary):
+        assert "30, 60, 120 or 240" in text
+        assert "30 min, 1 hr (the default), 2 hr or 4 hr" in text
+        assert "15" not in text
+    # The card has no timing control, so the tool points at where timing lives.
+    assert "Goals tab under Check-ins" in tool["description"]
+
+
+@pytest.mark.parametrize("interval", [0, 15, 45, True, "30"])
+def test_a_heartbeat_card_refuses_an_interval_outside_the_list(interval: Any) -> None:
+    with pytest.raises(Exception) as exc:
+        catalog.validate_params(
+            catalog.KIND_CREWMATE_CHECK_INS,
+            {"member": ORDINARY, "heartbeat": True, "interval": interval},
+        )
+    assert "interval" in str(exc.value)
+
+
 def test_a_path_fill_takes_only_the_identifier_the_earlier_step_returned() -> None:
     from kiro_crew.dashboard.handlers.change_cards import match_step
 

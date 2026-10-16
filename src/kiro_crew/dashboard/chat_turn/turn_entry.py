@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from kiro_crew.dashboard.chat_turn.segment_flush import _reset_segment_copy
     from kiro_crew.dashboard.chat_turn.turn_locals import _ChatTurn, _Flow
     from kiro_crew.dashboard.chat_turn.turn_stats import _turn_clock
+    from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows
 
 
 def _session_stop_generation(turn) -> int:
@@ -662,6 +663,9 @@ async def _turn_open(turn: _ChatTurn) -> _Flow | None:
     # ``_pending_steers``, so they do not lift it.
     _person_steered_turn = False
     turn._person_steered_turn = _person_steered_turn
+    # A hidden turn's pre-tool text, cut without delivery until the turn shows
+    # whether it ended quietly or with a final reply. None on every other turn.
+    turn._held_rows = HeldRows() if turn._hidden_turn and turn._prompt_depth == 0 else None
 
     # When this turn began, for bounding an out-of-band directive claim to it.
     # A directive belongs to the turn that asked for it: a record parked by a turn

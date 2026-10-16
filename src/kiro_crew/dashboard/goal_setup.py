@@ -174,6 +174,15 @@ def _goal_prompt(goal_id: str) -> Build:
     return lambda rec, tools: kickoff_prompt(rec, goal_id, has_mate_tools=tools)
 
 
+#: The Heartbeat in the check-ins offer. It is off by default and only a check-ins
+#: card or the Goals tab turns it on, so the offer names it and what each wake costs.
+_HEARTBEAT_OFFER = (
+    "and what the Heartbeat does: a wake every so often that keeps the work moving "
+    "while they are away, with this chat staying quiet and your Dashboard tab "
+    "showing what it did, each wake using credits."
+)
+
+
 def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> str | None:
     """The hidden turn after the user confirms the crewmate's milestones card.
 
@@ -206,14 +215,17 @@ def milestones_prompt(rec: dict[str, Any], *, has_mate_tools: bool = True) -> st
             "Reply in the user's language: acknowledge them in a sentence, then offer "
             "check-ins with set_check_ins. Say in one plain sentence each what the Daily "
             "Goal Reminder, the Weekly report and the Monthly review would do for them, "
-            "propose the ones that fit this goal, and let the card decide."
+            + _HEARTBEAT_OFFER
+            + " Propose the ones that fit this goal, and let the card decide."
         )
     else:
         lines.append(
             "Reply in the user's language: acknowledge them in a sentence, then offer "
             "check-ins. Say in one plain sentence each what the Daily Goal Reminder, the "
-            "Weekly report and the Monthly review would do for them, suggest the ones "
-            "that fit this goal, and tell the user they turn them on on your Goals tab."
+            "Weekly report and the Monthly review would do for them, "
+            + _HEARTBEAT_OFFER
+            + " Suggest the ones that fit this goal, and tell the user they turn them on "
+            "on your Goals tab."
         )
     return "\n".join(lines)
 

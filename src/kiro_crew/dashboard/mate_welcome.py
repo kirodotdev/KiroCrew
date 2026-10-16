@@ -363,7 +363,9 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     sent (``_turn_user_sent`` stays false), so the operations only a user's turn
     may run (a guide, ``update_self``, most cards) refuse inside it; in a
     crewmate's own thread its goal, milestones and check-ins cards are still
-    admitted (``handlers.guide.REQ_OWN_GOAL_TURN``).
+    admitted (``handlers.guide.REQ_OWN_GOAL_TURN``). Its pre-tool text is held
+    until the turn ends (:mod:`kiro_crew.dashboard.heartbeat_quiet_end`): a
+    quiet end or a final reply folds that narration into the steps.
     """
     # Deferred: chat_handlers / chat import this package's handlers at load.
     from kiro_crew.dashboard.chat import _run_chat
@@ -375,20 +377,10 @@ def dispatch_hidden_turn(state: Any, slot: Any, prompt: str, *, human_seen: bool
     slot._has_reader = False  # delivered over the WebSocket, like a ws send
     slot._file_changes = []
     _sweep_stale_permissions(slot)
-    task = spawn_guarded_turn(
-        state,
-        slot,
-        state.run_background_turn(
-            slot,
-            _run_chat(
-                state,
-                slot,
-                prompt,
-                _synthetic_payload=True,
-                _turn_actor="gateway",
-            ),
-        ),
+    turn = _run_chat(
+        state, slot, prompt, _synthetic_payload=True, _turn_actor="gateway", _hidden_turn=True
     )
+    task = spawn_guarded_turn(state, slot, state.run_background_turn(slot, turn))
     slot.task = task
     state.push_slots_update()
     logger.info("hidden gateway turn started on %s", slot.key)

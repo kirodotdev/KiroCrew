@@ -38,6 +38,7 @@ if TYPE_CHECKING:
         _TurnExit,
     )
     from kiro_crew.dashboard.chat_turn.turn_stats import _FirstVisibleClock
+    from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows
     from kiro_crew.dashboard.poisoned_escalation import PoisonedConversationEscalation
     from kiro_crew.dashboard.responsive_chat import ResponsiveTurn
     from kiro_crew.execution_context import ExecutionContext
@@ -83,6 +84,7 @@ class _ChatTurn:
     _directive_channel_origin: "bool"
     _commands_off: "bool"
     _turn_actor: "str"
+    _hidden_turn: "bool"
     regenerate_hint: "str"
     _on_consumed: "Callable[[bool], None] | None"
     _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None"
@@ -124,6 +126,7 @@ class _ChatTurn:
     _first_turn_history_assembled: "bool"
     _had_empty_response_verdict: "bool"
     _held: "dict[str, Any]"
+    _held_rows: "HeldRows | None"
     _incoming_message: "str"
     _interrupted_turn_preamble: "str"
     _irreversible_consumption_reported: "bool"
@@ -311,6 +314,7 @@ class _ChatTurn:
         _directive_channel_origin: "bool",
         _commands_off: "bool",
         _turn_actor: "str",
+        _hidden_turn: "bool",
         regenerate_hint: "str",
         _on_consumed: "Callable[[bool], None] | None",
         _on_irreversibly_consumed: "Callable[[], Awaitable[None] | None] | None",
@@ -339,6 +343,7 @@ class _ChatTurn:
         self._directive_channel_origin = _directive_channel_origin
         self._commands_off = _commands_off
         self._turn_actor = _turn_actor
+        self._hidden_turn = _hidden_turn
         self.regenerate_hint = regenerate_hint
         self._on_consumed = _on_consumed
         self._on_irreversibly_consumed = _on_irreversibly_consumed

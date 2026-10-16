@@ -47,7 +47,7 @@ const record = (over: Partial<MemberGoals> = {}): MemberGoals => ({
     },
     { id: 'k00000002', text: 'Notes published', target: 'yes', current: '', updated_at: 0, readings: [], goal_ids: [] },
   ],
-  schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1 },
+  schedules: { time: '09:00', timezone: '', daily: false, weekly: false, weekday: 1, monthly: false, month_day: 1, heartbeat: false, interval: 60 },
   reports: [{ kind: 'weekly', slug: 'week-41', title: 'Week 41', at: NOW - 86400 }],
   removed_key_result: null,
   removed_goal: null,
@@ -190,8 +190,76 @@ describe('CrewGoalsPane', () => {
     renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
     const page = await openCheckIns()
     const switches = within(page).getAllByRole('switch')
-    expect(switches).toHaveLength(3)
+    expect(switches).toHaveLength(4)
     for (const sw of switches) expect(sw).toHaveAttribute('aria-disabled', 'true')
+  })
+
+  it('shows the heartbeat as a full-width row under the three tiles, off by default', async () => {
+    memberGoals.get.mockResolvedValue(record())
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    const row = await screen.findByTestId('crew-goals-checkin-heartbeat')
+    expect(row).toHaveAttribute('data-on', 'false')
+    expect(row).toHaveTextContent('Heartbeat')
+    expect(row).toHaveTextContent('Every 1 hr, finds work on its own')
+    expect(row).toHaveTextContent('Off')
+    expect(row).not.toHaveTextContent('Each wake uses credits.')
+    // A sibling of the three-tile grid, not a fourth tile inside it.
+    const grid = screen.getByTestId('crew-goals-checkin-daily').parentElement
+    expect(grid).not.toContainElement(row)
+    expect(screen.getByTestId('crew-goals-checkins')).toContainElement(row)
+  })
+
+  it('shows an on heartbeat with its interval', async () => {
+    const base = record()
+    memberGoals.get.mockResolvedValue(record({ schedules: { ...base.schedules, heartbeat: true, interval: 120 } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    const row = await screen.findByTestId('crew-goals-checkin-heartbeat')
+    expect(row).toHaveAttribute('data-on', 'true')
+    expect(row).toHaveTextContent('Every 2 hr, finds work on its own')
+    expect(row).toHaveTextContent(/Turned on$/)
+    // The row that shows it on also names the cost and its daily bound.
+    expect(row).toHaveTextContent('Each wake uses credits. · up to 12 wakes a day')
+    expect(row).not.toHaveTextContent('Running')
+  })
+
+  it('sets the heartbeat and its interval on the check-ins page, which names the cost', async () => {
+    const base = record()
+    memberGoals.get.mockResolvedValue(base)
+    memberGoals.setSchedules.mockResolvedValue(record({ schedules: { ...base.schedules, heartbeat: true } }))
+    renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+    const page = await openCheckIns()
+    const settings = within(page).getByTestId('crew-goals-heartbeat-settings')
+    expect(settings).toHaveTextContent('Each wake uses credits. · up to 24 wakes a day')
+    expect(within(settings).queryByRole('combobox', { name: 'How often' })).toBeNull()
+    fireEvent.click(within(settings).getByRole('switch', { name: 'Heartbeat' }))
+    await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { heartbeat: true }))
+    expect(await within(settings).findByRole('combobox', { name: 'How often' })).toBeEnabled()
+  })
+
+  it('changes the heartbeat interval through its picker', async () => {
+    touch.on = true
+    try {
+      const base = record()
+      const on = record({ schedules: { ...base.schedules, heartbeat: true } })
+      memberGoals.get.mockResolvedValue(on)
+      memberGoals.setSchedules.mockResolvedValue(record({ schedules: { ...on.schedules, interval: 60 } }))
+      renderWithProviders(<CrewGoalsPane slug="scout" member="scout" name="Scout" />)
+      const page = await openCheckIns()
+      const picker = within(within(page).getByTestId('crew-goals-heartbeat-settings')).getByRole('combobox', { name: 'How often' })
+      expect(Array.from((picker as HTMLSelectElement).options).map(o => o.value)).toEqual(['30', '60', '120', '240'])
+      // Each option names its own daily bound, so the user can size the spend before choosing.
+      // Intl puts a no-break space between number and unit; compare the words.
+      expect(Array.from((picker as HTMLSelectElement).options).map(o => (o.textContent ?? '').replace(/\s/g, ' '))).toEqual([
+        'Every 30 min · up to 48 wakes a day',
+        'Every 1 hr · up to 24 wakes a day',
+        'Every 2 hr · up to 12 wakes a day',
+        'Every 4 hr · up to 6 wakes a day',
+      ])
+      fireEvent.change(picker, { target: { value: '60' } })
+      await waitFor(() => expect(memberGoals.setSchedules).toHaveBeenCalledWith('scout', 'scout', { interval: 60 }))
+    } finally {
+      touch.on = false
+    }
   })
 
   it('shows the weekday and day-of-month pickers only under their switch while it is on', async () => {

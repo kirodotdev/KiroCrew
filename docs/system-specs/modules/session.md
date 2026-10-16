@@ -1128,6 +1128,32 @@ against sweep completeness, and are torn down at `close_all`.
   (`_directive_user_origin` True, or any channel turn) is REFUSED
   (`QUIET_END_REFUSED_USER_TURN`), so the ladder, Resume and the channel notice
   run as before and a model that dodged a question fails VISIBLY, not silently.
+  **Text BEFORE the quiet end** is the turn's ordinary output (cut into an
+  assistant row at the tool call) on every turn but a crewmate's HIDDEN
+  gateway turn (`_run_chat(_hidden_turn=True)`, set only by
+  `mate_welcome.dispatch_hidden_turn`: the welcome, goal setup and the goal
+  check-ins, the heartbeat among them). There each pre-tool cut is persisted with
+  `quiet_persist` (no `chat_message`, no `_on_row` roster event, no card
+  event) and held in `dashboard/heartbeat_quiet_end.HeldRows`; at completion
+  (`settle_held_rows`) an applied quiet end with no person's steer folds the
+  held text onto the applied `nothing_to_do` row (`meta.folded_reply` and
+  `meta.output`, patched live over `chat_message_update`) and rewrites each
+  held row to the say-nothing U+200B body in place; a final reply with no
+  person's steer folds each held row onto the tool row after it the same way.
+  A fold writes the tool row's copy before it blanks any held row, since a
+  history flush serializes the same row dicts from an executor thread; at
+  every point one copy of the text is in the transcript.
+  A held row naming an image (`![...](...)`) is never folded: the save
+  preserves a local image only from a row's own content
+  (`chat_attachments.persist_inline_images`), not from tool metadata, so it
+  is delivered as written.
+  A fold takes only text it keeps whole: when the joined held text for one
+  tool row is longer than `MAX_FOLDED_CHARS`, nothing is folded there and the
+  rows are delivered as written, so no character leaves the transcript. Any
+  other ending delivers the held rows then, and a turn that raises or is
+  cancelled before settling delivers them from `_run_chat`'s `finally`
+  (`release_held_rows`). Cron, monitor wakes and user turns never set the flag
+  and are unchanged.
   A quiet end is also a FINISHED turn for the interrupted-turn scan: its tail
   (`[nudge, tool…]`) is shape-identical to a gateway that died mid-turn, so
   `state.is_turn_interrupted` and its mirror `selectTurnInterrupted` treat the

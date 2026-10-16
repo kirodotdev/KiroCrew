@@ -20,10 +20,10 @@ now is not part of it: that is the crewmate's work ledger.
   (``set_key_results``); once confirmed it records readings directly
   (``key_result_progress``). The user edits or removes them on the Goals tab.
   A reading is free text: a number ("27", "80%") or a short qualitative note.
-* ``schedules`` -- the three check-in switches (Daily Goal Reminder, Weekly
-  report, Monthly review), the one shared time of day, the weekday and the day of
-  the month; the gateway schedules they drive are owned by
-  :mod:`kiro_crew.dashboard.goal_reminder`.
+* ``schedules`` -- the four check-in switches (Daily Goal Reminder, Weekly
+  report, Monthly review, Heartbeat), the one shared time of day, the weekday,
+  the day of the month and the heartbeat's interval in minutes; the gateway
+  schedules they drive are owned by :mod:`kiro_crew.dashboard.goal_reminder`.
 * ``reports`` -- pointers to the newest weekly reports and monthly reviews, each
   saved as an artifact under ``Crewmates/<name>/Reports``.
 
@@ -110,11 +110,21 @@ BY_CREWMATE = "crewmate"
 _AUTHORS = (BY_USER, BY_CREWMATE)
 
 DEFAULT_REMINDER_TIME = "09:00"
-#: The three check-ins, each its own switch and its own schedule.
+#: The four check-ins, each its own switch and its own schedule. The heartbeat
+#: wakes the crewmate every :data:`HEARTBEAT_INTERVALS` minutes to move its work
+#: forward on its own (RFC "Crewmate heartbeat").
 CADENCE_DAILY = "daily"
 CADENCE_WEEKLY = "weekly"
 CADENCE_MONTHLY = "monthly"
-CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY)
+CADENCE_HEARTBEAT = "heartbeat"
+CADENCES = (CADENCE_DAILY, CADENCE_WEEKLY, CADENCE_MONTHLY, CADENCE_HEARTBEAT)
+#: The heartbeat's intervals, in minutes, and the one a record without one reads as.
+#: Each wake is a full model turn over the crewmate's whole context, and a
+#: provider's prompt cache lives minutes, not half-hours, so no interval here reuses
+#: the last wake's cache: credits scale with the number of wakes alone. Hence a
+#: 30-minute floor and an hourly default (RFC "Crewmate heartbeat", Cost and cache).
+HEARTBEAT_INTERVALS = (30, 60, 120, 240)
+DEFAULT_HEARTBEAT_INTERVAL = 60
 #: Report kinds: what a weekly and a monthly check-in each produce.
 REPORT_KINDS = (CADENCE_WEEKLY, CADENCE_MONTHLY)
 #: Cron day of week (0 = Sunday); Monday by default.
@@ -272,6 +282,8 @@ def default_schedules() -> dict[str, Any]:
         "weekday": DEFAULT_WEEKDAY,
         CADENCE_MONTHLY: False,
         "month_day": DEFAULT_MONTH_DAY,
+        CADENCE_HEARTBEAT: False,
+        "interval": DEFAULT_HEARTBEAT_INTERVAL,
     }
 
 
@@ -458,6 +470,8 @@ def _normalize(data: dict[str, Any]) -> dict[str, Any]:
         day = sched.get("month_day")
         if isinstance(day, int) and 1 <= day <= MAX_MONTH_DAY:
             out["month_day"] = day
+        if is_heartbeat_interval(sched.get("interval")):
+            out["interval"] = sched["interval"]
     reports = data.get("reports")
     if isinstance(reports, list):
         rec["reports"] = [
@@ -1205,8 +1219,53 @@ def is_check_in_time(value: str) -> bool:
     return bool(_TIME_RE.match(value))
 
 
+def interval_label(minutes: Any) -> str:
+    """The one way a heartbeat interval is written: ``"30 min"``, ``"1 hr"``, ``"2 hr"``.
+
+    The card, the tool text and the wake prompt use it, and the Goals tab's
+    ``fmtInterval`` gives the same English words (``Intl`` short units), so a
+    user reads one wording everywhere. A value off the list reads as the default.
+    """
+    value = minutes if is_heartbeat_interval(minutes) else DEFAULT_HEARTBEAT_INTERVAL
+    return f"{value} min" if value < 60 else f"{value // 60} hr"
+
+
+def wakes_per_day(minutes: Any) -> int:
+    """The most wakes a heartbeat at *minutes* makes in a day: 48, 24, 12 or 6.
+
+    The bound the user consents to on the card, matching the Goals tab's
+    ``wakesPerDay``. A value off the list reads as the default.
+    """
+    value = minutes if is_heartbeat_interval(minutes) else DEFAULT_HEARTBEAT_INTERVAL
+    return (24 * 60) // value
+
+
+def interval_choices() -> str:
+    """Every interval in :func:`interval_label` words, for tool and card text.
+
+    Built from :data:`HEARTBEAT_INTERVALS`, so the text a model reads can never
+    offer an interval the validator refuses: ``"30 min, 1 hr (the default), 2 hr or 4 hr"``.
+    """
+    words = [
+        interval_label(m) + (" (the default)" if m == DEFAULT_HEARTBEAT_INTERVAL else "")
+        for m in HEARTBEAT_INTERVALS
+    ]
+    return ", ".join(words[:-1]) + " or " + words[-1]
+
+
+def interval_minutes_text() -> str:
+    """:data:`HEARTBEAT_INTERVALS` as the numbers a tool call sends: ``"30, 60, 120 or 240"``."""
+    nums = [str(m) for m in HEARTBEAT_INTERVALS]
+    return ", ".join(nums[:-1]) + " or " + nums[-1]
+
+
+def is_heartbeat_interval(value: Any) -> bool:
+    """Whether *value* is one of :data:`HEARTBEAT_INTERVALS` (an int, never a bool)."""
+    return isinstance(value, int) and not isinstance(value, bool) and value in HEARTBEAT_INTERVALS
+
+
 def _validate_schedules(changes: Any) -> None:
-    allowed = {*CADENCES, "time", "timezone", "weekday", "month_day"}
+    allowed = {*CADENCES, "time", "timezone", "weekday", "month_day", "interval"}
     if not isinstance(changes, dict) or not changes or set(changes) - allowed:
         raise GoalError("invalid_schedule", "give switches or timing to change")
     for cadence in CADENCES:
@@ -1226,6 +1285,11 @@ def _validate_schedules(changes: Any) -> None:
     day = changes.get("month_day", 1)
     if not isinstance(day, int) or isinstance(day, bool) or not 1 <= day <= MAX_MONTH_DAY:
         raise GoalError("invalid_month_day", f"month_day must be 1 to {MAX_MONTH_DAY}")
+    if "interval" in changes and not is_heartbeat_interval(changes["interval"]):
+        raise GoalError(
+            "invalid_interval",
+            "interval must be one of " + ", ".join(str(m) for m in HEARTBEAT_INTERVALS),
+        )
 
 
 def set_schedules(
@@ -1237,9 +1301,12 @@ def set_schedules(
 ) -> dict[str, Any]:
     """Change the check-in switches and their timing. Returns the record.
 
-    *changes* holds any of ``daily``/``weekly``/``monthly`` (bool), ``time``
-    (``HH:MM``), ``timezone`` (IANA name), ``weekday`` (0-6, 0 = Sunday) and
-    ``month_day`` (1-28). Turning any switch on needs a goal (``no_goal``).
+    *changes* holds any of ``daily``/``weekly``/``monthly``/``heartbeat``
+    (bool), ``time`` (``HH:MM``), ``timezone`` (IANA name), ``weekday`` (0-6,
+    0 = Sunday), ``month_day`` (1-28) and ``interval`` (the heartbeat's minutes,
+    one of :data:`HEARTBEAT_INTERVALS`). Turning any switch on needs a goal
+    (``no_goal``). Only the owner's route and an applied card call this, so the
+    crewmate never turns a switch on by itself.
     When supplied, *expected* covers every written field and is compared under
     the write lock; omitted fields stay untouched. No expectation keeps the
     ordinary owner's partial-update behavior.

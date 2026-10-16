@@ -277,7 +277,16 @@ async def _on_tool_call(turn: _ChatTurn, event) -> None:
                 _open_construct,
             )
         else:
-            _flush_segment(state, slot, turn.assistant_text, broadcast=False)
+            # A hidden turn's cut is persisted without delivery and held until
+            # the turn end settles it (``heartbeat_quiet_end.HeldRows``).
+            _flush_segment(
+                state,
+                slot,
+                turn.assistant_text,
+                broadcast=False,
+                quiet_persist=turn._held_rows is not None,
+                held=turn._held_rows,
+            )
             turn.assistant_text = ""
             _turn_flushed_visible_text = True
             turn._turn_flushed_visible_text = _turn_flushed_visible_text

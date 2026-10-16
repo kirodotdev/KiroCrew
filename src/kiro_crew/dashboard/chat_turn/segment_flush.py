@@ -41,6 +41,7 @@ if TYPE_CHECKING:
     )
     from kiro_crew.dashboard.chat_turn.decisions_hooks import _decisions_strip_meta
     from kiro_crew.dashboard.chat_turn.file_changes import _note_reply_row
+    from kiro_crew.dashboard.heartbeat_quiet_end import HeldRows
 
 #: Shapes that make glued footer text look like an instruction to a later
 #: reader. Used only to tag the audit event; the label is applied regardless.
@@ -481,6 +482,7 @@ def _flush_segment(
     broadcast: bool = True,
     quiet_persist: bool = False,
     interrupted: bool = False,
+    held: HeldRows | None = None,
 ) -> None:
     """Finalize current text block as a segment and persist it.
 
@@ -492,6 +494,8 @@ def _flush_segment(
     would render a DUPLICATE copy of the pre-steer text below the steer
     bubble. Normal end-of-segment flushes keep the broadcast — there the
     clients still hold a live streaming message for it to reconcile into.
+    A hidden turn's pre-tool cut also passes it, with *held* to keep the row
+    until the turn end settles it (``heartbeat_quiet_end.HeldRows``).
 
     The append-only log's identity for this segment is DERIVED here, not passed
     in: the ACP session id comes from the slot's own client, the turn from the
@@ -577,7 +581,7 @@ def _flush_segment(
     # the chat_segment event tells it to finalize streaming → assistant.
     _note_reply_row(
         slot,
-        slot.append(
+        reply_row := slot.append(
             "assistant",
             redacted,
             "msg msg-a",
@@ -650,6 +654,8 @@ def _flush_segment(
     # dashboard-surfaced copy of the widget, so it must not persist a credential
     # the segment redaction just stripped out of chat.
     _schedule_widget_registration(state, slot, redacted, str(last_msg.get("ts", "")))
+    if held is not None:
+        held.hold(reply_row)
 
 
 def _schedule_widget_registration(

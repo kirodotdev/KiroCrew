@@ -157,6 +157,23 @@ def test_the_milestones_nudge_offers_check_ins_only_when_none_is_on() -> None:
     assert goal_setup.milestones_prompt({**rec, "key_results": []}) is None
 
 
+@pytest.mark.parametrize("has_mate_tools", [True, False])
+def test_the_milestones_nudge_offers_the_heartbeat_too(has_mate_tools: bool) -> None:
+    """The Heartbeat is off by default and only a check-ins card turns it on, so the
+    offer after the milestones are confirmed names it beside the three reminders."""
+    rec = {
+        "goals": [GOAL_A],
+        "key_results": [{"id": "k1", "text": "notes out", "target": "yes"}],
+        "schedules": {},
+    }
+    text = goal_setup.milestones_prompt(rec, has_mate_tools=has_mate_tools)
+    assert text is not None
+    for name in ("Daily Goal Reminder", "Weekly report", "Monthly review", "Heartbeat"):
+        assert name in text
+    assert "keeps the work moving while they are away" in text
+    assert "Dashboard tab" in text
+
+
 def test_the_removed_nudge_names_the_goal_and_its_orphaned_milestones() -> None:
     rec = {
         "goals": [GOAL_B],

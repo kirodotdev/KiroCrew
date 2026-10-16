@@ -811,7 +811,7 @@ describe('MembersPage Profile card — Goals retention and delivery', () => {
     slug: 'oncall', member: 'oncall',
     goals: [{ id: 'g00000001', number: 1, text: 'Keep releases current', created_at: 0, updated_at: 0, updated_by: 'user' }],
     key_results: [{ id: 'k00000001', text: 'Release notes', target: '10', current: '', updated_at: 0, readings: [], goal_ids: ['g00000001'] }],
-    schedules: { daily: false, weekly: false, monthly: false, weekday: 1, month_day: 1, time: '09:00', timezone: '' },
+    schedules: { daily: false, weekly: false, monthly: false, weekday: 1, month_day: 1, time: '09:00', timezone: '', heartbeat: false, interval: 60 },
     reports: [], removed_goal: null, removed_key_result: null,
     limits: { goal_text_max_chars: 2000, key_result_text_max_chars: 200, key_result_value_max_chars: 40, key_result_reading_max_chars: 120 },
   }
