@@ -378,6 +378,27 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc:notif:activeKinds:v2',
   'kirocrew:account-email-hidden',
   'kirocrew:comment-hint-dismissed',
+  // Settings > Shortcuts, and the push-to-talk key on Settings > Voice. Each
+  // key is written only by an explicit user action, on its settings page or in
+  // the shortcuts reference modal. No hook writes a default on mount. The
+  // on/off switch and the macOS digit modifier hold '1' or '0'
+  // (components/ShortcutsModal.tsx). The Search everywhere chord is a JSON
+  // QuickSearchConfig (lib/quickSearchShortcut.ts). The panel toggle chords are
+  // a JSON PanelToggleOverrides holding overrides only
+  // (lib/panelToggleShortcuts.ts). The push-to-talk key is a JSON PttConfig
+  // (lib/pushToTalk.ts). Its header states what a client inherits from another
+  // machine's binding.
+  //
+  // NOT here: 'mc-mic-device-id' (hooks/mic.ts). The browser issues a
+  // microphone id for the devices on that machine, so a restored one names no
+  // device. Also NOT here: 'mc-shortcut-overrides'. lib/shortcutRegistry.ts
+  // ships only its reader. The change that adds the writer must add the key
+  // here.
+  'mc-keyboard-shortcuts',
+  'mc-mac-ctrl-digits',
+  'mc-quicksearch-shortcut',
+  'mc-panel-toggle-shortcuts',
+  'mc-ptt-config',
   // Cloud launch defaults.
   'mc-cloud-profile',
   'mc-cloud-region',

@@ -1208,7 +1208,21 @@ Contract:
   interface mode (`mc-ui`), reading width (`mc-reading-width`), the sessions
   sidebar width and the width to give back when leaving board view
   (`mc-sidebar-width`, `mc-sidebar-width-pre-board`), and the board folder
-  collapse overrides described above -- are durable.
+  collapse overrides described above -- are durable, and so are the Settings >
+  Shortcuts choices: the on/off switch (`mc-keyboard-shortcuts`), the macOS
+  digit modifier (`mc-mac-ctrl-digits`), the Search everywhere chord
+  (`mc-quicksearch-shortcut`), and the panel toggle chords
+  (`mc-panel-toggle-shortcuts`), and the push-to-talk key (`mc-ptt-config`)
+  on Settings > Voice. The push-to-talk binding is positional and the
+  platform defaults differ, so a client that inherits another machine's
+  binding (a Mac client's bare right Option does not arm on most Windows and
+  Linux layouts) changes it once; that one change costs less than
+  re-recording the key after every destructive upgrade. Two neighboring keys
+  are deliberately excluded: the microphone choice (`mc-mic-device-id`) is a
+  device id the browser issues for that machine, so a restored one names no
+  device, and the rebound-shortcut overrides (`mc-shortcut-overrides`) have
+  no writer yet, so the change that adds the writer must also add the key to
+  the list.
 - A SETTINGS IMPORT rewrites this file under a profile that has already synced,
   which the cold-profile rule above would never re-read. The client therefore
   pauses the sync before sending the import (`pauseUiPrefsSync`: no flush,

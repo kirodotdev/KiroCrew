@@ -631,9 +631,9 @@ const PTT_MODES: readonly PttMode[] = ['toggle', 'ptt', 'hybrid']
  * cutoff, and the live test strip.
  *
  * State is BROWSER-LOCAL (see `lib/pushToTalk`), so this block writes
- * localStorage and does not go through the STT config mutation — the right key
- * depends on the keyboard in front of you, and pushing one machine's choice to
- * every other device would be wrong.
+ * localStorage and does not go through the STT config mutation. The ui-prefs
+ * backup carries the key between clients under the inherit-once contract in
+ * that module's header.
  *
  * Row ORDER is deliberate and was corrected after a first-run review: key first,
  * then behaviour, then the cutoff, then the test. Asking "how should the key

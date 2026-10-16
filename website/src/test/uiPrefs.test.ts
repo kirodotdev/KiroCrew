@@ -15,6 +15,11 @@ import {
 } from '../lib/uiPrefs'
 import { saveChatConfig, loadChatConfig } from '../pages/chat/ChatSettings'
 import { loadBoardFolderCollapse, persistBoardOverride } from '../utils/boardFolderCollapse'
+import { MAC_CTRL_DIGITS_KEY, SHORTCUTS_ENABLED_KEY } from '../hooks/useKeyboardShortcuts'
+import { QUICK_SEARCH_SHORTCUT_KEY } from '../lib/quickSearchShortcut'
+import { PANEL_TOGGLE_SHORTCUTS_KEY } from '../lib/panelToggleShortcuts'
+import { PTT_STORAGE_KEY } from '../lib/pushToTalk'
+import { SHORTCUT_OVERRIDES_KEY } from '../lib/shortcutRegistry'
 
 const SYNCED_KEYS_KEY = 'mc-ui-prefs-synced'
 const ROSTER_ENTRY = 'mc:ui-prefs:roster'
@@ -129,6 +134,35 @@ describe('uiPrefs', () => {
       for (const key of ['mc-notification-sound', 'mc-ui', 'mc-reading-width']) {
         expect(DURABLE_PREF_KEYS).toContain(key)
       }
+    })
+
+    it('holds the Settings > Shortcuts choices and the push-to-talk key (issue #16237)', () => {
+      // The on/off switch, the macOS digit modifier, the Search everywhere
+      // chord, the panel toggle chords, and the push-to-talk key on Settings >
+      // Voice are written only by an explicit user action. A fresh origin must
+      // restore them like every other setting. The constants are the writers'
+      // own. A renamed key fails here.
+      for (const key of [
+        SHORTCUTS_ENABLED_KEY,
+        MAC_CTRL_DIGITS_KEY,
+        QUICK_SEARCH_SHORTCUT_KEY,
+        PANEL_TOGGLE_SHORTCUTS_KEY,
+        PTT_STORAGE_KEY,
+      ]) {
+        expect(DURABLE_PREF_KEYS).toContain(key)
+      }
+    })
+
+    it('excludes the microphone choice', () => {
+      // The browser issues the microphone id for the devices on that machine.
+      // A restored id names no device on another one.
+      expect(DURABLE_PREF_KEYS).not.toContain('mc-mic-device-id')
+    })
+
+    it('excludes the rebound-shortcut overrides until their writer exists', () => {
+      // shortcutRegistry.ts ships the reader only. A key with no writer is a
+      // backup of nothing. The change that adds the writer adds the key.
+      expect(DURABLE_PREF_KEYS).not.toContain(SHORTCUT_OVERRIDES_KEY)
     })
   })
 
@@ -815,6 +849,105 @@ describe('uiPrefs', () => {
       const spy2 = mockFetch(() => okJson({ prefs: {} }))
       await flushUiPrefs()
       expect(lastPatch(spy2)).toEqual({ 'mc-ui': 'cli' })
+    })
+
+    it('a cold origin restores the Shortcuts and push-to-talk keys and keeps the one it already holds (issue #16237)', async () => {
+      localStorage.setItem(SHORTCUTS_ENABLED_KEY, '0')
+      mockFetch(() =>
+        okJson({
+          prefs: {
+            [SHORTCUTS_ENABLED_KEY]: '1',
+            [MAC_CTRL_DIGITS_KEY]: '0',
+            [QUICK_SEARCH_SHORTCUT_KEY]: '{"mode":"custom","custom":{"key":"j","mod":true}}',
+            [PANEL_TOGGLE_SHORTCUTS_KEY]: '{"terminal":{"key":"t","mod":true,"shift":true}}',
+            [PTT_STORAGE_KEY]: '{"enabled":true,"mode":"hybrid","binding":{"code":"ShiftRight"},"holdMs":500}',
+          },
+        }),
+      )
+      expect(await hydrateUiPrefs()).toBe(4)
+      expect(localStorage.getItem(SHORTCUTS_ENABLED_KEY)).toBe('0')
+      expect(localStorage.getItem(MAC_CTRL_DIGITS_KEY)).toBe('0')
+      expect(localStorage.getItem(QUICK_SEARCH_SHORTCUT_KEY)).toBe(
+        '{"mode":"custom","custom":{"key":"j","mod":true}}',
+      )
+      expect(localStorage.getItem(PANEL_TOGGLE_SHORTCUTS_KEY)).toBe(
+        '{"terminal":{"key":"t","mod":true,"shift":true}}',
+      )
+      expect(localStorage.getItem(PTT_STORAGE_KEY)).toBe(
+        '{"enabled":true,"mode":"hybrid","binding":{"code":"ShiftRight"},"holdMs":500}',
+      )
+      expect(hasUnreconciledKeys()).toBe(false)
+    })
+
+    /** Each Shortcuts key and the push-to-talk key, with a local value and a
+     *  different host value. */
+    const SHORTCUT_LOCAL_VS_HOST: ReadonlyArray<readonly [string, string, string]> = [
+      [SHORTCUTS_ENABLED_KEY, '0', '1'],
+      [MAC_CTRL_DIGITS_KEY, '0', '1'],
+      [QUICK_SEARCH_SHORTCUT_KEY, '{"mode":"double-shift"}', '{"mode":"custom","custom":{"key":"j","mod":true}}'],
+      [
+        PANEL_TOGGLE_SHORTCUTS_KEY,
+        '{"terminal":{"key":"t","mod":true,"shift":true}}',
+        '{"terminal":{"key":"`","ctrl":true},"left-sidebar":{"key":"[","mod":true}}',
+      ],
+      [
+        PTT_STORAGE_KEY,
+        '{"enabled":true,"mode":"hybrid","binding":{"code":"AltRight"},"holdMs":500}',
+        '{"enabled":true,"mode":"ptt","binding":{"code":"Space","alt":true,"shift":true},"holdMs":500}',
+      ],
+    ]
+
+    /** Build a warm profile from a roster-aware build that predates the
+     *  Shortcuts and push-to-talk keys. It holds a fingerprint for an old key
+     *  and a stored roster of every durable key except the five. */
+    async function warmRosterProfileWithoutShortcutKeys() {
+      await warmLegacyProfile()
+      const shortcutKeys = new Set(SHORTCUT_LOCAL_VS_HOST.map(([key]) => key))
+      const doc = JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!) as Record<string, string>
+      doc[ROSTER_ENTRY] = JSON.stringify(DURABLE_PREF_KEYS.filter((k) => !shortcutKeys.has(k)))
+      localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify(doc))
+      expect(storedRoster()).not.toContain(PANEL_TOGGLE_SHORTCUTS_KEY)
+    }
+
+    /** The common upgrade path for an install that already holds the keys.
+     *  The local value stays. The first flush uploads nothing. The user's next
+     *  change goes up. A never-synced install cold-hydrates instead. An
+     *  install with a pending failed-restore marker lets the host win. */
+    async function expectWarmProfileKeepsItsShortcutChoices() {
+      const hostPrefs: Record<string, string> = {}
+      for (const [key, local, host] of SHORTCUT_LOCAL_VS_HOST) {
+        localStorage.setItem(key, local)
+        hostPrefs[key] = host
+      }
+      mockFetch(() => okJson({ prefs: hostPrefs }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+
+      for (const [key, local] of SHORTCUT_LOCAL_VS_HOST) {
+        expect(localStorage.getItem(key)).toBe(local)
+      }
+      expect(hasUnreconciledKeys()).toBe(false)
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+
+      const next: Record<string, string> = {}
+      for (const [key, , host] of SHORTCUT_LOCAL_VS_HOST) {
+        next[key] = host
+        localStorage.setItem(key, host)
+      }
+      const spy2 = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy2)).toEqual(next)
+    }
+
+    it('a warm pre-roster origin keeps its own Shortcuts choices and does not upload them over the host copy (issue #16237)', async () => {
+      await warmLegacyProfile()
+      await expectWarmProfileKeepsItsShortcutChoices()
+    })
+
+    it('a warm origin whose stored roster predates the Shortcuts keys keeps its own choices too (issue #16237)', async () => {
+      await warmRosterProfileWithoutShortcutKeys()
+      await expectWarmProfileKeepsItsShortcutChoices()
     })
 
     it('a warm origin adopts the host value for a new key it never held', async () => {
