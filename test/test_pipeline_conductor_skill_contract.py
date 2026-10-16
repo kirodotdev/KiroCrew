@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
 from skill_script_helpers import load_skill_script
 
 from kiro_crew import agent, hooks, validation
@@ -938,7 +939,7 @@ class TestProbeSignalsAreDocumented:
         answered every tag except the new one, so the conductor received a line
         with no defined action.
         """
-        probe = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        probe = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         cells = [
             row.split("|")[1]
             for row in _skill_section(self.HEADING).splitlines()

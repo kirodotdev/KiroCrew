@@ -23,6 +23,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
 from skill_script_helpers import load_skill_script
 
 #: The two banned-line tests build a fake ``/proc`` and a ``cwd`` symlink and let
@@ -73,7 +74,7 @@ def _fake_proc_with_banned_pytest(
 def _run(tmp_path, monkeypatch, fleet_root: Path) -> str:
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
     monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(tmp_path / "proc"))
-    mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+    mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
     cfg_path = tmp_path / "probe-config.json"
     cfg_path.write_text(
         json.dumps({"sessions": [], "fleet_worktrees": [str(fleet_root)]}), encoding="utf-8"
@@ -134,7 +135,7 @@ class TestBannedLineCarriesAge:
         starttime_ticks = 400 * hz  # 400s into boot, whatever the tick rate is
         tail = ["0"] * 18 + [str(starttime_ticks)] + ["0"] * 5
         (proc_root / "9" / "stat").write_text("9 (sh )evil) R " + " ".join(tail) + "\n", "ascii")
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         # starttime 400s in, uptime 1000s -> age 600s, independent of clk_tck.
         # The token is required; pass the matching incarnation.
         assert mod._proc_age_secs(proc_root, "9", starttime_ticks) == 600
@@ -150,7 +151,7 @@ class TestBannedLineCarriesAge:
         (proc_root / "uptime").write_text("1000.0 0.0\n", encoding="ascii")
         tail = ["0"] * 18 + ["40000"] + ["0"] * 5
         (proc_root / "9" / "stat").write_text("9 (pytest) R " + " ".join(tail) + "\n", "ascii")
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         monkeypatch.delattr(os, "sysconf", raising=False)
         # Token matches (40000), so None comes from the missing tick rate, not a
         # mismatch -- the property under test.
@@ -172,7 +173,7 @@ class TestBannedLineCarriesAge:
         starttime_ticks = 400 * hz
         tail = ["0"] * 18 + [str(starttime_ticks)] + ["0"] * 5
         (proc_root / "9" / "stat").write_text("9 (pytest) R " + " ".join(tail) + "\n", "ascii")
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         # Token captured at scan matches the live starttime -> age is trusted.
         assert mod._proc_age_secs(proc_root, "9", starttime_ticks) == 600
         # A different token means the pid was recycled between the reads -> refuse.
@@ -195,7 +196,7 @@ class TestBannedLineCarriesAge:
         _fake_proc_with_banned_pytest(
             tmp_path / "proc", fleet_root, "4244", starttime_ticks=400 * hz, uptime_secs=1000.0
         )
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         # Make the emit-time starttime read differ from the scan-time one: the
         # scan captures start_tok first, then re-reads it before emit, so flipping
         # the value after the first call models the pid being recycled between the

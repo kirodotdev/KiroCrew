@@ -3722,11 +3722,11 @@ Writers: `apps/manager_install.py::install_app`, `update_app`,
 call sites). Tests:
 `test/test_app_manager.py::TestInstall` (the shipped `.app_secret` link, the
 shipped `data` link, the root `data` file refused before the record),
-`TestCopyAppTree::test_update_never_keeps_a_shipped_app_secret_link`,
+`test/test_app_manager_copy_tree.py::TestCopyAppTree::test_update_never_keeps_a_shipped_app_secret_link`,
 `TestCopyAppTree::test_an_update_shipping_a_root_data_file_where_none_is_preserved_rolls_back`,
 `TestCopyAppTree::test_an_installed_data_file_refuses_the_update_before_the_transaction`
 (and its link and junction siblings),
-`TestCopyAppTreeAsInstalled`,
+`test/test_app_manager_installed_tree.py::TestCopyAppTreeAsInstalled`,
 `test/test_apps_registry_desktop_layout.py::test_a_root_data_file_is_refused_before_any_record_is_written`.
 
 
