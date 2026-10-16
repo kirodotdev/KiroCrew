@@ -1,10 +1,10 @@
 """Pure helpers for the ssh self-target floor's hosts-file table.
 
-The line parser that turns hosts-file text, fed one chunk at a time, into
-``{name -> maps-to-local}``, the content digest a Windows cache key carries,
-and the two exceptions the reads raise.  ``argv_floor`` owns every read, the
-cache and the gate; these live apart so that parsing plumbing does not count
-against that module's per-module liveness cap.
+The platform hosts-file path seam, the line parser that turns hosts-file text,
+fed one chunk at a time, into ``{name -> maps-to-local}``, the content digest a
+Windows cache key carries, and the two exceptions the reads raise.  ``argv_floor``
+owns every read, the cache and the gate; these live apart so that parsing
+plumbing does not count against that module's per-module liveness cap.
 
 Layer.  This module imports nothing from the package: ``argv_floor`` imports
 these names and re-binds them in its own namespace, which is the seam tests
@@ -31,6 +31,17 @@ class _HostsFileUnreadable(Exception):
 def _hosts_content_digest_enabled() -> bool:
     """True where ``st_ctime`` is creation time (Windows); a seam for tests."""
     return os.name == "nt"
+
+
+def _hosts_file_paths() -> "tuple[str, ...]":
+    """Platform hosts-file path(s); a seam for tests."""
+    if os.name == "nt":
+        root = os.environ.get("SystemRoot") or r"C:\Windows"
+        return (os.path.join(root, "System32", "drivers", "etc", "hosts"),)
+    # Component-assembled per the portability gate's remedy: this branch is
+    # POSIX-only by the ``os.name`` guard above, so the path never reaches a
+    # Windows process.
+    return (os.path.join("/etc", "hosts"),)
 
 
 def _hosts_content_digest(data: bytes) -> bytes:

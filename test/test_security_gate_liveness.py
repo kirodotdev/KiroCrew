@@ -348,7 +348,30 @@ def _url_payload_command(n: int) -> str:
 #: spares an ordered alphabet and a data URI payload, the flag it sets, the one place pass 3
 #: reads it, and the two checks that tell those shapes from a key. No credential branch, gate
 #: verdict or other pass moved.
-_PACKAGE_LINE_BUDGET = 29_411
+#:
+#: Raised again, from 29,411, for the bare-kill window's runtime-synthesis search:
+#: a substitution body whose lookup target is assembled from a single-literal
+#: ``printf``/``echo`` substitution or a brace expansion is folded and matched for
+#: the name before the search. The constant-output fold reuses the existing
+#: ``_static_substitution_output`` resolver (guarded to a single plain literal, so
+#: no second printf model); the quote reading that keeps a quoted substitution,
+#: brace, comment or escape inert is taken from ``_iter_shell_chars`` -- the
+#: module's one quote/escape state machine -- not a second copy, so the fold and
+#: the brace mask read quoting through it and the shared paren-span reader
+#: (subshells, case patterns and ``$$`` open or close nothing); all of a body's
+#: expansion work shares one cumulative character budget (the connection-target
+#: check keeps its word cap alone), an assignment value's braces stay literal,
+#: and a same-line assignment chain is bounded by the total length of its words,
+#: on the resolver's own tokens, before it is built; a body nested past a small
+#: depth fails closed before any fold pass; and a backslash run escapes the ``$``
+#: after it only when the run is odd, as the shell reads it.
+#: Neither an unresolvable operand nor a brace product past the fan-out cap is
+#: failed closed -- both are documented residuals; no pass widened, no threshold
+#: moved. The hosts-file path seam moves unchanged to ``hosts_file`` (one import
+#: line here), and the runtime-synthesis search sits in its own module,
+#: ``kill_synthesis``, behind a one-call wrapper here, so ``argv_floor`` stays under
+#: the per-module cap.
+_PACKAGE_LINE_BUDGET = 29_912
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
