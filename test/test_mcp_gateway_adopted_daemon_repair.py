@@ -51,7 +51,7 @@ from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import manager as mgr
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.gatewayd import resolvable_target_stems
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 #: The fingerprint every fake pong in this module carries. The REAL one, because
 #: the end-to-end test spawns a real daemon from this same checkout and the
@@ -278,7 +278,7 @@ class TestShutdownAnnouncesItselfEarly:
             assert not task.done(), "and it is genuinely still waiting for the lock"
         finally:
             manager._lifecycle_lock.release()
-            await asyncio.wait_for(task, timeout=10)
+            await await_until(task)
 
 
 # ── the repair decision ────────────────────────────────────────────
@@ -675,7 +675,7 @@ class TestAdoptedDriftRecheck:
         monkeypatch.setattr(manager, "_spawn_once", AsyncMock())
 
         # Must not raise: the watchdog has to survive its own repair attempt.
-        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+        await finished(manager._run_watchdog(), "run watchdog")
 
         assert pings == 1
         assert manager._adopted is True, "adoption must be restored, not left dangling"
@@ -723,7 +723,7 @@ class TestAdoptedDriftRecheck:
             return True
 
         monkeypatch.setattr(manager, "_reconcile_adopted", AsyncMock(side_effect=_capture))
-        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+        await finished(manager._run_watchdog(), "run watchdog")
 
         assert manager._adopted is True
         assert seen, "the adopted branch never ran, so the gate was not exercised"
@@ -796,7 +796,7 @@ class TestAdoptedDriftRecheck:
             return True  # True short-circuits the sleep, so the loop exits at once
 
         monkeypatch.setattr(manager, "_reconcile_adopted", AsyncMock(side_effect=_stop_after_one))
-        await asyncio.wait_for(manager._run_watchdog(), timeout=5)
+        await finished(manager._run_watchdog(), "run watchdog")
         assert manager._reconcile_adopted.await_count == 1  # type: ignore[attr-defined]
 
 
@@ -944,11 +944,11 @@ class TestElection:
 
 
 async def _round_trip(socket_path: Path, frame: dict[str, Any]) -> dict[str, Any]:
-    reader, writer = await asyncio.wait_for(transport.connect(socket_path), timeout=10)
+    reader, writer = await finished(transport.connect(socket_path), "transport connect")
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
         await writer.drain()
-        line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=10)
+        line = await finished(reader.readuntil(b"\n"), "read line")
         result = json.loads(line.decode("utf-8"))
         assert isinstance(result, dict)
         return result
@@ -1151,7 +1151,7 @@ async def test_a_stale_survivor_is_repaired_end_to_end(
         if survivor.returncode is None:
             survivor.kill()
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(survivor.wait(), timeout=10)
+                await finished(survivor.wait(), "survivor wait")
 
 
 @_POSIX_ONLY

@@ -27,6 +27,7 @@ from connections_warm_helpers import (
 from kiro_crew.connections import warm
 from kiro_crew.connections.mint import _mints
 from kiro_crew.connections.registry import Provider
+from kiro_crew.testing.wait import await_until, finished
 
 # The shared fixtures, bound here by name so pytest registers them for this module.
 _clean_mint_table = connections_warm_helpers._clean_mint_table
@@ -244,7 +245,7 @@ async def test_the_reaper_drains_parked_generations_after_the_current_process_di
 
     monkeypatch.setattr(warm._warm_mint, "sweep_retiring", _counting_sweep)
 
-    await asyncio.wait_for(warm._warm_mint_reaper(6), timeout=5)
+    await finished(warm._warm_mint_reaper(6), "warm mint reaper")
 
     assert killed == [parked_runtime], "the parked generation's process was never retired"
     assert warm._warm_mint._retiring == []
@@ -271,7 +272,7 @@ async def test_the_reaper_rearms_a_dead_generation_once(monkeypatch: pytest.Monk
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
     warm._warm_mint.arm_supervision()
 
-    await asyncio.wait_for(warm._warm_mint_reaper(6), timeout=5)
+    await finished(warm._warm_mint_reaper(6), "warm mint reaper")
 
     assert rearmed == [6]
     assert warm._warm_mint._rearms_remaining == 0
@@ -309,7 +310,7 @@ async def test_reaper_audits_the_grant_scan_before_replacement_warm(
     monkeypatch.setattr(warm._warm_mint, "_sessions", {})
     warm._warm_mint.arm_supervision()
 
-    await asyncio.wait_for(warm._warm_mint_reaper(6), timeout=5)
+    await finished(warm._warm_mint_reaper(6), "warm mint reaper")
 
     assert events == [
         ("audit", "connections_premint.oauth_grant_presence", "success"),
@@ -494,11 +495,11 @@ async def test_the_invalidation_call_does_not_block_on_minting(monkeypatch: pyte
 
         assert not started.is_set(), "the caller returned before the re-arm ran at all"
         task = registry["linear"]
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started)
         assert not task.done()
         release.set()
 
-        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+        assert await await_until(task) == ["linear"]
         assert "linear" not in registry
 
 
@@ -525,7 +526,7 @@ async def test_repeated_invalidation_does_not_stack_duplicate_premints(
 
         assert registry["linear"] is first
         release.set()
-        await asyncio.wait_for(first, timeout=5)
+        await await_until(first)
 
         assert calls == ["linear"]
         assert "linear" not in registry
@@ -673,9 +674,9 @@ async def test_shutdown_settles_an_inflight_invalidation_rearm(monkeypatch: pyte
     async with _rearm_registry() as registry:
         warm.rearm_invalidated_provider("linear")
         task = registry["linear"]
-        await asyncio.wait_for(started.wait(), timeout=5)
+        await await_until(started)
 
-        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+        await finished(warm.shutdown_warm_mint(), "shutdown warm mint")
 
         assert cancelled.is_set(), "teardown did not cancel the in-flight re-arm"
         assert task.cancelled()
@@ -701,9 +702,9 @@ async def test_shutdown_leaves_a_completed_rearms_bookkeeping_alone(
     async with _rearm_registry() as registry:
         warm.rearm_invalidated_provider("linear")
         task = registry["linear"]
-        assert await asyncio.wait_for(task, timeout=5) == ["linear"]
+        assert await await_until(task) == ["linear"]
 
-        await asyncio.wait_for(warm.shutdown_warm_mint(), timeout=5)
+        await finished(warm.shutdown_warm_mint(), "shutdown warm mint")
 
         assert not task.cancelled()
         assert task.result() == ["linear"]
@@ -739,7 +740,7 @@ async def test_a_failed_respawn_still_drains_the_generation_it_parked(
 
     drain = warm._warm_mint._reaper
     assert drain is not None, "a parked generation with no process needs a drain task"
-    await asyncio.wait_for(drain, timeout=5)
+    await await_until(drain)
     assert killed == [parked_runtime]
     assert warm._warm_mint._retiring == []
 

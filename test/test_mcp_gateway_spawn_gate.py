@@ -55,6 +55,7 @@ from kiro_crew.mcp_gateway import stub as stub_mod
 from kiro_crew.mcp_gateway import transport
 from kiro_crew.mcp_gateway.backend import Backend
 from kiro_crew.mcp_gateway.pool import BackendUnavailable, PoolAtCapacity, PoolKey
+from kiro_crew.testing.wait import async_wait_until, await_until, finished
 
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
@@ -89,13 +90,7 @@ _LOST_RUN_CEILING_SECS = 30.0
 
 async def _await_state(predicate: Callable[[], bool], what: str) -> None:
     """Poll until ``predicate()`` holds; past the ceiling raise naming ``what``."""
-    loop = asyncio.get_running_loop()
-    started = loop.time()
-    while not predicate():
-        waited = loop.time() - started
-        if waited > _LOST_RUN_CEILING_SECS:
-            raise AssertionError(f"{what}: not reached after {waited:.2f}s (lost run)")
-        await asyncio.sleep(0.005)
+    await async_wait_until(predicate, describe=lambda: what)
 
 
 async def _within_ceiling(aw: Awaitable[Any], what: str) -> Any:
@@ -1064,8 +1059,9 @@ class TestEnsureBackendWire:
             asyncio.Event(),  # a hangup the test never sets
         )
         writer = _FakeWriter()
-        await asyncio.wait_for(
-            _handle(reader, writer, _fake_pool(), _admission(capacity=1)), timeout=5
+        await finished(
+            _handle(reader, writer, _fake_pool(), _admission(capacity=1)),
+            "handle connection",
         )
         # Dropped with no ``ready`` and no ``rejected``; the pings were answered
         # and never counted toward the bound.
@@ -1099,9 +1095,9 @@ class TestEnsureBackendWire:
             admitted.set()
 
         asyncio.create_task(admit_once_the_burst_is_parked())
-        result = await asyncio.wait_for(
+        result = await finished(
             gw._await_answering_pings(reader, writer, pending, acquire(), stub_uuid=_STUB),
-            timeout=5,
+            "await answering pings",
         )
         assert result == "acquired"
         assert list(pending) == burst, "every parked frame survives, in arrival order"
@@ -1383,7 +1379,9 @@ class TestTheRefusalArrivesBeforeTheStubGivesUp:
             reader, writer = await transport.connect(sock, limit=1 << 16)
             writer.write(json.dumps(_register_frame()).encode("utf-8") + b"\n")
             await writer.drain()
-            registered = json.loads((await asyncio.wait_for(reader.readuntil(b"\n"), 10)).decode())
+            registered = json.loads(
+                (await finished(reader.readuntil(b"\n"), "read registered line")).decode()
+            )
             assert registered["type"] == "registered"
             assert "spawn_queue" in registered["capabilities"]
             outcome, frame = await asyncio.wait_for(
@@ -1464,10 +1462,7 @@ class TestPrewarmYieldsToALiveStub:
                 # takes the gate's only slot and one more queues behind it.
                 held.append(await admission.gate.acquire(label="live-stub"))
                 queued.append(asyncio.create_task(admission.gate.acquire(label="live-stub-2")))
-                for _ in range(200):
-                    await asyncio.sleep(0.005)
-                    if admission.gate.queued == 1:
-                        break
+                await async_wait_until(lambda: admission.gate.queued >= 1)
                 assert admission.gate.queued == 1
             return _fake_backend(), True
 
@@ -1508,7 +1503,7 @@ class TestPrewarmYieldsToALiveStub:
             assert deadlines[0] - time.monotonic() <= gw._PREWARM_SPAWN_WAIT_SECS + 1e-6
         finally:
             stop_event.set()
-            await asyncio.wait_for(daemon, timeout=15)
+            await await_until(daemon)
             for permit in held:
                 permit.release()
             for task in queued:

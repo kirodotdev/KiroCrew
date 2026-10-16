@@ -49,6 +49,7 @@ from kiro_crew import code_fingerprint as cf
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
 from kiro_crew.mcp_gateway import transport
+from kiro_crew.testing.wait import async_wait_until, finished
 
 _FAKE_SERVER = Path(__file__).with_name("fake_pool_mcp_server.py")
 
@@ -93,16 +94,21 @@ def _endpoint_dir() -> str | None:
 
 
 def _init_frame(req_id: int) -> str:
-    return json.dumps({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": "initialize",
-        "params": {
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": {"name": "pool-integ", "version": "0.0.0"},
-        },
-    }) + "\n"
+    return (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "method": "initialize",
+                "params": {
+                    "protocolVersion": "2024-11-05",
+                    "capabilities": {},
+                    "clientInfo": {"name": "pool-integ", "version": "0.0.0"},
+                },
+            }
+        )
+        + "\n"
+    )
 
 
 async def _spawn_stub(
@@ -139,14 +145,22 @@ async def _spawn_stub(
         sys.executable,
         "-m",
         "kiro_crew.mcp_gateway.stub",
-        "--server", server,
-        "--agent", agent,
-        "--target-command", sys.executable,
-        "--target-args", str(_FAKE_SERVER),
-        "--work-dir", str(work_dir),
-        "--socket", str(socket_path),
-        "--sandbox-mode", "off",
-        "--approval-mode", "auto",
+        "--server",
+        server,
+        "--agent",
+        agent,
+        "--target-command",
+        sys.executable,
+        "--target-args",
+        str(_FAKE_SERVER),
+        "--work-dir",
+        str(work_dir),
+        "--socket",
+        str(socket_path),
+        "--sandbox-mode",
+        "off",
+        "--approval-mode",
+        "auto",
         *(["--env-json", env_json] if env_json else []),
         *(["--poolable"] if poolable else []),
         stdin=asyncio.subprocess.PIPE,
@@ -211,12 +225,17 @@ async def _drive_tool_call(proc: asyncio.subprocess.Process, req_id: int) -> dic
     requests, and the handshake is cached across stubs), so proving injection
     needs a per-turn frame.
     """
-    frame = json.dumps({
-        "jsonrpc": "2.0",
-        "id": req_id,
-        "method": "tools/call",
-        "params": {"name": "noop", "arguments": {}},
-    }) + "\n"
+    frame = (
+        json.dumps(
+            {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "method": "tools/call",
+                "params": {"name": "noop", "arguments": {}},
+            }
+        )
+        + "\n"
+    )
     return await _drive_frame(proc, frame, req_id)
 
 
@@ -237,8 +256,8 @@ async def _reap(procs: list[asyncio.subprocess.Process]) -> None:
                 pass
     for p in procs:
         try:
-            await asyncio.wait_for(p.wait(), timeout=15)
-        except (asyncio.TimeoutError, ProcessLookupError):
+            await finished(p.wait(), "process wait")
+        except (asyncio.TimeoutError, ProcessLookupError, AssertionError):
             pass
 
 
@@ -299,17 +318,21 @@ async def test_two_stubs_on_one_backend_are_told_apart(tmp_path: Path, short_soc
     )
     procs: list[asyncio.subprocess.Process] = []
     try:
-        for _ in range(100):
-            if transport.endpoint_exists(sock):
-                break
-            await asyncio.sleep(0.05)
-        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
 
         keys = ["dashboard:alice", "dashboard:bob"]
         for i, key in enumerate(keys):
             proc = await _spawn_stub(
-                socket_path=sock, server="fake", agent="probe",
-                work_dir=work_dir, home=home, session_key=key,
+                socket_path=sock,
+                server="fake",
+                agent="probe",
+                work_dir=work_dir,
+                home=home,
+                session_key=key,
             )
             procs.append(proc)
             reply = await _drive_initialize(proc, req_id=i + 1)
@@ -392,16 +415,20 @@ async def test_two_UNNAMED_stubs_on_one_backend_get_distinct_namespaces(
     )
     procs: list[asyncio.subprocess.Process] = []
     try:
-        for _ in range(100):
-            if transport.endpoint_exists(sock):
-                break
-            await asyncio.sleep(0.05)
-        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
 
         for i in range(2):
             proc = await _spawn_stub(
-                socket_path=sock, server="fake", agent="probe",
-                work_dir=work_dir, home=home, session_key="",
+                socket_path=sock,
+                server="fake",
+                agent="probe",
+                work_dir=work_dir,
+                home=home,
+                session_key="",
             )
             procs.append(proc)
             reply = await _drive_initialize(proc, req_id=i + 1)
@@ -468,17 +495,20 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
     )
     procs: list[asyncio.subprocess.Process] = []
     try:
-        for _ in range(100):  # wait for the endpoint to accept
-            if transport.endpoint_exists(sock):
-                break
-            await asyncio.sleep(0.05)
-        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
 
         # --- three stubs, one identical key -------------------------------
         for i in range(3):
             proc = await _spawn_stub(
-                socket_path=sock, server="fake", agent="probe",
-                work_dir=work_dir, home=home,
+                socket_path=sock,
+                server="fake",
+                agent="probe",
+                work_dir=work_dir,
+                home=home,
             )
             procs.append(proc)
             reply = await _drive_initialize(proc, req_id=i + 1)
@@ -495,9 +525,7 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
         # No stub may have taken the degrade path; a fallback would still have
         # answered initialize, so the reply assertions above cannot see it.
         fallback = home / "logs" / "stub_fallback.jsonl"
-        assert not fallback.exists(), (
-            f"a stub degraded to per-session exec: {fallback.read_text()}"
-        )
+        assert not fallback.exists(), f"a stub degraded to per-session exec: {fallback.read_text()}"
 
         # --- a different agent SHARES it ----------------------------------
         # Measured on real processes: the agent name never reaches the backend,
@@ -508,8 +536,11 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
         # dir, binary -- is its own PoolKey dimension and still partitions,
         # which the declared-env control at the end of this test measures.
         other = await _spawn_stub(
-            socket_path=sock, server="fake", agent="other-agent",
-            work_dir=work_dir, home=home,
+            socket_path=sock,
+            server="fake",
+            agent="other-agent",
+            work_dir=work_dir,
+            home=home,
         )
         procs.append(other)
         reply = await _drive_initialize(other, req_id=99)
@@ -522,8 +553,7 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
             "server config each burn their own MCP server process."
         )
         assert not fallback.exists(), (
-            f"the second agent's stub degraded to per-session exec: "
-            f"{fallback.read_text()}"
+            f"the second agent's stub degraded to per-session exec: " f"{fallback.read_text()}"
         )
 
         # --- negative control: a real difference still partitions ----------
@@ -532,8 +562,11 @@ async def test_real_stubs_sharing_a_key_share_one_backend(tmp_path: Path, short_
         # dimension to vary here: the resolver hands every key the same target,
         # so ``effective_env_hash`` is the only thing that can differ.
         partitioned = await _spawn_stub(
-            socket_path=sock, server="fake", agent="probe",
-            work_dir=work_dir, home=home,
+            socket_path=sock,
+            server="fake",
+            agent="probe",
+            work_dir=work_dir,
+            home=home,
             env_json=json.dumps({"DECLARED": "different"}),
         )
         procs.append(partitioned)
@@ -600,16 +633,20 @@ async def test_real_stubs_without_poolable_get_their_own_backend(
     procs: list[asyncio.subprocess.Process] = []
     backend_pids: list[int] = []
     try:
-        for _ in range(100):
-            if transport.endpoint_exists(sock):
-                break
-            await asyncio.sleep(0.05)
-        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
 
         for i in range(3):
             proc = await _spawn_stub(
-                socket_path=sock, server="fake", agent="probe",
-                work_dir=work_dir, home=home, poolable=False,
+                socket_path=sock,
+                server="fake",
+                agent="probe",
+                work_dir=work_dir,
+                home=home,
+                poolable=False,
             )
             procs.append(proc)
             reply = await _drive_initialize(proc, req_id=i + 1)
@@ -677,8 +714,7 @@ def _windows_collect_ignore() -> list[str]:
     found = [
         name
         for name in (
-            ln.split("#", 1)[0].strip()
-            for ln in listfile.read_text(encoding="utf-8").splitlines()
+            ln.split("#", 1)[0].strip() for ln in listfile.read_text(encoding="utf-8").splitlines()
         )
         if name
     ]
@@ -718,9 +754,7 @@ def test_pool_integ_is_never_silently_skipped_on_windows() -> None:
             if ln.strip() and not ln.startswith("#")
         ]
         offenders = [e for e in entries if e.startswith(f"test/{this_file}::")]
-        assert not offenders, (
-            f"pooling assertions were added to the Windows skip list: {offenders}"
-        )
+        assert not offenders, f"pooling assertions were added to the Windows skip list: {offenders}"
 
 
 def test_every_consumer_of_the_fake_reads_it_through_recorded() -> None:
@@ -813,7 +847,9 @@ def _windows(log: Path) -> list[tuple[float, float]]:
 
 
 def _max_overlap(windows: list[tuple[float, float]]) -> int:
-    events = sorted([(a, 1) for a, _ in windows] + [(b, -1) for _, b in windows], key=lambda e: (e[0], e[1]))
+    events = sorted(
+        [(a, 1) for a, _ in windows] + [(b, -1) for _, b in windows], key=lambda e: (e[0], e[1])
+    )
     live = peak = 0
     for _, delta in events:
         live += delta
@@ -876,17 +912,21 @@ async def test_a_private_stub_storm_is_admitted_a_few_at_a_time_and_all_reach_re
     )
     procs: list[asyncio.subprocess.Process] = []
     try:
-        for _ in range(100):
-            if transport.endpoint_exists(sock):
-                break
-            await asyncio.sleep(0.05)
-        assert transport.endpoint_exists(sock), "gatewayd never bound its endpoint"
+        await async_wait_until(
+            lambda: transport.endpoint_exists(sock),
+            off_loop=True,
+            describe=lambda: "gatewayd never bound its endpoint",
+        )
 
         for _ in range(_STORM_STUBS):
             procs.append(
                 await _spawn_stub(
-                    socket_path=sock, server="fake", agent="storm",
-                    work_dir=work_dir, home=home, poolable=False,
+                    socket_path=sock,
+                    server="fake",
+                    agent="storm",
+                    work_dir=work_dir,
+                    home=home,
+                    poolable=False,
                 )
             )
         replies = await asyncio.gather(
@@ -894,7 +934,9 @@ async def test_a_private_stub_storm_is_admitted_a_few_at_a_time_and_all_reach_re
             return_exceptions=True,
         )
         failures = [r for r in replies if isinstance(r, BaseException) or "result" not in r]
-        assert not failures, f"{len(failures)} of {_STORM_STUBS} stubs never got initialize answered: {failures[:3]}"
+        assert (
+            not failures
+        ), f"{len(failures)} of {_STORM_STUBS} stubs never got initialize answered: {failures[:3]}"
 
         assert _launch_count(launch_log) == _STORM_STUBS, "one private backend per stub"
         windows = _windows(window_log)
@@ -905,9 +947,9 @@ async def test_a_private_stub_storm_is_admitted_a_few_at_a_time_and_all_reach_re
             f"{_STORM_CAPACITY}. Without admission all {_STORM_STUBS} fork together."
         )
         assert peak >= 2, "the storm never overlapped at all, so the bound was not exercised"
-        assert not (home / "logs" / "stub_fallback.jsonl").exists(), (
-            "a stub fell back to a per-session exec: capacity must queue, never degrade"
-        )
+        assert not (
+            home / "logs" / "stub_fallback.jsonl"
+        ).exists(), "a stub fell back to a per-session exec: capacity must queue, never degrade"
     finally:
         await _reap(procs)
         stop.set()

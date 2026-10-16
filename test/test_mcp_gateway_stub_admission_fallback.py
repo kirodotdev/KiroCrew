@@ -50,6 +50,7 @@ import pytest
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import stub, transport
+from kiro_crew.testing.wait import finished
 
 
 def _endpoint_dir() -> str | None:
@@ -80,7 +81,9 @@ async def _serve(handler: Any, sock_dir: Path) -> tuple[Any, Path]:
 
 
 @pytest.mark.asyncio
-async def test_handshake_requests_fallback_when_admission_closes_the_connection(short_sock_dir) -> None:
+async def test_handshake_requests_fallback_when_admission_closes_the_connection(
+    short_sock_dir,
+) -> None:
     """The exact shape of a principal-check refusal: closed before any reply."""
     accepted = asyncio.Event()
 
@@ -93,9 +96,7 @@ async def test_handshake_requests_fallback_when_admission_closes_the_connection(
     server, sock = await _serve(on_connect, short_sock_dir)
     try:
         with pytest.raises(stub.FallbackRequestedError) as excinfo:
-            await asyncio.wait_for(
-                stub.handshake(str(sock), _register_payload()), timeout=30
-            )
+            await asyncio.wait_for(stub.handshake(str(sock), _register_payload()), timeout=30)
     finally:
         server.close()
         await server.wait_closed()
@@ -134,9 +135,7 @@ async def test_handshake_requests_fallback_on_an_explicit_rejection(short_sock_d
     server, sock = await _serve(_spawn, short_sock_dir)
     try:
         with pytest.raises(stub.FallbackRequestedError) as excinfo:
-            await asyncio.wait_for(
-                stub.handshake(str(sock), _register_payload()), timeout=30
-            )
+            await asyncio.wait_for(stub.handshake(str(sock), _register_payload()), timeout=30)
     finally:
         server.close()
         await server.wait_closed()
@@ -232,9 +231,7 @@ async def test_queued_frames_extend_a_queue_aware_wait(short_sock_dir, monkeypat
     def expire_every_frozen_timer() -> None:
         clock[0] += 1_000_000.0
 
-    watchdog = threading.Timer(
-        10.0, lambda: loop.call_soon_threadsafe(expire_every_frozen_timer)
-    )
+    watchdog = threading.Timer(10.0, lambda: loop.call_soon_threadsafe(expire_every_frozen_timer))
     watchdog.daemon = True
     watchdog.start()
 
@@ -259,7 +256,7 @@ async def test_queued_frames_extend_a_queue_aware_wait(short_sock_dir, monkeypat
         server, sock = await _serve(handler, short_sock_dir)
         reader, writer = await _open(sock)
         started = clock[0]
-        outcome, frame = await asyncio.wait_for(
+        outcome, frame = await finished(
             stub._ensure_backend_admitted(
                 reader,
                 writer,
@@ -268,7 +265,7 @@ async def test_queued_frames_extend_a_queue_aware_wait(short_sock_dir, monkeypat
                 silence_secs=0.12,
                 now=lambda: clock[0],
             ),
-            timeout=10,
+            "admitted",
         )
     finally:
         # Unconditional, and in this order, so a RED run still ends: our end
@@ -293,7 +290,9 @@ async def test_queued_frames_extend_a_queue_aware_wait(short_sock_dir, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(short_sock_dir) -> None:
+async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(
+    short_sock_dir,
+) -> None:
     """The timer is silence, not budget: a daemon that promised keepalives and
     sends none for one window is not serving, however much budget remains."""
 
@@ -304,11 +303,11 @@ async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(sho
     try:
         reader, writer = await _open(sock)
         t0 = time.monotonic()
-        outcome, frame = await asyncio.wait_for(
+        outcome, frame = await finished(
             stub._ensure_backend_admitted(
                 reader, writer, queue_aware=True, total_budget_secs=60.0, silence_secs=0.1
             ),
-            timeout=10,
+            "admitted",
         )
         elapsed = time.monotonic() - t0
         writer.close()
@@ -323,17 +322,19 @@ async def test_silence_from_a_queue_aware_daemon_times_out_before_the_budget(sho
 async def test_the_total_budget_caps_a_wait_however_lively_the_daemon(short_sock_dir) -> None:
     async def script(writer: Any) -> None:
         for _ in range(40):
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(
+                0.02
+            )  # flake-ok: daemon script pacing -- sleep IS the test scenario
             await _send(writer, {"type": "queued", "position": 9, "capacity": 1})
 
     server, sock = await _serve(_scripted_daemon(script), short_sock_dir)
     try:
         reader, writer = await _open(sock)
-        outcome, _ = await asyncio.wait_for(
+        outcome, _ = await finished(
             stub._ensure_backend_admitted(
                 reader, writer, queue_aware=True, total_budget_secs=0.25, silence_secs=1.0
             ),
-            timeout=10,
+            "admitted",
         )
         writer.close()
     finally:
@@ -355,11 +356,11 @@ async def test_an_old_daemon_gets_the_legacy_single_reply_protocol(short_sock_di
     server, sock = await _serve(handler, short_sock_dir)
     try:
         reader, writer = await _open(sock)
-        outcome, frame = await asyncio.wait_for(
+        outcome, frame = await finished(
             stub._ensure_backend_admitted(
                 reader, writer, queue_aware=False, total_budget_secs=600.0, silence_secs=1.0
             ),
-            timeout=10,
+            "admitted",
         )
         writer.close()
     finally:
@@ -391,7 +392,11 @@ async def test_a_queued_frame_to_an_old_protocol_wait_is_the_verdict(short_sock_
     finally:
         server.close()
         await server.wait_closed()
-    assert outcome == stub._ADMIT_REJECTED and frame == {"type": "queued", "position": 1, "capacity": 4}
+    assert outcome == stub._ADMIT_REJECTED and frame == {
+        "type": "queued",
+        "position": 1,
+        "capacity": 4,
+    }
 
 
 def test_only_the_target_shaped_classes_fall_back() -> None:
@@ -412,21 +417,31 @@ async def test_a_capacity_refusal_answers_requests_with_a_typed_error_and_stays_
     session = stub.StubSession()
     q: "asyncio.Queue[bytes]" = asyncio.Queue()
     session._line_q = q
-    q.put_nowait(json.dumps({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}}).encode() + b"\n")
-    q.put_nowait(json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode() + b"\n")
-    q.put_nowait(json.dumps({"jsonrpc": "2.0", "id": "t-1", "method": "tools/list"}).encode() + b"\n")
+    q.put_nowait(
+        json.dumps({"jsonrpc": "2.0", "id": 7, "method": "initialize", "params": {}}).encode()
+        + b"\n"
+    )
+    q.put_nowait(
+        json.dumps({"jsonrpc": "2.0", "method": "notifications/initialized"}).encode() + b"\n"
+    )
+    q.put_nowait(
+        json.dumps({"jsonrpc": "2.0", "id": "t-1", "method": "tools/list"}).encode() + b"\n"
+    )
     q.put_nowait(b"")  # kiro-cli hangs up
     written: list[bytes] = []
     monkeypatch.setattr(stub, "_write_stdout_line", written.append)
-    rc = await asyncio.wait_for(
+    rc = await finished(
         stub._serve_capacity_refusal(
             session, asyncio.Event(), reason="pool full", retry_after_secs=30, pool_label="a:b"
         ),
-        timeout=5,
+        "admitted",
     )
     assert rc == 0
     replies = [json.loads(w) for w in written]
-    assert [r["id"] for r in replies] == [7, "t-1"], "every request answered, the notification dropped"
+    assert [r["id"] for r in replies] == [
+        7,
+        "t-1",
+    ], "every request answered, the notification dropped"
     for reply in replies:
         assert reply["error"]["code"] == stub._CAPACITY_ERROR_CODE
         assert reply["error"]["data"] == {"class": "capacity", "retry_after_secs": 30}
@@ -446,7 +461,7 @@ class _NullWriter:
 @pytest.mark.parametrize(
     "stray, outcome",
     [
-        (b"[1]\n42\n\"x\"\ntrue\n", stub._ADMIT_READY),
+        (b'[1]\n42\n"x"\ntrue\n', stub._ADMIT_READY),
         # Not JSON, or null: the daemon is not speaking the protocol, as before.
         (b"not json\n", stub._ADMIT_CLOSED),
         (b"null\n", stub._ADMIT_CLOSED),
@@ -459,7 +474,7 @@ async def test_a_stray_value_during_admission_costs_that_frame(queue_aware, stra
     reader = asyncio.StreamReader()
     reader.feed_data(stray + b'{"type":"ready"}\n')
     reader.feed_eof()
-    got, frame = await asyncio.wait_for(
+    got, frame = await finished(
         stub._ensure_backend_admitted(
             reader,
             _NullWriter(),  # type: ignore[arg-type]
@@ -467,7 +482,7 @@ async def test_a_stray_value_during_admission_costs_that_frame(queue_aware, stra
             total_budget_secs=10.0,
             silence_secs=10.0,
         ),
-        timeout=10,
+        "backend admitted",
     )
     assert got == outcome
     assert frame == ({"type": "ready"} if outcome == stub._ADMIT_READY else None)

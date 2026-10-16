@@ -26,6 +26,7 @@ from typing import NamedTuple
 import pytest
 
 from kiro_crew.mcp_gateway import stub as stub_mod
+from kiro_crew.testing.wait import await_until, finished
 
 #: Small enough to keep these tests fast, and the drain takes it as a parameter
 #: for exactly that reason. Every timing assertion below is relative to it.
@@ -151,7 +152,7 @@ async def _drain_until(
     # production does not use.
     stop.set()
     with contextlib.suppress(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5.0)
+        await await_until(task)
     return _DrainRun(reached=reached, ended_itself=ended_itself)
 
 
@@ -270,7 +271,7 @@ async def test_only_the_frames_past_grace_are_failed(answers: _Answers) -> None:
     while session._line_q.qsize():
         await asyncio.sleep(_GRACE / 5)
     stop.set()
-    await asyncio.wait_for(task, timeout=5.0)
+    await await_until(task)
 
     assert answers.ids == [1]
     assert _held(session) == [_request(2)]
@@ -539,7 +540,7 @@ async def test_the_next_bridge_forwards_held_frames_before_newer_ones() -> None:
 
     gateway = _CaptureWriter()
     stdout_writer = _CaptureWriter()
-    await asyncio.wait_for(
+    await finished(
         stub_mod.run_bridge(
             asyncio.StreamReader(),
             gateway,  # type: ignore[arg-type]
@@ -547,7 +548,7 @@ async def test_the_next_bridge_forwards_held_frames_before_newer_ones() -> None:
             stdout_writer=stdout_writer,  # type: ignore[arg-type]
             session=session,
         ),
-        timeout=10,
+        "run bridge",
     )
 
     forwarded = [json.loads(b) for b in gateway.written if b.strip() and "id" in json.loads(b)]
@@ -568,7 +569,7 @@ async def test_the_bridge_forwards_a_stray_line_verbatim_and_goes_on() -> None:
     session._line_q.put_nowait(b"")
 
     gateway = _CaptureWriter()
-    await asyncio.wait_for(
+    await finished(
         stub_mod.run_bridge(
             asyncio.StreamReader(),
             gateway,  # type: ignore[arg-type]
@@ -576,7 +577,7 @@ async def test_the_bridge_forwards_a_stray_line_verbatim_and_goes_on() -> None:
             stdout_writer=_CaptureWriter(),  # type: ignore[arg-type]
             session=session,
         ),
-        timeout=10,
+        "run bridge",
     )
 
     assert all(line in gateway.written for line in strays)
@@ -724,9 +725,9 @@ async def test_a_stop_arriving_during_an_answer_loses_nothing(monkeypatch) -> No
         )
     )
 
-    await asyncio.wait_for(started.wait(), timeout=5.0)
+    await await_until(started)
     stop.set()  # lands while the answer is mid-flight
-    await asyncio.wait_for(task, timeout=5.0)
+    await await_until(task)
 
     assert emitted == [41], "the answer must complete rather than be abandoned"
     assert _held(session) == [], "an answered id must not also be forwarded"
@@ -751,7 +752,7 @@ async def test_the_pairing_ends_the_drain_without_interrupting_an_answer(
         emitted.extend(req_ids)
 
     async def _reconnect_landing_mid_answer(*_args, **_kwargs):  # noqa: ANN202
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started)
         return None
 
     monkeypatch.setattr(stub_mod, "_emit_error_frames", _slow_emit)

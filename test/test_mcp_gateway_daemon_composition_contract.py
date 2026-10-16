@@ -54,6 +54,7 @@ from kiro_crew.platform_compat import (
     process_start_time,
     python_launcher_hops,
 )
+from kiro_crew.testing.wait import async_wait_until, finished
 
 #: This module names the daemon's spawn and declared-env seams, so it opts out of
 #: the suite-wide launch-approval stand-in (``test_mcp_launch_approval.py`` checks
@@ -446,7 +447,7 @@ class TestStubSessionBytes:
         probe = gw._StubProbe(_STUB, writer, idle)  # type: ignore[arg-type]
         gw._stub_probe_add(probe)
         try:
-            assert await asyncio.wait_for(gw._probe_stub_transports(), timeout=10) == 0
+            assert await finished(gw._probe_stub_transports(), "probe stub transports") == 0
         finally:
             gw._stub_probe_discard(probe)
             idle.cancel()
@@ -874,11 +875,12 @@ async def test_run_gatewayd_arms_and_retires_its_tasks_in_a_fixed_order(
         )
     )
     try:
-        deadline = time.monotonic() + 30
-        while len(events) < 9:
-            assert time.monotonic() < deadline, f"tasks never armed: {events}"
+
+        def _events_ready() -> bool:
             assert not run.done(), run
-            await asyncio.sleep(0.01)
+            return len(events) >= 9
+
+        await async_wait_until(_events_ready, describe=lambda: f"tasks never armed: {events}")
         stop.set()
         await asyncio.wait_for(run, timeout=30)
     finally:
@@ -917,18 +919,18 @@ async def test_run_gatewayd_arms_and_retires_its_tasks_in_a_fixed_order(
 
 
 async def _control(sock: Path, frame: dict[str, Any]) -> dict[str, Any]:
-    reader, writer = await asyncio.wait_for(transport.connect(sock), timeout=15)
+    reader, writer = await finished(transport.connect(sock), "transport connect")
     try:
         writer.write(json.dumps(frame).encode("utf-8") + b"\n")
-        await asyncio.wait_for(writer.drain(), timeout=15)
-        line = await asyncio.wait_for(reader.readuntil(b"\n"), timeout=15)
+        await finished(writer.drain(), "writer drain")
+        line = await finished(reader.readuntil(b"\n"), "read line")
         reply = json.loads(line.decode("utf-8"))
         assert isinstance(reply, dict)
         return reply
     finally:
         writer.close()
         with contextlib.suppress(Exception):
-            await asyncio.wait_for(writer.wait_closed(), timeout=15)
+            await finished(writer.wait_closed(), "writer wait closed")
 
 
 def _kill_tree(proc: asyncio.subprocess.Process) -> None:
@@ -1010,14 +1012,11 @@ async def test_the_module_entry_point_publishes_its_owner_and_honours_an_orphan_
     try:
         from kiro_crew.mcp_gateway.daemon_control import describe_daemon
 
-        deadline = time.monotonic() + 90
-        info = None
-        while info is None:
+        async def _get_info() -> Any:
             assert daemon.returncode is None, _log_text(tmp_path / "gatewayd.log")
-            assert time.monotonic() < deadline, "the daemon never answered a ping"
-            info = await asyncio.to_thread(describe_daemon, sock)
-            if info is None:
-                await asyncio.sleep(0.1)
+            return await asyncio.to_thread(describe_daemon, sock)
+
+        info = await async_wait_until(_get_info)
         assert info.owner_pid == owner.pid
         assert info.start_time
         if python_launcher_hops() == 0:
@@ -1037,10 +1036,11 @@ async def test_the_module_entry_point_publishes_its_owner_and_honours_an_orphan_
 
         _kill_tree(owner)
         await asyncio.wait_for(owner.wait(), timeout=30)
-        deadline = time.monotonic() + 30
-        while pid_exists(owner.pid):
-            assert time.monotonic() < deadline, "the killed owner never went away"
-            await asyncio.sleep(0.05)
+        await async_wait_until(
+            lambda: not pid_exists(owner.pid),
+            off_loop=True,
+            describe=lambda: "the killed owner never went away",
+        )
         honoured = await _control(sock, {"type": "stand-down", "orphaned": True})
         assert honoured == {
             "type": "standing-down",
