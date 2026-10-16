@@ -124,12 +124,22 @@ class Metric(NamedTuple):
     size-shaped metric) emits :data:`KIND_HISTOGRAM` with an ABSOLUTE observation read
     straight off the fold's current render, with no delta and no memory of what was
     exported before -- see the module docstring's "WHY A REMEMBERED LAST VALUE" note.
+
+    ``unit`` is the UCUM unit a histogram observation is recorded under; it defaults to
+    ``"ms"`` because the first histogram here (``export.lag``) is a duration. A
+    histogram of a dimensionless quantity (session-tree depth, a count of hops) passes
+    ``unit="1"`` so it is not mislabeled as milliseconds, and its name is also declared
+    in :data:`~kiro_crew.metrics.events.NON_MS_HISTOGRAM_UNITS` and given explicit
+    buckets in ``provider._HISTOGRAM_BUCKETS_BY_UNIT`` -- the provider's bucket-view
+    guard checks the two agree. ``unit`` is ignored for :data:`KIND_COUNTER` (counters
+    default to ``"1"`` in the recorder).
     """
 
     name: str
     kind: str
     value: int | float
     attrs: Attrs
+    unit: str = "ms"
 
 
 # --------------------------------------------------------------------------- #
@@ -240,6 +250,15 @@ SESSION_STARTED_METRIC: Final[str] = "kirocrew.crew.session.started"
 #: ``actor`` set (``ACTOR_VALUES``, mirrored above as :data:`_KNOWN_ACTORS`).
 TURN_STARTED_METRIC: Final[str] = "kirocrew.crew.turn.started"
 
+#: ``kirocrew.crew.session.tree.depth`` -- one HISTOGRAM observation per session whose
+#: ``session/opened`` recorded a depth: how many creators stood above it in the session
+#: tree. No attribute -- the signal is a distribution, not a breakdown. Bucket
+#: boundaries are the SDK default for this build; the right boundaries are TO BE
+#: MEASURED against a real install's observed depths once this ships, by reading the
+#: exported histogram's bucket occupancy and narrowing from there, the same posture
+#: :data:`EXPORT_LAG_METRIC` takes -- not guessed in advance of any data.
+SESSION_TREE_DEPTH_METRIC: Final[str] = "kirocrew.crew.session.tree.depth"
+
 
 def _otel_usage_diff(
     previous: "Mapping[str, Any] | None", current: Mapping[str, Any]
@@ -318,12 +337,54 @@ def _otel_usage_diff(
     return metrics
 
 
+def _otel_session_tree_diff(
+    previous: "Mapping[str, Any] | None", current: Mapping[str, Any]
+) -> "list[Metric]":
+    """The depth histogram observation owed on the first sight of a session new to this
+    process.
+
+    ``previous is None`` is that first sight (see :class:`UsageExporter`). The fold
+    renders ``opened_ts`` (the opening entry's timestamp) and ``depth``
+    (:mod:`kiro_crew.crew_log.projection_otel_session_tree`); this observes the depth
+    once, only when :func:`_opened_in_this_process` proves the session opened at or
+    after export install -- so a resumed session's depth is not re-observed on every
+    gateway restart, the same guard ``_otel_usage_diff`` applies to session.started.
+    A later delivery (``previous`` not ``None``) is not a first sight and observes
+    nothing. The depth is read back through the fold's own shape-and-sign guard, and a
+    session with no established depth (``depth`` is ``None``) contributes no
+    observation. No attribute: the metric is a distribution.
+    """
+    # One observation per session, on the FIRST sight (previous is None) of a session
+    # this process can prove is new -- its opened_ts is at or after export install. A
+    # resumed session's first sight has an older opened_ts, so its depth is not
+    # re-observed on every restart; a later delivery is not a first sight, so it cannot
+    # observe twice. This is the same restart guard _otel_usage_diff uses for
+    # session.started.
+    if previous is not None:
+        return []
+    if not _opened_in_this_process(current.get("opened_ts")):
+        return []
+    depth = current.get("depth")
+    if isinstance(depth, bool) or not isinstance(depth, int) or depth < 0:
+        return []
+    # unit="1": depth is a dimensionless count of creators, not a duration.
+    return [Metric(SESSION_TREE_DEPTH_METRIC, KIND_HISTOGRAM, depth, {}, unit="1")]
+
+
 #: Every usage fold this export subscribes to. ONE ROW PER FOLD -- a later story
-#: (S2's session tree, a later work-ledger story) adds its own session-keyed row here
-#: with its own ``diff``, and nothing else in this module changes:
-#: :func:`on_fold_advanced` dispatches by the event's fold name, so a new row is live
-#: the moment it is added. This is the file-plus-tuple a later story extends.
-_EXPORTERS: Final[tuple[UsageExporter, ...]] = (UsageExporter("otel_usage", _otel_usage_diff),)
+#: A new session-keyed usage fold adds its own row here with its own ``diff``, and
+#: nothing else in this module changes: :func:`on_fold_advanced` dispatches by the
+#: event's fold name, so a new row is live the moment it is added. ``otel_session_tree``
+#: is the session-tree depth histogram's source; the roots metric is NOT here because
+#: its source is the whole session tree, which no session-keyed ``FoldAdvanced`` carries
+#: -- it is an observable gauge read at collect time
+#: (:func:`kiro_crew.crew_log.otel_session_tree_roots.register_session_tree_gauge`,
+#: registered from :mod:`kiro_crew.metrics.provider` the same way the inventory and
+#: process gauges are).
+_EXPORTERS: Final[tuple[UsageExporter, ...]] = (
+    UsageExporter("otel_usage", _otel_usage_diff),
+    UsageExporter("otel_session_tree", _otel_session_tree_diff),
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -450,7 +511,28 @@ def _record_metrics(metrics: "list[Metric]") -> None:
         if metric.kind == KIND_COUNTER:
             recorder.counter(metric.name, metric.value, attrs=dict(metric.attrs))
         elif metric.kind == KIND_HISTOGRAM:
-            recorder.histogram(metric.name, metric.value, attrs=dict(metric.attrs))
+            # Named static emit per known histogram, not a single dynamic
+            # ``histogram(metric.name, ...)`` call: the provider's bucket-view guard
+            # (``test_provider_bucket_views``) resolves each histogram's name and unit
+            # from the call site's literal/constant first argument, so the unit a
+            # non-ms histogram carries must be visible there, not hidden behind a
+            # variable. Each branch spells its instrument constant and its unit.
+            if metric.name == SESSION_TREE_DEPTH_METRIC:
+                # The name is spelled as a LITERAL here (equal to
+                # :data:`SESSION_TREE_DEPTH_METRIC`, pinned by a test) so the bucket-view
+                # guard's AST scan -- which resolves only string literals and plain
+                # ``Assign`` constants, not the ``Final[str]`` annotated constant -- can
+                # read this call's name and its ``unit="1"``.
+                recorder.histogram(
+                    "kirocrew.crew.session.tree.depth",
+                    metric.value,
+                    unit="1",
+                    attrs=dict(metric.attrs),
+                )
+            else:
+                recorder.histogram(
+                    metric.name, metric.value, unit=metric.unit, attrs=dict(metric.attrs)
+                )
         else:
             logger.debug("otel crew-log export: unrecognized metric kind %r", metric.kind)
 

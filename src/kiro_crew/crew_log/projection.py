@@ -95,6 +95,7 @@ _OWNERS = (
     "kiro_crew.crew_log.projection_session_log",
     "kiro_crew.crew_log.projection_values",
     "kiro_crew.crew_log.projection_otel_usage",
+    "kiro_crew.crew_log.projection_otel_session_tree",
     "kiro_crew.crew_log.projection_side_panel",
     "kiro_crew.crew_log.projection_usage",
     "kiro_crew.crew_log.projection_subagents",
@@ -117,7 +118,17 @@ for _owner in _OWNERS:
     _importlib.import_module(_owner)
 #: Name the facade serves but does not bind -> the owner that answers a read of it.
 _EXPORTS: dict[str, str] = {}
-_EXPORTS.update(_facade_mirror.install(_sys.modules[__name__], _OWNERS, excluded=()).served)
+#: ``SESSION_OPENED_TYPE`` is the ``session/opened`` entry-type string, and two export
+#: folds (``projection_otel_usage`` and ``projection_otel_session_tree``) each define
+#: their own constant for it -- equal values, distinct objects. Both are a module-local
+#: ``Final`` naming the one entry type that fold answers to, not a name read through the
+#: facade, so the family carries two bindings of the name by design. Declaring it here
+#: tells the mirror that divergence is expected rather than an owner patched live.
+_EXPORTS.update(
+    _facade_mirror.install(
+        _sys.modules[__name__], _OWNERS, excluded=("SESSION_OPENED_TYPE",)
+    ).served
+)
 _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
@@ -211,12 +222,20 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _ledger_start,
         _ledger_step,
     )
+    from kiro_crew.crew_log.projection_otel_session_tree import (  # noqa: F401
+        OTEL_SESSION_TREE_FOLD_NAME,
+        OTEL_SESSION_TREE_TYPES,
+        _otel_session_tree_copy,
+        _otel_session_tree_render,
+        _otel_session_tree_rows,
+        _otel_session_tree_start,
+        _otel_session_tree_step,
+    )
     from kiro_crew.crew_log.projection_otel_usage import (  # noqa: F401
         _AGENT_KIND_BY_STEM,
         _AGENT_KIND_UNSET,
         OTEL_USAGE_FOLD_NAME,
         OTEL_USAGE_TYPES,
-        SESSION_OPENED_TYPE,
         TURN_STARTED_TYPE,
         _agent_kind,
         _agent_kind_by_name,
@@ -558,6 +577,9 @@ if TYPE_CHECKING:  # names it serves from outside the fold family, from their ho
     from kiro_crew.crew_log.errors import (  # noqa: F401
         CODE_BAD_DATA,
         CrewLogError,
+    )
+    from kiro_crew.crew_log.otel_session_tree_fold import (  # noqa: F401
+        depth_observation,
     )
     from kiro_crew.crew_log.schema import (  # noqa: F401
         KIND_SESSION,

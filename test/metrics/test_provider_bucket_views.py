@@ -347,9 +347,13 @@ class TestNonDurationHistograms:
 
 class TestBoundaryShape:
     @pytest.mark.parametrize("name,bounds", sorted(histogram_bounds().items()))
-    def test_bounds_are_sorted_positive_and_unique(self, name, bounds):
+    def test_bounds_are_sorted_nonneg_and_unique(self, name, bounds):
+        # Non-negative, not strictly positive: a count-from-zero histogram (the
+        # session-tree depth, where 0 is a root with no creator above it) carries a
+        # 0.0 first edge so the root lands in its own (-inf, 0] bucket. A duration
+        # histogram never has a 0 edge, but the shape invariant is the same for both.
         assert bounds, name
-        assert all(b > 0 for b in bounds), name
+        assert all(b >= 0 for b in bounds), name
         assert list(bounds) == sorted(bounds), name
         assert len(set(bounds)) == len(bounds), name
 

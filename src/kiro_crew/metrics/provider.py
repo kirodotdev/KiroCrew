@@ -195,16 +195,47 @@ _ATTR_OTHER = "other"
 # 30s, and any sample above the top bound has its percentile floored at that
 # bound.
 _FAST_BUCKETS_MS: list[float] = [
-    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
-    1000, 2500, 5000, 10000, 30000, 60000,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
 ]
 
 # Milliseconds through ~1 minute — session startup and other cold-start work.
 # Sized for startup, which spans a 0.5ms set_model phase through 15-25s cold
 # spawns.
 _STARTUP_BUCKETS_MS: list[float] = [
-    1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 3000,
-    5000, 7500, 10000, 15000, 20000, 30000, 45000, 60000,
+    1,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2000,
+    3000,
+    5000,
+    7500,
+    10000,
+    15000,
+    20000,
+    30000,
+    45000,
+    60000,
 ]
 
 # One second through one hour — agent turns. A turn is an entire agent loop
@@ -213,9 +244,25 @@ _STARTUP_BUCKETS_MS: list[float] = [
 # multi-minute turn is not floored into an overflow bucket. Resolution is
 # deliberately densest between 1 and 10 minutes, where turns actually land.
 _TURN_BUCKETS_MS: list[float] = [
-    1000, 2500, 5000, 10000, 20000, 30000, 45000, 60000, 90000,
-    120000, 180000, 300000, 450000, 600000, 900000, 1200000,
-    1800000, 2700000, 3600000,
+    1000,
+    2500,
+    5000,
+    10000,
+    20000,
+    30000,
+    45000,
+    60000,
+    90000,
+    120000,
+    180000,
+    300000,
+    450000,
+    600000,
+    900000,
+    1200000,
+    1800000,
+    2700000,
+    3600000,
 ]
 
 # Watchdog idle-at-decision. The watchdog consults the oracle from
@@ -226,8 +273,23 @@ _TURN_BUCKETS_MS: list[float] = [
 # distribution is meant to tune. Sub-minute bounds exist because tests and
 # per-agent overrides can legitimately act earlier than the default 60s gate.
 _WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
-    1000, 5000, 15000, 30000, 60000, 120000, 180000, 300000, 450000,
-    600000, 900000, 1800000, 3600000, 5400000, 7200000, 10800000, 14400000,
+    1000,
+    5000,
+    15000,
+    30000,
+    60000,
+    120000,
+    180000,
+    300000,
+    450000,
+    600000,
+    900000,
+    1800000,
+    3600000,
+    5400000,
+    7200000,
+    10800000,
+    14400000,
 ]
 
 # Sub-ms through one hour — a single tool round-trip. The widest span of any
@@ -237,9 +299,27 @@ _WATCHDOG_IDLE_BUCKETS_MS: list[float] = [
 # dominate the population by count, and the ceiling matches _TURN_BUCKETS_MS
 # because a tool call cannot outlive the turn that contains it.
 _TOOL_CALL_BUCKETS_MS: list[float] = [
-    0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500,
-    1000, 2500, 5000, 10000, 30000, 60000,
-    120000, 300000, 600000, 1800000, 3600000,
+    0.5,
+    1,
+    2,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
+    5000,
+    10000,
+    30000,
+    60000,
+    120000,
+    300000,
+    600000,
+    1800000,
+    3600000,
 ]
 
 # One second through one week — session lifetime. Sessions are the only
@@ -251,9 +331,23 @@ _TOOL_CALL_BUCKETS_MS: list[float] = [
 # the short-lived teardown paths (unclaimed, destroyed) are a real population
 # whose distribution would otherwise collapse onto one boundary.
 _SESSION_BUCKETS_MS: list[float] = [
-    1000, 5000, 15000, 30000, 60000, 300000, 900000, 1800000,
-    3600000, 7200000, 14400000, 28800000, 43200000,
-    86400000, 172800000, 259200000, 604800000,
+    1000,
+    5000,
+    15000,
+    30000,
+    60000,
+    300000,
+    900000,
+    1800000,
+    3600000,
+    7200000,
+    14400000,
+    28800000,
+    43200000,
+    86400000,
+    172800000,
+    259200000,
+    604800000,
 ]
 
 # Instrument name -> boundaries. This map is the COMPLETE set of kirocrew
@@ -331,8 +425,22 @@ _HISTOGRAM_BUCKETS_MS: dict[str, list[float]] = {
 # overflow artifact `_HISTOGRAM_BUCKETS_MS` documents), and credit pricing is not
 # ours to hold still.
 _CREDIT_BUCKETS: list[float] = [
-    0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5,
-    10, 25, 50, 100, 250, 500, 1000, 2500,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    25,
+    50,
+    100,
+    250,
+    500,
+    1000,
+    2500,
 ]
 
 # The same shape in dollars, one decade lower: a claude_code turn bills
@@ -344,8 +452,22 @@ _CREDIT_BUCKETS: list[float] = [
 # instead, and worth re-checking against real rows once a claude_code host
 # reports.
 _USD_BUCKETS: list[float] = [
-    0.001, 0.0025, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25,
-    0.5, 1, 2.5, 5, 10, 25, 50, 100,
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+    10,
+    25,
+    50,
+    100,
 ]
 
 # Resident set of one kirocrew process, in BYTES because that is the unit the
@@ -361,10 +483,22 @@ _USD_BUCKETS: list[float] = [
 # percentile floored or capped at the nearest bound (the overflow artifact
 # `_HISTOGRAM_BUCKETS_MS` documents) and host memory is not ours to hold still.
 _RSS_BUCKETS_BYTES: list[float] = [
-    32 * 1024**2, 64 * 1024**2, 128 * 1024**2, 192 * 1024**2,
-    256 * 1024**2, 384 * 1024**2, 512 * 1024**2, 768 * 1024**2,
-    1024**3, 1536 * 1024**2, 2 * 1024**3, 3 * 1024**3,
-    4 * 1024**3, 6 * 1024**3, 8 * 1024**3, 16 * 1024**3,
+    32 * 1024**2,
+    64 * 1024**2,
+    128 * 1024**2,
+    192 * 1024**2,
+    256 * 1024**2,
+    384 * 1024**2,
+    512 * 1024**2,
+    768 * 1024**2,
+    1024**3,
+    1536 * 1024**2,
+    2 * 1024**3,
+    3 * 1024**3,
+    4 * 1024**3,
+    6 * 1024**3,
+    8 * 1024**3,
+    16 * 1024**3,
 ]
 
 # Share of the whole machine burned by one process: a dimensionless ratio where
@@ -380,8 +514,22 @@ _RSS_BUCKETS_BYTES: list[float] = [
 # saturated process can measure marginally over 1.0, and a bound above it keeps
 # that readable as "pegged" instead of silently capping the top percentile.
 _CPU_RATIO_BUCKETS: list[float] = [
-    0.001, 0.0025, 0.005, 0.01, 0.02, 0.04, 0.06, 0.08,
-    0.1, 0.15, 0.25, 0.4, 0.6, 0.8, 1.0, 1.25,
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.02,
+    0.04,
+    0.06,
+    0.08,
+    0.1,
+    0.15,
+    0.25,
+    0.4,
+    0.6,
+    0.8,
+    1.0,
+    1.25,
 ]
 
 # Non-duration histograms: instrument name -> boundaries, in the instrument's
@@ -410,6 +558,15 @@ _HISTOGRAM_BUCKETS_BY_UNIT: dict[str, list[float]] = {
     # percentile is not recoverable from it at any storage layer.
     "kirocrew.process.memory.rss_sampled": _RSS_BUCKETS_BYTES,
     "kirocrew.process.cpu.utilization": _CPU_RATIO_BUCKETS,
+    # Session-tree depth: a small dimensionless count of creators above a session.
+    # Integer boundaries covering the shallow trees delegation produces in practice,
+    # with headroom; the exact edges are "to be measured" against a real install's
+    # observed depths, like every histogram boundary in this epic. The first edge is
+    # 0.0, not 1.0: OTel buckets are closed on their upper edge, so a root (depth 0,
+    # no creator above it) and a direct child (depth 1) would share a single
+    # (-inf, 1] bucket and the distribution could not tell "no delegation" from "one
+    # level". With 0.0 the root lands in (-inf, 0] and the first child in (0, 1].
+    "kirocrew.crew.session.tree.depth": [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0, 12.0, 16.0],
 }
 
 
@@ -602,9 +759,7 @@ def _resource_attributes() -> "dict[str, str | int]":
         machine = platform.machine().lower()
         attrs["host.arch"] = _ARCH_BY_MACHINE.get(machine, _ATTR_OTHER)
         runtime = platform.python_implementation().lower()
-        attrs["process.runtime.name"] = (
-            runtime if runtime in _KNOWN_RUNTIME_NAMES else _ATTR_OTHER
-        )
+        attrs["process.runtime.name"] = runtime if runtime in _KNOWN_RUNTIME_NAMES else _ATTR_OTHER
         # beacon.python_minor() owns the major.minor clamp and records why the
         # patch level is dropped; a second spelling here would be a rule with
         # two owners.
@@ -685,11 +840,7 @@ def _build_recorder() -> _Build:
     # the life of the process even though metrics are "disabled".
     started_readers: list = []
     try:
-        directory = (
-            Path(cfg.local_dir).expanduser()
-            if cfg.local_dir
-            else _default_metrics_dir()
-        )
+        directory = Path(cfg.local_dir).expanduser() if cfg.local_dir else _default_metrics_dir()
         started_readers.append(
             PeriodicExportingMetricReader(
                 JsonlMetricExporter(
@@ -784,6 +935,17 @@ def _build_recorder() -> _Build:
             register_inventory_gauges(meter)
         except Exception:
             logger.warning("inventory gauges unavailable", exc_info=True)
+        # The session-tree roots gauge rides the same consent gate and the same
+        # observable-callback contract. Its source is crew_log's session-tree
+        # projection (read on the SDK's collect thread), so it lives in its own
+        # crew-log module rather than in inventory_gauges; its OWN try keeps a failure
+        # reading the tree from costing the inventory or process gauges.
+        try:
+            from kiro_crew.crew_log.otel_session_tree_roots import register_session_tree_gauge
+
+            register_session_tree_gauge(meter)
+        except Exception:
+            logger.warning("session-tree gauge unavailable", exc_info=True)
         return _Build(MetricsRecorder(meter), provider, consent)
     except Exception as exc:
         logger.warning("telemetry init failed; metrics disabled: %s", exc)
@@ -1015,10 +1177,7 @@ def _build_otlp_reader(dest: "OtlpDestination", cfg: object) -> Optional["_Reade
         exporter = OTLPMetricExporter(**kwargs)
         return PeriodicExportingMetricReader(
             exporter,
-            export_interval_millis=float(
-                getattr(cfg, "export_interval_seconds", 60)
-            )
-            * 1000.0,
+            export_interval_millis=float(getattr(cfg, "export_interval_seconds", 60)) * 1000.0,
         )
     except Exception:
         # Constructor errors may echo the credential-bearing endpoint in their
@@ -1196,9 +1355,7 @@ def _reap_readers_detached(readers: list) -> None:
             except Exception:  # noqa: BLE001 - best-effort cleanup
                 logger.debug("metric reader shutdown after init failure failed", exc_info=True)
 
-    threading.Thread(
-        target=_reap, name="kirocrew-telemetry-reap", daemon=True
-    ).start()
+    threading.Thread(target=_reap, name="kirocrew-telemetry-reap", daemon=True).start()
 
 
 def _take_provider_locked() -> Optional["_MeterProviderT"]:

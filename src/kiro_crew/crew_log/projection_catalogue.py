@@ -56,7 +56,16 @@ PROJECTION_NAMES: Final[tuple[str, ...]] = (
 #: name through the crew-log bus rather than through a side panel, so advertising it
 #: would push a frame to every owner socket on every turn for a reader that is not a
 #: browser.
-INTERNAL_PROJECTION_NAMES: Final[tuple[str, ...]] = ("class", "outline", "otel_usage")
+#: ``otel_session_tree`` joins them for the reason ``otel_usage`` does: its one reader
+#: is the OTel export subscriber (:mod:`kiro_crew.metrics.crew_log_export`), which asks
+#: for the fold by name through the crew-log bus, so advertising it would push a frame
+#: to every owner socket for a reader that is not a browser.
+INTERNAL_PROJECTION_NAMES: Final[tuple[str, ...]] = (
+    "class",
+    "outline",
+    "otel_usage",
+    "otel_session_tree",
+)
 
 #: Folds keyed by one SESSION, which are the ones the projection kernel drives
 #: (:func:`_session_registry`). The advertised panel set plus the internal ``class``:

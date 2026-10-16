@@ -167,6 +167,11 @@ _NULLABLE: Final[dict[str, dict[str, Any]]] = {
     "outline.last_turn": {"type": "number", "integer": True},
     # ``_work_render``: the item this board hangs under, null for a root conductor.
     "work.conductor.parent_item": {"type": "string"},
+    # ``_otel_session_tree_render``: how many creators stood above this session, null
+    # until its ``session/opened`` folds and for a session that never carried a depth.
+    # A whole count of hops up the tree, so a number and an integer -- the OTel export
+    # records it as one histogram observation, never a formatted label.
+    "otel_session_tree.depth": {"type": "number", "integer": True},
 }
 
 #: Objects whose KEYS are not this catalog's to enumerate, each ``"<fold>.<path>"`` ->

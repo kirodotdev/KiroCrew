@@ -435,6 +435,8 @@ Tests: `test/metrics/test_resource_attrs.py`.
 | `kirocrew.crew.session.started` | counter | `agent_kind` (closed: the owned agent-file stems, plus `default`, `crewmate`, `other`) | `metrics/crew_log_export.py::_otel_usage_diff`, from the crew log's `otel_usage` fold rather than from a session-lifecycle call site. Distinct from `kirocrew.session.started` above, which counts a gateway session allocation split by `session_source`: this one counts a crew LOG opening split by the kind of agent that opened it, and only for logs this process both wrote and could prove were opened after it installed the subscriber. Never over-counts across a restart; under-counts a session opened before install. |
 | `kirocrew.crew.turn.started` | counter | `actor` (the crew log's own closed `ACTOR_VALUES` set) | Same module and fold; one add per `turn/started` entry, derived as a delta against the last cumulative render this process exported for that session. |
 | `kirocrew.crew.export.lag` | histogram (ms) | — | Same module, `on_fold_advanced`; one observation per delivery an `_EXPORTERS` row actually handled, so the session-scoped deliveries for other folds that reach the same callback are not timed. Self-timing, so "the export is not slow" is read rather than asserted. SDK default boundaries for now — this instrument is deliberately absent from `_HISTOGRAM_BUCKETS_MS` until a real install's deliveries are measured. |
+| `kirocrew.crew.session.tree.depth` | histogram (1) | — | Same module, from the crew log's `otel_session_tree` fold; one observation per session this process can prove is new to it, carrying that session's BIRTH depth as `session/opened.depth` recorded it (`crew_log/otel_session_tree_fold.py::depth_observation`). Dimensionless, so it is declared in `events.NON_MS_HISTOGRAM_UNITS` as `1` and given its own explicit boundaries (see the bucket table below) rather than inheriting the millisecond family. A session whose depth could not be established — the tree unseeded, the reading `incomplete`, a creator cited with no log, a cycle — carries no `depth` and is left OUT of the distribution rather than defaulted to 0, roots included, so the histogram is never censored on one side only. |
+| `kirocrew.crew.session.tree.roots` | gauge | — | `crew_log/otel_session_tree_roots.py::register_session_tree_gauge`, registered from `provider.py` beside `register_inventory_gauges` / `register_process_gauges` and so collected on the reader's own thread. How many roots in the folded session tree have at least one child — the count of trees that actually branch, read by folding the in-memory tree once per collection (bounded by `TREE_UNIT_CAP`). A reading the tree cannot give yields a gap, never a `0`, on the same condition the depth histogram withholds an observation. |
 
 | `kirocrew.process.threads.python` | gauge | — | `metrics/process_gauges.py::register_process_gauges`, callbacks run only at reader collection (no polling threads). `threading.active_count()`. |
 | `kirocrew.process.threads.os` | gauge | — | Same module; `platform_compat.process_thread_count(os.getpid())` — OS-level count that catches native pools (ggml, grpc) invisible to `threading`. Linux-only; None elsewhere (gap, not zero). |
@@ -557,7 +559,7 @@ Boundaries live in two metric-name → boundaries maps in
 `metrics/provider.py` — `_HISTOGRAM_BUCKETS_MS` for millisecond instruments and
 `_HISTOGRAM_BUCKETS_BY_UNIT` for everything else — merged by
 `histogram_bounds()`, from which one `View(instrument_name=…)` is built per
-instrument. Ten families, each sized to its instrument's measured range:
+instrument. Eleven families, each sized to its instrument's measured range:
 
 | Family | Range | Unit | Instruments |
 |---|---|---|---|
@@ -571,6 +573,7 @@ instrument. Ten families, each sized to its instrument's measured range:
 | `_USD_BUCKETS` | 0.001 – 100 | usd | `turn.cost_usd` |
 | `_RSS_BUCKETS_BYTES` | 32MiB – 16GiB | By | `process.memory.rss_sampled` |
 | `_CPU_RATIO_BUCKETS` | 0.001 – 1.25 | 1 | `process.cpu.utilization` |
+| session-tree depth (spelled inline in `_HISTOGRAM_BUCKETS_BY_UNIT`) | 0 – 16 | 1 | `crew.session.tree.depth` |
 
 `_TOOL_CALL_BUCKETS_MS` spans a sub-millisecond builtin read to a multi-minute
 build in one instrument, so it keeps both ends: a `_FAST` ceiling would floor

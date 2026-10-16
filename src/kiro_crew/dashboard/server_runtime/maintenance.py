@@ -372,6 +372,42 @@ def _kick_knowledge_orphan_reclaim(state: DashboardState) -> None:
     task.add_done_callback(state._background_tasks.discard)
 
 
+def _kick_otel_crew_log_subscriber(state: DashboardState) -> None:
+    """Install the OTel usage export's crew-log subscription post-bind, off the loop.
+
+    ``install_otel_crew_log_subscriber`` reads telemetry consent through
+    ``get_recorder()``, and on an opted-in host the first ``get_recorder()`` builds
+    the recorder synchronously: it imports the OTel SDK (about 57 ms) and writes the
+    install id. Called inline between the bind and the ``KIROCREW_READY`` publish, that
+    import and file write sit on the one ordered path the listener's readiness waits on
+    (``no-new-work-on-gateway-boot-path``). So the install runs on a worker thread,
+    the same shape as the ``_kick_*`` calls above it, and nothing is awaited in front
+    of the publish.
+
+    A no-op for an unopted host (``telemetry.enabled`` off, the default): the consent
+    read returns, the thread finds nothing to subscribe, and the task ends. The bus
+    subscription the install registers is a process-global write guarded by the bus's
+    own lock, not loop-bound, so it is safe off the loop; a fold delivered before the
+    subscription lands is simply not exported, which is the baseline the exporter
+    already treats as its floor.
+    """
+
+    def _install_in_thread() -> None:
+        from kiro_crew.metrics.crew_log_export import install_otel_crew_log_subscriber
+
+        install_otel_crew_log_subscriber()
+
+    async def _otel_crew_log_install() -> None:
+        try:
+            await asyncio.to_thread(_install_in_thread)
+        except Exception:  # noqa: BLE001 -- telemetry must never take the gateway down
+            logger.warning("OTel crew-log subscriber install failed", exc_info=True)
+
+    task = asyncio.create_task(_otel_crew_log_install())
+    state._background_tasks.add(task)
+    task.add_done_callback(state._background_tasks.discard)
+
+
 def _register_own_host_warm(app: web.Application) -> None:
     """Start reading this machine's own addresses at boot, without waiting on it.
 

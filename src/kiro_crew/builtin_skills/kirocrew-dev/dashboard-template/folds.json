@@ -608,6 +608,30 @@
       ]
     },
     {
+      "name": "otel_session_tree",
+      "mode": "session",
+      "advertised": false,
+      "package_only": false,
+      "affects": [
+        "session/opened"
+      ],
+      "answers": "How many creators stood above this session in the session tree when it opened -- the one depth the OTel export reads to record this session's observation in the tree-depth histogram",
+      "fields": [
+        {
+          "name": "depth",
+          "type": "number",
+          "optional": true,
+          "integer": true
+        },
+        {
+          "name": "opened_ts",
+          "type": "number",
+          "optional": false,
+          "integer": true
+        }
+      ]
+    },
+    {
       "name": "ledger",
       "mode": "slot",
       "advertised": true,
