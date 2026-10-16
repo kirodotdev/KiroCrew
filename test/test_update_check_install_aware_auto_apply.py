@@ -288,7 +288,7 @@ class TestAutoApplyGuard:
         `available` is true on commit distance alone for a checkout, and this
         path applies `git reset --hard`. Requiring the version to have moved
         keeps it firing no more often than while the verdict was version-only
-        (see `TestCheckForUpdates` in `test_slack_gateway.py` for the negative).
+        (see `TestCheckForUpdates` in `test_slack_gateway_update_apply.py` for the negative).
         """
         orch = self._run(
             {

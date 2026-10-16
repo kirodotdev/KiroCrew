@@ -284,7 +284,6 @@
 2032 test/test_skill_browser.py
 2396 test/test_skill_trust_store.py
 3082 test/test_skills.py
-11406 test/test_slack_gateway.py
 2824 test/test_slack_gateway_coverage.py
 2303 test/test_slack_gateway_cron_exec_coverage.py
 2650 test/test_slack_handler_composition_contract.py
