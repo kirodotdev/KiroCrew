@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, memo, useRef, useId, type ReactNode } from 'react'
 import { motion } from 'framer-motion'
-import { Copy, ClipboardType, Check, Volume2, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
+import { Copy, ClipboardType, Check, Code, Eye, ClipboardList, CheckCircle, RefreshCw, ChevronLeft, ChevronRight, GitFork, Loader2, Link2, Compass, Clock, MessageSquare, Pin, PinOff, MoreHorizontal, Share2, X, Quote } from 'lucide-react'
 import { lazy, Suspense } from 'react'
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '../../components/ui/dropdown-menu'
 import MessageContextMenu, { type MessageMenuItem } from './MessageContextMenu'
@@ -26,6 +26,7 @@ import OpenFileChips from '../../components/OpenFileChips'
 import DecisionStrip from './DecisionStrip'
 import { readDecisionRecords, readMemoryRecallInStrip } from './decisionRecord'
 import MemoryRecallStrip from './MemoryRecallStrip'
+import SpeakMenuItem from './SpeakMenuItem'
 import type { FileChipStyle } from './ChatSettings'
 import { loadChatConfig } from './ChatSettings'
 import { useSmoothStream } from '../../hooks/useSmoothStream'
@@ -559,14 +560,7 @@ const AssistantMessage = memo(function AssistantMessage({ content, isStreaming, 
               </span>
             </DropdownMenuItem>
           )}
-          {hasSpeak && (
-            <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="speak-message" aria-description={i18nT('pages.chat.assistantMessage.speak_message')} onSelect={() => onSpeak?.(content)}>
-              <span className="flex items-center gap-2">
-                <Volume2 className="lucide-inline shrink-0" />
-                <span>{i18nT('pages.chat.assistantMessage.speak')}</span>
-              </span>
-            </DropdownMenuItem>
-          )}
+          {hasSpeak && <SpeakMenuItem onSelect={() => onSpeak?.(content)} />}
           {oldMenuContext && shareEnabled && (
           <DropdownMenuItem className="[@media(hover:none)]:min-h-10" data-testid="share-message" onSelect={() => setShareOpen(true)}>
             <span className="flex items-center gap-2">

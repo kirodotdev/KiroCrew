@@ -5112,6 +5112,7 @@
       "assistantMessage": {
         "speak_message": "Read message aloud",
         "speak": "Read aloud",
+        "stop_reading": "Stop reading",
         "copy_text": "Copy text",
         "copy_as_rich_text": "Copy as rich text",
         "copy_as_markdown": "Copy as Markdown",

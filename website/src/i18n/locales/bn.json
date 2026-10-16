@@ -11494,6 +11494,7 @@
         "regenerate_response": "উত্তর পুনরায় তৈরি করুন",
         "rendered_view": "রেন্ডার করা ভিউ",
         "speak": "পড়ে শোনান",
+        "stop_reading": "পড়ে শোনানো থামাও",
         "copy_text": "টেক্সট কপি করুন",
         "copy_as_rich_text": "রিচ টেক্সট হিসেবে কপি করো",
         "copy_as_markdown": "Markdown হিসেবে কপি করো",

@@ -11658,6 +11658,7 @@
         "regenerate_response": "Regenerar la respuesta",
         "rendered_view": "Vista renderizada",
         "speak": "Leer en voz alta",
+        "stop_reading": "Dejar de leer",
         "copy_text": "Copiar texto",
         "copy_as_rich_text": "Copiar como texto enriquecido",
         "copy_as_markdown": "Copiar como Markdown",

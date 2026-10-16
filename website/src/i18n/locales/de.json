@@ -11494,6 +11494,7 @@
         "regenerate_response": "Antwort neu erstellen",
         "rendered_view": "Gerenderte Ansicht",
         "speak": "Vorlesen",
+        "stop_reading": "Vorlesen stoppen",
         "copy_text": "Text kopieren",
         "copy_as_rich_text": "Als formatierten Text kopieren",
         "copy_as_markdown": "Als Markdown kopieren",
