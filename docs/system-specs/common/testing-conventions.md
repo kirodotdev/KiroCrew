@@ -1924,11 +1924,12 @@ tests; the classes below are what the rest was made of.
   The `mc-maint` pool is the gateway's own, so `_join_test_loop_executor` (which joins
   the TEST LOOP's default executor at teardown) cannot reach it; the caller-resolves rule
   is the fix there. The loop's executor is covered: a cache write-through in
-  `test_source_providers.py` scheduled a detached repo-visibility refresh whose
-  `to_thread` resolved the provider CLI through `workspace_root()`; the join drains it,
-  and the module also stubs the scheduler (a recorder, so the calls stay observable),
-  because no test there is about visibility and a side task that never starts has
-  nothing to drain.
+  `test_source_providers.py` (and the topic modules split from it, which import its
+  fixtures from `source_providers_helpers.py`) scheduled a detached repo-visibility
+  refresh whose `to_thread` resolved the provider CLI through `workspace_root()`; the
+  join drains it, and those modules also stub the scheduler (a recorder, so the calls
+  stay observable), because no test there is about visibility and a side task that
+  never starts has nothing to drain.
 - **Dropping the override to test the DEFAULT home resolves, and creates, the real one.**
   Five tests `delenv("KIROCREW_HOME")` (or `patch.dict(os.environ, {}, clear=True)`, or
   ran a module-scoped fixture BEFORE the function-scoped floor) and let `config_dir()`

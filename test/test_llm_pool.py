@@ -2602,7 +2602,7 @@ class TestCCWorkerReapsTheProcessTree:
             worker._reader_task.cancel()
 
         # Both halves of the platform_compat recipe, asserted the way
-        # test_source_providers does: the POSIX flag is IS_POSIX (not an
+        # test_source_providers_provider_cli does: the POSIX flag is IS_POSIX (not an
         # unconditional True -- on Windows setsid does not exist and the value is
         # legitimately False), and the Windows flag is what makes the child tree
         # `taskkill /T`-reapable there. Asserting membership separately keeps this

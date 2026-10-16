@@ -349,7 +349,7 @@
  1 test_slot_payload_lineage.py
  1 test_slots_broadcast_byte_pacing.py
  1 test_snapshot.py
- 1 test_source_providers.py
+ 1 test_source_providers_gitlab_host.py
  1 test_spawn_admission_verdict_census.py
  1 test_spawn_approval_channel_governance_13491.py
  1 test_spawn_approval_mid_wait_deny_13559.py

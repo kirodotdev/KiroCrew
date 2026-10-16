@@ -907,7 +907,7 @@ class TestTrustedRipgrep:
     What belongs here is the DELEGATION -- that the chokepoint is consulted and
     that its refusal degrades to the python engine. Which binaries it clears is
     its own contract, tested against real security descriptors and real mode
-    bits in ``test_source_providers.py`` and ``test_windows_acl.py``; asserting
+    bits in ``test_source_providers_provider_cli.py`` and ``test_windows_acl.py``; asserting
     that here a second time is what produced a subset that disagreed with it.
     """
 
