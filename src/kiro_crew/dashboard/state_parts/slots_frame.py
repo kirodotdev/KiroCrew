@@ -511,7 +511,8 @@ def _slack_link_nonce(state: "DashboardState", session_key: str) -> str:
 
 
 # Slot-list broadcast coalescing window. The sub-agent slots debouncer in
-# slack/gateway.py hardcodes the same value independently; the two are not shared.
+# slack/gateway_runtime/subagent_wiring.py hardcodes the same value independently;
+# the two are not shared.
 _SLOTS_BROADCAST_INTERVAL_S: float = 0.2
 
 

@@ -86,7 +86,7 @@ TOOL_STALL_RECOVERY_PREFIX = "[Tool stall — automatic recovery]"
 
 
 # Prefix on the continuation injected after a reset recovers an interrupted
-# connection. The body lives in chat_utils so queue provenance and turn routing
+# connection. The body lives in chat_utils_injected_rows so queue provenance and turn routing
 # share one canonical instruction.
 CONN_RECOVERY_PREFIX = "[Connection lost — automatic recovery]"
 
@@ -96,13 +96,13 @@ CONN_RECOVERY_PREFIX = "[Connection lost — automatic recovery]"
 # CONN_RECOVERY_PREFIX even though both requeue the same continuation shape:
 # nothing was disconnected, and the marker is what the transcript renders, so
 # sharing the connection marker would report a dropped connection to a user
-# whose status card reads "Session busy". Body: _BUSY_RECOVER_MSG in chat_utils.
+# whose status card reads "Session busy". Body: _BUSY_RECOVER_MSG in chat_utils_injected_rows.
 BUSY_RECOVERY_PREFIX = "[Session busy — automatic recovery]"
 
 
 # Prefix on the runner-injected CONTINUE that resumes a turn cut short by a
 # transient backend 5xx after tokens/tools had already streamed. The body lives
-# in chat_utils as _POSTTOKEN_RECOVER_MSG; the prefix is here so all
+# in chat_utils_injected_rows as _POSTTOKEN_RECOVER_MSG; the prefix is here so all
 # recovery markers share one home and the frontend has one list to mirror.
 POSTTOKEN_RECOVERY_PREFIX = "[Interrupted turn — automatic recovery]"
 
@@ -116,7 +116,7 @@ EMPTY_RESPONSE_RECOVERY_PREFIX = "[Empty response — automatic recovery]"
 # PROMISE-ONLY final message: the model announced an immediate action ("I'll do
 # that now") and then yielded without making the tool call, so the work never
 # happened and the turn still billed. Body: _PROMISE_ONLY_CONTINUE_MSG in
-# chat_utils. One bounded attempt (slot._promise_only_retries), never a loop.
+# chat_utils_injected_rows. One bounded attempt (slot._promise_only_retries), never a loop.
 PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 
 
@@ -125,13 +125,13 @@ PROMISE_ONLY_RECOVERY_PREFIX = "[Unfinished action — automatic recovery]"
 # the work. The compaction itself succeeded — nothing failed — but the request
 # that was in flight when the context filled was abandoned, and the turn lands
 # looking clean (a settled footer with elapsed time), so without this the chat
-# just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils. One bounded attempt
+# just stops. Body: _COMPACTION_CONTINUE_MSG in chat_utils_injected_rows. One bounded attempt
 # (slot._compaction_continue_retries), never a loop.
 COMPACTION_RECOVERY_PREFIX = "[Context compacted — automatic recovery]"
 
 
 # Prefix on the continuation injected when the USER pressed Continue on an
-# interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils. Named into the
+# interrupted turn. Body: _MANUAL_RESUME_MSG in chat_utils_turn_recovery. Named into the
 # *_RECOVERY_PREFIX family because test_recovery_card_prefixes.py keys the
 # cross-language drift guard on that suffix — a marker outside the family is
 # invisible to it, and the card would silently render machine prose as a bubble.
@@ -147,7 +147,7 @@ MANUAL_RESUME_RECOVERY_PREFIX = "[Continue — requested by the user]"
 # completed tool calls would run a second time -- so the session is moved to the
 # fallback model and asked to carry on from the completed work, the same
 # continuation a person gets from Continue. Body: _REFUSAL_FALLBACK_RESUME_MSG
-# in chat_utils. Named into the *_RECOVERY_PREFIX family so
+# in chat_utils_turn_recovery. Named into the *_RECOVERY_PREFIX family so
 # test_recovery_card_prefixes.py's drift guard sees it. The VALUE names the
 # cause (a model's filter) and the remedy (another model); it says neither
 # "requested by the user" (nobody pressed anything) nor "automatic recovery"
