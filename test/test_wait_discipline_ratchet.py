@@ -572,7 +572,8 @@ def test_the_scan_matches_known_sites() -> None:
     found = _tree_scan()
     assert found, "no short fixed wait anywhere under test/; the needles are broken"
     kinds = {site.kind for sites in found.values() for site in sites}
-    assert {"wait_for", "asyncio.timeout", "result", "sleep-in-loop"} <= kinds, kinds
+    # asyncio.timeout sites have all been migrated; the gate still detects the shape.
+    assert {"wait_for", "result", "sleep-in-loop"} <= kinds, kinds
 
 
 def test_a_planted_short_wait_is_named(tmp_path: Path) -> None:

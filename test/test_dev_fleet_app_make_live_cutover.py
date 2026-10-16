@@ -24,6 +24,7 @@ from dev_fleet_app_helpers import _POSIX_ONLY, _mk_make_live_wt, _stub_make_live
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
+from kiro_crew.testing.wait import await_until
 
 
 # --- make-live: systemd value escaping / unsafe_path ---
@@ -421,16 +422,19 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_cmd)
 
     first = asyncio.ensure_future(mod._make_live(str(wt), dry_run=False))
-    await asyncio.wait_for(entered.wait(), timeout=5)
+    await await_until(entered, what="make_live entered lock")
     assert mod._MAKE_LIVE_LOCK.locked() is True
 
     # Second call returns busy without waiting.
-    busy = await asyncio.wait_for(mod._make_live(str(wt), dry_run=False), timeout=5)
+    busy = await await_until(
+        asyncio.ensure_future(mod._make_live(str(wt), dry_run=False)),
+        what="second make_live call done",
+    )
     assert busy["ok"] is False and busy["code"] == "busy"
     assert "in progress" in busy["error"]
 
     release.set()
-    res = await asyncio.wait_for(first, timeout=5)
+    res = await await_until(first, what="first make_live done")
     assert res["ok"] is True and res.get("cutover") is True
     assert mod._MAKE_LIVE_LOCK.locked() is False
 

@@ -33,6 +33,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.wait import await_until
 
 NAME = "feature-wt"
 OTHER = "other-wt"
@@ -189,12 +190,12 @@ async def _removal_held_at_its_git_spawn(world):
 
     async def confirm(path):
         at_gate.set()
-        await asyncio.wait_for(release.wait(), BOUND)
+        await await_until(release, what="removal gate released")
         return True
 
     world.monkeypatch.setattr(live, "confirm_removal_lease", confirm)
     removal = asyncio.ensure_future(worktree_ops._worktree_remove(NAME))
-    await asyncio.wait_for(at_gate.wait(), BOUND)
+    await await_until(at_gate, what="removal reached git-spawn gate")
     return removal, release
 
 
@@ -204,7 +205,7 @@ async def test_a_removal_issued_during_a_pod_start_does_not_delete_the_running_p
 
     async def pod_cli(name):
         cli_running.set()
-        await asyncio.wait_for(unit_may_start.wait(), BOUND)
+        await await_until(unit_may_start, what="unit may start")
 
     async def confirm(path):
         # The unit goes active while the removal is between its last pod check
@@ -215,10 +216,10 @@ async def test_a_removal_issued_during_a_pod_start_does_not_delete_the_running_p
     world.pod_cli = pod_cli
     world.monkeypatch.setattr(live, "confirm_removal_lease", confirm)
     pod_up = asyncio.ensure_future(worktree_ops._pod_up(NAME))
-    await asyncio.wait_for(cli_running.wait(), BOUND)
+    await await_until(cli_running, what="CLI running")
     removed = await worktree_ops._worktree_remove(NAME)
     unit_may_start.set()
-    started = await asyncio.wait_for(pod_up, BOUND)
+    started = await await_until(pod_up, what="pod_up done")
 
     assert started["ok"] is True, started
     assert NAME in world.active
@@ -231,7 +232,7 @@ async def test_a_pod_start_during_a_removal_is_refused(world):
     removal, release = await _removal_held_at_its_git_spawn(world)
     started = await worktree_ops._pod_up(NAME)
     release.set()
-    removed = await asyncio.wait_for(removal, BOUND)
+    removed = await await_until(removal, what="removal done")
 
     assert started["ok"] is False, started
     assert NAME not in world.active
@@ -255,9 +256,11 @@ async def test_control_a_pod_started_before_the_last_check_still_refuses_the_rem
 @pytest.mark.asyncio
 async def test_control_a_pod_start_on_another_worktree_is_not_blocked(world):
     removal, release = await _removal_held_at_its_git_spawn(world)
-    started = await asyncio.wait_for(worktree_ops._pod_up(OTHER), BOUND)
+    started = await await_until(
+        asyncio.ensure_future(worktree_ops._pod_up(OTHER)), what="OTHER pod_up done"
+    )
     release.set()
-    removed = await asyncio.wait_for(removal, BOUND)
+    removed = await await_until(removal, what="removal done")
 
     assert started["ok"] is True, started
     assert world.active == {OTHER}
@@ -349,11 +352,11 @@ async def _gateway(monkeypatch):
     app.router.add_post(f"{gateway_routes.API_PREFIX}/token", token)
     gateway_routes.register_routes(app)
     server = TestServer(app, host="127.0.0.1")
-    await asyncio.wait_for(server.start_server(), BOUND)
+    await await_until(asyncio.ensure_future(server.start_server()), what="test server started")
     try:
         yield server.port
     finally:
-        await asyncio.wait_for(server.close(), BOUND)
+        await await_until(asyncio.ensure_future(server.close()), what="test server closed")
 
 
 @asynccontextmanager
@@ -423,13 +426,13 @@ async def _lease_during_a_held_start(world, tmp_path, lease_name):
     async with _gateway(world.monkeypatch) as port:
         pod_up = asyncio.ensure_future(worktree_ops._pod_up(NAME))
         try:
-            await asyncio.wait_for(cli_running.wait(), BOUND)
+            await await_until(cli_running, what="CLI running")
             async with _backend(port, str(world.trees[lease_name]), tmp_path) as backend:
                 answer = await _first_answer(backend)
                 err = await _release(backend)
         finally:
             unit_may_start.set()
-            started = await asyncio.wait_for(pod_up, BOUND)
+            started = await await_until(pod_up, what="pod_up done")
     return answer, err, started
 
 
@@ -439,7 +442,10 @@ async def _start_while_another_process_holds_the_lease(world, tmp_path, start_na
         async with _backend(port, str(world.trees[NAME]), tmp_path) as backend:
             try:
                 answer = await _first_answer(backend)
-                started = await asyncio.wait_for(worktree_ops._pod_up(start_name), BOUND)
+                started = await await_until(
+                    asyncio.ensure_future(worktree_ops._pod_up(start_name)),
+                    what="pod_up for start_name done",
+                )
             finally:
                 err = await _release(backend)
     return answer, err, started
@@ -496,7 +502,9 @@ async def test_control_a_gateway_pod_start_on_another_worktree_runs_during_a_bac
 @pytest.mark.asyncio
 async def test_control_a_lease_is_granted_once_the_gateway_pod_start_has_finished(world, tmp_path):
     async with _gateway(world.monkeypatch) as port:
-        started = await asyncio.wait_for(worktree_ops._pod_up(NAME), BOUND)
+        started = await await_until(
+            asyncio.ensure_future(worktree_ops._pod_up(NAME)), what="pod_up for NAME done"
+        )
         async with _backend(port, str(world.trees[NAME]), tmp_path) as backend:
             try:
                 answer = await _first_answer(backend)

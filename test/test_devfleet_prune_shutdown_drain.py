@@ -38,6 +38,7 @@ import pytest
 
 import kiro_crew.apps.builtins.dev_fleet.server as mod
 from kiro_crew.apps.builtins.dev_fleet import live, repository, runtime, worktree_ops
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -95,7 +96,7 @@ async def _start_prune(monkeypatch, *, remove_impl):
     # Force the item so no gh verdict is required (keeps the test hermetic).
     res = await worktree_ops._prune_run([], force_names={"wt-x"})
     assert res["ok"] is True
-    await asyncio.wait_for(entered.wait(), timeout=5.0)
+    await await_until(entered, what="prune worker entered removal")
     return entered
 
 
@@ -114,7 +115,7 @@ async def test_worker_is_retained(monkeypatch):
         assert not worktree_ops._prune_task.done()
     finally:
         gate.set()
-        await asyncio.wait_for(worktree_ops._prune_task, timeout=5.0)
+        await await_until(worktree_ops._prune_task, what="prune task done")
 
 
 @pytest.mark.asyncio
@@ -131,7 +132,9 @@ async def test_cleanup_drains_prune_worker_and_clears_handle(monkeypatch):
     assert prune_task is not None
 
     app = object()  # dev_fleet_cleanup only reads the arg, never touches it
-    await asyncio.wait_for(mod.dev_fleet_cleanup(app), timeout=5.0)
+    await await_until(
+        asyncio.ensure_future(mod.dev_fleet_cleanup(app)), what="dev_fleet_cleanup done"
+    )
 
     assert prune_task.done()
     assert worktree_ops._prune_task is None, "the handle must be cleared after the drain"
@@ -166,7 +169,7 @@ async def test_run_uninterruptible_drains_before_reraising(monkeypatch):
             raise
 
     task = asyncio.ensure_future(caller())
-    await asyncio.wait_for(started.wait(), timeout=5.0)
+    await await_until(started, what="inner coroutine started")
 
     # Cancel the caller while the inner mutation is still in flight.
     task.cancel()
@@ -180,7 +183,7 @@ async def test_run_uninterruptible_drains_before_reraising(monkeypatch):
     # re-raise the cancellation the caller requested.
     release.set()
     with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=5.0)
+        await await_until(task, what="caller task done")
     assert inner_finished["value"], "inner mutation must run to completion"
     assert reraised["value"], "cancellation must propagate after the drain"
 
@@ -234,7 +237,7 @@ async def test_cleanup_stays_pending_and_holds_lock_until_mutation_releases(monk
 
     res = await worktree_ops._prune_run([], force_names={"wt-x"})
     assert res["ok"] is True
-    await asyncio.wait_for(mutation_started.wait(), timeout=5.0)
+    await await_until(mutation_started, what="git mutation started")
 
     cleanup = asyncio.ensure_future(mod.dev_fleet_cleanup(object()))
     # Give cleanup a bounded window to run: under a bare shield the worker's
@@ -251,7 +254,7 @@ async def test_cleanup_stays_pending_and_holds_lock_until_mutation_releases(monk
 
     # Release the destructive mutation: now cleanup can complete.
     release_mutation.set()
-    await asyncio.wait_for(cleanup, timeout=5.0)
+    await await_until(cleanup, what="cleanup done after mutation")
 
     assert mutation_returned["value"], "the mutation must run to completion"
     assert not worktree_ops._GIT_MUTATION_LOCK.locked(), "lock released after the drain"
@@ -273,7 +276,9 @@ async def test_old_discarded_task_path_survives_cleanup(monkeypatch):
     await asyncio.sleep(0)  # let it start
 
     app = object()
-    await asyncio.wait_for(mod.dev_fleet_cleanup(app), timeout=5.0)
+    await await_until(
+        asyncio.ensure_future(mod.dev_fleet_cleanup(app)), what="dev_fleet_cleanup done"
+    )
 
     assert (
         leaked and not leaked[0].done()

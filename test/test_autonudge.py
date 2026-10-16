@@ -441,8 +441,8 @@ class TestAutonudgeUpdateConcurrency:
             upd = asyncio.ensure_future(svc.update(loop_obj.id, message="revised"))
             await asyncio.sleep(0.05)
             gate.set()
-            await asyncio.wait_for(upd, timeout=3)
-            await asyncio.wait_for(asyncio.shield(timer), timeout=3)
+            await await_until(upd, what="update completed")
+            await await_until(timer, what="timer completed")
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
             assert stored["message"] == "revised", "update was lost"
@@ -476,7 +476,7 @@ class TestAutonudgeUpdateConcurrency:
         try:
             loop_obj = await svc.add(slot_key="chat-9-3", message="go", idle_secs=15)
             svc._arm_timer(loop_obj, delay=0)
-            await asyncio.wait_for(asyncio.shield(svc._timers[loop_obj.id]), timeout=3)
+            await await_until(svc._timers[loop_obj.id], what="timer completed")
             await svc.update(loop_obj.id, message="revised")
             assert held, "nothing was persisted"
             assert all(held), f"a persist ran without the service lock: {held}"
@@ -505,10 +505,10 @@ class TestAutonudgeUpdateConcurrency:
             loop_obj = await svc.add(slot_key="chat-9-2", message="go", idle_secs=15)
             svc._arm_timer(loop_obj, delay=0)
             timer = svc._timers[loop_obj.id]
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="fire started")
             await svc.update(loop_obj.id, active=False)
             release.set()
-            await asyncio.wait_for(asyncio.shield(timer), timeout=3)
+            await await_until(timer, what="timer completed")
             assert svc._loops[loop_obj.id].active is False
             # The finished task stays registered; what must NOT happen is a
             # FRESH timer replacing it.
@@ -581,7 +581,7 @@ class TestAutonudgeUpdateConcurrency:
             await asyncio.sleep(0.1)
             assert not two.done(), "second update ran before the first released the lock"
             gate.set()
-            await asyncio.wait_for(two, timeout=5)
+            await await_until(two, what="second update completed")
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
             assert stored["message"] == "second", "a stale write clobbered the newer state"
@@ -636,7 +636,7 @@ class TestAutonudgeUpdateConcurrency:
             gate.set()
             with pytest.raises(asyncio.CancelledError):
                 await first
-            await asyncio.wait_for(second, timeout=5)
+            await await_until(second, what="second persist completed")
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
             assert stored["message"] == "second", "a stale snapshot replaced the newer state"
@@ -687,8 +687,8 @@ class TestAutonudgeUpdateConcurrency:
             timer = svc._timers[loop_obj.id]
             await asyncio.sleep(0.1)  # fire delivered; now blocked on the lock
             gate.set()
-            await asyncio.wait_for(upd, timeout=5)
-            await asyncio.wait_for(asyncio.shield(timer), timeout=5)
+            await await_until(upd, what="update completed")
+            await await_until(timer, what="timer completed")
             assert not timer.cancelled(), "update cancelled the bookkeeping persist"
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
@@ -735,7 +735,7 @@ class TestAutonudgeUpdateConcurrency:
             svc.notify_turn_complete("chat-9-6")
             assert not timer.cancelled(), "the hook cancelled the firing task"
             gate.set()
-            await asyncio.wait_for(asyncio.shield(timer), timeout=5)
+            await await_until(timer, what="timer completed")
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
             assert stored["cycle_count"] == 1, "delivered cycle was never persisted"
@@ -783,7 +783,7 @@ class TestAutonudgeUpdateConcurrency:
             svc.notify_user_input("chat-9-7")  # user takes priority
             assert not timer.cancelled(), "user input cancelled the firing task"
             gate.set()
-            await asyncio.wait_for(asyncio.shield(timer), timeout=5)
+            await await_until(timer, what="timer completed")
             on_disk = json.loads((tmp_path / "autonudge.json").read_text(encoding="utf-8"))
             stored = {lp["id"]: lp for lp in on_disk["loops"]}[loop_obj.id]
             assert stored["cycle_count"] == 1, "delivered cycle was never persisted"
@@ -839,11 +839,11 @@ class TestAutonudgeUpdateConcurrency:
             # test observes a single, deterministic fire window.
             svc._arm_timer(loop_obj, delay=0)
             timer = svc._timers[loop_obj.id]
-            await asyncio.wait_for(started.wait(), timeout=2)
+            await await_until(started, what="fire started")
             assert loop_obj.id in svc._firing
             await svc.update(loop_obj.id, message="revised mid-fire")
             assert not timer.cancelled(), "update cancelled the firing timer"
-            await asyncio.wait_for(asyncio.shield(timer), timeout=3)
+            await await_until(timer, what="timer completed")
             assert finished == [True], "the in-flight turn was cancelled"
             assert svc._loops[loop_obj.id].message == "revised mid-fire"
             assert svc._loops[loop_obj.id].cycle_count == 1, "cycle accounting lost"

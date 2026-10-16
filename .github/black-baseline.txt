@@ -490,7 +490,6 @@ test/test_design_tweak_discovery.py
 test/test_design_tweak_project_routes.py
 test/test_design_tweak_queue_routes.py
 test/test_design_tweak_relay_paths.py
-test/test_dev_fleet_app.py
 test/test_dev_fleet_node_toolchain.py
 test/test_dev_fleet_server_more_coverage.py
 test/test_diagnostics.py
@@ -789,7 +788,6 @@ test/test_source_providers_comment_guard.py
 test/test_source_summary.py
 test/test_spawn_list_redaction.py
 test/test_stable_release_gate.py
-test/test_stale_asset_watchdog.py
 test/test_steering_api.py
 test/test_stop_kill_cancel.py
 test/test_streaming_meta_redaction.py

@@ -26,7 +26,7 @@ from kiro_crew.messaging.queue_drain import (
 )
 from kiro_crew.session import SessionManager
 from kiro_crew.session_compaction import COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until, until_parked
 
 
 async def _no_events(_command: str):
@@ -139,7 +139,7 @@ async def test_restart_waits_for_a_shared_sub_agent_then_runs_when_it_finishes()
     assert mgr._session_map._data.get(key, {}).get("sid") == "sid-parent"
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert await await_until(task, what="compact_in_place completed") == "recycled"
     assert order == ["shutdown"]
     assert runs.cancelled == []
     # The conversation is still there to come back to.
@@ -174,7 +174,7 @@ async def _restart(mgr, key, runs, *messages: str, before_restart=None) -> str:
     if before_restart is not None:
         before_restart()
     runs.finish()
-    return await asyncio.wait_for(task, timeout=5)
+    return await await_until(task, what="compact_in_place completed")
 
 
 @pytest.mark.asyncio
@@ -444,7 +444,7 @@ async def test_an_uncompactable_restart_also_waits_for_a_shared_sub_agent():
     assert notices == [(False, COMPACT_OUTCOME_WAITING_FOR_SUBAGENTS)]
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
+    assert await await_until(task, what="recycle_unmanaged completed") == "recycled"
     assert order == ["shutdown"]
     assert runs.cancelled == []
     await mgr.close_all()
@@ -504,14 +504,14 @@ async def test_a_report_waiting_on_the_parent_lands_on_the_fresh_session():
     report = asyncio.ensure_future(mgr.get_or_create("dashboard:chat-1"))
     # Deterministic order: the report is parked on the held turn's lease before
     # the restart runs, so it cannot race the successor's start.
-    async with asyncio.timeout(5):
-        while not session.semaphore._waiters:
-            await asyncio.sleep(0.01)
+    await until_parked(
+        session.semaphore, describe=lambda: "report task not yet parked on semaphore"
+    )
     assert not report.done(), "the report waits while the hold keeps the turn"
 
     runs.finish()
-    assert await asyncio.wait_for(task, timeout=5) == "recycled"
-    provider, _is_new, _ = await asyncio.wait_for(report, timeout=5)
+    assert await await_until(task, what="compact_in_place completed") == "recycled"
+    provider, _is_new, _ = await await_until(report, what="report task completed")
     assert provider is not session.provider
     assert mgr.get_provider(key) is provider
     # Exactly one process ends: the old one. The successor is the one start the
@@ -534,7 +534,12 @@ async def test_restart_stops_the_sub_agent_with_a_stopped_report_at_the_timeout(
     session = mgr._sessions[key]
     restart = mgr._compaction._recycle_unmanaged if uncompactable else mgr._compact_in_place
 
-    assert await asyncio.wait_for(restart(key, session, 95.0), 5) == "recycled"
+    assert (
+        await await_until(
+            asyncio.ensure_future(restart(key, session, 95.0)), what="restart completed"
+        )
+        == "recycled"
+    )
 
     assert runs.stopped_reports == [("a1", "stopped at a context restart")]
     assert runs.cancelled == [], "the parent-end teardown drops the report"
@@ -547,7 +552,13 @@ async def test_a_sub_agent_on_its_own_process_does_not_hold_the_restart():
     mgr, key, runs, order, notices = await _setup(shared=False)
     session = mgr._sessions[key]
 
-    assert await asyncio.wait_for(mgr._compact_in_place(key, session, 95.0), 5) == "recycled"
+    assert (
+        await await_until(
+            asyncio.ensure_future(mgr._compact_in_place(key, session, 95.0)),
+            what="compact_in_place completed",
+        )
+        == "recycled"
+    )
 
     assert order == ["shutdown"]
     assert runs.cancelled == []

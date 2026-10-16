@@ -8,7 +8,6 @@ refusals for the live and the running checkout.
 from __future__ import annotations
 
 import asyncio
-import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -25,6 +24,7 @@ from kiro_crew.apps.builtins.dev_fleet import live as live_mod
 from kiro_crew.apps.builtins.dev_fleet import repository as repository_mod
 from kiro_crew.apps.builtins.dev_fleet import runtime as runtime_mod
 from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
+from kiro_crew.testing.wait import async_wait_until
 
 
 # =============================================================================
@@ -253,13 +253,13 @@ async def test_auto_prune_reaper_audits_scan_failure():
 # =============================================================================
 # parallel prune
 # =============================================================================
-async def _await_prune_idle(timeout: float = 5.0) -> None:
+async def _await_prune_idle(timeout: float | None = None) -> None:
     """Wait until the background prune task drains (running -> False)."""
-    deadline = time.monotonic() + timeout
-    while mod._PRUNE_STATE["running"]:
-        if time.monotonic() > deadline:
-            raise AssertionError("prune did not finish within timeout")
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not mod._PRUNE_STATE["running"],
+        timeout=timeout,
+        describe=lambda: f"prune not idle: {mod._PRUNE_STATE}",
+    )
 
 
 @pytest.fixture

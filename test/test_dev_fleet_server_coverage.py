@@ -39,6 +39,7 @@ from kiro_crew.apps.builtins.dev_fleet import (
     runtime,
     worktree_ops,
 )
+from kiro_crew.testing.wait import async_wait_until
 
 # The launchd label derivation imports the pod launchd module for its label
 # prefix; on a host where that optional module is unavailable the function
@@ -1163,10 +1164,10 @@ async def test_disk_six_sequential_polls_run_one_aggregation(monkeypatch):
     monkeypatch.setattr(runtime, "_run_cmd", fake_run)
 
     assert (await fleet_state._disk())["status"] == "computing"
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     for _ in range(5):
         snap = await fleet_state._disk()
         assert snap == {"status": "done", "total_mb": 12, "per": {"wt-a": 12}}
@@ -1204,10 +1205,10 @@ async def test_disk_stale_cache_coalesces_one_refresh(monkeypatch):
     await asyncio.sleep(0)  # let the refresh task reach the discovery await
     assert started == 1
     release.set()
-    for _ in range(50):
-        if fleet_state._DISK["total_mb"] == 7:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["total_mb"] == 7,
+        describe=lambda: f'disk total_mb: {fleet_state._DISK.get("total_mb")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": 7, "per": {"wt-a": 7}}
     assert started == 1
 
@@ -1228,10 +1229,10 @@ async def test_disk_invalidate_forces_refresh_on_next_read(monkeypatch):
     fleet_state._disk_invalidate()
     # The stale numbers keep serving while the refresh runs behind them.
     assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
-    for _ in range(50):
-        if fleet_state._DISK["total_mb"] == 9:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["total_mb"] == 9,
+        describe=lambda: f'disk total_mb: {fleet_state._DISK.get("total_mb")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": 9, "per": {"wt-b": 9}}
 
 
@@ -1254,10 +1255,10 @@ async def test_disk_mid_flight_invalidation_leaves_result_stale(monkeypatch):
     await fleet_state._disk()  # starts the aggregation
     fleet_state._disk_invalidate()  # a mutation lands mid-flight
     release.set()
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     # The measurement is kept for display but left stale: the next read starts
     # a fresh aggregation instead of serving pre-mutation numbers for a TTL.
     assert fleet_state._DISK_COMPUTED_AT == 0.0
@@ -1282,10 +1283,10 @@ async def test_disk_idle_starts_background_aggregation(monkeypatch):
     monkeypatch.setattr(runtime, "_run_cmd", fake_run)
 
     assert await fleet_state._disk() == {"status": "computing", "total_mb": None, "per": {}}
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     assert fleet_state._DISK["per"] == {"wt-a": 12}
     assert fleet_state._DISK["total_mb"] == 12
 
@@ -1301,10 +1302,10 @@ async def test_disk_aggregation_failure_reports_unknown(monkeypatch):
     )
 
     await fleet_state._disk()
-    for _ in range(50):
-        if fleet_state._DISK["status"] == "done":
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: fleet_state._DISK["status"] == "done",
+        describe=lambda: f'disk status: {fleet_state._DISK.get("status")}',
+    )
     assert fleet_state._DISK == {"status": "done", "total_mb": None, "per": {}}
 
 
@@ -1323,10 +1324,10 @@ async def test_disk_transient_failure_preserves_numbers_and_retries(monkeypatch)
 
     # Stale read starts the refresh, which fails behind the scenes.
     assert await fleet_state._disk() == {"status": "done", "total_mb": 42, "per": {"a": 42}}
-    for _ in range(50):
-        if not fleet_state._DISK_COMPUTING:
-            break
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: not fleet_state._DISK_COMPUTING,
+        describe=lambda: f"disk still computing: {fleet_state._DISK_COMPUTING}",
+    )
     # Good numbers survive the failure, and the stamp stays 0.0 so the next
     # read retries instead of serving the failure for a full TTL.
     assert fleet_state._DISK == {"status": "done", "total_mb": 42, "per": {"a": 42}}

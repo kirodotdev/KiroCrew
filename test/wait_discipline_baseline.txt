@@ -62,7 +62,6 @@
  5 test_auto_research_campaign_contract.py
  3 test_auto_research_handlers_coverage.py
  1 test_auto_research_onloop_db.py
-13 test_autonudge.py
  2 test_autonudge_reconciler.py
  4 test_autonudge_remove_offload_425.py
  4 test_aws_control_backup.py
@@ -97,7 +96,6 @@
  2 test_cloud_ssm.py
  1 test_codex_session_mcp.py
  4 test_cold_start_concurrency_config.py
- 9 test_compaction_failure_pause.py
  3 test_conductor_wake.py
  3 test_conductor_wake_pushed_ticks.py
  1 test_config_api.py
@@ -149,14 +147,9 @@
  1 test_decisions_points.py
  2 test_denied_commands_security.py
  1 test_dependency_coordinator.py
- 4 test_dev_fleet_app_guards.py
- 3 test_dev_fleet_app_make_live_cutover.py
- 1 test_dev_fleet_app_prune.py
+ 3 test_dev_fleet_app_guards.py
  1 test_dev_fleet_app_sync.py
  2 test_dev_fleet_app_teardown.py
-14 test_dev_fleet_removal_pod_start.py
- 7 test_dev_fleet_server_coverage.py
- 8 test_devfleet_prune_shutdown_drain.py
  1 test_diag_threads.py
  3 test_discord_approval_press_race_13539.py
  2 test_discord_dispatcher.py
@@ -264,7 +257,6 @@
  1 test_native_subagent_boundary.py
  2 test_oneshot_supervisor.py
  1 test_opencode_session_mcp.py
-13 test_overload_integration_glue.py
  1 test_papyrus_latex.py
  6 test_pathres_loop_starvation.py
  1 test_pid_lifecycle_process_sweeps.py
@@ -359,7 +351,6 @@
  4 test_spawn_reasoning_effort.py
  3 test_spawn_release_queued.py
  6 test_ssh_tunnel_manager_cov80.py
-16 test_stale_asset_watchdog.py
  2 test_stall_enrichment.py
  4 test_start_priority.py
  1 test_stop_kill_cancel.py

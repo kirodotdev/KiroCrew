@@ -53,7 +53,7 @@ from kiro_crew.taskq import store as store_mod
 from kiro_crew.taskq.adapters import runner as runner_mod
 from kiro_crew.taskq.store import TaskStore
 from kiro_crew.taskq.waits import WaitRecord
-from kiro_crew.testing.wait import async_wait_until
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -370,7 +370,7 @@ async def test_a_wait_parked_before_the_store_was_ready_is_woken_after_it(
     await orch._runner_admission_store_ready()
 
     assert coordinator.tick() == ["taskrunner:r7:task1"]
-    assert await asyncio.wait_for(parked, timeout=5) is True
+    assert await await_until(parked, what="taskrunner task parked on dependency") is True
     assert store.get("taskrunner:r7:task1").state == model.RUNNING
 
 
@@ -1599,8 +1599,10 @@ class TestStoreOffLoop:
         monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
         state = SimpleNamespace(subagents=mgr)
         info = await messaging._spawn_on_loop(state, "hello", parent_session_key="web-1", agent="")
-        for _ in range(10):
-            await asyncio.sleep(0.01)  # let the posted registration writes land
+        await async_wait_until(
+            lambda: asyncio.to_thread(lambda: real_store.get(info.id) is not None),
+            describe=lambda: "registration write not yet landed",
+        )
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
         # (The fake session makes the run itself fail right after it starts;
         # what this pins is the accept path, not the run.)
@@ -1682,15 +1684,18 @@ class TestStoreOffLoop:
         async def _states() -> dict[str, str]:
             return {rid: await asyncio.to_thread(store.state_of, rid) for rid in ("row0", "row1")}
 
-        deadline = asyncio.get_running_loop().time() + 10.0
-        states = await _states()
-        while not any(st in model.TERMINAL for st in states.values()):
-            assert asyncio.get_running_loop().time() < deadline, states
-            await asyncio.sleep(0.01)
+        async def _any_terminal() -> bool:
             states = await _states()
+            return any(st in model.TERMINAL for st in states.values())
+
+        await async_wait_until(_any_terminal, describe=lambda: "no terminal row yet")
         await mgr._drain_queue_async()
-        for _ in range(20):  # a second pass finds nothing to pick
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: asyncio.to_thread(
+                lambda: any(store.state_of(rid) in model.TERMINAL for rid in ("row0", "row1"))
+            ),
+            describe=lambda: "rows not yet terminal",
+        )
         assert store.loop_thread_calls == before
         monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
         states = {rid: store.state_of(rid) for rid in ("row0", "row1")}
@@ -1742,8 +1747,6 @@ class TestStoreOffLoop:
         resolved = await mgr._admission.resolve_window_lanes_async()
         assert resolved == {"subagent:ghostparent": "web-7"}, resolved
         await mgr._drain_queue_async()
-        for _ in range(20):
-            await asyncio.sleep(0.01)
         assert store.loop_thread_calls == before
         await mgr.cancel_all()
 
@@ -1918,8 +1921,10 @@ class TestStoreOffLoop:
             telegram_reply = await messaging_commands.spawn_task_reply(
                 "index it again", mgr, "telegram:kirocrew:direct:7"
             )
-            for _ in range(10):
-                await asyncio.sleep(0.01)  # let the posted registration writes land
+            await async_wait_until(
+                lambda: asyncio.to_thread(lambda: len(threads) >= 2),
+                describe=lambda: f"spawn registration writes not yet landed: {len(threads)}",
+            )
         finally:
             monkeypatch.delenv(store_mod.STRICT_ON_LOOP_ENV)
 
@@ -2371,8 +2376,10 @@ class TestStoreOffLoop:
             row = await store.run(store.get, victim.id)
             assert victim._taskq_generation == row.generation
             mgr._admission.taskq_settle(victim)
-            for _ in range(20):
-                await asyncio.sleep(0.01)
+            await async_wait_until(
+                lambda: asyncio.to_thread(lambda: store.state_of(victim.id) in model.TERMINAL),
+                describe=lambda: "victim not yet in terminal state",
+            )
             assert (await store.run(store.get, victim.id)).state in model.TERMINAL
         finally:
             mgr._agents.clear()
@@ -2643,7 +2650,7 @@ class TestStoreOffLoop:
             assert await asyncio.to_thread(parked.wait, 10)
             assert await mgr.cancel("row0") is True
             release.set()
-            await asyncio.wait_for(drain, 20)
+            await await_until(drain, what="drain completed after cancellation")
             assert store.state_of("row0") == model.CANCELLED
             assert announced == [], (
                 "a row the canceller already reported was announced again, so one id "
@@ -3097,8 +3104,9 @@ async def test_a_spawn_during_the_parked_claim_queues_instead_of_overshooting(
     monkeypatch.setattr(store, "claim", _slow_claim)
     mgr._drain_queue()
     drain = getattr(mgr, "_drain_task")
-    while not parked.is_set():
-        await asyncio.sleep(0.005)
+    await async_wait_until(
+        parked.is_set, describe=lambda: "slow claim not yet parked on writer thread"
+    )
     # The claim is parked on the writer thread; the reservation is held.
     assert mgr._running_count == 1 == mgr._max_concurrent
     loser = mgr.spawn("late", parent_session_key="web-1")  # a sync accept-path spawn
@@ -3107,8 +3115,9 @@ async def test_a_spawn_during_the_parked_claim_queues_instead_of_overshooting(
     assert mgr._running_count == 1
     release.set()
     await drain
-    for _ in range(10):
-        await asyncio.sleep(0.01)
+    await async_wait_until(
+        lambda: "parked" in mgr._agents, describe=lambda: "spawned agent not yet in _agents"
+    )
     assert "parked" in mgr._agents
     assert mgr._running_count <= mgr._max_concurrent
     await mgr.cancel_all()
@@ -3264,8 +3273,10 @@ async def test_nested_child_of_a_blocked_parent_runs_w3_off_loop(
     child = await messaging._spawn_on_loop(
         NS(subagents=mgr), "child", parent_session_key=f"subagent:{parent.id}"
     )
-    for _ in range(20):
-        await asyncio.sleep(0.01)  # posted writes land (still under the guard)
+    await async_wait_until(
+        lambda: asyncio.to_thread(lambda: store.state_of("parent1") == _taskq.WAITING_CHILDREN),
+        describe=lambda: "W3 branch not yet written WAITING_CHILDREN to store",
+    )
     # The accept AND the W3 branch (ledger read, deadline read, enter_wait)
     # completed without a loop-thread store call.
     assert store.loop_thread_calls == before
@@ -3503,7 +3514,7 @@ async def test_a_scope_armed_during_a_pump_sweep_gets_its_own_one_shot(
     before = store.loop_thread_calls
     try:
         mgr._taskq_pump()
-        await asyncio.wait_for(getattr(mgr, "_taskq_tick_task"), timeout=10)
+        await await_until(getattr(mgr, "_taskq_tick_task"), what="taskq tick completed")
         assert verdicts and verdicts[0].outcome == "wait"
         assert reads[0] is None, "the first pass read the schedule before the park"
         timer = getattr(mgr, "_taskq_pump_timer", None)
@@ -3567,7 +3578,7 @@ async def test_the_wired_pump_replays_a_terminal_write_the_store_refused(
     before = store.loop_thread_calls
     try:
         mgr._taskq_pump()
-        await asyncio.wait_for(getattr(mgr, "_taskq_tick_task"), timeout=10)
+        await await_until(getattr(mgr, "_taskq_tick_task"), what="taskq tick completed")
         assert adm.stats()["pending_terminal_writes"] == 0, "the owed write was never replayed"
         assert (await store.run(store.get, rec.id)).state == model.DONE
         assert store.loop_thread_calls == before
