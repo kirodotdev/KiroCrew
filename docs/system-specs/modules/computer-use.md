@@ -267,7 +267,7 @@ which the gate already treats as "nothing session-scoped is claimed, nothing to
 verify". Nothing in `_verify_unix_peer` changes; a real key declared by the wrong
 process is still denied. The body placeholder still scopes the `SnapshotIndex`
 namespace and the audit line. Pinned by
-`test_mcp_computer.py::TestUnresolvedKeysAreNeverDeclared`.
+`test_mcp_computer_sessions.py::TestUnresolvedKeysAreNeverDeclared`.
 
 The prefix is deliberate: this is a namespace separator, not attribution, and an audit
 reader must not mistake a pid — or a nonce — for a resolved identity. And it is a
@@ -1373,7 +1373,7 @@ the Settings copy says to raise it for dense apps), which is what made the loop
 worth a stamped field rather than a comment. `want_image` is still forced off for
 both — the verification compares structure, and spooling a screenshot nobody asked
 for would double the cost of every action. Pinned by
-`test_mcp_computer.py::TestTheDriftWalkHonoursTheSnapshotBudget`, which asserts the
+`test_mcp_computer_actions.py::TestTheDriftWalkHonoursTheSnapshotBudget`, which asserts the
 budget off the driver's own call journal (a behavioural assertion passed while the
 refresh walk was still using the default).
 

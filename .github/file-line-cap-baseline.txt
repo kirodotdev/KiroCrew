@@ -225,7 +225,6 @@
 2260 test/test_config_live.py
 8527 test/test_config_loader.py
 2868 test/test_connections_mint.py
-2606 test/test_connections_tool_aliases.py
 2418 test/test_context.py
 2226 test/test_context_composition_contract.py
 3069 test/test_crew_log_core.py
@@ -291,7 +290,6 @@
 2631 test/test_llm_pool.py
 2248 test/test_markdown_link_parentheses.py
 2005 test/test_mcp_apps_render.py
-2595 test/test_mcp_computer.py
 2117 test/test_mcp_cron_security.py
 3081 test/test_mcp_dashboard_folders.py
 7022 test/test_mcp_discovery.py
@@ -302,7 +300,6 @@
 2543 test/test_mcp_launch_approval.py
 2552 test/test_mcp_shared.py
 5390 test/test_md_notebook.py
-2629 test/test_member_dashboard_package_route.py
 3249 test/test_member_essential_context.py
 2044 test/test_member_session_control.py
 4309 test/test_members_dm_thread.py
@@ -387,7 +384,6 @@
 2055 test/test_telegram_sessions.py
 8129 test/test_terminal_handler.py
 2494 test/test_theme_install.py
-2591 test/test_tips.py
 2660 test/test_title_refresh.py
 4674 test/test_token_auth.py
 2663 test/test_tool_call_classification.py
