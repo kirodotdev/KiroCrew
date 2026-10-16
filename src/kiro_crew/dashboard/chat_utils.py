@@ -2119,6 +2119,12 @@ REDACTION_RECORD_FIELDS: dict[str, tuple[Callable[[object], list[dict]], tuple[s
     "redactions": (bounded_credential_records, tuple(CREDENTIAL_REDACTION_TAGS)),
 }
 
+#: Set (True) beside ``blocked_links`` when the writer vouches they are in reply
+#: order, which is what lets ``restore_allowed_links`` pair several different
+#: addresses on one host. Rows written before it existed may be out of order, so
+#: its absence keeps the older rule. It travels with its records, never alone.
+BLOCKED_LINKS_ORDERED_KEY = "blocked_links_ordered"
+
 
 def variant_from_row(row: dict) -> dict:
     """Stash a row as a variant, taking its redaction records with it.
@@ -2140,6 +2146,8 @@ def variant_from_row(row: dict) -> dict:
             records = bound(meta.get(key))
             if records:
                 entry[key] = records
+        if entry.get("blocked_links") and meta.get(BLOCKED_LINKS_ORDERED_KEY) is True:
+            entry[BLOCKED_LINKS_ORDERED_KEY] = True
     return entry
 
 
@@ -2186,7 +2194,10 @@ def _variant_for_emit(variant: dict) -> dict:
     text = bounded.get("content", "")
     if isinstance(text, str) and "blocked_links" in bounded:
         text, left = restore_allowed_links(
-            text, bounded["blocked_links"], current_scoped_exempt_hosts()
+            text,
+            bounded["blocked_links"],
+            current_scoped_exempt_hosts(),
+            ordered=bounded.get(BLOCKED_LINKS_ORDERED_KEY) is True,
         )
         bounded = {**bounded, "content": text}
         if left:
@@ -2220,6 +2231,11 @@ def adopt_variant_text(row: dict, variant: dict) -> None:
             meta[key] = records
         elif isinstance(meta, dict):
             meta.pop(key, None)
+    if isinstance(meta, dict):
+        # The marker describes the records just moved, so it moves with them.
+        meta.pop(BLOCKED_LINKS_ORDERED_KEY, None)
+        if meta.get("blocked_links") and variant.get(BLOCKED_LINKS_ORDERED_KEY) is True:
+            meta[BLOCKED_LINKS_ORDERED_KEY] = True
     if isinstance(meta, dict) and not meta:
         row.pop("meta", None)
 
@@ -4597,7 +4613,12 @@ def with_allowed_links_restored(m: dict) -> dict:
     if not isinstance(text, str) or not isinstance(meta, dict) or "blocked_links" not in meta:
         return m
     records = bounded_blocked_links(meta.get("blocked_links"))
-    new_text, left = restore_allowed_links(text, records, current_scoped_exempt_hosts())
+    new_text, left = restore_allowed_links(
+        text,
+        records,
+        current_scoped_exempt_hosts(),
+        ordered=meta.get(BLOCKED_LINKS_ORDERED_KEY) is True,
+    )
     if new_text == text:
         return m
     new_meta = dict(meta)

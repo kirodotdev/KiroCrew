@@ -348,7 +348,14 @@ def _url_payload_command(n: int) -> str:
 #: spares an ordered alphabet and a data URI payload, the flag it sets, the one place pass 3
 #: reads it, and the two checks that tell those shapes from a key. No credential branch, gate
 #: verdict or other pass moved.
-_PACKAGE_LINE_BUDGET = 29_411
+#: Then by 14 for ``exfil.restore_allowed_links``: an allowed host
+#: with several different addresses in one reply pairs its placeholders with its
+#: records by order instead of staying blocked, and every address put back must
+#: read as one whole URL where it lands. Display-time only; no redaction rule,
+#: pattern or threshold moved. Then by 2 for the ``ordered`` gate (older rows keep the
+#: one-address rule) and the check that an address never lands inside another URL.
+#: Then by 5 so a link rewritten inside an earlier one clears that order marker.
+_PACKAGE_LINE_BUDGET = 29_432
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

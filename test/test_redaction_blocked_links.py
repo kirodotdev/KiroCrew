@@ -507,9 +507,9 @@ class TestRecordsReachTheDisplayPath:
 
         from kiro_crew.dashboard import chat_runner
 
-        src = inspect.getsource(chat_runner._flush_segment)
-        assert "_redact_segment(slot, assistant_text)" in src
-        assert "_segment_row_meta(slot, blocked_links, redactions)" in src
+        src = " ".join(inspect.getsource(chat_runner._flush_segment).split())
+        assert "_redact_segment( slot, assistant_text," in src
+        assert "_segment_row_meta( slot, blocked_links, redactions," in src
         helper = inspect.getsource(chat_runner._redact_segment_text)
         assert "redact_exfiltration_urls_with_records(" in helper
         assert "redact_credentials_with_records(" in helper
@@ -537,9 +537,9 @@ class TestRecordsReachTheDisplayPath:
             if ln.strip() and len(ln) - len(ln.lstrip()) <= indent:
                 break
             body.append(ln)
-        src = "\n".join(body)
-        assert "_redact_segment(slot, body)" in src
-        assert "_segment_row_meta(slot, _blocked, _redactions)" in src
+        src = " ".join("\n".join(body).split())
+        assert "_redact_segment(slot, body," in src
+        assert "_segment_row_meta( slot, _blocked, _redactions," in src
         assert "redact_exfiltration_urls(body)" not in src
 
 

@@ -212,15 +212,163 @@ def test_restore_keeps_links_the_allow_does_not_cover() -> None:
     assert restore_allowed_links(text, other_rule, frozenset({"reviews.corp.example"}))[0] == text
 
 
-def test_restore_leaves_a_host_whose_links_differ() -> None:
-    """A placeholder names only its host, so with two addresses on one host none
-    is restored rather than one landing where the other stood."""
+def test_restore_leaves_a_host_when_a_repeat_hides_which_placeholder_is_which() -> None:
+    """A repeated address yields one record, so three placeholders over two
+    records cannot say which placeholder is the repeat: none is restored rather
+    than one landing where the other stood."""
     from kiro_crew.security.exfil import restore_allowed_links
 
     second = _LONG.replace("filter=", "sort=")
     text, _, records = redact_exfiltration_urls_with_records(f"a {_LONG} b {_LONG} c {second}")
     assert len(records) == 2
-    out, left = restore_allowed_links(text, records, frozenset({"reviews.corp.example"}))
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == text and left == records
+
+
+def test_restore_puts_back_two_different_links_on_one_host_each_in_its_place() -> None:
+    """Two addresses on one allowed host that differ only in their query (two
+    dashboard links in one reply) each come back where they stood."""
+    from kiro_crew.security.exfil import restore_allowed_links
+
+    second = _LONG.replace("filter=", "sort=")
+    raw = f"First [one]({_LONG}) then [two]({second})."
+    text, _, records = redact_exfiltration_urls_with_records(raw)
+    assert len(records) == 2 and _LONG not in text and second not in text
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == raw and left == []
+    # Reversed in the text, still each in its own place.
+    flipped = f"{second} and {_LONG}"
+    text, _, records = redact_exfiltration_urls_with_records(flipped)
+    assert (
+        restore_allowed_links(text, records, frozenset({"reviews.corp.example"}), ordered=True)[0]
+        == flipped
+    )
+
+
+def test_restore_of_two_links_leaves_an_unallowed_host_and_a_withheld_record() -> None:
+    from kiro_crew.security.exfil import restore_allowed_links
+
+    second = _LONG.replace("filter=", "sort=")
+    other = "https://sink.example-other.net/x?d=" + "b" * 260
+    raw = f"a {_LONG} b {other} c {second}"
+    text, _, records = redact_exfiltration_urls_with_records(raw)
+    assert len(records) == 3
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == f"a {_LONG} b [REDACTED: suspicious URL to sink.example-other.net] c {second}"
+    assert [r["domain"] for r in left] == ["sink.example-other.net"]
+    # One of the host's two records keeps no address: neither placeholder is restored.
+    withheld = [
+        {**r, "url": None, "url_withheld": "length"} if r["url"] == second else r for r in records
+    ]
+    out, left = restore_allowed_links(
+        text, withheld, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == text and left == withheld
+
+
+def test_restore_never_puts_an_address_where_only_part_of_it_stood() -> None:
+    """A record whose address does not read back whole at the placeholder's
+    position is not the address that stood there: the host keeps its
+    placeholders."""
+    from kiro_crew.security.exfil import (
+        EXFILTRATION_REDACTION_TAG_PREFIX,
+        restore_allowed_links,
+    )
+
+    tag = f"{EXFILTRATION_REDACTION_TAG_PREFIX}reviews.corp.example]"
+    second = _LONG.replace("filter=", "sort=")
+    _, _, records = redact_exfiltration_urls_with_records(f"{_LONG} {second}")
+    assert len(records) == 2
+    # The first placeholder is followed by URL text: it stood for only the
+    # start of a longer link, so the recorded address is not what stood there.
+    text = f"a {tag}&page=2 b {tag}"
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == text and left == records
+    # The same holds on the one-address path.
+    one = records[:1]
+    text = f"a {tag}&page=2"
+    assert restore_allowed_links(text, one, frozenset({"reviews.corp.example"}), ordered=True) == (
+        text,
+        one,
+    )
+    # A prefix redacted before its longer sibling leaves exactly that shape.
+    longer = _LONG + "&page=2"
+    text, _, records = redact_exfiltration_urls_with_records(f"{_LONG} then {longer}")
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
+    assert out == text and left == records
+
+
+def test_restore_pairs_different_links_only_on_a_row_that_vouches_their_order() -> None:
+    """A row saved before records were kept in reply order can hold them as
+    [second, first]; pairing by order would show each address in the other's
+    place, so without the row's marker a host with different addresses stays."""
+    from kiro_crew.dashboard.chat_utils import (
+        BLOCKED_LINKS_ORDERED_KEY,
+        _clear_display_redaction_cache,
+        _prepare_messages,
+    )
+
+    _clear_display_redaction_cache()
+    second = _LONG.replace("filter=", "sort=")
+    raw = f"First {_LONG} then {second} end"
+    saved, _, records = redact_exfiltration_urls_with_records(raw)
+    legacy = {"role": "assistant", "content": saved, "ts": "1"}
+    legacy["meta"] = {"blocked_links": records[::-1]}
+    marked = {**legacy, "meta": {"blocked_links": records, BLOCKED_LINKS_ORDERED_KEY: True}}
+    redaction_allow.allow_host("ws1", "reviews.corp.example")
+    old, new = _prepare_messages([legacy, marked], False, live_child="", workspace="ws1")
+    assert old["content"] == saved and len(old["meta"]["blocked_links"]) == 2
+    assert new["content"] == raw
+    # A legacy row whose host keeps one address is restored as before.
+    one, _, one_records = redact_exfiltration_urls_with_records(f"a {_LONG}")
+    row = {"role": "assistant", "content": one, "ts": "2", "meta": {"blocked_links": one_records}}
+    assert _prepare_messages([row], False, live_child="", workspace="ws1")[0]["content"] == (
+        f"a {_LONG}"
+    )
+
+
+def test_the_order_marker_moves_with_the_records_it_describes() -> None:
+    from kiro_crew.dashboard.chat_utils import (
+        BLOCKED_LINKS_ORDERED_KEY,
+        adopt_variant_text,
+        variant_from_row,
+    )
+
+    records = redact_exfiltration_urls_with_records(_LONG)[2]
+    row = {"content": "x", "meta": {"blocked_links": records, BLOCKED_LINKS_ORDERED_KEY: True}}
+    assert variant_from_row(row)[BLOCKED_LINKS_ORDERED_KEY] is True
+    # Adopting an unmarked (older) variant must not keep the row's marker.
+    adopt_variant_text(row, {"content": "y", "blocked_links": records})
+    assert BLOCKED_LINKS_ORDERED_KEY not in row["meta"]
+    adopt_variant_text(
+        row, {"content": "z", "blocked_links": records, BLOCKED_LINKS_ORDERED_KEY: True}
+    )
+    assert row["meta"][BLOCKED_LINKS_ORDERED_KEY] is True
+
+
+def test_restore_never_puts_an_address_inside_another_url() -> None:
+    """A second address that carries the first in its query redacts to
+    ``https://h/r?next=<placeholder>``; restoring both would show a link the
+    reply never wrote, so the host keeps its placeholders."""
+    from kiro_crew.security.exfil import restore_allowed_links
+
+    first = "https://reviews.corp.example/x?q=" + "a" * 250
+    second = "https://reviews.corp.example/r?next=" + first
+    text, _, records = redact_exfiltration_urls_with_records(f"{first} and {second}")
+    assert [r["url"] for r in records] == [first, second]
+    out, left = restore_allowed_links(
+        text, records, frozenset({"reviews.corp.example"}), ordered=True
+    )
     assert out == text and left == records
 
 

@@ -7053,6 +7053,93 @@ class TestBlockedLinkCardRecords:
         )
         assert json.loads(fixture.read_text(encoding="utf-8")) == out
 
+    def test_records_from_the_raw_copy_keep_the_order_the_reply_wrote_them(self):
+        """``restore_allowed_links`` pairs a host's placeholders with its records
+        by order, so a record only the raw copy has goes where the raw copy has
+        it, not after the ones the streamed text still describes."""
+        first = f"https://{self.H}/first?q=" + "a" * 250
+        second = f"https://{self.H}/second?q=" + "b" * 250
+        tag = f"[REDACTED: suspicious URL to {self.H}]"
+        slot = _slot()
+        chat_runner._accumulate_segment_raw(slot, f"one {first} two {second}")
+        # The first address went in one delta and is gone from the text; the
+        # second survived to the flush, and a label reflow changed the text.
+        ordered: list[bool] = []
+        redacted, links = chat_runner._redact_segment(
+            slot, f"one {tag} two {second}\n", _ordered_out=ordered
+        )[:2]
+        assert redacted.count(tag) == 2
+        assert [r["url"] for r in links] == [first, second]
+        assert ordered == [True]
+        meta = chat_runner._segment_row_meta(slot, links, links_ordered=True)
+        assert meta is not None and meta[chat_runner.BLOCKED_LINKS_ORDERED_KEY] is True
+
+    def test_records_with_no_place_in_the_raw_copy_are_not_vouched_in_order(self):
+        """A record the streamed text has and the raw copy lacks sorts to the
+        end with no known place, so the row must not claim reply order."""
+        first = f"https://{self.H}/first?q=" + "a" * 250
+        third = f"https://{self.H}/third?q=" + "c" * 250
+        tag = f"[REDACTED: suspicious URL to {self.H}]"
+        slot = _slot()
+        chat_runner._accumulate_segment_raw(slot, f"one {first} two")
+        ordered: list[bool] = []
+        links = chat_runner._redact_segment(slot, f"one {tag} two {third}", _ordered_out=ordered)[1]
+        assert [r["url"] for r in links] == [first, third]
+        assert ordered == [False]
+        assert chat_runner.BLOCKED_LINKS_ORDERED_KEY not in (
+            chat_runner._segment_row_meta(slot, links) or {}
+        )
+
+    def test_a_link_rewritten_by_an_earlier_one_is_not_vouched_in_order(self):
+        """``S B C C``: B on the allowed host carries S (another host) in its
+        query. S is replaced first, inside B too, so B leaves no placeholder of
+        its own yet still gets a record; the host then holds records [B, C] and
+        two placeholders, both C's. Pairing by order would put B -- a redirect
+        carrying the sink address -- where C stood, so the row must not vouch
+        its order and the host keeps its placeholders."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        sink = f"https://{self.H}/x?d=" + "s" * 250
+        redirect = f"https://{allowed}/r?next={sink}"
+        dash = f"https://{allowed}/c?q=" + "c" * 250
+        raw = f"{sink} {redirect} {dash} {dash}"
+        ordered: list[bool] = []
+        redacted, links = chat_runner._redact_segment(_slot(), raw, _ordered_out=ordered)[:2]
+        assert [r["url"] for r in links if r["domain"] == allowed] == [redirect, dash]
+        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
+        out, _ = restore_allowed_links(
+            redacted, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert redirect not in out
+        assert ordered == [False]
+
+    def test_a_link_swallowed_by_a_credential_span_is_not_vouched_in_order(self):
+        """``A B B`` with A inside a PEM block: the link pass records A, then the
+        credential pass removes the block and A's placeholder with it. The host
+        holds records [A, B] and two placeholders, both B's, so pairing by order
+        would put A where the first B stood: the row must not vouch its order and
+        the host keeps its placeholders."""
+        from kiro_crew.security.exfil import restore_allowed_links
+
+        allowed = "allowed.example"
+        inner = f"https://{allowed}/a?q=" + "a" * 250
+        dash = f"https://{allowed}/b?q=" + "b" * 250
+        # The PEM markers are assembled so no literal key header sits in source.
+        label = "RSA " + "PRIVATE KEY"
+        pem = f"-----BEGIN {label}-----\nMIIE {inner} xyz\n-----END {label}-----"
+        raw = f"key:\n{pem}\nthen {dash} and {dash} end"
+        ordered: list[bool] = []
+        redacted, links = chat_runner._redact_segment(_slot(), raw, _ordered_out=ordered)[:2]
+        assert [r["url"] for r in links] == [inner, dash]
+        assert redacted.count(f"[REDACTED: suspicious URL to {allowed}]") == 2
+        assert ordered == [False]
+        out, _ = restore_allowed_links(
+            redacted, links, frozenset({allowed}), ordered=ordered == [True]
+        )
+        assert inner not in out
+        assert out == redacted
+
     def test_clearing_the_streamed_text_clears_its_raw_copy(self):
         """``_cleared_segment_text`` is how a turn drops its streamed text
         mid-segment, and it takes the raw copy with it."""
