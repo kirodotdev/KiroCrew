@@ -86,6 +86,19 @@ async def test_parts_are_stripped_redacted_and_under_the_cap() -> None:
 
 
 @pytest.mark.asyncio
+async def test_goal_markers_never_reach_cross_surface_channels() -> None:
+    text = "Progress.\n[GOAL: Deliver the result]\n[OPTIONS: Ship it | Hold it]"
+
+    plain = "\n".join(await channel_egress_parts(text, _CAPS))
+    numbered = "\n".join(await channel_egress_parts(text, _CAPS, number_options=True))
+
+    assert "[GOAL:" not in plain
+    assert "[GOAL:" not in numbered
+    assert "Progress." in plain and "[OPTIONS:" in plain
+    assert "Progress." in numbered and "1. Ship it" in numbered
+
+
+@pytest.mark.asyncio
 async def test_options_are_numbered_only_when_asked() -> None:
     text = "Pick one.\n\n[OPTIONS: Ship it | Hold it]"
 

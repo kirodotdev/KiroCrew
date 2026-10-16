@@ -23,6 +23,14 @@ def test_options_from_assistant():
     assert "[OPTIONS:" not in d["prompt_preview"]
 
 
+def test_goal_marker_is_absent_from_option_prompt_preview():
+    s = _slot(
+        {"role": "assistant", "content": "Next.\n[GOAL: Deliver it]\n[OPTIONS: Wait]", "ts": "t1"}
+    )
+    d = s.to_dict()
+    assert d["prompt_preview"] == "Next."
+
+
 def test_options_ts_stays_on_reply_after_system_notice():
     s = _slot({"role": "assistant", "content": "Pick one.\n[OPTIONS: A | B]", "ts": "t1"})
     before = s.to_dict()
