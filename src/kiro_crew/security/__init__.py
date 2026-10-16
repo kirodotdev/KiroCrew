@@ -65,6 +65,7 @@ from . import (
     inline_payload,
     paths,
     perm_verb_mention,
+    publish_program_word,
     redaction,
     shell_normalizer,
     vocabulary,
@@ -1331,8 +1332,10 @@ def is_denied(
     # string, and gated once afterwards. Reading only ``lower`` made one wrapper a
     # complete bypass of the sole enforcement pushes have; gating once at the end
     # keeps the per-rule opt-out semantics exactly as written -- a rule an operator
-    # disabled stays disabled at whatever depth it fires.
-    publish_sources = [source for source in payload_sources if _argv._is_git_publish(source)]
+    # disabled stays disabled at whatever depth it fires. A heredoc printer one
+    # source reads as data in a sink is judged there, not again on its own.
+    lifted = publish_program_word._data_printer_sources(payload_sources)
+    publish_sources = [s for s in payload_sources if s not in lifted and _argv._is_git_publish(s)]
     if publish_sources:
         floor_tags: frozenset[str] = frozenset()
         for publish_source in publish_sources:
