@@ -204,6 +204,9 @@ export const PANEL_TAB_MAP: Record<string, PanelTarget> = {
   // automatic-cards switch.
   'PortabilityTab.tsx': 'imports',
   'AutomaticCardSetting.tsx': 'developer',
+  // The built-in KAS engine card, which FeaturePreviewsSection mounts from
+  // pages/developer: its `agent.kas_bundle` switch is a Developer-tab row.
+  'KasBundleCard.tsx': 'developer',
   // The per-app model rows ChatPanel's Model page mounts. Each row is labelled
   // with the app's own name, a dynamic label the extractor skips, so the file
   // yields no entry today; mapped so a static control added to it lands on the
@@ -460,6 +463,7 @@ export function panelRoots(srcDir: string): ExtractRoot[] {
   return [
     { dir: path.join(srcDir, 'pages', 'settings') },
     { dir: path.join(srcDir, 'pages', 'overview'), file: 'PortabilityTab.tsx' },
+    { dir: path.join(srcDir, 'pages', 'developer'), file: 'KasBundleCard.tsx' },
     { dir: path.join(srcDir, 'pages', 'chat', 'command-center'), file: 'AutomaticCardSetting.tsx' },
   ]
 }

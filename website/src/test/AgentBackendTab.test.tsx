@@ -2135,17 +2135,13 @@ describe('AgentBackendTab kiro sign-in', () => {
     expect(screen.queryByTestId('kiro-sign-in-card')).toBeNull()
   })
 
-  it('renders the KAS engine card in the KAS detail only, under the sign-in', async () => {
-    // The engine runs on the sign-in above it, so it lives in the same row.
+  it('keeps the KAS engine card off the harness row; it lives in Feature Previews', async () => {
+    // The route is in shadow testing, so its switch is not in plain view of every
+    // KAS user: the KAS detail shows the sign-in and no engine card.
     wrap()
     await waitFor(() => expect(row('KAS (kiro-agent)')).toBeInTheDocument())
-    expect(screen.queryByTestId('kas-bundle-card')).toBeNull()
     highlight('KAS (kiro-agent)')
-    const card = screen.getByTestId('kas-bundle-card')
-    expect(detail().contains(card)).toBe(true)
-    const signIn = screen.getByTestId('kiro-sign-in-card')
-    expect(signIn.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-    highlight('Claude Code')
+    expect(screen.getByTestId('kiro-sign-in-card')).toBeInTheDocument()
     expect(screen.queryByTestId('kas-bundle-card')).toBeNull()
   })
 

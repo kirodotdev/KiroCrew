@@ -235,8 +235,8 @@ without the payload or a source checkout exports nothing, and the backend then
 sees only the data home, exactly as an unbundled build does.
 The two values the shell joins onto the staged tree, the version and the
 record's `node_bin`, must be relative and free of `.`/`..`/empty segments
-(`staysWithinStagedTree`); and because that record chooses a program the shell
-and the gateway run outside any sandbox, the backend seals the exported root
+(`staysWithinStagedTree`); and because that record chooses a program the gateway
+runs outside any sandbox on every bundle-route spawn, the backend seals the exported root
 read-only for every sandboxed child, the same seal as its own packaged install
 tree (`sandbox_tiers._resolved_install_root_targets`; the rules are in the
 [security spec](../system-specs/modules/security.md)).

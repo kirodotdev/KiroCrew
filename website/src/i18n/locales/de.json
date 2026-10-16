@@ -13362,13 +13362,13 @@
         "folder_conductor_desc": "Hebt den Chat, der die anderen Chats eines Ordners gestartet hat, an den Anfang dieses Ordners: ein farbiger Balken am linken Rand und ein kleines conductor-Label neben dem Agentennamen. Das ändert die Reihenfolge der Sitzungsliste, daher bleibt die Liste unverändert, bis du es einschaltest. Der Chat-Eintrag im Ordnermenü ist immer da."
       },
       "kasBundleCard": {
-        "toggle_label": "Integrierte KAS-Engine verwenden",
-        "toggle_description": "Führt die KAS-Engine-Version aus, mit der diese {{productName}}-Version getestet wurde, ohne separate kiro-cli-Installation. Meldet sich mit dem Kiro-Konto oben an. Der Wechsel gilt, sobald {{productName}} neu startet.",
+        "toggle_label": "KAS mit der eigenen Engine von {{productName}} ausführen",
+        "toggle_description": "Nutzt die KAS-Engine-Version, mit der diese {{productName}}-Version getestet wurde, statt der Kiro CLI. Gilt für jede neue Sitzung in diesem {{productName}}, nicht nur auf diesem Gerät. Meldet sich mit deinem Kiro-Konto aus Einstellungen → Agent-Harness an. Gilt, sobald {{productName}} neu startet.",
         "installed": "KAS-Engine {{version}} (selbst installiert)",
         "installed_bundled": "KAS-Engine {{version}} (in der App enthalten)",
-        "off_note": "Aus: KAS läuft über kiro-cli, bis du den Schalter oben einschaltest.",
+        "off_note": "Aus: KAS nutzt deine Kiro-CLI-Installation. Ein: KAS nutzt die Engine, die mit dieser Version kommt.",
         "saved_restart_pending": "Gespeichert. {{productName}} läuft noch mit der bisherigen Engine-Route; der Wechsel passiert beim Neustart: Einstellungen → Über → Gateway neu starten.",
-        "not_installed": "Integrierte Engine {{version}} ist noch nicht installiert.",
+        "not_installed": "KAS-Engine {{version}} ist noch nicht installiert.",
         "install": "KAS-Engine installieren",
         "installing": "KAS {{version}} wird installiert…",
         "installing_progress": "KAS {{version}} wird installiert: {{percent}} ({{done}} von {{total}})",

@@ -8,9 +8,11 @@
  *   where-to-find line, and pages through multiple captures
  * - the switch inside the dialog IS the card's switch: flipping either one
  *   writes the same preview flag, and the other reflects it
+ * - the built-in KAS engine card is mounted in the section, with its own switch,
+ *   and only on a deployment whose `agent.acp_backend` enum offers KAS
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, fireEvent, within, cleanup } from '@testing-library/react'
+import { render, screen, fireEvent, within, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useState } from 'react'
 import { MemoryRouter } from 'react-router-dom'
@@ -139,6 +141,51 @@ describe('FeaturePreviewsSection — See-what-it-looks-like per card', () => {
     expect(within(dialog).getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'true')
     fireEvent.keyDown(dialog, { key: 'Escape' })
     expect(screen.getByRole('switch', { name: 'Webhooks' })).toHaveAttribute('aria-checked', 'true')
+  })
+
+  it('mounts the built-in KAS engine card, with its switch, in the section', async () => {
+    // The card left the KAS harness row for this page while the route is in
+    // shadow testing; it is the same card, writing `agent.kas_bundle`.
+    vi.spyOn(api, 'kasBundleStatus').mockResolvedValue({
+      enabled: false,
+      pinned_version: '0.66.33',
+      runs_version: '0.66.33',
+      installed: null,
+      installing: false,
+      progress: { done: 0, total: 0 },
+      error: '',
+    } as never)
+    renderSection()
+    expect(await screen.findByTestId('kas-bundle-card')).toBeInTheDocument()
+    expect(screen.getByRole('switch', { name: /Run KAS on .*own engine/ })).toBeInTheDocument()
+  })
+
+  it('draws no KAS engine card on a deployment that cannot select KAS', async () => {
+    // The same gate the card had on the harness row: nothing to install or switch
+    // on for a harness this deployment does not offer.
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async input =>
+      String(input).includes('/api/config/schema')
+        ? new Response(
+            JSON.stringify({
+              entries: [{ path: 'agent.acp_backend', type: 'enum', enumValues: ['kiro', 'claude'] }],
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        : new Response('{}', { status: 404 }),
+    )
+    vi.spyOn(api, 'kasBundleStatus').mockResolvedValue({
+      enabled: false,
+      pinned_version: '0.66.33',
+      runs_version: '0.66.33',
+      installed: null,
+      installing: false,
+      progress: { done: 0, total: 0 },
+      error: '',
+    } as never)
+    renderSection()
+    // Fail-open while the schema is in flight, then gone once it says no KAS.
+    await waitFor(() => expect(screen.queryByTestId('kas-bundle-card')).toBeNull())
+    expect(screen.queryByRole('switch', { name: /Run KAS on .*own engine/ })).toBeNull()
   })
 
   it('the button stays offered while the flag is on, beside the ingress link', () => {

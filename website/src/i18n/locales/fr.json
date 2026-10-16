@@ -13579,13 +13579,13 @@
         "folder_conductor_desc": "Remonte en haut du dossier le chat qui a lancé les autres chats de ce dossier : une barre de couleur sur son bord gauche et une petite étiquette conductor à côté du nom de l'agent. Cela change l'ordre de la liste des sessions, donc la liste reste telle quelle jusqu'à ce que tu l'actives. L'entrée de chat du menu du dossier est toujours là."
       },
       "kasBundleCard": {
-        "toggle_label": "Utiliser le moteur KAS intégré",
-        "toggle_description": "Exécute la version du moteur KAS testée avec cette version de {{productName}}, sans installer kiro-cli à part. Se connecte avec le compte Kiro ci-dessus. Le changement prend effet au redémarrage de {{productName}}.",
+        "toggle_label": "Exécuter KAS avec le moteur de {{productName}}",
+        "toggle_description": "Utilise la version du moteur KAS testée avec cette version de {{productName}}, à la place de la Kiro CLI. S'applique à chaque nouvelle session de ce {{productName}}, pas seulement à cet appareil. Se connecte avec ton compte Kiro depuis Paramètres → Harness de l’agent. Prend effet au redémarrage de {{productName}}.",
         "installed": "Moteur KAS {{version}} (installé par toi)",
         "installed_bundled": "Moteur KAS {{version}} (fourni avec l'application)",
-        "off_note": "Désactivé : KAS passe par kiro-cli jusqu'à ce que tu actives l'interrupteur ci-dessus.",
+        "off_note": "Désactivé : KAS utilise ton installation de la Kiro CLI. Activé : il utilise le moteur fourni avec cette version.",
         "saved_restart_pending": "Enregistré. {{productName}} tourne encore avec l'ancienne route du moteur ; le changement se fera au redémarrage : Paramètres → À propos → Redémarrer la passerelle.",
-        "not_installed": "Le moteur intégré {{version}} n'est pas encore installé.",
+        "not_installed": "Le moteur KAS {{version}} n'est pas encore installé.",
         "install": "Installer le moteur KAS",
         "installing": "Installation de KAS {{version}}…",
         "installing_progress": "Installation de KAS {{version}} : {{percent}} ({{done}} sur {{total}})",

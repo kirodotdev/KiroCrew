@@ -13579,13 +13579,13 @@
         "folder_conductor_desc": "Leva para o topo da pasta o chat que iniciou os outros chats dessa pasta: uma barra de destaque na borda esquerda e uma pequena etiqueta conductor ao lado do nome do agente. Isso muda a ordem da lista de sessões, por isso a lista fica como está até você ativar. O item de chat no menu da pasta está sempre lá."
       },
       "kasBundleCard": {
-        "toggle_label": "Usar o mecanismo KAS integrado",
-        "toggle_description": "Executa a versão do mecanismo KAS testada com esta versão do {{productName}}, sem instalar o kiro-cli separadamente. Entra com a conta Kiro acima. A troca passa a valer quando o {{productName}} reinicia.",
+        "toggle_label": "Executar o KAS no mecanismo próprio do {{productName}}",
+        "toggle_description": "Usa a versão do mecanismo KAS testada com esta versão do {{productName}}, em vez da Kiro CLI. Vale para toda nova sessão deste {{productName}}, não só para este dispositivo. Entra com sua conta Kiro em Configurações → Harness do agente. Passa a valer quando o {{productName}} reinicia.",
         "installed": "Mecanismo KAS {{version}} (instalado por você)",
         "installed_bundled": "Mecanismo KAS {{version}} (incluído no aplicativo)",
-        "off_note": "Desligado: o KAS roda pelo kiro-cli até você ligar a chave acima.",
+        "off_note": "Desligado: o KAS usa sua instalação da Kiro CLI. Ligado: usa o mecanismo que vem com esta versão.",
         "saved_restart_pending": "Salvo. O {{productName}} ainda está usando a rota do mecanismo anterior; a troca acontece ao reiniciar: Configurações → Sobre → Reiniciar o gateway.",
-        "not_installed": "O mecanismo integrado {{version}} ainda não está instalado.",
+        "not_installed": "O mecanismo KAS {{version}} ainda não está instalado.",
         "install": "Instalar o mecanismo KAS",
         "installing": "Instalando o KAS {{version}}…",
         "installing_progress": "Instalando o KAS {{version}}: {{percent}} ({{done}} de {{total}})",

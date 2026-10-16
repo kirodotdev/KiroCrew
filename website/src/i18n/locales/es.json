@@ -13579,13 +13579,13 @@
         "folder_conductor_desc": "Sube al principio de la carpeta el chat que inició los demás chats de esa carpeta: una barra de color en su borde izquierdo y una pequeña etiqueta conductor junto al nombre del agente. Esto cambia el orden de la lista de sesiones, así que la lista se queda igual hasta que lo actives. El elemento de chat del menú de la carpeta está siempre."
       },
       "kasBundleCard": {
-        "toggle_label": "Usar el motor KAS integrado",
-        "toggle_description": "Ejecuta la versión del motor KAS probada con esta versión de {{productName}}, sin instalar kiro-cli por separado. Inicia sesión con la cuenta de Kiro de arriba. El cambio se aplica cuando {{productName}} se reinicia.",
+        "toggle_label": "Ejecutar KAS con el motor propio de {{productName}}",
+        "toggle_description": "Usa la versión del motor KAS probada con esta versión de {{productName}}, en lugar de la Kiro CLI. Se aplica a cada sesión nueva de este {{productName}}, no solo a este dispositivo. Inicia sesión con tu cuenta de Kiro de Configuración → Harness del agente. Se aplica cuando {{productName}} se reinicia.",
         "installed": "Motor KAS {{version}} (instalado por ti)",
         "installed_bundled": "Motor KAS {{version}} (incluido en la aplicación)",
-        "off_note": "Desactivado: KAS se ejecuta mediante kiro-cli hasta que actives el interruptor de arriba.",
+        "off_note": "Desactivado: KAS usa tu instalación de la Kiro CLI. Activado: usa el motor que trae esta versión.",
         "saved_restart_pending": "Guardado. {{productName}} sigue usando la ruta del motor anterior; cambiará al reiniciar: Configuración → Acerca de → Reiniciar la pasarela.",
-        "not_installed": "El motor integrado {{version}} aún no está instalado.",
+        "not_installed": "El motor KAS {{version}} aún no está instalado.",
         "install": "Instalar el motor KAS",
         "installing": "Instalando KAS {{version}}…",
         "installing_progress": "Instalando KAS {{version}}: {{percent}} ({{done}} de {{total}})",

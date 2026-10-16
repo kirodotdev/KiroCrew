@@ -13145,13 +13145,13 @@
         "folder_conductor_desc": "把开启本文件夹其他对话的那个对话提到该文件夹最上面：左边一道强调色竖线，智能体名字旁边一个小小的 conductor 标签。这会改变会话列表的排序，所以开启之前列表保持原样。文件夹菜单里的对话入口一直都在。"
       },
       "kasBundleCard": {
-        "toggle_label": "使用内置的 KAS 引擎",
-        "toggle_description": "运行本 {{productName}} 版本测试过的 KAS 引擎版本，不需要另外安装 kiro-cli。使用上方的 Kiro 账户登录。切换会在 {{productName}} 重启后生效。",
+        "toggle_label": "用 {{productName}} 自带的引擎运行 KAS",
+        "toggle_description": "使用本 {{productName}} 版本测试过的 KAS 引擎版本，代替 Kiro CLI。对这个 {{productName}} 的所有新会话生效，不只是这台设备。使用设置 → 代理运行框架中的 Kiro 账户登录。{{productName}} 重启后生效。",
         "installed": "KAS 引擎 {{version}}（由你安装）",
         "installed_bundled": "KAS 引擎 {{version}}（随应用提供）",
-        "off_note": "已关闭：打开上方开关前，KAS 通过 kiro-cli 运行。",
+        "off_note": "已关闭：KAS 使用你安装的 Kiro CLI。开启后：使用本版本自带的引擎。",
         "saved_restart_pending": "已保存。{{productName}} 仍在运行之前的引擎路线，重启后才会切换：设置 → 关于 → 重启网关。",
-        "not_installed": "内置引擎 {{version}} 尚未安装。",
+        "not_installed": "KAS 引擎 {{version}} 尚未安装。",
         "install": "安装 KAS 引擎",
         "installing": "正在安装 KAS {{version}}…",
         "installing_progress": "正在安装 KAS {{version}}：{{percent}}（{{done}} / {{total}}）",

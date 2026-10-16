@@ -1,5 +1,5 @@
 /**
- * KasBundleCard — Settings > Agent Harness > KAS: run Kiro Crew's own engine.
+ * KasBundleCard — Settings > Developer > Feature Previews: run KAS on Kiro Crew's own engine.
  *
  * What is pinned:
  * - the switch can only be turned ON once the pinned engine is installed (an "on"
@@ -15,7 +15,9 @@
  * - a status read that fails with nothing cached offers Retry, which re-reads;
  * - the copy the desktop app shipped (`installed.bundled`) is named as such;
  * - an installed engine under an OFF switch says it is not in use, and the note
- *   goes away once the switch is on.
+ *   goes away once the switch is on;
+ * - the installed line's tick is green only once the engine is what runs: muted
+ *   with the switch off, muted again while a save waits for a restart.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { fireEvent, screen, waitFor } from '@testing-library/react'
@@ -77,7 +79,7 @@ describe('KasBundleCard', () => {
     kasBundleStatus.mockResolvedValue(BASE)
     renderWithProviders(<KasBundleCard />)
     await screen.findByTestId('kas-bundle-install')
-    expect(screen.getByText('Built-in engine 0.66.33 is not installed yet.')).toBeInTheDocument()
+    expect(screen.getByText('KAS engine 0.66.33 is not installed yet.')).toBeInTheDocument()
     expect(toggle()).toHaveAttribute('aria-disabled', 'true')
     expect(screen.getByTestId('restart-badge')).toHaveAttribute('data-key', KAS_BUNDLE_CONFIG_KEY)
   })
@@ -110,7 +112,7 @@ describe('KasBundleCard', () => {
     const { unmount } = renderWithProviders(<KasBundleCard />)
     await screen.findByText('KAS engine 0.66.33 (installed by you)')
     expect(screen.getByTestId('kas-bundle-off-note')).toHaveTextContent(
-      'Off: KAS runs through kiro-cli until you turn on the switch above.',
+      'Off: KAS uses your Kiro CLI install. On: it uses the engine this release ships with.',
     )
     unmount()
     kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
@@ -128,6 +130,34 @@ describe('KasBundleCard', () => {
     const pending = await screen.findByTestId('kas-bundle-restart-pending')
     expect(pending.textContent).toContain('Restart gateway')
     expect(pending).toHaveAttribute('role', 'status')
+  })
+
+  it('greens the installed tick only once the engine is what runs', async () => {
+    // Off: muted. On, after a restart (a fresh card reading enabled): green.
+    // On, saved in this card but not yet restarted onto: muted again.
+    kasBundleStatus.mockResolvedValue(INSTALLED)
+    const { unmount } = renderWithProviders(<KasBundleCard />)
+    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-muted')
+    unmount()
+
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
+    const second = renderWithProviders(<KasBundleCard />)
+    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-ok')
+    second.unmount()
+
+    kasBundleStatus.mockResolvedValueOnce(INSTALLED)
+    kasBundleStatus.mockResolvedValue({ ...INSTALLED, enabled: true })
+    renderWithProviders(<KasBundleCard />)
+    await screen.findByText('KAS engine 0.66.33 (installed by you)')
+    fireEvent.click(toggle())
+    await screen.findByTestId('kas-bundle-restart-pending')
+    await waitFor(() => expect(screen.queryByTestId('kas-bundle-off-note')).toBeNull())
+    expect(screen.getByTestId('kas-bundle-installed-tick')).toHaveClass('text-muted')
+    // The generic pill is hidden in place, so the row (and the switch) keeps its width.
+    expect(screen.getByTestId('kas-bundle-restart-pill')).toHaveClass('invisible')
+    expect(screen.getByTestId('restart-badge')).toBeInTheDocument()
   })
 
   it('always lets an enabled switch be turned off, even with nothing installed', async () => {

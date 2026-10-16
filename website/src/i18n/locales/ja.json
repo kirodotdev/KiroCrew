@@ -13145,13 +13145,13 @@
         "folder_conductor_desc": "フォルダーの他のチャットを開始したチャットを、そのフォルダーの先頭に引き上げます。左端にアクセントのバーが入り、エージェント名の横に小さな conductor タグが付きます。セッション一覧の並び順が変わるため、有効にするまで一覧はそのままです。フォルダーメニューのチャット項目は常に表示されます。"
       },
       "kasBundleCard": {
-        "toggle_label": "内蔵の KAS エンジンを使う",
-        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを実行します。kiro-cli を別途インストールする必要はありません。上の Kiro アカウントでサインインします。切り替えは {{productName}} の再起動後に反映されます。",
+        "toggle_label": "{{productName}} 独自のエンジンで KAS を実行",
+        "toggle_description": "この {{productName}} リリースでテスト済みの KAS エンジンを、Kiro CLI の代わりに使います。このデバイスだけでなく、この {{productName}} のすべての新しいセッションに適用されます。設定 → エージェントハーネスの Kiro アカウントでサインインします。{{productName}} の再起動後に反映されます。",
         "installed": "KAS エンジン {{version}}（自分でインストール）",
         "installed_bundled": "KAS エンジン {{version}}（アプリに同梱）",
-        "off_note": "オフ：上のスイッチをオンにするまで、KAS は kiro-cli 経由で動きます。",
+        "off_note": "オフ：KAS はインストール済みの Kiro CLI を使います。オン：このリリースに同梱のエンジンを使います。",
         "saved_restart_pending": "保存しました。{{productName}} はまだ以前のエンジン経路で動作しています。再起動すると切り替わります：設定 → 情報 → ゲートウェイを再起動。",
-        "not_installed": "内蔵エンジン {{version}} はまだインストールされていません。",
+        "not_installed": "KAS エンジン {{version}} はまだインストールされていません。",
         "install": "KAS エンジンをインストール",
         "installing": "KAS {{version}} をインストール中…",
         "installing_progress": "KAS {{version}} をインストール中: {{percent}}（{{done}} / {{total}}）",

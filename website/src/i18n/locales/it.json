@@ -13579,13 +13579,13 @@
         "folder_conductor_desc": "Porta in cima alla cartella la chat che ha avviato le altre chat di quella cartella: una barra colorata sul bordo sinistro e una piccola etichetta conductor accanto al nome dell'agente. Questo cambia l'ordine dell'elenco delle sessioni, quindi l'elenco resta com'è finché non la attivi. La voce di chat nel menu della cartella c'è sempre."
       },
       "kasBundleCard": {
-        "toggle_label": "Usa il motore KAS integrato",
-        "toggle_description": "Esegue la versione del motore KAS testata con questa versione di {{productName}}, senza installare kiro-cli a parte. Accede con l'account Kiro qui sopra. Il cambio ha effetto quando {{productName}} si riavvia.",
+        "toggle_label": "Esegui KAS con il motore di {{productName}}",
+        "toggle_description": "Usa la versione del motore KAS testata con questa versione di {{productName}}, al posto della Kiro CLI. Vale per ogni nuova sessione di questo {{productName}}, non solo per questo dispositivo. Accede con il tuo account Kiro da Impostazioni → Harness dell’agente. Ha effetto quando {{productName}} si riavvia.",
         "installed": "Motore KAS {{version}} (installato da te)",
         "installed_bundled": "Motore KAS {{version}} (incluso nell'applicazione)",
-        "off_note": "Disattivato: KAS funziona tramite kiro-cli finché non attivi l'interruttore sopra.",
+        "off_note": "Disattivato: KAS usa la tua installazione della Kiro CLI. Attivato: usa il motore incluso in questa versione.",
         "saved_restart_pending": "Salvato. {{productName}} usa ancora il percorso del motore precedente; il cambio avviene al riavvio: Impostazioni → Informazioni → Riavvia il gateway.",
-        "not_installed": "Il motore integrato {{version}} non è ancora installato.",
+        "not_installed": "Il motore KAS {{version}} non è ancora installato.",
         "install": "Installa il motore KAS",
         "installing": "Installazione di KAS {{version}}…",
         "installing_progress": "Installazione di KAS {{version}}: {{percent}} ({{done}} di {{total}})",
