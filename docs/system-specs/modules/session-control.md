@@ -2209,12 +2209,16 @@ goes to its owner, and the owners import each other lowest layer first, in this 
   the spawn record a created or forked child gets.
 - `src/kiro_crew/dashboard/session_control_parts/session_tree.py`: `session_fork`,
   `session_adopt` and `session_release`, and the tree-mutation lock and append fence.
-- `src/kiro_crew/dashboard/session_control_parts/session_status.py`: the read limits; the
-  read verbs themselves are still in the facade.
+- `src/kiro_crew/dashboard/session_control_parts/session_messaging.py`: `session_send` and
+  `session_broadcast`, the provenance envelope, and the steer deliveries a cancelled
+  sender leaves behind.
+- `src/kiro_crew/dashboard/session_control_parts/session_status.py`: the read verbs: the
+  status roster of the sessions a caller created, a target's transcript tail and its
+  cached summary, and their limits.
+- `src/kiro_crew/dashboard/session_control_parts/session_revive.py`: listing the revivable
+  history and `session_revive`.
 
-The facade itself still holds `session_send` and `session_broadcast`, the read verbs
-(`session_status`, `session_read`, `session_summary`) and archived-session revival and
-listing.
+The facade itself holds no verb: its docstring, its logger and the mirror.
 
 ## What is deliberately not here
 

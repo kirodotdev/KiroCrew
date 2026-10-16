@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import inspect
 import json
 import threading
 from pathlib import Path
@@ -6060,9 +6061,7 @@ def test_the_post_rpc_regate_warms_the_config_first():
     Mutation guard: delete the second warm and the regate is the first thing after
     the RPC again.
     """
-    src = Path(sc.__file__).read_text(encoding="utf-8")
-    send = src[src.index("async def send_to_target") :]
-    send = send[: send.index("\ndef read_messages")]
+    send = inspect.getsource(sc.send_to_target)
     rpc_at = send.index("await steer_into_running_turn(")
     regate_at = send.index("regated = authorize_target(")
     warm_at = send.index("await prewarm_enabled_check()", rpc_at)

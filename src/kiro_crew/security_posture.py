@@ -551,7 +551,7 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Session control read",
-        "dashboard/session_control.py",
+        "dashboard/session_control_parts/session_status.py",
         "Another session's transcript tail and its cached intent summary, served by "
         "`GET /api/session-control/read` and `GET /api/session-control/summary` to "
         "the calling agent. Conversation "
@@ -2229,7 +2229,7 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/chat_api/slot_note.py",
         "dashboard/chat_api/slot_settings.py",
         # Owners composed into dashboard/session_control.py, their redactor calls
-        # moved verbatim out of the module the "Session control read" sink names.
+        # moved verbatim out of dashboard/session_control.py.
         # The refusal factory scrubs the target and reason it writes to the audit
         # record; the model switch and the create verb refuse a model name their
         # redaction would change; and the model a pending pick reports, and the

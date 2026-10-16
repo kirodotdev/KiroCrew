@@ -128,7 +128,7 @@ def test_the_drop_notice_is_its_own_output_path_beside_the_session_control_read(
             "Queued-message drop notice",
             f"dashboard/{_PACKAGE.rpartition('.')[2]}/delivery_containment.py",
         ),
-        ("Session control read", "dashboard/session_control.py"),
+        ("Session control read", f"dashboard/{_PACKAGE.rpartition('.')[2]}/session_status.py"),
     }
 
 

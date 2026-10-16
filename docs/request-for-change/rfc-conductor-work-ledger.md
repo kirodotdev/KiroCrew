@@ -75,7 +75,7 @@ Four costs follow from that shape.
 #:   reachable; nothing bounds WHAT is sent.
 ```
 
-`send_to_target` in [`src/kiro_crew/dashboard/session_control.py`](../../src/kiro_crew/dashboard/session_control.py) hands the body to `enqueue_or_run_prompt` — the same call the human composer uses. A worker's text would therefore *be* the conductor's next prompt, executed under the conductor's grants. Granting it downward turns every worker into an operator of its parent.
+`send_to_target` in [`src/kiro_crew/dashboard/session_control_parts/session_messaging.py`](../../src/kiro_crew/dashboard/session_control_parts/session_messaging.py) hands the body to `enqueue_or_run_prompt` — the same call the human composer uses. A worker's text would therefore *be* the conductor's next prompt, executed under the conductor's grants. Granting it downward turns every worker into an operator of its parent.
 
 So the requirement is not "a channel from worker to conductor". It is a channel that cannot carry an instruction.
 

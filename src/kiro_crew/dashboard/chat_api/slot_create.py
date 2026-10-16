@@ -698,7 +698,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                     slot.memory_store = assigned_store
         _sync_dashboard_slots(state)
         # Persist INSIDE the suspension, ahead of the coalesced broadcast, the
-        # same ordering `session_control.py`'s create span uses ("the whole
+        # same ordering `session_control_parts/session_create.py`'s create span uses ("the whole
         # allocation-to-persist span runs under `suspend_slots_push`", so "a
         # slot whose birth write fails is never broadcast at all"). Two paths
         # mint a slot through this context manager; leaving the durable write
@@ -735,7 +735,7 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             # slot unbound. The birth line is written here, awaited and checked,
             # and the create fails rather than hand the palette a session that
             # would lose its binding. The newborn is retracted on that failure,
-            # the same retraction `session_control.py`'s create uses: left in
+            # the same retraction `session_control_parts/session_create.py`'s create uses: left in
             # `state._slots` it would still go out in the coalesced broadcast
             # this suspension owes, so every client would show a session the
             # caller was told did not get created, a retry would mint a second
