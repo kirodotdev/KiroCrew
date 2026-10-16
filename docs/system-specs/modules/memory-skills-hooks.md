@@ -369,8 +369,27 @@ For V2, `VectorMemoryStore.apply_consolidation` is the publication boundary.
 The original transcript snapshot determines a stable source span; the caller
 revalidates it after extraction. One immediate SQLite transaction publishes facts,
 correction proposals, episodes, lessons, history revisions, FTS and its receipt.
-Storage failure rolls back the whole pass. Verified corrections compare their
-pre-extraction record revision in that transaction. Embeddings are deferred for
+Storage failure rolls back the whole pass, but a fact whose model-authored
+metadata fails validation affects only that fact
+(`memory_record_metadata.normalize_extracted_metadata`).
+An unknown field name is dropped and the fact lands with its known fields; a
+known field with an invalid value, or metadata that is not an object, skips that
+fact the way a bad confidence does. Unknown names never reach stored metadata.
+The receipt counts the two as `metadata_fields_dropped` and `metadata_rejected`
+(present only when nonzero), and a warning names the fact key with up to three
+dropped field names (escaped, truncated, the rest counted) or the rejection
+reason, never a metadata value. A known field is checked after normalization,
+so an out-of-range date, a subject that casefolding lengthens past 1,024
+characters or a lone surrogate SQLite cannot encode is that fact's rejection,
+not a later failure of the span. Correction evidence becomes the record's
+`source_ref`, so a statement that cannot fit it with its session prefix leaves
+the correction pending. Only a verified correction's metadata is merged with the
+stored record, in `sync_record`; a merged validity window or identity that
+conflicts there still fails the pass.
+The other metadata entry points (`set_semantic`, `write_episodic`) keep the
+strict `normalize_metadata`, which refuses an unknown field and names it.
+Verified corrections compare their pre-extraction record revision in that
+transaction. Embeddings are deferred for
 maintenance and cannot hold the write lock during provider inference. Before a
 retry calls a provider, a committed receipt recovers a lost transcript progress
 acknowledgement and leaves later appended messages pending.

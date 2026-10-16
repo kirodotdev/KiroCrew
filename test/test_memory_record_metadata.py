@@ -508,6 +508,94 @@ def test_failed_import_audit_rolls_back_record_and_history_and_allows_retry(stor
     )
 
 
+def test_unknown_metadata_field_is_refused_by_a_bounded_escaped_name():
+    """A caller's patch is still refused whole, and the error names the field.
+
+    An unknown name is untrusted text, so the message escapes it onto one line
+    and repeats a bounded prefix of a bounded number of names."""
+    with pytest.raises(ValueError, match=r"^Unknown memory metadata field 'evidence'$"):
+        meta.normalize_metadata({"subject": "user", "evidence": "said so"})
+    long_name = "line\nbreak" + "x" * 500
+    with pytest.raises(ValueError) as refused:
+        meta.normalize_metadata({long_name: 1, "tags": 2, "kind": 3, "notes": 4})
+    message = str(refused.value)
+    assert message.startswith("Unknown memory metadata fields 'line\\nbreak")
+    assert message.endswith("..., 'tags', 'kind' (+1 more)")
+    assert "\n" not in message and "x" * 41 not in message
+    with pytest.raises(ValueError, match="^Memory metadata must be an object$"):
+        meta.normalize_metadata(["subject"])
+
+
+def test_extracted_metadata_drops_unknown_names_and_validates_the_known_fields():
+    """Model-authored metadata loses only the names the schema does not know;
+    the known fields normalize exactly as a caller's patch does and an invalid
+    known value still raises, for the caller to skip that one item."""
+    fields, dropped = meta.normalize_extracted_metadata(
+        {"subject": "User", "predicate": "work_email", "evidence": "said so", "Scope": ""}
+    )
+    assert fields == {"subject": "user", "predicate": "work_email"}
+    assert dropped == ["evidence", "Scope"]
+    assert meta.normalize_extracted_metadata(None) == ({}, [])
+    assert meta.normalize_extracted_metadata({"evidence": "only"}) == ({}, ["evidence"])
+    with pytest.raises(ValueError, match="^valid_from must be an ISO date or timestamp$"):
+        meta.normalize_extracted_metadata({"valid_from": "ISO date only if stated", "x": 1})
+    with pytest.raises(ValueError, match="^Memory metadata must be an object$"):
+        meta.normalize_extracted_metadata("contact")
+
+
+@pytest.mark.parametrize("stamp", ["9999-12-31T23:59:59-05:00", "0001-01-01T00:00:00+01:00"])
+def test_an_offset_date_past_the_calendar_edge_is_an_invalid_value(stamp):
+    """Converting to UTC overflows the calendar; that is the field's ValueError,
+    which every caller already handles, never an OverflowError."""
+    with pytest.raises(ValueError, match="^valid_until is out of the supported date range$"):
+        meta.normalize_metadata({"valid_until": stamp})
+
+
+def test_a_lone_surrogate_is_an_invalid_value_not_a_storage_failure():
+    """json.loads accepts a lone surrogate that SQLite cannot encode; the field
+    refuses it, without repeating the value, before any write reaches SQLite."""
+    with pytest.raises(ValueError) as refused:
+        meta.normalize_metadata({"category": json.loads('"\\ud800"')})
+    message = str(refused.value)
+    assert (
+        message == "category contains unpaired surrogate characters and cannot be stored as UTF-8"
+    )
+
+
+@pytest.mark.parametrize("store", ["v2"], indirect=True)
+@pytest.mark.parametrize(("length", "verified"), [(480, True), (500, False)])
+def test_correction_evidence_must_fit_the_source_ref_it_becomes(store, length, verified):
+    """Both statements pass their own 1,024-character bound; only the one whose
+    stored evidence (session prefix included) still fits verifies."""
+    old, new = "a" * length, "b" * length
+    before = fact(store, value=old)
+    statement = f"replace {old} with {new}"
+    assert len(statement) <= 1024
+    evidence = meta.verified_correction(
+        key="user.work_email",
+        before=before,
+        value=new,
+        quote=statement,
+        messages=[
+            {"role": "user", "content": statement, "ts": datetime.now(timezone.utc).isoformat()}
+        ],
+        session_key="dashboard:alice",
+    )
+    assert (evidence is not None) is verified
+    if evidence is not None:
+        assert meta.normalize_metadata({"source_ref": evidence.source_ref})
+
+
+def test_normalized_text_stays_within_the_bound_so_a_second_pass_accepts_it():
+    """The length bound is checked after casefolding, so the output of one pass
+    always passes the next (``sync_record`` normalizes the same patch again)."""
+    with pytest.raises(ValueError, match="^subject must be text of at most 1024 characters$"):
+        meta.normalize_metadata({"subject": "ß" * 600})
+    once = meta.normalize_metadata({"subject": "ß" * 512, "predicate": "Work  Email"})
+    assert once == {"subject": "ss" * 512, "predicate": "work email"}
+    assert meta.normalize_metadata(once) == once
+
+
 def test_metadata_invalid_interval_rolls_back_physical_write(store):
     assert (
         store.set_semantic(
