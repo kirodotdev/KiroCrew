@@ -483,7 +483,7 @@ def carries_attachments(item: dict) -> bool:
 
 def _stamped_turn_actor(item: dict) -> Any:
     """The turn actor stamped on a queue entry's meta, or ``""`` for none."""
-    # circular import: chat_delivery imports this module at load.
+    # circular import: chat_delivery imports chat_utils, which loads this module.
     from kiro_crew.dashboard.chat_delivery import TURN_ACTOR_META_KEY
 
     meta = item.get("meta")

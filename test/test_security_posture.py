@@ -1017,7 +1017,7 @@ class TestRedactionSinkRegistry:
             "redact_peer_text",
             "_redact_peer_payload",
             "_redact_sse_event_async",
-            # _redact_for_display (dashboard/chat_utils.py) runs redact_exfiltration_urls
+            # _redact_for_display (dashboard/chat_utils_display.py) runs redact_exfiltration_urls
             # THEN redact_credentials, cached by content hash, so a sink calling it is
             # fully covered; test_the_display_redactor_runs_both_scanners pins that.
             "_redact_for_display(",

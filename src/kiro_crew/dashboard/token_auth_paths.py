@@ -133,7 +133,7 @@ _BYPASS_EXACT = {
 # copied from is the safe one.
 
 #: The Bot Framework inbound webhook route. Named once because TWO independent
-#: middleware exemptions target it (the token gate below and the CSRF Origin
+#: middleware exemptions target it (the token gate in ``token_auth`` and the CSRF Origin
 #: check in ``server``), and a hand-copied second spelling is how one control
 #: ends up pointed at a route the other is not.
 TEAMS_WEBHOOK_PATH = "/api/messaging/teams"

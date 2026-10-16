@@ -447,7 +447,7 @@ async def restore_replacement_if_handover_did_not_land(
     if not carrier_rolled_back:
         return False
 
-    # Imported lazily: chat_persistence imports this module. The pending read is
+    # Imported lazily: chat_persistence -> chat_utils -> this module. The pending read is
     # the only worker-owned value consulted here; every live-state check and the
     # mutation below remains in this uninterrupted event-loop turn.
     from kiro_crew.dashboard.chat_persistence import pending_slot_memory_mode

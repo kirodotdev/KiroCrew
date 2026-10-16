@@ -57,7 +57,7 @@ def _app_api_allowlist(app_name: str) -> tuple[str, ...]:
     allow: tuple[str, ...] = ()
     try:
         # circular import: apps.manager imports generate_app_secret/
-        # write_app_secret from this module (token_auth), so a top-level
+        # write_app_secret from token_auth, which loads this module, so a top-level
         # `import` here would form a cycle. Kept function-local deliberately.
         from kiro_crew.apps.manager import get_app_manifest, staged_app_grants
 

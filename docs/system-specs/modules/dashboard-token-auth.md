@@ -66,7 +66,7 @@ sequenceDiagram
     participant Owner as Slack Owner
     participant Handler as commands.py (_bang_dashboard)
     participant Allowlist as allowlist.py (send_dashboard_link)
-    participant TokenGen as token_auth.py
+    participant TokenGen as token_auth_tokens.py
     participant Browser as Browser
     participant MW as Token Auth Middleware
     participant App as Dashboard App
