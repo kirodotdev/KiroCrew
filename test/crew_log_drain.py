@@ -131,7 +131,7 @@ def unsync_appends(monkeypatch: pytest.MonkeyPatch) -> None:
     turn an entry names -- rather than that it is durable. Each append is an fsync under
     a cross-process lock, which averaged 1.13 s on a loaded Windows shard (run
     37016327909) and turned a 160-append barrier into a 66 s test against a 60 s
-    ceiling. Durability is the store's own property and ``test_crew_log_core`` pins it
+    ceiling. Durability is the store's own property and ``test_crew_log_core_groups`` pins it
     (an append inside a failing fsync, and the rollback after it), so here the fsync
     only prices the batch. Patches the store module's OWN ``os`` binding, never an
     attribute of the stdlib module.

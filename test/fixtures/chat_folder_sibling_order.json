@@ -1,7 +1,7 @@
 {
   "$comment": [
     "ONE golden fixture for the sibling sort, consumed by BOTH suites:",
-    "  - pytest  test/test_mcp_dashboard_folders.py  (_chat_folder_siblings)",
+    "  - pytest  test/test_mcp_dashboard_folders_position.py  (_chat_folder_siblings)",
     "  - vitest  website/src/test/folderTree.test.ts (bySidebarOrder)",
     "",
     "The tool and the sidebar must order siblings identically, because",

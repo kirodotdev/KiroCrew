@@ -207,7 +207,6 @@
 2058 test/test_chat_regenerate_cov80.py
 6983 test/test_chat_runner_coverage.py
 2683 test/test_chat_slot_switch_atomicity.py
-3069 test/test_chat_tags.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
 2182 test/test_cloud_microvm_engine.py
@@ -223,7 +222,6 @@
 2606 test/test_connections_tool_aliases.py
 2418 test/test_context.py
 2226 test/test_context_composition_contract.py
-3069 test/test_crew_log_core.py
 6406 test/test_crew_log_emit.py
 2202 test/test_crew_log_fold_eager.py
 3011 test/test_crew_log_projection.py
@@ -243,7 +241,6 @@
 11284 test/test_dev_fleet_app.py
 4648 test/test_dev_fleet_server_coverage.py
 2020 test/test_discord_resumed_busy.py
-3050 test/test_discord_sessions.py
 2065 test/test_dynamic_dashboard_cards.py
 2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
@@ -285,7 +282,6 @@
 2005 test/test_mcp_apps_render.py
 2595 test/test_mcp_computer.py
 2117 test/test_mcp_cron_security.py
-3081 test/test_mcp_dashboard_folders.py
 7022 test/test_mcp_discovery.py
 5650 test/test_mcp_gateway_backend_coverage.py
 2271 test/test_mcp_gateway_rewriter_fingerprint.py

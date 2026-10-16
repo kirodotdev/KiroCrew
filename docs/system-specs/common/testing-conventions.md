@@ -3087,7 +3087,7 @@ mechanism, and one of them a production defect wearing a test's clothes.
   with it the frames); both hunks together are green, and reverting the test hunk alone
   stays green, so the production change is the load-bearing one and the test change is
   hygiene plus the witness. The pin then paid for itself before the PR merged: on the macOS
-  shard it read a lease from `test_crew_log_core.py`'s chmod-refusal test, an earlier file
+  shard it read a lease from `test_crew_log_core_segments.py`'s chmod-refusal test, an earlier file
   on the same worker -- `store._mkdir_private` warned with `exc_info=True` from inside
   `CrewLog.append`, the same class at a second site, POSIX-only because Windows never
   refuses the `chmod`. That warning carries its traceback as text now and the test pins
@@ -3836,7 +3836,8 @@ review finding; the version below is what the lane accepted.
   `value` is the exception -- the same cycle one layer down. The fix is a CLASS whose
   `__exit__` copies `code`/`field`/`message`/`written` into a plain record and returns; its
   frame is the only thing that ever named the exception. The pin moved to the creator:
-  `test_crew_log_core.py`'s autouse fixture asserts `lease._held` empty after every test,
+  the autouse fixture in `crew_log_core_helpers.py`, which `test_crew_log_core.py` and its
+  parts bind, asserts `lease._held` empty after every test,
   WITHOUT `gc.collect()` (release rides the refcount; a lease held there is a retention).
   39 errors under the old helper, none under the new. The old `_raises(code)` also never
   compared its argument, and one site had said `bad_src` for a refusal the product spells

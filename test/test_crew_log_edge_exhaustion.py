@@ -42,7 +42,7 @@ def _isolated_home(tmp_path, monkeypatch):
     # the drain: release rides the handle's refcount, so a lease still held here is
     # a retention, not a frame that has not finished unwinding. The table is
     # process-wide, so the key it names may belong to an EARLIER file on this
-    # worker (the macOS run of this PR caught ``test_crew_log_core.py``'s
+    # worker (the macOS run of this PR caught ``test_crew_log_core_segments.py``'s
     # chmod-refusal test that way); the path in the message says whose it is.
     assert not lease._held, f"a lease outlived its test on this worker: {sorted(lease._held)}"
 
