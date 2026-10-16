@@ -1226,8 +1226,10 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # an authorization input: it names the dashboard session a code channel's
     # messages run in. The gateway writes it through ``atomic_write``, outside
     # this gate; ``sandbox_leaves`` seals it.
-    f"{prefix}/slack-code-channels.json"
+    f"{prefix}/{leaf}"
     for prefix in _CREW_HOME_PREFIXES
+    # ...and its companion, the code-channel agent surface (``surface_store``).
+    for leaf in ("slack-code-channels.json", "slack-code-channel-surface.json")
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
     # The app-sources checkout root — the persistent tree every installed app

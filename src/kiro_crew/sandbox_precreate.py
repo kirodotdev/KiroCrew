@@ -302,6 +302,11 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # routes and no bindings, exactly as an absent file (criterion 1); a reader
     # frozen at ``{}`` sees no bindings, which binds nothing (criterion 2).
     "slack-code-channels.json",
+    # The code-channel agent surface: ``SurfaceStore`` reads ``{}`` as no records,
+    # exactly as an absent file (criterion 1); a reader frozen at ``{}`` sees no
+    # context-bar items, no plan canvas and no current wrap-up, so it publishes and
+    # archives nothing (criterion 2).
+    "slack-code-channel-surface.json",
     # The operator's grants of ``owner`` trust to a hand-configured app registry.
     # Satisfies both criteria the way ``file_delivery_consent.json`` does:
     # ``registry._granted_owner_repos`` reads an absent, empty, AND ``{}``-versioned
