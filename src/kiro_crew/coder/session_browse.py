@@ -48,6 +48,14 @@ class NotRemote(LookupError):
     """The session runs on this machine: there is no remote workspace."""
 
 
+class CloudSandboxOnly(SessionEnvironmentUnavailable):
+    """The session runs in a Kiro cloud sandbox, which only its own agent reaches.
+
+    Kiro Crew holds no transport into that sandbox, so files, git and a terminal
+    are refused here rather than served from the wrong machine.
+    """
+
+
 class WorkspaceNotRunning(SessionEnvironmentUnavailable):
     """The session's workspace is stopped (or not created yet)."""
 
@@ -73,14 +81,22 @@ async def _resolve(session_key: str) -> _Target:
 
     home = await asyncio.to_thread(data_home)
     choices = SessionEnvironmentChoices(home / "coder" / "session-choices.json")
-    resolved = await asyncio.to_thread(choices.resolve, session_key)
+    resolved = await asyncio.to_thread(choices.resolve_choice, session_key)
     if resolved is None:
         raise NotRemote(session_key)
-    profile_id, owner = resolved
+    profile_id, owner, recorded_provider = resolved
     config = live.snapshot()
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    from kiro_crew.coder.session_launch import KIRO_CLOUD_PROVIDER_ID, chosen_provider
+
+    if chosen_provider(section, profile_id, recorded_provider) == KIRO_CLOUD_PROVIDER_ID:
+        # The sandbox belongs to Kiro's cloud and only its own agent reaches it.
+        raise CloudSandboxOnly(
+            "this session runs in a Kiro cloud sandbox; its files and shell are reached "
+            "only by its own agent, not from Kiro Crew"
+        )
     provider = CoderSessionEnvironments(section, home)
     profile = provider.profile(profile_id)
     registry = WorkspaceBindingRegistry(home / "coder" / "session-envs.json")

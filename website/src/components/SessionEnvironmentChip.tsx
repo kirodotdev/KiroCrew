@@ -196,7 +196,10 @@ export default function SessionEnvironmentChip({ slot, disabled, compact }: Prop
                 <ProviderGlyph provider={p.provider} size={14} />
                 <span className="flex flex-col min-w-0 flex-1">
                   <span className="truncate">{p.name}</span>
-                  <span className="truncate text-[12px] text-muted font-mono">{p.workdir}</span>
+                  <span className="truncate text-[12px] text-muted font-mono">
+                    {/* A Kiro Cloud profile has no directory Kiro Crew can see. */}
+                    {p.workdir || p.repositories?.join(', ') || t('sessionEnvironments.kiroCloud.sandbox')}
+                  </span>
                 </span>
               </DropdownMenuRadioItem>
             ))}

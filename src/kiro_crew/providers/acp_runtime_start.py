@@ -98,7 +98,7 @@ _RESUME_TRANSIENT_LOCK_MARKERS: tuple[str, ...] = (
 
 
 async def _session_environments_configured() -> bool:
-    """Whether Session Environments has a Coder URL or a saved profile.
+    """Whether Session Environments has a Coder URL or any saved provider profile.
 
     Without either no session can be bound remotely, so its starts never read
     the session choices (a damaged file cannot refuse them).
@@ -111,7 +111,9 @@ async def _session_environments_configured() -> bool:
 
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
-    return bool(section.coder_url or section.profiles)
+    return bool(
+        section.coder_url or section.profiles or getattr(section, "kiro_cloud_profiles", None)
+    )
 
 
 def _unlink_dead_session_lock(session_id: str) -> bool:
@@ -505,18 +507,27 @@ async def _start_kiro_runtime_impl(
     # other session is untouched. Resolved from this session's own choice
     # row: a subagent of a remote session runs in its parent's workspace
     # because spawning it records an inherited row for the child's key.
-    from kiro_crew.coder.session_launch import prepare_for_session
+    from kiro_crew.coder.session_launch import PreparedCloudSession, prepare_for_session
     from kiro_crew.session_environment import report_start_stage
 
     remote = (
         await prepare_for_session(
-            session_key, before_compute=runtime.check_remote_workspace_supported
+            session_key,
+            agent=agent or "kirocrew",
+            before_compute=runtime.check_remote_workspace_supported,
         )
         if await _session_environments_configured()
         else None
     )
 
     async def attach_remote_workspace(target: AcpRuntime) -> None:
+        if isinstance(remote, PreparedCloudSession):
+            # Kiro Cloud Sessions: KAS places the session in a Kiro cloud
+            # sandbox at session/new. No workspace server and no git proxy:
+            # the agent itself runs there.
+            target.set_cloud_sandbox(remote.repositories)
+            report_start_stage(session_key, "starting_agent")
+            return
         # A fresh guest worker per runtime: the bridge consumes its one-use
         # secret file when the engine launches it.
         assert remote is not None
@@ -541,8 +552,17 @@ async def _start_kiro_runtime_impl(
         await attach_remote_workspace(runtime)
         # Per-message context reads this to name the guest directory
         # instead of the gateway's project path.
-        remember_remote_workspace(session_key, remote.profile_name, remote.workdir)
-        if remote.created and getattr(self._client, "_resume_session_id", None):
+        remember_remote_workspace(
+            session_key,
+            remote.profile_name,
+            # Empty for a cloud sandbox: Kiro Crew never sees its directory.
+            "" if isinstance(remote, PreparedCloudSession) else remote.workdir,
+        )
+        if (
+            not isinstance(remote, PreparedCloudSession)
+            and remote.created
+            and getattr(self._client, "_resume_session_id", None)
+        ):
             # A conversation that already ran got a new, empty workspace.
             from kiro_crew.session_environment import mark_workspace_recreated
 
@@ -585,8 +605,9 @@ async def _start_kiro_runtime_impl(
     finally:
         # subprocess launch + ACP `initialize` handshake
         phases["spawn_init"] = (time.monotonic() - _t_spawn) * 1000.0
-        if remote is not None:
+        if remote is not None and not isinstance(remote, PreparedCloudSession):
             # Closed once this runtime ends (at once if the spawn failed).
+            # A cloud session has no workspace relay.
             remote.launch.close_relay_when_ended(runtime.is_alive)
 
     # Everything AFTER a successful spawn() must be guarded: until the
@@ -719,7 +740,7 @@ async def _start_kiro_runtime_impl(
                         ) from exc
                     raise
                 finally:
-                    if remote is not None:
+                    if remote is not None and not isinstance(remote, PreparedCloudSession):
                         remote.launch.close_relay_when_ended(runtime.is_alive)
             try:
                 handle = await runtime.create_session(
@@ -751,6 +772,13 @@ async def _start_kiro_runtime_impl(
                 # so a successful resume never reports a near-zero session_new
                 # that would understate the phase's real distribution.
                 phases["session_new"] = (time.monotonic() - _t_sess) * 1000.0
+
+        if isinstance(remote, PreparedCloudSession) and session_key:
+            # Kiro's cloud now holds this session, so its environment is
+            # fixed from here on (the dashboard's choice lock reads this).
+            from kiro_crew.coder.session_launch import record_cloud_session
+
+            await record_cloud_session(session_key, handle.session_id)
 
         # Apply the configured model override (mirrors AcpClient handshake).
         # DEFAULT_MODEL ("auto") means "let kiro-cli pick per agent config".

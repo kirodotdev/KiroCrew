@@ -1962,6 +1962,21 @@ class AcpRuntime:
             "Crew remove the local file and shell tools; switch the backend in Settings"
         )
 
+    def set_cloud_sandbox(self, repositories: tuple[str, ...] | list[str] = ()) -> None:
+        """Run this runtime's sessions in a Kiro cloud sandbox (Kiro Cloud Sessions).
+
+        Installs :class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness` as
+        this runtime's harness, which answers request shaping, agent selection and
+        readiness for every session the runtime starts; see that module for what
+        the sandbox does and does not receive. The runtime is also declared
+        MCP-free, because it sends no servers. KAS only, and before the spawn.
+        """
+        from kiro_crew.acp.harness.kas_cloud import KasCloudSandboxHarness
+
+        self.check_remote_workspace_supported()
+        self._harness_resolved = KasCloudSandboxHarness(repositories)
+        self._expect_mcp_reports = False
+
     def _remote_session_servers(self, servers: list[Any]) -> list[Any]:
         """The session's MCP array: unchanged, plus the remote workspace server."""
         if self._remote_workspace is None:
@@ -7590,6 +7605,11 @@ class AcpRuntime:
             mcp_servers=wire_servers,
             kas_custom_agents=kas_agents,
         )
+        # The host's last word on the request and on the agent it activates
+        # (harness-parity H13): every served host returns both unchanged.
+        params, agent = self._harness.session_request(
+            METHOD_SESSION_NEW, params, agent, agent_capabilities=self._agent_capabilities
+        )
 
         projected_sources: dict[str, str] = {}
         if self._member_context:
@@ -8521,6 +8541,14 @@ class AcpRuntime:
             load_params["mcpServers"] = wire_servers
             kas_agents = self._remote_workspace_agents(kas_agents, wire_servers)
             attach_kas_custom_agents(load_params, kas_agents)
+            # The same last word session/new gets, asked inside this branch so the
+            # kiro resume path still stops at the comparison above.
+            load_params, agent = self._harness.session_request(
+                METHOD_SESSION_LOAD,
+                load_params,
+                agent,
+                agent_capabilities=self._agent_capabilities,
+            )
         budget = await self._session_start_budget()
         self._session_inits_in_flight += 1
         loaded_session_id = ""

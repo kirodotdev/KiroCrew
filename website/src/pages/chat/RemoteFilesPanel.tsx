@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, Cloud, FileText, Folder, RefreshCw, Save, Te
 import { api, type RemoteFileContent } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { useConfirm } from '../../components/ConfirmDialog'
 import { Btn, IconButton } from '../../components/ui'
 import { PierreEditor } from '../../pierre'
@@ -24,6 +25,12 @@ export function errorCode(error: unknown): string {
   return ''
 }
 
+/** A Kiro cloud sandbox session: Kiro Crew has no transport into it, so the
+ *  browse endpoint refuses by design. An expected state, not a failure. */
+export function isCloudSandbox(error: unknown): boolean {
+  return errorCode(error) === 'cloud_sandbox'
+}
+
 function joinPath(dir: string, name: string): string {
   return dir === '.' || dir === '' ? name : `${dir}/${name}`
 }
@@ -31,6 +38,7 @@ function joinPath(dir: string, name: string): string {
 function describe(t: (key: string) => string, error: unknown): string {
   switch (errorCode(error)) {
     case 'workspace_stopped': return t('sessionEnvironments.remoteFiles.stopped')
+    case 'cloud_sandbox': return t('sessionEnvironments.remoteFiles.cloudSandbox')
     case 'path_refused': return t('sessionEnvironments.remoteFiles.refused')
     case 'file_changed': return t('sessionEnvironments.remoteFiles.conflict')
     default: return t('sessionEnvironments.remoteFiles.error')
@@ -113,6 +121,15 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
       )
     },
   })
+  // Shares the root RemoteDir's query (same key), so this reads its answer
+  // without a second request.
+  const rootListing = useQuery({
+    queryKey: [...remoteKey(slot), 'list', '.'],
+    queryFn: () => api.chatSlotEnvironmentList(slot, '.'),
+    retry: false,
+    staleTime: 15_000,
+  })
+  const cloudSandbox = rootListing.isError && isCloudSandbox(rootListing.error)
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: remoteKey(slot) }) }
 
   const data = file.data
@@ -159,7 +176,7 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
           {t('sessionEnvironments.remoteFiles.title', { name })}
         </span>
         <span className="text-[11.5px] text-muted font-mono truncate min-w-0 flex-1" title={workdir}>{workdir}</span>
-        {onOpenTerminal && (
+        {onOpenTerminal && !cloudSandbox && (
           <IconButton aria-label={t('sessionEnvironments.remoteFiles.openTerminal')} title={t('sessionEnvironments.remoteFiles.openTerminal')} onClick={onOpenTerminal}>
             <TerminalSquare className="lucide-inline" />
           </IconButton>
@@ -168,6 +185,13 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
           <RefreshCw className="lucide-inline" />
         </IconButton>
       </div>
+      {cloudSandbox ? (
+        // Nothing failed: the sandbox is reached only by its own agent, so
+        // there is no tree, no file viewer and no hand-off to offer.
+        <div className="p-3">
+          <StatusNotice tone="info" testId="remote-files-cloud-sandbox" message={t('sessionEnvironments.remoteFiles.cloudSandbox')} />
+        </div>
+      ) : (<>
       <div className="flex-1 min-h-0 overflow-auto py-1" role="tree" aria-label={t('sessionEnvironments.remoteFiles.title', { name })}>
         <RemoteDir key={slot} slot={slot} path="." depth={0} selected={selected} dirtyPaths={drafts} onSelect={setSelected} />
       </div>
@@ -237,6 +261,7 @@ export default function RemoteFilesPanel({ slot, name, workdir, onOpenTerminal }
           <div className="p-3 text-[12.5px] text-muted" aria-busy="true">{t('sessionEnvironments.remoteFiles.loading')}</div>
         )}
       </div>
+      </>)}
     </div>
   )
 }

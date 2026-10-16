@@ -19584,7 +19584,8 @@
       "save": "Salvar",
       "saving": "Salvando…",
       "conflict": "O arquivo mudou no ambiente de sessão desde que você o abriu. Atualize para carregar a versão atual antes de salvar.",
-      "openTerminal": "Abrir um terminal neste ambiente de sessão"
+      "openTerminal": "Abrir um terminal neste ambiente de sessão",
+      "cloudSandbox": "Esta sessão é executada em um sandbox na nuvem do Kiro. Só o próprio agente dela acessa seus arquivos e comandos, não o {{productName}}."
     },
     "remoteGit": {
       "title": "Git em {{name}}",
@@ -19616,6 +19617,17 @@
     "stopOnShutdown": "Parar os ambientes de sessão quando o gateway é desligado",
     "stopOnShutdownHint": "Ligado: o {{productName}} para cada ambiente de sessão quando o gateway é desligado, exceto aqueles cujos arquivos não sobrevivem a uma parada do workspace. Desligado: continuam em execução durante um reinício, que reconecta mais rápido. A parada automática do próprio Coder continua valendo.",
     "computeSurvivesStop": "Os arquivos sobrevivem a uma parada",
-    "computeSurvivesStopHint": "Desative para modelos cuja parada destrói a máquina, como o MicroVM. As sessões neles não podem ser recuperadas após uma parada."
+    "computeSurvivesStopHint": "Desative para modelos cuja parada destrói a máquina, como o MicroVM. As sessões neles não podem ser recuperadas após uma parada.",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Perfis que executam a sessão inteira em um sandbox na nuvem do Kiro: o agente, seus arquivos e seus comandos. Escolha um para uma sessão no chip de ambiente ao lado da caixa de mensagem.",
+      "notVerified": "Verificar prontidão não confere estes perfis. Se uma sessão na nuvem não puder iniciar, ela informa o motivo em vez de ser executada no gateway.",
+      "setup1": "Entre no Kiro pelo gateway com uma conta que tenha Kiro Cloud Sessions e use o backend de agente KAS.",
+      "setup2": "Liste os repositórios que o sandbox deve abrir, no formato owner/name. Uma lista vazia abre um workspace vazio.",
+      "setup3": "As ferramentas, os servidores MCP e os pedidos de aprovação do {{productName}} não chegam ao sandbox.",
+      "repositories": "Repositórios",
+      "repositoriesHint": "Separados por vírgulas, no formato owner/name, no máximo {{max}}. Deixe vazio para um workspace vazio.",
+      "sandbox": "Sandbox na nuvem do Kiro"
+    }
   }
 }

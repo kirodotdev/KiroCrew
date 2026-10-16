@@ -198,6 +198,7 @@ class TestLoader:
         assert cfg.to_dict()["session_environments"] == {
             "coder_url": "",
             "profiles": [],
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -209,6 +210,7 @@ class TestLoader:
         section = {
             "coder_url": "https://c.example.com",
             "profiles": [_profile("a")],
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 2,
@@ -273,6 +275,7 @@ class TestApi:
             assert (await resp.json())["session_environments"] == {
                 "coder_url": "",
                 "profiles": [],
+                "kiro_cloud_profiles": [],
                 "default_profile": "",
                 "stop_on_shutdown": True,
                 "archived_retention_days": 7,
@@ -295,6 +298,7 @@ class TestApi:
         # The read shows the retention default; the file holds only what was sent.
         assert body["session_environments"] == {
             **expected,
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -317,6 +321,7 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [_profile()],
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -368,6 +373,7 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [],
+            "kiro_cloud_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -389,6 +395,100 @@ class TestApi:
             assert resp.status == 200, await resp.text()
             got = (await (await client.get("/api/config/kirocrew")).json())["session_environments"]
         assert got["archived_retention_days"] == 2
+
+    @pytest.mark.asyncio
+    async def test_a_kiro_cloud_profile_round_trips_and_survives_an_older_client(self, config_file):
+        cloud = {"id": "cloud", "name": "Kiro Cloud", "repositories": ["acme/web"]}
+        async with TestClient(TestServer(_app())) as client:
+            resp = await _patch(client, "session_environments.kiro_cloud_profiles", [cloud])
+            assert resp.status == 200, await resp.text()
+            # A dashboard that predates Kiro Cloud saves the section without it.
+            resp = await _patch(
+                client,
+                "session_environments",
+                {"coder_url": "https://c.example.com", "profiles": []},
+            )
+            assert resp.status == 200, await resp.text()
+            got = (await (await client.get("/api/config/kirocrew")).json())["session_environments"]
+            # The id decides the provider, so a Coder profile may not reuse it.
+            clash = await _patch(
+                client,
+                "session_environments",
+                {
+                    "coder_url": "https://c.example.com",
+                    "profiles": [_profile("cloud")],
+                    "kiro_cloud_profiles": [cloud],
+                },
+            )
+            assert clash.status == 400
+        assert got["kiro_cloud_profiles"] == [cloud]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "path,value",
+        [
+            # A leaf write of either provider's list, checked against the other on disk.
+            ("session_environments.profiles", [_profile("cloud")]),
+            (
+                "session_environments.kiro_cloud_profiles",
+                [{"id": "dev", "name": "Dev", "repositories": []}],
+            ),
+            # A whole-section save that omits the cloud list, which the writer preserves.
+            (
+                "session_environments",
+                {"coder_url": "https://c.example.com", "profiles": [_profile("cloud")]},
+            ),
+        ],
+    )
+    async def test_a_write_that_would_share_an_id_across_providers_is_refused(
+        self, config_file, path, value
+    ):
+        async with TestClient(TestServer(_app())) as client:
+            seed = await _patch(
+                client,
+                "session_environments",
+                {
+                    "coder_url": "https://c.example.com",
+                    "profiles": [_profile("dev")],
+                    "kiro_cloud_profiles": [
+                        {"id": "cloud", "name": "Kiro Cloud", "repositories": []}
+                    ],
+                },
+            )
+            assert seed.status == 200, await seed.text()
+            before = config_file.read_bytes()
+            resp = await _patch(client, path, value)
+            assert resp.status == 400, await resp.text()
+            assert (await resp.json())["code"] == "profile_id_collision"
+        assert config_file.read_bytes() == before
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            {"profiles": [{"name": "no id"}, "not an object", None, _profile("dev")]},
+            {"profiles": None, "kiro_cloud_profiles": None},
+            {"profiles": [], "kiro_cloud_profiles": [{"name": "no id"}, 7, None]},
+            {"profiles": [_profile("dev", id=3)], "kiro_cloud_profiles": [{"id": 3}]},
+        ],
+    )
+    async def test_a_hand_edited_entry_the_loader_drops_does_not_break_a_write(
+        self, config_file, stored
+    ):
+        """The id check reads each list the way the loader does, so a dropped entry cannot 500."""
+        data = _stored(config_file)
+        data["session_environments"] = {"coder_url": "https://c.example.com", **stored}
+        config_file.write_text(json.dumps(data), encoding="utf-8")
+        cloud = [{"id": "cloud", "name": "Kiro Cloud", "repositories": []}]
+        async with TestClient(TestServer(_app())) as client:
+            # A leaf that rewrites neither list: the check reads both as stored.
+            resp = await _patch(client, "session_environments.archived_retention_days", 2)
+            assert resp.status == 200, await resp.text()
+            resp = await _patch(client, "session_environments.kiro_cloud_profiles", cloud)
+            assert resp.status == 200, await resp.text()
+            resp = await _patch(client, "session_environments.default_profile", "cloud")
+            assert resp.status == 200, await resp.text()
+        assert _stored(config_file)["session_environments"]["kiro_cloud_profiles"] == cloud
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("value", [8, -1, True, "3"])

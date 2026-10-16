@@ -308,7 +308,16 @@ def rail_parts(
     # machine. Values come from operator config (profile name, workdir).
     remote = remote_workspace_for(session_key)
     project_on = _inclusion._group_included(context_groups, _inclusion.CONTEXT_GROUP_PROJECT)
-    if remote is not None and project_on:
+    if remote is not None and project_on and not remote[1]:
+        # No directory: the agent itself runs in a Kiro cloud sandbox, which Kiro
+        # Crew never reaches, so name the sandbox and nothing on the gateway.
+        parts.append(
+            f"[PROJECT] This session runs in a Kiro Cloud Sessions sandbox ({remote[0]}). "
+            "Its files, commands and tools all live in that sandbox. Kiro Crew's own "
+            "tools, MCP servers and the gateway machine's files are not available "
+            "there.\n\n"
+        )
+    elif remote is not None and project_on:
         env_name, env_workdir = remote
         parts.append(
             f"[PROJECT] This session runs in a remote environment ({env_name}). "

@@ -18,6 +18,7 @@ interface Section {
   profiles: typeof profile[]
   default_profile?: string
   archived_retention_days?: number
+  kiro_cloud_profiles?: { id: string; name: string; repositories: string[] }[]
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -413,5 +414,43 @@ describe('Session Environments readiness and workspaces', () => {
     const link = screen.getByRole('link', { name: 'Open Coder' })
     expect(link).toHaveAttribute('href', 'https://coder.example.test')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+})
+
+describe('Kiro Cloud Sessions profiles', () => {
+  it('adds a cloud profile with its repositories, and offers it as the default', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    const add = await screen.findAllByRole('button', { name: 'Add profile' })
+    // The Kiro Cloud list is the second one; it needs no Coder URL.
+    fireEvent.click(add[1])
+    const field = screen.getByRole('group', { name: 'kiro-cloud-1' })
+    fireEvent.change(within(field).getByLabelText('Profile name'), { target: { value: 'Cloud' } })
+    // A trailing comma while typing is kept, then dropped on save.
+    fireEvent.change(within(field).getByLabelText('Repositories'), { target: { value: 'acme/web, ' } })
+    expect(within(field).getByLabelText('Repositories')).toHaveValue('acme/web, ')
+    fireEvent.click(screen.getByRole('switch', { name: 'Start new chats in a session environment' }))
+    fireEvent.click(save())
+    expect(await screen.findByText('Configuration saved. No compute was started.')).toBeVisible()
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], default_profile: 'kiro-cloud-1',
+      kiro_cloud_profiles: [{ id: 'kiro-cloud-1', name: 'Cloud', repositories: ['acme/web'] }],
+    } }])
+  })
+
+  it('says Verify readiness does not cover Kiro Cloud profiles', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], kiro_cloud_profiles: [], default_profile: '' } }
+    mount()
+    // The readiness check probes Coder and git hosts only, so the cloud list says so.
+    expect(await screen.findByText(/Verify readiness doesn't check these profiles/)).toBeVisible()
+    expect(screen.getByText(/reports why instead of running on the gateway/)).toBeVisible()
+  })
+
+  it('hides the Kiro Cloud list for a gateway that does not report it', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.queryByText('Kiro Cloud Sessions')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Verify readiness doesn't check these profiles/)).not.toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: 'Add profile' })).toHaveLength(1)
   })
 })

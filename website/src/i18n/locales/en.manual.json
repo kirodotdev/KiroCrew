@@ -9514,7 +9514,8 @@
       "save": "Save",
       "saving": "Saving…",
       "conflict": "The file changed in the session environment since you opened it. Refresh to load the current version before saving.",
-      "openTerminal": "Open a terminal in this session environment"
+      "openTerminal": "Open a terminal in this session environment",
+      "cloudSandbox": "This session runs in a Kiro cloud sandbox. Only its own agent reaches its files and commands, not {{productName}}."
     },
     "remoteGit": {
       "title": "Git on {{name}}",
@@ -9546,6 +9547,17 @@
     "stopOnShutdown": "Stop session environments when the gateway shuts down",
     "stopOnShutdownHint": "On: {{productName}} stops each session environment when the gateway shuts down, except one whose files do not survive a workspace stop. Off: they keep running across a restart, which reconnects faster. Coder's own auto-stop still applies.",
     "computeSurvivesStop": "Files survive a workspace stop",
-    "computeSurvivesStopHint": "Turn it off for templates whose stop destroys the compute, such as MicroVM. Sessions on those can't be recovered after a stop."
+    "computeSurvivesStopHint": "Turn it off for templates whose stop destroys the compute, such as MicroVM. Sessions on those can't be recovered after a stop.",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profiles that run the whole session in a Kiro cloud sandbox: the agent, its files and its commands. Choose one for a session from the environment chip beside the message box.",
+      "notVerified": "Verify readiness doesn't check these profiles. If a cloud session can't start, it reports why instead of running on the gateway.",
+      "setup1": "Sign the gateway in to Kiro with an account that has Kiro Cloud Sessions, and use the KAS agent backend.",
+      "setup2": "List the repositories the sandbox should open, as owner/name. An empty list opens an empty workspace.",
+      "setup3": "{{productName}}'s tools, MCP servers and approval prompts do not reach the sandbox.",
+      "repositories": "Repositories",
+      "repositoriesHint": "Comma-separated, as owner/name, at most {{max}}. Leave it empty for an empty workspace.",
+      "sandbox": "Kiro cloud sandbox"
+    }
   }
 }

@@ -4,8 +4,8 @@ The ONE source both the loader (``SessionEnvironmentsConfig.from_raw``) and the
 dashboard write gate (``PATCH /api/config/kirocrew``) use, so what a save accepts
 and what a load keeps cannot drift apart.
 
-The section stores CONFIGURATION ONLY -- a Coder deployment URL and workspace
-profiles. Nothing here registers a provider,
+The section stores CONFIGURATION ONLY -- a Coder deployment URL, workspace
+profiles and Kiro Cloud Sessions profiles. Nothing here registers a provider,
 contacts a provider, or provisions anything. It carries no credentials.
 
 Two entry points per shape:
@@ -48,6 +48,7 @@ SECTION_KEYS: tuple[str, ...] = ("coder_url", "profiles")
 SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
     "archived_retention_days",
     "default_profile",
+    "kiro_cloud_profiles",
     "stop_on_shutdown",
 )
 #: Days an archived session's stopped workspace is kept before it is deleted.
@@ -63,6 +64,51 @@ _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 
 class SessionEnvironmentsError(ValueError):
     """A ``session_environments`` value failed validation; the message names the field."""
+
+
+class ProfileIdCollision(SessionEnvironmentsError):
+    """One profile id names profiles of more than one provider."""
+
+
+#: Each provider's profile list in the section, with the name a refusal uses.
+PROFILE_LISTS: tuple[tuple[str, str], ...] = (
+    ("profiles", "Coder"),
+    ("kiro_cloud_profiles", "Kiro Cloud"),
+)
+
+
+def _refuse_shared_ids(lists: dict[str, Any]) -> set[str]:
+    """Every profile id in ``lists``; raises :class:`ProfileIdCollision` on a shared one.
+
+    A session's choice records a profile id, and that id decides the provider,
+    so one id may not name profiles of two providers at once.
+    """
+    saved: dict[str, str] = {}
+    for key, provider in PROFILE_LISTS:
+        for profile in lists.get(key) or []:
+            other = saved.setdefault(profile["id"], provider)
+            if other != provider:
+                raise ProfileIdCollision(
+                    f"profile id {profile['id']!r} is used by both a {other} and a "
+                    f"{provider} profile"
+                )
+    return set(saved)
+
+
+def check_profile_ids_unique(raw: object) -> None:
+    """Refuse a stored section in which one id names profiles of two providers.
+
+    The config writer runs this on the final merged section, under the config
+    write lock, for every ``session_environments`` write: a leaf write of one
+    list is checked against the other lists on disk, and a whole-section save
+    that omits a list is checked against the list it preserves. Each list is
+    read the way the loader reads it, so an entry the loader drops cannot block
+    a save. Raises :class:`ProfileIdCollision`.
+    """
+    if not isinstance(raw, dict):
+        return
+    _coder_url, coder = load_session_environments(raw)
+    _refuse_shared_ids({"profiles": coder, "kiro_cloud_profiles": load_kiro_cloud_profiles(raw)})
 
 
 def validate_coder_url(value: object) -> str:
@@ -262,7 +308,9 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         "coder_url": validate_coder_url(value["coder_url"]),
         "profiles": validate_profiles(value["profiles"]),
     }
-    saved_ids = {profile["id"] for profile in result["profiles"]}
+    if "kiro_cloud_profiles" in value:
+        result["kiro_cloud_profiles"] = validate_kiro_cloud_profiles(value["kiro_cloud_profiles"])
+    saved_ids = _refuse_shared_ids(result)
     if "archived_retention_days" in value:
         result["archived_retention_days"] = validate_archived_retention_days(
             value["archived_retention_days"]
@@ -325,3 +373,86 @@ def load_session_environments(raw: object) -> tuple[str, list[dict[str, Any]]]:
         seen.add(profile["id"])
         profiles.append(profile)
     return coder_url, profiles
+
+
+KIRO_CLOUD_PROFILE_KEYS: tuple[str, ...] = ("id", "name", "repositories")
+#: Most repositories one Kiro Cloud session opens.
+KIRO_CLOUD_REPOSITORIES_MAX = 10
+#: ``name`` or ``owner/name``, the forms kiro-cli's ``--repo`` takes.
+_REPOSITORY_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,99}(?:/[A-Za-z0-9_.-]{1,100})?")
+
+
+def validate_kiro_cloud_profile(value: object, index: int = 0) -> dict[str, Any]:
+    """Validate a saved Kiro Cloud Sessions profile. No KAS call, no credential.
+
+    The gateway's own Kiro sign-in authenticates. A profile names only the
+    repositories the cloud sandbox opens; an empty list opens an empty workspace.
+    """
+    where = f"kiro_cloud_profiles[{index}]"
+    if not isinstance(value, dict) or set(value) != set(KIRO_CLOUD_PROFILE_KEYS):
+        raise SessionEnvironmentsError(f"{where} must contain exactly {KIRO_CLOUD_PROFILE_KEYS}")
+    common = validate_profile(
+        {"id": value["id"], "name": value["name"], "template": "kiro-cloud", "workdir": "/"},
+        index,
+        where=where,
+    )
+    repositories = value["repositories"]
+    if not isinstance(repositories, list) or len(repositories) > KIRO_CLOUD_REPOSITORIES_MAX:
+        raise SessionEnvironmentsError(
+            f"{where}.repositories must be a list of at most {KIRO_CLOUD_REPOSITORIES_MAX} entries"
+        )
+    repos: list[str] = []
+    for repo in repositories:
+        if not isinstance(repo, str) or not _REPOSITORY_RE.fullmatch(repo.strip()):
+            raise SessionEnvironmentsError(
+                f"{where}.repositories entries must be a repository name or owner/name"
+            )
+        if repo.strip() not in repos:
+            repos.append(repo.strip())
+    return {"id": common["id"], "name": common["name"], "repositories": repos}
+
+
+def validate_kiro_cloud_profiles(value: object) -> list[dict[str, Any]]:
+    """Strict atomic list validation for the Kiro Cloud configuration editor."""
+    if not isinstance(value, list) or len(value) > MAX_PROFILES:
+        raise SessionEnvironmentsError(
+            f"kiro_cloud_profiles must be a list of at most {MAX_PROFILES} entries"
+        )
+    result = [validate_kiro_cloud_profile(item, index) for index, item in enumerate(value)]
+    if len({item["id"] for item in result}) != len(result):
+        raise SessionEnvironmentsError("kiro_cloud_profiles contains duplicate profile IDs")
+    return result
+
+
+def load_kiro_cloud_profiles(raw: object) -> list[dict[str, Any]]:
+    """Lenient load: keep each valid saved entry; drop invalid or duplicate ones."""
+    if not isinstance(raw, dict):
+        return []
+    items = raw.get("kiro_cloud_profiles", [])
+    if not isinstance(items, list):
+        logger.warning("session_environments: kiro_cloud_profiles must be a list; ignoring it")
+        return []
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if len(result) >= MAX_PROFILES:
+            logger.warning(
+                "session_environments: more than %d Kiro Cloud profiles; ignoring the rest",
+                MAX_PROFILES,
+            )
+            break
+        try:
+            profile = validate_kiro_cloud_profile(item, index)
+        except SessionEnvironmentsError as exc:
+            logger.warning("session_environments: %s; dropping that profile", exc)
+            continue
+        if profile["id"] in seen:
+            logger.warning(
+                "session_environments: kiro_cloud_profiles[%d].id %r is a duplicate; dropping it",
+                index,
+                profile["id"],
+            )
+            continue
+        seen.add(profile["id"])
+        result.append(profile)
+    return result

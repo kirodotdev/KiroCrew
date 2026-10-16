@@ -4,9 +4,10 @@ import { useTranslation } from 'react-i18next'
 import { Cloud, GitBranch, RefreshCw } from 'lucide-react'
 import { api } from '../../api/client'
 import ErrorNotice from '../../components/ErrorNotice'
+import StatusNotice from '../../components/StatusNotice'
 import { Btn, IconButton, PanelSectionHeader } from '../../components/ui'
 import { PierrePatch } from '../../pierre'
-import { errorCode, remoteKey } from './RemoteFilesPanel'
+import { errorCode, isCloudSandbox, remoteKey } from './RemoteFilesPanel'
 
 interface StatusRow { code: string; path: string }
 
@@ -66,6 +67,15 @@ export default function RemoteGitPanel({ slot, name }: { slot: string; name: str
       </IconButton>
     </div>
   )
+  if (status.isError && isCloudSandbox(status.error)) {
+    // Nothing failed: only the sandbox's own agent reaches its git checkout.
+    return (
+      <div className="h-full flex flex-col">
+        {header}
+        <div className="p-3"><StatusNotice tone="info" testId="remote-git-cloud-sandbox" message={t('sessionEnvironments.remoteFiles.cloudSandbox')} /></div>
+      </div>
+    )
+  }
   if (status.isError || status.data?.error_text) {
     return <div className="h-full flex flex-col">{header}<div className="p-3"><ErrorNotice message={status.data?.error_text || failed(status.error)} askAgent /></div></div>
   }

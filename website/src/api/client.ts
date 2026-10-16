@@ -921,6 +921,8 @@ export interface SessionEnvironmentProfile {
   name: string
   provider: string
   workdir: string
+  /** Kiro Cloud profiles only: the repositories its cloud sandbox opens. */
+  repositories?: string[]
 }
 
 export interface RemoteDirListing {

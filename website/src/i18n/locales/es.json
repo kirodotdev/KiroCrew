@@ -19584,7 +19584,8 @@
       "save": "Guardar",
       "saving": "Guardando…",
       "conflict": "El archivo cambió en el entorno de sesión desde que lo abrió. Actualice para cargar la versión actual antes de guardar.",
-      "openTerminal": "Abrir una terminal en este entorno de sesión"
+      "openTerminal": "Abrir una terminal en este entorno de sesión",
+      "cloudSandbox": "Esta sesión se ejecuta en un sandbox en la nube de Kiro. Solo su propio agente accede a sus archivos y comandos, no {{productName}}."
     },
     "remoteGit": {
       "title": "Git en {{name}}",
@@ -19616,6 +19617,17 @@
     "stopOnShutdown": "Detener los entornos de sesión cuando el gateway se apaga",
     "stopOnShutdownHint": "Activado: {{productName}} detiene cada entorno de sesión cuando el gateway se apaga, salvo aquellos cuyos archivos no sobreviven a una detención del espacio de trabajo. Desactivado: siguen en marcha durante un reinicio, que vuelve a conectar más rápido. La detención automática propia de Coder sigue aplicándose.",
     "computeSurvivesStop": "Los archivos sobreviven a una detención",
-    "computeSurvivesStopHint": "Desactívalo en plantillas cuya detención destruye la máquina, como MicroVM. Las sesiones en ellas no se pueden recuperar tras una detención."
+    "computeSurvivesStopHint": "Desactívalo en plantillas cuya detención destruye la máquina, como MicroVM. Las sesiones en ellas no se pueden recuperar tras una detención.",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Perfiles que ejecutan toda la sesión en un sandbox en la nube de Kiro: el agente, sus archivos y sus comandos. Elige uno para una sesión desde el chip de entorno junto al cuadro de mensaje.",
+      "notVerified": "Verificar disponibilidad no comprueba estos perfiles. Si una sesión en la nube no puede iniciarse, indica el motivo en lugar de ejecutarse en el gateway.",
+      "setup1": "Inicia sesión en Kiro desde el gateway con una cuenta que tenga Kiro Cloud Sessions y usa el backend de agente KAS.",
+      "setup2": "Indica los repositorios que debe abrir el sandbox, en formato owner/name. Una lista vacía abre un espacio de trabajo vacío.",
+      "setup3": "Las herramientas, los servidores MCP y las solicitudes de aprobación de {{productName}} no llegan al sandbox.",
+      "repositories": "Repositorios",
+      "repositoriesHint": "Separados por comas, en formato owner/name, como máximo {{max}}. Déjalo vacío para un espacio de trabajo vacío.",
+      "sandbox": "Sandbox en la nube de Kiro"
+    }
   }
 }

@@ -19304,7 +19304,8 @@
       "save": "Speichern",
       "saving": "Wird gespeichert…",
       "conflict": "Die Datei hat sich in der Sitzungsumgebung geändert, seit du sie geöffnet hast. Aktualisiere, um die aktuelle Version zu laden, bevor du speicherst.",
-      "openTerminal": "Terminal in dieser Sitzungsumgebung öffnen"
+      "openTerminal": "Terminal in dieser Sitzungsumgebung öffnen",
+      "cloudSandbox": "Diese Sitzung läuft in einer Kiro-Cloud-Sandbox. Ihre Dateien und Befehle erreicht nur ihr eigener Agent, nicht {{productName}}."
     },
     "remoteGit": {
       "title": "Git auf {{name}}",
@@ -19336,6 +19337,17 @@
     "stopOnShutdown": "Sitzungsumgebungen beim Herunterfahren des Gateways stoppen",
     "stopOnShutdownHint": "An: {{productName}} stoppt jede Sitzungsumgebung, wenn das Gateway herunterfährt, außer einer, deren Dateien einen Workspace-Stopp nicht überstehen. Aus: Sie laufen über einen Neustart weiter und verbinden sich schneller wieder. Der eigene Auto-Stopp von Coder gilt weiterhin.",
     "computeSurvivesStop": "Dateien bleiben beim Anhalten erhalten",
-    "computeSurvivesStopHint": "Schalte das für Vorlagen aus, deren Anhalten die Rechenumgebung zerstört, etwa MicroVM. Sitzungen darauf lassen sich nach dem Anhalten nicht wiederherstellen."
+    "computeSurvivesStopHint": "Schalte das für Vorlagen aus, deren Anhalten die Rechenumgebung zerstört, etwa MicroVM. Sitzungen darauf lassen sich nach dem Anhalten nicht wiederherstellen.",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profile, die die ganze Sitzung in einer Kiro-Cloud-Sandbox ausführen: den Agenten, seine Dateien und seine Befehle. Das Profil einer Sitzung wählst du über den Umgebungs-Chip neben dem Nachrichtenfeld.",
+      "notVerified": "„Bereitschaft prüfen“ prüft diese Profile nicht. Kann eine Cloud-Sitzung nicht starten, meldet sie den Grund, statt auf dem Gateway zu laufen.",
+      "setup1": "Melde das Gateway bei Kiro mit einem Konto an, das Kiro Cloud Sessions hat, und nutze das KAS-Agent-Backend.",
+      "setup2": "Gib die Repositorys an, die die Sandbox öffnen soll, im Format owner/name. Eine leere Liste öffnet einen leeren Workspace.",
+      "setup3": "Die Tools, MCP-Server und Freigabeabfragen von {{productName}} erreichen die Sandbox nicht.",
+      "repositories": "Repositorys",
+      "repositoriesHint": "Durch Kommas getrennt, im Format owner/name, höchstens {{max}}. Lass das Feld leer für einen leeren Workspace.",
+      "sandbox": "Kiro-Cloud-Sandbox"
+    }
   }
 }

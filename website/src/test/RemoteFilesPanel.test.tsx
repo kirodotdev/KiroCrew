@@ -135,6 +135,33 @@ describe('RemoteFilesPanel', () => {
     wrap(<RemoteFilesPanel slot="chat-1" name="Coder MicroVM" workdir="/workspace/w" />)
     expect(await screen.findByText(/The session environment is stopped/)).toBeInTheDocument()
   })
+
+  it('shows a Kiro cloud sandbox as a neutral notice with no tree, viewer, hand-off or terminal', async () => {
+    const list = vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(
+      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
+    )
+    wrap(<RemoteFilesPanel slot="chat-1" name="Kiro Cloud" workdir="" onOpenTerminal={() => {}} />)
+    const notice = await screen.findByTestId('remote-files-cloud-sandbox')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveAttribute('data-tone', 'info')
+    expect(notice).toHaveTextContent('This session runs in a Kiro cloud sandbox')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).toBeNull()
+    expect(screen.queryByText(/Select a file to view it/)).toBeNull()
+    expect(screen.queryByRole('tree')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Open a terminal in this session environment' })).toBeNull()
+    // The panel and the root tree share one listing request.
+    expect(list).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps a real listing failure as an error with the hand-off', async () => {
+    vi.spyOn(api, 'chatSlotEnvironmentList').mockRejectedValue(new ApiError(500, 'boom', '{}'))
+    wrap(<RemoteFilesPanel slot="chat-1" name="Coder MicroVM" workdir="/workspace/w" />)
+    const failure = await screen.findByRole('alert')
+    expect(failure).toHaveTextContent('Could not read the session environment')
+    expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(screen.getByText(/Select a file to view it/)).toBeInTheDocument()
+  })
   it('retains session-owned drafts and the unload guard across tab, route and chat switches', async () => {
     mockTree().mockImplementation(async slot => ({ ...ROOT, path: 'README.md', content: slot, binary: false }))
     const u = userEvent.setup()
@@ -330,6 +357,18 @@ describe('RemoteGitPanel', () => {
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
     expect(screen.queryByText(/not a Git repository/)).not.toBeInTheDocument()
     expect(screen.queryByText(/No changes to show/)).not.toBeInTheDocument()
+  })
+
+  it('shows a Kiro cloud sandbox as a neutral notice, not an error', async () => {
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockRejectedValue(
+      new ApiError(409, 'cloud', JSON.stringify({ error: 'cloud', code: 'cloud_sandbox' })),
+    )
+    wrap(<RemoteGitPanel slot="chat-1" name="Kiro Cloud" />)
+    const notice = await screen.findByTestId('remote-git-cloud-sandbox')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice).toHaveTextContent('This session runs in a Kiro cloud sandbox')
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Ask the agent/ })).toBeNull()
   })
 
   it('says when the workdir is not a repository', async () => {

@@ -19584,7 +19584,8 @@
       "save": "Enregistrer",
       "saving": "Enregistrement…",
       "conflict": "Le fichier a changé dans l’environnement de session depuis son ouverture. Actualise pour charger la version actuelle avant d’enregistrer.",
-      "openTerminal": "Ouvrir un terminal dans cet environnement de session"
+      "openTerminal": "Ouvrir un terminal dans cet environnement de session",
+      "cloudSandbox": "Cette session s’exécute dans un bac à sable cloud Kiro. Seul son propre agent accède à ses fichiers et commandes, pas {{productName}}."
     },
     "remoteGit": {
       "title": "Git sur {{name}}",
@@ -19616,6 +19617,17 @@
     "stopOnShutdown": "Arrêter les environnements de session à l’arrêt du gateway",
     "stopOnShutdownHint": "Activé: {{productName}} arrête chaque environnement de session à l’arrêt du gateway, sauf ceux dont les fichiers ne survivent pas à un arrêt de l’espace de travail. Désactivé: ils continuent de tourner pendant un redémarrage, qui se reconnecte plus vite. L’arrêt automatique propre à Coder s’applique toujours.",
     "computeSurvivesStop": "Les fichiers survivent à un arrêt",
-    "computeSurvivesStopHint": "Désactive-le pour les modèles dont l’arrêt détruit la machine, comme MicroVM. Les sessions qui s’y trouvent ne sont pas récupérables après un arrêt."
+    "computeSurvivesStopHint": "Désactive-le pour les modèles dont l’arrêt détruit la machine, comme MicroVM. Les sessions qui s’y trouvent ne sont pas récupérables après un arrêt.",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "Profils qui exécutent toute la session dans un bac à sable cloud Kiro : l’agent, ses fichiers et ses commandes. Choisis-en un pour une session depuis la puce d’environnement à côté de la zone de message.",
+      "notVerified": "La vérification ne contrôle pas ces profils. Si une session cloud ne peut pas démarrer, elle en indique la raison au lieu de s’exécuter sur la passerelle.",
+      "setup1": "Connecte la passerelle à Kiro avec un compte qui dispose de Kiro Cloud Sessions, et utilise le backend d’agent KAS.",
+      "setup2": "Indique les dépôts que le bac à sable doit ouvrir, au format owner/name. Une liste vide ouvre un espace de travail vide.",
+      "setup3": "Les outils, les serveurs MCP et les demandes d’approbation de {{productName}} n’atteignent pas le bac à sable.",
+      "repositories": "Dépôts",
+      "repositoriesHint": "Séparés par des virgules, au format owner/name, {{max}} au maximum. Laisse le champ vide pour un espace de travail vide.",
+      "sandbox": "Bac à sable cloud Kiro"
+    }
   }
 }

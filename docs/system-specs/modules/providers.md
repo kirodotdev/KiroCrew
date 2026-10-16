@@ -81,7 +81,8 @@ the local-only tool fence and `SessionEnvironmentUnavailable`), separately from
 the LLM provider and harness selector, so execution placement does not add an
 `agent.provider` value or select a model. Gateway hosting, whole-Crew
 deployment, and application deployment are outside this contract. Coder is the
-workspace provider.
+workspace provider; Kiro Cloud Sessions (below) is the one provider that moves
+the agent itself.
 
 Coder configuration lives in Settings > Session Environments, revealed by the
 per-device toggle under Settings > Developer > Feature Previews. The Settings
@@ -599,6 +600,65 @@ S3 Files checkpoint integration, which is not part of this contract.
 The worker launcher prefers a transient `systemd --user` service and falls back
 to `setsid`/`nohup`, which may not survive Coder's SSH session cleanup on an
 image without systemd.
+
+### Kiro Cloud Sessions
+
+Kiro Cloud profiles (`session_environments.kiro_cloud_profiles`: `id`, `name`,
+`repositories`, each `name` or `owner/name`, at most 10, no other key) are the
+one provider whose AGENT runs remotely, so the "engine stays on the gateway"
+rule above does not hold for them. A profile id names one provider: the config
+writer refuses an id a Coder profile also uses, and `session_launch.profile_provider`
+is the one resolver the launch path, `session_browse`, the picker (`_profiles()`)
+and the choice lock share. An id a hand edit saved for both providers names
+neither: the picker omits it, a launch or browse raises
+`SessionEnvironmentUnavailable`, and a started session bound to it stays fixed.
+The choice row records the provider the id resolved to when it was picked
+(`coder` or `kiro_cloud`; a subagent's row copies its parent's). A launch or
+browse derives the provider from the id and refuses with
+`SessionEnvironmentUnavailable` when it differs from the row's
+(`session_launch.chosen_provider`), so an id reused across providers never
+moves a started session. The choice lock also reads the row's recorded provider,
+so deleting a cloud profile or reusing its id does not unlock a started cloud
+session. `prepare_for_session` provisions nothing and returns
+`PreparedCloudSession` after the same `before_compute` KAS check once the
+governance ceiling allows it. The provider passes its execution agent through
+to active-profile resolution, including task/agent bindings. An explicit
+policy or profile denial of `capabilities.kiro_cloud_sessions` always refuses
+the start, even without any tool-execution restriction. When the policy or
+profile governs a tool-execution scope, only a policy opt-in can permit the
+start; a profile can withdraw that allowance. An unreadable ceiling or profile
+refuses. The check emits a SEL governance-decision event for grants, denials
+and fail-closed evaluation errors, naming the session, execution agent,
+capability and reason (see governance.md). `AcpRuntime.set_cloud_sandbox` (KAS backend
+only, before spawn) installs `KasCloudSandboxHarness`
+(`acp/harness/kas_cloud.py`) as that runtime's harness and declares the runtime
+MCP-free. Every cloud answer comes from that harness through the existing
+seams (`session_extras`, `session_mcp_servers`, `notification_aliases`) and the
+`session_request` seam, which every host the backend table serves answers by
+returning the request and agent unchanged; `load_session` asks it only inside
+its KAS branch, so the session start path of an ordinary session holds no cloud
+conditional (harness-parity H13). The cloud harness makes `session/new` carry the `_meta.kiro` keys kiro-cli's
+own `--cloud` flag sends: `executionTarget: {kind: "cloud-sandbox"}`,
+`sessionSource: "remote"` when KAS lists it in `sessionSources`, and
+`repositories` or `isEmptyWorkspace: true`. `session/load` carries only
+`sessionSource: "remote"`. KAS relays such a session to Kiro's cloud and
+forwards only the mode, target and repositories, so Kiro Crew sends
+`mcpServers: []`, no `customAgents` and no `set_mode`, and waits for no MCP
+readiness reports. The session runs Kiro's default agent with that sandbox's
+tools; Kiro Crew's MCP servers, agent spec and PreToolUse gate do not apply to
+it, which is what the operator opts into by choosing the profile (the change
+card catalog classes `kiro_cloud_profiles` and `default_profile` as code-exec). A start is refused,
+never run locally, when KAS's `initialize` does not list `cloud-sandbox` in
+`agentCapabilities._meta.kiro.executionTargets`. The provider binds the sandbox
+through the same `attach_remote_workspace` seam as a workspace, so an engine
+respawn re-binds it, and records the session with an empty workdir: the
+`[PROJECT]` rail then names the cloud sandbox instead of a gateway or guest
+path. `session_browse._resolve` raises `CloudSandboxOnly` (a
+`SessionEnvironmentUnavailable`) before any Coder call, so files, git, the
+terminal and the unsaved-work check all refuse it; the browse and file routes
+answer 409 `cloud_sandbox`. A cloud session with messages is locked even though no
+registry row exists, since its history lives in Kiro's cloud store. Archiving
+leaves the cloud session to Kiro.
 
 ## Essential-context delivery contract
 

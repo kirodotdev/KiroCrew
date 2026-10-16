@@ -569,6 +569,27 @@ class HarnessAdapter(LaunchAdapter):
         unchanged, which is what keeps its wire byte-identical.
         """
 
+    def session_request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        agent: str | None,
+        *,
+        agent_capabilities: dict[str, Any],
+    ) -> tuple[dict[str, Any], str | None]:
+        """The ``session/new`` / ``session/load`` params to send, and the agent to activate.
+
+        Asked after the runtime built the request and before it goes out. Every host
+        the backend table serves sends what the runtime built and activates the agent
+        the caller asked for, so this answer returns BOTH of the caller's objects
+        unchanged, and the request stays byte-identical to one built without this
+        seam. A host that places the session where Kiro Crew's agent does not exist
+        (:class:`~kiro_crew.acp.harness.kas_cloud.KasCloudSandboxHarness`) reshapes
+        the request and activates nothing. Raising ``AcpRuntimeError`` here refuses
+        the start before anything is sent.
+        """
+        return params, agent
+
     def activation_refusal(self, agent: str, resp: dict[str, Any]) -> str | None:
         """Why *agent* must NOT be activated on the session *resp* just opened, or ``None``.
 

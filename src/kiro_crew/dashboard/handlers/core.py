@@ -3361,6 +3361,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_profiles,
     },
+    "session_environments.kiro_cloud_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_kiro_cloud_profiles,
+    },
     "session_environments.default_profile": {
         "type": "normalized",
         "normalize": _session_environments.validate_default_profile,
@@ -3859,6 +3863,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 section[parts[-1]] = merged
             else:
                 section[parts[-1]] = value
+            if parts[0] == "session_environments":
+                # On the merged section, under the lock: a leaf write of one
+                # provider's list, or a whole-section save that preserved one,
+                # must not leave an id naming profiles of two providers.
+                _session_environments.check_profile_ids_unique(data.get("session_environments"))
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers
@@ -3880,6 +3889,12 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("denied", f"{path_key}=write_refused")
             return web.json_response(
                 {"error": str(exc), "code": "config_write_refused"}, status=400
+            )
+        except _session_environments.ProfileIdCollision as exc:
+            # A ``ValueError`` too: the operator's input, refused before any write.
+            _log_sel("denied", f"{path_key}=profile_id_collision")
+            return web.json_response(
+                {"error": str(exc), "code": "profile_id_collision"}, status=400
             )
         except ValueError as exc:
             _log_sel("error", f"{path_key}=section_not_dict")

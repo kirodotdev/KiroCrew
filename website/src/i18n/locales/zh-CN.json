@@ -19024,7 +19024,8 @@
       "save": "保存",
       "saving": "正在保存…",
       "conflict": "打开后该文件已在会话环境中被修改。请先刷新以加载当前版本，再保存。",
-      "openTerminal": "在此会话环境中打开终端"
+      "openTerminal": "在此会话环境中打开终端",
+      "cloudSandbox": "此会话在 Kiro 云沙盒中运行。只有它自己的智能体能访问其文件和命令，{{productName}} 无法访问。"
     },
     "remoteGit": {
       "title": "{{name}} 上的 Git",
@@ -19056,6 +19057,17 @@
     "stopOnShutdown": "网关关闭时停止会话环境",
     "stopOnShutdownHint": "开启：网关关闭时，{{productName}} 会停止每个会话环境，但工作区停止后文件无法保留的环境除外。关闭：重启期间它们继续运行，重新连接更快。Coder 自身的自动停止仍然适用。",
     "computeSurvivesStop": "停止后文件仍保留",
-    "computeSurvivesStopHint": "对于停止即销毁机器的模板（如 MicroVM），请关闭此项。这类会话停止后无法恢复。"
+    "computeSurvivesStopHint": "对于停止即销毁机器的模板（如 MicroVM），请关闭此项。这类会话停止后无法恢复。",
+    "kiroCloud": {
+      "title": "Kiro Cloud Sessions",
+      "profilesHint": "在 Kiro 云沙盒中运行整个会话（智能体及其文件和命令）的配置方案。在消息框旁边，用环境标签为会话选择配置方案。",
+      "notVerified": "验证就绪状态不会检查这些配置方案。云会话无法启动时，会说明原因，而不会改在网关上运行。",
+      "setup1": "在网关上使用拥有 Kiro Cloud Sessions 的账号登录 Kiro，并使用 KAS 智能体后端。",
+      "setup2": "以 owner/name 形式列出沙盒要打开的仓库。列表为空时会打开一个空工作区。",
+      "setup3": "{{productName}} 的工具、MCP 服务器和审批提示都不会到达沙盒。",
+      "repositories": "仓库",
+      "repositoriesHint": "以逗号分隔，采用 owner/name 形式，最多 {{max}} 个。留空则使用空工作区。",
+      "sandbox": "Kiro 云沙盒"
+    }
   }
 }

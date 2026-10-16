@@ -1679,6 +1679,16 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # row permits, as for every capability.
     # Data row only -- CONTRACT_VERSION and the evaluator are untouched.
     "capabilities.decisions_local": ScopeSpec(CAPABILITY, capability_default=True),
+    # Kiro Cloud Sessions (``session_environments.kiro_cloud_profiles``): the session's
+    # agent and tools run in Kiro's cloud, where none of this ceiling's tool-execution
+    # scopes is applied. Consulted at ONE chokepoint, the launch seam
+    # (``coder.session_launch.kiro_cloud_governance_refusal``), and only when the
+    # policy or the session's profile governs one of those scopes: then the start
+    # is refused unless the POLICY enables this row (a profile may withdraw it but
+    # not grant it). A ceiling that cannot be read refuses. Opt-in
+    # (capability_default=False), like messaging and publish. Data row only --
+    # CONTRACT_VERSION and the evaluator are untouched.
+    "capabilities.kiro_cloud_sessions": ScopeSpec(CAPABILITY, capability_default=False),
 }
 
 

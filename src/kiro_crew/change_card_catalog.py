@@ -218,9 +218,8 @@ _CANNOT_WIDEN_SETTINGS: frozenset[str] = frozenset(
         "session.timeout_secs",
         "session_summary.enabled",
         # Retention and shutdown only decide how long the operator's own
-        # workspaces live; the default picks among profiles already saved.
+        # workspaces live.
         "session_environments.archived_retention_days",
-        "session_environments.default_profile",
         "session_environments.stop_on_shutdown",
         # Generated skills still wait for approval unless
         # ``skills.approval_required`` (ordered above) is turned off.
@@ -259,6 +258,13 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "session_environments",
         "session_environments.coder_url",
         "session_environments.profiles",
+        # A Kiro Cloud profile moves a session's agent and tools into a Kiro
+        # cloud sandbox outside Kiro Crew's tool gate, with the repositories
+        # it names checked out there.
+        "session_environments.kiro_cloud_profiles",
+        # The default binds every new chat to a saved profile, which can be a
+        # Kiro Cloud profile outside the tool gate or a Coder workspace.
+        "session_environments.default_profile",
     }
 )
 

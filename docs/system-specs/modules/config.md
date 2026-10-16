@@ -3383,6 +3383,9 @@ nothing else:
     "profiles": [
       {"id": "dev", "name": "Dev box", "template": "python-dev", "workdir": "/workspace/repo"}
     ],
+    "kiro_cloud_profiles": [
+      {"id": "cloud", "name": "Kiro Cloud", "repositories": ["acme/web"]}
+    ],
     "archived_retention_days": 7,
     "default_profile": "",
     "stop_on_shutdown": true
@@ -3402,6 +3405,18 @@ workspace itself (see [providers](providers.md)). Text fields are whitespace-str
 There is no `enabled` field (the UI opt-in is the per-device preview flag) and no
 credential field, so the whole section is safe for the masked GET to return.
 
+`kiro_cloud_profiles` (optional) holds at most 20 Kiro Cloud Sessions records, each
+exactly `{id, name, repositories}`: `id` and `name` follow the profile rules above,
+and `repositories` is a list of at most 10 `name` or `owner/name` entries
+(whitespace-stripped, duplicates dropped; empty opens an empty workspace). One id
+may not name both a Coder and a Kiro Cloud profile, because the id decides the
+provider. The write gate checks this on the final merged section under the config
+lock, for leaf writes of either list and for a whole-section save that preserves a
+list it omits, and refuses with 400 `profile_id_collision`, writing nothing. A
+hand-edited file can still hold such an id; it then names no provider (see
+[providers](providers.md)). The lenient `load_kiro_cloud_profiles` drops each invalid or
+duplicate entry with a warning.
+
 One validator owns these rules: `config/session_environments.py`. The loader calls
 its lenient `load_session_environments` through `SessionEnvironmentsConfig.from_raw`,
 which keeps every valid part of a hand-edited section — an invalid `coder_url` loads
@@ -3412,15 +3427,15 @@ same value with a 400, writing nothing. An absent or non-object section loads as
 unmodelled key inside the section is preserved by `save()` like any other section
 key and omitted from the GET.
 
-`default_profile` is a saved profile id or `""` (this machine), and a
+`default_profile` is a saved profile id of either provider or `""` (this machine), and a
 whole-section save refuses a default the same save drops. `stop_on_shutdown` is
 a boolean, default `true`. Unknown keys, including credentials, are refused.
 
-`PATCH /api/config/kirocrew` accepts six paths, all through the handler's
+`PATCH /api/config/kirocrew` accepts seven paths, all through the handler's
 `"normalized"` spec type (a shared normalizer that raises `ValueError` and returns the
 value to store): `session_environments` (the whole record),
 `session_environments.coder_url`, `session_environments.profiles`,
-`session_environments.default_profile`, `session_environments.stop_on_shutdown`, and
+`session_environments.kiro_cloud_profiles`, `session_environments.default_profile`, `session_environments.stop_on_shutdown`, and
 `session_environments.archived_retention_days` (an int 0-7, default 7: days an
 archived session's stopped workspace is kept before it is deleted, see
 [providers](providers.md)). Whole-section saves require the Coder
