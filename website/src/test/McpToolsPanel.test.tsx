@@ -15,6 +15,31 @@ describe('McpToolsPanel', () => {
     expect(screen.getByText('Tool Search · Deferred')).toBeInTheDocument()
   })
 
+  it('labels the header count as enabled servers', () => {
+    render(
+      <McpToolsPanel
+        servers={[
+          { name: 'slack-mcp', enabled: true },
+          { name: 'aws-mcp', enabled: true },
+          { name: 'off-mcp', enabled: false },
+        ]}
+        toolsByServer={{}}
+        loaded={new Set()}
+        toolSearchOn={true}
+        loading={false}
+      />,
+    )
+    expect(screen.getByText('MCP Servers (2/3 enabled)')).toBeInTheDocument()
+  })
+
+  it('shows the bare header with no count while the server list is empty', () => {
+    render(
+      <McpToolsPanel servers={[]} toolsByServer={{}} loaded={new Set()} toolSearchOn={true} loading={true} />,
+    )
+    expect(screen.getByText('MCP Servers')).toBeInTheDocument()
+    expect(screen.queryByText(/enabled\)/)).toBeNull()
+  })
+
   it('shows a per-server loaded/total count and marks each tool loaded / deferred / disabled', () => {
     const loaded = new Set(['slack-mcp::post_message'])
     render(

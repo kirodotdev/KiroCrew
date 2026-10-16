@@ -11280,7 +11280,7 @@
         "agent_loads_only_its_own_mcp_servers": "Der Agent „{{name}}“ lädt nur seine eigenen MCP-Server.",
         "disabled": "deaktiviert",
         "load_failed": "MCP-Server konnten nicht geladen werden",
-        "mcp_servers_count": "MCP-Server ({{count}}/{{total}})",
+        "mcp_servers_count": "MCP-Server ({{count}}/{{total}} aktiviert)",
         "mode_load_failed": "Tool-Search-Modus konnte nicht gelesen werden; Standard wird angezeigt",
         "none_loaded": "Keine geladen",
         "session_mcp_servers": "MCP-Server der Sitzung"

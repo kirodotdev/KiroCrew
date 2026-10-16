@@ -11442,7 +11442,7 @@
         "agent_loads_only_its_own_mcp_servers": "L’agente \"{{name}}\" carica solo i propri server MCP.",
         "disabled": "disattivato",
         "load_failed": "Impossibile caricare i server MCP",
-        "mcp_servers_count": "Server MCP ({{count}}/{{total}})",
+        "mcp_servers_count": "Server MCP ({{count}}/{{total}} attivati)",
         "mode_load_failed": "Impossibile leggere la modalità Tool Search; viene mostrato il valore predefinito",
         "none_loaded": "Nessuno caricato",
         "session_mcp_servers": "Server MCP della sessione"

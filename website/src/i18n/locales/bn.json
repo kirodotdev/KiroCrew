@@ -11280,7 +11280,7 @@
         "agent_loads_only_its_own_mcp_servers": "\"{{name}}\" এজেন্ট শুধু নিজের MCP সার্ভারগুলোই লোড করে।",
         "disabled": "নিষ্ক্রিয়",
         "load_failed": "MCP সার্ভার লোড করা যায়নি",
-        "mcp_servers_count": "MCP সার্ভার ({{count}}/{{total}})",
+        "mcp_servers_count": "MCP সার্ভার ({{count}}/{{total}} সক্রিয়)",
         "mode_load_failed": "Tool Search মোড পড়া যায়নি; ডিফল্ট দেখানো হচ্ছে",
         "none_loaded": "কিছুই লোড হয়নি",
         "session_mcp_servers": "সেশনের MCP সার্ভার"

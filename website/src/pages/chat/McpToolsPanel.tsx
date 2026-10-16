@@ -63,7 +63,7 @@ const SESSION_LABEL_KEY: Record<McpSessionServerState, string> = {
 }
 
 /**
- * The chat session-options dropdown's MCP view: a "MCP Servers (n/n)" header,
+ * The chat session-options dropdown's MCP view: a "MCP Servers (n/m enabled)" header,
  * the Tool Search mode line, and an expandable per-server list.
  *
  * TWO different facts are on screen, and keeping them distinguishable is the
@@ -118,7 +118,11 @@ export default function McpToolsPanel({
   return (
     <div>
       <div className="text-[11px] uppercase tracking-wider text-muted font-semibold mb-1.5">
-        {i18nT('pages.chatPage.mcp_servers_2')} {servers.length > 0 && `(${enabledCount}/${servers.length})`}
+        {/* McpInfoButton's header key, so both MCP views word the count the
+            same way: it counts enabled entries, not connected ones. */}
+        {servers.length > 0
+          ? i18nT('pages.chat.mcpInfoButton.mcp_servers_count', { count: enabledCount, total: servers.length })
+          : i18nT('pages.chatPage.mcp_servers_2')}
       </div>
       <div className="flex items-center gap-1.5 text-[11px] mb-0.5">
         <Zap size={11} className={toolSearchOn ? 'text-ok' : 'text-muted'} />

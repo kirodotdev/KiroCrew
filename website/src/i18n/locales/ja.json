@@ -11118,7 +11118,7 @@
         "agent_loads_only_its_own_mcp_servers": "エージェント「{{name}}」は自身の MCP サーバーのみを読み込みます。",
         "disabled": "無効",
         "load_failed": "MCP サーバーを読み込めませんでした",
-        "mcp_servers_count": "MCP サーバー ({{count}}/{{total}})",
+        "mcp_servers_count": "MCP サーバー（{{count}}/{{total}} 有効）",
         "mode_load_failed": "Tool Search モードを読み取れませんでした。既定値を表示しています",
         "none_loaded": "読み込みなし",
         "session_mcp_servers": "セッションの MCP サーバー"

@@ -11118,7 +11118,7 @@
         "agent_loads_only_its_own_mcp_servers": "代理“{{name}}”仅加载自己的 MCP 服务器。",
         "disabled": "已禁用",
         "load_failed": "无法加载 MCP 服务器",
-        "mcp_servers_count": "MCP 服务器（{{count}}/{{total}}）",
+        "mcp_servers_count": "MCP 服务器（{{count}}/{{total}} 已启用）",
         "mode_load_failed": "无法读取 Tool Search 模式，当前显示的是默认值",
         "none_loaded": "未加载任何项",
         "session_mcp_servers": "会话 MCP 服务器"

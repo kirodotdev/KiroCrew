@@ -11604,7 +11604,7 @@
         "agent_loads_only_its_own_mcp_servers": "Агент «{{name}}» загружает только свои серверы MCP.",
         "disabled": "отключено",
         "load_failed": "Не удалось загрузить серверы MCP",
-        "mcp_servers_count": "Серверы MCP ({{count}}/{{total}})",
+        "mcp_servers_count": "MCP-серверы ({{count}}/{{total}} включено)",
         "mode_load_failed": "Не удалось прочитать режим Tool Search; показано значение по умолчанию",
         "none_loaded": "Не загружено",
         "session_mcp_servers": "Серверы MCP сессии"
