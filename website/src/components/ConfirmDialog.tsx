@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { guideConfirm } from '../uiLocations/targetRegistry'
 
 import Modal from './Modal'
@@ -15,9 +15,9 @@ import { i18nT } from '../i18n/t'
  * This dialog is the themed, non-blocking replacement: the confirm button
  * restates the action instead of "OK", and the caller awaits a boolean.
  *
- * The confirm button is always styled destructively and the cancel label is
- * always the shared one: every current caller confirms a destructive act, so
- * the knobs would ship without a consumer. Add them when a caller needs them.
+ * The confirm button is styled destructively by default, and the cancel label
+ * is the shared one unless a caller names what staying means ("Keep editing").
+ * Add further knobs only when a caller needs them.
  */
 export interface ConfirmOptions {
   /** Short dialog title. A question restating the stakes reads best. */
@@ -26,6 +26,8 @@ export interface ConfirmOptions {
   body?: ReactNode
   /** Restates the action ("Discard changes", "Destroy site") — never "OK". */
   confirmLabel: string
+  /** Names what cancelling keeps ("Keep editing"). Defaults to the shared Cancel. */
+  cancelLabel?: string
   /** Every earlier caller confirms a destructive act, so danger styling is the
    *  default. Pass `false` for a weighty but non-destructive confirm (a grant). */
   danger?: boolean
@@ -40,6 +42,15 @@ export interface ConfirmOptions {
 interface PendingConfirm {
   opts: ConfirmOptions
   resolve: (confirmed: boolean) => void
+}
+
+/** Reports whether the rendered modal subtree exists in the committed DOM. */
+function DialogMountSignal({ onMountChange }: { onMountChange: (mounted: boolean) => void }) {
+  useLayoutEffect(() => {
+    onMountChange(true)
+    return () => { onMountChange(false) }
+  }, [onMountChange])
+  return null
 }
 
 /**
@@ -62,7 +73,11 @@ export function useConfirm(): {
   confirmOpen: boolean
 } {
   const [pending, setPending] = useState<PendingConfirm | null>(null)
+  const [dialogPresent, setDialogPresent] = useState(false)
   const pendingRef = useRef<PendingConfirm | null>(null)
+  const dialogMountedRef = useRef(false)
+  const dialogMountGenerationRef = useRef(0)
+  const ownerMountedRef = useRef(false)
   // Keeps the last options through the exit animation: Modal stays mounted
   // with open=false so AnimatePresence can play the dialog out, and it still
   // needs a title/footer to render while doing so.
@@ -76,6 +91,7 @@ export function useConfirm(): {
       const next = { opts, resolve }
       pendingRef.current = next
       lastOptsRef.current = opts
+      setDialogPresent(true)
       setPending(next)
     })
   }, [])
@@ -84,6 +100,41 @@ export function useConfirm(): {
     pendingRef.current?.resolve(confirmed)
     pendingRef.current = null
     setPending(null)
+  }, [])
+
+  useLayoutEffect(() => {
+    ownerMountedRef.current = true
+    return () => { ownerMountedRef.current = false }
+  }, [])
+
+  const handleDialogMountChange = useCallback((mounted: boolean) => {
+    const generation = ++dialogMountGenerationRef.current
+    dialogMountedRef.current = mounted
+    if (mounted) return
+    queueMicrotask(() => {
+      if (!ownerMountedRef.current || dialogMountedRef.current || dialogMountGenerationRef.current !== generation) return
+      setDialogPresent(false)
+      if (pendingRef.current) settle(false)
+    })
+  }, [settle])
+
+  // A question omitted by the hook owner never mounts the signal above. This
+  // owner check handles that case; signal cleanup handles descendant-only
+  // removal without waiting for the owner to render.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (dialogMountedRef.current) return
+    if (pending) {
+      setDialogPresent(false)
+      settle(false)
+    } else if (dialogPresent) {
+      setDialogPresent(false)
+    }
+  })
+
+  // Keep parent modals inert until this dialog has actually left the DOM.
+  const finishExit = useCallback(() => {
+    if (!pendingRef.current) setDialogPresent(false)
   }, [])
 
   // An unmount while the dialog is open answers "no" so the awaiting caller
@@ -99,12 +150,15 @@ export function useConfirm(): {
       open={!!pending}
       onClose={() => settle(false)}
       title={opts.title}
+      wrapTitle
       maxWidth={440}
       layer={opts.layer}
+      onExitComplete={finishExit}
       footer={
         <>
+          <DialogMountSignal onMountChange={handleDialogMountChange} />
           <Btn onClick={() => settle(false)}>
-            {i18nT('components.confirmDialog.cancel')}
+            {opts.cancelLabel ?? i18nT('components.confirmDialog.cancel')}
           </Btn>
           {/* What a guide's destructive step waits for: this press, never a cancel. */}
           <Btn danger={!opts.primary && opts.danger !== false} primary={opts.primary} onClick={() => settle(true)} {...guideConfirm()}>
@@ -125,5 +179,5 @@ export function useConfirm(): {
 
   const cancel = useCallback(() => settle(false), [settle])
 
-  return { confirm, cancel, confirmDialog, confirmOpen: !!pending }
+  return { confirm, cancel, confirmDialog, confirmOpen: dialogPresent }
 }

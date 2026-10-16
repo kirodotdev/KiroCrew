@@ -20,7 +20,7 @@
  */
 import React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, cleanup, fireEvent } from '@testing-library/react'
+import { render, screen, cleanup, fireEvent, within, waitFor } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { I18nextProvider } from 'react-i18next'
@@ -46,7 +46,8 @@ vi.mock('../hooks/useAvailableModels', () => ({
 }))
 
 import SidePanelLayout, { type SidePanelTab } from '../components/SidePanelLayout'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
 import NewCrewmateDialog from '../pages/members/NewCrewmateDialog'
 
 const TABS: SidePanelTab[] = [
@@ -87,8 +88,8 @@ function renderInLayout() {
  *  which is where a dialog registered on two channels gets asked twice. */
 function SidebarRow() {
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
-  return <button onClick={() => { if (!mayLeave()) return; navigate('/chat') }}>Chat</button>
+  const mayLeave = useMayLeaveAsPromise()
+  return <button onClick={() => { void (async () => { if (!(await mayLeave())) return; navigate('/chat') })() }}>Chat</button>
 }
 
 function LocationProbe() {
@@ -139,66 +140,56 @@ const typeName = (v: string) => fireEvent.change(nameInput(), { target: { value:
 const clickTab = (name: string) => fireEvent.click(screen.getByRole('button', { name }))
 
 describe('NewCrewmateDialog inside a SidePanelLayout', () => {
+  const settleLeaveConfirm = async (confirmed: boolean) => {
+    const dialog = await screen.findByRole('dialog', { name: /Leave this page\?/ })
+    fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Keep editing' }))
+  }
+
   beforeEach(() => { mobile = false; sessionStorage.clear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })
 
-  it('vetoes a capability tab switch that would discard the typed draft', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('vetoes a capability tab switch that would discard the typed draft', async () => {
     renderInLayout()
     typeName('half typed name')
     clickTab('Other')
-    // The whole point of the fix: the layout consulted the dialog's guard, the
-    // declined confirm kept the crews pane mounted, and the typed name survives.
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleLeaveConfirm(false)
     expect(nameInput().value).toBe('half typed name')
     expect(screen.queryByTestId('plain')).toBeNull()
   })
 
-  it('lets the switch through once the confirm is accepted', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('lets the switch through once the confirm is accepted', async () => {
     renderInLayout()
     typeName('half typed name')
     clickTab('Other')
-    expect(screen.getByTestId('plain').textContent).toBe('other')
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
   })
 
-  it('does not ask when nothing has been typed', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('does not ask when nothing has been typed', async () => {
     renderInLayout()
     clickTab('Other')
-    expect(confirmSpy).not.toHaveBeenCalled()
-    expect(screen.getByTestId('plain').textContent).toBe('other')
+    await waitFor(() => expect(screen.getByTestId('plain').textContent).toBe('other'))
+    expect(screen.queryByRole('dialog', { name: /Leave this page\?/ })).toBeNull()
   })
 
-  it('asks EXACTLY ONCE when an in-app navigation leaves the layout with a draft typed', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('asks EXACTLY ONCE when an in-app navigation leaves the layout with a draft typed', async () => {
     renderInLayoutWithShell()
     typeName('half typed name')
     clickTab('Chat')
-    // One draft, one question. The layout forwards its pane guard into the same
-    // shell set the dialog would register with directly, so a dialog on both
-    // channels put two entries there that both resolve to `mayLeave` — and
-    // `ask()` walks the whole set, raising this confirm a second time for one
-    // click. The second prompt is not merely noise: answering it "Cancel"
-    // vetoes a leave the user had already approved.
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(screen.getByTestId('loc').textContent).toBe('/chat')
+    await settleLeaveConfirm(true)
+    await waitFor(() => expect(screen.getByTestId('loc').textContent).toBe('/chat'))
   })
 
-  it('a declined in-app navigation keeps the draft, still asking once', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('a declined in-app navigation keeps the draft, still asking once', async () => {
     renderInLayoutWithShell()
     typeName('half typed name')
     clickTab('Chat')
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    await settleLeaveConfirm(false)
     expect(screen.getByTestId('loc').textContent).toBe('/capabilities')
     expect(nameInput().value).toBe('half typed name')
   })
 
-  it('mounts standalone (no layout) and guards through the shell channel there', () => {
-    // No SidePanelLayout in the tree, so `useSidePanelLeaveGuard` finds no pane
-    // context and registers with the app shell itself. The dialog must still
-    // render, with the typed name held.
+  it('mounts standalone (no layout) and guards through the shell channel there', async () => {
     renderStandalone()
     typeName('typed on the mates page')
     expect(nameInput().value).toBe('typed on the mates page')

@@ -16,12 +16,14 @@
  */
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, cleanup } from '@testing-library/react'
+import { screen, waitFor, fireEvent, cleanup, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import App from '../App'
 import SidePanelLayout, { useSidePanelLeaveGuard } from '../components/SidePanelLayout'
 import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
 import type { Notification } from '../types'
+
+import { useConfirm } from '../components/ConfirmDialog'
 
 // Same isolation as the other App nav tests: stub the routed pages and the api
 // client so App mounts without real network.
@@ -38,14 +40,16 @@ vi.mock('../pages/SchedulePage', () => ({ default: () => <div data-testid="sched
 vi.mock('../pages/CapabilitiesPage', () => {
   function DraftPane() {
     const [draft, setDraft] = React.useState('')
-    useSidePanelLeaveGuard(() => !draft || confirm('Discard unsaved changes?'), !!draft)
-    return (
+    const { confirm, confirmDialog } = useConfirm()
+    useSidePanelLeaveGuard(() => !draft || confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard changes' }), !!draft)
+    return <>
       <input
         aria-label="draft"
         value={draft}
         onChange={e => setDraft((e.target as HTMLInputElement).value)}
       />
-    )
+      {confirmDialog}
+    </>
   }
   function CapabilitiesPageStub() {
     return (
@@ -134,32 +138,33 @@ const typeDraft = (value: string) =>
 const draftValue = () => (screen.getByLabelText('draft') as HTMLInputElement).value
 const paneReady = () => waitFor(() => expect(screen.getByLabelText('draft')).toBeInTheDocument())
 const openBell = () => fireEvent.click(screen.getByRole('button', { name: /^Notifications$/ }))
+const settleDiscard = async (confirmed: boolean) => {
+  const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+  fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Cancel' }))
+}
 
 describe('notification panel navigation leave guard', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })
 
   it('keeps the page on screen when the inbox jump is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     openBell()
     fireEvent.click(await screen.findByRole('button', { name: /^Open inbox$/ }))
-    expect(confirmSpy).toHaveBeenCalled()
-    // The pane is still mounted, which is what saves the draft inside it. An
-    // assertion on the URL alone would pass even if the jump navigated anyway.
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
     expect(screen.queryByTestId('inbox-page')).toBeNull()
   })
 
   it('jumps to the inbox once the confirm is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     openBell()
     fireEvent.click(await screen.findByRole('button', { name: /^Open inbox$/ }))
+    await settleDiscard(true)
     await waitFor(() => expect(screen.getByTestId('inbox-page')).toBeInTheDocument())
   })
 
@@ -174,28 +179,25 @@ describe('notification panel navigation leave guard', () => {
   })
 
   it("keeps the page on screen when the detail panel's own jump is declined", async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     openBell()
-    // The detail panel takes its own `navigate`, so wiring the bell's footer
-    // says nothing about it: every button in here is a separate exit.
     fireEvent.click(await screen.findByText('Backup finished'))
     fireEvent.click(await screen.findByRole('button', { name: /^Open$/ }))
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
     expect(screen.queryByTestId('schedule-page')).toBeNull()
   })
 
   it("follows the detail panel's jump once the confirm is accepted", async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     openBell()
     fireEvent.click(await screen.findByText('Backup finished'))
     fireEvent.click(await screen.findByRole('button', { name: /^Open$/ }))
+    await settleDiscard(true)
     await waitFor(() => expect(screen.getByTestId('schedule-page')).toBeInTheDocument())
   })
   it('asks the gateway to mark an opened note read ONCE, even when the ack is refused', async () => {
@@ -221,7 +223,6 @@ describe('notification panel navigation leave guard', () => {
   })
 
   it('leaves the active slot alone when a slot jump is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const store = createTestStore({
       notifications: { items: [CRON_NOTE], clearSeq: 0, ackSeq: 0, ackSeqByTs: {} },
     })
@@ -231,11 +232,7 @@ describe('notification panel navigation leave guard', () => {
     openBell()
     fireEvent.click(await screen.findByText('Nightly backup finished'))
     fireEvent.click(await screen.findByRole('button', { name: /^Go to Chat$/ }))
-    expect(confirmSpy).toHaveBeenCalled()
-    // The draft survives — and so does the rest of the answer. This handler
-    // switches the active slot BEFORE it navigates, so vetoing only the
-    // navigation would keep the user on their draft while silently moving their
-    // chat: the next visit to Chat would open a session they never chose.
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
     expect(store.getState().chat.activeSlot).not.toBe('slot-from-the-note')
   })

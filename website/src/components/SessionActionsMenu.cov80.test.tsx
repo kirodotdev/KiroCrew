@@ -1,6 +1,6 @@
 import { screen, fireEvent } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from '../test/helpers'
-import SessionActionsMenu from './SessionActionsMenu'
+import SessionActionsMenu from '../test/ownedSessionActionsMenu'
 import { sseSlots, markSlotUnread } from '../store/dashboardSlice'
 import { sseSubagentSpawn } from '../store/chatSlice'
 import { api } from '../api/client'

@@ -40,4 +40,23 @@ describe('AgentCfgTab', () => {
     const title = screen.getByRole('heading', { level: 3 })
     expect(title.nextElementSibling).toBe(screen.getByLabelText('Agent config JSON'))
   })
+
+  it('renders invalid JSON as an inline validation status', async () => {
+    render(<AgentCfgTab />, { wrapper: Wrapper })
+    await waitFor(() => expect(screen.getByDisplayValue(/claude-3/)).toBeInTheDocument())
+    fireEvent.change(screen.getByLabelText('Agent config JSON'), { target: { value: '{' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(await screen.findByTestId('agent-config-validation-notice')).toHaveTextContent('Invalid JSON')
+  })
+
+  it('renders a save rejection through ErrorNotice without discarding the draft', async () => {
+    const { api } = await import('../api/client')
+    vi.mocked(api.saveAgentConfig).mockRejectedValueOnce(new Error('save refused'))
+    render(<AgentCfgTab />, { wrapper: Wrapper })
+    const editor = await screen.findByDisplayValue(/claude-3/)
+    fireEvent.change(editor, { target: { value: '{\n  "model": "edited"\n}' } })
+    fireEvent.click(screen.getByText('Save'))
+    expect(await screen.findByTestId('agent-config-save-error')).toHaveTextContent('save refused')
+    expect(screen.getByDisplayValue(/edited/)).toBeInTheDocument()
+  })
 })

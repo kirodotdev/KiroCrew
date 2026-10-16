@@ -1,12 +1,15 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { flushSync } from 'react-dom'
 import userEvent from '@testing-library/user-event'
 import { api } from '../../api/client'
 import { ApiError } from '../../api/apiError'
 import type { TailscaleInvite, TailscaleInvitesStatus } from '../../api/sharedCrewInvites'
 import { parseEmails, looksLikeApiKey } from '../../api/sharedCrewInvites'
-import { TailscaleInvites, inviteErrorText, tailscaleInvitesKey } from './TailscaleInvites'
+import { InviteDialog, TailscaleInvites, inviteErrorText, tailscaleInvitesKey } from './TailscaleInvites'
 
 vi.mock('../../api/client', () => ({
   api: {
@@ -54,7 +57,35 @@ function mount() {
   return render(<QueryClientProvider client={qc}><TailscaleInvites /></QueryClientProvider>)
 }
 
-beforeEach(() => { vi.resetAllMocks(); accessRead.mockResolvedValue(null); copy.mockResolvedValue(true) })
+function mountDialog() {
+  const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  return render(<QueryClientProvider client={qc}><InviteDialog open onClose={vi.fn()} /></QueryClientProvider>)
+}
+
+async function expectNestedDialogLifecycle(outer: HTMLElement, inner: HTMLElement) {
+  const user = userEvent.setup()
+  expect(outer.inert).toBe(true)
+  expect(outer).toHaveAttribute('aria-hidden', 'true')
+  await user.tab()
+  expect(inner).toContainElement(document.activeElement as HTMLElement)
+
+  fireEvent.click(within(inner).getByRole('button', { name: 'Cancel' }))
+  expect(inner).toBeInTheDocument()
+  expect(outer.inert).toBe(true)
+  await user.tab()
+  expect(inner).toContainElement(document.activeElement as HTMLElement)
+
+  await waitFor(() => expect(inner).not.toBeInTheDocument())
+  await waitFor(() => expect(outer.inert).toBe(false))
+  expect(outer).toContainElement(document.activeElement as HTMLElement)
+}
+
+beforeEach(() => {
+  vi.resetAllMocks()
+  accessRead.mockResolvedValue(null)
+  capsRead.mockResolvedValue({} as never)
+  copy.mockResolvedValue(true)
+})
 
 describe('TailscaleInvites', () => {
   it('without a key: shows the admin-console share path and the one-time key form', async () => {
@@ -289,6 +320,39 @@ describe('TailscaleInvites', () => {
     fireEvent.click(screen.getByTestId('invite-revoke'))
     expect(screen.getByTestId('invite-revoke-confirm')).toBeInTheDocument()
     expect(screen.queryByTestId('invite-resend')).toBeNull()
+  })
+
+  it('keeps the Invite modal inert through the first-share confirmation exit', async () => {
+    read.mockResolvedValue(status())
+    accessRead.mockResolvedValue({
+      first_share: { needs_ack: true, sessions: 4, memory_items: 12, host: { state: 'available', reason: '', backend: 'caffeinate', laptop: true, laptop_reason: 'battery_present' } },
+    })
+    mountDialog()
+    const outer = await screen.findByRole('dialog', { name: 'Invite' }) as HTMLElement
+    fireEvent.change(await screen.findByTestId('invite-emails'), { target: { value: 'ann@example.com' } })
+    fireEvent.click(screen.getByTestId('invite-send'))
+    const inner = await screen.findByRole('dialog', { name: 'Share this Crew?' })
+
+    await expectNestedDialogLifecycle(outer, inner)
+    expect(create).not.toHaveBeenCalled()
+  })
+
+  it('keeps the Invite modal inert in the commit that opens the key-removal confirmation', async () => {
+    const source = readFileSync(join(__dirname, 'TailscaleInvites.tsx'), 'utf8')
+    expect(source).toContain('useLayoutEffect(() => { onConfirmOpenChange?.(nestedConfirmOpen) }')
+    // The first-share confirmation reports through the same pre-paint path.
+    expect(source).toContain('useLayoutEffect(() => { onConfirmOpenChange?.(confirmOpen) }')
+    expect((source.match(/useLayoutEffect\(\(\) => \(\) => \{ onConfirmOpenChange\?\.\(false\) \}/g) ?? [])).toHaveLength(2)
+    read.mockResolvedValue(status())
+    mountDialog()
+    const outer = await screen.findByRole('dialog', { name: 'Invite' }) as HTMLElement
+    const removeKey = await screen.findByTestId('invite-disconnect')
+    flushSync(() => { fireEvent.click(removeKey) })
+    const inner = screen.getByRole('dialog', { name: 'Remove the Tailscale API key?' })
+    expect(outer.inert).toBe(true)
+
+    await expectNestedDialogLifecycle(outer, inner)
+    expect(disconnect).not.toHaveBeenCalled()
   })
 
   it('removes the API key only after a confirm, since it cannot be undone', async () => {

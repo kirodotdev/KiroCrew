@@ -14,7 +14,7 @@
  *  it. The first invite, while nobody else has access, asks once per Crew
  *  (`useFirstShareGate`) with one warning line: they will see every session and
  *  Crew memory, with real counts. */
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Copy, ExternalLink, Link2, Mail, MessageSquare, RefreshCw, Trash2, UserPlus } from 'lucide-react'
 import { api } from '../../api/client'
@@ -105,7 +105,7 @@ export function CopyInviteMessage({ inviteUrl = '', testId = 'invite-copy-messag
 /** Allow sharing when no warning is due, or after the owner confirms it. */
 export function useFirstShareGate() {
   const qc = useQueryClient()
-  const { confirm, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const [shareError, setShareError] = useState('')
   const confirmShare = useCallback(async () => {
     setShareError('')
@@ -140,7 +140,7 @@ export function useFirstShareGate() {
     await qc.invalidateQueries({ queryKey: sharedCrewAccessKey })
     return true
   }, [confirm, qc])
-  return { confirmShare, firstShareDialog: confirmDialog, shareError }
+  return { confirmShare, firstShareDialog: confirmDialog, confirmOpen, shareError }
 }
 
 /** One friendly sentence per gateway refusal code. Route refusals carry the
@@ -266,9 +266,11 @@ function ConnectForm() {
   )
 }
 
-function InviteForm({ disabled }: { disabled: boolean }) {
+function InviteForm({ disabled, onConfirmOpenChange }: { disabled: boolean; onConfirmOpenChange?: (open: boolean) => void }) {
   const qc = useQueryClient()
-  const { confirmShare, firstShareDialog, shareError } = useFirstShareGate()
+  const { confirmShare, firstShareDialog, confirmOpen, shareError } = useFirstShareGate()
+  useLayoutEffect(() => { onConfirmOpenChange?.(confirmOpen) }, [confirmOpen, onConfirmOpenChange])
+  useLayoutEffect(() => () => { onConfirmOpenChange?.(false) }, [onConfirmOpenChange])
   const [mode, setMode] = useState<'email' | 'link'>('email')
   const [emails, setEmails] = useState('')
   const [alias, setAlias] = useState('')
@@ -455,9 +457,17 @@ export function InviteRow({ invite, inPeople = false }: { invite: TailscaleInvit
   )
 }
 
-function Connected({ status, showList = true }: { status: TailscaleInvitesStatus; showList?: boolean }) {
+function Connected({ status, showList = true, onConfirmOpenChange }: {
+  status: TailscaleInvitesStatus
+  showList?: boolean
+  onConfirmOpenChange?: (open: boolean) => void
+}) {
   const qc = useQueryClient()
-  const { confirm, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  const [firstShareConfirmOpen, setFirstShareConfirmOpen] = useState(false)
+  const nestedConfirmOpen = confirmOpen || firstShareConfirmOpen
+  useLayoutEffect(() => { onConfirmOpenChange?.(nestedConfirmOpen) }, [nestedConfirmOpen, onConfirmOpenChange])
+  useLayoutEffect(() => () => { onConfirmOpenChange?.(false) }, [onConfirmOpenChange])
   const disconnect = useMutation({
     mutationFn: () => api.tailscaleDisconnect(),
     onSuccess: data => qc.setQueryData(tailscaleInvitesKey, data),
@@ -486,7 +496,7 @@ function Connected({ status, showList = true }: { status: TailscaleInvitesStatus
       {status.sync?.restart_required && (
         <p className="text-[12px] text-warn" data-testid="invite-restart">{i18nT('sharedCrew.invite_restart_needed')}</p>
       )}
-      <InviteForm disabled={removal.isPending} />
+      <InviteForm disabled={removal.isPending} onConfirmOpenChange={setFirstShareConfirmOpen} />
       {showList && <div className="pt-2 border-t border-border">
         {status.invites.length === 0 ? (
           !status.sync?.error && <p className="text-[13px] text-muted" data-testid="invite-empty">{i18nT('sharedCrew.invite_empty')}</p>
@@ -526,11 +536,12 @@ export function TailscaleInvites() {
 export function InviteDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
   const query = useInvites()
   const status = query.data
+  const [confirmOpen, setConfirmOpen] = useState(false)
   return (
-    <Modal open={open} onClose={onClose} title={i18nT('sharedCrew.invite_dialog_title')} maxWidth={520} guardAccidentalDismiss>
+    <Modal open={open} onClose={onClose} title={i18nT('sharedCrew.invite_dialog_title')} maxWidth={520} guardAccidentalDismiss interactionDisabled={confirmOpen}>
       <div className="flex flex-col gap-3 min-w-0" data-testid="invite-dialog">
         <InviteReadError query={query} testId="invite-dialog-error" />
-        {status && (status.connected ? <Connected status={status} showList={false} /> : (
+        {status && (status.connected ? <Connected status={status} showList={false} onConfirmOpenChange={setConfirmOpen} /> : (
           <>
             <p className="text-[13px] text-muted">{i18nT('sharedCrew.invite_dialog_key_first')}</p>
             <ConnectForm />

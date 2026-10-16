@@ -63,6 +63,13 @@ vi.mock('../components/NavigationLeaveGuard', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../components/NavigationLeaveGuard')>()),
   useGuardedLeave: () => mockLeave,
 }))
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({
+    confirm: (opts: { title: string }) => Promise.resolve(window.confirm(opts.title)),
+    confirmDialog: null,
+    confirmOpen: false,
+  }),
+}))
 // The stub exposes the editor's `onChange(name, skills)` as a button, so a
 // test can play a completed skill save without the real popover.
 vi.mock('../components/AgentSkillsEditor', () => ({
@@ -388,8 +395,8 @@ describe('AgentTemplatesTab editing', () => {
     expect(prompt).toHaveValue('x')
     confirm.mockReturnValue(true)
     fireEvent.click(screen.getByRole('button', { name: 'Discard' }))
-    expect(screen.queryByRole('alert')).toBeNull()
-    expect(prompt).toHaveValue('prompt of reviewer')
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    await waitFor(() => expect(prompt).toHaveValue('prompt of reviewer'))
   })
 
   it('lists resources as plain rows, not chips', async () => {

@@ -16,7 +16,7 @@
  * test is the page's flush-on-leave guard, not the editor.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { screen, waitFor, fireEvent } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import PapyrusPage from '../apps/papyrus/PapyrusPage'
 import { renderWithProviders } from './helpers'
@@ -156,6 +156,29 @@ describe('Papyrus closeProject', () => {
   })
 })
 
+describe('Papyrus project deletion', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    localStorage.clear()
+    api.health.mockResolvedValue({ status: 'ok', compiler: '/usr/bin/pdflatex', git: true })
+    api.listProjects.mockResolvedValue({
+      projects: [{ name: PROJECT, modified: 0, has_pdf: false }],
+    })
+    api.deleteProject.mockResolvedValue({ ok: true })
+  })
+
+  it('deletes a paper only after the project-list confirmation is accepted', async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<PapyrusPage />)
+
+    await user.click(await screen.findByRole('button', { name: 'Delete thesis' }))
+    expect(api.deleteProject).not.toHaveBeenCalled()
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Delete paper' }))
+
+    await waitFor(() => expect(api.deleteProject).toHaveBeenCalledWith(PROJECT))
+  })
+})
+
 /**
  * A BACKGROUND refresh is the nastier half of the same bug: the user did not ask
  * for it, so losing the buffer to a finishing git pull (or the co-author's turn
@@ -221,11 +244,13 @@ describe('Papyrus reloadOpenFile', () => {
     // `createFile`'s onSuccess sets `currentFile` to the new file, abandoning the
     // outgoing buffer — so the flush has to happen before the create, not after.
     api.createFile.mockResolvedValue({ ok: true, path: 'chapter2.tex' })
-    vi.stubGlobal('prompt', vi.fn(() => 'chapter2.tex'))
-    await openWorkspace()
+    const user = await openWorkspace()
     await makeDirty('\\documentclass{article}\n% about to create a new file')
 
-    fireEvent.click(screen.getByRole('button', { name: /new file/i }))
+    await user.click(screen.getByRole('button', { name: /new file/i }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'chapter2.tex' } })
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
 
     await waitFor(() =>
       expect(api.saveFile).toHaveBeenCalledWith(
@@ -238,11 +263,13 @@ describe('Papyrus reloadOpenFile', () => {
     // Trading the user's unsaved text for a new empty file is the worst outcome.
     api.saveFile.mockRejectedValue(new Error('disk full'))
     api.createFile.mockResolvedValue({ ok: true, path: 'chapter2.tex' })
-    vi.stubGlobal('prompt', vi.fn(() => 'chapter2.tex'))
-    await openWorkspace()
+    const user = await openWorkspace()
     await makeDirty('\\documentclass{article}\n% unsaveable')
 
-    fireEvent.click(screen.getByRole('button', { name: /new file/i }))
+    await user.click(screen.getByRole('button', { name: /new file/i }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'chapter2.tex' } })
+    await user.click(within(dialog).getByRole('button', { name: 'New file' }))
 
     await waitFor(() => expect(api.saveFile).toHaveBeenCalled())
     expect(api.createFile).not.toHaveBeenCalled()

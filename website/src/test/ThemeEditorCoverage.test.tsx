@@ -345,40 +345,39 @@ describe('useThemeEditor', () => {
   })
 
   it('does nothing on delete when no theme is targeted', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
     const { result } = renderHook(() => useThemeEditor())
     await act(async () => { await result.current.handleDelete() })
 
-    expect(confirmSpy).not.toHaveBeenCalled()
     expect(themeStore.deleteCustomTheme).not.toHaveBeenCalled()
   })
 
   it('writes nothing when the delete confirmation is declined', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
-    const { result } = renderHook(() => useThemeEditor())
-    await act(async () => { await result.current.handleDelete('ocean') })
+    await openEdit()
+    fireEvent.click(await screen.findByRole('button', { name: /Delete Theme/ }))
+    const dialog = await screen.findByRole('dialog')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
 
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(themeStore.deleteCustomTheme).not.toHaveBeenCalled()
   })
 
   it('surfaces a failed delete instead of closing the editor', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     themeStore.deleteCustomTheme.mockRejectedValue(new Error('in use'))
-    const { result } = renderHook(() => useThemeEditor())
-    await act(async () => { await result.current.openEditTheme('ocean') })
-    await act(async () => { await result.current.handleDelete() })
+    await openEdit()
+    fireEvent.click(await screen.findByRole('button', { name: /Delete Theme/ }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /Delete/ }))
 
-    expect(result.current.error).toBe('in use')
-    expect(result.current.editorOpen).toBe(true)
+    expect(await screen.findByRole('alert')).toHaveTextContent('in use')
+    expect(screen.getByLabelText('Theme Name')).toBeInTheDocument()
   })
 
   it('reports a non-Error delete rejection through the catalog fallback', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     themeStore.deleteCustomTheme.mockRejectedValue('boom')
-    const { result } = renderHook(() => useThemeEditor())
-    await act(async () => { await result.current.handleDelete('ocean') })
+    await openEdit()
+    fireEvent.click(await screen.findByRole('button', { name: /Delete Theme/ }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /Delete/ }))
 
-    expect(result.current.error).toBe('Failed to delete theme')
+    expect(await screen.findByRole('alert')).toHaveTextContent('Failed to delete theme')
   })
 
   it('adopts only the fields present in pasted JSON and ignores invalid text', () => {
@@ -636,9 +635,9 @@ describe('ThemeEditorPanel', () => {
   })
 
   it('deletes the edited theme once the confirmation is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     await openEdit()
-    fireEvent.click(btn(/Delete Theme/))
+    fireEvent.click(await screen.findByRole('button', { name: /Delete Theme/ }))
+    fireEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: /Delete/ }))
 
     await waitFor(() => expect(themeStore.deleteCustomTheme).toHaveBeenCalledWith('ocean'), { timeout: 5_000 })
     await waitFor(() => expect(screen.queryByLabelText('Theme Name')).toBeNull())

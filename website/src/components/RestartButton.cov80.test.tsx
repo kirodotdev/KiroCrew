@@ -19,15 +19,21 @@ describe('RestartButton', () => {
   })
   afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
-  it('asks first, saying what stays and what stops, and does nothing when declined', () => {
+  const acceptConfirm = async () => {
+    const dialog = await screen.findByRole('dialog')
+    // The confirm answer settles a promise; the restart's state updates follow it.
+    await act(async () => { fireEvent.click(dialog.querySelector('[data-guide-confirm]') as HTMLElement) })
+  }
+
+  it('asks first, saying what stays and what stops, and does nothing when declined', async () => {
     // The reassurance has to land at the moment of the click, not only in a
     // hover title: a reader who reads "Restart" as breaking something never
     // presses it, and a saved template change never reaches a running chat.
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     render(<RestartButton />)
     fireEvent.click(screen.getByRole('button'))
-    expect(confirm).toHaveBeenCalledTimes(1)
-    expect(confirm.mock.calls[0][0]).toMatch(/Your chats and their history stay; a reply in progress stops/)
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent(/Your chats and their history stay; a reply in progress stops/)
+    fireEvent.click(dialog.querySelector('button:first-child') as HTMLButtonElement)
     expect(restartSessions).not.toHaveBeenCalled()
   })
 
@@ -36,6 +42,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await acceptConfirm()
     const ok = await screen.findByText(/sessions restarted/i)
     expect(ok.className).toContain('text-ok')
     expect(restartSessions).toHaveBeenCalledTimes(1)
@@ -51,6 +58,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button', { name: /apply & restart/i }))
+    await acceptConfirm()
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveAttribute('role', 'alert')
     // The page's sentence leads; the server's reason follows it.
@@ -69,6 +77,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await acceptConfirm()
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveTextContent(/restart failed/i)
   })
@@ -81,7 +90,8 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
-    const button = await screen.findByRole('button')
+    await acceptConfirm()
+    const button = await screen.findByTitle(/Relaunches the agent process/)
     await waitFor(() => expect(button).toBeDisabled())
     expect(button.className).toContain('cursor-wait')
     expect(screen.getByText(/restarting/i)).toBeInTheDocument()
@@ -103,6 +113,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await acceptConfirm()
     const notice = await screen.findByTestId('restart-button-error')
     expect(notice).toHaveTextContent(/mcp sync failed/i)
     expect(screen.queryByText(/config applied/i)).not.toBeInTheDocument()
@@ -118,6 +129,7 @@ describe('RestartButton', () => {
     render(<RestartButton />)
 
     fireEvent.click(screen.getByRole('button'))
+    await acceptConfirm()
     const ok = await screen.findByText(/config applied/i)
     expect(ok.className).toContain('text-ok')
   })

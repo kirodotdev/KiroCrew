@@ -3,7 +3,7 @@ import { OverlayPortal, useLocalCrewHidden } from './overlayRoot'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X } from 'lucide-react'
 
-import { useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
+import { FOCUSABLE, useDialogFocusTrap } from '../hooks/useDialogFocusTrap'
 import { useDocumentImeLatch } from '../hooks/useImeGuard'
 import { i18nT } from '../i18n/t'
 import { guideTrustRoot, GuideTrustRootProvider, useGuideTrustRoot } from '../guide/trustRoot'
@@ -25,6 +25,10 @@ interface ModalProps {
   footer?: React.ReactNode
   /** Optional actions rendered in the header (right side, before the close button) */
   headerActions?: React.ReactNode
+  /** Wrap a long title onto further lines instead of truncating it. For a
+   *  title that IS the question being asked (a confirmation), where an
+   *  ellipsis would hide the stakes the user is deciding on. */
+  wrapTitle?: boolean
   /** Max width of the modal (default: 640px) */
   maxWidth?: number
   /**
@@ -51,6 +55,8 @@ interface ModalProps {
    *  mid-write unmounts the modal, and a rejection settling after that has
    *  nowhere to render. The caller keeps its own footer Cancel in step. */
   dismissDisabled?: boolean
+  /** Called after every exiting modal subtree has left the DOM. */
+  onExitComplete?: () => void
   /** Remove this dialog from focus and pointer input while its own nested
    *  portaled dialog is the active layer. Set it for as long as this modal
    *  has a dialog of its OWN open above it that is portaled outside its panel
@@ -81,7 +87,7 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, wrapTitle = false, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, interactionDisabled = false, guideTrustRoot: trustRootProp = false, children }: ModalDialogProps) {
   // Asked for, or opened from inside a trust-root region (it portals out of it).
   const trustRoot = useGuideTrustRoot() || trustRootProp
   const dialogRef = useRef<HTMLDivElement>(null)
@@ -99,7 +105,15 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   // dialog is the active layer) must not pull Tab back into itself either.
   useDialogFocusTrap(dialogRef, dismiss, { handleEscape: false, enabled: !interactionDisabled })
   useEffect(() => {
-    if (dialogRef.current) dialogRef.current.inert = interactionDisabled
+    const dialog = dialogRef.current
+    if (!dialog) return
+    dialog.inert = interactionDisabled
+    // The nested dialog restores focus while this panel is still inert. Once
+    // that child has left, return focus inside the active outer dialog.
+    if (!interactionDisabled && !dialog.contains(document.activeElement)) {
+      const first = dialog.querySelector<HTMLElement>(FOCUSABLE)
+      ;(first ?? dialog).focus({ preventScroll: true })
+    }
   }, [interactionDisabled])
 
   // Keyboard isolation for the whole dialog, the header X button included. The
@@ -174,7 +188,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
     >
       {/* Header */}
       <div className="flex items-center justify-between gap-3 px-5 min-h-12 py-2 shrink-0 border-b border-border">
-        <span id={titleId} className="text-base font-semibold text-text-strong truncate">{title}</span>
+        <span id={titleId} className={`text-base font-semibold text-text-strong ${wrapTitle ? 'min-w-0 break-words' : 'truncate'}`}>{title}</span>
         <div className="flex items-center gap-1.5 shrink-0">
           {headerActions}
           <button
@@ -207,7 +221,7 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   return trustRoot ? <GuideTrustRootProvider>{dialog}</GuideTrustRootProvider> : dialog
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
+export default function Modal({ open, onClose, onExitComplete, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, layer = 'dialog', ...rest }: ModalProps) {
   const top = layer === 'top'
   /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
    *  and while every dismissal is refused. */
@@ -244,7 +258,7 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
   // ancestor's clip-path, transform, or filter, and modals can mount inside
   // those shells.
   return <OverlayPortal>
-    <AnimatePresence>
+    <AnimatePresence onExitComplete={onExitComplete}>
       {open && (
         <>
           <motion.div

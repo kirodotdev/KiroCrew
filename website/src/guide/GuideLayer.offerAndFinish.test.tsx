@@ -483,7 +483,7 @@ describe('a surface the guide opened', () => {
     const src = readFileSync(path.join(__dirname, '../pages/members/MembersPage.tsx'), 'utf-8')
     expect(src).toMatch(/useGuideOpenedSurface\('crewmate\.create'/)
     expect(src).toMatch(/isPristine: \(\) => !createEditedRef\.current && !createBusyRef\.current/)
-    expect(src).toMatch(/markGuideOpenedRef\.current\(\)\n\s+openCreate\(/)
+    expect(src).toMatch(/markGuideOpenedRef\.current\(\)\n\s+(?:void )?openCreate\(/)
   })
 })
 

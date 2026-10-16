@@ -1,10 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { PREVIEW_ARTIFACT_DEPLOY } from '../utils/previewFlags'
-import { screen, waitFor, fireEvent, within } from '@testing-library/react'
+import { screen, waitFor, fireEvent, within, render } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import type { ComponentType } from 'react'
+import { MemoryRouter, useNavigate } from 'react-router-dom'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 import ArtifactsPage from '../pages/ArtifactsPage'
-import { renderWithProviders, createTestStore } from './helpers'
+import { renderWithProviders, createTestStore, deferred } from './helpers'
+import { confirmAction } from './confirmAction'
+import { ThemeProvider } from '../hooks/useTheme'
 import { sseConnected } from '../store/dashboardSlice'
 
 /** The row's star and delete are gateway-gated, so this fixture connects. */
@@ -72,6 +77,11 @@ const mkArtifact = (slug: string, overrides: Partial<Artifact> = {}): Artifact =
  */
 const kindTrigger = () => screen.getByRole('combobox', { name: 'Filter by kind' })
 const tagTrigger = () => screen.getByRole('combobox', { name: 'Filter by tag' })
+
+function HistoryForward() {
+  const navigate = useNavigate()
+  return <button onClick={() => navigate(1)}>Forward</button>
+}
 
 describe('ArtifactsPage', () => {
   beforeEach(() => {
@@ -938,12 +948,67 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn().mockResolvedValue({ ok: true })
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     const deleteBtn = screen.getByLabelText('Remove from artifacts library')
     await userEvent.click(deleteBtn)
-    expect(deleteSpy).toHaveBeenCalledWith('cr-queue')
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Remove from library' }))
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledWith('cr-queue'))
+    expect(nativeConfirm).not.toHaveBeenCalled()
+  })
+
+  it('keeps removal confirmation mounted while a new artifact scope loads', async () => {
+    const user = userEvent.setup()
+    const destination = deferred<{ artifacts: Artifact[] }>()
+    const artifactA = mkArtifact('artifact-a')
+    const artifacts = vi.fn().mockImplementation((filters?: { touchedBy?: string }) => {
+      if (filters?.touchedBy === 'chat-a') return Promise.resolve({ artifacts: [artifactA] })
+      if (filters?.touchedBy === 'chat-b') return destination.promise
+      return Promise.resolve({ artifacts: [artifactA] })
+    })
+    vi.mocked(api).artifacts = artifacts
+    const deleteSpy = vi.fn().mockResolvedValue({ ok: true })
+    vi.mocked(api).deleteArtifact = deleteSpy
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <Provider store={connectedStore()}>
+          <ThemeProvider>
+            <MemoryRouter
+              initialEntries={[
+                '/artifacts?touched_by=chat-a',
+                '/artifacts?touched_by=chat-b',
+              ]}
+              initialIndex={0}
+            >
+              <HistoryForward />
+              <ArtifactsPage />
+            </MemoryRouter>
+          </ThemeProvider>
+        </Provider>
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('artifact a')).toBeInTheDocument()
+    await user.click(screen.getByLabelText('Remove from artifacts library'))
+    const question = await screen.findByText(/Remove artifact “artifact-a” from your library\?/)
+
+    await user.click(screen.getByRole('button', { name: 'Forward' }))
+    await waitFor(() => expect(artifacts).toHaveBeenCalledWith(
+      expect.objectContaining({ touchedBy: 'chat-b' }),
+    ))
+    expect(screen.getByText('Loading…')).toBeInTheDocument()
+    expect(question).toBeInTheDocument()
+
+    await confirmAction('Remove from library')
+    await waitFor(() => expect(deleteSpy).toHaveBeenCalledTimes(1))
+    expect(deleteSpy).toHaveBeenCalledWith('artifact-a')
+
+    destination.resolve({ artifacts: [] })
+    expect(await screen.findByText('No artifacts match your filters.')).toBeInTheDocument()
   })
 
   it('does not delete when user cancels', async () => {
@@ -952,10 +1017,12 @@ describe('ArtifactsPage', () => {
     })
     const deleteSpy = vi.fn()
     vi.mocked(api).deleteArtifact = deleteSpy
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderWithProviders(<ArtifactsPage />)
     await waitFor(() => expect(screen.getByText('cr queue')).toBeInTheDocument())
     await userEvent.click(screen.getByLabelText('Remove from artifacts library'))
+    const dialog = await screen.findByRole('dialog')
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
     expect(deleteSpy).not.toHaveBeenCalled()
   })
 

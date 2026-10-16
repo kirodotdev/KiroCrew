@@ -12,6 +12,7 @@ import type { KnowledgeItem, Entity } from './types'
 
 import { i18nT } from '../../i18n/t'
 import { useImeGuard } from '../../hooks/useImeGuard'
+import { useConfirm } from '../../components/ConfirmDialog'
 function highlightEntities(text: string, entities: Entity[], onEntityClick?: (name: string) => void) {
   if (!entities?.length) return text
   const names = [...entities].sort((a, b) => b.name.length - a.name.length).map(e => e.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
@@ -151,6 +152,7 @@ function isMarkdownContent(item: KnowledgeItem): boolean {
 
 export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: string; onBack: () => void; onEntityClick?: (name: string) => void }) {
   const queryClient = useQueryClient()
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
   const { data: item, isLoading: loading, isError: loadFailed, error: loadError } = useQuery({
     queryKey: ['knowledge-item', itemId],
     queryFn: () => knowledgeApi<KnowledgeItem>(`/items/${itemId}`),
@@ -197,6 +199,16 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
     },
   })
 
+  const handleDelete = async () => {
+    if (deleteMutation.isPending || !item || confirmOpen) return
+    const id = item.id
+    const ok = await confirm({
+      title: i18nT('pages.knowledge.detailView.permanently_delete_this_item'),
+      confirmLabel: i18nT('pages.knowledge.detailView.delete'),
+    })
+    if (ok) deleteMutation.mutate(id)
+  }
+
   const { copied, copy } = useCopy()
   const copyContent = () => {
     if (!item) return
@@ -223,6 +235,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
 
   return (
     <div className="animate-rise">
+      {confirmDialog}
       <button onClick={onBack} className="flex items-center gap-1 text-muted hover:text-text text-[13px] mb-3 bg-transparent border-none cursor-pointer"><ChevronLeft size={14} /> {i18nT('pages.knowledge.detailView.back_to_list')}</button>
       {/* A failed refresh over the cached item: what is below may be out of date. */}
       <ErrorNotice
@@ -325,7 +338,7 @@ export default function DetailView({ itemId, onBack, onEntityClick }: { itemId: 
         {item.status === 'archived'
           ? <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'active' })}><RefreshCw size={12} /> {i18nT('pages.knowledge.detailView.unarchive')}</Btn>
           : <Btn disabled={archiveMutation.isPending} onClick={() => archiveMutation.mutate({ id: item.id, status: 'archived' })}><Archive size={12} /> {i18nT('pages.knowledge.detailView.archive')}</Btn>}
-        <Btn disabled={deleteMutation.isPending} onClick={() => { if (confirm(i18nT('pages.knowledge.detailView.permanently_delete_this_item'))) deleteMutation.mutate(item.id) }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
+        <Btn disabled={deleteMutation.isPending} onClick={() => { void handleDelete() }}><X size={12} /> {i18nT('pages.knowledge.detailView.delete')}</Btn>
       </div>
       {(archiveMutation.isError || deleteMutation.isError) && (
         <div className="mt-2 text-[12px] text-danger flex items-center gap-1">

@@ -16,7 +16,7 @@
  */
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor, fireEvent, cleanup, act } from '@testing-library/react'
+import { screen, waitFor, fireEvent, cleanup, act, within } from '@testing-library/react'
 import { renderWithProviders, createTestStore } from './helpers'
 import { useAppSelector } from '../store'
 import { useLocation, useNavigate } from 'react-router-dom'
@@ -27,6 +27,8 @@ import type { NavIntent } from '../utils/popoutController'
 import App from '../App'
 import SidePanelLayout, { useSidePanelLeaveGuard } from '../components/SidePanelLayout'
 import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
+
+import { useConfirm } from '../components/ConfirmDialog'
 
 // Same isolation as the other App nav tests: stub the routed pages and the api
 // client so App mounts without real network. The test only cares about the nav
@@ -45,14 +47,16 @@ vi.mock('../pages/SchedulePage', () => ({ default: () => null }))
 vi.mock('../pages/CapabilitiesPage', () => {
   function DraftPane() {
     const [draft, setDraft] = React.useState('')
-    useSidePanelLeaveGuard(() => !draft || confirm('Discard unsaved changes?'))
-    return (
+    const { confirm, confirmDialog } = useConfirm()
+    useSidePanelLeaveGuard(() => !draft || confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard changes' }))
+    return <>
       <input
         aria-label="draft"
         value={draft}
         onChange={e => setDraft((e.target as HTMLInputElement).value)}
       />
-    )
+      {confirmDialog}
+    </>
   }
   function CapabilitiesPageStub() {
     return (
@@ -165,6 +169,10 @@ const typeDraft = (value: string) =>
   fireEvent.change(screen.getByLabelText('draft'), { target: { value } })
 const draftValue = () => (screen.getByLabelText('draft') as HTMLInputElement).value
 const paneReady = () => waitFor(() => expect(screen.getByLabelText('draft')).toBeInTheDocument())
+const settleDiscard = async (confirmed: boolean) => {
+  const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+  fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Cancel' }))
+}
 
 describe('sidebar navigation leave guard', () => {
   beforeEach(() => { localStorage.clear(); sessionStorage.clear() })
@@ -180,39 +188,29 @@ describe('sidebar navigation leave guard', () => {
   })
 
   it('keeps the page on screen when the confirm is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     fireEvent.click(navRow(/^Schedule$/))
-    expect(confirmSpy).toHaveBeenCalled()
-    // The pane is still mounted, which is what saves the draft inside it. An
-    // assertion on the URL alone would pass even if the row navigated anyway.
-    expect(draftValue()).toBe('half-written prompt')
+    await settleDiscard(false)
+    await waitFor(() => expect(draftValue()).toBe('half-written prompt'))
   })
 
   it('navigates once the confirm is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     fireEvent.click(navRow(/^Schedule$/))
+    await settleDiscard(true)
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
   })
 
   it('asks when the ACTIVE row would drop the query that keeps the pane mounted', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard('/capabilities?tab=drafts')
     await paneReady()
     typeDraft('half-written prompt')
-    // The Customize row is `active` here: `active` is a PATHNAME match, and
-    // the pathname is already /capabilities. But the row navigates to a bare
-    // `/capabilities`, dropping `?tab=drafts` — and the pane is mounted on that
-    // query, so the click unmounts it. Skipping the ask for any active row lost
-    // the draft in silence; the ask has to be skipped only when the WHOLE
-    // current URL already equals the row's target.
     fireEvent.click(navRow(/^Customize$/))
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
   })
 
@@ -238,23 +236,22 @@ describe('popout-forwarded navigation leave guard', () => {
   // page on screen here. The popout cannot see this window's draft, so the
   // main window has to ask before it carries the intent out.
   it('keeps the page on screen when the confirm is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
     act(() => { navIntent.artifactHandler!({ path: '/schedule' }) })
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
   })
 
   it('carries the intent out once the confirm is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
     act(() => { navIntent.artifactHandler!({ path: '/schedule' }) })
+    await settleDiscard(true)
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
   })
 })
@@ -464,24 +461,22 @@ describe('native app-menu navigation leave guard', () => {
   })
 
   it('keeps the page on screen when the confirm is declined', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/schedule') })
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
   })
 
   it('keeps the page on screen for a declined session deep link', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/chat?sid=other') })
-    expect(confirmSpy).toHaveBeenCalled()
+    await settleDiscard(false)
     expect(draftValue()).toBe('half-written prompt')
   })
 
@@ -520,12 +515,12 @@ describe('native app-menu navigation leave guard', () => {
   })
 
   it('follows the menu path once the confirm is accepted', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     renderDashboard()
     await paneReady()
     typeDraft('half-written prompt')
     await waitFor(() => expect(nativeHandler).not.toBeNull())
     act(() => { nativeHandler!('/schedule') })
+    await settleDiscard(true)
     await waitFor(() => expect(screen.queryByLabelText('draft')).toBeNull())
   })
 })
@@ -581,7 +576,7 @@ describe('popout hand-off to the session already on screen', () => {
     renderWithProviders(<NavigationLeaveGuardProvider><App /></NavigationLeaveGuardProvider>, { route: '/chat', store })
     await waitFor(() => expect(navIntent.artifactHandler).not.toBeNull())
     deliver(store, 'chat-2')
-    expect(store.getState().chat.mainComposerAppend).toBeNull()
-    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toContain('"prompt":"ref"')
+    await waitFor(() => expect(store.getState().chat.mainComposerAppend).toBeNull())
+    await waitFor(() => expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toContain('"prompt":"ref"'))
   })
 })

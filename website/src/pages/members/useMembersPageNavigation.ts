@@ -57,7 +57,7 @@ interface MembersPageNavigationOptions {
   urlMember: string
   setGone: Dispatch<SetStateAction<GoneNotice | null>>
   draftRequest: boolean
-  leaveCreate: () => boolean
+  leaveCreate: () => boolean | Promise<boolean>
   followUp: CreatedCrewmate | null
   goneStandInRef: MutableRefObject<string>
   activeMemberName: string
@@ -112,7 +112,10 @@ export function useMembersPageNavigation({
    *  lands in one tick. */
   const openMember = useCallback(
     async (m: MemberRosterRow): Promise<boolean> => {
-      if (!leaveCreate()) return false
+      const createLeave = leaveCreate()
+      if (typeof createLeave === 'boolean') {
+        if (!createLeave) return false
+      } else if (!(await createLeave)) return false
       // Re-clicking the open member is the repair gesture (re-POST); the URL
       // is unchanged so the sync effect would not fire — call through. It is
       // also an explicit choice of that member, so a swap notice still

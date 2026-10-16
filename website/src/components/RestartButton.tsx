@@ -2,10 +2,12 @@ import { useState } from 'react'
 import { Zap } from 'lucide-react'
 import { api } from '../api/client'
 
+import { useConfirm } from './ConfirmDialog'
 import { i18nT } from '../i18n/t'
 import ErrorNotice from './ErrorNotice'
 
 export default function RestartButton() {
+  const { confirm, confirmDialog } = useConfirm()
   const [restarting, setRestarting] = useState(false)
   const [ok, setOk] = useState('')
   const [err, setErr] = useState('')
@@ -16,7 +18,10 @@ export default function RestartButton() {
     // who will not press it never gets a saved template change into a running
     // chat. The confirm says what stays (chats, history) and what stops (a
     // reply in progress) before anything happens.
-    if (!window.confirm(i18nT('components.restartButton.confirm'))) return
+    if (!(await confirm({
+      title: i18nT('components.restartButton.confirm'),
+      confirmLabel: i18nT('components.restartButton.apply_restart'),
+    }))) return
     setRestarting(true)
     setErr('')
     setOk('')
@@ -53,6 +58,7 @@ export default function RestartButton() {
     // inside the Connections header band (the ok tick is one short line and
     // stays beside the button).
     <div className="flex flex-wrap items-center justify-end gap-2">
+      {confirmDialog}
       {ok && <span className="text-[13px] animate-rise text-ok">{ok}</span>}
       {/* No hand-off: the failure goes through ErrorNotice like every other error the user
           sees, so the journal lookup applies; `inline` because this sits in a

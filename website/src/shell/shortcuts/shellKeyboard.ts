@@ -7,7 +7,7 @@ import { requestSlotFolderOpen, setAgentSwitchNotice } from '../../store/chatSli
 import { isStaleProjectDirError } from '../../utils/folderAgent'
 import type { ChatFolder } from '../../types'
 import { newChatShortcutArgs } from './newChatArgs'
-import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
+import { createChatForView, showCreatedChat, whenCreatedChatShown } from '../../lib/createdChatView'
 import { useAskingNavigate } from '../../components/NavigationLeaveGuard'
 import { pendingSlotSwitch, pendingSlotSwitchTarget, performSlotSwitch } from '../../lib/slotSwitch'
 import { performAgentSlotSwitch } from '../../lib/agentSwitch'
@@ -85,22 +85,23 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       // A create the user moved away from (another session, another page)
       // leaves the user there: no navigate and no composer focus. So does a
       // page that refused to be left.
-      if (!showCreatedChat(view, navigate)) return
-      // A chat filed into the active chat's folder: open that folder's path in
-      // the sidebar so its row is not hidden (a default-folder create already
-      // asks from createSlot; this is a no-op for an unfiled chat).
-      if (view.slot.folder_id) dispatch(requestSlotFolderOpen({ key: view.slot.key, folder_id: view.slot.folder_id }))
-      // Unguarded on purpose: this mutation only fires from the new-chat
-      // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
-      // focusComposer()'s touch-device skip would wrongly suppress focus on a
-      // tablet with a physical keyboard. Next frame, so the new slot's
-      // composer has been committed to the DOM.
-      //
-      // Through the resolver rather than a bare lookup, so a composer the user
-      // left collapsed is asked back instead of swallowing the caret: creating a
-      // session IS a typing intent, and the alternative is a new chat whose
-      // first keystroke goes nowhere.
-      requestAnimationFrame(() => queryComposerOrExpand(focusComposerElement))
+      whenCreatedChatShown(showCreatedChat(view, navigate), () => {
+        // A chat filed into the active chat's folder: open that folder's path in
+        // the sidebar so its row is not hidden (a default-folder create already
+        // asks from createSlot; this is a no-op for an unfiled chat).
+        if (view.slot.folder_id) dispatch(requestSlotFolderOpen({ key: view.slot.key, folder_id: view.slot.folder_id }))
+        // Unguarded on purpose: this mutation only fires from the new-chat
+        // keyboard shortcut, and a pressed shortcut proves a keyboard exists —
+        // focusComposer()'s touch-device skip would wrongly suppress focus on a
+        // tablet with a physical keyboard. Next frame, so the new slot's
+        // composer has been committed to the DOM.
+        //
+        // Through the resolver rather than a bare lookup, so a composer the user
+        // left collapsed is asked back instead of swallowing the caret: creating a
+        // session IS a typing intent, and the alternative is a new chat whose
+        // first keystroke goes nowhere.
+        requestAnimationFrame(() => queryComposerOrExpand(focusComposerElement))
+      })
     },
   })
   const refreshTrigger = useAppSelector(s => s.dashboard.refreshTrigger)
@@ -141,7 +142,7 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
       dispatch(setAgentSwitchNotice(agentSwitchFailureNotice(error, agent)))
     }
   }, [dispatch, queryClient])
-  useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
+  const { confirmDialog } = useKeyboardShortcuts({ onToggleShortcutsModal: toggleShortcutsModal, onNewChat: () => {
     const s = appStore.getState()
     newChatMutation.mutate(newChatShortcutArgs(s.dashboard.slots, s.chat.activeSlot, queryClient.getQueryData<ChatFolder[]>(['chat-folders'])))
   }, disabled: shortcutsOpen,
@@ -351,5 +352,5 @@ export function useShellKeyboard({ toggleFocusMode, toggleNav, terminalEnabled, 
   // (behind the default-on mc-auto-connect setting), so a crew is live without
   // a manual switcher click. Registered here once, like useInstanceShortcuts.
   useAutoConnectInstances()
-  return { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice }
+  return { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, confirmDialog }
 }

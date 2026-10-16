@@ -2,6 +2,7 @@ import type { HTMLAttributes, MouseEvent, ReactNode } from 'react'
 import { X } from 'lucide-react'
 
 import Clickable from '../Clickable'
+import ErrorNotice from '../ErrorNotice'
 import Glass from '../Glass'
 import type { Notification } from '../../types'
 import { KIND_META, DEFAULT_META, notePriority, stripMd, fmtRelativeMinute, MAC_ACTION_BTN_CLASS } from './notifMeta'
@@ -99,7 +100,15 @@ export default function NotificationCard({
       {member ? <CrewmateNoteFace member={member} size={26} fallback={kindIcon} /> : kindIcon}
       <div className="flex-1 min-w-0">
         {member && <CrewmateNoteName member={member} title={n.title} className="block text-[11px] text-muted truncate leading-tight mb-0.5" />}
-        <div className={`text-[13px] font-semibold truncate leading-tight ${muted ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
+        {n.kind === 'error' ? (
+          /* No hand-off: this card floats over whatever page the user is on,
+             which may hold an unsaved draft (a chat composer, a settings form)
+             that the hand-off's navigation to the chat would destroy.
+             The status-text shade: bare --danger misses 4.5:1 on the light card. */
+          <ErrorNotice variant="inline" showIcon={false} live={false} message={n.title} className="text-[13px] font-semibold leading-tight" messageClassName="text-danger-text" />
+        ) : (
+          <div className={`text-[13px] font-semibold leading-tight ${n.body || bodyOverride !== undefined ? 'truncate' : 'break-words'} ${muted ? 'text-muted font-normal' : 'text-text-strong'}`}>{n.title}</div>
+        )}
         {bodyOverride !== undefined
           ? bodyOverride
           : <div className="text-[12px] text-muted mt-0.5 line-clamp-2 leading-snug">{stripMd(n.body || '').slice(0, 140)}</div>}

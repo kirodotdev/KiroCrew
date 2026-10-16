@@ -141,6 +141,15 @@ describe('NotificationBanner: arrival', () => {
     expect(card.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
+  it('announces a live error note through the region, not a nested alert', () => {
+    renderBanner()
+    arrive(mkN({ kind: 'error', title: 'Couldn\'t duplicate this session.', body: '' }))
+    const region = screen.getByTestId('notification-banner-region')
+    expect(region).toHaveTextContent('Couldn\'t duplicate this session.')
+    expect(region.getAttribute('aria-live')).toBe('polite')
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('never renders passive or silenced notes', () => {
     renderBanner()
     arrive(mkN({ priority: 'passive' }))

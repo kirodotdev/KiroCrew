@@ -73,7 +73,8 @@ import { OverlayPortal } from '../../components/overlayRoot'
 import { useGuideOpenedSurface } from '../../guide/useGuideOpenedSurface'
 import { useGuideRevealScope } from '../../guide/GuideRevealScope'
 import { useGuidePredicate, useGuideSelection } from '../../guide/guidePredicates'
-import { useGuardedLeave, useMayLeaveForNavigation, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
+import { settleNavigationExit, useClaimNavigationExitAttempt, useGuardedLeave, useMayLeaveNow, usePublishNavigationStake, useRegisterNavigationLeaveGuard } from '../../components/NavigationLeaveGuard'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { hasNoCrewmates } from './rosterFilter'
 import { AnimatePresence, animate, motion } from 'framer-motion'
 import OverlayDrawer from '../../components/OverlayDrawer'
@@ -180,6 +181,7 @@ function CrewFaceFlight({ flight, onDone }: { flight: FaceFlight; onDone: () => 
 
 export default function MembersPage() {
   const { t } = useTranslation()
+  const { confirm: confirmLeave, confirmDialog: leaveConfirmDialog } = useConfirm()
   const navigate = useNavigate()
   const leave = useGuardedLeave()
   const location = useLocation()
@@ -252,7 +254,17 @@ export default function MembersPage() {
   // The proposal an opening starts from (a create link's name and goal), or
   // none. A NEW object per opening: the card re-fills from it by identity.
   const [createDraft, setCreateDraft] = useState<CrewmateDraft>()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeaveNow = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
+  // Leaving the open card is an exit like any other: it holds the provider's one
+  // question, so a Back or rail click while it asks is dropped, not stacked. The
+  // answer is not tied to the address: this page rewrites its own URL (the
+  // remembered chat) while the question is open, and the card is still there.
+  const askLeaveCreate = useCallback((): boolean | Promise<boolean> => {
+    const attempt = claimExitAttempt()
+    if (!attempt) return false
+    return settleNavigationExit({ isSourceCurrent: () => true, end: attempt.end }, mayLeaveNow, () => true, undefined, false)
+  }, [claimExitAttempt, mayLeaveNow])
   // The card's own report of whether the user changed what it opened with,
   // and whether a create is in flight.
   const createEditedRef = useRef(false)
@@ -272,12 +284,12 @@ export default function MembersPage() {
    *  only when the user changed it (a guide that brought us here already
    *  asked: `leaveGranted`); refused, it stays as it is. The chat behind the card
    *  stays mounted, so its unsent draft is there again on the way back. */
-  const openCreate = useCallback((expanded: boolean, draft?: CrewmateDraft, leaveGranted = false) => {
+  const openCreate = useCallback(async (expanded: boolean, draft?: CrewmateDraft, leaveGranted = false) => {
     // A create in flight keeps its card as sent, open or left: a second
     // opening would blank a form still locked on that create, and its
     // settle would then close or error the card the user just opened.
     if (createBusyRef.current) return
-    if (createOpenRef.current && !leaveGranted && !mayLeave()) return
+    if (createOpenRef.current && !leaveGranted && !(await askLeaveCreate())) return
     createEditedRef.current = false
     if (!createBusyRef.current) leftCreateRef.current = false
     setLeftCreateFailure(null)
@@ -286,7 +298,7 @@ export default function MembersPage() {
     setCreateDraft(draft ? { ...draft } : { name: '', goal: '' })
     setCreateExpanded(expanded)
     setCreateOpen(true)
-  }, [mayLeave])
+  }, [askLeaveCreate])
   const draftRequest = searchParams.get('create') === '1'
   // Set below, once the card's close exists: records the guide that opened it.
   const markGuideOpenedRef = useRef<() => void>(() => {})
@@ -294,7 +306,7 @@ export default function MembersPage() {
     if (!draftRequest) return
     const granted = (location.state as { leaveGranted?: boolean } | null)?.leaveGranted === true
     markGuideOpenedRef.current()
-    openCreate(false, { name: searchParams.get('name') ?? '', goal: searchParams.get('goal') ?? '' }, granted)
+    void openCreate(false, { name: searchParams.get('name') ?? '', goal: searchParams.get('goal') ?? '' }, granted)
     const next = new URLSearchParams(searchParams)
     next.delete('create'); next.delete('name'); next.delete('goal')
     // A create link names no member, so the chat it was followed from stays
@@ -317,14 +329,23 @@ export default function MembersPage() {
   // card is left only if its own guard agrees (a create in flight asks too).
   // A card whose create just succeeded has already been stood down by
   // `handleCreated`, so opening the new crewmate passes straight through.
-  const leaveCreate = useCallback((): boolean => {
-    if (createOpenRef.current) {
-      if (!mayLeave()) return false
+  const leaveCreate = useCallback((): boolean | Promise<boolean> => {
+    if (!createOpenRef.current) return true
+    // An untouched card has no work to preserve. Keep this path synchronous so
+    // ordinary member switches retain their existing one-tick behavior.
+    if (!createEditedRef.current && !createBusyRef.current) {
+      setCreateOpen(false)
+      return true
+    }
+    const close = (allowed: boolean) => {
+      if (!allowed) return false
       if (createBusyRef.current) leftCreateRef.current = true
       setCreateOpen(false)
+      return true
     }
-    return true
-  }, [mayLeave])
+    const answer = askLeaveCreate()
+    return typeof answer === 'boolean' ? close(answer) : answer.then(close)
+  }, [askLeaveCreate])
   // The rail's Crewmates row (or a palette jump to `/members`) while the card
   // is up means "show me the page", like choosing a chat does. The navigation
   // lands on this same page, which stays mounted with `createOpen` still true,
@@ -354,7 +375,7 @@ export default function MembersPage() {
     if (navigationType !== 'PUSH' || isTrapEntry(location.state)) return
     if (location.pathname !== '/members' || location.search !== '' || !createOpen) return
     const granted = (location.state as { leaveGranted?: boolean } | null)?.leaveGranted === true
-    if (!granted) { leaveCreate(); return }
+    if (!granted) { void leaveCreate(); return }
     if (createBusyRef.current) leftCreateRef.current = true
     setCreateOpen(false)
   }, [location.key, location.pathname, location.search, location.state, navigationType, createOpen, leaveCreate])
@@ -583,8 +604,15 @@ export default function MembersPage() {
     return confirmSched({
       title: t('components.markdownPanel.discard_unsaved_changes'),
       confirmLabel: t('components.markdownPanel.discard_changes_button'),
+      cancelLabel: t('components.confirmDialog.keep_editing'),
     })
   }, [confirmSched, t])
+  const confirmDiscard = useCallback((title: string) => confirmLeave({
+    title,
+    confirmLabel: t('components.markdownPanel.discard_changes_button'),
+    cancelLabel: t('components.confirmDialog.keep_editing'),
+    layer: 'top',
+  }), [confirmLeave, t])
   schedGuardRef.current = useCallback(async () => {
     // An in-flight editor write must not be abandoned: refuse the leave outright
     // until it settles (the request could still land and persist a "discarded"
@@ -594,33 +622,35 @@ export default function MembersPage() {
     // exit it does not own. The async guard backs the in-app exits (sidebar
     // clicks and session opens); confirm before discarding modal edits, the
     // same question the Schedules draft asks.
-    if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
+    if (crewModalAtStakeRef.current && !(await confirmDiscard(t('pages.membersPage.edit_leave_draft')))) return false
     if (!schedulesMounted) return true
     if (schedSaving.current || goalsDraft.current.busy) return false
     return await mayLeaveGoals() && await mayLeaveExport() && await mayLeaveSchedules()
-  }, [schedulesMounted, mayLeaveGoals, mayLeaveExport, mayLeaveSchedules, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
+  }, [schedulesMounted, mayLeaveGoals, mayLeaveExport, mayLeaveSchedules, confirmDiscard, t, crewModalAtStakeRef, crewModalBusyRef, schedSaving])
   schedAtStakeRef.current = useCallback(
     () => schedulesMounted && (schedSaving.current || schedDraftDirty.current || goalsDraft.current.dirty || goalsDraft.current.busy || exportDraft.current),
     [schedulesMounted, schedDraftDirty, schedSaving],
   )
-  // Leaving the ROUTE is the last exit, and the registry that owns it is synchronous, so
-  // it cannot use the app's confirm dialog. `window.confirm`, exactly as the New crewmate
-  // dialog's own guard does on this page for the same reason. A create in flight refuses
-  // outright here too: the POST would land with the page gone.
-  useRegisterNavigationLeaveGuard(() => {
+  // The route guard is awaitable, so it can use the page-owned themed dialog. A create
+  // or editor write in flight still refuses outright: the POST could land with the page gone.
+  useRegisterNavigationLeaveGuard(async () => {
     // Refuse a route leave while an editor write is in flight (see the async
     // guard): the request could still persist a change the user discarded.
     if (crewModalBusyRef.current) return false
     // Leaving the route also abandons an open editor modal's unsaved panes.
-    // Same synchronous `window.confirm` the Schedules draft uses here, since
-    // the registry cannot await the app's confirm dialog.
-    if (crewModalAtStakeRef.current && !window.confirm(t('pages.membersPage.edit_leave_draft'))) return false
+    if (crewModalAtStakeRef.current && !(await confirmDiscard(t('pages.membersPage.edit_leave_draft')))) return false
     if (!schedulesMounted) return true
     if (schedSaving.current || goalsDraft.current.busy) return false
-    if (goalsDraft.current.dirty && !window.confirm(t('components.markdownPanel.discard_unsaved_changes'))) return false
-    if (exportDraft.current && !window.confirm(`${t('pages.membersPage.export_discard_lessons')}\n${t('pages.membersPage.export_discard_lessons_body')}`)) return false
+    if (goalsDraft.current.dirty && !(await confirmDiscard(t('components.markdownPanel.discard_unsaved_changes')))) return false
+    if (exportDraft.current && !(await confirmLeave({
+      title: t('pages.membersPage.export_discard_lessons'),
+      body: t('pages.membersPage.export_discard_lessons_body'),
+      confirmLabel: t('pages.membersPage.export_discard_lessons_confirm'),
+      cancelLabel: t('components.confirmDialog.keep_editing'),
+      layer: 'top',
+    }))) return false
     if (!schedDraftDirty.current) return true
-    const ok = window.confirm(t('pages.membersPage.schedules_leave_draft'))
+    const ok = await confirmDiscard(t('pages.membersPage.schedules_leave_draft'))
     if (ok) releaseSchedRetention()
     return ok
   })
@@ -930,6 +960,7 @@ export default function MembersPage() {
           answer may unmount. */}
       {schedConfirmDialog}
       {freshStartConfirmDialog}
+      {leaveConfirmDialog}
       {/* CREW-18688: the bot-edit modal, opened in place by the thread header's
           identity pill (member-identity-pill). Renders nothing until editingCrew is
           set; the hook returns open=false until its roster read resolves the

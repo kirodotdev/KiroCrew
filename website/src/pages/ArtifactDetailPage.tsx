@@ -4,7 +4,7 @@
  * it calls the owner hooks beside it in the page's hook order and renders the
  * two views. It keeps the comment counts and the side-panel state machine (the
  * owners and views read them, and two callbacks here set the panel), the revert
- * (its native confirm is allowlisted for this file), and the companion-chat
+ * (confirmed through the page's themed dialog), and the companion-chat
  * open path, its context entry and the upstream sync banner, which hold
  * agent-facing and provider strings that are not translated. New work goes to
  * the owner whose part it is:
@@ -47,7 +47,7 @@ export { isEditableKind }
 export default function ArtifactDetailPage({ popout = false }: { popout?: boolean } = {}) {
   const stateRead = useArtifactDetailPageState()
   const {
-    slug, navigate, confirmDialog, queryClient, dispatch, selectedVersion, setSelectedVersion, editing,
+    slug, navigate, confirm, confirmDialog, queryClient, dispatch, selectedVersion, setSelectedVersion, editing,
     setSaving, setSaveError,
   } = stateRead
   // ── Inline-comment state (durable via /api/artifacts/:slug/comments) ──
@@ -134,9 +134,11 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     if (!artifact || !selectedVersion || isCurrent) return
     const targetVersion = selectedVersion
     const newVersion = (detailQuery.data?.version ?? 1) + 1
-    const ok = window.confirm(
-      i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
-    )
+    const ok = await confirm({
+      title: i18nT('pages.artifactDetailPage.revert_confirm', { version: targetVersion, newVersion }),
+      confirmLabel: i18nT('pages.artifactDetailPage.revert'),
+      danger: false,
+    })
     if (!ok) return
     setSaving(true)
     setSaveError(null)
@@ -162,7 +164,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
     } finally {
       setSaving(false)
     }
-  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, queryClient, slug, setSaveError, setSaving, setSelectedVersion])
+  }, [artifact, selectedVersion, isCurrent, detailQuery.data?.version, confirm, queryClient, slug, setSaveError, setSaving, setSelectedVersion])
   const commentsRead = useArtifactDetailPageComments({ durableComments, stateRead, documentRead })
   const { postAnchoredMut } = commentsRead
   // Anchored add (from the selection toolbar's composer).
@@ -323,13 +325,14 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
   const threadsRead = useArtifactDetailPageThreads({ durableComments, stateRead, documentRead, composerRead })
   const menuRead = useArtifactDetailPageMenu({ stateRead, documentRead, composerRead, companionRead })
   if (detailQuery.isLoading || (!isCurrent && versionQuery.isLoading))
-    return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.loading')}</div>
+    return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.loading')}</div></>
   // A failed historical-snapshot fetch used to fall through to "Not found"
   // (artifact is undefined either way); surface it as the load failure it is.
   const loadError = detailQuery.error ?? (!isCurrent ? versionQuery.error : null)
   if (loadError) {
     return (
       <>
+        {confirmDialog}
         <div className="sticky top-0 z-10 bg-bg border-b border-border">
           <PageHeader title={i18nT('pages.artifactDetailPage.artifact')} subtitle={slug} />
         </div>
@@ -356,7 +359,7 @@ export default function ArtifactDetailPage({ popout = false }: { popout?: boolea
       </>
     )
   }
-  if (!artifact) return <div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div>
+  if (!artifact) return <>{confirmDialog}<div className="p-6 text-muted">{i18nT('pages.artifactDetailPage.not_found')}</div></>
 
   return (
     <>

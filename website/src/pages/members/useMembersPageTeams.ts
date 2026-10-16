@@ -88,7 +88,7 @@ interface MembersPageTeamViewOptions {
   location: Location
   setSearchParams: SetURLSearchParams
   urlMember: string
-  leaveCreate: () => boolean
+  leaveCreate: () => boolean | Promise<boolean>
   slotKeyOf: (m: MemberRosterRow) => string
 }
 
@@ -108,7 +108,6 @@ export function useMembersPageTeamView({
   // bare roster below md so the back button pops.
   const openTeam = useCallback(
     (id: string) => {
-      if (!leaveCreate()) return
       const go = () => {
         if (urlMember || urlTeam || !isMobile) {
           // The replace keeps the entry's own state: below md this branch is
@@ -121,11 +120,19 @@ export function useMembersPageTeamView({
         }
         setSearchParams({ [TEAM_PARAM]: id }, { state: { fromRoster: true } })
       }
-      // Opening a team clears the open crewmate, which unmounts the whole panel subtree
-      // and with it any create form on the Schedules tab. A team header row is a click
-      // away from that tab, so it asks first.
-      if (!schedAtStakeRef.current()) { go(); return }
-      void schedGuardRef.current().then((ok) => { if (ok) go() })
+      const openAfterCreateGuard = () => {
+        // Opening a team clears the open crewmate, which unmounts the whole panel subtree
+        // and with it any create form on the Schedules tab. A team header row is a click
+        // away from that tab, so it asks first.
+        if (!schedAtStakeRef.current()) { go(); return }
+        void schedGuardRef.current().then((ok) => { if (ok) go() })
+      }
+      const createLeave = leaveCreate()
+      if (typeof createLeave === 'boolean') {
+        if (createLeave) openAfterCreateGuard()
+        return
+      }
+      void createLeave.then((ok) => { if (ok) openAfterCreateGuard() })
     },
     [urlMember, urlTeam, isMobile, setSearchParams, location.state, leaveCreate, schedAtStakeRef, schedGuardRef],
   )

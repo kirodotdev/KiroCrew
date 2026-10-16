@@ -16,12 +16,6 @@ vi.mock('framer-motion', async () => {
   }
 })
 
-// Mock window.confirm for delete operations
-const mockConfirm = vi.fn()
-Object.defineProperty(window, 'confirm', {
-  writable: true,
-  value: mockConfirm,
-})
 
 /** The skills list is a master-detail layout: a list of skill rows on the
  *  left, a directory browser + edit affordances on the right.  The first
@@ -29,7 +23,6 @@ Object.defineProperty(window, 'confirm', {
 describe('SkillsTab Integration Tests', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    mockConfirm.mockReturnValue(true)
   })
 
   // ── Loading & Display ──────────────────────────────────────────────
@@ -209,7 +202,8 @@ describe('SkillsTab Integration Tests', () => {
     const delBtn = await screen.findByRole('button', { name: /delete/i }, { timeout: 3000 })
     await user.click(delBtn)
 
-    expect(mockConfirm).toHaveBeenCalledWith(expect.stringContaining('code-search'))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('code-search')
   })
 
   // ── Create Skill ───────────────────────────────────────────────────

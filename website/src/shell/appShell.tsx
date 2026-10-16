@@ -45,7 +45,7 @@ import { Package } from 'lucide-react'
 import { useFirstRunChapters } from './boot/firstRun'
 import { PREVIEW_EXPAND_EVENT } from '../components/WebPreviewPanel'
 import { useMobileConnect } from '../components/mobileConnect'
-import { useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { settleNavigationExit, useMayLeaveNow, useClaimNavigationExitAttempt } from '../components/NavigationLeaveGuard'
 import { useMotionValue, useTransform } from 'framer-motion'
 import { useDrawerSwipe, animateDrawer, registerDrawerTargets, takeOverDrawer, safeAreaLeft } from '../hooks/useDrawerSwipe'
 import { useTopbarCollapse } from '../lib/useTopbarCollapse'
@@ -267,7 +267,8 @@ export function useAppShell() {
   const activeSlotProject = useAppSelector(selectActiveSlotProject)
   const terminalPosition = useTerminalPosition()
   const navigate = useNavigate()
-  const mayLeaveForNavigation = useMayLeaveForNavigation()
+  const mayLeaveForNavigation = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const appStore = useAppStore()
   const pathnameRef = useRef(location.pathname)
   pathnameRef.current = location.pathname
@@ -322,6 +323,7 @@ export function useAppShell() {
         navigate,
         switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
         mayLeave: mayLeaveForNavigation,
+        claimExitAttempt,
         appendToOpenComposer: (slotKey, text) => {
           const path = pathnameRef.current
           const onChat = path === '/chat' || path.startsWith('/chat/')
@@ -343,7 +345,7 @@ export function useAppShell() {
     const unsetArtifact = setArtifactNavIntentHandler(perform)
     const unsetApp = setAppNavIntentHandler(perform)
     return () => { unsetArtifact(); unsetApp() }
-  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, appStore])
+  }, [isPopout, isEmbed, navigate, dispatch, mayLeaveForNavigation, claimExitAttempt, appStore])
 
   // Publish the router navigator and the current page's leave answer for the
   // error → agent hand-off. AskAgentButton is deliberately hook-free (its
@@ -359,9 +361,9 @@ export function useAppShell() {
   // the popped-out app while carrying the staged prompt across windows.
   useEffect(() => {
     if ((isPopout && !appPopoutRoute) || isEmbed) return
-    installSoftNavigate(navigate, mayLeaveForNavigation)
+    installSoftNavigate(navigate, mayLeaveForNavigation, claimExitAttempt)
     return () => installSoftNavigate(null)
-  }, [isPopout, appPopoutRoute, isEmbed, navigate, mayLeaveForNavigation])
+  }, [isPopout, appPopoutRoute, isEmbed, navigate, mayLeaveForNavigation, claimExitAttempt])
 
   const {
     colorTheme,
@@ -749,7 +751,7 @@ export function useAppShell() {
 
   const { appBadges, discoverBadges, railAppBadges, railAppRunStates } = useRailBadges(approvalCount)
 
-  const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice } = useShellKeyboard({
+  const { shortcutsOpen, setShortcutsOpen, toggleShortcutsModal, commandPalette, agentSwitchNotice, confirmDialog: keyboardConfirmDialog } = useShellKeyboard({
     toggleFocusMode, toggleNav: () => toggleNav(), terminalEnabled, isPopout, isEmbed, terminalPoppedOut, activeSlotProject,
   })
 
@@ -801,16 +803,18 @@ export function useAppShell() {
             navigate,
             switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) },
             mayLeave: mayLeaveForNavigation,
+            claimExitAttempt,
           },
         )
         return
       }
       // Same leave check as every other in-app exit: a native menu entry
       // replaces the page on screen just like a sidebar click does.
-      if (!mayLeaveForNavigation()) return
-      navigate(path)
+      const attempt = claimExitAttempt()
+      if (!attempt) return
+      settleNavigationExit(attempt, mayLeaveForNavigation, () => navigate(path))
     })
-  }, [navigate, dispatch, mayLeaveForNavigation, appStore])
+  }, [navigate, dispatch, mayLeaveForNavigation, appStore, claimExitAttempt])
   // A mouse's Back/Forward buttons on macOS, relayed by the shell as a swipe.
   useNativeHistoryStep(isMobile)
 
@@ -958,8 +962,8 @@ export function useAppShell() {
     isEmbed, isPopout, initialPopoutPath, appPopoutRoute, dispatch, connected, updateAvailable, authRequired, terminalEnabled,
     gatewayStatusMsg, focusModeChord, focusModeExitMsg, focusModeExitMsgVisible, focusChromeInert,
     terminalPoppedOut, bottomTerminalOpen, mobileConnect, mobileConnectOpen, setMobileConnectOpen,
-    hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation,
-    colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
+    hasRenderableMobileConnect, activeSlotProject, terminalPosition, navigate, mayLeaveForNavigation, claimExitAttempt,
+    keyboardConfirmDialog, colorTheme, resolvedMode, onboarded, privacyAcked, markOnboarded, markImportOnboarded, markPrivacyAcked,
     firstRun, lookPreviewFrame, branding, botName, avatar, isMobile, bottomDock, activeInstanceId,
     macFullscreen, macInset, topReservePx, focusMode, toggleFocusMode, focusActive, topPeek, railPeek,
     topPeekTrigger, topPeekSurface, railPeekTrigger, railPeekSurface, topChromeShown, localHeaderDragGaps,

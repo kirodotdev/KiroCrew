@@ -21,6 +21,7 @@ import {
 import { i18nT } from '../i18n/t'
 import { useImeGuard } from '../hooks/useImeGuard'
 import ErrorNotice from '../components/ErrorNotice'
+import StatusNotice from '../components/StatusNotice'
 type Mode = 'compose' | 'spec' | 'yaml'
 
 /** Human text for a caught failure: the `ApiError` / `Error` message, else the value itself. */
@@ -134,6 +135,10 @@ export default function ProjectsPage() {
   // drop its rejection or its `{ ok: false }` body on the floor, so a refused
   // action was indistinguishable from a slow one.
   const [actionError, setActionError] = useState('')
+  // Local file validation and scheduling outcomes have a visible page owner,
+  // so they render inline rather than as a global notification.
+  // A refusal is a warning; the scheduled confirmation is a neutral result.
+  const [statusNotice, setStatusNotice] = useState<{ message: string; tone: 'warn' | 'info' } | null>(null)
   const mountedRef = useRef(true)
   const loadingRef = useRef(false)
   const appliedRef = useRef<string | null>(null)
@@ -376,7 +381,7 @@ export default function ProjectsPage() {
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml')); e.target.value = ''; return }
+    if (/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.yaml_files_should_be_uploaded_via_the_from_yaml'), tone: 'warn' }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setSpecText(reader.result as string)
     reader.readAsText(file)
@@ -386,7 +391,7 @@ export default function ProjectsPage() {
   const handleYamlUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file) return
-    if (!/\.ya?ml$/i.test(file.name)) { alert(i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr')); e.target.value = ''; return }
+    if (!/\.ya?ml$/i.test(file.name)) { setStatusNotice({ message: i18nT('pages.projectsPage.only_yaml_yml_files_are_accepted_here_use_the_fr'), tone: 'warn' }); e.target.value = ''; return }
     const reader = new FileReader()
     reader.onload = () => setYamlText(reader.result as string)
     reader.readAsText(file)
@@ -650,6 +655,7 @@ export default function ProjectsPage() {
         <ErrorNotice message={actionError} onDismiss={() => setActionError('')} className="mx-4 mt-2 shrink-0" testId="projects-action-error" />
         {/* Project rename announcement — always mounted so it is present before any run is selected. */}
         <span className="sr-only" role="status" aria-live="polite" aria-atomic="true" data-testid="project-rename-status">{projectRenameAnnouncement}</span>
+        <StatusNotice message={statusNotice?.message} tone={statusNotice?.tone} onDismiss={() => setStatusNotice(null)} className="mx-4 mt-2 shrink-0" testId="projects-status-notice" />
         {selectedRun ? (
           <>
             <div className="px-4 py-2 flex items-center gap-2 border-b border-border shrink-0">
@@ -762,10 +768,10 @@ export default function ProjectsPage() {
                 <button className="px-3 h-8 rounded-md border border-border text-muted text-[13px] cursor-pointer hover:text-accent hover:border-accent transition-all" onClick={() => {
                   const name = selectedRun.name || selectedRun.spec_name || selectedRun.task_id
                   const spec = selectedRun.spec_content || selectedRun.original_input || ''
-                  if (!spec) { alert(i18nT('pages.projectsPage.no_spec_idea_to_schedule')); return }
+                  if (!spec) { setStatusNotice({ message: i18nT('pages.projectsPage.no_spec_idea_to_schedule'), tone: 'warn' }); return }
                   void runAction(
                     () => api.createCron({ name: `Project: ${name}`, message: `run __inline__:${spec}`, every: 86400 }),
-                    () => alert(i18nT('pages.projectsPage.scheduled_as_daily_cron_job')),
+                    () => setStatusNotice({ message: i18nT('pages.projectsPage.scheduled_as_daily_cron_job'), tone: 'info' }),
                   )
                 }}><Clock className="lucide-inline" /> {i18nT('pages.projectsPage.schedule')}</button>
               </>}

@@ -1,8 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { screen, fireEvent, waitFor, within } from '@testing-library/react'
+import { screen, fireEvent, waitFor, within, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from '../../test/helpers'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider } from '../../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from '../../test/useMayLeaveAsPromise'
 import { api } from '../../api/client'
 import NewCrewmateDialog from './NewCrewmateDialog'
 import { POSE_IDS, seedIconPose } from '../../lib/avatarPoses'
@@ -22,10 +23,14 @@ vi.mock('../../api/client', async importOriginal => {
   }
 })
 
-let mayLeave: () => boolean = () => true
+let mayLeave: () => Promise<boolean> = async () => true
 function Probe() {
-  mayLeave = useMayLeaveForNavigation()
+  mayLeave = useMayLeaveAsPromise()
   return null
+}
+const settleLeaveConfirm = async (confirmed: boolean) => {
+  const dialog = await screen.findByRole('dialog', { name: /Leave this page\?/ })
+  fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Keep editing' }))
 }
 const unloadPrevented = () => {
   const ev = new Event('beforeunload', { cancelable: true })
@@ -443,8 +448,8 @@ describe('NewCrewmateDialog', () => {
     })
   })
 
-  it('a typed draft asks before leaving and before unload; a clean form does not', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('a typed draft asks through the themed dialog before leaving and before unload; a clean form does not', async () => {
+    const user = userEvent.setup()
     renderWithProviders(
       <NavigationLeaveGuardProvider>
         <Probe />
@@ -452,12 +457,28 @@ describe('NewCrewmateDialog', () => {
       </NavigationLeaveGuardProvider>,
     )
     await screen.findByTestId('crewmate-create-form')
-    expect(mayLeave()).toBe(true)
+    const outer = screen.getByRole('dialog') as HTMLElement
+    expect(await mayLeave()).toBe(true)
     expect(unloadPrevented()).toBe(false)
     typeName('Scout')
     expect(unloadPrevented()).toBe(true)
-    expect(mayLeave()).toBe(false)
-    expect(confirm).toHaveBeenCalledTimes(1)
+    let leave!: Promise<boolean>
+    act(() => { leave = mayLeave() })
+    const confirmDialog = await screen.findByRole('dialog', { name: /Leave this page\?/ })
+    await waitFor(() => expect(outer.inert).toBe(true))
+    expect(outer).toHaveAttribute('aria-hidden', 'true')
+    await user.tab()
+    expect(confirmDialog).toContainElement(document.activeElement as HTMLElement)
+    expect(document.activeElement?.tagName).toBe('BUTTON')
+    fireEvent.click(within(confirmDialog).getByRole('button', { name: 'Keep editing' }))
+    await expect(leave).resolves.toBe(false)
+    expect(confirmDialog).toBeInTheDocument()
+    expect(outer.inert).toBe(true)
+    await user.tab()
+    expect(confirmDialog).toContainElement(document.activeElement as HTMLElement)
+    await waitFor(() => expect(confirmDialog).not.toBeInTheDocument())
+    await waitFor(() => expect(outer.inert).toBe(false))
+    expect(outer).toContainElement(document.activeElement as HTMLElement)
   })
 })
 
@@ -489,7 +510,6 @@ describe('NewCrewmateDialog opened from a proposal', () => {
   })
 
   it('an untouched proposal leaves without asking and reports itself unedited; an edit is the user\'s draft', async () => {
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const states: { edited: boolean; busy: boolean }[] = []
     renderWithProviders(
       <NavigationLeaveGuardProvider>
@@ -498,14 +518,16 @@ describe('NewCrewmateDialog opened from a proposal', () => {
       </NavigationLeaveGuardProvider>,
     )
     await screen.findByTestId('crewmate-create-form')
-    expect(mayLeave()).toBe(true)
+    expect(await mayLeave()).toBe(true)
     expect(unloadPrevented()).toBe(false)
     expect(states.at(-1)).toEqual({ edited: false, busy: false })
     fireEvent.change(goalField()!, { target: { value: 'Watch CI and the release' } })
     await waitFor(() => expect(states.at(-1)).toEqual({ edited: true, busy: false }))
     expect(unloadPrevented()).toBe(true)
-    expect(mayLeave()).toBe(false)
-    expect(confirm).toHaveBeenCalledTimes(1)
+    let leave!: Promise<boolean>
+    await act(async () => { leave = mayLeave() })
+    await settleLeaveConfirm(false)
+    expect(await leave).toBe(false)
   })
 
   it('an untouched proposal whose New workspace form holds input reports itself edited, and unedited once that form is closed', async () => {

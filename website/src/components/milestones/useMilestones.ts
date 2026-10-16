@@ -11,7 +11,7 @@ import type { MilestoneEventAction, MilestoneFeatureItem, MilestoneSurface, Mile
 import { useAppDispatch, useAppSelector, store } from '../../store'
 import { stagePendingSend } from '../../store/chatSlice'
 import { createChatForView, showCreatedChat } from '../../lib/createdChatView'
-import { useAskingNavigate, useIsCurrentUrl, useMayLeaveForNavigation, useNavigationStakeNow } from '../NavigationLeaveGuard'
+import { settleNavigationExit, useAskingNavigate, useClaimNavigationExitAttempt, useIsCurrentUrl, useMayLeaveNow, useNavigationStakeNow } from '../NavigationLeaveGuard'
 import { crewModeAgent, crewModeEnabled, gatewayRunsCrewMode } from '../../lib/crewMode'
 import { ApiError } from '../../api/apiError'
 import { appPathname } from '../../lib/basePath'
@@ -307,7 +307,8 @@ function inAppRoute(route: string | undefined): route is string {
 export function useRunStarter() {
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
-  const mayLeave = useMayLeaveForNavigation()
+  const mayLeave = useMayLeaveNow()
+  const claimExitAttempt = useClaimNavigationExitAttempt()
   const stakeNow = useNavigationStakeNow()
   const isCurrentUrl = useIsCurrentUrl()
   const askingNavigate = useAskingNavigate()
@@ -326,7 +327,11 @@ export function useRunStarter() {
     // means the user already agreed to discard it, so the navigate after the
     // create carries `leaveGranted` instead of asking the same question twice.
     const agreedToLeave = !sameRoute && stakeNow()
-    if (!sameRoute && !mayLeave()) return
+    if (!sameRoute) {
+      const attempt = claimExitAttempt()
+      if (!attempt) return
+      if (!(await settleNavigationExit(attempt, mayLeave, () => true, undefined, false))) return
+    }
     // Explore is the only place a starter runs; the new-chat card only opens it.
     postMilestoneEvent(item.id, 'starter_clicked', 'panel')
     if (starter.kind === 'route') {
@@ -349,7 +354,7 @@ export function useRunStarter() {
     if (!view.shown) return
     // A yes to the first ask covers this navigate; with nothing at stake then,
     // the live guard is asked now (a draft can start during the create).
-    const go = (route: string): boolean => {
+    const go = (route: string): boolean | Promise<boolean> => {
       if (!agreedToLeave) return askingNavigate(route)
       navigate(route, { state: { leaveGranted: true } })
       return true
@@ -357,7 +362,7 @@ export function useRunStarter() {
     if (!send) { showCreatedChat(view, go); return }
     // A direct send goes through the composer's `?autoSend=1` intake, which
     // sends the staged input at once, so nothing the user types can be lost.
-    if (!go(chatUrl)) return
+    if (!(await go(chatUrl))) return
     dispatch(stagePendingSend(prompt))
-  }, [dispatch, navigate, mayLeave, stakeNow, isCurrentUrl, askingNavigate])
+  }, [dispatch, navigate, mayLeave, claimExitAttempt, stakeNow, isCurrentUrl, askingNavigate])
 }

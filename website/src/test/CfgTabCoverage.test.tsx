@@ -658,17 +658,20 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   it('stakes a leave guard while a subagent draft is unsaved', async () => {
     await renderRun()
     // Clean: the guard lets every navigation through and stakes nothing.
-    let [guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    let [guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean | Promise<boolean>, boolean]
     expect(atStake).toBe(false)
+    // A plain `true`, not a promise: a clean tab is left in the same task.
     expect(guard()).toBe(true)
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '120' } })
-    ;[guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean, boolean]
+    ;[guard, atStake] = leaveGuard.mock.calls.at(-1) as [() => boolean | Promise<boolean>, boolean]
     expect(atStake).toBe(true)
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    expect(guard()).toBe(false)
-    expect(confirm).toHaveBeenCalledTimes(1)
-    confirm.mockRestore()
+    let answer!: Promise<boolean>
+    act(() => { answer = guard() as Promise<boolean> })
+    expect(answer).toBeInstanceOf(Promise)
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep editing' }))
+    await expect(answer).resolves.toBe(false)
   })
 
   it('sends the whole subagent block and confirms', async () => {
@@ -872,16 +875,26 @@ describe('KiroCrewCfgTab workspace actions', () => {
     await waitFor(() => expect(within(form('ws-idle')).getByRole('textbox')).toBeDisabled())
   })
 
-  it('stakes a leave guard once the create dialog holds a typed name', async () => {
-    await renderTab()
+  it('settles the create leave guard after the config enters its error branch', async () => {
+    const { queryClient } = await renderTab()
     const staked = () => leaveGuard.mock.calls.at(-1)?.[1]
     expect(staked()).toBe(false)
     fireEvent.click(screen.getByRole('button', { name: 'New workspace' }))
     fireEvent.change(await screen.findByLabelText('Name'), { target: { value: 'client-b' } })
     await waitFor(() => expect(staked()).toBe(true))
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    expect(leaveGuard.mock.calls.at(-1)?.[0]()).toBe(false)
-    confirm.mockRestore()
+    const guard = leaveGuard.mock.calls.at(-1)?.[0] as () => Promise<boolean>
+
+    vi.mocked(api).kirocrewConfig = vi.fn().mockRejectedValue(new Error('config file unreadable'))
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+    })
+    expect(await screen.findByText('config file unreadable')).toBeInTheDocument()
+
+    let answer!: Promise<boolean>
+    act(() => { answer = guard() })
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Discard changes' }))
+    await expect(answer).resolves.toBe(true)
   })
 
   it('never restores an armed delete on a later mount', async () => {

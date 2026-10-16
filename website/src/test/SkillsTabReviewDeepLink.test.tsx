@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, fireEvent } from '@testing-library/react'
+import { within, render, screen, waitFor, fireEvent } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation } from 'react-router-dom'
 
@@ -98,6 +98,27 @@ beforeEach(() => {
   )
 })
 
+
+async function confirmAction(name: string | RegExp) {
+  const dialog = await waitFor(() => {
+    const confirmDialog = screen.getAllByRole('dialog').find(candidate =>
+      candidate.querySelector('[data-guide-confirm]'),
+    )
+    if (!confirmDialog) throw new Error('Native confirmation dialog is not open')
+    return confirmDialog
+  })
+  const action = name === 'Cancel'
+    ? within(dialog).getByRole('button', { name: 'Cancel' })
+    : dialog.querySelector<HTMLButtonElement>('[data-guide-confirm]')
+  if (!action) throw new Error('Native confirmation action is not rendered')
+  const actionName = action.textContent?.trim() ?? ''
+  if (typeof name === 'string' ? actionName !== name : !name.test(actionName)) {
+    throw new Error(`Unexpected native confirmation action: ${actionName}`)
+  }
+  fireEvent.click(action)
+  await waitFor(() => expect(document.querySelector('[data-guide-confirm]')).toBeNull())
+}
+
 describe('?review=<slug> deep link', () => {
   it('expands the linked candidate and only that one', async () => {
     renderAt('/capabilities?tab=skills&review=beta-skill')
@@ -173,11 +194,12 @@ describe('?review=<slug> deep link', () => {
     mockApi.skillsPending.mockResolvedValueOnce({ pending: [ROW_B] })
     mockApi.dismissPendingSkill.mockResolvedValue({ ok: true })
     mockApi.skillsPending.mockResolvedValue({ pending: [] })
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+
     renderAt('/capabilities?tab=skills&review=beta-skill')
     await bodyOfBetaSkillShown()
 
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await confirmAction('Dismiss')
     await waitFor(() => expect(mockApi.dismissPendingSkill).toHaveBeenCalledWith('beta-skill'))
     // Waiting for the row to GO is what makes this pin the guard: the mock being
     // called only proves the request fired, which precedes the refetch, so the

@@ -12,7 +12,7 @@
  */
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { cleanup, renderHook } from '@testing-library/react'
+import { cleanup, renderHook, screen, fireEvent, within, waitFor, act } from '@testing-library/react'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
@@ -23,6 +23,8 @@ import {
   useRegisterNavigationLeaveGuard,
 } from '../components/NavigationLeaveGuard'
 
+import { useConfirm } from '../components/ConfirmDialog'
+
 const navigateSpy = vi.fn()
 vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom')
@@ -31,8 +33,9 @@ vi.mock('react-router-dom', async () => {
 
 /** A page that is holding work: it answers "no" unless the user confirms. */
 function DirtyPage({ children }: { children: React.ReactNode }) {
-  useRegisterNavigationLeaveGuard(() => confirm('Discard unsaved changes?'))
-  return <>{children}</>
+  const { confirm, confirmDialog } = useConfirm()
+  useRegisterNavigationLeaveGuard(() => confirm({ title: 'Discard unsaved changes?', confirmLabel: 'Discard changes' }))
+  return <>{children}{confirmDialog}</>
 }
 
 /** A page with nothing at stake registers no guard at all. */
@@ -63,52 +66,46 @@ const renderActions = (
 }
 
 describe('command palette navigation leave guard', () => {
+  const settleDiscard = async (confirmed: boolean) => {
+    const dialog = await screen.findByRole('dialog', { name: 'Discard unsaved changes?' })
+    await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: confirmed ? 'Discard changes' : 'Cancel' })) })
+  }
+
   beforeEach(() => { navigateSpy.mockClear() })
   afterEach(() => { vi.restoreAllMocks(); cleanup() })
 
-  it('does not navigate when the page declines', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('does not navigate when the page declines', async () => {
     const { result } = renderActions(DirtyPage)
-    result.current.navigate('/chat')
-    expect(confirmSpy).toHaveBeenCalled()
+    act(() => { result.current.navigate('/chat') })
+    await settleDiscard(false)
     expect(navigateSpy).not.toHaveBeenCalled()
   })
 
-  it('navigates once the page accepts', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('navigates once the page accepts', async () => {
     const { result } = renderActions(DirtyPage)
-    result.current.navigate('/chat')
-    // The jump carries the mark that the guards were asked, so a page that
-    // stays mounted through it and acts on it does not ask again.
-    expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } })
+    act(() => { result.current.navigate('/chat') })
+    await settleDiscard(true)
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } }))
   })
 
-  it('does not ask when the page has nothing at stake', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('does not ask when the page has nothing at stake', async () => {
     const { result } = renderActions(CleanPage)
     result.current.navigate('/chat')
-    expect(confirmSpy).not.toHaveBeenCalled()
-    expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } })
+    await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/chat', { state: { leaveGranted: true } }))
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
   })
 
-  it('asks when the jump would drop the query the pane is mounted on', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('asks when the jump would drop the query the pane is mounted on', async () => {
     const { result } = renderActions(DirtyPage)
-    // Same pathname, no query: this is the palette's own Skills row jumping to
-    // `/capabilities`. The pane is mounted on `?tab=prompts`, so it unmounts.
-    result.current.navigate('/capabilities')
-    expect(confirmSpy).toHaveBeenCalled()
+    act(() => { result.current.navigate('/capabilities') })
+    await settleDiscard(false)
     expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('never asks for a jump to the address we are already at', () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
     const { result } = renderActions(DirtyPage)
     result.current.navigate('/capabilities?tab=prompts')
-    // Nothing changes, so nothing unmounts. A confirm the user did not earn is
-    // what teaches them to click through the one that matters.
-    expect(confirmSpy).not.toHaveBeenCalled()
-    // Nothing was asked, so the jump carries no `leaveGranted` mark.
+    expect(screen.queryByRole('dialog', { name: 'Discard unsaved changes?' })).toBeNull()
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=prompts', undefined)
   })
 })

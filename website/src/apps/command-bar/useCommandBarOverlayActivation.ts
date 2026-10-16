@@ -84,7 +84,7 @@ export function useCommandBarOverlayActivation({
   chatFoldersRef: MutableRefObject<unknown>
   dispatch: AppDispatch
   /** False when a leave guard kept the page on screen. */
-  navigate: (route: string) => boolean | void
+  navigate: (route: string) => boolean | void | Promise<boolean>
   queryClient: QueryClient
 }) {
   /**
@@ -217,9 +217,12 @@ export function useCommandBarOverlayActivation({
               // A send is staged only once the page has agreed to leave: one left
               // in the store after "stay" would fire the next time Chat opens.
               // After "stay" the text is still kept, as a seed, so the reader's
-              // argument is never lost.
-              const left = navigate(autoSend ? '/chat?autoSend=1' : '/chat') !== false
-              dispatch(autoSend && left ? stagePendingSend(text) : setPendingInput(text))
+              // argument is never lost. While a discard question is open the
+              // answer is a promise, and the text waits for it.
+              const stage = (left: boolean) => { dispatch(autoSend && left ? stagePendingSend(text) : setPendingInput(text)) }
+              const went = navigate(autoSend ? '/chat?autoSend=1' : '/chat')
+              if (went instanceof Promise) void went.then(stage)
+              else stage(went !== false)
               onClose()
               // Filed LAST, and deliberately not awaited. A contributed row opens a new
               // session on every run, so unfiled they bury the reader's own chats and two

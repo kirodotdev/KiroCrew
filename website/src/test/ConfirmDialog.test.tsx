@@ -7,8 +7,9 @@
  * native dialog is synchronous, freezes the renderer's event loop, and lets a
  * queued Quit event tear the app down before a follow-up request is sent.
  */
+import { StrictMode, useState, type ReactNode } from 'react'
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent, waitFor } from '@testing-library/react'
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { useConfirm, type ConfirmOptions } from '../components/ConfirmDialog'
 
@@ -35,7 +36,99 @@ function Probe({ onAnswer, opts }: { onAnswer: (ok: boolean) => void; opts?: Par
   )
 }
 
+function ConditionalProbe({ renderDialog, onAnswer }: { renderDialog: boolean; onAnswer: (ok: boolean) => void }) {
+  const { confirm, confirmDialog } = useConfirm()
+  return (
+    <>
+      <button onClick={async () => onAnswer(await confirm({ title: 'Proceed?', confirmLabel: 'Proceed' }))}>ask conditionally</button>
+      {renderDialog && confirmDialog}
+    </>
+  )
+}
+
+function SplitRenderer({ dialog }: { dialog: ReactNode }) {
+  const [renderDialog, setRenderDialog] = useState(true)
+  return (
+    <>
+      <button onClick={() => setRenderDialog(false)}>remove renderer</button>
+      {renderDialog && dialog}
+    </>
+  )
+}
+
+function SplitRendererProbe({ onAnswer }: { onAnswer: (ok: boolean) => void }) {
+  const { confirm, confirmDialog, confirmOpen } = useConfirm()
+  return (
+    <>
+      <button onClick={async () => onAnswer(await confirm({ title: 'Proceed?', confirmLabel: 'Proceed' }))}>ask separately</button>
+      <output data-testid="confirm-open">{String(confirmOpen)}</output>
+      <SplitRenderer dialog={confirmDialog} />
+    </>
+  )
+}
+
 describe('useConfirm', () => {
+  it('answers false when confirm is called without rendering its dialog', async () => {
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    render(<ConditionalProbe renderDialog={false} onAnswer={onAnswer} />)
+
+    await user.click(screen.getByRole('button', { name: 'ask conditionally' }))
+
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
+    expect(screen.queryByRole('dialog')).toBeNull()
+  })
+
+  it('answers false when a pending dialog is removed by an owner branch', async () => {
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    const view = render(<ConditionalProbe renderDialog onAnswer={onAnswer} />)
+    await user.click(screen.getByRole('button', { name: 'ask conditionally' }))
+    await screen.findByRole('dialog', { name: 'Proceed?' })
+
+    view.rerender(<ConditionalProbe renderDialog={false} onAnswer={onAnswer} />)
+
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
+  })
+
+  it('answers false when a child removes the separately rendered dialog', async () => {
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    render(<SplitRendererProbe onAnswer={onAnswer} />)
+    await user.click(screen.getByRole('button', { name: 'ask separately' }))
+    await screen.findByRole('dialog', { name: 'Proceed?' })
+
+    await user.click(screen.getByRole('button', { name: 'remove renderer' }))
+
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(false))
+  })
+
+  it('clears confirmOpen when a child removes the renderer during exit', async () => {
+    const user = userEvent.setup()
+    render(<SplitRendererProbe onAnswer={vi.fn()} />)
+    await user.click(screen.getByRole('button', { name: 'ask separately' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Proceed?' })
+    expect(screen.getByTestId('confirm-open')).toHaveTextContent('true')
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    expect(dialog).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'remove renderer' }))
+
+    await waitFor(() => expect(screen.getByTestId('confirm-open')).toHaveTextContent('false'))
+  })
+
+  it('keeps a rendered question pending under StrictMode until the user answers', async () => {
+    const onAnswer = vi.fn()
+    const user = userEvent.setup()
+    render(<StrictMode><ConditionalProbe renderDialog onAnswer={onAnswer} /></StrictMode>)
+
+    await user.click(screen.getByRole('button', { name: 'ask conditionally' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Proceed?' })
+    expect(onAnswer).not.toHaveBeenCalled()
+    await user.click(within(dialog).getByRole('button', { name: 'Proceed' }))
+    await waitFor(() => expect(onAnswer).toHaveBeenCalledWith(true))
+  })
+
   it("marks its confirm button, and only that one, as the guide's confirm signal", async () => {
     const user = userEvent.setup()
     render(<Probe onAnswer={vi.fn()} />)

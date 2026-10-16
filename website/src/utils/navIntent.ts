@@ -1,5 +1,6 @@
 import type { NavIntent } from './popoutController'
 import { handoffToChat, notifyChatHandoffs } from './errorReport'
+import { settleNavigationExit } from '../lib/settleNavigationExit'
 import { safeSetSessionItem } from './safeStorage'
 import type { ChatLaunchOptions } from '../app-sdk'
 
@@ -137,7 +138,7 @@ export function chatDeepLinkSlot(path: string): string {
  * before the slot switch + route change so ChatPage's slot-restore effect
  * finds it when the target slot activates.
  *
- * `mayLeave` is the page-on-screen leave check (`useMayLeaveForNavigation`).
+ * `mayLeave` is the page-on-screen leave check (`useMayLeaveNow`).
  * An intent that leaves the page asks it first, like every wired in-app exit,
  * and a veto drops the whole intent: no prefill is staged and no slot switches
  * for a navigation the user refused.
@@ -148,7 +149,9 @@ export function applyNavIntentInMain(
     navigate: (path: string) => void
     switchSlot: (slotKey: string) => void
     // Required, so every caller decides whether its exit asks the page first.
-    mayLeave: () => boolean
+    mayLeave: () => boolean | Promise<boolean>
+    /** Claims the provider's one visible exit confirmation, if one exists. */
+    claimExitAttempt?: () => { isSourceCurrent: () => boolean; end: () => void } | null
     /**
      * Append `text` to the chat composer this window already shows for
      * `slotKey`, returning false when no such composer is on screen. A hand-off
@@ -170,7 +173,7 @@ export function applyNavIntentInMain(
      */
     setPendingInput?: (text: string, to: string, slotKey: string | null) => void
   },
-): void {
+): void | Promise<void> {
   // Best-effort raise — a channel-delivered intent has no user activation, so
   // browsers may veto this; the opener-focus on the popout side is the
   // reliable path and this is just the assist for the claimed-but-not-opener
@@ -182,32 +185,36 @@ export function applyNavIntentInMain(
     && intent.slotKey === prefill.slotKey && deps.appendToOpenComposer?.(prefill.slotKey, prefill.append)) {
     return
   }
-  if (!deps.mayLeave()) return
-  let destination = `${intent.path}${intent.search ?? ''}`
-  if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
-  if (intent.pendingInput) {
-    deps.setPendingInput?.(intent.pendingInput, destination, intent.slotKey ?? null)
-  }
-  if (intent.errorHandoffs?.length) {
-    // The forwarding window already spent its queue. If this window cannot
-    // re-stage it, use ChatPage's fresh-session launch (`?new=1&prefill=`) so
-    // the diagnostic seeds only the session that launch creates; publishing
-    // through pendingInput would let usePendingInputIntake overwrite an open
-    // session's unsent draft. "Ask the agent" always targets /chat
-    // (sendErrorToChat navigates there after staging, and the pop-out's hard
-    // exit hands off /chat), so a prompt paired with any other destination is
-    // stale, and dropping it is safer than writing it over a retained draft.
-    if (handoffToChat(intent.errorHandoffs)) notifyChatHandoffs()
-    else if (intent.path === '/chat' || intent.path.startsWith('/chat/')) {
-      const params = new URLSearchParams(intent.search ?? '')
-      params.delete('sid')
-      params.delete('slot')
-      params.set('new', '1')
-      params.set('prefill', intent.errorHandoffs.join('\n\n'))
-      destination = `${intent.path}?${params}`
+  const attempt = deps.claimExitAttempt ? deps.claimExitAttempt() : null
+  if (deps.claimExitAttempt && !attempt) return
+  // Synchronous unless the page on screen shows a confirmation.
+  return settleNavigationExit<void>(attempt, deps.mayLeave, () => {
+    let destination = `${intent.path}${intent.search ?? ''}`
+    if (prefill) writePrefill(prefill.slotKey, prefill.prompt)
+    if (intent.pendingInput) {
+      deps.setPendingInput?.(intent.pendingInput, destination, intent.slotKey ?? null)
     }
-  }
-  if (intent.chatLaunch) writeChatLaunch(intent.chatLaunch)
-  if (intent.slotKey) deps.switchSlot(intent.slotKey)
-  deps.navigate(destination)
+    if (intent.errorHandoffs?.length) {
+      // The forwarding window already spent its queue. If this window cannot
+      // re-stage it, use ChatPage's fresh-session launch (`?new=1&prefill=`) so
+      // the diagnostic seeds only the session that launch creates; publishing
+      // through pendingInput would let usePendingInputIntake overwrite an open
+      // session's unsent draft. "Ask the agent" always targets /chat
+      // (sendErrorToChat navigates there after staging, and the pop-out's hard
+      // exit hands off /chat), so a prompt paired with any other destination is
+      // stale, and dropping it is safer than writing it over a retained draft.
+      if (handoffToChat(intent.errorHandoffs)) notifyChatHandoffs()
+      else if (intent.path === '/chat' || intent.path.startsWith('/chat/')) {
+        const params = new URLSearchParams(intent.search ?? '')
+        params.delete('sid')
+        params.delete('slot')
+        params.set('new', '1')
+        params.set('prefill', intent.errorHandoffs.join('\n\n'))
+        destination = `${intent.path}?${params}`
+      }
+    }
+    if (intent.chatLaunch) writeChatLaunch(intent.chatLaunch)
+    if (intent.slotKey) deps.switchSlot(intent.slotKey)
+    deps.navigate(destination)
+  }, undefined, undefined)
 }

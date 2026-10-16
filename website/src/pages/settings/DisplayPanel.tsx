@@ -1123,10 +1123,12 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
         onClose={editor.closeEditor}
         title={editor.isEditing ? i18nT('pages.settings.displayPanel.edit_theme') : i18nT('pages.settings.displayPanel.create_theme')}
         maxWidth={672}
+        interactionDisabled={editor.confirmOpen}
         guardAccidentalDismiss={editor.isDirty}
       >
-        <ThemeEditorPanel editor={editor} />
+        <ThemeEditorPanel editor={editor} includeConfirmDialog={false} />
       </Modal>
+      {editor.confirmDialog}
       </>
           )
 

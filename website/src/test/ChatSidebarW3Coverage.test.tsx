@@ -60,6 +60,11 @@ vi.mock('framer-motion', async () => {
 
 vi.mock('../components/ProjectPicker', () => ({ default: () => null }))
 
+const confirmMock = vi.hoisted(() => vi.fn())
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({ confirm: confirmMock, confirmDialog: null }),
+}))
+
 /** What the stubbed modal hands back, and what the sidebar handed it. */
 const modal = vi.hoisted(() => ({
   draft: {
@@ -250,6 +255,7 @@ beforeEach(() => {
   // logs have to be cleared here or a later negative assertion inherits an
   // earlier test's calls.
   vi.clearAllMocks()
+  confirmMock.mockReset().mockResolvedValue(false)
   localStorage.clear()
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false }
   modal.props = null
@@ -402,16 +408,21 @@ describe('ChatSidebar — list-view folder header', () => {
     expect(screen.queryByTestId('folder-hide-f1')).toBeNull()
   })
 
-  it('deletes the folder only once the confirm is accepted', async () => {
-    const confirmFn = vi.fn().mockReturnValue(false)
-    vi.stubGlobal('confirm', confirmFn)
+  it('keeps the folder when the ⋯ menu delete confirm is declined', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     renderSidebar()
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Delete “Alpha”? Sessions will be ungrouped.', confirmLabel: 'Delete folder',
+    }))
     expect(mocks.deleteChatFolder).not.toHaveBeenCalled()
+    expect(nativeConfirm).not.toHaveBeenCalled()
+  })
 
-    confirmFn.mockReturnValue(true)
+  it('deletes the folder once the ⋯ menu delete confirm is accepted', async () => {
+    confirmMock.mockResolvedValue(true)
+    renderSidebar()
     openFolderMenu('f1')
     fireEvent.click(screen.getByTestId('folder-delete-f1'))
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
@@ -433,12 +444,15 @@ describe('ChatSidebar — list-view folder header', () => {
   })
 
   it('right-click deletes only through the same confirm as the ⋯ menu', async () => {
-    const confirmFn = vi.fn().mockReturnValue(true)
-    vi.stubGlobal('confirm', confirmFn)
+    confirmMock.mockResolvedValue(true)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     renderSidebar()
     fireEvent.contextMenu(screen.getByRole('group', { name: 'Folder Alpha' }), { clientX: 40, clientY: 20 })
     fireEvent.click(screen.getByTestId('folder-delete-f1-ctx'))
-    expect(confirmFn).toHaveBeenCalledWith('Delete “Alpha”? Sessions will be ungrouped.')
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Delete “Alpha”? Sessions will be ungrouped.', confirmLabel: 'Delete folder',
+    }))
+    expect(nativeConfirm).not.toHaveBeenCalled()
     await waitFor(() => expect(mocks.deleteChatFolder).toHaveBeenCalledWith('f1'))
   })
 

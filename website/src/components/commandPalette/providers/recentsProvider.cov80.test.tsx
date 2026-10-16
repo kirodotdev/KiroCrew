@@ -18,6 +18,8 @@ const navigateSpy = vi.hoisted(() => vi.fn())
 vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   useNavigate: () => navigateSpy,
+  // The asking navigate claims a leave attempt, which reads the current location.
+  useLocation: () => ({ pathname: '/', search: '', hash: '', key: 'default', state: null }),
 }))
 
 const apiMock = vi.hoisted(() => ({

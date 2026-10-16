@@ -26,7 +26,8 @@ import { act, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { useLocation } from 'react-router-dom'
 import { i18nT } from '../i18n/t'
-import { NavigationLeaveGuardProvider, useMayLeaveForNavigation } from '../components/NavigationLeaveGuard'
+import { NavigationLeaveGuardProvider } from '../components/NavigationLeaveGuard'
+import { useMayLeaveAsPromise } from './useMayLeaveAsPromise'
 
 globalThis.ResizeObserver = class {
   observe() {}
@@ -413,11 +414,11 @@ describe('crew editor — dirty dismissal is guarded on every pane', () => {
 })
 
 /** The app shell's question: may the page on screen be left? */
-let mayLeave: () => boolean = () => true
+let mayLeave: () => Promise<boolean> = () => Promise.resolve(true)
 /** The router's current path, so a test can tell a navigation happened. */
 let pathname = ''
 function ShellProbe() {
-  mayLeave = useMayLeaveForNavigation()
+  mayLeave = useMayLeaveAsPromise()
   pathname = useLocation().pathname
   return null
 }
@@ -448,7 +449,7 @@ function reloadPrompts(): boolean {
 describe('crew editor — the page exits guard unsaved work', () => {
   it('a clean editor lets the route go and arms no reload prompt', async () => {
     await openEditorUnderShell()
-    expect(mayLeave()).toBe(true)
+    expect(await mayLeave()).toBe(true)
     expect(screen.queryByRole('dialog', { name: GENERIC })).not.toBeInTheDocument()
     expect(reloadPrompts()).toBe(false)
   })
@@ -458,7 +459,7 @@ describe('crew editor — the page exits guard unsaved work', () => {
     makeDirty(sheet)
 
     let allowed = true
-    act(() => { allowed = mayLeave() })
+    await act(async () => { allowed = await mayLeave() })
     expect(allowed).toBe(false)
     await waitFor(() => expect(confirmBox()).toBeInTheDocument())
     expect(screen.getByTestId('crew-editor-next-dialog')).toBe(sheet)
@@ -468,12 +469,12 @@ describe('crew editor — the page exits guard unsaved work', () => {
   it('after the discard is confirmed, the repeated leave goes through', async () => {
     const sheet = await openEditorUnderShell()
     makeDirty(sheet)
-    act(() => { mayLeave() })
+    await act(async () => { await mayLeave() })
     await waitFor(() => expect(confirmBox()).toBeInTheDocument())
     fireEvent.click(within(confirmBox()).getByTestId('crew-sched-discard-confirm'))
     await waitFor(() =>
       expect(screen.queryByTestId('crew-editor-next-dialog')).not.toBeInTheDocument())
-    expect(mayLeave()).toBe(true)
+    expect(await mayLeave()).toBe(true)
     expect(reloadPrompts()).toBe(false)
   })
 

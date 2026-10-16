@@ -317,7 +317,7 @@ export default function PortabilityTab() {
   const [importMemoryOnly, setImportMemoryOnly] = useState(false)
   const [chatLines, setChatLines] = useState<string[]>(carried?.chats ?? [])
   const fileRef = useRef<HTMLInputElement>(null)
-  const { confirm: confirmShare, confirmDialog } = useConfirm()
+  const { confirm, confirmDialog } = useConfirm()
   // A memory bundle carries nothing else, so it only ever imports with Merge.
   const previewMemoryOnly = isMemoryOnlyManifest(preview)
   const memoryImport = importMemoryOnly || previewMemoryOnly
@@ -331,7 +331,7 @@ export default function PortabilityTab() {
     // A memory-only export exists to be handed to someone else, and nothing in it
     // is redacted: the user sees what it holds and says yes before it is built.
     if (memoryOnly) {
-      const ok = await confirmShare({
+      const ok = await confirm({
         title: i18nT('pages.overview.portabilityTab.share_memory_title'),
         body: (
           <span data-testid="portability-share-memory-body">
@@ -416,7 +416,13 @@ export default function PortabilityTab() {
   const handleImport = async () => {
     const file = fileRef.current?.files?.[0]
     if (!file) return
-    if (effectiveMode === 'replace' && !confirm(i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'))) return
+    if (effectiveMode === 'replace') {
+      const ok = await confirm({
+        title: i18nT('pages.overview.portabilityTab.replace_mode_will_overwrite_existing_data_contin'),
+        confirmLabel: i18nT('pages.overview.portabilityTab.import'),
+      })
+      if (!ok) return
+    }
 
     setImportStatus({ type: 'loading', msg: i18nT('pages.overview.portabilityTab.importing') })
     setImportWarnings([])
@@ -516,6 +522,7 @@ export default function PortabilityTab() {
 
   return (
     <div className="space-y-4">
+      {confirmDialog}
       <Card>
         <CardTitle>
           {memoryOnly
@@ -790,7 +797,6 @@ export default function PortabilityTab() {
           </div>
         )}
       </Card>
-      {confirmDialog}
     </div>
   )
 }

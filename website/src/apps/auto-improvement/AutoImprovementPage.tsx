@@ -25,6 +25,7 @@ import {
 } from 'lucide-react'
 
 import Clickable from '../../components/Clickable'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { Badge, Card, CardTitle, StatCard } from '../../components/ui'
 import { i18nT } from '../../i18n/t'
 
@@ -247,6 +248,7 @@ function PrRow({ finding, repo }: { finding: Finding; repo: string }) {
 }
 
 export default function AutoImprovementPage() {
+  const { confirm, confirmDialog } = useConfirm()
   const { openSession } = useAgentSession()
   // Fingerprint of the finding whose evidence panel is open, or null. One at a
   // time: each panel fetches its own detail, and the interesting comparison is
@@ -322,6 +324,7 @@ export default function AutoImprovementPage() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 p-4">
+      {confirmDialog}
       <header className="flex items-center gap-2">
         <Brain className="lucide-inline" size={20} />
         <h1 className="text-[17px] font-semibold">{i18nT('autoImprovement.title')}</h1>
@@ -472,14 +475,11 @@ export default function AutoImprovementPage() {
                         // `englishIdentity` forbids a hardcoded confirm string, since those
                         // are call arguments the i18n codemod never saw. Raised by the UX
                         // review.
-                        onClick={() => {
-                          if (
-                            !window.confirm(
-                              i18nT('autoImprovement.commitConfirm', { branch }),
-                            )
-                          ) {
-                            return
-                          }
+                        onClick={async () => {
+                          if (!(await confirm({
+                            title: i18nT('autoImprovement.commitConfirm', { branch }),
+                            confirmLabel: i18nT('autoImprovement.commitFinding'),
+                          }))) return
                           commitFinding.mutate(f.fp)
                         }}
                         // Disabled while ANY commit is in flight, not just this row's: each

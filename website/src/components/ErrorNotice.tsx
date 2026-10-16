@@ -56,7 +56,13 @@ export function ErrorNoticeMenuItem({
       title={i18nT('components.askAgent.open_a_chat_with_this_error_s_context_attached')}
       aria-describedby={describedBy}
       onSelect={(event) => {
-        if (!handoffErrorToAgent({ message, report })) event.preventDefault()
+        // A refused hand-off keeps the menu open so the diagnostic stays
+        // reachable. While the page's leave confirmation is still open the
+        // answer is not known yet, so the menu stays open until it settles: a
+        // successful hand-off navigates away, a refused one leaves the item
+        // available for retry.
+        const sent = handoffErrorToAgent({ message, report })
+        if (sent !== true) event.preventDefault()
       }}
     >
       <Sparkles size={13} className="shrink-0 text-muted" aria-hidden="true" />
@@ -136,6 +142,7 @@ export default function ErrorNotice({
   messageTooltip,
   testId,
   showIcon = true,
+  live = true,
 }: {
   /** DOM id for controls, including menu hand-offs, that describe themselves with this alert. */
   id?: string
@@ -281,6 +288,12 @@ export default function ErrorNotice({
    * off changes nothing for assistive tech; `role="alert"` stays. On by default.
    */
   showIcon?: boolean
+  /**
+   * Off for a stored error listed with others (the bell feed): `role="alert"`
+   * would announce every past failure each time the list mounts. The host
+   * announces a new arrival through its own live region.
+   */
+  live?: boolean
 } & ErrorNoticeNoHandoff) {
   // Subscribes to language switches: a parent compiled by the React Compiler
   // caches this element while its props are unchanged, so without its own
@@ -299,7 +312,7 @@ export default function ErrorNotice({
   if (variant === 'inline') {
     return (
       <span
-        role="alert"
+        role={live ? 'alert' : undefined}
         className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
@@ -362,7 +375,7 @@ export default function ErrorNotice({
 
   return (
     <div
-      role="alert"
+      role={live ? 'alert' : undefined}
       className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger-text ${className}`}
       id={id}
       data-testid={testId}

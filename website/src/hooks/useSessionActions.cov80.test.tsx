@@ -28,6 +28,13 @@ vi.mock('./useMoveSlotToFolder', () => ({ useMoveSlotToFolder: () => moveSlotToF
 const chatConfig = vi.hoisted(() => ({ confirmCloseSession: true }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => chatConfig }))
 
+// This hook-only suite has no rendered confirm-dialog owner. Component suites
+// cover the native UI, while this mock gives close() a deterministic answer.
+const confirmMock = vi.hoisted(() => vi.fn())
+vi.mock('../components/ConfirmDialog', () => ({
+  useConfirm: () => ({ confirm: confirmMock, confirmDialog: null }),
+}))
+
 const deleteSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/deleteSlot', payload: key })))
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/switchSlot', payload: key })))
 vi.mock('../store/chatSlice', async (importOriginal) => ({
@@ -71,6 +78,7 @@ beforeEach(() => {
   deleteSlot.mockClear()
   switchSlot.mockClear()
   chatConfig.confirmCloseSession = true
+  confirmMock.mockReset().mockResolvedValue(false)
   store.dispatch(sseSlots([]))
   store.dispatch(markSlotRead(KEY))
 })
@@ -485,26 +493,40 @@ describe('move', () => {
 })
 
 describe('close', () => {
-  it('closes without a prompt when the confirm preference is off', () => {
+  it('closes without a prompt when the confirm preference is off', async () => {
     chatConfig.confirmCloseSession = false
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     const { result } = harness()
-    act(() => result.current.close(KEY))
-    expect(confirmSpy).not.toHaveBeenCalled()
+    await act(async () => { await result.current.close(KEY) })
+    expect(confirmMock).not.toHaveBeenCalled()
+    expect(nativeConfirm).not.toHaveBeenCalled()
     expect(deleteSlot).toHaveBeenCalledWith(KEY)
   })
 
-  it('closes after an accepted confirm', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
+  it('closes after an accepted confirm', async () => {
+    confirmMock.mockResolvedValue(true)
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    await act(async () => { await result.current.close(KEY) })
+    expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Close this session?',
+      body: expect.stringContaining('Nothing is running in it.'),
+      confirmLabel: 'Close session',
+    })
+    expect(nativeConfirm).not.toHaveBeenCalled()
     expect(deleteSlot).toHaveBeenCalledWith(KEY)
   })
 
-  it('keeps the session on a declined confirm', () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
+  it('keeps the session on a declined confirm', async () => {
+    const nativeConfirm = vi.spyOn(window, 'confirm')
     const { result } = harness()
-    act(() => result.current.close(KEY))
+    await act(async () => { await result.current.close(KEY) })
+    expect(confirmMock).toHaveBeenCalledWith({
+      title: 'Close this session?',
+      body: expect.stringContaining('Nothing is running in it.'),
+      confirmLabel: 'Close session',
+    })
+    expect(nativeConfirm).not.toHaveBeenCalled()
     expect(deleteSlot).not.toHaveBeenCalled()
   })
 })

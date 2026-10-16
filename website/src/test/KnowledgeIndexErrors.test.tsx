@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { confirmAction } from './confirmAction'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 import { namedCeiling } from './namedCeiling'
@@ -106,18 +107,17 @@ describe('KnowledgePage — failed requests are shown', () => {
   })
 
   it('a refused bulk delete says why', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
     renderPage()
     await searchAndSelect()
     mutationError = new Error('delete refused')
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction(/delete/i)
     const notice = await screen.findByTestId('knowledge-bulk-error', {}, PAGE_REQUEST_CHAIN())
     expect(notice).toHaveTextContent("Couldn't delete the selected items")
     expect(notice).toHaveTextContent('delete refused')
   })
 
   it('a bulk action clears the previous action\'s failure', async () => {
-    vi.stubGlobal('confirm', vi.fn(() => true))
     renderPage()
     await searchAndSelect()
     mutationError = new Error('patch refused')
@@ -125,6 +125,7 @@ describe('KnowledgePage — failed requests are shown', () => {
     await screen.findByTestId('knowledge-bulk-error', {}, PAGE_REQUEST_CHAIN())
     mutationError = new Error('delete refused')
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }))
+    await confirmAction(/delete/i)
     await waitFor(() => expect(screen.getByTestId('knowledge-bulk-error')).toHaveTextContent('delete refused'), PAGE_REQUEST_CHAIN())
     expect(screen.getByTestId('knowledge-bulk-error')).toHaveTextContent("Couldn't delete the selected items")
   })

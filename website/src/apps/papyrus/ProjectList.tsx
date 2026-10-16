@@ -14,6 +14,7 @@ import { Btn, Card, CardTitle, ContentSkeleton, EmptyState, Input, PageHeader, S
 import Clickable from '../../components/Clickable'
 import ErrorNotice from '../../components/ErrorNotice'
 import InfoTip from '../../components/InfoTip'
+import { useConfirm } from '../../components/ConfirmDialog'
 import { fmtBytes, fmtDateTime } from '../../i18n/format'
 import { papyrusApi, PapyrusApiError, type Project } from './api'
 import { projectErrorText, pruneSlots, renameErrorText, PROJECTS_QUERY_KEY, projectQueryKey } from './lib'
@@ -41,6 +42,7 @@ function formatModified(epochSeconds: number): string {
 }
 
 export default function ProjectList({ onOpenProject }: ProjectListProps) {
+  const { confirm, confirmDialog } = useConfirm()
   // One instance covers both inputs; the binding's focus/blur reset makes sharing safe.
   const ime = useImeGuard()
   const queryClient = useQueryClient()
@@ -271,6 +273,7 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
 
   return (
     <>
+      {confirmDialog}
       <PageHeader
         title={i18nT('apps.papyrus.page.papyrus')}
         subtitle={i18nT('apps.papyrus.page.latex_papers_with_a_live_pdf_preview')}
@@ -525,19 +528,17 @@ export default function ProjectList({ onOpenProject }: ProjectListProps) {
                         aria-label={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
                         {...guideCaution}
                         title={i18nT('apps.papyrus.page.delete_paper', { name: project.name })}
-                        onClick={() => {
+                        onClick={async () => {
                           // Deleting a paper is `rmtree` on the server with no
                           // undo, including uncommitted work — so it confirms,
                           // exactly as deleting a single file already does.
-                          if (
-                            window.confirm(
-                              i18nT('apps.papyrus.page.delete_paper_confirm', {
-                                name: project.name,
-                              }),
-                            )
-                          ) {
-                            deleteMutation.mutate(project.name)
-                          }
+                          if (!(await confirm({
+                            title: i18nT('apps.papyrus.page.delete_paper_confirm', {
+                              name: project.name,
+                            }),
+                            confirmLabel: i18nT('apps.papyrus.page.delete_paper_button'),
+                          }))) return
+                          deleteMutation.mutate(project.name)
                         }}
                         disabled={deleteMutation.isPending || renameOpen}
                         className="p-1 rounded text-muted hover:text-danger-text hover:bg-danger/10 cursor-pointer bg-transparent border-none transition-colors disabled:opacity-40"

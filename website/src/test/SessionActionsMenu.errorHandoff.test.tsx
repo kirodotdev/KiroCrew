@@ -10,7 +10,7 @@ import {
   __resetNavSeamForTests,
 } from '../utils/errorReport'
 import type { ChatSlot } from '../types'
-import SessionActionsMenu from '../components/SessionActionsMenu'
+import SessionActionsMenu from './ownedSessionActionsMenu'
 import { markSubagentApprovalGone, reconcileSubagentApprovalGone, sseSubagentPending } from '../store/chatSlice'
 import {
   ContextMenu,

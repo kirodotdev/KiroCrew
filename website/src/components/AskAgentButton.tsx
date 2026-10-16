@@ -66,13 +66,17 @@ export function handoffErrorToAgent({
   /** The caller's own leave gate already asked the page and it agreed — see `sendErrorToChat`. */
   leaveGranted?: boolean
   onHandoff?: () => void
-}): boolean {
+}): boolean | Promise<boolean> {
   const resolved: ErrorReport | { message: string } | null =
     report ?? findReport(message) ?? (message ? { message } : null)
   if (!resolved) return false
-  if (!sendErrorToChat(askAgentPrompt(resolved), { hard, leaveGranted })) return false
-  try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
-  return true
+  const finish = (sent: boolean): boolean => {
+    if (!sent) return false
+    try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
+    return true
+  }
+  const sent = sendErrorToChat(askAgentPrompt(resolved), { hard, leaveGranted })
+  return sent instanceof Promise ? sent.then(finish) : finish(sent === true)
 }
 
 export default function AskAgentButton({
@@ -124,7 +128,7 @@ export default function AskAgentButton({
    *
    * The gate IS the leave ask: once it has run `proceed`, the hand-off skips the
    * installed navigator's own guard (`leaveGranted`). Both read the same
-   * `useMayLeaveForNavigation` channel, so asking twice posed one discard
+   * page leave channel, so asking twice posed one discard
    * question two times, and a "keep my draft" on the second cancelled a hand-off
    * the first had already accepted.
    */

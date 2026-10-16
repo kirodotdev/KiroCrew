@@ -128,7 +128,7 @@ export function useCommandBarOverlayRootRows({
   slotStatusDetail: NonNullable<RootState['chat']['slotStatusDetail']>
   simplifiedToolNames: boolean
   dispatch: AppDispatch
-  navigate: (route: string) => boolean | void
+  navigate: (route: string) => boolean | void | Promise<boolean>
   store: AppStore
   cycleTheme: () => void
   commandById: Map<string, ContributedCommand>

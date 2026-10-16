@@ -27,7 +27,7 @@ vi.mock('../api/client', () => ({
 const copyToClipboard = vi.hoisted(() => vi.fn(() => Promise.resolve(true)))
 vi.mock('../utils/clipboard', () => ({ copyToClipboard }))
 
-import SessionActionsMenu from '../components/SessionActionsMenu'
+import OwnedSessionActionsMenu from './ownedSessionActionsMenu'
 import type { RootState } from '../store'
 
 const dashboardState = {
@@ -48,7 +48,7 @@ function renderMenu(onReferenceInChat?: () => void) {
             <DropdownMenu>
               <DropdownMenuTrigger>menu</DropdownMenuTrigger>
               <DropdownMenuContent>
-                <SessionActionsMenu variant="dropdown" slotKey="chat-1" onReferenceInChat={onReferenceInChat} />
+                <OwnedSessionActionsMenu variant="dropdown" slotKey="chat-1" onReferenceInChat={onReferenceInChat} />
               </DropdownMenuContent>
             </DropdownMenu>
           </MemoryRouter>
