@@ -16,6 +16,9 @@ superseded-by: []
 - Status: in-progress — the dashboard promotion and the runtime-selected
   prompt rule ship with [#5012](https://github.com/kirodotdev/KiroCrew/pull/5012);
   the messaging `OutputEvent` extension (§3.3) is unstarted.
+- Amended by [rfc-fold-recorded-edit-cards.md](rfc-fold-recorded-edit-cards.md):
+  a diff card whose change the turn's changed-files card records folds with
+  the other tool rows (§3.1's `isDiffCardItem` bullet).
 - Author: zezhexu
 - Created: 2026-08-21
 - Related: `docs/system-specs/modules/memory-skills-hooks.md` (session context
@@ -109,7 +112,10 @@ diff-shaped text never promotes) renders a first-class diff presentation:
   a result, not a working step, the same class as the prose diff the final
   summary used to carry. Density relief is per-card: every open card has a
   chip handle that folds it to one line and unfolds it again; over-cap diffs
-  never render as cards at all.
+  never render as cards at all. Amended by
+  [rfc-fold-recorded-edit-cards.md](rfc-fold-recorded-edit-cards.md): a row
+  whose change the turn's changed-files card records folds with the other
+  tool rows.
 - Companion behaviors shipped with the promotion: rejected / auto-denied
   edits never promote (the change was not applied — a first-class card would
   read as if it shipped); an edit row whose transport attached no
