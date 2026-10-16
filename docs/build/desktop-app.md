@@ -841,6 +841,11 @@ Crashpad dump directory (`app.getPath("crashDumps")`) and, on macOS, the user's
   Crashpad handler) is acknowledged and deleted, since nothing else prunes it.
   Unreadable dumps, Electron-shaped strangers and this app's own dumps are
   never deleted.
+- Minidumps that reached `crashes-seen.json` without that check (the first
+  scan's baseline writes them off unread) are swept: each is opened once more,
+  oldest first, within what the fresh artifacts leave of the same 25-file
+  budget, and deleted on the same proof. The state file lists them as swept,
+  so none is opened again.
 
 ### Native window chrome
 

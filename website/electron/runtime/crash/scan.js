@@ -2,7 +2,9 @@
 
 // One crash scan: list the candidates, baseline what predates the collector,
 // inspect the newest unseen ones within a cap, write their ledger lines, and
-// only then acknowledge them in the seen-set. Never throws.
+// only then acknowledge them in the seen-set. Whatever the cap leaves over
+// sweeps the acknowledged backlog for proven-foreign dumps to delete. Never
+// throws.
 
 const path = require("path");
 const {
@@ -71,7 +73,7 @@ const MAX_PENDING_ATTEMPTS = 3;
  * @returns {{crashLogPath: string, logsDir: string, baseline: boolean,
  *            newCrashes: Array<object>, candidates: number, inspected: number,
  *            skipped: number, deferred: number, unparsed: number, aged: number,
- *            removed: number, recorded: number}}
+ *            removed: number, removedFromBacklog: number, recorded: number}}
  */
 function collectCrashReports({
   logsDir,
@@ -98,6 +100,7 @@ function collectCrashReports({
     unparsed: 0,
     aged: 0,
     removed: 0,
+    removedFromBacklog: 0,
     recorded: 0,
   };
   if (!fs) return summary;
@@ -119,7 +122,7 @@ function collectCrashReports({
   summary.candidates = candidates.length;
 
   const state = readSeenState(statePath, { fs, log });
-  const { seen, activatedAt, baselined } = state;
+  const { seen, activatedAt, baselined, swept } = state;
   // Both stamps are carried through every write below, so a scan never drops the
   // cutoff that decides what counts as pre-existing.
   let baselinedAt = state.baselinedAt;
@@ -128,6 +131,14 @@ function collectCrashReports({
   // out and the map stays bounded by the pending backlog.
   const priorAttempts = state.attempts || {};
   const nextAttempts = {};
+
+  // The acknowledged backlog: minidumps an EARLIER scan put in `seen` that no
+  // sweep has opened yet. Taken before this scan acknowledges anything, so a
+  // dump this run baselines or judges is never part of it. Oldest first, so
+  // the longest-standing dumps drain first.
+  const backlog = candidates
+    .filter((c) => c.kind === "minidump" && seen.has(c.key) && !swept.has(c.key))
+    .sort((a, b) => a.mtimeMs - b.mtimeMs);
 
   if (!baselined) {
     // Baseline run: write off what predates the feature. See crash-collector.js's
@@ -186,9 +197,11 @@ function collectCrashReports({
     log(`crash scan capped: ${summary.skipped} new artifacts beyond ${maxInspect} left uninspected`);
   }
 
-  // `seen` is an ACKNOWLEDGEMENT: a key in it is never looked at again, so
-  // anything added that was not actually accounted for is a crash the user
-  // silently never hears about. Every path to `seen.add`, and why:
+  // `seen` is an ACKNOWLEDGEMENT: a key in it is never reported or retried
+  // again (the backlog sweep below opens it at most once more, and only to
+  // delete a proven-foreign dump), so anything added that was not actually
+  // accounted for is a crash the user silently never hears about. Every path
+  // to `seen.add`, and why:
   //
   //   crash          -> acknowledge ONLY once its ledger line is on disk.
   //   foreign        -> acknowledge. This is the 689-foreign-dump case; without
@@ -342,7 +355,43 @@ function collectCrashReports({
     log(`crash scan: ${summary.aged} unreadable artifact(s) aged out and acknowledged`);
   }
 
-  writeSeenState(statePath, seen, { fs, log, activatedAt, baselinedAt, attempts: nextAttempts });
+  // A minidump this scan inspected and acknowledged has already been through
+  // the sweep's proof, so it counts as swept and the sweep never reopens it.
+  for (const candidate of toInspect) {
+    if (candidate.kind === "minidump" && seen.has(candidate.key)) swept.add(candidate.key);
+  }
+
+  // Drain the acknowledged backlog: dumps that reached `seen` without the
+  // delete above, such as everything the baseline wrote off unread. Nothing
+  // else ever prunes them, so a machine keeps every one until the user clears
+  // `pending/` by hand. Each is opened ONCE, on whatever budget the fresh pass
+  // left, so a launch never opens more files than `maxInspect`. It is deleted
+  // only on the fresh pass's own proof, `INSPECT_FOREIGN` with `deletable`,
+  // and marked swept whatever the outcome: an own, unreadable, oversized or
+  // Electron-shaped dump stays on disk and is never opened again.
+  const sweepBudget = Math.max(0, maxInspect - toInspect.length);
+  for (const candidate of backlog.slice(0, sweepBudget)) {
+    swept.add(candidate.key);
+    let result = null;
+    try {
+      result = inspectCandidate(candidate, { fs, appNames, log });
+    } catch (e) {
+      log(`crash scan sweep could not read ${candidate.name}: ${e && e.message}`);
+      continue;
+    }
+    if (!result || result.outcome !== INSPECT_FOREIGN || result.deletable !== true) continue;
+    try {
+      fs.unlinkSync(candidate.filePath);
+      summary.removedFromBacklog += 1;
+    } catch (e) {
+      log(`crash scan could not remove foreign ${candidate.name}: ${e && e.message}`);
+    }
+  }
+
+  // Only keys this scan listed are kept, so the set stays bounded by what the
+  // Crashpad database holds: a dump that is gone drops out by the next scan.
+  const sweptListed = candidates.filter((c) => swept.has(c.key)).map((c) => c.key);
+  writeSeenState(statePath, seen, { fs, log, activatedAt, baselinedAt, attempts: nextAttempts, swept: sweptListed });
 
   // `kind=unparsed` counts here even though it is not a crash: it is still a
   // line in the log the user hands over, so it counts as something recorded.
@@ -355,7 +404,7 @@ function collectCrashReports({
     `crash scan: candidates=${summary.candidates} new=${summary.newCrashes.length} `
       + `inspected=${summary.inspected} skipped=${summary.skipped} deferred=${summary.deferred} `
     + `unparsed=${summary.unparsed} aged=${summary.aged} removed=${summary.removed} `
-    + `recorded=${summary.recorded}`
+    + `removedFromBacklog=${summary.removedFromBacklog} recorded=${summary.recorded}`
   );
   return summary;
 }
