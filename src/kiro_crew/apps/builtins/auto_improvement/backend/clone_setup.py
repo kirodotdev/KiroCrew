@@ -46,7 +46,7 @@ from kiro_crew.subprocess_utf8 import UTF8_TEXT
 from ..spine.git_safety import GIT_SAFE_CONFIG, hook_off_args, require_pinned
 
 #: Alias the ONE shared safe-config so this helper cannot drift from the others (the
-#: structural test in `test_dogfood_learnings` asserts identity). See `backend/commit.py`.
+#: structural test in `test_dogfood_learnings_clone` asserts identity). See `backend/commit.py`.
 _GIT_SAFE_CONFIG = GIT_SAFE_CONFIG
 
 logger = logging.getLogger(__name__)

@@ -1681,6 +1681,13 @@ jobs:
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_ledger_sync_git.py \
             src/kiro_crew/apps/builtins/ops_mission_control/tests/test_schedule_file.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_credentials.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py \
+            src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_tracks.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_lint_findings.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_github_profile.py \

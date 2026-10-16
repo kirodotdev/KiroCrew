@@ -284,14 +284,14 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # the fixture, and routing them through the agent sandbox would sandbox the
         # fixture rather than the thing under test. Same class as the Ops Mission
         # Control ledger-sync tests below.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_clean_filter_does_not_run_in_a_linked_worktree",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_planted_pre_commit_hook_does_not_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_a_repointed_worktree_gitdir_is_refused",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_clone_setup_checkout_pins_the_attributes",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_refuses_a_symlink_and_fails_closed",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::test_the_pin_survives_a_normal_repo",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_clean_filter_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_clean_filter_does_not_run_in_a_linked_worktree",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_planted_pre_commit_hook_does_not_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_a_repointed_worktree_gitdir_is_refused",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_clone_setup_checkout_pins_the_attributes",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_red_base_staging_does_not_dereference_a_credential_symlink",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_refuses_a_symlink_and_fails_closed",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::test_the_pin_survives_a_normal_repo",
         # Four pre-existing spawns in ``acp/client.py`` and
         # ``acp/runtime_process_tree.py`` that the scan could not see until receivers
         # were derived from each file's imports (``acp/client.py`` binds the module
@@ -580,9 +580,9 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # process is created — the test's provider is a local stub with no argv at all.
         # Same classification as the ``asyncio.run`` sites above
         # (cli_commands.py::_cleanup_app_crons_from_scheduler, cli_doctor.py::_doctor).
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_approval_is_logged_then_granted",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_audit_failure_denies_instead_of_approving",
         # Offline clone-setup regressions use only fixed Git argv against pytest
         # tmp_path repositories; no agent/model input reaches command or cwd.
@@ -597,7 +597,7 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # whether a second module ended up in `sys.modules`; a clean interpreter is the
         # point, since measuring "does the boot path pull the profile tree?" inside the test
         # session would read whatever pytest already imported.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py"
         "::test_importing_the_backend_does_not_pull_the_profile_tree",
         "apps/builtins/auto_improvement/backend/commit.py::_git",
         # `git apply --index` on the QUEUED diff, literal argv against the configured clone.
@@ -703,19 +703,19 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "::test_push_refuses_before_git_when_repository_safety_changed",
         # Same basis: a fixed `git init/add/commit` against a tmp_path, asserting a diff
         # that cannot apply is refused BEFORE the pipeline drafts.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_diff_that_does_not_apply_never_reaches_the_pipeline",
         # Same basis: literal `git config/add/commit/cat-file/diff` against a tmp_path clone,
         # proving a credential planted in the COMMITTER IDENTITY is refused. Real git is
         # required rather than a stub: the point is which bytes git itself puts in the commit
         # object, which canned output cannot demonstrate. Nothing is agent-influenced -- the
         # argv is literal and the cwd is the test's own tmp_path.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_credential_in_the_committer_identity_refuses_to_publish",
         # NOT a subprocess spawn: the AST heuristic matches ``asyncio.run`` (attr ``run`` on
         # base ``asyncio``) driving the async ``_approve`` coroutine so a REAL SEL
         # write can be read back off disk. No child process is created.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tool_gate.py"
         "::test_a_real_sel_write_produces_a_readable_event",
         # Same basis: a fixed `git init --bare` + clone + push against a tmp_path, driving
         # one-click commit end to end in a clone whose origin is neutralized exactly as
@@ -723,11 +723,15 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # cwd is the test's own tmp_path, and the "remote" is a local bare repo. This is
         # the test that proves `commit_finding` can still fetch its base after
         # `_disable_push`; the bug it pins was invisible to every mocked test.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_git",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_upstream_and_clone",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_tracks.py::_git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
+        "::_upstream_and_clone",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_stale_local_ref_is_not_used_when_a_url_is_configured",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_the_queued_diff_is_committed_and_pushed",
         # Same basis: a fixed bare-repo + clone against a tmp_path, asserting that a
         # non-default branch is really checked out inside a push-disabled clone (the run
@@ -735,89 +739,90 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # Only the functions that CONTAIN a spawn are listed: the detector keys by the
         # enclosing function, so a test that merely calls these helpers is not a spawn
         # site and the staleness check rejects it as a masking entry.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py"
         "::test_a_remote_only_branch_is_checked_out_without_a_fetch",
         # Multi-cycle staging test: literal `git` argv against a tmp_path bare repo,
         # asserting cycle-2's checkout does not orphan cycle-1's kept commit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_staging_stays_on_the_local_branch_across_cycles",
         # Its inner `git` helper: literal argv against the tmp_path bare repo above.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::git",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::git",
         # The provisional-commit fail-closed test spawns `git rev-parse HEAD` inline (not
         # via a helper) to assert HEAD did not move; literal argv against a tmp_path repo.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_failing_commit_returns_false_not_true",
         # Same basis: `git status --porcelain` inline against a tmp_path repo, asserting a
         # REJECTED provisional commit left nothing staged for the next candidate to inherit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_rejected_commit_leaves_no_diff_staged_for_the_next_candidate",
         # Same basis: literal `git show`/`ls-tree` against a tmp_path bare repo + clone,
         # asserting a manual draft stages ITS queued diff instead of publishing whatever a
         # later cycle left at HEAD.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_drafting_an_older_finding_does_not_publish_a_later_one",
         # Same basis: literal `git rev-parse`/`status` against a tmp_path clone, asserting a
         # failed draft's rollback restores the branch to the base it was fetched at.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_rollback_restores_the_branch_to_its_fetched_base",
         # Same basis: literal `git rev-parse` against a tmp_path clone, asserting a REJECTED
         # push leaves no commit on the branch for the next run to adopt as its baseline.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_a_failed_push_leaves_no_commit_behind",
         # Same basis: literal `git clone`/`log`/`show` against a tmp_path bare repo, asserting
         # two concurrent operator commits never merge into one commit.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_commit.py"
         "::test_two_concurrent_commits_do_not_merge_into_one",
         # Its inner `_repo` helper: fixed `git init/clone/commit/push` argv against a tmp_path
         # bare repo, building the local-vs-remote base case for the credential-scan self-diff.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_repo",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_repo",
         # The direct-push HEAD-identity tests. `::run` is a stub pre-push reviewer that
         # amends the test's OWN tmp_path clone to reproduce the race; the test function spawns
         # `git rev-parse --short HEAD` inline to assert that amend really landed before it
         # asserts the refusal. Both are fixed `git` argv against a per-test tmp_path repo with
         # no remote -- nothing in the argv, the cwd or the resolved binary is agent-influenced,
         # and the enclosing `::git` helper above already covers the repo builder.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_reviewer_amend_between_commit_and_push_refuses_to_publish",
         # Same basis: the shadow-ref variant additionally spawns `git branch <short-sha> HEAD`
         # and two `git rev-list -1` reads, all literal argv with cwd and `-C` pinned to the
         # same per-test tmp_path clone, asserting the injection applied before the refusal.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_ref_named_the_abbreviation_cannot_shadow_the_committed_object",
         # The time-of-check/time-of-use pair, same basis again: `::_scan_then_amend` stands in
         # for a background amend landing while the credential scan runs, and the two test
         # functions read HEAD back with `git rev-list -1` to prove the injection applied and
         # to pin the published revision to a full object id.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_scan_then_amend",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py::_scan_then_amend",
         # `::_gate_then_swap_head` is the same injection one step earlier -- it moves HEAD
         # right after the pre-scan gate returns, to prove the scan is bound to the object id
         # rather than to `HEAD`.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_gate_then_swap_head",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
+        "::_gate_then_swap_head",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_the_credential_scan_reads_the_committed_object_not_head",
         # Same basis: this one additionally spawns `git replace` and a `git show` control, to
         # prove a replacement ref cannot substitute what the credential scan reads.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_replacement_ref_cannot_substitute_what_the_scan_reads",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_move_after_the_scan_cannot_change_what_is_published",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_an_unmoved_head_still_publishes",
         # Same basis: literal `git rev-parse`/`diff`/`reset` against a tmp_path repo, showing a
         # left-behind provisional commit lands in the NEXT bug PR's range.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_publish.py"
         "::test_a_chained_head_would_contaminate_the_next_branch",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py" "::_disabled_clone",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py" "::_disabled_clone",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py"
         "::_remote_with_two_branches",
         # Same basis: a fixed `git init/add/commit` + an uncommitted edit against a tmp_path
         # repo, proving `_export_is_durable` retains a clone that holds UNCOMMITTED work (an
         # empty committed diff over a dirty tree is not "no work"). Literal argv, test-owned
         # cwd, dead origin — nothing agent-influenced. `_run` is the test's inline git helper;
         # the test function itself also spawns `git init/add/commit` directly.
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::_run",
-        "apps/builtins/auto_improvement/tests/test_dogfood_learnings.py"
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py::_run",
+        "apps/builtins/auto_improvement/tests/test_dogfood_learnings_run_lifecycle.py"
         "::test_end_to_end_uncommitted_work_survives_teardown",
         # Same basis: fixed bare-repo + clone + push against a tmp_path, asserting the
         # CONTENT that reached the remote branch (a committed fix does, a staged one does

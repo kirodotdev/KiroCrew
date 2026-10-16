@@ -4,8 +4,8 @@
 # fails. Developer Mode/elevated Windows runners and POSIX hosts keep full
 # coverage. Keep this inventory exact: directory-redirection tests that can use
 # platform_compat.symlink_or_junction belong in ordinary cross-platform coverage.
-src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_red_base_staging_does_not_dereference_a_credential_symlink
-src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_the_pin_refuses_a_symlink_and_fails_closed
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_red_base_staging_does_not_dereference_a_credential_symlink
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_the_pin_refuses_a_symlink_and_fails_closed
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pollute.py::TestExcludesAreNarrow::test_a_relative_or_symlinked_exclude_still_matches
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestCloneIsolation::test_symlinked_destination_is_refused
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_reconcile_and_publish.py::TestOrphanCloneSweep::test_a_symlink_is_not_followed

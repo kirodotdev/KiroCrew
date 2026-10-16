@@ -22,7 +22,7 @@ and still failed in CI. Measured: ``git var GIT_AUTHOR_IDENT`` with both config 
 
 Setting the identity through the ENVIRONMENT fixes it for every subprocess without touching
 any repository's config, and mirrors what several tests in this directory already do inline
-(``test_suite_scope.py``, ``test_dogfood_learnings.py``). ``autouse`` and function-scoped: a
+(``test_suite_scope.py``, ``test_dogfood_learnings_publish.py``). ``autouse`` and function-scoped: a
 test that shells out to git cannot forget it, and the identity is undone with the test, so a
 later suite on the same xdist worker never inherits it. Deliberately NOT a real address, so a commit
 that escaped a temporary directory would be obvious in a log.

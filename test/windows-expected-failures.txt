@@ -162,5 +162,5 @@ test/test_write_secret_file.py::TestWriteSecretFile::test_happy_path
 # first time. `PermissionError [Errno 13]` from `pathlib` writing the linked worktree's
 # `.git` pointer file: Windows refuses the write where POSIX allows it. The security
 # property it guards (a repointed gitdir must be refused) is POSIX-shaped.
-src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_a_repointed_worktree_gitdir_is_refused
+src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings_clone.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_a_repointed_worktree_gitdir_is_refused
 test/test_open_slots_persistence.py::test_persist_open_slots_handles_write_failure_gracefully
