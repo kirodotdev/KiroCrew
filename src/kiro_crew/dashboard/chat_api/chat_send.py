@@ -1126,6 +1126,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
     if _replay is not None:
         return _sc_entry.chat_replay_response(_replay, slot_key=slot.key)
 
+    # The session's own human typing into the dashboard, recognised by the
+    # POSITIVE dashboard-user mark token_auth sets only for a validated
+    # dashboard token with no app claim. A loopback internal-secret caller (an
+    # MCP tool, a cron script) never carries it, nor does an app, and a hub
+    # conductor's agent-origin send is not the person either. Only such a
+    # send skips the sub-agent hold below; every other sender keeps waiting for
+    # the wave, including a future caller nobody taught this rule.
+    _from_composer = (
+        request.get("is_dashboard_user") is True and not _agent_origin and not cron_creator
+    )
+
     # Asked again after the replay await: a Pause all may have landed during it.
     _crew_paused = _crew_paused or crew_pause.holds_slot(slot)
     if slot.turn_running or slot._turn_admission_reserved or _crew_paused:
@@ -1312,11 +1323,11 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             # the delivery ended -- a receipt withheld there would lose the only
             # record that a decision was made at all.
             decision_strip=_auto_strip,
-            # A steer that fell through here (unavailable, or refused as a
-            # duplicate) still means "act now": released past the sub-agent hold
-            # when this turn ends. An `auto` send Jev chose to queue is a real
-            # queue and waits like one.
-            steer_intent=bool(steer) and _person_send and not _auto_queues,
+            # The composer's own human, whichever way the send went (Queue, a
+            # steer that fell through, or `auto` choosing to queue): Queue means
+            # after THIS turn, so the sub-agent hold releases it when the turn
+            # ends instead of parking it behind background children.
+            composer_send=_from_composer,
             author=_author_meta(_queued_actor_of(request)) if _person_send else None,
         )
         _sc_entry.stamp_queued_work(slot, qid, _queued_admission)
@@ -1330,31 +1341,32 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             headers=_sc_entry.admission_headers(_queued_admission),
         )
 
-    # Queue a message typed while background sub-agents are still running for
-    # this slot. The slot.running queue path above covers the mid-turn case;
-    # this covers the idle case (spawn_run is fire-and-forget, so the main slot
-    # goes idle while children run). Without the hold, this message would start a
-    # main turn immediately and interleave with the [Subagent completion event]
-    # injections. Queue it instead (reusing the slot queue) — the queue drain
-    # releases it after the last sub-agent finishes (see subagents_hold_user_messages).
-    # Opt-out: if the user explicitly chose steer mode, honour it — start a new
-    # turn immediately so the message is processed without waiting for children.
-    # An app on a session it does not own has no opt-out (`steer` is None there),
-    # and an agent-origin send has none either: it waits like any queued turn.
-    # The opt-out covers the SUB-AGENT hold only. It is a choice about waiting,
-    # not about which conversation answers, so it cannot waive a deferred
-    # discard: the composer's Steer action on an idle slot with children running
-    # is exactly the state that defers one, and answering there would use the
-    # conversation the person asked to drop. `_turn_admit` consumes without
-    # ``allow_discard``, so nothing later in the turn drops it either.
+    # Hold a message sent while background sub-agents are still running for this
+    # slot. The slot.running queue path above covers the mid-turn case; this
+    # covers the idle case (spawn_run is fire-and-forget, so the main slot goes
+    # idle while children run). Held, the message waits in the slot queue and the
+    # drain releases it after the last sub-agent finishes (see chat_runner
+    # _hold_users), so it cannot interleave with [Subagent completion event]
+    # injections. Only an automated send (an app, an MCP tool, a cron script) is
+    # held: the session's own human is never kept waiting on background work,
+    # whatever the composer's busy-send mode -- a completion that lands during
+    # their turn queues behind it as usual. An agent-origin send (a hub
+    # conductor's) is not the session's human: it waits like any queued turn.
+    # The steer opt-out and the composer exemption cover the SUB-AGENT hold only.
+    # They are choices about waiting, not about which conversation answers, so
+    # neither can waive a deferred discard: the composer on an idle slot with
+    # children running is exactly the state that defers one, and answering there
+    # would use the conversation the person asked to drop. `_turn_admit` consumes
+    # without ``allow_discard``, so nothing later in the turn drops it either.
     _teardown_hold = bool(not slot.running and teardown_hold_active(state, slot))
     _sub_key = effective_session_key(slot)
-    _held = subagents_hold_user_messages(state, _sub_key)
+    _children_hold = subagents_hold_user_messages(state, _sub_key)
+    _held = not _from_composer and _children_hold
     # Messages parked while a child was live stay parked once it is flagged
     # stalled (nothing starts a drain then). A send behind them joins the queue
     # and drains it, so it is answered after them rather than ahead of them.
     _behind_parked = bool(
-        not _held
+        not _children_hold
         and slot._queue
         and state.subagents is not None
         and state.subagents.running_agents_for(_sub_key)
@@ -1413,6 +1425,17 @@ async def _api_chat_send(request: web.Request) -> web.StreamResponse:
             from kiro_crew.shared_crew.identity import actor_of as _hold_actor_of
 
             _hold_meta[MESSAGE_AUTHOR_META_KEY] = _hold_author_meta(_hold_actor_of(request))
+        if _from_composer and _behind_parked and not _edit_held:
+            # Behind parked messages: the drain runs the parked message first, and
+            # a stalled child that streams again (or a child that turn spawns)
+            # reinstates the hold at its end, so the mark is what releases the
+            # person's send after that turn. An open queue editor's hold drains
+            # marked entries (it is not system-only), so a send it holds gets no
+            # mark and waits behind the edited card. A deferred discard's drain is
+            # system-only, so the mark cannot pass it.
+            from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+            _hold_meta[COMPOSER_SEND_META] = True
         qid = slot.queue_append(
             message,
             meta=_hold_meta,

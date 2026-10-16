@@ -11,7 +11,7 @@ without a save, and the deadline.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -196,6 +196,38 @@ async def test_a_composer_send_queues_behind_a_held_entry(tmp_path, monkeypatch)
     assert direct == []
     spawned.assert_not_called()
     assert [q["content"] for q in slot._queue] == ["old words", "new send"]
+
+
+@pytest.mark.asyncio
+async def test_a_composer_send_behind_a_held_card_gets_no_release_mark(tmp_path, monkeypatch):
+    """Behind parked messages (a stalled child) AND an open editor: the composer
+    mark would let the edit hold's drain release the send ahead of the edited
+    card, so the send is queued without it."""
+    from chat_test_helpers import _make_app
+
+    from kiro_crew.dashboard.chat_utils import COMPOSER_SEND_META
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", AsyncMock())
+    monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+    subs = MagicMock()
+    subs.running_agents_for = MagicMock(return_value=[{"id": "dead", "stalled": True}])
+    state = _make_state(tmp_path, subagents=subs)
+    state.broadcast_ws = MagicMock()
+    slot = state.get_or_create_slot("chat-1")
+    slot.queue_append("old words", directive_user_origin=True)
+    slot._queue[0][queue_edit_hold.EDIT_HOLD_KEY] = queue_edit_hold._clock() + 60.0
+
+    spawn, run = _patched_turn_start()
+    with spawn as spawned, run:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat?ws=1", json={"message": "new send", "slot": "chat-1"}
+            )
+            assert (await resp.json()).get("queued") is True
+
+    spawned.assert_not_called()
+    assert [q["content"] for q in slot._queue] == ["old words", "new send"]
+    assert COMPOSER_SEND_META not in (slot._queue[1].get("meta") or {})
 
 
 @pytest.mark.asyncio

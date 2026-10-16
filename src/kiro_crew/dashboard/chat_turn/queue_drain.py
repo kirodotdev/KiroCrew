@@ -24,8 +24,8 @@ from kiro_crew.dashboard.chat_delivery import (
 from kiro_crew.dashboard.chat_title import RESTORED_TURN_META_KEY
 from kiro_crew.dashboard.chat_utils import (
     AUTOMATION_NOTICE_KIND,
+    COMPOSER_SEND_META,
     MCP_APP_MESSAGE_KIND,
-    STEER_INTENT_META,
     STEER_POSSIBLY_DELIVERED_META,
     SUBAGENT_DELIVERY_KINDS,
     TURN_END_WIRE_CLS,
@@ -34,6 +34,7 @@ from kiro_crew.dashboard.chat_utils import (
     is_synthetic_payload_item,
     is_synthetic_recovery_item,
     is_system_injection_item,
+    releases_past_subagent_hold,
 )
 from kiro_crew.dashboard.chat_utils_injected_rows import AUTOMATION_STEER_META
 from kiro_crew.dashboard.queue_edit_hold import edit_hold_blocks_user_turn
@@ -753,9 +754,13 @@ async def _start_next_queued_turn(
                 break
 
     if required_queue_id and hold_users:
-        # The hold dequeues only system entries, so it could start a different
-        # entry than the one card asked for. That card stays queued instead.
-        return False
+        # The hold dequeues only entries it releases, so a held card could start
+        # a different entry than the one asked for: that card stays queued. A
+        # card the hold releases (the session's own composer send) runs, and
+        # promotion below puts it first so the hold's dequeue takes exactly it.
+        _required = next((q for q in slot._queue if q.get("id") == required_queue_id), None)
+        if _required is None or not releases_past_subagent_hold(_required):
+            return False
     if required_queue_id and not slot.queue_promote_by_id(required_queue_id):
         return False
     if hold_users:
@@ -1172,7 +1177,7 @@ async def _start_next_queued_turn(
     # Model input only: the row keeps the user's text as typed.
     _possibly_delivered_steer = bool(_drained_meta.pop(STEER_POSSIBLY_DELIVERED_META, False))
     # Queue plumbing for the sub-agent hold only; says nothing about the row.
-    _drained_meta.pop(STEER_INTENT_META, None)
+    _drained_meta.pop(COMPOSER_SEND_META, None)
     # Queue plumbing too: the row says it as `meta.nudge`, the key the chip reads.
     _drained_meta.pop(AUTOMATION_STEER_META, None)
     if automation_nudge is not None:
