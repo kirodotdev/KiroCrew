@@ -362,7 +362,67 @@ def _url_payload_command(n: int) -> str:
 #: made a text that repeats the header quadratic. 56 lines are the new ``pem_scan`` module
 #: (the spellings and the last-END-marker lookup) and 25 the choice between the two
 #: patterns in ``_credential_search``. No credential branch, match or pass moved.
-_PACKAGE_LINE_BUDGET = 29_573
+#:
+#: Raised again, from 29,573, for ``publish_program_word.py``: the git-publish floor
+#: reads program position on quote-aware shell words, so a push run under a program
+#: word the shell resolves at run time (``"$G"``, ``g?t``, a substitution) is found in
+#: every program position -- after newlines, glued and background separators, inside
+#: compound constructs, behind precommands, dispatchers and redirections -- and judged
+#: by its target when its argv is known, and unverifiable when it is not. Substitution
+#: bodies, comments and each heredoc body are read in their own quote context; a body
+#: that only a sink (``git commit``, ``gh pr create``, ``glab mr create``) reads, or that
+#: ``cat``/``tee`` only writes to a plainly named file, is data beside inert companions,
+#: and a markdown ``*`` bullet in a sink's body is read as ``:`` beside inert companions
+#: and plain runners (``make``/``pytest``/``ruff``/``npm test``/``pre-commit run``). A
+#: runtime publish joined to its program word by a backslash-newline is judged on the
+#: folded source, so a sibling feature push cannot hide it. The reading is a
+#: security-deciding predicate, so it cannot leave the package; it sits in its own module
+#: so ``argv_floor`` stays under the per-module cap (the arithmetic-literal fold moved to
+#: ``shell_normalizer``, which also carries the ``flock -c`` command-string payload the
+#: nested-payload walk judges). No threshold moved.
+#:
+#: Raised to 31,606 so a markdown bullet in a ``gh``/``glab`` body is text beside a
+#: checkout, switch, stash, plain rebase or script run by its path (neither runs a
+#: hook on a body), so ``mkdir`` and ``.github`` paths leave a file-written body data,
+#: and so a redirection target ends at the next operator and a literal ``git`` with a
+#: redirection before ``push`` is judged by its target. No threshold moved.
+#:
+#: Raised to 31,685 so a ``${...}`` parameter expansion holding whitespace stays one
+#: shell word for the program-word reader, so a markdown bullet in a body only
+#: written to a plainly named file is text beside a plain runner, so a ``.sh`` script
+#: run by its path is a hookless sibling like a ``.py`` one, so a target-neutral flag
+#: may carry its one-word value attached, so ``push`` glued to a letter is not read as
+#: the subcommand, so a ``>|`` noclobber redirection is one operator and not a pipe,
+#: and so a body written to an executable a sibling then runs is command text
+#: (``argv_floor`` comments were tightened to keep it under the per-module cap). No
+#: threshold moved.
+#:
+#: Raised to 31,712 so a markdown bullet in a body written to a path whose basename
+#: is a git hook name and fired by a git sibling is read as command text (git runs
+#: no other basename as a hook), and so a continuation-split publish whose folded
+#: target carries an expansion is unverifiable at the target reader the pre-pass
+#: reaches. No threshold moved; ``argv_floor`` is unchanged in line count.
+#:
+#: Raised to 31,757 for the import lines and docstring of ``publish_heredoc``: the
+#: heredoc and sink reader moved there unchanged so ``publish_program_word`` stays
+#: under the per-file line cap. No definition changed; no threshold or pass moved.
+#:
+#: Raised to 31,786 for the ``make``-recipe guard: a heredoc body written to a
+#: ``Makefile`` ``make`` reads by default is command text, not data, so a markdown
+#: bullet in a recipe is read like a literal push. No threshold or pass moved;
+#: ``argv_floor`` is unchanged in line count.
+#:
+#: Rebased onto main's ``readonly_bash``, ``engines``, hosts-file cache-key,
+#: ``redaction_switch``, OAuth consent-endpoint and PEM-scan additions; the pin becomes main's
+#: 29,573 plus this PR's measured 2,508, so 32,081. The normalizer pass of ``_is_git_publish`` and the git
+#: global-flag set it reads sit in their own module, ``publish_subcommand``, so
+#: ``argv_floor`` stays under the per-module cap; no reading or threshold changed.
+#:
+#: Raised to 31,919 so the segment splitter keeps a ``$(...)`` / ``${...}`` /
+#: backtick span whole: a separator inside a command substitution is the
+#: substitution's, so the surrounding command is not cut there and a publish glued
+#: to such a span is read as the one command it is. No threshold moved.
+_PACKAGE_LINE_BUDGET = 32_081
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

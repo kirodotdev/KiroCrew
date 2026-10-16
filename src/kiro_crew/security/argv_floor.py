@@ -93,6 +93,14 @@ from .inline_payload import (
     _decoded_b64_literal_sources,
     _has_self_importing_inline_program,
 )
+from .publish_program_word import (
+    _commands_without_runtime_publish,
+    _floor_segments,
+    _runs_runtime_program_publish,
+    _runtime_publishes,
+    _without_judged_program_words,
+)
+from .publish_subcommand import _GIT_ARG_FLAGS, _is_git_push_via_normalizer  # noqa: F401
 from .shell_normalizer import (
     _AMBIGUOUS_EXPANSION_RE,
     _PROCESS_SUBSTITUTION_OPENERS,
@@ -125,7 +133,6 @@ from .shell_normalizer import (
     _shell_join_continuations,
     _shell_payload_walk,
     _shell_quote_walk,
-    _split_push_command_segments,
     _split_shell_words,
     _strip_redirect,
     _substitution_bodies,
@@ -2382,7 +2389,6 @@ def _host_is_self(host: str, *, dns_fallback: bool = True) -> bool:
 # prints (hex and bash-octal included); anything else inside ``$((…))`` is
 # left alone — an in-floor expression evaluator is itself attack surface, and
 # a variable-carrying expression is runtime state (documented residual).
-_ARITH_INT_LITERAL_RE = re.compile(r"\$\(\(\s*(-?(?:0[xX][0-9a-fA-F]+|[0-9]+))\s*\)\)")
 
 # A brace group with a comma alternation or a ``..`` range is a brace
 # expansion; ``{single}`` is literal in bash and stays untouched, and the
@@ -2393,30 +2399,6 @@ _BRACE_RANGE_RE = re.compile(r"\A(-?[0-9]+|[A-Za-z])\.\.(-?[0-9]+|[A-Za-z])(?:\.
 # caller DENIES (fail-closed) — a wider product in a connection operand is
 # pathological, and enumerating it here would be its own DoS.
 _BRACE_EXPANSION_CAP = 256
-
-
-def _arith_int_literal_repl(match: "re.Match[str]") -> str:
-    """The decimal spelling bash prints for one arithmetic integer literal."""
-    lit = match.group(1)
-    magnitude = lit.lstrip("-")
-    try:
-        if magnitude.lower().startswith("0x"):
-            value = int(lit, 16)
-        elif magnitude.startswith("0") and len(magnitude) > 1:
-            # bash reads a leading zero as octal; an invalid octal digit is a
-            # bash error (no command runs), so the spelling is left alone.
-            value = int(lit, 8)
-        else:
-            value = int(lit, 10)
-        # ``str`` stays INSIDE the try (round-18): hex/octal ``int`` uses a
-        # power-of-two base exempt from the interpreter's digit cap, so a
-        # ~3600-digit hex literal converts -- but its decimal ``str`` IS
-        # capped and would raise straight through ``is_denied``, aborting
-        # the evaluation.  Keeping the original spelling instead composes
-        # with the target-position rule into a fail-closed deny.
-        return str(value)
-    except ValueError:
-        return match.group(0)
 
 
 def _brace_alternatives(body: str) -> "list[str] | None":
@@ -2562,7 +2544,9 @@ def _operand_targets_self(operand: str, *, host_position: bool = True) -> bool:
     # expression or a variable stays unresolved (run-time residual, see the
     # docstring) — and the substituted string carries no ``$((…))`` literal,
     # so the recursion is a single level.
-    normalized = _ARITH_INT_LITERAL_RE.sub(_arith_int_literal_repl, t)
+    normalized = _shell_normalizer._ARITH_INT_LITERAL_RE.sub(
+        _shell_normalizer._arith_int_literal_repl, t
+    )
     if normalized != t and _operand_targets_self(normalized, host_position=host_position):
         return True
     # round-17: an arithmetic expansion that SURVIVED normalization is an
@@ -3479,7 +3463,7 @@ def _is_ssh_to_self(text_lower: str) -> bool:
 def _is_git_publish(text_lower: str) -> bool:
     """Return True if *text_lower* invokes ``git push`` (verb-anchored).
 
-    Uses a two-pass approach:
+    Uses three passes:
 
     1. **Fast first-pass (regex):** ``_GIT_PUBLISH_RE`` and
        ``_GIT_PUBLISH_GLUE_RE`` catch normal ``git push`` invocations and
@@ -3489,6 +3473,9 @@ def _is_git_publish(text_lower: str) -> bool:
     2. **Normalizer second-pass:** ``normalize_shell_command`` strips quotes
        and empty-string concatenation so evasions like ``"git" push``,
        ``g""it push``, or ``'g'it push`` are resolved to their true tokens.
+    3. **Program-position pass:** ``_runs_runtime_program_publish`` finds a
+       ``push`` under a runtime-resolved program word (``"$G"``, ``g?t``, a
+       substitution) in any program position, compound or precommand included.
 
     Does NOT match ``git stash push``, ``git commit -m '...push...'``,
     ``git log --grep push``, etc.
@@ -3505,97 +3492,12 @@ def _is_git_publish(text_lower: str) -> bool:
 
     # Pass 2: normalizer-based detection (catches quote evasions like
     # "git" push, g""it push, 'g'it push)
-    return _is_git_push_via_normalizer(text_lower)
+    if _is_git_push_via_normalizer(text_lower):
+        return True
 
-
-# Git global flags that consume a separate argument token (appear between
-# `git` and the subcommand).
-_GIT_ARG_FLAGS = frozenset({"-c", "-C", "--git-dir", "--work-tree", "--namespace"})
-
-
-def _is_git_push_via_normalizer(text_lower: str) -> bool:
-    """Normalizer-based git push detection (second pass).
-
-    Tokenizes the command via ``normalize_shell_command``, then checks if
-    any token sequence resolves to ``git`` followed by ``push`` as the
-    subcommand (skipping flags and their arguments, and skipping empty or
-    whitespace-only words in the subcommand seek, which git never resolves
-    a command name from.)
-
-    Avoids false positives on ``git stash push`` by requiring ``push`` to
-    be the FIRST non-flag token after ``git`` (the subcommand position).
-    """
-    try:
-        tokens = _shell_normalizer.normalize_shell_command(text_lower)
-    except Exception:
-        return False
-
-    if not tokens:
-        return False
-
-    # Glued operators are not part of the word: ``(git`` is the git program and
-    # ``push)`` is the push subcommand. But these tokens come from
-    # ``normalize_shell_command``, which has ALREADY tokenized and dequoted, so
-    # punctuation surviving inside a token is part of the WORD -- and cutting
-    # there truncated a legal executable path (``/opt/my(dir)/git`` ->
-    # ``/opt/my``, whose basename is not ``git``), which NARROWED detection and
-    # let a protected push through. Replacing the token was therefore not the
-    # widen-only step its previous comment claimed.
-    #
-    # Both spellings are consulted instead, so the claim actually holds: a token
-    # counts when EITHER its raw form or its operator-cut form resolves to the
-    # word. That is a superset of both readings, and detection can only ever
-    # grow -- the allow/deny decision still rests with
-    # ``_is_push_to_protected_branch``.
-    def _resolves_to(token: str, word: str) -> bool:
-        for candidate in (token, _cut_at_operator(token)):
-            if candidate == word or os.path.basename(candidate) == word:
-                return True
-        return False
-
-    i = 0
-    while i < len(tokens):
-        token = tokens[i]
-        # Check if this token resolves to "git"
-        if _resolves_to(token, "git"):
-            # Skip global flags and their arguments to find the subcommand.
-            #
-            # A zero-width or whitespace-only word is also skipped.  It is a
-            # real argv element the shell hands over, and git does NOT ignore
-            # it -- git takes it as its command name and
-            # exits.  Skipping it is deliberate fail-closed OVER-detection: it
-            # widens only DETECTION, and a spelling it newly reaches either
-            # fails to run at all (git rejects the zero-width command name) or
-            # was already reached in its adjacent spelling, so no runnable
-            # push gains an escape.  What the floor DOES with a newly-detected
-            # spelling is the ungated anti-obfuscation branch, not the
-            # protected-branch rule: ``_git_push_args`` anchors on the raw
-            # split and does not skip the empty word, so the parse fails and
-            # ``_git_publish_floor_tags`` denies unconditionally
-            # (``_GIT_PUBLISH_UNGATED``) -- the right treatment for a spelling
-            # git itself cannot run.  ``str.strip()``'s whitespace set is
-            # wider than POSIX IFS (NBSP, U+2000..200A, ...) and deliberately
-            # so: every extra character it treats as skippable is still a word
-            # git takes as its command name and rejects, and a skipped token
-            # can never be the subcommand token, so the breadth only ever ADDS
-            # detection -- do not narrow it to a literal space/tab set.  No
-            # matching guard is needed in program position: a zero-width word
-            # never resolves to the program word (``_resolves_to`` cannot
-            # yield ``git`` from it), so the outer loop already steps past it.
-            j = i + 1
-            while j < len(tokens):
-                if not tokens[j].strip():
-                    j += 1  # zero-width/whitespace-only word
-                elif tokens[j] in _GIT_ARG_FLAGS:
-                    j += 2  # skip flag + its argument
-                elif tokens[j].startswith("-"):
-                    j += 1  # skip simple flag
-                else:
-                    break
-            if j < len(tokens) and _resolves_to(tokens[j], "push"):
-                return True
-        i += 1
-    return False
+    # Pass 3: a program word the shell resolves at run time, in program position
+    # anywhere on the line (``"$G" push``, ``if x; then g?t push; fi``).
+    return _runs_runtime_program_publish(text_lower)
 
 
 _PROTECTED_BRANCHES = {"main", "mainline", "master"}  # wokeignore:rule=master
@@ -4322,9 +4224,9 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     if not refspecs:
         return frozenset(tags)
     for refspec in refspecs:
-        # Refspecs with shell expansion ($, `) or git-revision syntax
-        # (@{upstream}, @{u}) cannot be statically verified — never opt-out-able.
-        if _AMBIGUOUS_REFSPEC_RE.search(refspec):
+        # A refspec with shell expansion ($(, ${, `), a comma/range brace, or
+        # @{u} git-revision syntax is unverifiable (guards continuation-split too).
+        if _AMBIGUOUS_REFSPEC_RE.search(refspec) or _AMBIGUOUS_EXPANSION_RE.search(refspec):
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
         clean = refspec.lstrip("+")  # strip force-push '+' ref prefix
@@ -4354,6 +4256,26 @@ def _push_segment_targets_protected(arg_tokens: list[str]) -> frozenset[str]:
     return frozenset(tags)
 
 
+def _tag_runtime_publishes(runtime: "list", tags: "set[str]") -> bool:
+    """Add each runtime publish's git-publish tag to *tags*; True if any seen.
+
+    A known argv after ``push`` is read with the literal-push grammar, unless a
+    publish sits among its arguments (the program may be ``eval``); any other
+    is the ungated unverifiable tag.
+    """
+    for publish in runtime:
+        known = None
+        if publish.args is not None:
+            known = _git_push_args("git push " + " ".join(publish.args))
+            if _is_git_publish(" ".join(map(_dequote_token, publish.args))):
+                known = None
+        if known is None:
+            tags.add(_GIT_PUBLISH_UNGATED)
+        else:
+            tags |= _push_segment_targets_protected(known)
+    return bool(runtime)
+
+
 def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     """Return the git-publish rule tags a command trips, EMPTY if it is allowed.
 
@@ -4377,7 +4299,15 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
     """
     tags: set[str] = set()
     saw_push = False
-    for command in _split_push_command_segments(text_lower):
+    # A runtime publish whose program word and ``push`` a backslash-newline joins
+    # is split across two physical-line segments below, so judge every runtime
+    # publish of the WHOLE folded source first; ``_runtime_publishes`` masks data,
+    # bullet and sink bodies, so this adds no literal-message false positive.
+    try:
+        saw_push = _tag_runtime_publishes(_runtime_publishes(text_lower), tags) or saw_push
+    except Exception:
+        tags.add(_GIT_PUBLISH_UNGATED)
+    for command in _floor_segments(text_lower):
         # ``_is_git_publish`` (not ``_git_push_args``) gates the checks so that
         # glue-evasion forms — which do NOT tokenize to a clean ``git`` token —
         # are still recognized as pushes and cannot slip past the ambiguity /
@@ -4389,10 +4319,32 @@ def _git_publish_floor_tags(text_lower: str) -> frozenset[str]:
         # unverifiable (the shell fuses it into the verb or the target word).
         # This is also what covers brace expansion, which is why
         # ``git-publish-push-brace-expansion-refspec`` stays floor-enforced.
-        if _AMBIGUOUS_EXPANSION_RE.search(command):
+        # Every push this segment runs under a program word the shell resolves
+        # at run time is judged on its own, so a literal publish elsewhere in
+        # the segment cannot answer for it: a known argv after ``push`` with the
+        # literal grammar, any other as unverifiable; a failed walk fails closed.
+        try:
+            runtime = _runtime_publishes(command)
+        except Exception:
             tags.add(_GIT_PUBLISH_UNGATED)
             continue
+        if _AMBIGUOUS_EXPANSION_RE.search(_without_judged_program_words(command, runtime)):
+            tags.add(_GIT_PUBLISH_UNGATED)
+            continue
+        _tag_runtime_publishes(runtime, tags)
         args = _git_push_args(command)
+        # The segment needs no parse of its own only when every publish in it
+        # was judged above; a literal publish beside a runtime one still falls
+        # to the fail-closed reading below.
+        if args is None and runtime:
+            try:
+                unclaimed = any(
+                    _is_git_publish(piece) for piece in _commands_without_runtime_publish(command)
+                )
+            except Exception:
+                unclaimed = True
+            if not unclaimed:
+                continue
         if args is None:
             # Detected as a push but not cleanly parseable. That normally means
             # OBFUSCATION (``git$(echo ' ')push``) -> ungated deny.
