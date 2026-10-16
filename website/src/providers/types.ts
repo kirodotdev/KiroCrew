@@ -116,6 +116,18 @@ export interface NormalizedProviderHook {
   source?: string
 }
 
+/** A configured hook that validated but reaches no provider hook config.
+ *  `reason` is a wire value from the gateway (`disabled`, `confirm`,
+ *  `trigger`, `agent_action`); `command` holds an agent action's prompt. */
+export interface NormalizedUnsentHook {
+  name: string
+  trigger: string
+  matcher: string
+  actionType: string
+  command: string
+  reason: string
+}
+
 export interface NormalizedPlugin {
   id: string
   name: string
@@ -190,6 +202,10 @@ export interface ProviderAdapter {
   fetchUsage(): Promise<NormalizedUsage>
 
   fetchProviderHooks(): Promise<Record<string, NormalizedProviderHook[]>>
+  /** Hooks the user configured that Crew accepted but left out of the
+   *  provider's own hook config, each with the reason. Optional: a provider
+   *  that drops nothing has none to report. */
+  fetchUnsentProviderHooks?(): Promise<NormalizedUnsentHook[]>
 
   listPlugins(): Promise<NormalizedPlugin[]>
   installPlugin(pkg: string, type: 'agent' | 'skill' | 'mcp'): Promise<{ ok: boolean; error?: string }>

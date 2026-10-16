@@ -65,7 +65,7 @@ class TestApiKiroHooks:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/kiro-hooks")
                 assert resp.status == 200
-                assert (await resp.json()) == {"hooks": {}}
+                assert (await resp.json()) == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_malformed_json_in_agent_cfg(self, kiro_dir: Path, tmp_path: Path) -> None:
@@ -78,7 +78,7 @@ class TestApiKiroHooks:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/kiro-hooks")
                 assert resp.status == 200
-                assert (await resp.json()) == {"hooks": {}}
+                assert (await resp.json()) == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_missing_defaults_file(self, kiro_dir: Path, tmp_path: Path) -> None:
@@ -105,7 +105,7 @@ class TestApiKiroHooks:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/kiro-hooks")
                 assert resp.status == 200
-                assert (await resp.json()) == {"hooks": {}}
+                assert (await resp.json()) == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_unknown_events_dropped(self, kiro_dir: Path, tmp_path: Path) -> None:
@@ -208,4 +208,4 @@ class TestApiKiroHooks:
             async with TestClient(TestServer(_make_app())) as client:
                 resp = await client.get("/api/kiro-hooks")
                 assert resp.status == 200
-                assert (await resp.json()) == {"hooks": {}}
+                assert (await resp.json()) == {"hooks": {}, "unsent": []}

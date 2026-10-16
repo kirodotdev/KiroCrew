@@ -21,6 +21,7 @@ from kiro_crew.agent import (
     _shipped_defaults,
     agents_spec_lock,
     kiro_agents_dir_path,
+    unsent_kiro_hook_rows,
 )
 from kiro_crew.agent_capabilities import CapabilityError
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
@@ -119,6 +120,10 @@ async def api_hooks(request: web.Request) -> web.Response:
     return web.json_response({"hooks": [h.to_dict() for h in store.list_all()]})
 
 
+#: The ``unsent`` row fields the author wrote, which may hold a credential.
+_UNSENT_AUTHORED = frozenset({"name", "matcher", "command"})
+
+
 @_store_failure_guard
 async def api_kiro_hooks(request: web.Request) -> web.Response:
     """GET /api/kiro-hooks — read-only view of kiro-cli agent hooks from kirocrew.json."""
@@ -181,7 +186,9 @@ async def api_kiro_hooks(request: web.Request) -> web.Response:
                 )
         if tagged:
             result[event] = tagged
-    return web.json_response({"hooks": result})
+    unsent = await asyncio.to_thread(unsent_kiro_hook_rows)  # off-loop: reads config.json
+    unsent = [{k: redact(v) if k in _UNSENT_AUTHORED else v for k, v in r.items()} for r in unsent]
+    return web.json_response({"hooks": result, "unsent": unsent})
 
 
 class _StoreUnavailable(Exception):

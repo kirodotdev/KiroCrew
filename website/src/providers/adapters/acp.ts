@@ -11,6 +11,7 @@ import type {
   NormalizedUsage,
   TokenEstimate,
   NormalizedProviderHook,
+  NormalizedUnsentHook,
   NormalizedPlugin,
   ModelInfo,
   PermissionMode,
@@ -178,6 +179,17 @@ interface RawHookEntry {
   command: string
   matcher?: string
   source?: string
+}
+
+/** Raw `unsent` entry from /api/kiro-hooks: a validated `agent.kiro_hooks`
+ *  document left out of the kiro-cli spec. */
+interface RawUnsentHook {
+  name?: string
+  trigger?: string
+  matcher?: string
+  action_type?: string
+  command?: string
+  reason?: string
 }
 
 /** Raw plugin (agent/skill/mcp) entry from /api/capability/*. */
@@ -374,6 +386,20 @@ export class AcpAdapter implements ProviderAdapter {
       }))
     }
     return result
+  }
+
+  async fetchUnsentProviderHooks(): Promise<NormalizedUnsentHook[]> {
+    const data = await api.kiroHooks()
+    // An older gateway sends no `unsent`; that reads as nothing left out.
+    const unsent: RawUnsentHook[] = Array.isArray(data.unsent) ? data.unsent : []
+    return unsent.map(u => ({
+      name: u.name || '',
+      trigger: u.trigger || '',
+      matcher: u.matcher || '',
+      actionType: u.action_type || '',
+      command: u.command || '',
+      reason: u.reason || '',
+    }))
   }
 
   async listPlugins(): Promise<NormalizedPlugin[]> {

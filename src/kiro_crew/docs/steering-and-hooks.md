@@ -399,6 +399,18 @@ picked up on its own, so a hook you switched off by naming that script would com
 back as a fresh discovery on autoimport's default event. The script named by a
 hook you switched off is left out of that scan.
 
+The Hooks page shows each of these hooks. In the **ACP Agent Hooks** table,
+after the hooks kiro-cli was handed, every hook in `agent.kiro_hooks` that was
+accepted but left out gets a row with no order number and the `never fires` mark.
+Under its command the row says why: kiro-cli has no event for the trigger, it
+cannot run an `agent` action, or the hook is set to `enabled: false` or
+`confirm: true` (and its script is also left out of the scan). The reason comes
+from the same function that builds the kiro-cli spec
+(`hook_document_unsent_reason`). The rows are read from `config.json` as it is
+now, while the rows above them are the spec as last written, so an edit you have
+not refreshed yet shows on this list first. A hook that fails validation is not
+listed; the log and the security event log name it.
+
 The standalone hook-file wrapper `{"version": "v1", "hooks": [...]}` is a file
 format, not a spec value, and is rejected.
 

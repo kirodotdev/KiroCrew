@@ -240,7 +240,7 @@ class TestApiKiroHooksHardenedRead:
         (kiro_dir / "kirocrew.json").write_text(body, encoding="utf-8")
         status, payload = await _get_hooks(kiro_dir, defaults)
         assert status == 200
-        assert payload == {"hooks": {}}
+        assert payload == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_non_utf8_kirocrew_json_degrades_to_empty(
@@ -251,7 +251,7 @@ class TestApiKiroHooksHardenedRead:
         (kiro_dir / "kirocrew.json").write_bytes(b'\xff\xfe{"hooks": {}}')
         status, payload = await _get_hooks(kiro_dir, defaults)
         assert status == 200
-        assert payload == {"hooks": {}}
+        assert payload == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_non_dict_hooks_value_degrades_to_empty(
@@ -262,7 +262,7 @@ class TestApiKiroHooksHardenedRead:
         (kiro_dir / "kirocrew.json").write_text(json.dumps({"hooks": []}), encoding="utf-8")
         status, payload = await _get_hooks(kiro_dir, defaults)
         assert status == 200
-        assert payload == {"hooks": {}}
+        assert payload == {"hooks": {}, "unsent": []}
 
     @pytest.mark.asyncio
     async def test_normal_kirocrew_json_still_serves_hooks(

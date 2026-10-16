@@ -213,6 +213,7 @@ if TYPE_CHECKING:  # served by ``__getattr__`` at runtime; named here for mypy
         is_unc_shape,
         normalize_spec_hooks,
         unc_probe_allowed,
+        unsent_kiro_hook_rows,
     )
     from kiro_crew.agent_materialization.managed_mcp import (  # noqa: F401
         _HOME_DERIVING_ENV_KEYS,
@@ -2123,6 +2124,7 @@ _EXPORTS_BY_OWNER: dict[str, tuple[str, ...]] = {
         "_HOOK_SUPPRESSED_CONFIRM",
         "hook_documents_suppressed_commands",
         "hook_documents_to_object_form",
+        "unsent_kiro_hook_rows",
         "_FILENAME_EVENT_SUFFIXES",
         "_HOOK_HEADER_SCAN_LINES",
         "_HOOK_HEADER_RE",
