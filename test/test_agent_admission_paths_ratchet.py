@@ -110,7 +110,7 @@ AGENT_ARGV_SITES: dict[Site, tuple[Site, ...] | str] = {
         ("acp/harness/kiro.py", "KiroHarness.resolve_spawn"),
         ("acp/runtime.py", "AcpRuntime._resolve_spawn_plan"),
     ),
-    ("dashboard/handlers/sessions.py", "_usage_scrape_argv"): (
+    ("dashboard/handlers/sessions_parts/usage_scrape.py", "_usage_scrape_argv"): (
         "UNGATED: a one-shot `/usage` read on the fixed kirocrew-lite service agent, "
         "spawned with no cwd argument, so the child resolves --agent against the "
         "gateway process's own working directory rather than a session checkout"

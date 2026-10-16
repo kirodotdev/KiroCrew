@@ -221,8 +221,20 @@
     "dashboard/handlers/security.py": {
       "missing_code": 16
     },
-    "dashboard/handlers/sessions.py": {
-      "missing_code": 17
+    "dashboard/handlers/sessions_parts/delete_routes.py": {
+      "missing_code": 2
+    },
+    "dashboard/handlers/sessions_parts/history_reads.py": {
+      "missing_code": 5
+    },
+    "dashboard/handlers/sessions_parts/live_turn.py": {
+      "missing_code": 5
+    },
+    "dashboard/handlers/sessions_parts/summaries.py": {
+      "missing_code": 2
+    },
+    "dashboard/handlers/sessions_parts/tool_policy.py": {
+      "missing_code": 3
     },
     "dashboard/handlers/side.py": {
       "missing_code": 7

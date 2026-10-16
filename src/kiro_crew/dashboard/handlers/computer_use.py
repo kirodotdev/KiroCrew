@@ -151,8 +151,8 @@ class StateCorruptError(Exception):
 def _sel():
     """Late-binding ``sel()`` for test monkeypatch compatibility.
 
-    The function-local import is the deliberate circular-import exception every
-    sibling handler uses (``core.py``, ``sessions.py``, ``files.py``, ``cron.py``,
+    The function-local import is the deliberate circular-import exception every sibling
+    handler uses (``core.py``, ``sessions_parts/app_scope.py``, ``files.py``, ``cron.py``,
     ``memory.py``, ``agents.py``, ``hooks.py``, ``prompts_caller_gates.py``): this module is
     imported BY ``handlers/__init__``, so a top-level ``from .. import sel`` would
     be a cycle. Resolving the package attribute per call is also what lets a test
