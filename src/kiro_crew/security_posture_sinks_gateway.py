@@ -843,4 +843,11 @@ _GATEWAY_SINKS: tuple[tuple[str, str, str], ...] = (
         "dashboard/openai_compat.py",
         "Streamed and non-streamed completions served to third-party clients.",
     ),
+    (
+        "Remote session Git views",
+        "coder/session_browse.py",
+        "Git status, log and diff output and error text pass the shared "
+        "exfiltration-URL and credential redactor at the gateway before reaching "
+        "the dashboard, preserving record separators and patch framing.",
+    ),
 )
