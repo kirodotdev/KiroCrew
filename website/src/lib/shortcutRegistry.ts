@@ -170,6 +170,15 @@ export const SHORTCUT_REGISTRY: readonly ShortcutEntry[] = [
   // its window-close role to Ctrl+Shift+W so this reaches the renderer.
   { id: 'close-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
     defaults: both({ key: 'w', mod: true }), aliases: alias({ key: 'w', alt: true, shift: true }) },
+  // ⌘⇧T / Ctrl+Shift+T — reopen the session closed most recently (#18969), the
+  // browser/editor reopen-closed-tab chord, so the inverse of ⌘W sits one key
+  // over from it. Browser-reserved (a browser reopens ITS closed tab), so the
+  // Option/Alt+Shift+T alias is the working chord there, the same shape as the
+  // new-chat and close-chat aliases. The desktop menu's Refresh Token moved off
+  // this chord to Cmd+Alt+T (macOS) / Ctrl+Alt+Shift+T so the keystroke reaches
+  // the renderer.
+  { id: 'reopen-chat', group: 'actions', dispatch: 'registry', browserReserved: true,
+    defaults: both({ key: 't', mod: true, shift: true }), aliases: alias({ key: 't', alt: true, shift: true }) },
   // ⌘/ / Ctrl+/ — the shortcuts reference (Slack, Notion, Linear, GitHub). Was
   // ⌥K; alias. Both fire even while shortcuts are globally disabled, so the user
   // can always reach the toggle that re-enables them.

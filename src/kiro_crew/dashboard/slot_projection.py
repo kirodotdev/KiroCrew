@@ -38,6 +38,24 @@ def stop_declined_armed(slot: Any, now: float | None = None) -> bool:
     return current - at < STOP_DECLINED_ESCALATION_SECS
 
 
+def _history_stem(slot: Any) -> str:
+    """The transcript filename stem for *slot*, as History rows spell it.
+
+    ``slot_history_key`` is the one rule for which transcript a slot writes;
+    ``_safe_key`` folds it to the stem History lists and resume accepts
+    (``dashboard:chat-1`` -> ``dashboard_chat-1``). ``""`` for a duck-typed
+    slot the rule cannot read.
+    """
+    # Local import: chat_utils imports state, which imports this module.
+    from kiro_crew.dashboard.chat_utils import slot_history_key
+    from kiro_crew.history import _safe_key
+
+    try:
+        return _safe_key(slot_history_key(slot))
+    except (AttributeError, TypeError):
+        return ""
+
+
 def resolved_row_identity(slot: Any) -> str:
     """The identity the sidebar renders this slot under: its own local key.
 
@@ -488,6 +506,13 @@ class SlotProjection:
             "memory_mode": slot.memory_mode,
             "forked_from": slot.forked_from,
             "linked_session_key": slot.linked_session_key,
+            # The transcript's filename stem -- the key History rows carry and
+            # ``/api/chat/resume`` reads. Derived here, by the one rule
+            # (``slot_history_key``), because the client cannot rebuild it: an
+            # unbound channel-born slot has no ``linked_session_key`` and no
+            # origin link, yet its transcript is the channel's, not
+            # ``dashboard_<key>``. Reopen-closed-session resumes by this key.
+            "history_key": _history_stem(slot),
             "app": slot._app,
             "origin": slot._origin,
             # Creator attribution: the slot key of the session that asked for

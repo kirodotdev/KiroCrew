@@ -10234,6 +10234,8 @@
       "focus_pending_approval": "Enfocar la aprobación pendiente",
       "focus_text_input": "Enfocar el campo de texto",
       "edit_last_message": "Editar el último mensaje",
+      "reopen_closed_session": "Volver a abrir la sesión cerrada",
+      "no_recently_closed_session": "No hay sesiones cerradas recientemente.",
       "group_actions": "Acciones",
       "group_chat_navigation": "Navegación por el chat",
       "group_panel_navigation": "Navegación por los paneles",

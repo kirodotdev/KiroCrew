@@ -11,6 +11,7 @@ import { copySessionLink } from '../utils/shareUrl'
 import { useMoveSlotToFolder } from './useMoveSlotToFolder'
 import { loadChatConfig } from '../pages/chat/ChatSettings'
 import { sessionIsBusyForClose } from '../lib/closeBusyGate'
+import { rememberClosedSession } from '../lib/recentlyClosedSessions'
 import { commitPinnedSessionOperations, commitPinnedSessionSnapshot, readPinnedSessionOrder, reconcilePinnedSessionOrder } from '../utils/pinnedSessionOrder'
 import { i18nT } from '../i18n/t'
 import { forkFailureNoticeOffsite } from '../utils/forkFailure'
@@ -480,7 +481,12 @@ export function useSessionActions(mode?: string): SessionActions {
   // one keeps the user's `confirmCloseSession` setting.
   const close = useCallback((slotKey: string) => {
     const mustConfirm = loadChatConfig().confirmCloseSession || sessionIsBusyForClose(store.getState(), slotKey)
-    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) dispatch(deleteSlot(slotKey))
+    if (!mustConfirm || confirm(i18nT('hooks.useSessionActions.close_this_session'))) {
+      // Read before the close removes the row. Recorded only once the close
+      // lands, so a refused close (the row comes back) is not reopenable.
+      const slot = store.getState().dashboard.slots.find(s => s.key === slotKey)
+      void dispatch(deleteSlot(slotKey)).then(action => { if (deleteSlot.fulfilled.match(action)) rememberClosedSession(slot) })
+    }
   }, [dispatch])
 
   return { duplicate, forkError, clearForkError, toggleRead, togglePin, toggleMutesOpened, toggleMuted, copyLink, move, reload, close }

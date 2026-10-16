@@ -28,13 +28,18 @@ vi.mock('./useMoveSlotToFolder', () => ({ useMoveSlotToFolder: () => moveSlotToF
 const chatConfig = vi.hoisted(() => ({ confirmCloseSession: true }))
 vi.mock('../pages/chat/ChatSettings', () => ({ loadChatConfig: () => chatConfig }))
 
-const deleteSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/deleteSlot', payload: key })))
+// Thunk-shaped like the real `deleteSlot`: `close` awaits the dispatched close
+// and reads `deleteSlot.fulfilled` to record it for ⌘⇧T reopen (#18969).
+const deleteSlot = vi.hoisted(() => vi.fn((key: string) => async () => ({ type: 'zzq/deleteSlot/fulfilled', payload: key })))
 const switchSlot = vi.hoisted(() => vi.fn((key: string) => ({ type: 'zzq/switchSlot', payload: key })))
-vi.mock('../store/chatSlice', async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  deleteSlot,
-  switchSlot,
-}))
+vi.mock('../store/chatSlice', async (importOriginal) => {
+  const real = await importOriginal<Record<string, unknown> & { deleteSlot: { fulfilled: unknown } }>()
+  return {
+    ...real,
+    deleteSlot: Object.assign(deleteSlot, { fulfilled: real.deleteSlot.fulfilled }),
+    switchSlot,
+  }
+})
 
 import { store } from '../store'
 import { sseSlots, markSlotUnread, markSlotRead, setSidebarOrder, updateSlot, updateSlotPin } from '../store/dashboardSlice'

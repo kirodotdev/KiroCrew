@@ -4389,6 +4389,8 @@
       "focus_pending_approval": "Focus pending approval",
       "focus_text_input": "Focus text input",
       "edit_last_message": "Edit last message",
+      "reopen_closed_session": "Reopen closed session",
+      "no_recently_closed_session": "No recently closed sessions.",
       "group_actions": "Actions",
       "group_chat_navigation": "Chat Navigation",
       "group_panel_navigation": "Panel Navigation",

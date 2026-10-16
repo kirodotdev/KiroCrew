@@ -155,6 +155,9 @@ export interface QuestionNotice {
   kind: 'restored' | 'release_failed'
 }
 
+/** A transient shell notice; see {@link ChatState.agentSwitchNotice}. */
+export interface AgentSwitchNotice { message: string; tone?: 'info' }
+
 export interface ChatState {
   recoveryRevision?: number
   lastRecoveryRequestId?: string
@@ -315,8 +318,9 @@ export interface ChatState {
   mainComposerAppend: { slot: string; text: string } | null
   /** Transient feedback for agent-rebind failures shared by the picker and
    *  global cycle shortcuts, and for a new chat that could not get its own
-   *  session folder. The App shell owns rendering and expiry. */
-  agentSwitchNotice: { message: string } | null
+   *  session folder, and for a reopen shortcut with nothing to reopen. The App
+   *  shell owns rendering and expiry. `info` drops the warning border. */
+  agentSwitchNotice: AgentSwitchNotice | null
   // True while a createSlot POST is in flight. Lets every New Chat entry
   // point show a pending state so the UI never looks dead on click.
   creatingSlot: boolean

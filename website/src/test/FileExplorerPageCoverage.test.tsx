@@ -748,6 +748,18 @@ describe('FileExplorerPage shortcuts and search', () => {
     await waitFor(() => expect(tabBox().getAllByText('user')).toHaveLength(2))
   })
 
+  it('leaves the shifted T chord to the shell instead of opening a workspace tab', async () => {
+    renderPage()
+    await ready()
+    const shifted = new KeyboardEvent('keydown', { key: 'T', ctrlKey: true, shiftKey: true, cancelable: true })
+    act(() => { window.dispatchEvent(shifted) })
+    expect(shifted.defaultPrevented).toBe(false)
+    // Plain Cmd/Ctrl+T afterwards still adds exactly one tab: the shifted
+    // keystroke contributed nothing.
+    act(() => { chord('t') })
+    await waitFor(() => expect(tabBox().getAllByText('user')).toHaveLength(2))
+  })
+
   it('closes the open file with the command chord', async () => {
     renderPage()
     await ready()

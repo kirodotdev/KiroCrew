@@ -10091,6 +10091,8 @@
       "focus_pending_approval": "Ausstehende Genehmigung fokussieren",
       "focus_text_input": "Texteingabe fokussieren",
       "edit_last_message": "Letzte Nachricht bearbeiten",
+      "reopen_closed_session": "Geschlossene Sitzung wieder öffnen",
+      "no_recently_closed_session": "Keine kürzlich geschlossenen Sitzungen.",
       "group_actions": "Aktionen",
       "group_chat_navigation": "Chat-Navigation",
       "group_panel_navigation": "Panel-Navigation",

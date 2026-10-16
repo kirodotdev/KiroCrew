@@ -9948,6 +9948,8 @@
       "focus_pending_approval": "保留中の承認にフォーカス",
       "focus_text_input": "テキスト入力にフォーカス",
       "edit_last_message": "最後のメッセージを編集",
+      "reopen_closed_session": "閉じたセッションを再度開く",
+      "no_recently_closed_session": "最近閉じたセッションはありません。",
       "group_actions": "アクション",
       "group_chat_navigation": "チャットナビゲーション",
       "group_panel_navigation": "パネルナビゲーション",

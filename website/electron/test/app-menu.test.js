@@ -224,6 +224,27 @@ for (const isMac of [true, false]) {
     assert.strictEqual(item.accelerator, "CmdOrCtrl+Alt+N");
   });
 
+  // Cmd/Ctrl+Shift+T is "reopen closed session" in the renderer (#18969), so
+  // Refresh Token moved to an Alt variant and nothing in the menu claims a
+  // Shift+T chord without Alt. Linux/Windows carry Shift as well: Ctrl+Alt+T
+  // is GNOME/Ubuntu's open-terminal and would never reach the app.
+  test(`${os}: Refresh Token is ${isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T"}, leaving CmdOrCtrl+Shift+T unclaimed`, () => {
+    const { deps } = makeDeps({ isMac });
+    const template = buildMenuTemplate(deps);
+    const item = findItem(template, (i) => i.label === "Refresh Token");
+    assert.ok(item, "Refresh Token present");
+    assert.strictEqual(item.accelerator, isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T");
+    for (const acc of ["CmdOrCtrl+Shift+T", "Cmd+Shift+T", "Ctrl+Shift+T"]) {
+      assert.strictEqual(findItem(template, (i) => i.accelerator === acc), null, `${acc} unclaimed`);
+    }
+    assert.strictEqual(
+      findItem(template, (i) => /Shift\+T$/.test(i.accelerator ?? "") && !/Alt/.test(i.accelerator ?? "")),
+      null,
+      "no item claims Shift+T without Alt",
+    );
+    assert.strictEqual(findItem(template, (i) => i.accelerator === "CmdOrCtrl+Alt+T" || i.accelerator === "Ctrl+Alt+T"), null, "Ctrl+Alt+T (GNOME terminal) unclaimed");
+  });
+
   test(`${os}: devtools item keeps its id and starts hidden`, () => {
     const { deps } = makeDeps({ isMac });
     const item = findItem(buildMenuTemplate(deps), (i) => i.id === "devtools-toggle");

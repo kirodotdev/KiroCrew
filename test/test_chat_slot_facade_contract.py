@@ -95,6 +95,9 @@ _TO_DICT_KEYS = (
     "memory_mode",
     "forked_from",
     "linked_session_key",
+    # The transcript's filename stem, derived by ``slot_history_key``; the
+    # reopen-closed-session shortcut resumes by it.
+    "history_key",
     "app",
     "origin",
     "created_by",

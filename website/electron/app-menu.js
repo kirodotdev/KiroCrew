@@ -151,7 +151,13 @@ function buildMenuTemplate(deps) {
         { label: "Rename Window…", click: renameCurrentWindow },
         { type: "separator" },
         { label: "Set Remote Host…", click: promptRemoteHost },
-        { label: "Refresh Token", accelerator: "CmdOrCtrl+Shift+T", click: refreshToken },
+        // Was CmdOrCtrl+Shift+T, which is "reopen closed session" in the
+        // renderer (src/lib/shortcutRegistry.ts, #18969) — the browser
+        // reopen-closed-tab chord. Moved to an Alt variant, like New
+        // Connection Window… above, so the menu does not take the keystroke.
+        // Not CmdOrCtrl+Alt+T either: on GNOME/Ubuntu Ctrl+Alt+T opens a
+        // terminal system-wide, so Linux (and Windows) add Shift.
+        { label: "Refresh Token", accelerator: isMac ? "Cmd+Alt+T" : "Ctrl+Alt+Shift+T", click: refreshToken },
         { label: "Open Config File", click: openConfigFile },
       ],
     },

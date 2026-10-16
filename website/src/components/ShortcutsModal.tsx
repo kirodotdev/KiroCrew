@@ -142,17 +142,30 @@ export function ShortcutGroupRows({ entries, hintClass }: { entries: readonly Sh
  * primary after an "or", muted. A legacy alias is just muted (it works too); a
  * browser-reserved chord demoted in a browser host carries an inline tag naming
  * where it works, because muted alone would read as "also works" there.
+ *
+ * Below `sm`, the row stacks a full-width label above its chords so narrow
+ * windows never squeeze a short label into a one-word column. From the `sm`
+ * breakpoint up the label does not shrink: when two full chords plus a tag
+ * outrun the row (reopen-chat in a browser host), the caps column wraps onto a
+ * second line while the short label stays on one. There it is also capped at
+ * 55% of the row. At every width, a combo never breaks: its keys stay together
+ * and the caps line breaks only between combos ("or" and a tag), never between
+ * "Alt" and "S".
  */
 export function ShortcutRow({ label, keys, secondary }: { label: string; keys: string[]; secondary?: readonly SecondaryChord[] }) {
   return (
-    <div className="flex items-center justify-between py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors">
-      <span className="text-[13px] text-text">{label}</span>
-      <span className="flex items-center gap-1 flex-wrap justify-end">
-        {keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+    <div className="flex flex-col items-stretch justify-between gap-1 py-1.5 px-2 rounded-md hover:bg-bg-hover transition-colors sm:flex-row sm:items-center sm:gap-0">
+      <span className="w-full text-[13px] text-text sm:w-auto sm:shrink-0 sm:max-w-[55%]">{label}</span>
+      <span className="flex w-full items-center gap-1 flex-wrap justify-start sm:w-auto sm:justify-end">
+        <span data-testid="shortcut-combo" className="flex items-center gap-1 flex-nowrap">
+          {keys.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+        </span>
         {secondary?.map((sc, j) => (
-          <span key={j} className="flex items-center gap-1 opacity-60">
+          <span key={j} className="flex items-center gap-1 flex-wrap justify-start sm:justify-end opacity-60">
             <span className="text-muted text-[11px] mx-1">{i18nT('components.shortcutsModal.or')}</span>
-            {sc.caps.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+            <span data-testid="shortcut-combo" className="flex items-center gap-1 flex-nowrap">
+              {sc.caps.map((p, i) => <span key={i} className="flex items-center gap-1">{i > 0 && <span className="text-muted text-[11px]">+</span>}<Kbd>{p}</Kbd></span>)}
+            </span>
             {/* A div, not a span: "or" and the tag are separate catalog units, and a
                 block element ends the inline text run so the i18n render gate never
                 sees them glued into one string (it is a flex item, so layout is the same). */}

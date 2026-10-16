@@ -10234,6 +10234,8 @@
       "focus_pending_approval": "Placer le focus sur l’approbation en attente",
       "focus_text_input": "Placer le focus sur la zone de saisie",
       "edit_last_message": "Modifier le dernier message",
+      "reopen_closed_session": "Rouvrir la session fermée",
+      "no_recently_closed_session": "Aucune session fermée récemment.",
       "group_actions": "Actions",
       "group_chat_navigation": "Navigation dans les chats",
       "group_panel_navigation": "Navigation dans les panneaux",

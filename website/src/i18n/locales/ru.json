@@ -10377,6 +10377,8 @@
       "focus_pending_approval": "Перейти к ожидающему подтверждению",
       "focus_text_input": "Перейти к полю ввода",
       "edit_last_message": "Редактировать последнее сообщение",
+      "reopen_closed_session": "Снова открыть закрытый сеанс",
+      "no_recently_closed_session": "Нет недавно закрытых сеансов.",
       "group_actions": "Действия",
       "group_chat_navigation": "Навигация по чатам",
       "group_panel_navigation": "Навигация по панелям",
