@@ -213,7 +213,6 @@
 6983 test/test_chat_runner_coverage.py
 2683 test/test_chat_slot_switch_atomicity.py
 3069 test/test_chat_tags.py
-6790 test/test_ci_runner_watchdog.py
 10498 test/test_cli.py
 4698 test/test_cli_doctor.py
 2744 test/test_cli_server_more_coverage.py
