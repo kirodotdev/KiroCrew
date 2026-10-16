@@ -526,6 +526,13 @@
       "configKey": "agent.refusal_fallback_model"
     },
     {
+      "id": "chat.copy-on-select",
+      "label": "Copy on select",
+      "tab": "chat",
+      "route": "/settings/chat/transcript?highlight=chat.copy-on-select",
+      "hint": "Copy text to the clipboard as soon as you select it in the conversation with the mouse. The Quote, Ask about this and Copy row still opens."
+    },
+    {
       "id": "chat.default-memory-mode",
       "label": "Default Memory Mode",
       "tab": "chat",
