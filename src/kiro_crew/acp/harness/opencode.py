@@ -62,6 +62,13 @@ _OPENCODE_CONFIG_READBACK_ARGS = ("debug", "config")
 # Bounded so a wedged harness cannot hold the spawn open: the read-back is a
 # short-lived child, measured at ~2.3s on a loaded dev desktop.
 _OPENCODE_READBACK_TIMEOUT_S = 30.0
+# What ``debug config`` prints in place of a STRING value whose key looks sensitive
+# (``secret``, ``token``, ``password``, ``key``, ``credential`` ...), from opencode
+# 1.18.33 on. The real value is unreadable, so the read-back never counts it as a
+# verified deny and always counts it as a possible one: either way it can only
+# refuse or withhold more. A map value is printed as is, which is why the seed
+# writes each deny rule as ``{"*": "deny"}``.
+_OPENCODE_MASKED_VALUE = "***"
 
 
 def _opencode_readback_remedy() -> str:
@@ -113,11 +120,15 @@ def _opencode_uniform_permission(raw: object) -> object:
 
 
 def _opencode_rules_deny(raw: dict) -> bool:
-    """True when any rule in *raw* -- top level or one tool's pattern map -- denies."""
+    """True when any rule in *raw* -- top level or one tool's pattern map -- may deny.
+
+    A masked value may be a deny, so it counts as one.
+    """
+    may_deny = {"deny", _OPENCODE_MASKED_VALUE}
     for value in raw.values():
-        if value == "deny":
+        if isinstance(value, str) and value in may_deny:
             return True
-        if isinstance(value, dict) and "deny" in value.values():
+        if isinstance(value, dict) and may_deny & {v for v in value.values() if isinstance(v, str)}:
             return True
     return False
 
@@ -338,7 +349,11 @@ def _opencode_seeded_deny_rules(config_content: str, setting_key: str) -> tuple[
     value = seed.get(setting_key) if isinstance(seed, dict) else None
     if not isinstance(value, dict):
         return ()
-    return tuple(str(key) for key, action in value.items() if key != "*" and action == "deny")
+    return tuple(
+        str(key)
+        for key, action in value.items()
+        if key != "*" and action in ("deny", {"*": "deny"})
+    )
 
 
 def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> str:
@@ -379,7 +394,10 @@ def _opencode_routing_config(backend: str, deny_rules: Collection[str] = ()) -> 
     if rules and value == "ask":
         # Each switched-off tool AFTER the "*", because the harness lets the last
         # matching rule win; the read-back checks that order survived the merge.
-        merged[setting_key] = {"*": value, **{rule: "deny" for rule in rules}}
+        # The map form, not the bare string the harness reads the same way, because
+        # ``debug config`` masks a string under a sensitive-looking key and the
+        # read-back could then never see the deny in force.
+        merged[setting_key] = {"*": value, **{rule: {"*": "deny"} for rule in rules}}
     else:
         merged[setting_key] = value
     return json.dumps(merged)
@@ -526,19 +544,44 @@ def _verify_opencode_routing(
     observed = _opencode_uniform_permission(top_level)
     issue = acp_tool_gate.seeded_setting_issue(backend, session._scrub_observed(observed))
     if issue:
-        return issue, acp_tool_gate.remediation_for(backend)
+        return issue, _opencode_routing_remedy(backend, top_level)
     # The top-level value is in force; now the per-agent overrides, which the
     # seed does not reach and which replace it for the agent they name. One
     # permissive agent is one agent whose tool calls never reach the host gate,
     # so the first such entry refuses the session and names the agent.
+    agents = resolved.get("agent")
     for agent_name, agent_observed in _opencode_agent_permissions(resolved, setting_key):
         issue = acp_tool_gate.seeded_setting_issue(backend, session._scrub_observed(agent_observed))
         if issue:
+            entry = agents.get(agent_name) if isinstance(agents, dict) else None
+            raw = entry.get(setting_key) if isinstance(entry, dict) else None
             return (
                 f"agent {session._scrub_observed(agent_name)!r} overrides it: {issue}",
-                acp_tool_gate.remediation_for(backend),
+                _opencode_routing_remedy(backend, raw),
             )
     return "", ""
+
+
+def _opencode_routing_remedy(backend: str, raw: object) -> str:
+    """The gate's remedy, or the redaction's when *raw* holds a masked rule."""
+    masked = raw == _OPENCODE_MASKED_VALUE or (
+        isinstance(raw, dict)
+        and any(
+            value == _OPENCODE_MASKED_VALUE
+            or (isinstance(value, dict) and _OPENCODE_MASKED_VALUE in value.values())
+            for value in raw.values()
+        )
+    )
+    if not masked:
+        return acp_tool_gate.remediation_for(backend)
+    return (
+        f"opencode's '{' '.join(_OPENCODE_CONFIG_READBACK_ARGS)}' prints a permission "
+        f"rule as '{_OPENCODE_MASKED_VALUE}' because its key looks sensitive, so Crew "
+        "cannot read it and refuses. Remove that rule from your opencode config. A "
+        "top-level rule that allows or asks can instead be written as a map, for example "
+        '"<key>": {"*": "ask"}, which opencode prints as is; a deny ahead of the "*" '
+        "rule is refused however it is spelled."
+    )
 
 
 def _native_mount_refusal(session: ProcessSession, native: Collection[str]) -> tuple[str, str]:
