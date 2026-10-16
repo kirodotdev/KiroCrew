@@ -101,6 +101,44 @@ def _apply_build_version_file(base: str, package_dir: "str | None") -> str:
 
 __version__ = _apply_build_version_file(__version__, os.path.dirname(__file__ or ""))
 
+# What ``kirocrew --version`` appends when the code runs from a source checkout.
+# There the literal above is whatever the tree says -- often the NEXT version,
+# bumped ahead of its release -- and no ``BUILD_VERSION`` stamp or release lane
+# has rewritten it, so the bare number names a build that may not exist. The
+# bug-report form asks for this output verbatim, so the provenance has to travel
+# with the number. ASCII only: ``_bootstrap`` prints it before the console is
+# switched to UTF-8.
+SOURCE_CHECKOUT_NOTE = "(source checkout, not a release build)"
+
+
+def _runs_from_source_checkout(package_dir: str) -> bool:
+    """Whether *package_dir* is ``<repo>/src/kiro_crew`` with no build stamp.
+
+    Same layout test as ``_bootstrap._source_checkout_root``: an editable or
+    ``PYTHONPATH=src`` run resolves the package inside the repository, which
+    carries ``setup.cfg`` two levels up; a wheel, the desktop bundle and the
+    Docker image resolve it inside ``site-packages``, which does not. A
+    ``BUILD_VERSION`` file means a packager stamped the build, so the version is
+    one it vouches for even when the tree happens to look like a checkout.
+    """
+    if not package_dir:
+        return False
+    if os.path.exists(os.path.join(package_dir, _BUILD_VERSION_FILENAME)):
+        return False
+    root = os.path.dirname(os.path.dirname(os.path.abspath(package_dir)))
+    return os.path.isfile(os.path.join(root, "setup.cfg")) and os.path.isdir(
+        os.path.join(root, "src", "kiro_crew")
+    )
+
+
+def version_line(package_dir: "str | None" = None) -> str:
+    """The ``kirocrew --version`` output, shared by every entry that prints it."""
+    if package_dir is None:
+        package_dir = os.path.dirname(__file__ or "")
+    if _runs_from_source_checkout(package_dir):
+        return f"kirocrew {__version__} {SOURCE_CHECKOUT_NOTE}"
+    return f"kirocrew {__version__}"
+
 
 class _LazyShutdownEvent:
     """Proxy for ``asyncio.Event`` that defers construction until first use.

@@ -42,10 +42,10 @@ from typing import Callable, TypeVar
 
 # Module scope, not function-local: these are the only package imports this file
 # can safely make at import time. dep_sync and stdlib_shadow import the standard
-# library only (each asserted by a test) and `__version__` needs nothing beyond
+# library only (each asserted by a test) and `version_line` needs nothing beyond
 # the package itself (`kiro_crew.__init__` imports only the standard library), so
 # none can raise the ModuleNotFoundError this file exists to heal.
-from kiro_crew import __version__, dep_sync
+from kiro_crew import dep_sync, version_line
 from kiro_crew.stdlib_shadow import refuse_if_stdlib_shadowed
 
 _PIP_TIMEOUT_SECS = 300
@@ -122,7 +122,7 @@ def main() -> None:
     # form fast-paths so `artifact show --version N` keeps its argparse
     # semantics.
     if len(sys.argv) == 2 and sys.argv[1] == "--version":
-        print(f"kirocrew {__version__}")
+        print(version_line())
         return
     # The stdio MCP servers the gateway launches skip the full CLI import
     # (kiro_crew.mcp_entry; its module scope is stdlib-only). slim_server
