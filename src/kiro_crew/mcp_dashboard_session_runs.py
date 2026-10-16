@@ -691,9 +691,24 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact("\n".join(lines))
 
 
+#: Seconds the client gives ONE ``session_status`` read. Its GET does real work: the
+#: route scans the transcript catalog and folds each ended child's crew log on the
+#: gateway's shared default executor, where a busy gateway makes every hop wait its
+#: turn. ``mcp_core._get``'s 10 s default is sized for a telemetry read and its
+#: docstring asks a route like this one to raise it. The value is the write path's:
+#: ``session_send`` reaches the same gateway through ``mcp_core._post``, whose default
+#: is 30 s, so a patrol's roster read is not the call that fails first while its sends
+#: still land.
+SESSION_STATUS_READ_TIMEOUT_SECS = 30.0
+
+
 def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
-        resp = ctx.client.get("/api/session-control/status", session_key=ctx.caller_key)
+        resp = ctx.client.get(
+            "/api/session-control/status",
+            session_key=ctx.caller_key,
+            timeout=SESSION_STATUS_READ_TIMEOUT_SECS,
+        )
     except DashboardError as refused:
         return f"Error: could not read your session roster: {refused.error}"
     rows = resp.get("sessions") or []

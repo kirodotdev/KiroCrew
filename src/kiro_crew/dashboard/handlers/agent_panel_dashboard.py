@@ -13,7 +13,6 @@ never imports the facade.
 from __future__ import annotations
 
 import asyncio
-import functools
 import json
 import logging
 import time
@@ -249,27 +248,30 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
     strict-internal prefix with the publish routes because it reports a crewmate's
     own refused writes, which is state about that crewmate and nobody else's to
     read.
+
+    The reads after the gate run in ONE worker hop. Each ``asyncio.to_thread`` call
+    queues on the gateway's shared default executor, so a busy gateway charges every
+    hop its queue wait before the work starts. The reads are sequential anyway --
+    each later one needs the instance the first returns -- so one hop pays that
+    wait once instead of once per read.
     """
     resolved, refusal = await _resolve_dashboard_caller(request, "dashboard_fields")
     if refusal is not None:
         return refusal
     assert resolved is not None
     slug, crew_name, slot = resolved
-    instance = await asyncio.to_thread(read_instance, slug, crew_name)
-    mistakes = await asyncio.to_thread(_mistake_book, slot) if slot else {}
-    # The version history rides along on THIS read rather than having a tool of its
-    # own. An agent that is about to answer "go back" already has to make this call to
-    # know its fields, the rows are capped at ten, and a second round trip for ten rows
-    # is a cycle spent on a payload that fits in this one.
-    rows, retained = await asyncio.to_thread(_instance_history, slug, slot)
-    values, written_at = await asyncio.to_thread(
-        _current_values, slug, crew_name, instance, "" if crew_name else slot
-    )
-    # Off the loop: the upkeep rows read the shipped catalog (every built-in
-    # directory), the same scan `_templates_for_agent` already runs on a thread.
-    payload = await asyncio.to_thread(
-        functools.partial(
-            dashboard_agentic.fields_for_agent,
+
+    def _read() -> dict[str, Any]:
+        instance = read_instance(slug, crew_name)
+        mistakes = _mistake_book(slot) if slot else {}
+        # The version history rides along on THIS read rather than having a tool of
+        # its own. An agent about to answer "go back" already has to make this call to
+        # know its fields, the rows are capped at ten, and a second round trip for ten
+        # rows is a cycle spent on a payload that fits in this one.
+        rows, retained = _instance_history(slug, slot)
+        values, written_at = _current_values(slug, crew_name, instance, "" if crew_name else slot)
+        # The upkeep rows read the shipped catalog (every built-in directory).
+        return dashboard_agentic.fields_for_agent(
             instance,
             mistakes,
             history=rows,
@@ -278,8 +280,8 @@ async def api_dashboard_fields(request: web.Request) -> web.Response:
             written_at=written_at,
             slug=slug,
         )
-    )
-    return web.json_response(payload)
+
+    return web.json_response(await asyncio.to_thread(_read))
 
 
 async def api_dashboard_types(request: web.Request) -> web.Response:

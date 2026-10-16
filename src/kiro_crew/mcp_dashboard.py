@@ -793,6 +793,7 @@ from kiro_crew.mcp_dashboard_references import (  # noqa: E402, F401
 from kiro_crew.mcp_dashboard_session_runs import (  # noqa: E402, F401
     _PROFILE_COPY_NOTE,
     GENERATE_TITLE_TIMEOUT_SECS,
+    SESSION_STATUS_READ_TIMEOUT_SECS,
     _closed_at_display,
     _create_refusal_remedy,
     _pending_approval_phrase,

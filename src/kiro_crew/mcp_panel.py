@@ -53,6 +53,17 @@ logger = logging.getLogger(__name__)
 SERVER_NAME = "kirocrew-panel"
 SERVER_VERSION = "1.0.0"
 
+#: The field list's own ceiling, because its GET does real work: the route reads the
+#: dashboard instance, folds the mistake book and the page's values from the crew
+#: log, and scans the template catalog, all on the gateway's shared default
+#: executor, where a busy gateway makes the read wait its turn. ``_get``'s 10 s
+#: default is sized for a telemetry read and its docstring asks a route like this
+#: one to raise it. The value is the write path's: ``dashboard_write`` passes the
+#: same caller gate and reads the same mistake book through ``_post``, whose default
+#: is 30 s, so the read that tells an agent what to write is not the call that fails
+#: first. Every reader of the route uses it, the type lookup a clear makes included.
+DASHBOARD_FIELDS_READ_TIMEOUT_SECS = 30.0
+
 
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface: publish a panel, and discover what can render it."""
@@ -511,7 +522,11 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         sk, err = _strict_session_key()
         if err:
             return err
-        d = _get("/api/agent-panel/dashboard/fields", session_key=sk)
+        d = _get(
+            "/api/agent-panel/dashboard/fields",
+            session_key=sk,
+            timeout=DASHBOARD_FIELDS_READ_TIMEOUT_SECS,
+        )
         if d.get("error"):
             return redact(f"Error: {d['error']}")
         return redact(_render_fields(d))
@@ -1110,7 +1125,11 @@ def _empty_value_for(field: str, sk: str) -> Any:
     refused by the write route as ``wrong_type``, and the next clear that can read
     the list writes ``{}``.
     """
-    d = _get("/api/agent-panel/dashboard/fields", session_key=sk)
+    d = _get(
+        "/api/agent-panel/dashboard/fields",
+        session_key=sk,
+        timeout=DASHBOARD_FIELDS_READ_TIMEOUT_SECS,
+    )
     rows = None if d.get("error") else d.get("fields")
     if isinstance(rows, list):
         for row in rows:
