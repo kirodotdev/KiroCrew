@@ -1618,6 +1618,13 @@ class SubagentManager:
         # Set when a run records a settled reading (and at start), so the sweep
         # re-reads the cost log only when it can have changed what the map holds.
         self._learned_settled_dirty = True
+        # Monotonic time of the last re-read; ``None`` until the first, so the
+        # first sweep always reads.
+        self._learned_settled_read_mono: float | None = None
+        # Monotonic time of the oldest read whose figures the map may still
+        # hold: an incomplete read keeps figures it could not confirm, but not
+        # past the reading horizon.
+        self._learned_settled_basis_mono: float | None = None
         # Claims admitted but not registered yet: (checked price, priced shared),
         # keyed by run id. Set with the ClaimPoint reservation, popped by the
         # re-entry that registers it or ``release_reservation``.

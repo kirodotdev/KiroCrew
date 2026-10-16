@@ -293,7 +293,11 @@ session first answered); a settled worker owes nothing, because its memory is
 already in the free-memory reading. A dedicated start is priced at what such a runtime
 settles at: the learned settled RSS of its agent once three runs have measured
 it (capped at 2 GB), else the measured default of about 1 GB, and never less than
-`subagent_cost_gb`. A start that will share its parent's runtime skips the
+`subagent_cost_gb`. An agent whose newest reading is more than seven days old is
+unlearned again, so a figure learned under a heavier MCP roster or another
+backend expires on its own even when it holds every dedicated start back and no
+new reading arrives; an agent with any reading inside the seven days keeps its
+figure. A start that will share its parent's runtime skips the
 process but still starts the agent's MCP servers, so it is priced at that less
 about 0.35 GB. Parents waiting without a slot retain their reservation; a shared session
 owes its price until it settles too, because its MCP servers start after it

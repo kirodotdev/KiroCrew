@@ -33,6 +33,12 @@ _START_QUEUE_MAX_SECS = 1800.0
 #: ``subagent_timeout_secs``: the startup watchdog stops looking once a PID exists.
 _FIRST_PROMPT_SILENT_SECS = 300.0
 
+#: Longest the learned settled map goes without a re-read when no run recorded a
+#: settled reading. Readings age out of it (``SETTLED_SAMPLE_MAX_AGE_SECS``), and
+#: the host whose figure has gone stale is exactly the one that records nothing new
+#: (its dedicated starts are held back), so time alone must also re-read the log.
+_SETTLED_REREAD_SECS = 3600.0
+
 
 if TYPE_CHECKING:
     from kiro_crew import taskq as _taskq
@@ -1095,22 +1101,53 @@ class OrphanStallMonitor(ManagerComponent):
         sweep -- and the admission gate only ever reads the map it leaves. The
         map is replaced whole, never mutated, so a reader on the loop sees one
         consistent version. An incomplete read (a refused or unreadable record)
-        keeps every figure it did not see, folded under the bucket bound. Runs
-        only after a run recorded a settled reading (or once at start): nothing
-        else changes what the per-bucket window holds.
+        or a failed one keeps the figures it could not confirm, folded under the
+        bucket bound, but only while the map rests on a read younger than
+        ``SETTLED_SAMPLE_MAX_AGE_SECS``: past that, every reading behind a kept
+        figure has expired, so the map is rebuilt from what this read saw. Runs
+        after a run recorded a settled reading (or once at start), and otherwise
+        every ``_SETTLED_REREAD_SECS``: readings expire with time, so the map
+        changes even when no run records anything.
         """
-        if not self._manager._learned_settled_dirty:
+        # Imported here: this method runs on the ``subagent`` facade's globals.
+        from kiro_crew.subagent_cost import SETTLED_SAMPLE_MAX_AGE_SECS
+        from kiro_crew.subagent_manager.monitoring import _SETTLED_REREAD_SECS
+
+        mono = time.monotonic()
+        last = self._manager._learned_settled_read_mono
+        if (
+            not self._manager._learned_settled_dirty
+            and last is not None
+            and mono - last < _SETTLED_REREAD_SECS
+        ):
             return
         self._manager._learned_settled_dirty = False
+        self._manager._learned_settled_read_mono = mono
         try:
-            costs, complete = read_learned_costs_checked("settled_gb", dedicated_only=True)
+            costs, complete = read_learned_costs_checked(
+                "settled_gb",
+                dedicated_only=True,
+                max_age_secs=SETTLED_SAMPLE_MAX_AGE_SECS,
+                now=time.time(),
+            )
         except Exception:
+            costs, complete = None, False
             logger.debug("learned settled RSS unreadable; keeping the previous map", exc_info=True)
+        # When the oldest read the map may still hold figures from was taken.
+        basis = self._manager._learned_settled_basis_mono
+        if complete:
+            self._manager._learned_settled_basis_mono = mono
+            self._manager._learned_settled_gb = dict(costs or {})
             return
-        held = self._manager._learned_settled_gb
-        self._manager._learned_settled_gb = (
-            dict(costs) if complete else cap_buckets({**held, **costs})
-        )
+        if basis is not None and mono - basis >= SETTLED_SAMPLE_MAX_AGE_SECS:
+            self._manager._learned_settled_basis_mono = mono
+            self._manager._learned_settled_gb = cap_buckets(dict(costs or {}))
+            return
+        if basis is None:
+            self._manager._learned_settled_basis_mono = mono
+        if costs is not None:
+            held = self._manager._learned_settled_gb
+            self._manager._learned_settled_gb = cap_buckets({**held, **costs})
 
     async def _reaper_loop_impl(self) -> None:
         """Periodically force-kill subagents that exceed the timeout.

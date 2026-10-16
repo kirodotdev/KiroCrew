@@ -321,6 +321,40 @@ def test_settled_reader_is_dedicated_only_per_bucket_p90(cost_log):
     assert costs == {"kirocrew": pytest.approx(0.68)}
 
 
+def test_settled_reader_drops_a_bucket_once_its_newest_reading_is_past_the_horizon(cost_log):
+    now = 2_000_000_000.0
+    old = now - sc.SETTLED_SAMPLE_MAX_AGE_SECS - 1
+    fresh = now - 60
+    _seed(
+        cost_log,
+        # A heavy roster, since removed: nothing recent, so the bucket is unlearned.
+        [{"agent": "stale", "settled_gb": 1.9, "ts": old}] * 3
+        # An agent that runs now and then: one recent reading keeps the whole window.
+        + [{"agent": "rare", "settled_gb": 1.9, "ts": old}] * 3
+        + [{"agent": "rare", "settled_gb": 1.7, "ts": fresh}]
+        # Old readings plus stamps that cannot show recency: no number, not
+        # finite, a bool, or later than now.
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": old}] * 3
+        + [{"agent": "pinned", "settled_gb": 1.9}, {"agent": "pinned", "settled_gb": 1.9, "ts": "x"}]
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": True}]
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": float("nan")}]
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": float("inf")}]
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": 10**400}]
+        + [{"agent": "pinned", "settled_gb": 1.9, "ts": now + 3600}],
+    )
+    costs, complete = sc.read_learned_costs_checked(
+        "settled_gb", dedicated_only=True, max_age_secs=sc.SETTLED_SAMPLE_MAX_AGE_SECS, now=now
+    )
+    assert complete is True
+    assert costs == {"rare": pytest.approx(1.9)}
+    # Without a horizon no stamp is read, so every bucket still counts; the cap's
+    # reader, which reads no stamp either, survives the oversized one.
+    unbounded, _ = sc.read_learned_costs_checked("settled_gb", dedicated_only=True)
+    assert set(unbounded) == {"stale", "rare", "pinned"}
+    typical, _heavy = sc.read_cap_costs("settled_gb")
+    assert typical is not None
+
+
 def test_settled_lookup_reads_one_bucket_and_normalizes_the_default():
     costs = {"kirocrew": 0.6, "heavy": 1.5}
     assert sc.learned_settled_for(costs, "") == 0.6

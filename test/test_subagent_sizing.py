@@ -1227,6 +1227,77 @@ class TestSettledRuntimeReading:
         m._refresh_learned_settled()
         assert m._learned_settled_gb == {"kirocrew": 0.7}, "a failed read keeps the map"
 
+    def test_a_stale_settled_figure_ages_out_without_a_new_run(self, monkeypatch, tmp_path) -> None:
+        """A bucket priced out by a figure learned under a heavier roster records
+        no new readings, so the figure must expire with time alone: the next
+        re-read drops it and the bucket is priced at the unlearned default."""
+        import json
+
+        from kiro_crew import subagent_cost as sc
+
+        log = tmp_path / "cost_samples.jsonl"
+        monkeypatch.setattr(sc, "_cost_log_path", lambda: log)
+        wall = [1_000_000_000.0]
+        mono = [5_000.0]
+        log.write_text(
+            "".join(
+                json.dumps({"agent": "kirocrew", "mem_gb": 3.0, "settled_gb": 1.9, "ts": wall[0]})
+                + "\n"
+                for _ in range(3)
+            ),
+            encoding="utf-8",
+        )
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        clock = types.SimpleNamespace(time=lambda: wall[0], monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            pytest.approx(1.9)
+        )
+
+        # Eight days later nothing has run, so no reading was recorded; the map is
+        # re-read on time alone, hourly.
+        wall[0] += 8 * 24 * 3600
+        mono[0] += 3599
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": pytest.approx(1.9)}, "not re-read yet"
+        mono[0] += 2
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}
+        assert subagent._dedicated_start_price_gb(0.5, m._learned_settled_gb, "") == (
+            subagent._UNLEARNED_DEDICATED_START_GB
+        )
+
+    def test_an_incomplete_read_keeps_a_figure_only_within_the_horizon(self, monkeypatch) -> None:
+        """A log with an unreadable record makes every read incomplete, and an
+        incomplete read keeps what it could not confirm -- but not past the
+        horizon, or a figure it can never re-check would hold for good."""
+        m = _mgr(running=0, max_concurrent=16, last_ts=0.0)
+        m._learned_settled_gb = {"kirocrew": 1.9}
+        mono = [5_000.0]
+        clock = types.SimpleNamespace(time=lambda: 1_000_000_000.0, monotonic=lambda: mono[0])
+        monkeypatch.setattr(subagent, "time", clock)
+        monkeypatch.setattr(
+            subagent, "read_learned_costs_checked", lambda *a, **k: ({"light": 0.4}, False)
+        )
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}
+        mono[0] += 6 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"kirocrew": 1.9, "light": 0.4}, "inside the horizon"
+        mono[0] += 2 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {"light": 0.4}, "rebuilt from what the read saw"
+
+        def _boom(*_a, **_k):
+            raise OSError("unreadable")
+
+        monkeypatch.setattr(subagent, "read_learned_costs_checked", _boom)
+        mono[0] += 8 * 24 * 3600
+        m._refresh_learned_settled()
+        assert m._learned_settled_gb == {}, "a failed read keeps nothing past the horizon"
+
 
 # ---------------------------------------------------------------------------
 # Container / cgroup hardening (Stage 8, dynamic-subagent-sizing.md §9)
