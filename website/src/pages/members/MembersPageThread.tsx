@@ -558,7 +558,7 @@ export function MembersPageThreadColumn({
     connected,
   } = thread
   const {
-    openMemberSideChat, openCrewWorkLog, sessionRoster, retryThreadsFlag, threadsFlagFailed,
+    openMemberSideChat, openCrewWorkLog, openSubagentsView, sessionRoster, retryThreadsFlag, threadsFlagFailed,
     threadsFlagRetrying, threadsOn, threadsQuery, threadHooks, actionError, setActionError, actionInfo,
     openFileGuarded, openSessionGuarded,
   } = sidePanel
@@ -1034,6 +1034,7 @@ export function MembersPageThreadColumn({
                           ? <MateResumeCard resume={mateGreeting.resume} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />
                           : <MateWelcomeCard recap={mateGreeting.recap} crewmate={crewmateIdentity} onDismiss={dismissMateGreeting} />)}
                         onOpenCrewWorkLog={openCrewWorkLog}
+                        onOpenSubagents={openSubagentsView}
                         openSideChat={openMemberSideChat}
                         threads={threadHooks}
                         onFileOpen={openFileGuarded}

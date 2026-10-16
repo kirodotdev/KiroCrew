@@ -2625,7 +2625,22 @@ user must see or act on stay: `user`, `error`, `file`, `mcp_oauth`,
 `permission` (pending native and background-spawn approvals remain actionable),
 question cards, change cards, the stop card (a `system` row of kind
 `stop_event`, the record of the person's own Stop press, which breaks a run like
-an error row), and the live `streaming` row. Runtime `notice` rows and
+an error row), and the live `streaming` row. One `tool` row is drawn too: the
+`spawn_run` launch (`isSpawnRunTool`: a tool row whose persisted output carries
+the "Spawned N subagent(s)." header), rendered as the same live
+`SubagentRunCard` the chat page draws through `transcriptRenderers`'
+`subagent_run_tool` entry, reading the member slot's sub-agent state
+(`selectSlotSubagents`) so its counts and per-worker state update in place as
+workers run and return. Delegated work outlives the crewmate's own turn: it
+says "on it", ends its turn, and the workers run for minutes with no typing
+bubble or caption under the last bubble (`CrewmateLiveActivity` mounts only
+while the crewmate's own turn is live), so without the card the chat is
+perfectly still and reads as frozen. The card is a row the person sees, so it
+is a run boundary like an error row (`isRunTransparent` returns false for it):
+the reply after it opens a new run. Every other tool row — the launch's own ✅
+sibling, `nothing_to_do`, a bare `spawn_run` call with no launch output — stays
+hidden, and the `[Subagent completion event]` envelope stays hidden too (the
+card's counters already show the return). Runtime `notice` rows and
 compaction status cards are hidden rather than removed from history. When the
 filter leaves NOTHING to draw although the transcript is not empty (a patroller
 that has never spoken), the pane's empty hint is the crewmate's — "<name> hasn't
