@@ -23,6 +23,7 @@ import pytest
 
 from kiro_crew.messaging import privacy_mode
 from kiro_crew.session_map import SessionMap
+from kiro_crew.testing.wait import LoopHop, async_wait_until, await_until
 
 #: A key in a namespace that is NOT Slack. The whole point of the hoist.
 _TG_KEY = "telegram:kirocrew:direct:4242"
@@ -598,7 +599,7 @@ class TestInboundRestoreReadsRowAndHeader:
             await until_parked(privacy_mode._key_locks[_TG_KEY].lock)
             assert not task.done(), "the read must wait for the sequence holding the lock"
             await self._set_header(log, "persistent")  # what the release restores
-        await asyncio.wait_for(task, timeout=10)
+        await await_until(task)
         assert privacy_mode.is_restricted(_TG_KEY) is False
 
     @pytest.mark.asyncio
@@ -991,15 +992,17 @@ class TestTranscriptHeaderDurability:
         release = asyncio.Event()
         real_update = ConversationLog.update_metadata_if
 
+        loop = asyncio.get_running_loop()
+        hop = LoopHop(loop)
+
         def _blocked_write(self_log, *args, **kwargs):
             # Runs on the worker thread ``asyncio.to_thread`` hands it to; the
             # cancellation lands on the awaiting task, not on this thread, which
             # completes the write once released.
             loop.call_soon_threadsafe(entered.set)
-            asyncio.run_coroutine_threadsafe(release.wait(), loop).result(timeout=5)
+            hop.run(release.wait(), "waiting for release event")
             return real_update(self_log, *args, **kwargs)
 
-        loop = asyncio.get_running_loop()
         monkeypatch.setattr(ConversationLog, "update_metadata_if", _blocked_write)
         sm = session_map()
         rec = _Recorder()
@@ -1012,7 +1015,7 @@ class TestTranscriptHeaderDurability:
                 notify=rec.notify,
             )
         )
-        await asyncio.wait_for(entered.wait(), timeout=5)
+        await await_until(entered)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -1020,10 +1023,11 @@ class TestTranscriptHeaderDurability:
         assert [(e["operation"], e["outcome"]) for e in audits] == []
         assert rec.notices == []
         release.set()
-        for _ in range(200):  # the thread finishes the write it was handed
-            await asyncio.sleep(0.005)
-            if transcript_privacy_mode(log.get_metadata(_TG_KEY).get("memory_mode")) == "incognito":
-                break
+        await async_wait_until(
+            lambda: transcript_privacy_mode(log.get_metadata(_TG_KEY).get("memory_mode"))
+            == "incognito"
+        )
+        hop.check()
         assert transcript_privacy_mode(log.get_metadata(_TG_KEY).get("memory_mode")) == "incognito"
         assert sm.get_flag(_TG_KEY, "incognito") is True, "the row landed before the write"
         assert privacy_mode._pending == {}
@@ -1688,10 +1692,7 @@ class TestReservations:
                 privacy_mode.MODE_INCOGNITO, _TG_KEY, source="telegram", sessions=sessions
             )
         )
-        for _ in range(200):  # past the header read, into the application, up to its stamp
-            await asyncio.sleep(0.005)
-            if privacy_mode.is_incognito(_TG_KEY):
-                break
+        await async_wait_until(lambda: privacy_mode.is_incognito(_TG_KEY))
         assert privacy_mode.is_incognito(
             _TG_KEY
         ), "premise: the key is held as restricted before the await (the mark follows the header)"
@@ -1937,7 +1938,7 @@ class TestReservations:
         releasing_temp = asyncio.create_task(
             privacy_mode.release(temp, sessions=sessions, source="telegram")
         )
-        await asyncio.wait_for(asyncio.to_thread(in_write.wait, 10), timeout=15)
+        await async_wait_until(in_write.is_set, off_loop=True)
         releasing_inco = asyncio.create_task(
             privacy_mode.release(inco, sessions=sessions, source="telegram")
         )
@@ -1983,7 +1984,7 @@ class TestReservations:
         releasing = asyncio.create_task(
             privacy_mode.release(res, sessions=sessions, source="telegram")
         )
-        await asyncio.wait_for(asyncio.to_thread(in_write.wait, 10), timeout=15)
+        await async_wait_until(in_write.is_set, off_loop=True)
         assert sm.get_flag(_TG_KEY, "incognito") is True, (
             "premise: the row is loosened LAST -- it still says the mode while the header "
             "restore is in flight"
@@ -1992,7 +1993,7 @@ class TestReservations:
         gate.set()
         with pytest.raises(asyncio.CancelledError):
             await releasing
-        await asyncio.wait_for(asyncio.to_thread(done.wait, 10), timeout=15)
+        await async_wait_until(done.is_set, off_loop=True)
         await _land_on_disk(sm)
         header = log.get_metadata(_TG_KEY).get("memory_mode")
         row = sm.get_flag(_TG_KEY, "incognito")
@@ -2046,7 +2047,7 @@ class TestReservations:
         releasing = asyncio.create_task(
             privacy_mode.release(res, sessions=sessions, source="telegram")
         )
-        await asyncio.wait_for(in_clear.wait(), timeout=5)
+        await await_until(in_clear)
         assert privacy_mode.is_incognito(_TG_KEY), "premise: the mark stands during the clear"
         rec = _Recorder()
         arriving = asyncio.create_task(
@@ -2119,10 +2120,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
                 notify=rec.notify,
             )
         )
-        for _ in range(50):
-            await asyncio.sleep(0.002)
-            if privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY):
-                break
+        await async_wait_until(lambda: privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY))
         assert privacy_mode._landing("incognito", _TG_KEY), "premise: the write is in flight"
         # Held, not published.
         assert privacy_mode.is_incognito(_TG_KEY) and privacy_mode.is_restricted(_TG_KEY)
@@ -2157,10 +2155,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
                 notify=rec.notify,
             )
         )
-        for _ in range(50):
-            await asyncio.sleep(0.002)
-            if privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY):
-                break
+        await async_wait_until(lambda: privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY))
         assert _TG_KEY not in privacy_mode._incognito and audits == [] and rec.notices == []
         gate.set()
         assert await task is True
@@ -2192,10 +2187,7 @@ class TestAnInFlightCommitIsHeldNotPublished:
                 notify=rec.notify,
             )
         )
-        for _ in range(50):
-            await asyncio.sleep(0.002)
-            if privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY):
-                break
+        await async_wait_until(lambda: privacy_mode._landing(privacy_mode.MODE_INCOGNITO, _TG_KEY))
         second = asyncio.create_task(
             privacy_mode.apply_mode(
                 privacy_mode.MODE_INCOGNITO,

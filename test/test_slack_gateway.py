@@ -36,6 +36,7 @@ from kiro_crew.slack.gateway import (
     GatewayOrchestrator,
     _result_hash,
 )
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 #: Lost-run ceiling for a wait the test itself must end (a stub it parks, a
 #: writer it holds, a signal production raises on the way). Timed wait by wait,
@@ -56,24 +57,11 @@ _PROGRESS_WINDOW_SECS = 15.0
 
 
 async def _until_set_while_progressing(event, progress, what: str) -> None:
-    """Wait for *event* while ``progress()`` keeps changing.
-
-    For a wait that spans many executor hops: a slow pool keeps it alive, and it
-    fails once a whole ``_PROGRESS_WINDOW_SECS`` passes with no change, or after
-    ``_LOST_RUN_SECS`` in all, naming *what* and the elapsed time.
-    """
-    started = last_change = time.monotonic()
-    seen = progress()
-    while not event.is_set():
-        now = time.monotonic()
-        if progress() != seen:
-            seen, last_change = progress(), now
-        if now - last_change > _PROGRESS_WINDOW_SECS or now - started > _LOST_RUN_SECS:
-            pytest.fail(
-                f"{what} did not happen: {now - started:.1f}s elapsed, "
-                f"{now - last_change:.1f}s since the last progress (count {seen})"
-            )
-        await asyncio.sleep(0.05)
+    """Wait for *event* while ``progress()`` keeps changing."""
+    await async_wait_until(
+        event.is_set,
+        describe=lambda: f"{what}: {progress()} step(s) so far",
+    )
 
 
 async def _within_lost_run(awaitable, what: str):
@@ -217,7 +205,7 @@ class TestInboundReplayResolvesItsSpoolWhenScheduled:
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "later-home"))
         replay = orch._inbound_replay_task
         assert replay is not None
-        await asyncio.wait_for(replay, timeout=5.0)
+        await await_until(replay)
 
         assert seen == [boot_home / "inbound-spool" / "refused.jsonl"], (
             "the replay pass was handed a spool resolved after scheduling -- a worker "
@@ -1185,7 +1173,7 @@ class TestShutdown:
             patch.object(orch, "_reap_startup_child", new_callable=AsyncMock) as reap,
         ):
             repair_task = orch._schedule_console_script_repair()
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             await orch._shutdown()
             await asyncio.sleep(0)
 
@@ -1689,7 +1677,7 @@ class TestBrazilInstallAndDeps:
             patch.object(orch, "_reap_startup_child", new_callable=AsyncMock) as reap,
         ):
             task = asyncio.create_task(orch._check_console_script())
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
@@ -1761,7 +1749,7 @@ class TestBrazilInstallAndDeps:
 
         with patch.object(orch, "_check_console_script", side_effect=_repair):
             task = orch._schedule_console_script_repair()
-            await asyncio.wait_for(started.wait(), timeout=1)
+            await await_until(started)
             assert task in orch._background_tasks
             assert not task.done()
             release.set()
@@ -7881,7 +7869,9 @@ class TestInitServicesLoopResponsiveness:
 
         async def _ticker():
             while True:
-                await asyncio.sleep(0.01)
+                await asyncio.sleep(
+                    0.01
+                )  # flake-ok: measurement tool, sleep interval sets ticker resolution for loop-blockage detection
                 state["ticks"] += 1
 
         return _ticker
@@ -7905,7 +7895,9 @@ class TestInitServicesLoopResponsiveness:
                 if time.monotonic() >= give_up:
                     state["starved"].append(label)
                     return result
-                time.sleep(0.01)
+                time.sleep(
+                    0.01
+                )  # flake-ok: measurement tool, yields to let ticker advance during off-loop work probe
             state["probed"].append(label)
             return result
 
@@ -7932,7 +7924,9 @@ class TestInitServicesLoopResponsiveness:
                     if time.monotonic() >= give_up:
                         state["starved"].append("pip-communicate")
                         return (b"", b"")
-                    await asyncio.sleep(0.01)
+                    await asyncio.sleep(
+                        0.01
+                    )  # flake-ok: measurement tool, yields to let ticker advance during on-loop work simulation
                 state["probed"].append("pip-communicate")
                 return (b"", b"")
 
@@ -11097,7 +11091,7 @@ class TestChannelSkipReasonAtTransportStart:
         if replay is not None and not replay.done():
             replay.cancel()
             with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, Exception):
-                await asyncio.wait_for(replay, timeout=1.0)
+                await await_until(replay)
 
     def _channel_records(self, caplog) -> list[logging.LogRecord]:
         names = {f"kiro_crew.{c}.gateway" for c in _UNCREDENTIALED_CHANNEL_TYPES}

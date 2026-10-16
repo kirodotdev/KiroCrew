@@ -13,6 +13,7 @@ import pytest
 from test_chat_send_echo_scope import echo_state  # noqa: F401  (fixture, used by name)
 
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.testing.wait import async_wait_until, await_until
 
 
 @pytest.fixture(autouse=True)
@@ -1617,7 +1618,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # The loop fired after one TTL tick with the visible chip URLs and the
         # broadcast callback (which pushes only on actual status change).
@@ -1705,7 +1706,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         state.push_slots_update.assert_called()
 
@@ -1813,7 +1814,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "ensure_gitlab_hosts_loaded", fake_ensure)
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 30)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         assert order[:2] == ["ensure", "serialize"]
 
@@ -1883,7 +1884,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         refresh.assert_not_called()
         state.source_link_urls.assert_not_called()
@@ -1953,7 +1954,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "schedule_check_refresh", check_refresh)
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", vis_refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
         # Non-owner: the driver never starts, so neither refresh is ever called
         # and source_link_urls is never polled by a refresh round.
         assert not check_refresh.called
@@ -2037,7 +2038,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_PENDING_MAX", 2)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # offset = round * cap(2) % len(3): rounds 0,1,2 lead with index 0,2,1 —
         # every URL leads within ceil(len/cap) rounds, so none is starved.
@@ -2117,7 +2118,7 @@ class TestPeriodicCheckStatusRefresh:
         monkeypatch.setattr(source_providers, "CHECK_STATUS_TTL_SECS", 0.01)
         monkeypatch.setattr(source_providers, "schedule_check_refresh", refresh)
 
-        await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)  # type: ignore[arg-type]
+        await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))  # type: ignore[arg-type]
 
         # Fired at least twice: the first raised, the loop logged and continued.
         assert len(calls) >= 2
@@ -2350,7 +2351,7 @@ class TestWebSocketUnregisteredOnEveryExit:
         monkeypatch.setattr(source_providers, "schedule_visibility_refresh", MagicMock())
 
         with contextlib.suppress(asyncio.CancelledError, GeneratorExit):
-            await asyncio.wait_for(dashboard_ws.api_ws(Request()), timeout=5)
+            await await_until(asyncio.ensure_future(dashboard_ws.api_ws(Request())))
 
         state.register_ws.assert_called_once()
         state.unregister_ws.assert_called_once_with(fake_ws)
@@ -2376,7 +2377,7 @@ class TestWebSocketUnregisteredOnEveryExit:
         async def _held_members_baseline(ws) -> None:
             # The connect block's second frame waits, so each disconnect lands
             # inside the connect block rather than in the main receive loop.
-            await asyncio.wait_for(connect_frames_held.wait(), timeout=5)
+            await await_until(connect_frames_held)
 
         monkeypatch.setattr(state, "send_members_subscribed", _held_members_baseline)
         if disconnect == "clean_close":
@@ -2395,13 +2396,12 @@ class TestWebSocketUnregisteredOnEveryExit:
                         await _abort_after_the_connect_snapshot(host, port, origin)
                     else:
                         socket_ = await client.ws_connect("/api/ws", headers={"Origin": origin})
-                        frame = await asyncio.wait_for(socket_.receive_json(), timeout=5)
+                        frame = await await_until(asyncio.ensure_future(socket_.receive_json()))
                         assert frame["type"] == "slots"
                         await socket_.close()
-                for _ in range(100):
-                    if not state._ws_clients and not state._owner_ws_clients:
-                        break
-                    await asyncio.sleep(0.05)
+                await async_wait_until(
+                    lambda: not state._ws_clients and not state._owner_ws_clients
+                )
                 left = (len(state._ws_clients), len(state._owner_ws_clients))
         finally:
             connect_frames_held.set()
@@ -2421,7 +2421,7 @@ async def _abort_after_the_connect_snapshot(host: str, port: int, origin: str) -
     await writer.drain()
     received = b""
     while b"slots" not in received:
-        chunk = await asyncio.wait_for(reader.read(4096), timeout=5)
+        chunk = await await_until(asyncio.ensure_future(reader.read(4096)))
         assert chunk, "the server closed the connection before its connect snapshot"
         received += chunk
     sock = writer.get_extra_info("socket")

@@ -40,6 +40,7 @@ from kiro_crew.telegram.renderer import TelegramApprovalDecider
 from kiro_crew.telegram.session_resume import _ROUTE_OWNER_REFUSAL
 from kiro_crew.telegram.transport import TELEGRAM_CAPABILITIES, TelegramInboundMessage
 from kiro_crew.telegram.transport_dispatch import TelegramDispatcher
+from kiro_crew.testing.wait import await_until
 
 
 @pytest.fixture(autouse=True)
@@ -870,14 +871,14 @@ class TestTelegramSessionPicker:
         async def _slow_choose(*args: Any, **kwargs: Any) -> None:
             held.append("choose-start")
             choose_started.set()
-            await asyncio.wait_for(release_choose.wait(), 5)
+            await await_until(release_choose)
             await real_choose(*args, **kwargs)
             held.append("choose-end")
 
         dispatcher._session_resume.choose = _slow_choose  # type: ignore[method-assign]
 
         async def _message_after_press() -> None:
-            await asyncio.wait_for(choose_started.wait(), 5)
+            await await_until(choose_started)
             held.append("message")
             message_attempted.set()
             async with dispatcher._routing_turn(route_id):
@@ -886,7 +887,7 @@ class TestTelegramSessionPicker:
         press = asyncio.create_task(dispatcher.on_callback(_callback(data, message_id=message_id)))
         message = asyncio.create_task(_message_after_press())
         try:
-            await asyncio.wait_for(message_attempted.wait(), 5)
+            await await_until(message_attempted)
             # The message runs from set() through lock acquisition before this
             # waiter resumes: both deciders must overlap while choose is held.
             assert "message-routed" not in held, held
@@ -894,7 +895,7 @@ class TestTelegramSessionPicker:
         finally:
             release_choose.set()
             try:
-                await asyncio.wait_for(asyncio.gather(press, message), 5)
+                await await_until(asyncio.ensure_future(asyncio.gather(press, message)))
             finally:
                 for task in (press, message):
                     if not task.done():
@@ -1177,9 +1178,9 @@ class TestTelegramInboundResumeRouting:
         async def _send(chat_id: int, text: str, **kwargs: Any) -> int | None:
             if text == "Detached 11":
                 try:
-                    await asyncio.wait_for(topic_12_routed.wait(), timeout=1)
+                    await await_until(topic_12_routed, timeout=1)
                     crossed.append(True)
-                except asyncio.TimeoutError:
+                except AssertionError:  # timed out: topic 12 not routed within the window
                     crossed.append(False)
             return await real_send(chat_id, text, **kwargs)
 
@@ -1213,7 +1214,7 @@ class TestTelegramInboundResumeRouting:
         async def _send(chat_id: int, text: str, **kwargs: Any) -> int | None:
             if text == "Detached" and not first_started.is_set():
                 first_started.set()
-                await asyncio.wait_for(second_started.wait(), timeout=1)
+                await await_until(second_started)
             return await real_send(chat_id, text, **kwargs)
 
         client.send_message = _send  # type: ignore[method-assign]

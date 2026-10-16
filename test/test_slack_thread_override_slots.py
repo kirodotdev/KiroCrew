@@ -15,6 +15,8 @@ import threading
 
 import pytest
 
+from kiro_crew.testing.wait import LoopHop, await_until
+
 try:
     from kiro_crew.slack.thread_override_slots import THREAD_SLOTS
 except ImportError:  # the unbounded shape: assert against the intended bound
@@ -282,20 +284,20 @@ async def test_pinning_a_thread_evicted_during_its_command_keeps_the_bound(
     for key in (chosen, other):
         await handler._hydrate_thread_overrides(key, log)
     loop = asyncio.get_running_loop()
+    hop1 = LoopHop(loop)
 
     def resolve_while_two_threads_hydrate(name, project):
         # Runs in the worker thread ``!ta`` awaits: both threads hydrate on the loop
         # before agent discovery answers.
         for i in (THREAD_SLOTS, THREAD_SLOTS + 1):
-            asyncio.run_coroutine_threadsafe(
-                handler._hydrate_thread_overrides(_key(i), log), loop
-            ).result(timeout=10)
+            hop1.run(handler._hydrate_thread_overrides(_key(i), log), "_hydrate_thread_overrides")
         return "chosen-agent"
 
     monkeypatch.setattr(handler, "_resolve_agent_name", resolve_while_two_threads_hydrate)
     await handler._bang_thread_agent(
         "!ta chosen-agent", AsyncMock(), AsyncMock(), "C0SYNTH01", "t1", "m1", chosen, "U1", None
     )
+    hop1.check()
     assert chosen not in slots._order and (chosen, "agent") in slots._pinned
     assert handler._thread_agents.get(chosen) == "chosen-agent"
     containers = {
@@ -360,20 +362,20 @@ async def test_ta_on_a_thread_evicted_during_its_lookup_keeps_its_restored_proje
         await handler._hydrate_thread_overrides(key, log)
     assert handler._thread_projects.get(chosen) == str(project)
     loop = asyncio.get_running_loop()
+    hop2 = LoopHop(loop)
 
     def resolve_while_two_threads_hydrate(name, project_dir):
         # Runs in the worker thread ``!ta`` awaits: both threads hydrate on the loop
         # and evict ``chosen`` before agent discovery answers.
         for i in (THREAD_SLOTS, THREAD_SLOTS + 1):
-            asyncio.run_coroutine_threadsafe(
-                handler._hydrate_thread_overrides(_key(i), log), loop
-            ).result(timeout=10)
+            hop2.run(handler._hydrate_thread_overrides(_key(i), log), "_hydrate_thread_overrides")
         return "chosen-agent"
 
     monkeypatch.setattr(handler, "_resolve_agent_name", resolve_while_two_threads_hydrate)
     await handler._bang_thread_agent(
         "!ta chosen-agent", AsyncMock(), AsyncMock(), "C0SYNTH01", "t1", "m1", chosen, "U1", log
     )
+    hop2.check()
     assert handler._thread_agents.get(chosen) == "chosen-agent"
     assert handler._thread_projects.get(chosen) == str(project), (
         "the thread evicted during !ta lost the project its conversation metadata names: "
@@ -731,7 +733,7 @@ async def _set_in_a_worker(flag: threading.Event) -> None:
 
 async def _drain(*tasks: asyncio.Future) -> None:
     """Let *tasks* end, so a failed assertion leaves none of them waiting on a gate."""
-    await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), 10)
+    await await_until(asyncio.ensure_future(asyncio.gather(*tasks, return_exceptions=True)))
 
 
 @pytest.mark.asyncio
@@ -763,7 +765,7 @@ async def test_ta_off_stays_reset_when_its_thread_hydrates_again_during_the_writ
         assert chosen not in handler._hydrated_sessions, "the thread was not evicted"
         await handler._hydrate_thread_overrides(chosen, log)  # this thread's next message
         log.gate.set()
-        await asyncio.wait_for(command, 10)
+        await await_until(command)
     finally:
         log.gate.set()
         await _drain(command)
@@ -800,9 +802,9 @@ async def test_ta_off_stays_reset_when_a_read_from_before_its_write_publishes_af
         late = asyncio.ensure_future(handler._hydrate_thread_overrides(chosen, log))
         await _set_in_a_worker(log.read_parked)  # it read the metadata before the write
         log.gate.set()
-        await asyncio.wait_for(command, 10)  # `!ta off` reads no agent back and replies
+        await await_until(command)  # `!ta off` reads no agent back and replies
         log.read_gate.set()
-        await asyncio.wait_for(late, 10)
+        await await_until(late)
     finally:
         log.gate.set()
         log.read_gate.set()
@@ -841,7 +843,7 @@ async def test_project_off_stays_cleared_when_its_thread_hydrates_again_during_t
         assert chosen not in handler._hydrated_sessions, "the thread was not evicted"
         await handler._hydrate_thread_overrides(chosen, log)
         log.gate.set()
-        await asyncio.wait_for(command, 10)
+        await await_until(command)
     finally:
         log.gate.set()
         await _drain(command)
@@ -881,11 +883,11 @@ async def test_ta_off_stays_reset_when_a_stale_read_publishes_after_a_later_evic
         late = asyncio.ensure_future(handler._hydrate_thread_overrides(chosen, log))
         await _set_in_a_worker(log.read_parked)  # it read the metadata before the write
         log.gate.set()
-        await asyncio.wait_for(command, 10)  # `!ta off` replies
+        await await_until(command)  # `!ta off` replies
         await handler._hydrate_thread_overrides(third, None)  # a third thread's message
         assert chosen not in handler._hydrated_sessions, "not evicted after the command"
         log.read_gate.set()
-        await asyncio.wait_for(late, 10)
+        await await_until(late)
     finally:
         log.gate.set()
         log.read_gate.set()
@@ -925,11 +927,11 @@ async def test_project_off_stays_cleared_when_a_stale_read_publishes_after_a_lat
         late = asyncio.ensure_future(handler._hydrate_thread_overrides(chosen, log))
         await _set_in_a_worker(log.read_parked)
         log.gate.set()
-        await asyncio.wait_for(command, 10)
+        await await_until(command)
         await handler._hydrate_thread_overrides(third, None)
         assert chosen not in handler._hydrated_sessions, "not evicted after the command"
         log.read_gate.set()
-        await asyncio.wait_for(late, 10)
+        await await_until(late)
     finally:
         log.gate.set()
         log.read_gate.set()
@@ -968,6 +970,7 @@ async def test_hydration_publishes_nothing_while_every_read_overlaps_a_command_w
     chosen = _key(0)
     others = [_key(i) for i in range(1, 10)]
     loop = asyncio.get_running_loop()
+    hop3 = LoopHop(loop)
     reads: list[str] = []
 
     class _CommandDuringEachRead(_PerThreadLog):
@@ -977,7 +980,7 @@ async def test_hydration_publishes_nothing_while_every_read_overlaps_a_command_w
             if session_key == chosen and self.overlap:
                 reads.append(session_key)
                 # Runs on the loop, to its reply, while this read is in flight.
-                asyncio.run_coroutine_threadsafe(
+                hop3.run(
                     handler._bang_thread_agent(
                         "!ta off",
                         AsyncMock(),
@@ -989,8 +992,8 @@ async def test_hydration_publishes_nothing_while_every_read_overlaps_a_command_w
                         "U1",
                         self,
                     ),
-                    loop,
-                ).result(timeout=10)
+                    "_bang_thread_agent",
+                )
             return super().get_metadata(session_key)
 
     log = _CommandDuringEachRead({chosen: {"agent": "reviewer"}})
@@ -1028,6 +1031,7 @@ async def test_ta_on_an_evicted_thread_whose_hydration_gives_up_reads_its_projec
     chosen = _key(THREAD_SLOTS - 2)
     others = [_key(THREAD_SLOTS + i) for i in range(10)]
     loop = asyncio.get_running_loop()
+    hop4 = LoopHop(loop)
 
     class _WriteDuringEachRead(_PerThreadLog):
         overlap = False
@@ -1035,7 +1039,7 @@ async def test_ta_on_an_evicted_thread_whose_hydration_gives_up_reads_its_projec
         def get_metadata(self, session_key: str) -> dict:
             if session_key == chosen and self.overlap:
                 # Runs on the loop, to its reply, while this read is in flight.
-                asyncio.run_coroutine_threadsafe(
+                hop4.run(
                     handler._bang_thread_agent(
                         "!ta off",
                         AsyncMock(),
@@ -1047,8 +1051,8 @@ async def test_ta_on_an_evicted_thread_whose_hydration_gives_up_reads_its_projec
                         "U1",
                         self,
                     ),
-                    loop,
-                ).result(timeout=10)
+                    "_bang_thread_agent",
+                )
             return super().get_metadata(session_key)
 
     log = _WriteDuringEachRead({chosen: _template_meta("reviewer", str(project))})

@@ -46,6 +46,7 @@ from kiro_crew.memory_stores import (
 )
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import restore_main
+from kiro_crew.testing.wait import wait_until
 
 STORE = "acme"
 ROOT = MEMORY_STORES_DIR_NAME
@@ -1288,7 +1289,8 @@ def test_provisioning_waits_for_replace_and_rollback(
             future = worker.submit(create)
             futures.append(future)
             if without_namespace:
-                future.result(timeout=10)
+                wait_until(future.done)
+                future.result()
             else:
                 assert pending.wait(timeout=10), "creator must reach namespace admission"
             mutate(*args, **kwargs)
@@ -1301,7 +1303,8 @@ def test_provisioning_waits_for_replace_and_rollback(
                 snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
         else:
             snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
-        name = futures[0].result(timeout=10)
+        wait_until(futures[0].done)
+        name = futures[0].result()
     store = destination / ROOT / name
     assert store.exists() is not without_namespace
     if not without_namespace:
@@ -1409,7 +1412,8 @@ def test_file_only_writes_serialize_with_replace(
             future = worker.submit(getattr(target, method), *args)
             futures.append(future)
             if without_admission:
-                future.result(timeout=10)
+                wait_until(future.done)
+                future.result()
             else:
                 assert pending.wait(timeout=10)
             mutate(*call_args, **kwargs)
@@ -1422,7 +1426,8 @@ def test_file_only_writes_serialize_with_replace(
                 snap._do_replace(source, destination, ["memory"], allow_unpinned=True)
         else:
             snap._do_replace(source, destination, ["memory"], allow_unpinned=True)
-        futures[0].result(timeout=10)
+        wait_until(futures[0].done)
+        futures[0].result()
     files = list((destination / ROOT / STORE).rglob("*.md"))
     files += list((destination / ROOT / STORE).glob("*.jsonl"))
     survived = any("acknowledged" in path.read_text(encoding="utf-8") for path in files)
@@ -1645,7 +1650,8 @@ def test_cold_vector_open_waits_until_replace_or_rollback_finishes(
                 future = worker.submit(open_and_write)
                 futures.append(future)
                 if without_namespace:
-                    future.result(timeout=10)
+                    wait_until(future.done)
+                    future.result()
                 else:
                     assert started.wait(timeout=10)
                     assert not database.parent.exists()
@@ -1659,7 +1665,8 @@ def test_cold_vector_open_waits_until_replace_or_rollback_finishes(
                     snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
             else:
                 snap._do_replace(src, destination, ["memory"], allow_unpinned=True)
-            futures[0].result(timeout=10)
+            wait_until(futures[0].done)
+            futures[0].result()
         assert database.exists() is not without_namespace
     finally:
         store.close()

@@ -22,6 +22,7 @@ from kiro_crew.dashboard.source_providers.contract import (
     source_ref_identity_key,
 )
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.testing.wait import await_until
 
 PR_A = "https://github.com/acme/widgets/pull/11"
 PR_B = "https://github.com/acme/widgets/pull/12"
@@ -2266,7 +2267,7 @@ class TestAwaitBindingRegressions:
         monkeypatch.setattr(asyncio, "to_thread", held_read)
         with patch("kiro_crew.dashboard.chat_handlers.sel"):
             task = asyncio.create_task(api_chat_slot_source_link_unlink(req))
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             if change == "rebind":
                 primary.linked_session_key = "dashboard:foreign"
             elif change == "replace":
@@ -2274,7 +2275,7 @@ class TestAwaitBindingRegressions:
             else:
                 primary._app = "foreign"
             release.set()
-            response = await asyncio.wait_for(task, 5)
+            response = await await_until(task)
         assert response.status in (404, 409)
         state.conversation_log.update_metadata_if.assert_not_called()
         assert key not in primary._dismissed_source_links
@@ -2726,12 +2727,12 @@ class TestUnlinkPublicationOutcome:
         monkeypatch.setattr(asyncio, "to_thread", held)
         with patch("kiro_crew.dashboard.chat_handlers.sel") as audit:
             task = asyncio.create_task(api_chat_slot_source_link_unlink(req))
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             task.cancel()
             await asyncio.sleep(0)
             release.set()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(task, 5)
+                await await_until(task)
         meta, readable = await original(log.get_metadata_status, "dashboard:s1")
         committed = key in meta.get("dismissed_source_links", [])
         assert readable and (key in primary._dismissed_source_links) == committed
@@ -2786,7 +2787,7 @@ class TestUnlinkPublicationOutcome:
         state.push_slots_update.side_effect = broadcast
         with patch("kiro_crew.dashboard.chat_handlers.sel"):
             task = asyncio.create_task(api_chat_slot_source_link_unlink(req))
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             # Mid-write: a concurrent projection MUST still show the chip, even
             # though the key is already in the slot's in-memory dismissed set.
             assert key in primary._dismissed_source_links
@@ -2794,7 +2795,7 @@ class TestUnlinkPublicationOutcome:
             assert any(link["url"] == PR_A for link in primary._pr_source_links())
             # Let the write commit and the transaction settle.
             release.set()
-            resp = await asyncio.wait_for(task, 5)
+            resp = await await_until(task)
         assert resp.status == 200
         # After commit the fence is cleared and the chip is gone.
         assert primary._dismissed_txn_pending == set()
@@ -2930,7 +2931,7 @@ class TestUnlinkPublicationOutcome:
         monkeypatch.setattr(asyncio, "to_thread", hold_write)
         with patch("kiro_crew.dashboard.chat_handlers.sel"):
             caller = asyncio.create_task(api_chat_slot_source_link_unlink(req))
-            await asyncio.wait_for(entered.wait(), 5)
+            await await_until(entered)
             caller.cancel()
             await asyncio.sleep(0)
             caller.cancel()
@@ -2939,7 +2940,7 @@ class TestUnlinkPublicationOutcome:
             settlement = tuple(chat_handlers._source_link_unlink_tasks)
             assert len(settlement) == 1 and not settlement[0].cancelled()
             release.set()
-            responses = await asyncio.wait_for(asyncio.gather(*settlement), 5)
+            responses = await await_until(asyncio.ensure_future(asyncio.gather(*settlement)))
         assert responses[0].status == 200
         assert primary._dismissed_txn_depth == 0
         assert key in primary._dismissed_source_links

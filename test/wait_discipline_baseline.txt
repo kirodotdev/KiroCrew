@@ -131,15 +131,12 @@
  7 test_cross_surface_stop_gate.py
  6 test_darwin_native_provider_reap.py
  4 test_dashboard_approval.py
- 5 test_dashboard_chat_rewind.py
  1 test_dashboard_cron_run_guard.py
  1 test_dashboard_execution_retention.py
  2 test_dashboard_files_coverage.py
  1 test_dashboard_files_onloop_fs.py
  2 test_dashboard_member_assignment.py
  1 test_dashboard_slowloris.py
- 8 test_dashboard_source_link_unlink.py
-12 test_dashboard_state_ws.py
  2 test_dashboard_status_snapshot.py
  1 test_decisions_compaction_hook.py
  1 test_decisions_gate.py
@@ -244,21 +241,17 @@
  8 test_meetings_routes.py
  4 test_meetings_routes_lifecycle.py
  3 test_member_memory_mcp_routing.py
- 5 test_member_memory_runtime.py
  1 test_members_eventlog_wiring.py
  1 test_memory_admission_queue.py
  4 test_memory_backup.py
  3 test_memory_multistore_stress.py
- 6 test_memory_startup.py
  2 test_memv2_audit_a_prompt.py
  4 test_memv2_audit_b_regressions.py
  2 test_memv2_audit_c_followup.py
-11 test_memv2_audit_d_workflows.py
  1 test_messaging_approval.py
  1 test_messaging_attachments.py
  1 test_messaging_auto_title.py
  3 test_messaging_driver.py
-12 test_messaging_privacy_mode.py
  1 test_mochi_activity.py
  1 test_mochi_autonomous_unfreeze.py
  4 test_mochi_poller_freestyle_backoff.py
@@ -341,7 +334,6 @@
  3 test_skill_view_relaunch_harness.py
  3 test_skills_cold_start.py
  1 test_slack_events_coverage_route_flow.py
- 9 test_slack_gateway.py
  2 test_slack_gateway_coverage.py
  3 test_slack_gateway_cron_exec_coverage.py
  3 test_slack_gateway_more_coverage.py
@@ -350,14 +342,12 @@
  2 test_slack_handler_coverage.py
  1 test_slack_home_tab.py
  1 test_slack_sessions_view.py
-13 test_slack_thread_override_slots.py
  1 test_slot_create_default_agent.py
  3 test_slot_ownership_checkpoint.py
  5 test_slot_patch_frames.py
  1 test_slot_payload_lineage.py
  1 test_slots_broadcast_byte_pacing.py
  1 test_snapshot.py
- 6 test_snapshot_memory_stores.py
  1 test_source_providers.py
  1 test_spawn_admission_verdict_census.py
  1 test_spawn_approval_channel_governance_13491.py
@@ -398,7 +388,6 @@
  2 test_taskrunner_execution_context.py
  3 test_telegram_album.py
  1 test_telegram_parity.py
- 6 test_telegram_sessions.py
  1 test_telegram_turn_lifecycle.py
  1 test_terminal_commands.py
  1 test_terminal_ctty_shim.py

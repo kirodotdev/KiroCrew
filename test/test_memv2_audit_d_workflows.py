@@ -13,6 +13,7 @@ from kiro_crew.config.loader import KiroCrewAgentConfig
 from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
 from kiro_crew.history import ConversationLog
 from kiro_crew.memory_stores import persist_member_config, provision_member_memory
+from kiro_crew.testing.wait import await_until
 from kiro_crew.workflow_memory import capture_execution
 from kiro_crew.workflows import agent_exec, agent_pool, service
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
@@ -85,20 +86,22 @@ async def test_named_lease_is_returned_and_second_call_keeps_history(
     monkeypatch.setattr(agent_pool, "stream_and_collect", stream)
     first = asyncio.create_task(fn("first", {"session": "chain"}))
     try:
-        await asyncio.wait_for(entered.wait(), 2)
+        await await_until(entered)
         if exit_kind == "cancel":
             first.cancel()
             with pytest.raises(asyncio.CancelledError):
-                await asyncio.wait_for(first, 2)
+                await await_until(first)
         elif exit_kind == "exception":
             with pytest.raises(RuntimeError, match="step failed"):
-                await asyncio.wait_for(first, 2)
+                await await_until(first)
         else:
-            assert await asyncio.wait_for(first, 2) == "reply"
+            assert await await_until(first) == "reply"
         provider = sessions.providers["chain"]
         assert not sessions.leases["chain"].locked()
         assert sessions.released == [("chain", False)]
-        assert await asyncio.wait_for(fn("second", {"session": "chain"}), 2) == "reply"
+        assert (
+            await await_until(asyncio.ensure_future(fn("second", {"session": "chain"}))) == "reply"
+        )
         assert sessions.providers["chain"] is provider
         assert provider.history == ["first", "second"]
         assert sessions.released == [("chain", False), ("chain", False)]
@@ -127,16 +130,16 @@ async def test_cancelled_waiter_cannot_release_another_calls_lease(monkeypatch, 
     first = asyncio.create_task(fn("first", {"session": "chain"}))
     second = None
     try:
-        await asyncio.wait_for(entered.wait(), 2)
+        await await_until(entered)
         second = asyncio.create_task(fn("second", {"session": "chain"}))
-        await asyncio.wait_for(sessions.waiting.wait(), 2)
+        await await_until(sessions.waiting)
         second.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(second, 2)
+            await await_until(second)
         assert sessions.leases["chain"].locked()
         assert sessions.released == []
         finish.set()
-        assert await asyncio.wait_for(first, 2) == "done"
+        assert await await_until(first) == "done"
         assert sessions.released == [("chain", False)]
     finally:
         finish.set()
@@ -219,7 +222,7 @@ async def test_private_parent_without_context_refuses_before_author_or_worker_cr
     for snapshot in svc.list_runs():
         task = svc.registry.get(snapshot["run_id"]).task
         if task is not None:
-            await asyncio.wait_for(task, 3)
+            await await_until(task)
     assert "run_id" not in result
     assert result["code"] == "workflow_memory_unavailable"
     assert "memory" in result["error"]
@@ -255,7 +258,7 @@ async def test_global_parent_still_runs_when_private_members_exist(
     for snapshot in svc.list_runs():
         task = svc.registry.get(snapshot["run_id"]).task
         if task is not None:
-            await asyncio.wait_for(task, 3)
+            await await_until(task)
     assert "error" not in result
     assert result.get("ok") or result.get("run_id")
 

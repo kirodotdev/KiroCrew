@@ -19,6 +19,7 @@ from kiro_crew.subagent_persistence import (
     create_agent_folder,
     read_run_memory_store,
 )
+from kiro_crew.testing.wait import await_until
 
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
@@ -397,7 +398,7 @@ async def test_owner_direct_first_send_pins_private_memory_before_user_history(
             json={"slot": "owner-direct", "agent": "writer", "message": "Remember this task"},
         )
         assert response.status == 200, await response.text()
-        await asyncio.wait_for(drain_background_tasks(state), timeout=5)
+        await await_until(asyncio.ensure_future(drain_background_tasks(state)))
     assert pin_observations == [False]
     assert state._slots["owner-direct"].memory_store == writer
     assert read_private_session_store("dashboard:owner-direct") == writer
@@ -1292,7 +1293,7 @@ async def test_unavailable_private_run_refused_before_provider_allocation():
     manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
     info = SubagentInfo(id="run1", task="task", memory_store="missing-private")
     with pytest.raises(ValueError, match="no captured execution context"):
-        await asyncio.wait_for(manager._run_inner(info, "subagent:run1"), 5)
+        await await_until(asyncio.ensure_future(manager._run_inner(info, "subagent:run1")))
     sessions.get_or_create.assert_not_called()
 
 
@@ -1337,7 +1338,7 @@ async def test_failed_binding_publication_blocks_an_already_scheduled_run(member
         manager._log_spawned(info)
     assert info.error.startswith("memory_unavailable:")
     with pytest.raises(RuntimeError, match="could not persist"):
-        await asyncio.wait_for(manager._run_inner(info, "subagent:run1"), 5)
+        await await_until(asyncio.ensure_future(manager._run_inner(info, "subagent:run1")))
     sessions.get_or_create.assert_not_called()
 
 
@@ -1425,12 +1426,12 @@ async def test_structural_startup_failure_keeps_memory_closed_and_explains_recov
         ):
             supervisor = asyncio.create_task(gateway._wait_for_memory_preparation())
             try:
-                await asyncio.wait_for(recovery_shell.wait(), 1)
+                await await_until(recovery_shell, timeout=1)
                 assert not supervisor.done()
                 memory.init.assert_not_called()
                 vectors.init.assert_not_called()
                 stopping.set()
-                assert await asyncio.wait_for(supervisor, 1) is False
+                assert await await_until(supervisor, timeout=1) is False
             finally:
                 stopping.set()
                 await supervisor

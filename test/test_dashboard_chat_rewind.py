@@ -16,6 +16,7 @@ from chat_test_helpers import _make_app, _make_state
 
 from kiro_crew.dashboard import chat_persistence, chat_rewind
 from kiro_crew.dashboard.state import append_and_surface
+from kiro_crew.testing.wait import async_wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -147,7 +148,7 @@ class TestRewindSlot:
                 )
             )
             try:
-                await asyncio.wait_for(asyncio.to_thread(save_started.wait), timeout=1)
+                await async_wait_until(save_started.is_set, off_loop=True)
                 await asyncio.to_thread(state.flush_slot_now, slot)
                 fail_save.set()
                 resp = await request_task
@@ -1312,7 +1313,7 @@ class TestRewindSlot:
 
         fake_request.json = _json  # type: ignore[method-assign]
         handler_task = asyncio.create_task(api_chat_slot_rewind(fake_request))
-        await asyncio.wait_for(asyncio.to_thread(save_started.wait), timeout=2)
+        await async_wait_until(save_started.is_set, off_loop=True)
         handler_task.cancel()
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -1321,10 +1322,7 @@ class TestRewindSlot:
         # The commit landed: truncated window plus the edited user row.
         assert [m["content"] for m in slot.messages] == ["edited first question"]
         # The reserved dispatch task still runs the edited prompt.
-        for _ in range(50):
-            if _mock_run_chat.await_count:
-                break
-            await asyncio.sleep(0.02)
+        await async_wait_until(lambda: _mock_run_chat.await_count > 0)
         _mock_run_chat.assert_awaited_once()
         assert _mock_run_chat.await_args.args[2] == "edited first question"
 
@@ -1378,7 +1376,7 @@ class TestRewindSlot:
 
         fake_request.json = _json  # type: ignore[method-assign]
         handler_task = asyncio.create_task(api_chat_slot_rewind(fake_request))
-        await asyncio.wait_for(asyncio.to_thread(save_started.wait), timeout=2)
+        await async_wait_until(save_started.is_set, off_loop=True)
         handler_task.cancel()
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -1651,10 +1649,7 @@ class TestRewindSlot:
             assert resp.status == 200
 
         # Wait briefly for the create_task'd _run_chat to be picked up
-        for _ in range(20):
-            if _mock_run_chat.await_count > 0:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(lambda: _mock_run_chat.await_count > 0)
         _mock_run_chat.assert_awaited_once()
         args = _mock_run_chat.await_args.args
         # _run_chat(state, slot, content) — content should be stripped
