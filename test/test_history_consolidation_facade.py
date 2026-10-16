@@ -1,8 +1,9 @@
 """``history_consolidation.py`` keeps its BASE surface while the stages of a pass live in owners.
 
-``HistoryConsolidator`` is defined in :mod:`kiro_crew.history_consolidation`; fourteen of
-its methods have their bodies in the sibling owners ``history_consolidation_span``,
-``_memory``, ``_skills`` and ``_pass``, and the class binds each under its own name. These
+``HistoryConsolidator`` is defined in :mod:`kiro_crew.history_consolidation`; twenty-three
+of its methods have their bodies in the sibling owners ``history_consolidation_span``,
+``_lease``, ``_memory``, ``_skills`` and ``_pass``, and the class binds each under its own
+name. These
 checks pin what callers, ``patch.object`` and the patch corpus rely on:
 
 * every module-level name the one-module file bound still resolves through the facade,
@@ -71,6 +72,10 @@ _BASE_MODULE_NAMES = frozenset("""
     extracted_lesson_applies frontmatter_value hashlib json live logging math re
     redact_credentials redact_exfiltration_urls run_in_embed_pool scope_is_admissible
     strip_image_refs timezone validate_skill_script
+    Iterator _CONSOLIDATION_BUSY _CONSOLIDATION_LEASE_CEILING_SECS
+    _CONSOLIDATION_LEASE_RENEW_SECS _LEASE_INCARNATION _LEASE_MONOTONIC _LEASE_PID
+    _LEASE_START _LEASE_TOKEN _LeaseLostMidRun _lease_holder_is_live _no_pass_ran os
+    platform_compat uuid
     """.split())
 #: The members whose bodies moved to an owner.
 _MOVED = frozenset("""
@@ -78,6 +83,9 @@ _MOVED = frozenset("""
     _merge_skill_update _skill_publication_guard _stage_skill_update _process_auto_skills
     _gated_lesson_scope _lesson_tier _lesson_delete_decision _save_lessons
     _write_structured_memory
+    _acquire_consolidation_lease _renew_consolidation_lease _heartbeat_consolidation_lease
+    _release_consolidation_lease _lease_is_current _lease_fence _advance_history_marker_now
+    _advance_history_marker_fenced _mark_consolidated_fenced
     """.split())
 #: name -> (kind, coroutine function, async generator, signature) of every member at BASE.
 #: ``_INHERIT_GLOBAL``'s default repr carries an address and its module, so it is
@@ -89,9 +97,27 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, log: 'ConversationLog', memory: 'MemoryStore', sessions: 'SessionManager | None' = None, lesson_store: 'LessonStore | None' = None, history_idle_secs: 'float' = 10800, vector_store: \"'VectorMemoryStore | None'\" = None, migrated: 'bool' = False, skills_loader: \"'SkillsLoader | None'\" = None, auto_skills_enabled: 'bool' = False, auto_refine_enabled: 'bool' = False, auto_min_tool_calls: 'int' = 5, auto_similarity_threshold: 'float' = 0.85, approval_required: 'bool' = True, max_auto_skills: 'int' = 100, stale_after_days: 'int' = 30, archive_after_days: 'int' = 90, generate_scripts: 'bool' = True, judge_model: 'str' = '') -> 'None'",
     ),
+    "_acquire_consolidation_lease": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str') -> 'str | None'",
+    ),
     "_advance_history_marker": (
         "function",
         True,
+        False,
+        "(self, key: 'str', span: 'AttemptedSpan', lease: 'str | None' = None) -> 'None'",
+    ),
+    "_advance_history_marker_fenced": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str', span: 'AttemptedSpan', lease: 'str | None') -> 'None'",
+    ),
+    "_advance_history_marker_now": (
+        "function",
+        False,
         False,
         "(self, key: 'str', span: 'AttemptedSpan') -> 'None'",
     ),
@@ -129,6 +155,12 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
     ),
     "_dedupe_judge": ("function", True, False, "(self, prompt: 'str') -> 'str'"),
     "_forget_key": ("function", False, False, "(self, key: 'str') -> 'None'"),
+    "_heartbeat_consolidation_lease": (
+        "function",
+        True,
+        False,
+        "(self, key: 'str', token: 'str', on_lost: 'Callable[[], None] | None' = None) -> 'None'",
+    ),
     "_gated_lesson_scope": (
         "function",
         False,
@@ -153,8 +185,21 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, vector_store: \"'VectorMemoryStore'\", del_key: 'object') -> \"'_LessonDeleteDecision'\"",
     ),
+    "_lease_fence": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str', lease: 'str | None') -> 'Iterator[None]'",
+    ),
+    "_lease_is_current": ("function", False, False, "(self, key: 'str', token: 'str') -> 'bool'"),
     "_lesson_tier": ("function", False, False, "(self, item: 'dict') -> 'str | None'"),
     "_logger": ("property", False, False, "(self) -> 'logging.Logger'"),
+    "_mark_consolidated_fenced": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str', offset: 'int', generation: 'int | None', lease: 'str | None') -> 'None'",
+    ),
     "_merge_skill_update": (
         "function",
         True,
@@ -171,7 +216,7 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         "function",
         True,
         False,
-        "(self, key: 'str', span: 'AttemptedSpan', reason: 'str') -> 'None'",
+        "(self, key: 'str', span: 'AttemptedSpan', reason: 'str', lease: 'str | None' = None) -> 'bool'",
     ),
     "_process_auto_skills": (
         "function",
@@ -185,7 +230,19 @@ _BASE_MEMBERS: dict[str, tuple[str, bool, bool, str]] = {
         False,
         "(self, key: 'str', commit_state: '_RunCommitState | None' = None)",
     ),
+    "_release_consolidation_lease": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str', token: 'str') -> 'None'",
+    ),
     "_release_count": ("function", False, False, "(self, claim: '_CountClaim') -> 'None'"),
+    "_renew_consolidation_lease": (
+        "function",
+        False,
+        False,
+        "(self, key: 'str', token: 'str') -> 'bool | None'",
+    ),
     "_run_skill_detection": (
         "function",
         True,

@@ -45,7 +45,7 @@ KEY = "dashboard:chat-retry"
 @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
 async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, mode):
     from kiro_crew import execution_context
-    from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
+    from kiro_crew.history_consolidation import _CONSOLIDATION_BUSY, _CONSOLIDATION_REFUSED
 
     captured = execution_context.ExecutionContext(
         None, execution_context.MemoryStoreRef("default"), "template", "kirocrew", mode
@@ -61,7 +61,9 @@ async def test_consolidation_captures_execution_off_loop(tmp_path, monkeypatch, 
     consolidator = _make_consolidator(_seed_log(tmp_path, count=0))
     consolidator._call_llm = AsyncMock()
     result = await asyncio.wait_for(consolidator._consolidate(KEY), 10)
-    assert result is (None if mode == "persistent" else _CONSOLIDATION_REFUSED)
+    # count=0 leaves no transcript on disk, so the lease (which requires an
+    # existing session) is refused before any snapshot.
+    assert result is (_CONSOLIDATION_BUSY if mode == "persistent" else _CONSOLIDATION_REFUSED)
     consolidator._call_llm.assert_not_awaited()
     assert len(reads) == 1
     assert reads[0][0] != loop_thread
@@ -227,20 +229,22 @@ class TestTheLineIsValidatedWithTheRows:
         c._call_llm = AsyncMock(return_value={"history_entry": "leaked"})
         # Unreadable only from the snapshot's own lock hold onward, so the
         # pre-checks (which read the line too) pass and the snapshot is the gate.
-        real_locked_stems = type(log).locked_stems
+        # Hooked on the snapshot itself: the lease check takes the same lock
+        # first and must still read the line.
+        real_snapshot = type(log).snapshot_for_consolidation
         real_status = type(log)._read_metadata_status
         inside = {"lock": False}
 
-        def _locked_then_unreadable(self, stems):
+        def _snapshot_then_unreadable(self, key, **kwargs):
             inside["lock"] = True
-            return real_locked_stems(self, stems)
+            return real_snapshot(self, key, **kwargs)
 
         def _status(self, key):
             if inside["lock"] and key == KEY:
                 return {}, False
             return real_status(self, key)
 
-        monkeypatch.setattr(type(log), "locked_stems", _locked_then_unreadable)
+        monkeypatch.setattr(type(log), "snapshot_for_consolidation", _snapshot_then_unreadable)
         monkeypatch.setattr(type(log), "_read_metadata_status", _status)
 
         outcome = await asyncio.wait_for(c._consolidate(KEY, include_history=True), 10)

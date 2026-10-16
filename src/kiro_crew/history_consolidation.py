@@ -12,6 +12,8 @@ sibling owners, and the class binds each of their methods under its own name:
 
 * ``history_consolidation_span`` -- which transcript span a pass prompts and how its
   attempt ends;
+* ``history_consolidation_lease`` -- the cross-process lease that excludes a second
+  pass over one session, and the fence every durable write of a pass takes on it;
 * ``history_consolidation_memory`` -- the memory a pass reads into its prompt and writes
   back;
 * ``history_consolidation_skills`` -- auto-skill detection, dedupe, staging and
@@ -38,24 +40,29 @@ import importlib as _importlib
 import json
 import logging
 import math
+import os
 import re
 import sys as _sys
 import time as _time
-from collections.abc import Awaitable, Callable
+import uuid
+from collections.abc import Awaitable, Callable, Iterator
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew import _facade_mirror
+from kiro_crew import history_consolidation_lease as _lease
 from kiro_crew import history_consolidation_memory as _memory
 from kiro_crew import history_consolidation_pass as _pass
 from kiro_crew import history_consolidation_skills as _skills
+from kiro_crew import platform_compat
 from kiro_crew.config import live
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.frontmatter import SKILL_UPDATE, frontmatter_value
 from kiro_crew.history_consolidation_skills import _session_touched_sensitive
 from kiro_crew.history_consolidation_span import (
-    _CONSOLIDATION_REFUSED,
     AttemptedSpan,
+    _LeaseLostMidRun,
+    _no_pass_ran,
     _persistence_disabled,
     _PersistenceDisabledMidRun,
     _RunCommitState,
@@ -163,6 +170,17 @@ class HistoryConsolidator:
     _skill_publication_guard = _skills._skill_publication_guard
     _stage_skill_update = _skills._stage_skill_update
     _process_auto_skills = _skills._process_auto_skills
+
+    # ── Cross-process consolidation lease (history_consolidation_lease) ──
+    _acquire_consolidation_lease = _lease._acquire_consolidation_lease
+    _renew_consolidation_lease = _lease._renew_consolidation_lease
+    _heartbeat_consolidation_lease = _lease._heartbeat_consolidation_lease
+    _release_consolidation_lease = _lease._release_consolidation_lease
+    _lease_is_current = _lease._lease_is_current
+    _lease_fence = _lease._lease_fence
+    _advance_history_marker_now = _lease._advance_history_marker_now
+    _advance_history_marker_fenced = _lease._advance_history_marker_fenced
+    _mark_consolidated_fenced = _lease._mark_consolidated_fenced
 
     # ── Memory a pass reads and writes (history_consolidation_memory) ──
     _gated_lesson_scope = _memory._gated_lesson_scope
@@ -304,6 +322,12 @@ class HistoryConsolidator:
         """Acquire one publication hold and gate the run's first commit."""
         state = commit_state or _RunCommitState()
         with self._log.publication_hold(key):
+            # The hold's transcript lock also fences the write on the run's
+            # lease: the token is re-read under that lock, so a pass whose
+            # renewals failed past the ceiling while a peer claimed the span
+            # refuses the write instead of doubling it.
+            if state.lease_token is not None and not self._lease_is_current(key, state.lease_token):
+                raise _LeaseLostMidRun(key)
             if not state.committed and _persistence_disabled():
                 raise _PersistenceDisabledMidRun
             yield state
@@ -353,7 +377,9 @@ class HistoryConsolidator:
         """
         return (_time.time() if now is None else now) < self._log.consolidation_retry_state(key)[1]
 
-    async def _advance_history_marker(self, key: str, span: AttemptedSpan) -> None:
+    async def _advance_history_marker(
+        self, key: str, span: AttemptedSpan, lease: str | None = None
+    ) -> None:
         """Make durable the progress a finished history span represents.
 
         The one place that decides, from the span alone, whether a pass advanced
@@ -371,19 +397,15 @@ class HistoryConsolidator:
         display-only rows carried with it) or an ordinary message-aligned
         chunk — advances ``last_consolidated`` to ``prompted`` and clears the
         sub-offset. Both run off the event loop (blocking file IO).
-        """
-        if span.sub_prompted > span.sub_offset and span.prompted <= span.offset:
-            await asyncio.to_thread(
-                self._log.advance_consolidation_sub_offset,
-                key,
-                span.offset,
-                span.sub_prompted,
-                span.generation,
-            )
-            return
-        await asyncio.to_thread(self._log.mark_consolidated, key, span.prompted, span.generation)
 
-    async def _note_failed_attempt(self, key: str, span: AttemptedSpan, reason: str) -> None:
+        *lease* fences the write on this pass's acquisition token (see
+        ``_lease_fence``); a lost lease raises ``_LeaseLostMidRun``.
+        """
+        await asyncio.to_thread(self._advance_history_marker_fenced, key, span, lease)
+
+    async def _note_failed_attempt(
+        self, key: str, span: AttemptedSpan, reason: str, lease: str | None = None
+    ) -> bool:
         """Charge one attempt for a billed turn that never reached the marker.
 
         Called only once the prompt has actually reached the provider, so a
@@ -401,26 +423,58 @@ class HistoryConsolidator:
         tail behind it would retire messages no model has read. That tail is left
         unconsolidated and is picked up by the next pass, which charges its own
         attempts against it.
+
+        *lease* fences the charge AND the abandon marker on this pass's
+        acquisition token, inside ONE transcript-lock hold. A stale holder whose
+        lease a peer took over must not charge the peer's span: a fifth charge
+        recorded before the ownership check would leave the span at the cap
+        with the abandon marker refused, and ``retry_eligible`` would then reject
+        the peer's span even after its backoff expired. Holding the fence across
+        both writes also means no takeover can land between the charge and the
+        marker. Returns ``False`` when the lease was lost and nothing was
+        charged (the caller reports the pass as refused), ``True`` otherwise —
+        including when the bookkeeping itself failed, which is only logged.
         """
+
+        def _charge() -> tuple[int, float, Exception | None]:
+            with self._lease_fence(key, lease):
+                attempts, retry_at = self._log.record_consolidation_failure(
+                    key,
+                    _CONSOLIDATION_BACKOFF_BASE_SECS,
+                    _CONSOLIDATION_BACKOFF_MAX_SECS,
+                    span,
+                )
+                marker_error: Exception | None = None
+                if attempts >= _CONSOLIDATION_MAX_ATTEMPTS:
+                    try:
+                        self._advance_history_marker_now(key, span)
+                    except Exception as exc:  # reported below, with the abandon
+                        marker_error = exc
+                return attempts, retry_at, marker_error
+
         try:
-            attempts, retry_at = await asyncio.to_thread(
-                self._log.record_consolidation_failure,
+            attempts, retry_at, marker_error = await asyncio.to_thread(_charge)
+        except _LeaseLostMidRun:
+            # A peer owns this span now: the charge and any abandon marker are
+            # its to write. Nothing is recorded and no abandon notice fires.
+            self._logger.warning(
+                "Not charging the failed consolidation for %s (%s): another process "
+                "holds the lease",
                 key,
-                _CONSOLIDATION_BACKOFF_BASE_SECS,
-                _CONSOLIDATION_BACKOFF_MAX_SECS,
-                span,
+                reason,
             )
+            return False
         except Exception:
             # Without a persisted count the sweep cannot back off, so say so
             # loudly — but never let bookkeeping mask the original failure.
             self._logger.warning(
                 "Could not persist consolidation retry state for %s", key, exc_info=True
             )
-            return
+            return True
         if attempts < 1:
             # The session was deleted mid-consolidation, so nothing was recorded
             # and there is no span left to abandon.
-            return
+            return True
         if attempts < _CONSOLIDATION_MAX_ATTEMPTS:
             self._logger.warning(
                 "Consolidation attempt %d/%d failed for %s (%s); " "next attempt in %.0fs",
@@ -430,7 +484,7 @@ class HistoryConsolidator:
                 reason,
                 max(0.0, retry_at - _time.time()),
             )
-            return
+            return True
         # A non-final sub-slice abandon drops ONE budget-sized slice of an
         # over-budget head, not whole messages: the message marker stays put and
         # the next pass tries the next slice. Report the slice's character span so
@@ -485,13 +539,13 @@ class HistoryConsolidator:
                 reason,
                 span.prompted - span.offset,
             )
-        try:
-            await self._advance_history_marker(key, span)
-        except Exception:
+        if marker_error is not None:
             # The count stays at the cap, so retry_eligible() keeps refusing —
             # the span stops spending even though the marker is missing.
             self._logger.warning(
-                "Could not mark abandoned consolidation for %s", key, exc_info=True
+                "Could not mark abandoned consolidation for %s",
+                key,
+                exc_info=(type(marker_error), marker_error, marker_error.__traceback__),
             )
         callback = self.on_abandoned
         if callback is not None:
@@ -507,6 +561,7 @@ class HistoryConsolidator:
                 self._logger.debug(
                     "Abandoned-consolidation callback failed for %s", key, exc_info=True
                 )
+        return True
 
     async def _note_environment_failure(self, key: str, reason: str) -> None:
         """Arm the backoff for a consolidation that never reached the provider.
@@ -697,7 +752,7 @@ class HistoryConsolidator:
         # threshold test skips it until a whole new threshold of messages
         # accumulates — silently dropping its preference/project extraction.
         # A cancellation propagates and leaves the offset alone too.
-        if result is not _CONSOLIDATION_REFUSED:
+        if not _no_pass_ran(result):
             self._prefs_offset[key] = total
 
     def _claim_count(self, key: str) -> _CountClaim | None:
@@ -812,7 +867,7 @@ class HistoryConsolidator:
             return  # logged by _consolidate; no throttle, so the next sweep retries
         # A refusal is not a completed pass; setting the throttle for it would
         # delay the retry past the backoff deadline.
-        if result is not _CONSOLIDATION_REFUSED:
+        if not _no_pass_ran(result):
             self._history_consolidated[key] = now
 
     def check_idle_sessions(self) -> None:
@@ -883,7 +938,7 @@ class HistoryConsolidator:
                     and fut.exception() is None
                     # A refusal is not a completed pass; setting the throttle
                     # for it would delay the retry past the backoff deadline.
-                    and fut.result() is not _CONSOLIDATION_REFUSED
+                    and not _no_pass_ran(fut.result())
                 ):
                     self._history_consolidated[k] = ts
                 elif k in self._seeded_keys and not fut.cancelled() and fut.exception() is None:
@@ -987,7 +1042,7 @@ class HistoryConsolidator:
         finally:
             self._running.discard(key)
         # A refusal is not a completed pass; leave the throttle unset.
-        if result is not _CONSOLIDATION_REFUSED:
+        if not _no_pass_ran(result):
             self._history_consolidated[key] = _time.time()
 
     async def consolidate_now(self, key: str) -> bool:
@@ -1009,9 +1064,10 @@ class HistoryConsolidator:
         marker cannot advance over all leave the count where it was, and
         repeating them is an infinite loop rather than progress.
 
-        Returns ``False`` when the first pass was refused by the consolidation
-        retry backoff — so the CLI can report the skip instead of a false
-        success — and ``True`` for every other outcome (including the
+        Returns ``False`` when the first pass recorded no completed pass —
+        retry backoff, another process holding the consolidation lease, or a
+        source change after billing — so the CLI can report the skip instead of
+        a false success, and ``True`` for every other outcome (including the
         nothing-to-do and sensitive-session skips, which were already reported
         as done). A partial drain that then stalls returns ``True``: work did
         happen, and the caller reports the remainder from its own count rather
@@ -1050,7 +1106,7 @@ class HistoryConsolidator:
                     )
                     return True
             outcome = await self._consolidate(key, include_history=True)
-            if outcome is _CONSOLIDATION_REFUSED:
+            if _no_pass_ran(outcome):
                 return not first_pass
             after = self._log.unconsolidated_count(key)
             if after >= remaining:
@@ -1075,6 +1131,7 @@ _BOUND_FOR_IMPORTERS = (
     AutoSkillProvenance,
     ClaimRefusal,
     DISPLAY_ONLY_ROLES,
+    Iterator,
     LESSON_APPLIES_INSTRUCTION,
     LESSON_APPLIES_ON_TOPIC,
     NamedTuple,
@@ -1096,6 +1153,8 @@ _BOUND_FOR_IMPORTERS = (
     hashlib,
     json,
     math,
+    os,
+    platform_compat,
     re,
     redact_credentials,
     redact_exfiltration_urls,
@@ -1103,11 +1162,13 @@ _BOUND_FOR_IMPORTERS = (
     scope_is_admissible,
     strip_image_refs,
     timezone,
+    uuid,
     validate_skill_script,
 )
 #: Owner modules, lowest layer first: the first holder of a name answers its reads.
 _OWNERS = (
     "kiro_crew.history_consolidation_span",
+    "kiro_crew.history_consolidation_lease",
     "kiro_crew.history_consolidation_memory",
     "kiro_crew.history_consolidation_skills",
     "kiro_crew.history_consolidation_pass",
@@ -1130,6 +1191,16 @@ _sys.modules[__name__].__class__ = _facade_mirror.MirroredModule
 #: What a star import binds: every public name of the unsplit module's namespace.
 __all__ = sorted(n for n in set(globals()) | set(_EXPORTS) if not n.startswith("_"))
 if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and IDEs
+    from kiro_crew.history_consolidation_lease import (  # noqa: F401
+        _CONSOLIDATION_LEASE_CEILING_SECS,
+        _CONSOLIDATION_LEASE_RENEW_SECS,
+        _LEASE_INCARNATION,
+        _LEASE_MONOTONIC,
+        _LEASE_PID,
+        _LEASE_START,
+        _LEASE_TOKEN,
+        _lease_holder_is_live,
+    )
     from kiro_crew.history_consolidation_memory import (  # noqa: F401
         _EMBED_BUDGET_SECS_PER_PASS,
         _INHERIT_GLOBAL,
@@ -1162,9 +1233,11 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
         _strip_skill_frontmatter,
     )
     from kiro_crew.history_consolidation_span import (  # noqa: F401
+        _CONSOLIDATION_BUSY,
         _CONSOLIDATION_MAX_HEAD_SLICES,
         _CONSOLIDATION_META_KEYS,
         _CONSOLIDATION_PROMPT_BUDGET_CHARS,
+        _CONSOLIDATION_REFUSED,
         _CONSOLIDATION_SUBOFFSET_META_KEYS,
         _consolidation_chunk,
         _consolidation_head_content,

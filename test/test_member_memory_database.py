@@ -443,15 +443,16 @@ async def test_lost_transcript_ack_recovers_committed_prefix_without_another_mod
 ):
     from unittest.mock import AsyncMock, MagicMock
 
+    from consolidation_lease_helpers import lease_aware_log
+
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history_consolidation import HistoryConsolidator
 
-    log = MagicMock()
+    log = lease_aware_log()
     first = {"role": "user", "content": "The release codename is aurora 中文."}
     second = {"role": "assistant", "content": "Recorded the original decision."}
     log.snapshot_for_consolidation.return_value = ([first, second], 2, 0, 0)
     log.consolidation_retry_state.return_value = (0, 0.0)
-    log.get_metadata.return_value = {}
     memory = MagicMock()
     memory.read_preferences.return_value = ""
     memory.read_projects.return_value = ""
@@ -516,6 +517,8 @@ async def test_v2_member_memory_extracts_an_over_budget_head_slice_by_slice(memb
     """
     from unittest.mock import AsyncMock, MagicMock
 
+    from consolidation_lease_helpers import lease_aware_log
+
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import _CONSOLIDATION_PROMPT_BUDGET_CHARS
     from kiro_crew.history_consolidation import HistoryConsolidator
@@ -526,10 +529,9 @@ async def test_v2_member_memory_extracts_an_over_budget_head_slice_by_slice(memb
     # trip apply_consolidation's `source_total < len(messages)` guard.
     marker = {"value": 0, "sub": 0}
 
-    log = MagicMock()
+    log = lease_aware_log()
     log.snapshot_for_consolidation.return_value = ([head], 1, 0, 0)
     log.consolidation_retry_state.return_value = (0, 0.0)
-    log.get_metadata.return_value = {}
 
     def _mark(key, offset, generation=None):
         marker["value"] = offset

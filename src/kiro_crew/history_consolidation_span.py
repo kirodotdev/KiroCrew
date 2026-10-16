@@ -6,8 +6,8 @@ and a first message too large for the budget alone is cut into budget-sized slic
 (:func:`_slice_head_for_budget`), at most :data:`_CONSOLIDATION_MAX_HEAD_SLICES` per head.
 :class:`AttemptedSpan` is the identity a billed attempt records, and the retry metadata
 keys are where ``ConversationLog`` stores it. The sentinels and exceptions here are the
-ways a pass ends without its writes (refused, never dispatched, persistence switched off
-mid-run), and :class:`_RunCommitState` is whether a run has published anything yet.
+ways a pass ends without its writes (refused, busy, never dispatched, persistence
+switched off or the consolidation lease lost mid-run), and :class:`_RunCommitState` is whether a run has published anything yet.
 :func:`_persistence_disabled` and :func:`_lesson_extraction_disabled` read the
 ``memory.*`` switches that gate a pass.
 
@@ -97,12 +97,28 @@ _CONSOLIDATION_SUBOFFSET_META_KEYS: frozenset[str] = frozenset(
 
 
 class _ConsolidationRefusedSentinel:
-    """A retry gate or changed source declined a pass without accepting its writes."""
+    """No completed consolidation pass was recorded for this span.
+
+    Busy and backoff refusals precede dispatch, but a source recheck or lease
+    loss can refuse after a provider turn was billed. Callers must leave
+    completion bookkeeping unchanged for either sentinel.
+    """
 
     __slots__ = ()
 
 
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+#: Another process holds the session's consolidation lease.
+_CONSOLIDATION_BUSY = _ConsolidationRefusedSentinel()
+
+
+def _no_pass_ran(outcome: object) -> bool:
+    """True when *outcome* reports no completed pass recorded.
+
+    Test this, never one sentinel instance: a new refusal reason must not read
+    as a completed pass to the throttles and offsets that follow a pass.
+    """
+    return isinstance(outcome, _ConsolidationRefusedSentinel)
 
 
 class AttemptedSpan(NamedTuple):
@@ -149,19 +165,38 @@ class _PersistenceDisabledMidRun(Exception):
     """The persistence switch turned off before this run committed output."""
 
 
-# Both exceptions reach tracebacks and logs by their dotted name, which names the
+class _LeaseLostMidRun(Exception):
+    """The pass's consolidation lease belongs to a peer before it can write.
+
+    Raised from a publication hold, a fenced marker write or a fenced failure
+    charge when the token on the session's metadata line names another
+    acquisition: the pass's renewals fell silent past the ceiling and a peer
+    claimed the span it is still working on, so the outputs and accounting it
+    would still write are that peer's.
+    """
+
+
+# The exceptions reach tracebacks and logs by their dotted name, which names the
 # module they were defined in before the split.
 _ConsolidationNotDispatched.__module__ = "kiro_crew.history_consolidation"
 _PersistenceDisabledMidRun.__module__ = "kiro_crew.history_consolidation"
+_LeaseLostMidRun.__module__ = "kiro_crew.history_consolidation"
 
 
 class _RunCommitState:
-    """Whether one consolidation run has committed a publication."""
+    """What one consolidation run has committed, and the lease it commits under.
 
-    __slots__ = ("committed",)
+    ``lease_token`` is the acquisition token this run's durable writes are fenced
+    on: every publication and marker write re-reads it under the transcript lock
+    and refuses when a peer has taken the lease over. ``None`` for a run that
+    holds no lease of its own (skill detection entered directly, tests).
+    """
 
-    def __init__(self) -> None:
+    __slots__ = ("committed", "lease_token")
+
+    def __init__(self, lease_token: str | None = None) -> None:
         self.committed = False
+        self.lease_token = lease_token
 
     def mark_committed(self) -> None:
         """Record that a guarded durable publication succeeded."""

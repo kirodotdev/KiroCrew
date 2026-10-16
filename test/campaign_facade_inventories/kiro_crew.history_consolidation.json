@@ -25,7 +25,7 @@
   "strip_image_refs",
   "validate_skill_script"
  ],
- "note": "HistoryConsolidator stays in the facade; the stages of a pass live in the history_consolidation_span, _memory, _skills and _pass owners. The facade binds every name it imported from the rest of kiro_crew itself, and AttemptedSpan is the span owner's class, re-exported.",
+ "note": "HistoryConsolidator stays in the facade; the stages of a pass live in the history_consolidation_span, _lease, _memory, _skills and _pass owners. The facade binds every name it imported from the rest of kiro_crew itself, and AttemptedSpan is the span owner's class, re-exported.",
  "rebound": {
   "AUTO_SKILL_MAX_PROCEDURE_CHARS": "kiro_crew.skills",
   "AttemptedSpan": "kiro_crew.history_consolidation_span",

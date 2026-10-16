@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from consolidation_lease_helpers import lease_aware_log
 from test_memory_context_toggles import KEY, _builder, _make_consolidator, _seed_log, _write_config
 
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
@@ -71,10 +72,8 @@ class TestHelpers:
 
 def _lesson_consolidator() -> tuple[HistoryConsolidator, MagicMock]:
     """A consolidator whose one pass extracts a lesson, with stores mocked."""
-    log = MagicMock()
+    log = lease_aware_log()
     log.snapshot_for_consolidation.return_value = ([{"role": "user", "content": "hi"}], 1, 0, 0)
-    log.get_metadata.return_value = {}
-    log.get_metadata_status.return_value = ({}, True)
     log.consolidation_retry_state.return_value = (0, 0.0)
     memory = MagicMock()
     memory.read_preferences.return_value = ""

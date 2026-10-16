@@ -9,7 +9,11 @@ the durable marker to the end of the PROMPTED prefix through ``_advance_history_
 (both stay on the class). Every
 write is gated by ``memory.persistence_enabled`` and ``memory.writes_enabled``
 (``_persistence_disabled``), checked before the pass is billed and again inside the
-publication hold of the run's first commit. ``_facade_stream_and_collect_json`` reads ``kiro_crew.history`` at call
+publication hold of the run's first commit. A pass claims the session's cross-process
+consolidation lease (``history_consolidation_lease``) before its snapshot, keeps its
+heartbeat while it runs, fences every durable write on the token and releases it in
+``finally``; a busy session returns ``_CONSOLIDATION_BUSY``, a lost lease
+``_CONSOLIDATION_REFUSED``. ``_facade_stream_and_collect_json`` reads ``kiro_crew.history`` at call
 time, so a patch of ``kiro_crew.history.stream_and_collect_json`` reaches the turn.
 
 Each function here whose first parameter is ``self`` is a ``HistoryConsolidator`` method:
@@ -48,6 +52,7 @@ from kiro_crew.history_consolidation_memory import (
     _withhold_unseen_deletes,
 )
 from kiro_crew.history_consolidation_span import (
+    _CONSOLIDATION_BUSY,
     _CONSOLIDATION_MAX_HEAD_SLICES,
     _CONSOLIDATION_REFUSED,
     AttemptedSpan,
@@ -58,6 +63,7 @@ from kiro_crew.history_consolidation_span import (
     _fmt_message,
     _head_exceeds_budget,
     _head_slice_ceiling_reached,
+    _LeaseLostMidRun,
     _lesson_extraction_disabled,
     _persistence_disabled,
     _PersistenceDisabledMidRun,
@@ -91,9 +97,13 @@ async def _consolidate(
     """Run LLM consolidation for a session.
 
     Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
-    refuses the span or its transcript changes during extraction; every
-    other completion returns ``None``. A changed source remains pending
-    rather than consuming the failure/abandon budget of a different span.
+    refuses the span, its transcript changes during extraction, or the
+    pass loses its consolidation lease to a peer, and
+    :data:`_CONSOLIDATION_BUSY` when another process already holds that
+    lease; every other completion returns ``None``. Callers distinguish
+    either from a completed pass with :func:`_no_pass_ran`, never against
+    one instance. A changed source remains pending rather than consuming
+    the failure/abandon budget of a different span.
     """
     # Capture the gateway loop so the thread-offloaded _process_auto_skills
     # can schedule the async dedupe judge back onto it.
@@ -104,11 +114,28 @@ async def _consolidate(
     billed = False
     total = 0
     generation_at_snapshot = 0
+    # Held from the acquisition below to the finally block. Declared out here
+    # so the release is reachable from paths that return before it is taken.
+    lease: str | None = None
+    lease_heartbeat: asyncio.Future | None = None
+    lease_lost = False
+    owner = asyncio.current_task()
+
+    def _abort_lost_lease() -> None:
+        nonlocal lease_lost
+        lease_lost = True
+        if owner is not None:
+            owner.cancel()
+
     # The span identity any failure charge is stamped with. Rebuilt from the
     # snapshot below; the zero value only ever reaches a charge if the snapshot
     # itself raised, and that path is not billed.
     # circular import: kiro_crew.history re-exports this module
-    from kiro_crew.history import TranscriptWithheld, is_incognito_transcript
+    from kiro_crew.history import (
+        TranscriptWithheld,
+        is_incognito_transcript,
+        transcript_lock_stems,
+    )
 
     attempted = AttemptedSpan(0, 0, 0, 0)
     commit_state = _RunCommitState()
@@ -142,6 +169,32 @@ async def _consolidate(
         metadata = await asyncio.to_thread(self._log.get_metadata, key)
         if isinstance(metadata, dict) and is_incognito_transcript(metadata.get("memory_mode")):
             return _CONSOLIDATION_REFUSED
+        # Acquire before reading the authoritative span: a peer may have
+        # completed it since scheduling, and busy callers need no snapshot.
+        acquisition = asyncio.create_task(asyncio.to_thread(self._acquire_consolidation_lease, key))
+        try:
+            lease = await asyncio.shield(acquisition)
+        except asyncio.CancelledError:
+            # A worker cannot be cancelled mid-CAS. Recover its token so
+            # finally releases a claim written during cancellation.
+            lease = await acquisition
+            raise
+        if lease is None:
+            self._logger.info("_consolidate skipped for %s: consolidation already in flight", key)
+            return _CONSOLIDATION_BUSY
+        # Every durable write from here on is fenced on this token: a peer
+        # that takes the lease over while this pass runs (its renewals having
+        # failed past the ceiling) refuses the remaining outputs instead of
+        # publishing the span a second time.
+        commit_state.lease_token = lease
+        # Keep proving the holder is working for as long as the pass runs.
+        # The ceiling measures silence, and everything after this line —
+        # the prompt, the provider turn, the memory writes — is one stretch
+        # of it with no natural place to stamp liveness.
+        lease_heartbeat = asyncio.ensure_future(
+            self._heartbeat_consolidation_lease(key, lease, _abort_lost_lease)
+        )
+
         # Atomically snapshot the unconsolidated tail, the total message
         # count (the absolute offset handed to mark_consolidated below), and
         # the rotation generation under ONE lock hold. Reading them as
@@ -158,15 +211,21 @@ async def _consolidate(
         # that was persistent a moment ago). The snapshot re-reads the line
         # under the same lock as the rows and refuses them together, so no
         # rows a restricted line governs ever reach the prompt below.
+        # The lease is re-checked under the same lock hold, so the span
+        # read here is one this pass still owns.
+        def leased_snapshot():
+            with self._log.locked_stems(transcript_lock_stems(key)):
+                if lease is None or not self._lease_is_current(key, lease):
+                    raise _LeaseLostMidRun(key)
+                return self._log.snapshot_for_consolidation(key, withhold_restricted=True)
+
         try:
             (
                 unconsolidated,
                 total,
                 generation_at_snapshot,
                 sub_offset_at_snapshot,
-            ) = await asyncio.to_thread(
-                self._log.snapshot_for_consolidation, key, withhold_restricted=True
-            )
+            ) = await asyncio.to_thread(leased_snapshot)
         except TranscriptWithheld:
             return _CONSOLIDATION_REFUSED
         # Transcript caches may share nested message dictionaries with an
@@ -188,7 +247,7 @@ async def _consolidate(
         if not _prompt_rows(unconsolidated):
             if include_history:
                 await asyncio.to_thread(
-                    self._log.mark_consolidated, key, total, generation_at_snapshot
+                    self._mark_consolidated_fenced, key, total, generation_at_snapshot, lease
                 )
             return None
         # Retry-eligibility choke point: every entry point funnels through
@@ -302,11 +361,14 @@ async def _consolidate(
                 )
                 try:
                     await asyncio.to_thread(
-                        self._log.mark_consolidated,
+                        self._mark_consolidated_fenced,
                         key,
                         offset + len(chunk),
                         generation_at_snapshot,
+                        lease,
                     )
+                except _LeaseLostMidRun:
+                    raise
                 except Exception:
                     self._logger.warning(
                         "Could not retire consolidation head for %s", key, exc_info=True
@@ -482,17 +544,18 @@ async def _consolidate(
                         # one) rather than a bare ``source_total``, which for
                         # a non-final slice is the unmoved message offset and
                         # would wrongly drop the sub-offset.
-                        await self._advance_history_marker(key, attempted)
+                        await self._advance_history_marker(key, attempted, lease)
                     else:
                         # The ordinary message-aligned receipt: advance to the
                         # EXACT prefix the committed run extracted
                         # (``source_total``), never this replay's possibly-
                         # larger snapshot — appended messages must stay unread.
                         await asyncio.to_thread(
-                            self._log.mark_consolidated,
+                            self._mark_consolidated_fenced,
                             key,
                             committed["source_total"],
                             generation_at_snapshot,
+                            lease,
                         )
                 return None
 
@@ -729,8 +792,12 @@ async def _consolidate(
             # the in-memory throttle while the durable count still says
             # unconsolidated: the span re-bills a full turn every idle window,
             # and immediately after every restart. Charge the attempt.
-            if include_history:
-                await self._note_failed_attempt(key, attempted, "empty LLM result")
+            if include_history and not await self._note_failed_attempt(
+                key, attempted, "empty LLM result", lease
+            ):
+                # The lease went to a peer: nothing was charged, and this
+                # is not a completed pass.
+                return _CONSOLIDATION_REFUSED
             return None
 
         # A pending model result cannot authorize writes from a deleted or
@@ -982,7 +1049,7 @@ async def _consolidate(
         ):
             try:
                 await self._run_skill_detection(key, commit_state)
-            except _PersistenceDisabledMidRun:
+            except (_PersistenceDisabledMidRun, _LeaseLostMidRun):
                 raise
             except Exception:
                 self._logger.warning("Auto-skill detection failed for %s", key, exc_info=True)
@@ -1028,7 +1095,7 @@ async def _consolidate(
         # sub-offset (the head is only partly extracted) and everything else
         # to the whole-message marker.
         if include_history:
-            await self._advance_history_marker(key, attempted)
+            await self._advance_history_marker(key, attempted, lease)
 
     except TranscriptWithheld as exc:
         if not commit_state.committed:
@@ -1063,13 +1130,25 @@ async def _consolidate(
                 # it were never read, and the next pass prompts them. For a
                 # non-final sub-slice this advances the durable sub-offset
                 # rather than the message marker.
-                await self._advance_history_marker(key, attempted)
+                await self._advance_history_marker(key, attempted, lease)
+            except _LeaseLostMidRun:
+                # Both fences failed: the line became restricted AND the lease
+                # went to a peer. Nothing this pass still holds may be written,
+                # and the span belongs to the new holder.
+                self._logger.warning(
+                    "Consolidation for %s lost its lease as the transcript became "
+                    "restricted; the span is left to the new holder",
+                    key,
+                )
+                return _CONSOLIDATION_REFUSED
             except Exception:
                 # Same accounting as the arm below: an output committed, so
                 # the turn was billed, and the unwritten marker must back
                 # off rather than re-bill on the next tick.
                 self._logger.exception("Consolidation failed for %s", key)
-                await self._note_failed_attempt(key, attempted, "exception after the LLM call")
+                await self._note_failed_attempt(
+                    key, attempted, "exception after the LLM call", lease
+                )
                 raise
         return None
     except _PersistenceDisabledMidRun:
@@ -1078,6 +1157,21 @@ async def _consolidate(
             key,
         )
         return _CONSOLIDATION_REFUSED
+    except _LeaseLostMidRun:
+        # A peer claimed the lease while this pass was still running — its
+        # renewals failed past the ceiling, and every write after that point
+        # was refused at the fence. The span is the new holder's, so this is
+        # a refusal: no attempt is charged here and no marker is advanced.
+        self._logger.warning(
+            "Consolidation for %s lost its lease to another process; the remaining "
+            "outputs are not published",
+            key,
+        )
+        return _CONSOLIDATION_REFUSED
+    except asyncio.CancelledError:
+        if lease_lost:
+            return _CONSOLIDATION_REFUSED
+        raise
     except Exception:
         self._logger.exception("Consolidation failed for %s", key)
         # Anything raised between the LLM call and mark_consolidated (memory
@@ -1086,7 +1180,7 @@ async def _consolidate(
         # skip conditions are false again on the next 60s tick. Charging the
         # attempt here is what converts that tight loop into backoff.
         if billed and include_history:
-            await self._note_failed_attempt(key, attempted, "exception after the LLM call")
+            await self._note_failed_attempt(key, attempted, "exception after the LLM call", lease)
         elif include_history and attempted.total > 0:
             # Setup has a durable retry budget too, but consumes no model
             # attempt and must never abandon a span the model did not read.
@@ -1094,6 +1188,29 @@ async def _consolidate(
         raise
     finally:
         self._running.discard(key)
+        if lease_heartbeat is not None:
+            # The heartbeat stops before the release, so a renewal cannot
+            # land after the lease is cleared and race a peer's fresh
+            # acquisition into looking older than it is.
+            lease_heartbeat.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await lease_heartbeat
+        if lease is not None:
+            # Best effort, and deliberately still attempted while the task is
+            # unwinding under cancellation: an unreleased lease excludes this
+            # session's peers until the ceiling expires, which is the one
+            # outcome worse than a slow release. asyncio.shield keeps the
+            # to_thread call from being cancelled out from under us; if the
+            # loop is already gone the lease is left to the liveness test,
+            # which frees it as soon as this process is.
+            try:
+                await asyncio.shield(
+                    asyncio.to_thread(self._release_consolidation_lease, key, lease)
+                )
+            except Exception:
+                self._logger.debug(
+                    "Consolidation lease release did not complete for %s", key, exc_info=True
+                )
     return None
 
 
