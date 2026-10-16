@@ -524,6 +524,12 @@ async def _start_kiro_runtime_impl(
         report_start_stage(session_key, "connecting")
         server = await remote.launch.workspace_server(remote.workdir)
         target.set_remote_workspace({"server": server, "workdir": remote.workdir})
+        # GitHub git from the workspace goes through this gateway, which holds
+        # the credential (remote_session/git_gateway.py). In the background:
+        # it never delays the start, and a failure only costs git access.
+        begin_git_proxy = getattr(remote.launch, "begin_git_proxy", None)
+        if callable(begin_git_proxy) and session_key:
+            begin_git_proxy(session_key, agent=agent)
         report_start_stage(session_key, "starting_agent")
 
     from kiro_crew.session_environment import (

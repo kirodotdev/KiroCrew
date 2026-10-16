@@ -1,7 +1,7 @@
 import { useId, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
-import { Check, ChevronRight, ExternalLink, Plus, Trash2 } from 'lucide-react'
+import { Check, ChevronRight, ExternalLink, Minus, Plus, Trash2, X } from 'lucide-react'
 import { AnimatePresence, motion } from 'framer-motion'
 import type { ReactNode } from 'react'
 
@@ -84,14 +84,24 @@ function ProfileDisclosure({ title, subtitle, open, onToggle, children }: {
   )
 }
 
-/** One passed check: a check mark and its text, announced as a list item. */
-function CheckLine({ children }: { children: ReactNode }) {
+/** One check line: a status glyph and its text, announced as a list item. */
+function CheckLine({ status, children }: { status: 'ok' | 'fail' | 'unknown'; children: ReactNode }) {
+  const Icon = status === 'ok' ? Check : status === 'fail' ? X : Minus
+  const tone = status === 'ok' ? 'text-ok' : status === 'fail' ? 'text-danger' : 'text-muted'
   return (
     <li className="flex min-w-0 items-start gap-2 text-[13px] text-text">
-      <Check size={14} className="mt-0.5 shrink-0 text-ok" aria-hidden="true" />
+      <Icon size={14} className={`mt-0.5 shrink-0 ${tone}`} aria-hidden="true" />
       <span className="min-w-0 break-words">{children}</span>
     </li>
   )
+}
+
+/** Display names for git hosts whose brand is a do-not-translate term; any
+ * other host is shown as its host name. */
+const GIT_HOST_NAMES: Record<string, string> = {
+  'github.com': 'GitHub',
+  'gitlab.com': 'GitLab',
+  'dev.azure.com': 'Azure DevOps',
 }
 
 /** What the readiness check found, in the order a person fixes things. */
@@ -104,7 +114,7 @@ function CheckResults({ result, profiles }: {
   return (
     <ul aria-label={t('sessionEnvironments.checkResults')} className="space-y-1.5">
       {result.coder.ok ? (
-        <CheckLine>{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
+        <CheckLine status="ok">{t('sessionEnvironments.checkCoderOk', { owner: result.coder.owner ?? '' })}</CheckLine>
       ) : (
         <li><ErrorNotice variant="inline" message={t('sessionEnvironments.checkCoderFailed', { error: result.coder.error ?? '' })} askAgent /></li>
       )}
@@ -112,11 +122,23 @@ function CheckResults({ result, profiles }: {
         const profile = names.get(row.id)
         const name = profile?.name || row.id
         return row.ok ? (
-          <CheckLine key={row.id}>
+          <CheckLine key={row.id} status="ok">
             {t('sessionEnvironments.checkTemplateOk', { name, template: profile?.template ?? '' })}
           </CheckLine>
         ) : (
           <li key={row.id}><ErrorNotice variant="inline" message={t('sessionEnvironments.checkTemplateFailed', { name, error: row.error ?? '' })} askAgent /></li>
+        )
+      })}
+      {Object.entries(result.git).map(([host, status]) => {
+        const name = GIT_HOST_NAMES[host] ?? host
+        return (
+          <CheckLine key={host} status={status === 'signed_in' ? 'ok' : status === 'not_signed_in' ? 'fail' : 'unknown'}>
+            {status === 'signed_in'
+              ? t('sessionEnvironments.checkGitSignedIn', { name })
+              : status === 'not_signed_in'
+                ? t('sessionEnvironments.checkGitSignedOut', { name })
+                : t('sessionEnvironments.checkGitUnchecked', { name })}
+          </CheckLine>
         )
       })}
     </ul>

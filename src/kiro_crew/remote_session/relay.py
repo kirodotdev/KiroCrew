@@ -55,6 +55,8 @@ class _Relay:
         self._active = 0
         self._last_activity = time.monotonic()
         self._idle_task: Optional[asyncio.Task] = None
+        #: Awaited once when the relay closes: what lives as long as it does.
+        self.on_close: Optional[Callable[[], Any]] = None
 
     async def start(self) -> int:
         if len(_LIVE) >= _MAX_LIVE_RELAYS:
@@ -75,6 +77,10 @@ class _Relay:
                 await self._server.wait_closed()
             self._server = None
         self._closed()
+        on_close, self.on_close = self.on_close, None
+        if on_close is not None:
+            with contextlib.suppress(Exception):
+                await on_close()
 
     def _closed(self) -> None:
         """Subclass hook: release what the relay owns."""

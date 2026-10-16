@@ -59,12 +59,82 @@ WITHHELD_ENV = frozenset(
 )
 
 
+#: Written by ``git_proxy.py`` once it listens; absent when no proxy runs.
+GIT_PROXY_PORT_FILE = os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "git-proxy.port")
+#: Per proxied host, the remote spellings git rewrites to the proxy (each a
+#: prefix git matches). Mirrors ``git_gateway.HOSTS``, which this guest-side
+#: file cannot import; ``test_remote_git_proxy`` pins the two equal.
+GIT_PROXY_REWRITES: Dict[str, tuple] = {
+    "github.com": ("https://github.com/", "git@github.com:", "ssh://git@github.com/"),
+    "gitlab.com": ("https://gitlab.com/", "git@gitlab.com:", "ssh://git@gitlab.com/"),
+    "bitbucket.org": ("https://bitbucket.org/", "git@bitbucket.org:", "ssh://git@bitbucket.org/"),
+    "dev.azure.com": ("https://dev.azure.com/",),
+}
+
+
+def _listening(port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+            return True
+    except OSError:
+        return False
+
+
+def git_proxy_env(port_file: str = GIT_PROXY_PORT_FILE, secret: str = "") -> Dict[str, str]:
+    """Environment that routes this command's hosted git traffic via the gateway.
+
+    Git LFS also reads these aliases; the gateway returns its batch and lock
+    verification requests to their direct HTTPS endpoints without credentials.
+    Public LFS remains anonymous; private LFS needs workspace-side authentication.
+
+    Uses git's environment config (``GIT_CONFIG_COUNT``, git 2.31+), so nothing
+    is written to a git config file and a command run outside this tool is not
+    affected. ``GIT_TERMINAL_PROMPT=0`` and an empty ``GIT_ASKPASS`` keep git
+    from asking anyone for a password even when an anonymous fetch returns 401.
+    """
+    if not secret:
+        return {}
+    try:
+        with open(port_file, encoding="ascii") as handle:
+            port = int(handle.read().strip())
+    except (OSError, ValueError):
+        return {}
+    if not 0 < port < 65536 or not _listening(port):
+        # A file left by a proxy that died: rewriting to a dead port would break
+        # even public clones, so the command runs as if no proxy existed.
+        return {}
+    pairs = [
+        (f"url.http://127.0.0.1:{port}/{host}/.insteadOf", prefix)
+        for host, prefixes in GIT_PROXY_REWRITES.items()
+        for prefix in prefixes
+    ]
+    # URL-scoped; Authorization is also stripped on cross-host LFS redirects.
+    pairs.append((f"http.http://127.0.0.1:{port}/.extraHeader", f"Authorization: Bearer {secret}"))
+    env = {"GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "", "GIT_CONFIG_COUNT": str(len(pairs))}
+    for index, (key, value) in enumerate(pairs):
+        env[f"GIT_CONFIG_KEY_{index}"] = key
+        env[f"GIT_CONFIG_VALUE_{index}"] = value
+    return env
+
+
 class ToolError(Exception):
     """A refusal or failure reported to the agent as a tool error, not a crash."""
 
 
 class Workspace:
-    def __init__(self, root: str, *, lock_dir: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        root: str,
+        git_proxy_port_file: str = GIT_PROXY_PORT_FILE,
+        *,
+        lock_dir: Optional[str] = None,
+        git_proxy_secret: str = "",
+    ) -> None:
+        #: The port file of THIS session's git proxy (``git_proxy.py --port-file``).
+        self.git_proxy_port_file = git_proxy_port_file
+        self.git_proxy_secret = git_proxy_secret
         real = os.path.realpath(root)
         if not os.path.isdir(real):
             raise SystemExit(f"workspace root {root!r} is not a directory")
@@ -263,6 +333,8 @@ class Workspace:
         timeout = max(1, min(int(timeout or DEFAULT_TIMEOUT), MAX_TIMEOUT))
         workdir = self.resolve(cwd)
         env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
+        # GitHub git traffic goes through the gateway, which holds the credential.
+        env.update(git_proxy_env(self.git_proxy_port_file, self.git_proxy_secret))
         try:
             proc = subprocess.run(
                 ["/bin/sh", "-c", command],
@@ -454,58 +526,133 @@ def browse(ws: Workspace, request: Any) -> Dict[str, Any]:
                 "binary": undecodable or b"\x00" in data[:8192],
                 "truncated": len(data) > MAX_READ_BYTES,
             }
-        if op == "git_status":
-            return _git_status(ws)
+        if op in ("git_status", "git_log", "git_diff"):
+            return _git_read(ws, op, path)
     except ToolError as exc:
         return {"error": str(exc)}
     except OSError as exc:
         return {"error": f"{type(exc).__name__}: {exc}"}
-    return {"error": "op must be list, read or git_status"}
+    return {"error": "op must be list, read, git_status, git_log or git_diff"}
 
 
-def _git_status(ws: Workspace) -> Dict[str, Any]:
-    """Read-only ``git status`` of the workspace root: fixed argv, no shell.
+def _git_read(ws: Workspace, op: str, path: str) -> Dict[str, Any]:
+    """Read-only git views of the workspace root: fixed argv, no shell.
 
-    ``-c core.fsmonitor= -c core.pager=cat`` and no hooks keep the repository's
-    config from naming a program for this read to run. Not every such program is
-    closed off: a ``filter.<name>.clean`` driver the repository's attributes
-    select still runs when status reads a modified file, and driver names are
-    open-ended, so no fixed argv can blank them all. That runs as the guest user,
-    who can already run any command in the guest through ``run_command``.
+    ``-c core.fsmonitor= -c core.pager=cat``, ``--no-ext-diff --no-textconv``
+    and no hooks keep the repository's config from naming a program for these
+    reads to run. Not every such program is closed off: a ``filter.<name>.clean``
+    driver the repository's attributes select still runs when status or diff
+    reads a modified file, and driver names are open-ended, so no fixed argv can
+    blank them all. That runs as the guest user, who can already run any command
+    in the guest through ``run_command``.
     """
-    argv = [
+    base = [
         "git",
+        "--literal-pathspecs",
         "-c",
         "core.fsmonitor=",
         "-c",
         "core.pager=cat",
         "-C",
         ws.root,
-        "status",
-        "--porcelain=v1",
-        "--branch",
-        "--untracked-files=normal",
     ]
+    if op == "git_status":
+        argv = base + ["status", "--porcelain=v1", "-z", "--branch", "--untracked-files=all"]
+    elif op == "git_log":
+        argv = base + ["log", "--no-color", "-n", "50", "--pretty=format:%h%x09%an%x09%ar%x09%s"]
+    else:
+        argv = []  # The status path is relative to the repository, not the workdir.
     env = {k: v for k, v in os.environ.items() if k not in WITHHELD_ENV}
     env["GIT_TERMINAL_PROMPT"] = "0"
-    try:
-        proc = subprocess.run(
-            argv,
+    # Repository-state diagnostics must not depend on the guest's locale.
+    env["LC_ALL"] = "C"
+
+    def run(args: List[str]):
+        return subprocess.run(
+            args,
+            cwd=ws.root,
             env=env,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             timeout=30,
         )
+
+    def unborn(proc: Any) -> bool:
+        return (
+            proc.returncode == 128
+            and re.fullmatch(
+                rb"fatal: your current branch '[^\r\n]+' does not have any commits yet\n?",
+                proc.stderr,
+            )
+            is not None
+        )
+
+    def failure(message: str) -> Dict[str, Any]:
+        return {"root": ws.root, "git": False, "code": "git_failed", "error_text": message}
+
+    untracked = False
+    try:
+        if op == "git_diff":
+            target = ws.root
+            if path not in ("", "."):
+                top = run(base + ["rev-parse", "--show-toplevel"])
+                if top.returncode:
+                    return failure(top.stderr.decode("utf-8", "replace").strip()[-300:])
+                repo_root = os.fsdecode(top.stdout).rstrip("\r\n")
+                target = ws.resolve(os.path.join(repo_root, path), must_exist=False)
+            argv = base + [
+                "diff",
+                "--no-color",
+                "--no-ext-diff",
+                "--no-textconv",
+                "HEAD",
+                "--",
+                target,
+            ]
+        if op == "git_diff" and path not in ("", "."):
+            listed = run(base + ["ls-files", "--others", "--exclude-standard", "-z", "--", target])
+            if listed.returncode:
+                return failure(listed.stderr.decode("utf-8", "replace").strip()[-300:])
+            untracked = bool(listed.stdout)
+            if untracked:
+                argv = base + [
+                    "diff",
+                    "--no-color",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--no-index",
+                    "--",
+                    os.devnull,
+                    target,
+                ]
+        proc = run(argv)
+        if (
+            op == "git_diff"
+            and proc.returncode == 128
+            and proc.stderr.strip() == (b"fatal: bad revision 'HEAD'")
+        ):
+            # An unborn branch has an empty-tree baseline, including staged files.
+            if unborn(run(base + ["log", "-1", "--format=%h"])):
+                empty_tree = run(base + ["hash-object", "-t", "tree", "--stdin"])
+                if empty_tree.returncode == 0:
+                    tree = empty_tree.stdout.decode("ascii").strip()
+                    proc = run([tree if arg == "HEAD" else arg for arg in argv])
+        if op == "git_log" and unborn(proc):
+            return {"root": ws.root, "git": True, "output": ""}
     except FileNotFoundError:
-        return {"root": ws.root, "git": False, "error_text": "git is not installed"}
+        return failure("git is not installed")
     except subprocess.TimeoutExpired:
-        raise ToolError("git did not answer in 30 seconds")
+        return failure("git did not answer in 30 seconds")
+    except OSError as exc:
+        return failure(f"could not run git: {exc}")
     out = proc.stdout[:MAX_READ_BYTES].decode("utf-8", "replace")
-    if proc.returncode != 0:
+    # --no-index uses exit 1 for a successful comparison that found changes.
+    if proc.returncode != 0 and not (untracked and proc.returncode == 1):
         err = proc.stderr.decode("utf-8", "replace").strip()
-        # Not a repository (or no commits yet) is a state, not a failure.
-        return {"root": ws.root, "git": False, "error_text": err[-300:]}
+        if proc.returncode == 128 and err.startswith("fatal: not a git repository"):
+            return {"root": ws.root, "git": False}
+        return failure(err[-300:] or f"git exited with status {proc.returncode}")
     return {
         "root": ws.root,
         "git": True,
@@ -549,6 +696,8 @@ def write_request(ws: Workspace, request: Any) -> Dict[str, Any]:
 def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="workspace_tools.py")
     p.add_argument("--root", required=True)
+    p.add_argument("--git-proxy-port-file", default=GIT_PROXY_PORT_FILE)
+    p.add_argument("--git-proxy-secret-stdin", action="store_true")
     mode = p.add_mutually_exclusive_group()
     mode.add_argument(
         "--browse",
@@ -561,10 +710,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="save one file from a JSON request on stdin and exit",
     )
     args = p.parse_args(argv)
+    secret = ""
+    if args.git_proxy_secret_stdin:
+        secret = sys.stdin.buffer.readline(66).decode("ascii").strip()
+        if re.fullmatch(r"[0-9a-f]{64}", secret) is None:
+            raise SystemExit("invalid git proxy capability")
     os.makedirs(os.path.expanduser(args.root), exist_ok=True)
+    # The port file is resolved here: a relative path names the worker directory
+    # this starts in.
     ws = Workspace(
         os.path.expanduser(args.root),
+        os.path.abspath(args.git_proxy_port_file),
         lock_dir=os.path.join(os.path.expanduser("~"), ".kirocrew-worker", "file-locks"),
+        git_proxy_secret=secret,
     )
     if args.browse or args.write:
         limit = (2 * MAX_WRITE_BYTES) if args.write else 65536

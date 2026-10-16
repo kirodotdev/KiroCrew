@@ -2195,7 +2195,7 @@ reported/skipped; import success never implies a governance grant.
 ### `vet_and_audit` — the audited-decision seam for governed outbound messaging
 
 `governance_profiles.vet_and_audit(scope, item, *, session_key, tool_name,
-app="", fail_closed=False, log_warning=True)` evaluates ONE permission
+agent="", app="", fail_closed=False, log_warning=True)` evaluates ONE permission
 decision via `governance_permits` AND writes its SEL
 `log_governance_decision` record — **grant and denial alike** — from a
 single code path, then returns the Decision. Any chokepoint whose outcome
@@ -2509,6 +2509,15 @@ denials leave the same forensic trail.
   PTY, which is an ungoverned plane by design (see below). A deployment that
   needs an actual bound on where the host can reach should treat the example
   as a starting point for defense-in-depth, not as sufficient on its own.
+  One gateway-side egress is governed by host besides the fetch tool: the
+  remote session git proxy (`remote_session/git_gateway.py`) asks
+  `vet_and_audit("network.egress", <host>, agent=<calling agent>, fail_closed=True)` (`github.com`,
+  `gitlab.com`, `bitbucket.org` or `dev.azure.com`) before every request it
+  carries upstream on a remote session's behalf, because there the GATEWAY is
+  the one reaching out, with its own credential. `AcpProvider` supplies the
+  calling agent to proxy startup; the channel keeps it independently of guest
+  frames. Missing identity refuses forwarding, and the audited seam passes it
+  into the existing task-profile resolution before intersecting the policy ceiling.
   Separately: once a `commands` deny pattern is adopted into policy, it
   becomes a force-pin via `resolve_pinned_commands` (ceiling pins ∪ profile
   pins, union not override) — a user cannot locally opt out of a pinned rule

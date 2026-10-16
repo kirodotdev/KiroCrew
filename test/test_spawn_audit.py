@@ -281,7 +281,16 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # server; its shell and git (including project filters) run in that guest.
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
-        "remote_session/workspace_tools.py::_git_status",
+        "remote_session/workspace_tools.py::run",
+        # Gateway credential reads: the callers supply fixed CLI verbs and a
+        # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
+        # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
+        # the operator's global helpers remain available. No local shell parses
+        # guest input. Host logins must remain visible to these credential CLIs.
+        "remote_session/git_gateway.py::_run_quiet",
+        # Gateway readiness uses fixed auth-status argv for a HOSTS entry, with
+        # all three streams discarded. It reads no credential or guest cwd.
+        "remote_session/git_gateway.py::login_status",
         "acp/runtime_process_tree.py::_get_rss_mb",
         # The spawn primitive for three fixed-argv kiro-cli one-shots
         # (`chat --list-models`, `whoami`, the `/usage` scrape). Every caller has

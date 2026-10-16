@@ -1992,7 +1992,11 @@ class AcpRuntime:
         notice = (
             f"\n\nThis session's files and shell live in a remote workspace at {workdir}. "
             f"Use the @{name} tools for every file and command; local file and shell "
-            "tools are not available."
+            "tools are not available. Git over HTTPS or SSH to GitHub, GitLab, Bitbucket "
+            "and Azure DevOps (dev.azure.com) works from those commands as usual, private "
+            "repositories included: the gateway adds the user's credentials, so the "
+            "workspace deliberately holds none. Do not look for keys or tokens in it, and "
+            "do not unset GIT_ASKPASS or git's url rewrites."
         )
         out = []
         for agent in agents:

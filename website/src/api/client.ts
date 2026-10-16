@@ -938,9 +938,23 @@ export interface RemoteFileContent {
   truncated: boolean
 }
 
+export interface RemoteGitResult {
+  root: string
+  /** False for a non-repository, or a failure accompanied by error_text. */
+  git: boolean
+  output?: string
+  code?: 'git_failed'
+  /** Subprocess failure only; a non-repository or unborn branch is not an error. */
+  error_text?: string
+  truncated?: boolean
+}
+
+export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked'
+
 export interface SessionEnvironmentsCheck {
   coder: { ok: boolean; owner?: string; error?: string }
   profiles: { id: string; ok: boolean; error?: string }[]
+  git: Record<string, GitLoginStatus>
 }
 
 export interface SessionEnvironmentWorkspace {

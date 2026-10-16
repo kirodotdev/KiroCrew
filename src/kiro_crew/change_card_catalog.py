@@ -254,7 +254,8 @@ _CODE_EXEC_SETTINGS: frozenset[str] = frozenset(
         "dashboard.terminal.shell",
         "session.pool_agent",
         # The Coder deployment and the template a session's workspace is built
-        # from decide which machine runs that session's commands.
+        # from decide which machine runs that session's commands, and the
+        # gateway proxies credentialed Git requests for it.
         "session_environments",
         "session_environments.coder_url",
         "session_environments.profiles",

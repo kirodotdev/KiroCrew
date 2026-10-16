@@ -46,9 +46,12 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
     """``POST /api/session-environments/check`` -- is the saved setup ready to run?
 
     Owner-only. Read-only against Coder (``whoami`` and the template list: no
-    workspace is created, started or touched). Answers::
+    workspace is created, started or touched) and status-only for git logins
+    (exit codes; no credential is read). Answers::
 
-        {"coder": {"ok", "owner" | "error"}, "profiles": [{"id", "ok", "error"?}]}
+        {"coder": {"ok", "owner" | "error"},
+         "profiles": [{"id", "ok", "error"?}],
+         "git": {host: "signed_in" | "not_signed_in" | "unchecked"}}
     """
     if (
         refusal := await require_owner_dashboard_request(request, "session_environments.check")
@@ -58,11 +61,17 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
     from kiro_crew.coder.session_launch import CoderSessionEnvironments
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.config.paths import data_home
+    from kiro_crew.remote_session.git_gateway import HOSTS, login_status
 
     section = (await asyncio.to_thread(KiroCrewConfig.load)).session_environments
+    git = dict(zip(HOSTS, await asyncio.gather(*(login_status(h) for h in HOSTS))))
     if not section.coder_url:
         return web.json_response(
-            {"coder": {"ok": False, "error": "no Coder URL is saved"}, "profiles": []}
+            {
+                "coder": {"ok": False, "error": "no Coder URL is saved"},
+                "profiles": [],
+                "git": git,
+            }
         )
     client = CoderSessionEnvironments(section, await asyncio.to_thread(data_home))._client()
     try:
@@ -75,6 +84,7 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
                     "error": "the gateway is not signed in to Coder; run coder login there",
                 },
                 "profiles": [],
+                "git": git,
             }
         )
     profiles: list[dict[str, object]] = []
@@ -84,7 +94,9 @@ async def api_session_environments_check(request: web.Request) -> web.Response:
             profiles.append({"id": profile.id, "ok": True})
         except CoderClientError as exc:
             profiles.append({"id": profile.id, "ok": False, "error": str(exc)[:200]})
-    return web.json_response({"coder": {"ok": True, "owner": owner}, "profiles": profiles})
+    return web.json_response(
+        {"coder": {"ok": True, "owner": owner}, "profiles": profiles, "git": git}
+    )
 
 
 async def api_session_environments_workspaces_get(request: web.Request) -> web.Response:

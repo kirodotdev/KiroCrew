@@ -343,13 +343,14 @@ describe('Coder setup and saved profile management', () => {
 })
 
 describe('Session Environments readiness and workspaces', () => {
-  it('runs the read-only check and reports Coder and each template', async () => {
+  it('runs the read-only check and reports Coder, each template and each git host', async () => {
     let checks = 0
     server.use(http.post('*/api/session-environments/check', () => {
       checks++
       return HttpResponse.json({
         coder: { ok: true, owner: 'devuser' },
         profiles: [{ id: 'dev', ok: false, error: 'Coder template is unavailable' }],
+        git: { 'github.com': 'signed_in', 'dev.azure.com': 'not_signed_in', 'bitbucket.org': 'unchecked' },
       })
     }))
     mount()
@@ -362,12 +363,15 @@ describe('Session Environments readiness and workspaces', () => {
     const failure = within(results).getByRole('alert')
     expect(failure).toHaveTextContent('Development: Coder template is unavailable')
     expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(results).toHaveTextContent('GitHub: signed in on the gateway')
+    expect(results).toHaveTextContent('Azure DevOps: not signed in on the gateway')
+    expect(results).toHaveTextContent("bitbucket.org: uses the gateway's git credential helper, not checked")
     expect(writes).toEqual([])
   })
 
   it('surfaces failed Coder checks with a safe hand-off and drops them while editing', async () => {
     server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
-      coder: { ok: false, error: 'Coder login expired' }, profiles: [],
+      coder: { ok: false, error: 'Coder login expired' }, profiles: [], git: {},
     })))
     mount()
     await screen.findByLabelText('Coder URL')

@@ -1545,6 +1545,7 @@ export default function SidePanel({
                   // The local project is not this session's working tree when it
                   // runs remotely, so the Git view must not describe it.
                   projectDir={remoteEnvironment === null ? projectDir : undefined}
+                  remoteEnvironmentName={remoteEnvironment?.name}
                   navLinks={navLinks} navResolving={navResolving}
                 />
               </div>

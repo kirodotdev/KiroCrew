@@ -556,3 +556,89 @@ def test_local_shell_services_and_bus_are_tmp_owned(tmp_path):
     assert env["XDG_RUNTIME_DIR"] == str(shell.runtime_dir)
     assert env["DBUS_SESSION_BUS_ADDRESS"] == f"unix:path={shell.runtime_dir / 'bus'}"
     assert f"XDG_RUNTIME_DIR={shell.runtime_dir}" in shell.argv("true")
+
+
+@sync
+async def test_git_proxy_runs_in_the_guest_and_answers_through_the_gateway(tmp_path):
+    """Install, worker, real RemoteLink, channel: the whole path, upstream faked."""
+    import urllib.error
+    import urllib.request
+
+    from test_remote_git_proxy import HttpBackendUpstream
+
+    launch = _launch(tmp_path, "sess-git")
+    await launch.install()
+    upstream = HttpBackendUpstream(tmp_path, status=404)
+
+    async def credential(host):
+        return "Basic eC1hY2Nlc3MtdG9rZW46dA=="
+
+    try:
+        await launch.start_git_proxy(
+            "dashboard:chat-git",
+            credential_source=credential,
+            agent="researcher",
+            egress_permitted=lambda key, host, agent: True,
+            http_session=upstream,
+        )
+        port_file = tmp_path / "guest" / ".kirocrew-worker" / launch.git_proxy_port_file
+        await async_wait_until(
+            port_file.exists, off_loop=True, describe=lambda: "guest proxy port is unpublished"
+        )
+        port = int(port_file.read_text().strip())
+        url = f"http://127.0.0.1:{port}/github.com/acme/w/info/refs?service=git-upload-pack"
+
+        def fetch() -> int:
+            try:
+                request = urllib.request.Request(
+                    url, headers={"Authorization": f"Bearer {launch.git_proxy_secret}"}
+                )
+                with urllib.request.urlopen(request, timeout=30) as response:
+                    return response.status
+            except urllib.error.HTTPError as exc:
+                return exc.code
+
+        assert await asyncio.wait_for(asyncio.to_thread(fetch), 60) == 404
+        assert upstream.calls[0]["url"] == (
+            "https://github.com/acme/w/info/refs?service=git-upload-pack"
+        )
+    finally:
+        await launch.stop_git_proxy()
+    assert launch.git_proxy is None
+    # The proxy is gone with its link: its port file goes with it.
+    await async_wait_until(
+        lambda: not port_file.exists(),
+        off_loop=True,
+        describe=lambda: "guest proxy port file remains after shutdown",
+    )
+    assert not port_file.exists()
+
+
+@sync
+async def test_an_older_relay_closing_does_not_stop_the_live_git_proxy(tmp_path):
+    """A start can make more than one relay; only the current one owns the proxy.
+
+    Seen live: the first relay of a start idled out 16 minutes in and stopped the
+    proxy while the session was still working through the second relay.
+    """
+    launch = _launch(tmp_path, "sess-relays")
+    await launch.install()
+    stops: list[str] = []
+
+    async def stop() -> None:
+        stops.append("stop")
+
+    launch.stop_git_proxy = stop  # observe, do not reach the guest
+    first = await launch.workspace_server(str(tmp_path / "guest"))
+    first_relay = launch.relay
+    await launch.workspace_server(str(tmp_path / "guest"))
+    second_relay = launch.relay
+    try:
+        assert first and first_relay is not second_relay
+        await first_relay.close()
+        assert stops == []  # the old relay is gone; the proxy stays
+        await second_relay.close()
+        assert stops == ["stop"]
+    finally:
+        await first_relay.close()
+        await second_relay.close()

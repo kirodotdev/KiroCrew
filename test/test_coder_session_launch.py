@@ -819,6 +819,52 @@ def test_git_views_are_read_only_and_handle_non_repos(tmp_path):
     (root / "f.txt").write_text("x\n")
     status = wt.browse(ws, {"op": "git_status"})
     assert status["git"] is True and "?? f.txt" in status["output"]
+    assert "first" in wt.browse(ws, {"op": "git_log"})["output"]
+    assert wt.browse(ws, {"op": "git_diff", "path": "../outside"})["error"]
+
+
+def test_git_diff_view_does_not_run_a_repository_textconv(tmp_path):
+    import shlex
+    import shutil
+    import subprocess
+    import sys
+
+    from kiro_crew.remote_session import workspace_tools as wt
+
+    if shutil.which("git") is None:
+        pytest.skip("git is not installed")
+    root = tmp_path / "repo"
+    root.mkdir()
+    marker = tmp_path / "textconv-ran"
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@x",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@x",
+    }
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(root), *args], check=True, env=env, cwd=root)
+
+    git("init", "-q")
+    (root / ".gitattributes").write_text("*.txt diff=probe\n")
+    (root / "f.txt").write_text("one\n")
+    git("add", ".")
+    git("commit", "-q", "-m", "first")
+    script = tmp_path / "probe.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('ran')\n"
+        "sys.stdout.write(open(sys.argv[1]).read())\n"
+    )
+    git(
+        "config", "diff.probe.textconv", f"{shlex.quote(sys.executable)} {shlex.quote(str(script))}"
+    )
+    (root / "f.txt").write_text("two\n")
+    diff = wt.browse(wt.Workspace(str(root)), {"op": "git_diff", "path": "f.txt"})
+    assert diff["git"] is True and "+two" in diff["output"]
+    assert not marker.exists()
 
 
 @sync
@@ -899,7 +945,7 @@ def test_the_browse_mode_has_no_metrics_op(tmp_path):
     from kiro_crew.remote_session import workspace_tools as wt
 
     assert wt.browse(wt.Workspace(str(tmp_path)), {"op": "stats"}) == {
-        "error": "op must be list, read or git_status"
+        "error": "op must be list, read, git_status, git_log or git_diff"
     }
 
 

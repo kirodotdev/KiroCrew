@@ -1,7 +1,7 @@
-"""Dashboard access to a remote session's workspace: files and terminal.
+"""Dashboard access to a remote session's workspace: files, git, terminal.
 
-A remote session's files live in its guest workspace, so the dashboard's file
-and terminal views cannot use the gateway's disk or shell. These ask the
+A remote session's files live in its guest workspace, so the dashboard's file,
+git and terminal views cannot use the gateway's disk or shell. These ask the
 guest instead, through the gateway's ``coder ssh`` (never autostarting a stopped
 workspace):
 
@@ -41,7 +41,7 @@ _BROWSE_TIMEOUT = 45.0
 _MAX_PATH = 4096
 #: Largest file body the dashboard editor may save (the guest allows more).
 MAX_WRITE_BYTES = 1024 * 1024
-READ_OPS = ("list", "read", "git_status")
+READ_OPS = ("list", "read", "git_status", "git_log", "git_diff")
 
 
 class NotRemote(LookupError):
@@ -185,18 +185,28 @@ _AHEAD_RE = re.compile(r"\[(?:[^\]]*\b)?ahead (\d+)")
 
 
 def summarize_unsaved(status_output: str) -> str | None:
-    """What ``git status --porcelain=v1 --branch`` says would be lost, or None.
+    """What ``git status --porcelain=v1 -z --branch`` says would be lost, or None.
 
     Counts changed and untracked paths, commits ahead of the upstream, and a
     branch with no upstream at all (every commit on it exists only here).
     """
-    lines = [line for line in status_output.splitlines() if line.strip()]
+    # Accept newline records from workers without NUL status support as well.
+    nul = "\0" in status_output
+    lines = status_output.split("\0") if nul else status_output.splitlines()
+    lines = [line for line in lines if line]
     if not lines:
         return None
     head, changes = (lines[0], lines[1:]) if lines[0].startswith("## ") else ("", lines)
+    count = 0
+    index = 0
+    while index < len(changes):
+        code = changes[index][:2]
+        count += 1
+        # NUL porcelain puts the destination first, then a separate source path.
+        index += 2 if nul and ("R" in code or "C" in code) else 1
     parts: list[str] = []
-    if changes:
-        parts.append(f"{len(changes)} uncommitted file{'s' if len(changes) != 1 else ''}")
+    if count:
+        parts.append(f"{count} uncommitted file{'s' if count != 1 else ''}")
     ahead = _AHEAD_RE.search(head)
     if ahead and int(ahead.group(1)) > 0:
         count = int(ahead.group(1))

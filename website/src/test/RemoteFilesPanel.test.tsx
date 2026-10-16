@@ -19,9 +19,11 @@ vi.mock('../pierre', () => ({
       />
     )
   },
+  PierrePatch: ({ patch }: { patch: string }) => <pre data-testid="patch">{patch}</pre>,
 }))
 
 import RemoteFilesPanel from '../pages/chat/RemoteFilesPanel'
+import RemoteGitPanel, { parsePorcelain } from '../pages/chat/RemoteGitPanel'
 import { api } from '../api/client'
 import { ApiError } from '../api/apiError'
 import '../i18n'
@@ -257,4 +259,82 @@ describe('RemoteFilesPanel', () => {
     expect(write).toHaveBeenCalledWith('chat-1', 'README.md', '# agent merged', '# agent')
   })
 
+})
+
+describe('RemoteGitPanel', () => {
+  it('parses NUL porcelain with literal filenames and rename/copy source records', () => {
+    expect(parsePorcelain('## main...origin/main\0 M space name.py\0?? é.txt\0R  new\nname.py\0old.py\0 C copied.py\0source.py\0 M arrow -> name\0')).toEqual({
+      branch: 'main...origin/main',
+      rows: [
+        { code: ' M', path: 'space name.py' }, { code: '??', path: 'é.txt' },
+        { code: 'R ', path: 'new\nname.py' }, { code: ' C', path: 'copied.py' },
+        { code: ' M', path: 'arrow -> name' },
+      ],
+    })
+  })
+
+  it.each(['a.py', 'space name.py', 'é.py', 'arrow -> name.py'])('shows history and requests the literal diff path %s', async (filename) => {
+    const git = vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op, path) => {
+      if (op === 'git_status') return { root: '/w', git: true, output: `## main\0 M ${filename}\0` }
+      if (op === 'git_log') return { root: '/w', git: true, output: 'abc123\tme\t2 hours ago\tfirst commit' }
+      return { root: '/w', git: true, output: `diff --git a/${path} b/${path}\n` }
+    })
+    const u = userEvent.setup()
+    wrap(<RemoteGitPanel slot="chat-1" name="Coder MicroVM" />)
+    expect(await screen.findByText('main')).toBeInTheDocument()
+    // Status enables history; file selection then enables the diff query.
+    expect(await screen.findByText('first commit', {}, { timeout: 5000 })).toBeInTheDocument()
+    await u.click(screen.getByRole('button', { name: `M ${filename}` }))
+    expect(await screen.findByTestId('patch', {}, { timeout: 5000 })).toHaveTextContent(`diff --git a/${filename}`)
+    expect(git).toHaveBeenCalledWith('chat-1', 'git_diff', filename)
+  })
+
+  it('renders the addition patch for an untracked row', async () => {
+    const git = vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op) => {
+      if (op === 'git_status') return { root: '/w', git: true, output: '## main\0?? new.txt\0' }
+      if (op === 'git_log') return { root: '/w', git: true, output: '' }
+      return { root: '/w', git: true, output: 'diff --git a/new.txt b/new.txt\n+entirely new content\n' }
+    })
+    const u = userEvent.setup()
+    wrap(<RemoteGitPanel slot="chat-1" name="Remote" />)
+    await u.click(await screen.findByRole('button', { name: '?? new.txt' }))
+    // The status row selection enables the addition-diff query.
+    expect(await screen.findByTestId('patch', {}, { timeout: 5000 })).toHaveTextContent('+entirely new content')
+    expect(git).toHaveBeenCalledWith('chat-1', 'git_diff', 'new.txt')
+    expect(screen.queryByText('No changes in this file.')).not.toBeInTheDocument()
+  })
+
+  it('surfaces a failed history query with an agent hand-off', async () => {
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op) => {
+      if (op === 'git_log') throw new Error('history unavailable')
+      return { root: '/w', git: true, output: '## main\0' }
+    })
+    wrap(<RemoteGitPanel slot="chat-1" name="Coder MicroVM" />)
+    // History loads after the status response enables its query.
+    const failure = await screen.findByRole('alert', {}, { timeout: 5000 })
+    expect(failure).toHaveTextContent('Could not read the session environment')
+    expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+  })
+
+  it.each(['git_status', 'git_log', 'git_diff'] as const)('shows %s subprocess failures through ErrorNotice', async (failureOp) => {
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockImplementation(async (_slot, op) => {
+      if (op === failureOp) return { root: '/w', git: false, code: 'git_failed', error_text: 'git is not installed' }
+      return { root: '/w', git: true, output: op === 'git_status' ? '## main\0 M a.py\0' : '' }
+    })
+    const u = userEvent.setup()
+    wrap(<RemoteGitPanel slot="chat-1" name="Coder MicroVM" />)
+    if (failureOp === 'git_diff') await u.click(await screen.findByRole('button', { name: /a\.py/ }))
+    // Status enables history; selecting a status row enables diff. Either chain may fail.
+    const failure = await screen.findByRole('alert', {}, { timeout: 5000 })
+    expect(failure).toHaveTextContent('git is not installed')
+    expect(within(failure).getByRole('button', { name: /Ask the agent/ })).toBeVisible()
+    expect(screen.queryByText(/not a Git repository/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/No changes to show/)).not.toBeInTheDocument()
+  })
+
+  it('says when the workdir is not a repository', async () => {
+    vi.spyOn(api, 'chatSlotEnvironmentGit').mockResolvedValue({ root: '/w', git: false })
+    wrap(<RemoteGitPanel slot="chat-1" name="Coder MicroVM" />)
+    expect(await screen.findByText(/not a Git repository/)).toBeInTheDocument()
+  })
 })

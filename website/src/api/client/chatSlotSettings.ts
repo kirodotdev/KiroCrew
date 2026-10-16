@@ -9,6 +9,7 @@ import type { ClientTransport } from './transport'
 import type {
   RemoteDirListing,
   RemoteFileContent,
+  RemoteGitResult,
   SessionEnvironmentsCheck,
   SessionEnvironmentWorkspace,
   SlotEnvironment,
@@ -89,7 +90,10 @@ export function createChatSlotSettingsEndpoints({ get, post, put, j, jfetch: fet
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=list&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteDirListing>,
     chatSlotEnvironmentRead: (slot: string, path: string) =>
       get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=read&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteFileContent>,
-    /** Read-only readiness check: Coder sign-in and each profile's template. */
+    /** Read-only git view of a remote session's workspace root. */
+    chatSlotEnvironmentGit: (slot: string, op: 'git_status' | 'git_log' | 'git_diff', path = '.') =>
+      get('/api/chat/slots/' + encodeURIComponent(slot) + '/environment/browse?op=' + op + '&path=' + encodeURIComponent(path)).then(j) as Promise<RemoteGitResult>,
+    /** Read-only readiness check: Coder sign-in, each profile's template, git logins. */
     sessionEnvironmentsCheck: () =>
       post('/api/session-environments/check').then(j) as Promise<SessionEnvironmentsCheck>,
     sessionEnvironmentsWorkspaces: () =>
