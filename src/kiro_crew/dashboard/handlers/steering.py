@@ -195,7 +195,7 @@ def _redact_meta(text: str) -> str:
 
     Metadata (the first-heading description, the display path) is never written
     back to disk, so redacting it is free — it mirrors ``_redact_prompt`` in
-    ``handlers/prompts.py``. Editor CONTENT is deliberately NOT redacted: the
+    ``handlers/prompts_reading.py``. Editor CONTENT is deliberately NOT redacted: the
     detail response is what the textarea saves back, so a redaction there would
     overwrite the user's own file with ``[REDACTED]`` markers.
     """

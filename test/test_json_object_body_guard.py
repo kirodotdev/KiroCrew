@@ -201,7 +201,7 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     "handlers/ui_prefs.py::api_ui_prefs": ("MAX_REQUEST_BYTES", _BOUNDED_EXPLICIT),
     # Installed exact-read keys allow 32,768 characters. Escaped astral characters
     # need 12 JSON bytes each; 512 KiB covers those keys plus the control envelope.
-    "handlers/prompts.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
+    "handlers/prompts_skill_catalog.py::api_skills": ("512 * 1024", _BOUNDED_EXPLICIT),
     # agents.py tranche.
     "agent_admin/agent_config.py::api_agent_config": ("None", _UNBOUNDED_USER_CONTENT),
     "agent_admin/default_agent.py::api_default_agent": ("None", _CONTROL_FIELDS_CAP_PENDING),

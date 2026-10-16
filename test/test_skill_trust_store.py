@@ -2233,7 +2233,7 @@ class TestReviewedProjectConfirmation:
 
         src_path = (
             _pathlib.Path(__file__).resolve().parents[1]
-            / "src/kiro_crew/dashboard/handlers/prompts.py"
+            / "src/kiro_crew/dashboard/handlers/prompts_skill_catalog.py"
         )
         tree = ast.parse(src_path.read_text(encoding="utf-8"))
 

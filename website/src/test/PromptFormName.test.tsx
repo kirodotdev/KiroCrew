@@ -97,7 +97,7 @@ describe('sanitizePromptName', () => {
     // test uses for the same reason.
     const handler = path.resolve(
       __dirname,
-      '../../../src/kiro_crew/dashboard/handlers/prompts.py',
+      '../../../src/kiro_crew/dashboard/handlers/prompts_authoring.py',
     )
     const source = readFileSync(handler, 'utf-8')
     expect(source).toContain(

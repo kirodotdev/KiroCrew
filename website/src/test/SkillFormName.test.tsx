@@ -124,7 +124,7 @@ describe('sanitizeSkillName', () => {
     // http:// one, so fileURLToPath refuses it.
     const handler = path.resolve(
       __dirname,
-      '../../../src/kiro_crew/dashboard/handlers/prompts.py',
+      '../../../src/kiro_crew/dashboard/handlers/prompts_skill_edits.py',
     )
     const source = readFileSync(handler, 'utf-8')
     expect(source).toContain(

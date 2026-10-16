@@ -153,7 +153,7 @@ def _sel():
 
     The function-local import is the deliberate circular-import exception every
     sibling handler uses (``core.py``, ``sessions.py``, ``files.py``, ``cron.py``,
-    ``memory.py``, ``agents.py``, ``hooks.py``, ``prompts.py``): this module is
+    ``memory.py``, ``agents.py``, ``hooks.py``, ``prompts_caller_gates.py``): this module is
     imported BY ``handlers/__init__``, so a top-level ``from .. import sel`` would
     be a cycle. Resolving the package attribute per call is also what lets a test
     monkeypatch ``handlers.sel`` and have it take effect here.

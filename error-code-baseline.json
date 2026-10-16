@@ -203,8 +203,17 @@
     "dashboard/handlers/optimizer.py": {
       "missing_code": 1
     },
-    "dashboard/handlers/prompts.py": {
-      "missing_code": 27
+    "dashboard/handlers/prompts_authoring.py": {
+      "missing_code": 4
+    },
+    "dashboard/handlers/prompts_skill_catalog.py": {
+      "missing_code": 7
+    },
+    "dashboard/handlers/prompts_skill_edits.py": {
+      "missing_code": 10
+    },
+    "dashboard/handlers/prompts_skill_pending.py": {
+      "missing_code": 6
     },
     "dashboard/handlers/security.py": {
       "missing_code": 16

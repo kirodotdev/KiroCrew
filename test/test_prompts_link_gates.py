@@ -593,7 +593,8 @@ class TestCreateAndDeletePinTheDirectory:
         call only ``getattr``/``bool``, so putting a ``stat`` back into it fails
         here no matter how the call is spelled.
         """
-        tree = ast.parse(Path(_prompts_mod.__file__).read_text(encoding="utf-8"))
+        owner = Path(_prompts_mod.__file__).with_name("prompts_paths.py")
+        tree = ast.parse(owner.read_text(encoding="utf-8"))
         assign = next(
             node
             for node in tree.body
