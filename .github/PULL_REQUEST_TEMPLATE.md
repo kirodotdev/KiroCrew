@@ -101,7 +101,10 @@
      surface.
 
      - Show each affected surface in its meaningful variants (e.g. desktop vs
-       browser, empty vs populated, light vs dark).
+       browser, empty vs populated, light vs dark). Capture the full application
+       chrome -- nav/sidebar and the whole page or dialog with the surface in
+       context -- not a cropped element shot, which draws a UX "not the real
+       pane" finding.
      - Prefer a short video/GIF when the change involves motion or a multi-step
        flow (animations, transitions, interactions) — a still image cannot
        prove those.
@@ -118,14 +121,27 @@
        Limits: 10 MB per image/GIF, 100 MB per video.
      - WITHOUT write access on this repository (a fork PR), `--attach` is not
        available to you: the upload endpoint answers read permission with a
-       404 (cli/cli#14302). Either drag the file into this box in the web UI,
-       which works with read access, or commit it -- `git add -f
-       temp-screenshots/<topic>/after.png`, forced because that directory is
-       gitignored -- and reference the repository-relative path here. The
-       review lanes read committed media the same way they read an attachment,
-       with ONE limit for a committed file: 10 MB, video included -- a bigger
-       file is skipped, not reviewed. A recording over 10 MB goes into this
-       box via the web UI, where the 100 MB video limit above applies.
+       404 (cli/cli#14302). You can still upload PROGRAMMATICALLY through your
+       own fork, where you are admin: `gh issue create --repo <you>/<fork>
+       --attach <file>` (enable issues first with `gh api -X PATCH
+       repos/<you>/<fork> -f has_issues=true`) mints account-scoped
+       `github.com/user-attachments/assets/<uuid>` URLs that render cross-repo;
+       embed those here and keep that issue as a reusable upload holder (GitHub
+       retains unlinked media only ~30 days and whether deleting the source
+       issue orphans the asset is undocumented, so keep the holder). Or push the
+       files to your fork on an UNRELATED branch (e.g. `pr-assets`), off the
+       contributed code path, and reference their raw
+       `raw.githubusercontent.com/<you>/<fork>/<branch>/<path>` URLs
+       (branch-mutable, not pinned). Dragging the file into this box in the web
+       UI works too, but is not always available -- device, network, or
+       application-managed policy can block a browser upload. Committing is the
+       last resort -- `git add -f temp-screenshots/<topic>/after.png`, forced
+       because that directory is gitignored -- and reference the
+       repository-relative path here. The review lanes read committed media the
+       same way they read an attachment, with ONE limit for a committed file:
+       10 MB, video included -- a bigger file is skipped, not reviewed. A
+       recording over 10 MB goes into this box via the web UI, where the 100 MB
+       video limit above applies.
        Know the cost: a committed file merges into main's history for good;
        the maintainer removes it from the tip afterwards, the blob stays.
      - Non-media evidence is neither attached with --attach nor committed.
