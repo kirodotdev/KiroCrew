@@ -286,6 +286,11 @@ _ARTIFACT_SLUG_SPEC = FieldSpec(name="artifact_slug", type=str, max_len=128, pat
 # scanning a local_dir's full contents.
 _SCAN_SIZE_LIMIT = 2 * 1024 * 1024  # 2 MiB
 
+# Size cap on a local_dir tree, measured before staging. `_do_deploy` refuses a
+# bigger tree before copying it, and `_handle_pending_confirm` applies the same
+# cap at confirm time.
+_MAX_STAGE_BYTES = 200 * 1024 * 1024  # 200 MiB
+
 
 def _safe_resolve(p: Path) -> Path:
     """Resolve a path (following symlinks); fall back to the raw path on error."""
@@ -971,19 +976,7 @@ async def _do_deploy(params: dict[str, Any]) -> tuple[int, dict[str, Any]]:
 
             # TOCTOU defense — stage an immutable snapshot before scan+deploy.
             # Size guard: refuse trees > 200 MiB before copying.
-            _MAX_STAGE_BYTES = 200 * 1024 * 1024
-
-            def _compute_tree_size(root: Path) -> int:
-                total = 0
-                for p in root.rglob("*"):
-                    if p.is_file():
-                        try:
-                            total += p.stat().st_size
-                        except OSError:
-                            pass
-                return total
-
-            tree_size = await asyncio.to_thread(_compute_tree_size, src)
+            tree_size = await asyncio.to_thread(_compute_tree_size_global, src)
             if tree_size > _MAX_STAGE_BYTES:
                 return 400, {"error": f"local_dir tree exceeds 200 MiB ({tree_size} bytes)"}
 
@@ -2529,10 +2522,9 @@ async def _handle_pending_confirm(request: web.Request) -> web.Response:
                    error=confinement_error)
             return web.json_response({"error": confinement_error}, status=409)
 
-        # Size guard (same _MAX_STAGE_BYTES as deploy path).
-        _MAX_STAGE_BYTES_CONFIRM = 200 * 1024 * 1024
+        # Size guard, the same _MAX_STAGE_BYTES cap as the deploy path.
         tree_size = await asyncio.to_thread(_compute_tree_size_global, local_path)
-        if tree_size > _MAX_STAGE_BYTES_CONFIRM:
+        if tree_size > _MAX_STAGE_BYTES:
             await asyncio.to_thread(add_pending, entry)
             _audit("pending_confirm", entry_id, "denied",
                    error=f"size guard exceeded ({tree_size} bytes)")

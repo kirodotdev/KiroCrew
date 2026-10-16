@@ -517,6 +517,20 @@ class TestDoDeployRefusals:
         assert status == 400 and "sensitive credential path" in payload["error"]
 
     @pytest.mark.asyncio
+    async def test_oversized_tree_is_refused_before_staging(self, _site, monkeypatch):
+        handlers._save_config("p", "us-west-2")
+        monkeypatch.setattr(handlers, "_compute_tree_size_global",
+                            lambda _p: 200 * 1024 * 1024 + 1)
+
+        def _boom():
+            raise AssertionError("an oversized tree must be refused before staging")
+
+        monkeypatch.setattr(handlers, "_staging_root", _boom)
+        status, payload = await handlers._do_deploy(
+            {"site_id": "s", "local_dir": str(_site)})
+        assert status == 400 and "exceeds 200 MiB" in payload["error"]
+
+    @pytest.mark.asyncio
     async def test_tagged_staging_rejection_becomes_409(self, _site, monkeypatch):
         handlers._save_config("p", "us-west-2")
 
