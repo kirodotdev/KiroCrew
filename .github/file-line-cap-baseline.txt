@@ -247,7 +247,6 @@
 2417 test/test_ephemeral_sessions.py
 9026 test/test_external_registry.py
 2765 test/test_fargate_launch_engine.py
-2680 test/test_feature_videos_hosted.py
 2872 test/test_file_change_snapshots.py
 4162 test/test_gateway_appkit_endpoints.py
 4437 test/test_github_pull_request_monitor.py
@@ -309,7 +308,6 @@
 2725 test/test_plugin_import.py
 8519 test/test_pod.py
 3225 test/test_portability.py
-2673 test/test_publish_personal_drive.py
 2215 test/test_publish_sync.py
 2016 test/test_push_branch_gate.py
 4559 test/test_push_guard.py
@@ -369,9 +367,7 @@
 2055 test/test_telegram_sessions.py
 8129 test/test_terminal_handler.py
 2494 test/test_theme_install.py
-2660 test/test_title_refresh.py
 4674 test/test_token_auth.py
-2663 test/test_tool_call_classification.py
 4193 test/test_transcribe.py
 3143 test/test_trusted_apps_api.py
 2944 test/test_update_check_install_aware.py
