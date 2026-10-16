@@ -3387,12 +3387,17 @@ def _run_stdio_dispatch_loop(
                         _deliver_finished_worker(1.0)
                     continue
                 if req is None:
-                    # EOF: wait for worker then exit. Parked calls die with the
-                    # client that owned them; the ``finally`` below cancels
-                    # their queued steps so no worker runs one for a client
-                    # that is gone, then shuts the pool down.
+                    # EOF: wait for worker, deliver what it finished, then
+                    # exit. The check above cannot cover a worker that
+                    # finishes while this read waits, and the Windows pump
+                    # has usually queued EOF long before. Parked calls die
+                    # with the client that owned them; the ``finally`` below
+                    # cancels their queued steps so no worker runs one for a
+                    # client that is gone, then shuts the pool down.
                     if _worker_thread:
                         _worker_thread.join(timeout=5.0)
+                        if not _worker_thread.is_alive():
+                            _deliver_finished_worker(0)
                     break
                 if isinstance(req, _Skipped):
                     # One iteration per dropped frame, so a finished worker's

@@ -160,3 +160,37 @@ def test_end_of_stream_ends_the_loop(monkeypatch, reader):
     harness = _LoopHarness(monkeypatch, lambda name, args: "ok")
     harness.close()
     assert not harness._thread.is_alive()
+
+
+def test_a_call_running_at_end_of_stream_is_still_answered(monkeypatch, reader):
+    """A tool that finishes after stdin hit EOF still gets its response.
+
+    The tool returns only once EOF has been read, so the loop reaches its EOF
+    branch with the worker still running. On the native path the loop does
+    that read itself, so the order is fixed; the pump reads EOF on its own
+    thread, where this is the order the loop usually sees.
+    """
+    eof_read = threading.Event()
+    real_read = mcp_shared._read_message
+
+    def read_message(stdin):
+        msg = real_read(stdin)
+        if msg is None:
+            eof_read.set()
+        return msg
+
+    monkeypatch.setattr(mcp_shared, "_read_message", read_message)
+    started = threading.Event()
+
+    def tool(name, args):
+        started.set()
+        eof_read.wait(5.0)
+        return "done"
+
+    harness = _LoopHarness(monkeypatch, tool)
+    harness.send(_tools_call(1, "slow"))
+    assert started.wait(5.0)
+    harness.close()
+    assert not harness._thread.is_alive()
+    assert eof_read.is_set()
+    assert _answered(harness, 1), "a call that finished after EOF was never answered"
