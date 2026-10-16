@@ -286,6 +286,7 @@ from kiro_crew.dashboard.chat_api.source_links import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_api.turn_stop import (  # noqa: F401
     _cancel_target,
+    _cancel_terminal_stop_task,
     _compaction_in_flight,
     _make_stop_resolver,
     _open_stop_event_card,
@@ -346,6 +347,7 @@ from kiro_crew.dashboard.chat_persistence import (  # noqa: F401
 )
 from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _context_usage_payload,
+    _drain_parked_queues,
     _run_chat,
     _start_next_queued_turn,
     _sync_served_model,

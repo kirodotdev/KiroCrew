@@ -4835,6 +4835,7 @@ async def _start_next_queued_turn(
     predecessor_actor: str = "",
     predecessor_turn_id: str = "",
     end_batch: bool = False,
+    handoff_owner: asyncio.Task[Any] | None = None,
 ) -> bool:
     """Dequeue and start one ready Kiro turn, preserving queue semantics.
 
@@ -4847,7 +4848,9 @@ async def _start_next_queued_turn(
     (:func:`_mark_turn_end`). ``end_batch`` says the caller read the synthesis
     fire gate as ``clear`` with the floor held, so a user message drained here
     also zeroes the batch's completion-turn count; the drain itself reads no
-    store.
+    store. ``handoff_owner`` lets the retiring runner's tail dispatch its own
+    successor once cleanup reaches the handoff; external retries still wait
+    for teardown to finish, including after the runner releases ``slot.task``.
     """
 
     # Nothing starts while the process is going away. The successor would write
@@ -4862,6 +4865,14 @@ async def _start_next_queued_turn(
     # the drop notices, the held-note flush and the cancellation notices below
     # belong to what comes next, not to the turn that ended. Held back only while
     # the queue head is that turn's own recovery; the dequeue re-decides then.
+    teardown = slot._stop_teardown_task
+    if (
+        teardown is not None
+        and not teardown.done()
+        and (handoff_owner is not teardown or slot.task is not teardown)
+    ):
+        return False
+
     turn_ended = False
     if predecessor_actor and not _is_own_recovery(
         slot._queue[:1], predecessor_actor, predecessor_turn_id
@@ -5657,12 +5668,19 @@ def _arm_synthesis_recheck(state: DashboardState, slot: _ChatSlot) -> None:
                 and state._slots.get(slot.key) is slot
             )
 
-        if not _still_wanted():
+        def _defer_stop_teardown() -> bool:
+            teardown = slot._stop_teardown_task
+            if teardown is None or teardown.done():
+                return False
+            _arm_synthesis_recheck(state, slot)
+            return True
+
+        if not _still_wanted() or _defer_stop_teardown():
             return
         verdict = await synthesis_fire_verdict(state, slot)
         if verdict == SYNTHESIS_UNKNOWN:
             _arm_synthesis_recheck(state, slot)
-        elif verdict == SYNTHESIS_CLEAR and _still_wanted():
+        elif verdict == SYNTHESIS_CLEAR and _still_wanted() and not _defer_stop_teardown():
             # Re-read after the store read: the tab may have started closing.
             _launch_synthesis(state, slot)
 
@@ -5704,6 +5722,7 @@ async def _finish_queue_cycle(
     a cycle of local commands and cancelled replays has no reply to title and
     no remote work to re-read."""
 
+    handoff_owner = slot.task
     will_synthesize = False
     verdict = SYNTHESIS_HELD
     if (
@@ -5729,7 +5748,7 @@ async def _finish_queue_cycle(
             # drain attempt. A held queue stays held: its arrivals are handed the
             # floor by the read loop below.
             state.push_slots_update()
-            if await _start_next_queued_turn(state, slot):
+            if await _start_next_queued_turn(state, slot, handoff_owner=handoff_owner):
                 return
 
     # The cycle's end is also the end of the turn that ran it, and it is marked
@@ -5777,13 +5796,19 @@ async def _finish_queue_cycle(
             break
         # The queue moved during the read: a send that arrived queued behind the
         # still-running turn. Hand it the floor, then read again.
-        if drain and slot._queue and await _start_next_queued_turn(state, slot):
+        if (
+            drain
+            and slot._queue
+            and await _start_next_queued_turn(state, slot, handoff_owner=handoff_owner)
+        ):
             return
         arrived = next((e.get("id") for e in slot._queue if e.get("id") not in held), None)
         if (
             not drain
             and arrived
-            and await _start_next_queued_turn(state, slot, required_queue_id=arrived)
+            and await _start_next_queued_turn(
+                state, slot, required_queue_id=arrived, handoff_owner=handoff_owner
+            )
         ):
             return
     if slot.task is not owner:
@@ -5908,6 +5933,7 @@ async def _hand_off_queue(
             predecessor_actor=predecessor_actor,
             predecessor_turn_id=predecessor_turn_id,
             end_batch=end_batch,
+            handoff_owner=slot.task,
         ):
             return
     await _finish_queue_cycle(
@@ -8262,9 +8288,12 @@ async def _run_chat(
     _deferred_options_expiry = (
         _prompt_depth == 0 and first_word in _KIRO_ONLY_BLOCKED_SLASH_COMMANDS
     )
+    # Bounded dispatch stores the outer task on the slot, not this inner runner.
+    _preparing_task = slot.task or asyncio.current_task()
     try:
-        # Publish the immutable identity BEFORE the first admission await, as
-        # the first statement the enclosing finally covers. From here down the
+        slot._preparing_task = _preparing_task
+        # Publish the immutable identity BEFORE the first admission await,
+        # inside the enclosing finally's coverage. From here down the
         # local session_key is what the turn acquires, audits and releases
         # while slot.linked_session_key remains mutable underneath it -- and
         # the admission awaits below are exactly where a rebind can land: a
@@ -10571,6 +10600,15 @@ async def _run_chat(
         _crew_log_step_t0 = time.monotonic()
         event_stream = client.stream_command(message) if is_slash else client.stream(full_message)
         async for event in event_stream:
+            # The provider's first event ends the PREPARING span. Not the dispatch
+            # gate above: the transport can still await (timeout configuration,
+            # session setup) before it registers the turn as active, and a Stop
+            # landing there finds no active turn, answers ``idle`` and would leave
+            # the prompt to dispatch after it. While the marker stands, that
+            # terminal outcome cancels this runner instead. From the first event
+            # on, the provider owns the turn and a stop goes through its machinery.
+            if slot._preparing_task is _preparing_task:
+                slot._preparing_task = None
             if (_todo_sync_rendered or _todo_recovery_carried) and (
                 event.kind in _TODO_BLOCK_READ_EVENT_KINDS
             ):
@@ -18246,6 +18284,10 @@ async def _run_chat(
                 "nudge_turn": _directive_self_wake and _turn_landed,
             },
         )
+        # An older runner may finish after a successor starts preparing.
+        if slot._preparing_task is _preparing_task:
+            slot._preparing_task = None
+
         # The turn's crew log closers, in the one order a reader can trust: every
         # `message/sent` for this turn has now been flushed, so the tool closer,
         # the last step's completion and the turn's own completion land after the

@@ -428,6 +428,9 @@ class SlotProjection:
             ),
             "turn": slot._turn_generation,
             "turn_gen": chunk_generation(),
+            "stop_teardown": bool(
+                slot._stop_teardown_task is not None and not slot._stop_teardown_task.done()
+            ),
             # An automatic compaction in flight on this session. Separate from
             # `running` because it is NOT a dashboard turn: the composer reads
             # idle while it holds the session, which without this field looks

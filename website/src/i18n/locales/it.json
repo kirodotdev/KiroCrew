@@ -19510,5 +19510,9 @@
       "composer_approval_mode": "Il selettore della modalità di approvazione nella riga dei controlli della casella del messaggio. Stabilisce se gli strumenti chiedono prima, se le letture vengono eseguite senza chiedere, se ci si fida di questa sessione o se tutto viene approvato automaticamente (YOLO).",
       "composer_voice_input": "Il pulsante del microfono nella casella del messaggio. Premilo per dettare invece di scrivere; su un touchscreen passa dalla tastiera alla modalità tieni premuto per parlare."
     }
+  },
+  "queueActions": {
+    "stillStopping": "Interruzione in corso…",
+    "teardownPending": "Il turno precedente si sta ancora interrompendo. Il messaggio è in coda e verrà inviato quando si ferma."
   }
 }

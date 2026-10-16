@@ -19510,5 +19510,9 @@
       "composer_approval_mode": "Le sélecteur du mode d'approbation dans la rangée de commandes de la zone de message. Il définit si les outils demandent d'abord, si les lectures s'exécutent sans demander, si cette session est approuvée ou si tout est approuvé automatiquement (YOLO).",
       "composer_voice_input": "Le bouton du micro dans la zone de message. Appuie dessus pour dicter au lieu de taper ; sur un écran tactile, il bascule entre le clavier et le maintien pour parler."
     }
+  },
+  "queueActions": {
+    "stillStopping": "Arrêt en cours…",
+    "teardownPending": "Le tour précédent est encore en cours d’arrêt. Ton message est en attente et sera envoyé une fois l’arrêt terminé."
   }
 }

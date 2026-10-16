@@ -158,6 +158,9 @@ def test_running_and_turn_running_slot_readers_are_enumerated() -> None:
                 ("chat_api/turn_stop.py", "stop_slot_turn"),
                 # Stop settlement wakes retained priority only on an unreserved slot.
                 ("chat_api/turn_stop.py", "_make_stop_resolver"),
+                # A cancelled preparing runner's settle drains parked queues only
+                # on an unreserved slot, so a turn that took the floor keeps it.
+                ("chat_api/turn_stop.py", "_cancel_terminal_stop_task"),
                 ("chat_rewind.py", "api_chat_slot_rewind"),
                 # The memory-ready queue drain starts a turn only on a slot no
                 # dispatch has reserved, the same guard the dispatch routes take.

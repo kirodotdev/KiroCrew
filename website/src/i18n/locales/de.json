@@ -19230,5 +19230,9 @@
       "composer_approval_mode": "Die Auswahl des Freigabemodus in der Steuerleiste des Nachrichtenfelds. Sie legt fest, ob Werkzeugaufrufe zuerst nachfragen, Lesezugriffe ohne Nachfrage laufen, dieser Sitzung vertraut wird oder alles automatisch freigegeben wird (YOLO).",
       "composer_voice_input": "Die Mikrofon-Schaltfläche im Nachrichtenfeld. Drücke sie, um zu diktieren statt zu tippen; auf einem Touchscreen wechselt sie zwischen Tastatur und Gedrückthalten zum Sprechen."
     }
+  },
+  "queueActions": {
+    "stillStopping": "Wird noch beendet…",
+    "teardownPending": "Der vorherige Durchlauf wird noch beendet. Deine Nachricht ist in der Warteschlange und wird gesendet, sobald er beendet ist."
   }
 }

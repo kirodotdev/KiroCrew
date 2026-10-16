@@ -19510,5 +19510,9 @@
       "composer_approval_mode": "O seletor do modo de aprovação na linha de controles da caixa de mensagem. Define se as ferramentas pedem permissão, se leituras rodam sem perguntar, se esta sessão é confiável ou se tudo é aprovado automaticamente (YOLO).",
       "composer_voice_input": "O botão do microfone na caixa de mensagem. Pressione-o para ditar em vez de digitar; numa tela sensível ao toque, alterna entre o teclado e segurar para falar."
     }
+  },
+  "queueActions": {
+    "stillStopping": "Ainda interrompendo…",
+    "teardownPending": "O turno anterior ainda está sendo interrompido. Sua mensagem está na fila e será enviada quando ele parar."
   }
 }

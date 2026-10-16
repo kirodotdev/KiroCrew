@@ -19,7 +19,12 @@ replayed as historical input. This includes cron, recovery and user-replay
 injections; queue drain supplies the exact appended row to the runner.
 
 `running` gates turn admission and destructive history edits; `turn_running`
-reports execution. `running` also reads `_turn_admission_reserved`, which the
+reports execution through a live `slot.task`. `running` also remains true while
+`_stop_teardown_task` is live, even after the runner releases `slot.task` before
+awaiting its terminal frame. Task readers must therefore check for a non-null
+task independently of `running`. Slot summaries keep `running` execution-only
+and expose `stop_teardown` separately; Stop publishes both marker transitions.
+`running` also reads `_turn_admission_reserved`, which the
 dashboard send handler sets for a person's own send between admitting the row
 and publishing `slot.task`, the window that holds the automatic Slack link
 (`chat_slack.maybe_auto_link_slack`, at most `AUTO_LINK_HOLD_SECS`), so a second
@@ -32,6 +37,19 @@ then, as it would at the end of a stopped turn. `test_slot_running_readers.py::t
 walks every dashboard symbol and pins each direct or shared-helper reader by
 `(module, symbol)` to the predicate it uses; the same census enumerates every
 non-null `slot.task` publisher so a new unguarded admission site fails the test.
+
+A preparation Stop retains the runner's task reference through the bounded
+settle wait. The runner's existing tail owns an admitted queue handoff; its
+identity-checked `handoff_owner` can dispatch at that boundary while external
+drains still refuse live teardown. If memory admission held the queue, it stays
+held for the existing explicit retry. The synthesis timer also defers live Stop
+teardown within its existing bounded recheck budget, including after a store
+read. Admission queues sends while teardown is live, after the runner's tail has
+passed its own drain, so completing teardown hands a non-empty queue on an idle,
+signed-in slot to the lock-guarded idle drain (`_drain_parked_queues`). It takes
+over only after the runner has released `slot.task`, and it rechecks the slot,
+the stop state and memory admission under the slot lock, so at most one queued
+turn starts.
 
 Continue and Project requests retain the slot object they originally authorized.
 They reject a same-name replacement after lock acquisition and each pre-commit
@@ -1950,6 +1968,37 @@ beside the sibling per-key dicts. `cancel_current()` does NOT record a stop: it
 is the host's own best-effort abort (queue drain, injection retry, run
 teardown), not a person pressing Stop, and must not suppress a continuation
 the way a Stop does.
+
+Dashboard stop and interrupt handlers snapshot the runner task before calling
+`stop_turn()`. A terminal `"hard"` or `"idle"` result cancels and awaits the captured
+task only while it owns the runtime-only `_preparing_task` marker. The runner
+captures `slot.task` (the outer task under bounded dispatch, falling back to the
+current task for direct calls), publishes that identity inside its preparation
+`try`, clears it on the provider stream's first event, and compare-and-clears it
+in `finally`. The first event, not the dispatch gate, ends preparation because the
+transport can still await before it registers the turn as active, and a Stop in
+that span answers `"idle"`. Local command exits never publish it, and an older
+runner cannot clear a successor's marker. A turn the provider has taken remains
+owned by the existing stop machinery. A task that does not settle within two
+seconds emits a warning for investigation.
+
+An idle interrupt starts preserved queued work only after the captured runner
+settles and clears `slot.task`, including cancellation before memory admission.
+If teardown exceeds the cancellation deadline, the queue waits for it rather than
+dispatching over unfinished cleanup, and teardown completion hands it to the idle
+drain. The response sets `queue_held: true`; both chat surfaces show a notice and
+release the selected card's pending latch. A retry interrupt while teardown is live
+answers `queue_held` before any stop claim, card or cancel. A runtime-only `_stop_teardown_task` reference
+keeps admission busy until cleanup actually completes, even when `slot.task` has
+already cleared. Normal messages queue, and shared queue drains and interrupt retries
+withhold dispatch while teardown is live. Completion clears that reference by identity.
+Steering uses `turn_running` or `_turn_admission_reserved`; the queue guard uses
+`running` so teardown without a task still holds new messages. A later explicit
+Stop re-cancels a live retained teardown task, even after its preparation marker
+clears; a non-escalating RPC retry leaves that cleanup alone.
+Under the slot
+lock, the handler rechecks slot identity, authorizes the current session, and
+withholds dispatch after an authentication failure or a superseding stop.
 
 ### Cancelled-turn context restore
 

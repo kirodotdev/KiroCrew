@@ -9440,5 +9440,9 @@
     "restore_now": "Now",
     "restore_after": "After restoring",
     "current_version": "Current version"
+  },
+  "queueActions": {
+    "stillStopping": "Still stopping…",
+    "teardownPending": "The previous turn is still stopping. Your message is queued and will send once it stops."
   }
 }

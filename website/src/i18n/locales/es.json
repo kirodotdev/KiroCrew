@@ -19510,5 +19510,9 @@
       "composer_approval_mode": "El selector del modo de aprobación en la fila de controles del cuadro de mensaje. Define si las herramientas piden permiso, si las lecturas se ejecutan sin preguntar, si se confía en esta sesión o si todo se aprueba automáticamente (YOLO).",
       "composer_voice_input": "El botón del micrófono en el cuadro de mensaje. Púlsalo para dictar en lugar de escribir; en una pantalla táctil alterna entre el teclado y mantener pulsado para hablar."
     }
+  },
+  "queueActions": {
+    "stillStopping": "Aún se está deteniendo…",
+    "teardownPending": "El turno anterior aún se está deteniendo. Tu mensaje está en la cola y se enviará cuando se detenga."
   }
 }

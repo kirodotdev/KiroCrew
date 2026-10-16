@@ -79,6 +79,7 @@ interface QueueProps {
   onInterrupt: (id: string) => void
   onEdit: (id: string, content: string) => void
   onReorder: (id: string, direction: 'next' | 'later') => void
+  interruptBlockedTitle?: string | null
 }
 let queueProps: QueueProps | null = null
 vi.mock('../components/QueueStack', async (importOriginal) => {
@@ -87,7 +88,7 @@ vi.mock('../components/QueueStack', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../components/QueueStack')>()
   return {
     ...actual,
-    default: (props: QueueProps) => { queueProps = props; return null },
+    default: (props: QueueProps) => { queueProps = props; return <div data-testid="queue-stack" /> },
     SubagentDeliveryProgress: () => null,
   }
 })
@@ -859,6 +860,24 @@ describe('ChatPage — queued message actions', () => {
     act(() => { queueProps!.onInterrupt('q2') })
     expect(apiMocks.interruptSlot).toHaveBeenCalledWith('chat-1', 'q2')
     expect(apiSpy('cancelQueuedMessage')).not.toHaveBeenCalled()
+  })
+
+  it('keeps the informational hold beside the queue and clears it when teardown settles', async () => {
+    const { store } = await renderWithQueue()
+    apiSpy('interruptSlot').mockResolvedValue({ ok: true, queue_held: true })
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotPatch', payload: { slots: [{ key: 'chat-1', stop_teardown: true }] } }) })
+    await act(async () => { queueProps!.onInterrupt('q2') })
+    const notice = await screen.findByTestId('queue-interrupt-notice')
+    expect(notice).toHaveAttribute('role', 'status')
+    expect(notice.querySelector('[data-tone="info"]')).not.toBeNull()
+    expect(notice.querySelector('.lucide-hourglass')).not.toBeNull()
+    expect(notice.nextElementSibling).toHaveAttribute('data-testid', 'queue-stack')
+    expect(notice).toHaveTextContent('Your message is queued and will send once it stops.')
+    expect(queueProps!.interruptBlockedTitle).toBe('Still stopping…')
+    act(() => { store.dispatch({ type: 'dashboard/sseSlotPatch', payload: { slots: [{ key: 'chat-1', stop_teardown: false }] } }) })
+    expect(screen.queryByTestId('queue-interrupt-notice')).not.toBeInTheDocument()
+    expect(queueProps!.interruptBlockedTitle).toBeNull()
+    expect(apiMocks.interruptSlot).toHaveBeenCalledTimes(1)
   })
 
   it('editing a queued card trims and commits, and refuses a blank edit', async () => {

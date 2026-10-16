@@ -31,6 +31,8 @@ class _FakeSlot:
         self._stop_generation = 0
         self._stop_event_id = None
         self._stop_escalated_card_id = None
+        self.task = None
+        self._stop_teardown_task = None
         self._queue: list[dict] = []
         self._pending_steers: list = []
         self._steer_delivery_ids: dict = {}

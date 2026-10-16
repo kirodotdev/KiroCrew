@@ -50,6 +50,7 @@ _TO_DICT_KEYS = (
     # pair to match an idle row to its `chat_done` and history reply.
     "turn",
     "turn_gen",
+    "stop_teardown",
     "compacting",
     "stop_declined",
     "queue_depth",
@@ -313,5 +314,26 @@ def test_to_dict_key_order_and_single_source_scan(monkeypatch) -> None:
     assert calls == [slot]
     assert payload["turn"] == slot._turn_generation
     assert payload["turn_gen"] == chunk_generation()
+    assert payload["stop_teardown"] is False
     assert payload["source_links"] == [link]
     assert payload["source_links_total"] == 1
+
+
+def test_to_dict_reads_current_stop_teardown_ownership() -> None:
+    slot = _ChatSlot("teardown-projection")
+    teardown = SimpleNamespace(done=lambda: False)
+    slot._stop_teardown_task = teardown
+
+    payload = slot.to_dict()
+    assert payload["stop_teardown"] is True
+    assert payload["running"] is False
+    assert slot.running is True
+
+    teardown.done = lambda: True
+    assert slot.to_dict()["stop_teardown"] is False
+    assert slot.running is False
+
+    slot._stop_teardown_task = SimpleNamespace(done=lambda: False)
+    assert slot.to_dict()["stop_teardown"] is True
+    slot._stop_teardown_task = None
+    assert slot.to_dict()["stop_teardown"] is False

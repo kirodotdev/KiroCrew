@@ -57,6 +57,7 @@ from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
+from kiro_crew.testing.wait import await_until
 from kiro_crew.trust_patterns import (
     GrantDeadline,
     base_trust_patterns,
@@ -3416,6 +3417,59 @@ class TestFinishQueueCycle:
         assert slot._synthesis_completion_turns == 0
         assert slot._synthesis_recheck is None
         assert slot.messages[-1]["role"] == "done"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("during_probe", [False, True])
+    async def test_synthesis_recheck_waits_for_stop_teardown(
+        self, tmp_path, monkeypatch, during_probe
+    ):
+        state, slot = _state(tmp_path), _slot()
+        state._slots[slot.key] = slot
+        slot._pending_synthesis = True
+        retiring = asyncio.create_task(asyncio.Event().wait())
+        slot._stop_teardown_task = None if during_probe else retiring
+        scheduled = []
+        timer = MagicMock()
+        loop = asyncio.get_running_loop()
+        real_call_later = loop.call_later
+
+        def call_later(delay, callback, *args, **kwargs):
+            if (
+                delay == chat_runner._SYNTHESIS_RECHECK_SECS
+                and getattr(callback, "__module__", None) == chat_runner.__name__
+                and getattr(callback, "__qualname__", None)
+                == "_arm_synthesis_recheck.<locals>._fire"
+            ):
+                scheduled.append(callback)
+                return timer
+            return real_call_later(delay, callback, *args, **kwargs)
+
+        monkeypatch.setattr(loop, "call_later", call_later)
+
+        async def read_gate(*args):
+            slot._stop_teardown_task = retiring
+            return chat_runner.SYNTHESIS_CLEAR
+
+        gate = AsyncMock(side_effect=read_gate)
+        monkeypatch.setattr(chat_runner, "synthesis_fire_verdict", gate)
+        launch = MagicMock()
+        monkeypatch.setattr(chat_runner, "_launch_synthesis", launch)
+        try:
+            chat_runner._arm_synthesis_recheck(state, slot)
+            scheduled.pop()()
+            await await_until(asyncio.gather(*state._background_tasks))
+            launch.assert_not_called()
+            assert gate.await_count == int(during_probe)
+            assert slot._pending_synthesis
+            retiring.cancel()
+            await await_until(asyncio.gather(retiring, return_exceptions=True))
+            scheduled.pop()()
+            await await_until(asyncio.gather(*state._background_tasks))
+            launch.assert_called_once_with(state, slot)
+            assert gate.await_count == 1 + int(during_probe)
+        finally:
+            retiring.cancel()
+            await await_until(asyncio.gather(retiring, return_exceptions=True))
 
     @pytest.mark.asyncio
     async def test_the_outage_re_check_launches_the_synthesis_whatever_the_count(self, tmp_path):
