@@ -635,7 +635,23 @@ def _url_payload_command(n: int) -> str:
 #: was relaxed.
 #: Raised by 3, from 33,720, for the ``kas-mcp-launch`` leaf on the read+write floor
 #: (``paths_lists``): one entry and its two-line note; the floor only grows.
-_PACKAGE_LINE_BUDGET = 33_723
+#: Raised by 367, from 33,723, for gh's body-from-file flags in ``gh_file_body``
+#: (`--input`, `--field k=@f`, `release --notes-file`): one matcher keyed to a plain
+#: `gh` program word, reading each command's argv through ``shell_commands`` (so a
+#: redirection, a leading one included, is never the program word); gh's own flag
+#: parsing (short-flag clusters, `release download -p`); its catalog row, kept out of
+#: the regex tier; and the ``is_denied`` floor that runs the same matcher for script
+#: hooks. Its argv comes from ``read_commands(heredoc_bodies=True)``, an opt-in reader
+#: mode (``_heredoc_tag``, ``_heredoc_end``, ``_body_commands``) that skips each
+#: here-document body in one pass, reads an unquoted body's substitutions once with its
+#: quotes literal, and reads on when no line closes a body. The default read, used by
+#: the ``rm`` floor, is unchanged. A ``<<`` after an unclosed ``((``, an unquoted-tag
+#: one inside ``$(…)``, or a span that closes inside a body makes the matcher also read
+#: the whole command as commands (fail closed). Each command's lines are indexed once
+#: (``_line_index``), so a body's end is a lookup, not a rescan. A ``$'…'`` word is
+#: decoded by the shared ANSI-C decoder before it is judged. Span closes are kept in a
+#: heap and their scans share one linear budget. No pattern moved.
+_PACKAGE_LINE_BUDGET = 34_090
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second

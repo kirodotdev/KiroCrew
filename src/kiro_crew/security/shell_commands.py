@@ -15,6 +15,7 @@ that command keeps one :data:`SUBST` step in its place.
 
 from __future__ import annotations
 
+import bisect
 import functools
 from contextvars import ContextVar
 from typing import NamedTuple
@@ -147,8 +148,82 @@ def _is_fd_prefix(raw: str) -> bool:
     return raw[:1] == "{" and raw[-1:] == "}" and name.isidentifier() and name.isascii()
 
 
+def _heredoc_tag(text: str, i: int) -> "tuple[str, bool]":
+    """The here-document delimiter word at *text[i:]* (after blanks), with quotes and
+    escapes removed, and whether any of it was quoted (then the body is not expanded)."""
+    while i < len(text) and (text[i] in " \t" or text.startswith("\\\n", i)):
+        i += 2 if text[i] == "\\" else 1  # a live ``\<newline>`` joins lines
+    tag: list[str] = []
+    quoted = False
+    while i < len(text) and text[i] not in " \t\n;&|()<>":
+        ch = text[i]
+        if ch == "$" and text[i + 1 : i + 2] in ("'", '"'):
+            i += 1
+        elif text.startswith("\\\n", i):
+            i += 2
+        elif ch in "'\"":
+            close = text.find(ch, i + 1)
+            close = len(text) if close < 0 else close
+            part = text[i + 1 : close]  # single quotes keep ``\<newline>``; double drop it
+            tag.append(part.replace("\\\n", "") if ch == '"' else part)
+            quoted, i = True, close + 1
+        elif ch == "\\":
+            tag.append(text[i + 1 : i + 2])
+            quoted, i = True, i + 2
+        else:
+            tag.append(ch)
+            i += 1
+    return "".join(tag), quoted
+
+
+@functools.lru_cache(maxsize=4)
+def _line_index(text: str) -> "dict[tuple[str, bool], list[int]]":
+    """Line ends keyed by (line, False) and (line less leading tabs, True), built once."""
+    index: "dict[tuple[str, bool], list[int]]" = {}
+    start = 0
+    for line in text.split("\n"):
+        index.setdefault((line, False), []).append(start + len(line))
+        index.setdefault((line.lstrip("\t"), True), []).append(start + len(line))
+        start += len(line) + 1
+    return index
+
+
+def _heredoc_end(text: str, start: int, tag: str, strip_tabs: bool) -> int:
+    """Index past the first line at or after line start *start* equal to *tag*, or -1."""
+    ends = _line_index(text).get((tag, strip_tabs), [])
+    at = bisect.bisect_left(ends, start)
+    return min(ends[at] + 1, len(text)) if at < len(ends) else -1
+
+
+def _body_commands(body: str, base: int, track: bool) -> "list[ShellCommand]":
+    """The commands an expanding here-document body runs: each ``$(…)`` and backtick
+    body, read once. Quotes in the body are literal text, so only ``\\`` escapes."""
+    out: list[ShellCommand] = []
+    i = 0
+    while i < len(body):
+        if body[i] == "\\":
+            i += 2
+        elif body.startswith("$(", i):
+            close, proven = _shell._matching_close_paren(body[i + 2 :], 0)
+            inner = body[i + 2 : i + 2 + (close - 1 if proven else close)]
+            out.extend(read_commands(inner, track, base + i + 2, heredoc_bodies=True))
+            i += 2 + close
+        elif body[i] == "`":
+            closer = _shell._backtick_closer(body, i + 1)
+            end = len(body) if closer < 0 else closer
+            out.extend(read_commands(body[i + 1 : end], track, base + i + 1, heredoc_bodies=True))
+            i = end + 1
+        else:
+            i += 1
+    return out
+
+
 def read_commands(
-    command: str, track: bool = True, _base: int = 0, nested: bool = True
+    command: str,
+    track: bool = True,
+    _base: int = 0,
+    nested: bool = True,
+    heredoc_bodies: bool = False,
 ) -> "list[ShellCommand]":
     """*command* as the commands a shell would run, in reading order.
 
@@ -157,6 +232,11 @@ def read_commands(
     tracking reads the text both ways; *nested* False skips the commands of a quoted
     substitution body (its :data:`SUBST` step stays). The list is never empty: the last
     command holds whatever follows the last separator.
+
+    By default the read stops at a live ``<<``. With *heredoc_bodies* it reads ``<<`` /
+    ``<<-`` as a redirection, skips each body once its line ends, and resumes after it;
+    an unquoted delimiter's body adds the commands of its substitutions. A body no line
+    closes is not skipped, so the rest is still read as commands.
     """
     out: list[ShellCommand] = []
     steps: list[ShellStep] = []
@@ -164,6 +244,8 @@ def read_commands(
     in_redirect = False
     expansion: list[str] = []  # closers of open ``${…}`` / ``$[…]``
     pos, state = 0, 0
+    pending: "list[tuple[str, bool, bool]]" = []  # (tag, strip tabs, expands) per ``<<``
+    dash_at = -1  # absolute offset of the ``-`` of ``<<-``, kept out of the words
 
     def cut(separator: str) -> None:
         nonlocal steps
@@ -181,9 +263,16 @@ def read_commands(
             dollars = dollars + 1 if step.active and step.char == "$" else 0
             live_syntax = step.active and not expansion
             near = text[max(step.offset - 1, 0) : step.offset + 3]  # ``<<<`` takes one word
+            if pos + step.offset == dash_at:
+                continue
             if live_syntax and text.startswith("<<", step.offset) and "<<<" not in near:
-                stop = "<<"
-                break
+                if not heredoc_bodies:
+                    stop = "<<"
+                    break
+                strip = text.startswith("<<-", step.offset)
+                dash_at = pos + step.offset + 2 if strip else -1
+                tag, quoted = _heredoc_tag(text, step.offset + 2 + strip)
+                pending.append((tag, strip, not quoted))
             if live_syntax and step.char == "#" and _shell._opens_comment(text, step.offset):
                 newline = text.find("\n", step.offset)  # a comment's quotes open nothing
                 resume = len(command) if newline < 0 else pos + newline
@@ -193,7 +282,8 @@ def read_commands(
                 body = text[step.offset + 2 :]
                 close, proven = _shell._matching_close_paren(body, 0)
                 if nested:
-                    out.extend(read_commands(body[: close - 1 if proven else close], track, at + 2))
+                    inner = body[: close - 1 if proven else close]
+                    out.extend(read_commands(inner, track, at + 2, heredoc_bodies=heredoc_bodies))
                 end = pos + step.offset + 2 + close
                 steps.append(ShellStep(at, _base + end, SUBST, SUBST, 2, False, False))
                 in_redirect = False
@@ -205,7 +295,8 @@ def read_commands(
                 closed = closer != -1
                 end = closer + 1 if closed else len(text)
                 if nested:
-                    out.extend(read_commands(text[step.offset + 1 : end - closed], track, at + 1))
+                    inner = text[step.offset + 1 : end - closed]
+                    out.extend(read_commands(inner, track, at + 1, heredoc_bodies=heredoc_bodies))
                 steps.append(ShellStep(at, _base + pos + end, SUBST, SUBST, 2, False, False))
                 in_redirect = False
                 resume, resume_state = pos + end, 2
@@ -224,6 +315,25 @@ def read_commands(
             elif step.active and step.char in _CUT_CHARS:
                 cut(step.char)
                 in_redirect = False
+                if step.char == "\n" and pending:
+                    # The bodies start on the next line, in ``<<`` order; skip them all
+                    # only when every one is closed, else read on (fail closed).
+                    start, bodies = step.offset + 1, []
+                    for tag, strip, expands in pending:
+                        end = _heredoc_end(command, pos + start, tag, strip) - pos  # one index
+                        if end < 0:
+                            break
+                        bodies.append((start, end, expands))
+                        start = end
+                    if len(bodies) == len(pending):
+                        for begin, end, expands in bodies:
+                            if expands:
+                                body = text[begin:end]
+                                out.extend(_body_commands(body, _base + pos + begin, track))
+                        pending = []
+                        resume = pos + start
+                        break
+                    pending = []
                 continue
             elif step.active and step.char in "<>":
                 redirect = not in_redirect  # a second operator char (``>>``) continues it

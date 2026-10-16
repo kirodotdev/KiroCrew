@@ -35,12 +35,16 @@ PKG = Path(display_battery.__file__).resolve().parent.parent
 NOT_RULES: dict[str, str] = {
     "kiro_crew.sel": "SEL audit records; the battery never writes one (trace below)",
     "kiro_crew.security.denied_rules": "bash-audit symbols exfil re-uses; never called by the battery",
+    "kiro_crew.security.shell_normalizer": (
+        "shell quote reader for exfil's bash deny gate; never called by the battery"
+    ),
     "kiro_crew.config": "operator OAuth file, banner-only (test_display_redaction_source_guard)",
     "kiro_crew.config.loader": "same; plus the owner-view switch path, which turns storage off",
     "kiro_crew.platform.context": "exempt-host source; its output, the host set, is in every tag",
     "kiro_crew.atomic_write": "the owner-view switch writer; never reached from the battery",
     "kiro_crew._facade_mirror": "mirror facade glue: runs at import and on attribute access only",
     "kiro_crew.security.exfil_bash": "the bash egress gate; the battery never calls it",
+    "kiro_crew.security.gh_file_body": "the gh body-from-file matcher; the battery never calls it",
     "kiro_crew.security.shell_commands": "the bash gates' command reader; the battery never calls it",
 }
 
