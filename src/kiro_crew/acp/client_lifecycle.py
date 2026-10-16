@@ -682,6 +682,9 @@ def _reset_state(self: AcpClient) -> None:
     # replacement process, so release it with the oracle it sampled into.
     self._retire_liveness_state()
     self._session_id = None
+    # The next session is opened (or reloaded) on a new process, and which
+    # pictures its conversation carries is not known here.
+    self._forget_sent_images()
     # The launches this record holds died with the process whose harness
     # started them (a backgrounded command or Workflow runs in that
     # process's own tree). Carrying it across a respawn would grant the

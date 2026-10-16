@@ -240,7 +240,12 @@ from kiro_crew.acp.mcp_session_report import ERROR_CAP as MCP_REPORT_ERROR_CAP  
 from kiro_crew.acp.mcp_session_report import NAME_CAP as MCP_REPORT_NAME_CAP  # noqa: F401
 from kiro_crew.acp.mcp_session_report import McpSessionReport, sanitize_sink_text  # noqa: F401
 from kiro_crew.acp.mcp_startable import PrunedServer, prune_unstartable  # noqa: F401
-from kiro_crew.acp.prompt_blocks import build_prompt_blocks
+from kiro_crew.acp.prompt_blocks import (
+    SentImageLedger,
+    StagedImages,
+    build_prompt_blocks,
+    command_drops_pictures,
+)
 from kiro_crew.acp.runtime_models import (  # noqa: F401
     DEFAULT_MODEL,
     _extract_advisory_detail,
@@ -1213,6 +1218,13 @@ class AcpClient:
         # _maybe_fire_post_tool_hooks.
         self._observed_tool_calls: dict[str, tuple[str, str]] = {}
         self._last_stop_reason: str = ""
+        # The pictures this client's current session already holds (see
+        # AcpSessionHandle), and the request id of the prompt whose inlined
+        # pictures are staged, with that prompt's staging: only that prompt's
+        # answer commits them.
+        self._sent_images = SentImageLedger()
+        self._sent_images_req: int | None = None
+        self._sent_images_staged: StagedImages | None = None
         # Dynamic config from ACP session/new response and config_option_update notifications.
         # Only the effort configOptions are consumed (model lists come from
         # _capture_available_models, which parses the real dict-shaped `models`).
@@ -3305,6 +3317,12 @@ class AcpClient:
                 ):
                     self.last_prompt_stats.event_count -= 1
                     continue
+                if action == "complete" and req_id == getattr(self, "_sent_images_req", None):
+                    # The backend answered the prompt whose pictures were staged,
+                    # so its conversation now holds them.
+                    staged: StagedImages | None = getattr(self, "_sent_images_staged", None)
+                    if staged is not None:
+                        staged.commit()
                 # Single yield chokepoint: everything downstream (dispatch,
                 # chat runner, a human answering an approval card) runs while
                 # this generator is suspended here, so the whole gap is
@@ -3818,6 +3836,9 @@ class AcpClient:
                     summary = compaction_failure_detail(params)
                 yield AcpEvent(kind=EVENT_COMPACTION_STATUS, text=status_type, title=summary)
             elif action == "clear":
+                # The cleared conversation holds none of the pictures it was
+                # sent, so the next prompt naming one must send it again.
+                self._forget_sent_images()
                 yield AcpEvent(kind=EVENT_CLEAR_STATUS)
             elif action == "subagent_list":
                 params = msg.params or {}
@@ -4117,21 +4138,42 @@ class AcpClient:
 
     # ── Private Helpers ──
 
+    def _forget_sent_images(self) -> None:
+        """The conversation has dropped the pictures it was sent (a completed
+        compaction summarized it, a clear wiped it, or the session is
+        gone): a later prompt naming one inlines it again."""
+        sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+        if sent_images is not None:
+            sent_images.forget()
+
     async def _send_prompt(self, message: str, *, allow_image: bool = True) -> int:
         await self._settle_orphan_steers()
         # Shared with AcpSessionHandle.prompt via prompt_blocks so the two paths
         # cannot drift.
-        return await self._send_request(
-            METHOD_PROMPT,
-            {
-                "sessionId": self._session_id,
-                # Offloaded: see the note in session_handle.prompt -- image
-                # reads and base64 encoding must not block the event loop.
-                "prompt": await asyncio.to_thread(
-                    build_prompt_blocks, message, allow_image=allow_image
-                ),
-            },
+        sent_images: SentImageLedger | None = getattr(self, "_sent_images", None)
+        if message.lstrip().startswith("/") and command_drops_pictures(
+            parse_slash_command(message)[0],
+            getattr(self, "backend", None),
+            compacts_inline=getattr(self, "backend", None) in ACP_BACKENDS_INLINE_COMPACTION,
+        ):
+            # This backend compacts or clears inside the turn, often with no
+            # status frame to say so, and drops the pictures: forget them
+            # before the turn.
+            self._forget_sent_images()
+        # This prompt's own staging, so a build abandoned on its worker thread
+        # can write only to a staging nothing commits.
+        staged = sent_images.staging() if sent_images is not None else None
+        # Offloaded: see the note in session_handle.prompt -- image reads and
+        # base64 encoding must not block the event loop.
+        blocks = await asyncio.to_thread(
+            build_prompt_blocks, message, allow_image=allow_image, sent_images=staged
         )
+        req_id = await self._send_request(
+            METHOD_PROMPT, {"sessionId": self._session_id, "prompt": blocks}
+        )
+        self._sent_images_req = req_id
+        self._sent_images_staged = staged
+        return req_id
 
     async def _read_prompt_response(self, req_id: int, timeout: float) -> str:
         output: list[str] = []

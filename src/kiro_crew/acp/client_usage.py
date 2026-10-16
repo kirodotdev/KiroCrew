@@ -182,6 +182,7 @@ def _handle_compaction_status(self: AcpClient, msg: JsonRpcMessage) -> None:
     elif s_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
 
 
 def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
@@ -221,9 +222,16 @@ def _claude_compaction_event(self: AcpClient, chunk: str) -> AcpEvent | None:
         return None
     logger.info("Compaction status (claude): %s", status_type)
     self._claude_compaction_pending = status_type == "started"
+    if status_type == "started":
+        # An automatic claude compaction sends no terminal, and only a turn
+        # that ends naturally settles it as completed. Forget the pictures
+        # now, so one that is then cut off or never settled costs one more
+        # copy of a picture, never a lost one.
+        self._forget_sent_images()
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
     elif status_type == "failed":
         logger.warning("Compaction failed (claude): %s", detail or "no reason reported")
         # Arm the bounded post-failure wait, exactly as the kiro-cli path
@@ -289,6 +297,7 @@ def _codex_compaction_event(self: AcpClient, msg: JsonRpcMessage) -> AcpEvent | 
     if status_type == "completed":
         self._compaction_failed_at = None
         self.last_prompt_stats.reset_after_compaction()
+        self._forget_sent_images()
     # No title: the adapter ships no summary with either frame, and an empty
     # string is what every consumer already renders for "compacted, no
     # summary offered".
@@ -385,6 +394,7 @@ def _settle_claude_compaction(self: AcpClient, reason: str) -> AcpEvent | None:
     logger.info("Compaction status (claude): completed (synthesized at turn end)")
     self._compaction_failed_at = None
     self.last_prompt_stats.reset_after_compaction()
+    self._forget_sent_images()
     # ``synthesized`` marks this terminal as manufactured at the turn's end
     # rather than observed mid-turn. It arrives AFTER every text chunk of the
     # turn, so a consumer that treats a compaction terminal as a segment

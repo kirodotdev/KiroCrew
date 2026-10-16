@@ -106,6 +106,7 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_extract_tool_event": ("function", False, "e64128661dfa", "client_tool_events"),
     "_foreign_mcp_identity": ("function", False, "2dfacffa6279", "client_permissions"),
     "_foreign_settings_owner": ("function", False, "0d96e8ab9b17", "client_seed_ownership"),
+    "_forget_sent_images": ("function", False, "b60c5fea256e", "client"),
     "_fork_session": ("function", True, "bca802976336", "client"),
     "_goose_session_mcp_servers": ("function", False, "f5423acdeebc", "client_mcp_array"),
     "_guard_unresolved_mcp_refs": ("function", False, "779b51571c73", "client_mcp_array"),
