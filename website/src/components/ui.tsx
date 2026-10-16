@@ -394,7 +394,8 @@ export function FilteredEmpty({ query, onClear, noun, testId = 'filtered-empty' 
  */
 export function PanelSectionHeader({ label, count, trailing, className }: {
   label: string
-  count?: number
+  /** A number, or a translated count string such as a capped `14+`. */
+  count?: number | string
   trailing?: React.ReactNode
   className?: string
 }) {
