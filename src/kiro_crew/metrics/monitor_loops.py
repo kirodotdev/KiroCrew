@@ -195,6 +195,9 @@ _PASSED_THROUGH_REASONS = (
     loop_model.STOP_SENTINEL_REASON,
     loop_model.MONITOR_TERMINAL_REASON,
     loop_model.AUTONUDGE_STOP_REASON,
+    # The agent's own ``autonudge_stop`` / ``monitor_stop`` on a legacy loop: a
+    # deliberate stop, so it must not read as an unknown ``other``.
+    loop_model.AGENT_STOP_REASON,
     loop_model.SESSION_START_FAILURE_REASON,
     loop_model.CONSECUTIVE_FAILURE_REASON,
     loop_model.STRUCTURAL_TERMINAL_REASON,
@@ -269,6 +272,7 @@ ENDED_BY_VALUES: tuple[str, ...] = (
 ENDED_BY: dict[str, str] = {
     # The agent declared the goal met.
     "autonudge_stop": "agent_stop",
+    "agent_stop": "agent_stop",
     "stop_sentinel": "agent_stop",
     # A person stopped it, or removed what it ran on.
     "user_stop": "user_stop",

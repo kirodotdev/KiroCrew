@@ -511,6 +511,7 @@ if TYPE_CHECKING:  # every owner-defined name in _EXPORTS, for type checkers and
 
 if TYPE_CHECKING:  # names it serves from outside the family, from their homes
     from kiro_crew.autonudge import (  # noqa: F401
+        AGENT_STOP_REASON,
         APPROVAL_STALL_REASON,
         AUTONUDGE_STOP_REASON,
         CONSECUTIVE_FAILURE_REASON,
