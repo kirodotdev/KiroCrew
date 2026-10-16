@@ -481,7 +481,8 @@ async def notify_turn_start(
     when the turn is cancelled part way through the start subscribers.
     """
     binding = active_binding(channel_id, thread_ts)
-    if binding is None:
+    if binding is None or binding.archived_at:
+        # An archived channel takes no turns: its session is a plain chat now.
         return False
     if on_bound is not None:
         on_bound()
