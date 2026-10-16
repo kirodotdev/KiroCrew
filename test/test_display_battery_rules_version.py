@@ -35,6 +35,9 @@ PKG = Path(display_battery.__file__).resolve().parent.parent
 NOT_RULES: dict[str, str] = {
     "kiro_crew.sel": "SEL audit records; the battery never writes one (trace below)",
     "kiro_crew.security.denied_rules": "bash-audit symbols exfil re-uses; never called by the battery",
+    "kiro_crew.security.shell_normalizer": (
+        "shell quote reader for exfil's bash deny gate; never called by the battery"
+    ),
     "kiro_crew.config": "operator OAuth file, banner-only (test_display_redaction_source_guard)",
     "kiro_crew.config.loader": "same; plus the owner-view switch path, which turns storage off",
     "kiro_crew.platform.context": "exempt-host source; its output, the host set, is in every tag",

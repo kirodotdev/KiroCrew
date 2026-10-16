@@ -533,7 +533,7 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         ),
     ),
     # ── Floor-PRIMARY exfil rules ──
-    # Enforcement for these seven is the always-on gate
+    # Enforcement for these eight is the always-on gate
     # (``audit_bash_exfiltration`` / ``_check_imds_access``), not the regex tier:
     # the gate sees flag spellings and IP encodings no single human-auditable
     # regex can cover. Each ``pattern`` below is a readable SUBSET that exists so
@@ -584,6 +584,17 @@ BUILTIN_DENIED_RULES: list[DeniedCommandRule] = [
         description=(
             "Blocks `wget --post-file`, which posts the contents of a local file to a remote "
             "endpoint."
+        ),
+    ),
+    DeniedCommandRule(
+        id="data-exfil-gh-file-body",
+        pattern="^\\s*gh\\s+api\\s+[^\\s'\"-]\\S*(\\s+-[xX]\\s*[a-zA-Z]+)?\\s+--input[= ][^-\\s'\"]\\S*\\s*$",
+        category="credential-exfil",
+        description=(
+            "Blocks `gh` sending a request body read from a LOCAL FILE: `gh api --input <file>`, "
+            "`--field k=@<file>`, and `gh release --notes-file <file>`. Stdin (`--input -`, "
+            "`k=@-`) is not blocked. Separate from the curl rows, so turning it off leaves "
+            "`curl -d @file` blocked."
         ),
     ),
     DeniedCommandRule(
@@ -1679,6 +1690,14 @@ _SELF_PROTECTION_FLOOR_BY_ID: dict[str, str] = {
     r.id: r.pattern for r in BUILTIN_DENIED_RULES if r.id in _SELF_PROTECTION_FLOOR_RULE_IDS
 }
 _SELF_PROTECTION_FLOOR_PATTERNS: frozenset[str] = frozenset(_SELF_PROTECTION_FLOOR_BY_ID.values())
+
+# ``data-exfil-gh-file-body`` is enforced ONLY by ``exfil.audit_bash_exfiltration``,
+# which reads shell words. Its ``pattern`` is a readable subset for Settings and is
+# kept out of the regex tier, which reads raw lines and would refuse the same text
+# inside a quoted value or a here-document body.
+_GH_FILE_BODY_PATTERN: str = next(
+    r.pattern for r in BUILTIN_DENIED_RULES if r.id == "data-exfil-gh-file-body"
+)
 
 # The self-management SUBCOMMAND floors named in this set -- restart, update, file-delivery
 # approve, gateway restart, cloud <destructive> -- have NO catalog row and NO opt-out.  A regex

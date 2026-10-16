@@ -2338,6 +2338,15 @@ through to the unchanged denial — including the reporter's multi-statement
 diagnostic loop, which needs `$(…)` and is not carved out; its individual
 `date` conversion run on its own is.
 
+gh's own body-from-file flags (`data-exfil-gh-file-body`) are read on shell
+words, only where `gh` is a command's first word: `gh api|repo --input <file>`,
+`--field k=@<file>`, `gh release --notes-file <file>`. A known option's value is
+data, and a here-document body is not a command. Stdin (`-`, `/dev/stdin`,
+`/dev/fd/N`, `<( … )`, `k=@-`) is allowed, so a pipe still carries a file: the
+row is friction, not containment. The row's `pattern` is a readable subset kept
+out of the regex tier (`_GH_FILE_BODY_PATTERN`); the gate alone enforces it.
+Quote state and here-document tags come from `shell_normalizer`'s shared reader.
+
 ### SEL Forward Callback (`sel.py`)
 
 `set_forward_callback()` enables centralized log integration (basin/ktap). Events are redacted via `redact()` before forwarding to strip credentials and exfiltration URLs from string fields. Callback failures are logged at debug level (never silently swallowed).

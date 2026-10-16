@@ -1257,6 +1257,8 @@ def is_denied(
     # under backtracking and are already enforced by the ``_is_git_publish`` floor
     # below (see ``_GIT_PUBLISH_RULE_PATTERNS``).
     regex_patterns = [p for p in regex_patterns if p not in _rules._GIT_PUBLISH_RULE_PATTERNS]
+    # Enforced by the exfil gate alone: see ``_GH_FILE_BODY_PATTERN``.
+    regex_patterns = [p for p in regex_patterns if p != _rules._GH_FILE_BODY_PATTERN]
     # The two self-protection rules get an ADDITIONAL argv-structural floor
     # below, for the reason documented on ``_SELF_PROTECTION_FLOOR_PATTERNS``:
     # only a tokenized view can tell ``kirocrew "token"`` from

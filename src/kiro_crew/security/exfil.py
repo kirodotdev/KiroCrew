@@ -44,6 +44,7 @@ from .redaction import (
     _text_contains_bare_secret,
     redact_credentials,
 )
+from .shell_normalizer import _heredoc_marker, _iter_shell_chars
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -2106,6 +2107,220 @@ def _data_at_carveout_allows(command: str) -> bool:
     return words[0] in _CARVEOUT_VERBS
 
 
+# gh reads a request body from a LOCAL FILE through flags the substring table
+# above does not name: `gh api --input <file>`, `--field k=@<file>`, and
+# `gh release create|edit --notes-file <file>` (`-F <file>`). They are matched on
+# shell words, and only where `gh` is a command's first word, so text that only
+# mentions a flag (`echo …`, `grep …`, a later command's own `--input`) is left
+# alone. Stdin (`-`, `k=@-`) names no file and stays allowed. `-f`/`--raw-field`
+# never reads a file.
+_GH_FILE_BODY_RULE = "data-exfil-gh-file-body"
+_GH_FILE_BODY_SUBCOMMANDS = frozenset({"api", "repo", "release"})
+#: gh global flags that take the next word as their value.
+_GH_VALUE_FLAGS = frozenset({"-R", "--repo", "--hostname"})
+#: Per subcommand, the gh options whose next word is a plain value (gh's own
+#: flag tables; a short letter means different things per subcommand: `-d` is
+#: `repo --description` but `release --draft`).
+_GH_VALUE_OPTIONS: "dict[str, frozenset[str]]" = {
+    "api": _GH_VALUE_FLAGS
+    | frozenset(
+        {"-X", "--method", "-H", "--header", "-f", "--raw-field", "-q", "--jq"}
+        | {"-t", "--template", "-p", "--preview", "--cache"}
+    ),
+    "repo": _GH_VALUE_FLAGS
+    | frozenset(
+        {"-d", "--description", "-h", "--homepage", "--add-topic", "--remove-topic"}
+        | {"--default-branch", "--visibility", "-g", "--gitignore", "-l", "--license"}
+        | {"-t", "--team", "-p", "--template", "-s", "--source", "-r", "--remote"}
+        | {"-u", "--upstream-remote-name", "--fork-name", "-b", "--branch"}
+    ),
+    "release": _GH_VALUE_FLAGS
+    | frozenset(
+        {"-t", "--title", "-n", "--notes", "--target", "--tag", "--notes-start-tag"}
+        | {"--discussion-category", "-L", "--limit", "-O", "--output", "--pattern"}
+        | {"-D", "--dir", "-A", "--archive", "-q", "--jq", "-T", "--template"}
+    ),
+}
+#: Bare characters that end a simple command.
+_COMMAND_ENDS = ";&|()\n"
+
+
+def _skip_heredoc_bodies(command: str, pos: int, delimiters: "list[str]") -> int:
+    """Index just past the here-document bodies that start at *pos*."""
+    for delimiter in delimiters:
+        while pos < len(command):
+            end = command.find("\n", pos)
+            end = len(command) if end == -1 else end
+            line, pos = command[pos:end], end + 1
+            if line.lstrip("\t") == delimiter:
+                break
+    return pos
+
+
+def _shell_commands(command: str) -> "list[list[str]]":
+    """*command*'s simple commands, each as the words its program receives.
+
+    Quote state comes from :func:`shell_normalizer._iter_shell_chars`, so a
+    quoted `|`, `;` or `--input` stays inside its word, and here-document tags
+    from :func:`shell_normalizer._heredoc_marker`. A bare `;`, `&`, `|`, `(`,
+    `)` or newline ends a command (`>&`/`&>` are redirections). Comments and
+    here-document bodies are not commands. No expansion is evaluated: `$(gh …)`
+    is read as the words it contains.
+    """
+    commands: "list[list[str]]" = [[]]
+    word: "list[str]" = []
+    #: Per character of *word*: True where it was shell syntax (unquoted,
+    #: unescaped), so a quoted `'<<EOF'` is text, never a here-document.
+    syntax: "list[bool]" = []
+    in_word = False
+    heredocs: "list[str]" = []
+    want_tag = False
+
+    def add(ch: str, is_syntax: bool) -> None:
+        nonlocal in_word
+        word.append(ch)
+        syntax.append(is_syntax)
+        in_word = True
+
+    def end_word() -> None:
+        nonlocal in_word, want_tag
+        if in_word:
+            text = "".join(word)
+            fd = len(text) - len(text.lstrip("0123456789"))
+            operator = len(text) >= fd + 2 and syntax[fd] and syntax[fd + 1]
+            tag = _heredoc_marker(text[fd:]) if operator else None
+            if want_tag:
+                heredocs.append(text)
+                want_tag = False
+            elif tag is not None:
+                if tag:
+                    heredocs.append(tag)
+                else:
+                    want_tag = True
+            else:
+                commands[-1].append(text)
+        word.clear()
+        syntax.clear()
+        in_word = False
+
+    pos = 0
+    while pos < len(command):
+        # Restarted after a comment or a here-document body: quote characters
+        # there are text, so the state machine must not read them.
+        restart = len(command)
+        prev_state = 0
+        for step in _iter_shell_chars(command[pos:]):
+            at, ch = pos + step.offset, step.char
+            if step.state != prev_state:  # an opening or closing quote
+                if step.ansi and word and word[-1] == "$":
+                    word.pop()  # the `$` of `$'…'`
+                    syntax.pop()
+                prev_state = step.state
+                in_word = True
+                continue
+            if not step.active:
+                if step.text != "\\\n":  # `\<newline>` joins lines
+                    add(ch, False)
+                continue
+            if ch == "#" and not in_word:
+                newline = command.find("\n", at)
+                restart = len(command) if newline == -1 else newline
+                break
+            if ch == "&" and ((word and word[-1] in "<>") or command[at + 1 : at + 2] == ">"):
+                add(ch, True)
+            elif ch in _COMMAND_ENDS:
+                end_word()
+                commands.append([])
+                if ch == "\n" and heredocs:
+                    restart = _skip_heredoc_bodies(command, at + 1, heredocs)
+                    heredocs.clear()
+                    break
+            elif ch in " \t\r":
+                end_word()
+            else:
+                add(ch, True)
+        pos = restart
+    end_word()
+    return commands
+
+
+def _is_assignment(word: str) -> bool:
+    name, eq, _value = word.partition("=")
+    return bool(eq) and name.isidentifier()
+
+
+def _is_redirection(word: str) -> bool:
+    return word.lstrip("0123456789")[:1] in ("<", ">")
+
+
+def _names_stdin(value: str) -> bool:
+    """*value* reads no file on disk: empty, `-`, `/dev/stdin`, `/dev/fd/N`, or a
+    process substitution `<( … )` (its first word is the bare `<`)."""
+    return value in ("", "-", "<", "/dev/stdin") or value.startswith("/dev/fd/")
+
+
+def _gh_field_reads_file(spec: str) -> bool:
+    """A gh field spec `k=@<file>`; `k=@-` and the other stdin names are not files."""
+    _key, sep, value = spec.partition("=")
+    return bool(sep) and value.startswith("@") and not _names_stdin(value[1:])
+
+
+def _gh_file_body_flag(command: str) -> str:
+    """The gh flag in *command* that sends a local file, or ``""``."""
+    for words in _shell_commands(command):
+        i = 0
+        while i < len(words) and _is_assignment(words[i]):
+            i += 1
+        if i >= len(words) or words[i].rsplit("/", 1)[-1] != "gh":
+            continue
+        args = words[i + 1 :]
+        # Global flags and redirections may sit before the subcommand.
+        j = 0
+        while j < len(args):
+            w = args[j]
+            if w.startswith("-") or _is_redirection(w):
+                # A bare operator (`2>`) or a value flag (`-R o/r`) takes the next word.
+                bare = _is_redirection(w) and w.lstrip("0123456789").strip("<>&") == ""
+                j += 2 if w in _GH_VALUE_FLAGS or bare else 1
+            elif j and args[j - 1].startswith("-") and "=" not in args[j - 1]:
+                if w in _GH_FILE_BODY_SUBCOMMANDS:
+                    break
+                j += 1  # the value of a flag this walk does not know
+            else:
+                break
+        if j >= len(args) or args[j] not in _GH_FILE_BODY_SUBCOMMANDS:
+            continue
+        release = args[j] == "release"
+        value_options = _GH_VALUE_OPTIONS[args[j]]
+        # Global flags count (`gh --input f api …` gives api the flag); `-F` on
+        # release means `--notes-file` only after the subcommand.
+        # A known option's value (`--title '--input=x'`) is data, not a flag.
+        skip = False
+        for k, word in enumerate(args):
+            if skip:
+                skip = False
+                continue
+            skip = word in value_options
+            if release and k <= j and word.startswith("-F"):
+                continue
+            nxt = args[k + 1] if k + 1 < len(args) else ""
+            name, eq, value = word.partition("=")
+            if word.startswith("-F") and not word.startswith("--"):
+                name, value = "-F", word[2:].removeprefix("=") or nxt
+                skip = word == "-F"
+            elif not eq:
+                value = nxt
+            if name in ("--input", "--notes-file", "--field"):
+                skip = not eq
+            if name == "--input" and not _names_stdin(value):
+                return "--input"
+            if release and name in ("--notes-file", "-F") and not _names_stdin(value):
+                return "--notes-file"
+            if not release and name in ("--field", "-F") and _gh_field_reads_file(value):
+                return "--field"
+    return ""
+
+
 def audit_bash_exfiltration(
     command: str, *, enabled_ids: "frozenset[str] | None" = None
 ) -> str | None:
@@ -2163,6 +2378,10 @@ def audit_bash_exfiltration(
             if _on(matched_id):
                 return f"Blocked: command matches data-exfiltration pattern ({label})"
         continue
+    if _on(_GH_FILE_BODY_RULE) and ("gh" in lower):
+        flag = _gh_file_body_flag(command)
+        if flag:
+            return f"Blocked: command matches data-exfiltration pattern (gh {flag} from file)"
     return None
 
 

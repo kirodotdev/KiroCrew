@@ -356,7 +356,14 @@ def _url_payload_command(n: int) -> str:
 #: ``_approved_oauth_authorization_endpoint`` and the facade export. The rationale
 #: lives in the security spec, not the package. An approved endpoint gets exactly
 #: the builtin set's exemption; no pattern, threshold or pass moved.
-_PACKAGE_LINE_BUDGET = 29_492
+#:
+#: Raised again, from 29,492, for gh's body-from-file flags in ``exfil.py``
+#: (`--input`, `--field k=@f`, `release --notes-file`): a shell-word reader for
+#: the command (quotes, newlines, comments and here-documents read as bash reads
+#: them), one matcher keyed to a plain `gh` command word, and its catalog row,
+#: kept out of the regex tier (the gate alone enforces it). No existing pattern
+#: or pass moved. Quote state comes from ``shell_normalizer._iter_shell_chars``.
+_PACKAGE_LINE_BUDGET = 29_732
 
 #: Ceiling on any ONE file in the package. This is what the bound is really for --
 #: a package total says nothing about a single file growing back into a second
