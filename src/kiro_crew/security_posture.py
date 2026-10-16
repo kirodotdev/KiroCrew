@@ -2264,13 +2264,18 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "dashboard/session_control_parts/session_create.py",
         # The owners composed into dashboard/chat_runner.py: the redactor calls of the
         # runner's helpers that moved into them (deny rows, file-change snapshots, the MCP
-        # sign-in banner, native cards, tool rows, spec-hook notices, the stats footer),
-        # unchanged. Their output reaches the surfaces it reached from the runner: the
-        # call sites moved, the set of egress paths did not.
+        # sign-in banner, native cards, tool rows, spec-hook notices, the stats footer,
+        # the cross-surface legs, prompt and skill mentions, the segment flush, the
+        # eager-spawn error detail), unchanged. Their output reaches the surfaces it
+        # reached from the runner: the call sites moved, the set of egress paths did not.
         "dashboard/chat_turn/deny_chokepoints.py",
+        "dashboard/chat_turn/eager_spawn.py",
         "dashboard/chat_turn/file_changes.py",
         "dashboard/chat_turn/mcp_session.py",
         "dashboard/chat_turn/native_cards.py",
+        "dashboard/chat_turn/prompt_assembly.py",
+        "dashboard/chat_turn/recipient.py",
+        "dashboard/chat_turn/segment_flush.py",
         "dashboard/chat_turn/tool_rows.py",
         "dashboard/chat_turn/turn_spec_hooks.py",
         "dashboard/chat_turn/turn_stats.py",

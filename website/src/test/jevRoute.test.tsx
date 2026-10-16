@@ -107,11 +107,11 @@ describe('isUnpinnedModel', () => {
   })
 
   it('agrees with the gate that actually routes', () => {
-    // The Python half is `_JEV_ROUTE_AUTO_MODELS` in `dashboard/chat_runner.py`. A
+    // The Python half is `_JEV_ROUTE_AUTO_MODELS` in `dashboard/chat_turn/decisions_hooks.py`. A
     // chip keyed off a different set would say `Auto` for a turn that routed, which
     // is the one thing this pair exists to prevent.
     const runner = readFileSync(
-      join(__dirname, '../../../src/kiro_crew/dashboard/chat_runner.py'),
+      join(__dirname, '../../../src/kiro_crew/dashboard/chat_turn/decisions_hooks.py'),
       'utf8',
     )
     expect(runner).toContain('_JEV_ROUTE_AUTO_MODELS = ("auto",)')

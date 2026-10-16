@@ -914,7 +914,7 @@ treated as reachable.
 
 **Every `<mcwidget>` the agent emits becomes an artifact automatically** — no
 user gesture required. Registration happens on the backend when the assistant
-segment is finalized (`chat_runner._flush_segment` →
+segment is finalized (`chat_turn.segment_flush._flush_segment` →
 `widget_artifacts.register_widgets_off_loop`), and the record is created
 **unpinned**: it is a *record*, not a library entry. The star on a rendered
 widget is therefore a pure `pinned` flip, not a create.
