@@ -16633,6 +16633,8 @@
         "terminal_cursor_style_block": "ব্লক",
         "terminal_cursor_style_bar": "বার",
         "terminal_cursor_style_underline": "আন্ডারলাইন",
+        "terminal_copy_on_select": "নির্বাচন করলেই কপি",
+        "terminal_copy_on_select_desc": "মাউস দিয়ে টেক্সট নির্বাচন করার সঙ্গে সঙ্গে সেটি ক্লিপবোর্ডে কপি হয়। নির্বাচনের টুলবার তবুও খোলে, তাই চ্যাটে পাঠাও এক ক্লিকেই পাওয়া যায়।",
         "terminal_shell": "ডিফল্ট শেল",
         "terminal_shell_hint": "বিল্ট-ইন টার্মিনাল যে শেল চালু করে।",
         "terminal_shell_desc": "একটি সম্পূর্ণ পাথ বা PATH-এ থাকা কমান্ড। খালি থাকলে সিস্টেম ডিফল্ট ($SHELL) ব্যবহার হয়।",

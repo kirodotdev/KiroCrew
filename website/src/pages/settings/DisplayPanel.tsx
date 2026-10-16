@@ -29,6 +29,7 @@ import {
   setTerminalFontFamily,
   setTerminalFontSize,
   setTerminalCursorStyle,
+  setTerminalCopyOnSelect,
   DEFAULT_TERMINAL_FONT_SIZE,
   TERMINAL_CURSOR_STYLES,
 } from '../../hooks/useTerminalFont'
@@ -726,6 +727,15 @@ export function DisplayPanel({ basePath }: { basePath?: string } = {}) {
                     : i18nT('pages.settings.displayPanel.terminal_cursor_style_underline'),
             }))}
             onChange={v => setTerminalCursorStyle(v as (typeof TERMINAL_CURSOR_STYLES)[number])}
+          />
+          {/* Per-client like the cursor above: it writes to THIS browser's
+              clipboard, so it lives in the same localStorage store and applies
+              to every open terminal on the next selection, with no save step. */}
+          <SettingsToggle
+            label={i18nT('pages.settings.displayPanel.terminal_copy_on_select')}
+            hint={i18nT('pages.settings.displayPanel.terminal_copy_on_select_desc')}
+            checked={termFont.copyOnSelect}
+            onChange={setTerminalCopyOnSelect}
           />
           {/* Free text with commit-on-blur, mirroring the font field above: the
               gateway host's installed shells cannot be enumerated from the
