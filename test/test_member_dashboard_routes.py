@@ -295,6 +295,21 @@ async def test_a_template_page_at_the_frames_ceiling_previews_applies_and_draws(
     assert on_loop == [False, False]
 
 
+async def test_a_preview_read_the_store_refuses_answers_in_the_stores_words(monkeypatch):
+    """A store refusal on the staged read (a linked session directory raises
+    `InstanceError`) is the route's structured answer, not aiohttp's bare 500."""
+    from kiro_crew.dashboard.handlers import member_dashboard as md
+
+    def _refuse(_slug):
+        raise instance.InstanceError("the session dashboard directory is a link")
+
+    monkeypatch.setattr(md, "_preview_record", _refuse)
+    async with _client() as client:
+        resp = await client.get(_q("", preview="1"))
+        assert resp.status == 500
+        assert (await resp.json())["code"] == "dashboard_failed"
+
+
 # --------------------------------------------------------------------------
 # adopt, edit, rollback
 # --------------------------------------------------------------------------

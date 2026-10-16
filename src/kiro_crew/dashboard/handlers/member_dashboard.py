@@ -478,6 +478,13 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
         # artifact library. THE PACKAGE LINE'S OWN LOOKUP answers this -- one
         # implementation of "which package is bound here" for every caller that asks.
         package_slug = await _run(lambda: _bound_package_slug(_member))
+        # ONLY A PAGE A PERSON CUT. A bound package with no such version is the
+        # crewmate's saved draft between `dashboard_save` and `dashboard_apply`, and
+        # the tab keeps the page it had -- the same answer the write check and the
+        # turn block give (`dashboard_agentic.has_person_cut_version`).
+        bound = package_slug
+        if bound and not await _run(lambda: dashboard_agentic.has_person_cut_version(bound)):
+            package_slug = ""
     if _name_unsafe(package_slug):
         # A SLUG IS A NAME TOO, and it travels further than the others: the body carries
         # it twice, every pushed frame carries it, and the refetch answers with it. An
@@ -540,8 +547,13 @@ async def _serve(request: web.Request, slug: str, member: str, slot: str | None)
         # reads this: the Members page's Dashboard tab, which asks here with
         # `preview=1` and draws the answer under a preview label.
         #
-        # Only a TEMPLATE is ever staged: a composed package goes in force on save.
-        staged = await _run(lambda: _preview_record(slug))
+        # Only a TEMPLATE is ever staged: a composed package goes in force on apply.
+        # A store refusal (a linked session directory, an unreadable record) answers
+        # in the store's own words, as every other read on this route does.
+        try:
+            staged = await _run(lambda: _preview_record(slug))
+        except Exception as exc:
+            return _refusal(exc)
         if staged is None:
             return web.json_response(
                 {"error": "nothing is staged to preview", "code": "no_preview"}, status=404

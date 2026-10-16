@@ -2199,8 +2199,25 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
         )
 
     def _save() -> tuple[Any, dict[str, int], dict[str, Any]]:
+        from kiro_crew.dashboard_templates import instance as instance_store
+
         content = _dashboard.canonical_package_content(json.dumps(package, ensure_ascii=False))
         store = _dashboard_artifact_store()
+        # ONE SAVE AT A TIME per crewmate, across the lookup and the write it decides:
+        # two first saves would otherwise both find no package and create two with
+        # the same binding, which every later save and apply refuses as ambiguous.
+        with instance_store.package_save_lock(slug):
+            art = _write_bound_package(store, content)
+        parsed = _dashboard.parse_package(content)
+        counts = {
+            "fields": len((parsed.get("model") or {}).get("types") or {}),
+            "blocks": len((parsed.get("view") or {}).get("blocks") or []),
+        }
+        # The parsed canonical bytes go back too, for the page check below.
+        return art, counts, parsed
+
+    def _write_bound_package(store: Any, content: str) -> Any:
+        """Update the package bound to the caller, or create it. Under the save lock."""
         existing = _dashboard.resolve_bound_slug(binding, store=store)
         if existing:
             # The store fences every dashboard write on the snapshot it read, so the
@@ -2219,27 +2236,19 @@ async def api_dashboard_save(request: web.Request) -> web.Response:
                     f"the dashboard package {existing!r} is not bound to you any more; "
                     "nothing was written -- save again"
                 )
-            art = store.update(
+            return store.update(
                 existing,
                 content=content,
                 actor="agent",
                 snapshot=True,
                 snapshot_token=current.content_token,
             )
-        else:
-            art = store.create(
-                name=f"{crew_name} dashboard",
-                content=content,
-                kind=_dashboard.DASHBOARD_KIND,
-                description="This crewmate's own Dashboard page.",
-            )
-        parsed = _dashboard.parse_package(content)
-        counts = {
-            "fields": len((parsed.get("model") or {}).get("types") or {}),
-            "blocks": len((parsed.get("view") or {}).get("blocks") or []),
-        }
-        # The parsed canonical bytes go back too, for the page check below.
-        return art, counts, parsed
+        return store.create(
+            name=f"{crew_name} dashboard",
+            content=content,
+            kind=_dashboard.DASHBOARD_KIND,
+            description="This crewmate's own Dashboard page.",
+        )
 
     try:
         art, counts, saved_package = await asyncio.to_thread(_save)

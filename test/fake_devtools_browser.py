@@ -189,5 +189,10 @@ class FakeBrowser:
         path = self.directory / "received.jsonl"
         if not path.exists():
             return []
-        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        # Only whole lines. The browser appends while a test polls this file, and its
+        # `start` line carries the whole environment, so a read can land mid-write; the
+        # line is read on the next poll, once its newline is down.
+        text = path.read_text()
+        complete = text[: text.rfind("\n") + 1]
+        rows = [json.loads(line) for line in complete.splitlines()]
         return [row for row in rows if row["kind"] == kind]

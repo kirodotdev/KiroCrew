@@ -299,6 +299,15 @@ def _from_bound_package(member: str, record: object) -> PackageRead:
         )
     except OSError as exc:
         raise PackageReadError(f"the dashboard package {slug!r} cannot be read: {exc}") from exc
+    from kiro_crew.dashboard.handlers.member_dashboard import _record_identity
+
+    if drawn is not loaded and _record_identity(drawn) != _record_identity(loaded):
+        # THE SAME RECORD, as the page read checks (`_serve_package`): a slug deleted and
+        # saved again between the two reads answers with another record's version N,
+        # and a write checked against its Model could put the wrong shape in a cell.
+        return PackageRead(
+            None, STATE_ERROR, f"the dashboard package {slug!r} was replaced while it was read"
+        )
     read = _package_model(
         member,
         slug,
