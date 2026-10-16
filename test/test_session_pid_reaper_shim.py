@@ -18,7 +18,9 @@ predicate that guards them is POSIX group semantics.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import kiro_crew.session_pid as sp
@@ -109,16 +111,24 @@ class TestSweepDirectKillRoutesThroughShim:
             # Same int value as signal.SIGKILL on POSIX; asserting with the
             # shim constant keeps the test tied to whatever the module sends.
             mock_sys.platform = "linux"
-            # os.getpgrp/getpgid do not exist on Windows and its frozen os
-            # module cannot be patched by name, so create the attributes the
-            # sweep consults: our own group (1000) differs from the orphan's
-            # group (the pid itself) -> shared-pgid? No: pgid==pid means the
-            # orphan IS an isolated leader, which routes to killpg. To reach
-            # the direct-kill branch the orphan must share OUR group.
-            with (
-                patch.object(sp.os, "getpgrp", create=True, return_value=1000),
-                patch.object(sp.os, "getpgid", create=True, return_value=1000),
-            ):
+            # The sweep reads getpid, getpgrp and getpgid from session_pid's
+            # own os binding, so the test answers them there, from a copy of
+            # the module. Patching os itself would hand the fake pid to every
+            # thread in the worker. getpgrp/getpgid do not exist on Windows, so
+            # the copy supplies them. A pgid equal to the pid makes the orphan
+            # an isolated leader, which routes to killpg, so to reach the
+            # direct-kill branch the orphan shares OUR group (1000). The sweep
+            # skips its own pid, so that is pinned to a value that cannot equal
+            # the candidate: the real worker pid can be 600 on Windows.
+            os_view = SimpleNamespace(
+                **{
+                    **vars(os),
+                    "getpid": lambda: 1,
+                    "getpgrp": lambda: 1000,
+                    "getpgid": lambda _pid: 1000,
+                }
+            )
+            with patch.object(sp, "os", os_view):
                 killed = sp.kill_orphan_mcps([600])
         assert killed == 1
         pc.kill_pid.assert_called_once_with(600, pc.SIGKILL)
