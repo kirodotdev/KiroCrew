@@ -54,6 +54,7 @@ from kiro_crew.acp.types import (  # noqa: F401
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_FROM_ADVERTISED_OPTION,
+    ACP_BACKENDS_EFFORT_OVERLAY,
 )
 from kiro_crew.acp.types import (
     ACP_BACKENDS_HARNESS_MANAGED_COMPACTION as ACP_BACKENDS_HARNESS_MANAGED,
@@ -274,19 +275,24 @@ class AcpProvider(LLMProvider):
             if tool_search_min_tokens is None
             else tool_search_min_tokens
         )
-        if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
-            # Recover overlay-persisted levels (server-restart resilience) and
-            # write the overlay BEFORE the first spawn so kiro-cli reads it on
-            # session/new. Caller-provided overrides win — only fill gaps.
+        if self._client.backend in ACP_BACKENDS_EFFORT_OVERLAY:
+            # Read back the levels the overlay already holds, so after a gateway
+            # restart the map names what kiro-cli will run. Caller-provided
+            # overrides win — only fill gaps.
             #
-            # The overlay set, not the transport set: the file belongs to the kiro
-            # family, and a harness that shares the runtime without reading it
-            # would seed its effort map out of another harness's file.
+            # The overlay's own readers only. The file is keyed by work dir, so
+            # every session in one project shares it; read back by a harness that
+            # never opens it (KAS), it would start a new chat at whatever level
+            # another chat in the same work dir picked last. Such a harness takes
+            # its level from the factory alone.
             try:
                 for m, lvl in _read_cli_overlay(self._client._work_dir).items():
                     self._effort_per_model.setdefault(m, lvl)
             except Exception:
                 logger.debug("ACP effort overlay recovery failed", exc_info=True)
+        if self._client.backend in ACP_BACKENDS_KIRO_SLASH_COMMANDS:
+            # Write the overlay BEFORE the first spawn so kiro-cli reads it on
+            # session/new. Each writer is scoped to the harnesses that read its keys.
             self._apply_effort_overlay()
             self._apply_tool_search_overlay()
 
@@ -525,9 +531,10 @@ class AcpProvider(LLMProvider):
 
         This answers ONE question, the transport, and it is worth saying what it
         does not answer. Membership does not imply the kiro-family spawn
-        conventions: the cli.json effort and Tool Search overlay is gated on
-        ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` at every site that reads, writes or
-        clears it, because codex runs here and reads no such file. Nor does it
+        conventions: the cli.json overlay is gated on its readers' own sets
+        (``ACP_BACKENDS_EFFORT_OVERLAY``, ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``) at
+        every site that reads, writes or clears it, because codex and KAS run here
+        and read no such file. Nor does it
         imply that a session can be disposed — that is
         ``ACP_BACKENDS_SESSION_EVICTION``, a separate claim earned by a measured
         teardown verb, and the reason the background path asks its own question

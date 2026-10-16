@@ -108,8 +108,8 @@ async def set_model_target(
             # (Pi's ``minimal``, Claude's ``default``) is set from that session's
             # effort dropdown, which reads its live list.
             #
-            # "" (back to the model default) is refused too: on a kiro-family
-            # backend the default only takes once the workspace effort overlay
+            # "" (back to the model default) is refused too: on kiro-cli
+            # the default only takes once the workspace effort overlay
             # is cleared, which only the dropdown route's live clear_effort does.
             # Committed here, the cold start would recover the old level from
             # the overlay while every surface said "default".

@@ -415,11 +415,10 @@ ACP_BACKENDS_INLINE_COMPACTION = frozenset(
 # slash commands go through ``session/prompt`` and are interpreted by the adapter
 # (or degrade to prompt text) instead of returning -32601 for the whole call.
 #
-# The same membership decides who reads the workspace ``cli.json`` overlay for
-# EFFORT: the kiro-family harnesses take ``chat.modelDefaults`` from that file at
-# spawn, and writing it for a harness that never reads it leaves a stale file in
-# the user's workspace that no later clear can reach. Tool Search has its own,
-# narrower set, ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``: the two hosts read it from different places.
+# This membership does NOT decide who reads the workspace ``cli.json`` overlay: KAS
+# speaks this dialect but never opens that file, so its effort keys and its Tool
+# Search keys each have their own, narrower sets, ``ACP_BACKENDS_EFFORT_OVERLAY``
+# and ``ACP_BACKENDS_TOOL_SEARCH_OVERLAY``.
 # opencode is not a member: it has no ``_kiro.dev`` verb, and it publishes its own
 # command list as an ``available_commands_update`` on ``session/update`` instead.
 # pi is not a member for the same reason: pi-acp publishes its built-ins the same

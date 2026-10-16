@@ -315,6 +315,18 @@ ACP_BACKENDS_HONOR_ZERO_TOOL_BAN = frozenset(
 # ``AcpClient``, which is where the prune is applied.
 ACP_BACKENDS_PRUNE_UNSTARTABLE_MCP = frozenset({ACP_BACKEND_GOOSE, ACP_BACKEND_DEEPSEEK})
 
+# Backends that read reasoning effort from the workspace ``cli.json`` overlay
+# (``chat.modelDefaults.<model>.<key>.effort``) at spawn. Only kiro-cli's Rust engine
+# does. The file's scope is the WORK DIRECTORY, so every session in one project
+# shares one entry per model: on kiro-cli that sharing is the engine's own, and Crew
+# reads the file back at construction so its map names the level the engine will
+# run. KAS never opens it -- its level travels as the ``effortLevel`` config option
+# -- so reading it back there ran a new chat at whatever level another chat in the
+# same work dir picked last. A non-member's level comes from the provider factory
+# (the slot's own pick, persisted per slot, else the crew, role or global default),
+# and the file is neither written, read back, nor cleared for it.
+ACP_BACKENDS_EFFORT_OVERLAY = frozenset({ACP_BACKEND_KIRO})
+
 # Backends that read the MCP Tool Search setting from the workspace ``cli.json``
 # overlay (``toolSearch.*`` keys). Only kiro-cli's Rust engine does. KAS shares
 # the ``ACP_BACKENDS_KIRO_SLASH_COMMANDS`` dialect but never opens that file: on the relay path
