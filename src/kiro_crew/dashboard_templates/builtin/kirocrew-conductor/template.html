@@ -5,7 +5,7 @@
       --c-mute: var(--muted, #9a9aa8); --c-edge: var(--border, #2a2a35); --c-acc: var(--accent, #818cf8);
       --c-ok: var(--ok, #4ade80); --c-warn: var(--warn, #fbbf24); --c-bad: var(--danger, #f87171); --c-info: var(--info, #60a5fa);
       display: flex; flex-direction: column; gap: 10px; color: var(--c-ink);
-      font: 13px/1.45 system-ui, -apple-system, 'Segoe UI', sans-serif; font-variant-numeric: tabular-nums;
+      font: 13px/1.4 system-ui, -apple-system, 'Segoe UI', sans-serif; font-variant-numeric: tabular-nums;
     }
     @media (prefers-color-scheme: light) {
       .cb {
@@ -15,125 +15,118 @@
       }
     }
     .cb * { box-sizing: border-box; }
-    .cb .ghost { position: relative; overflow: hidden; padding: 10px 12px; border: 1px solid var(--c-edge); border-radius: 12px;
-      background: var(--c-card); box-shadow: 0 8px 24px -14px var(--c-acc); }
-    .cb .k0 { margin: 0; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--c-acc); }
-    .cb h1 { margin: 2px 0 0; font-size: 15px; font-weight: 650; color: var(--c-strong); overflow-wrap: anywhere; }
-    .cb .meta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 2px; font-size: 11px; color: var(--c-mute); }
-    .cb .band { border: 1px solid var(--c-warn); border-left-width: 4px; border-radius: 10px; padding: 8px 10px;
+    .cb .band { border: 1px solid var(--c-warn); border-left-width: 4px; border-radius: 10px; padding: 9px 10px;
       background: var(--warn-subtle, rgba(251, 191, 36, .12)); animation: cb-glow 2.6s ease-in-out 3; }
-    .cb .k { display: block; color: var(--c-warn); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
-    .cb .v { margin: 3px 0 0; font-weight: 500; color: var(--c-strong); overflow-wrap: anywhere; }
-    .cb .tag { display: inline-block; margin-left: 6px; font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0;
-      color: var(--c-mute); }
+    .cb .band-head { display: flex; align-items: baseline; gap: 6px; }
+    .cb .k { color: var(--c-warn); font-size: 11px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
+    .cb .tag { font-size: 10px; font-weight: 600; color: var(--c-mute); }
+    .cb .ask { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding-top: 7px; }
+    .cb .ask + .ask { margin-top: 7px; border-top: 1px solid var(--c-edge); }
+    .cb .ask-copy { min-width: min(100%, 160px); flex: 1; }
+    .cb .v { margin: 0; font-weight: 600; color: var(--c-strong); overflow-wrap: anywhere; }
+    .cb .why { color: var(--c-mute); font-size: 11px; white-space: nowrap; }
     .cb .calm { margin: 0; color: var(--c-mute); font-size: 12px; }
     .cb .calm::before { content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c-ok);
       margin-right: 6px; vertical-align: 1px; }
+    .cb .overview { padding: 10px 12px; border: 1px solid var(--c-edge); border-radius: 12px; background: var(--c-card); }
+    .cb .eyebrow { margin: 0; color: var(--c-acc); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .06em; }
+    .cb h1 { margin: 2px 0 9px; font-size: 16px; line-height: 1.3; font-weight: 680; color: var(--c-strong); overflow-wrap: anywhere; }
     .cb .meter { display: flex; flex-direction: column; gap: 6px; }
-    .cb .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; font-size: 12px; color: var(--c-mute); }
-    .cb .row b { color: var(--c-strong); font-weight: 600; }
-    .cb .track { height: 8px; border-radius: 999px; background: var(--c-edge); overflow: hidden; }
-    .cb .fill { height: 100%; width: 0; border-radius: 999px; background: var(--c-ok);
-      transition: width .9s cubic-bezier(.2,.8,.2,1); }
-    .cb .note { border: 1px solid var(--c-edge); border-radius: 10px; padding: 8px 10px; background: var(--c-card); }
-    .cb .note p { margin: 3px 0 0; overflow-wrap: anywhere; }
-    .cb .note .lbl { color: var(--c-mute); }
-    .cb h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--c-strong); }
-    .cb .grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px;
+    .cb .row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 5px 10px; font-size: 11px; color: var(--c-mute); }
+    .cb .row b { color: var(--c-strong); font-weight: 650; }
+    .cb .track { height: 6px; border-radius: 999px; background: var(--c-edge); overflow: hidden; }
+    .cb .fill { height: 100%; width: 0; border-radius: 999px; background: var(--c-ok); transition: width .7s ease-out; }
+    .cb details { border: 1px solid var(--c-edge); border-radius: 10px; background: var(--c-card); overflow: hidden; }
+    .cb summary { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; cursor: pointer;
+      color: var(--c-strong); font-weight: 650; list-style: none; }
+    .cb summary::-webkit-details-marker { display: none; }
+    .cb summary::after { content: '\203a'; color: var(--c-mute); font-size: 18px; line-height: 1; transition: transform .2s ease; }
+    .cb details[open] summary { border-bottom: 1px solid var(--c-edge); }
+    .cb details[open] summary::after { transform: rotate(90deg); }
+    .cb summary:focus-visible, .cb button:focus-visible { outline: 2px solid var(--c-acc); outline-offset: -2px; }
+    .cb .count { margin-left: auto; color: var(--c-mute); font-size: 11px; font-weight: 500; }
+    .cb .inside { display: flex; flex-direction: column; gap: 8px; padding: 9px 10px 10px; }
+    .cb .meta { display: flex; flex-wrap: wrap; gap: 5px 12px; color: var(--c-mute); font-size: 11px; }
+    .cb .grid { list-style: none; margin: 0; padding: 0; display: grid; gap: 7px;
       grid-template-columns: repeat(auto-fill, minmax(min(100%, 240px), 1fr)); }
-    .cb .card { min-width: 0; display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; background: var(--c-card);
-      border: 1px solid var(--c-edge); border-top: 3px solid var(--tone); border-radius: 10px; }
-    .cb .card.pop { animation: cb-pop .42s cubic-bezier(.2,1.4,.4,1) both; }
-    .cb .top { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
-    .cb .t { margin: 0; font-size: 13px; font-weight: 600; color: var(--c-strong); overflow-wrap: anywhere; }
-    .cb .pill { flex: none; display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; border-radius: 999px;
-      padding: 1px 8px; font-size: 11px; font-weight: 600; color: var(--tone); border: 1px solid var(--tone); }
+    .cb .card { min-width: 0; display: flex; align-items: flex-start; flex-wrap: wrap; gap: 5px 8px; padding: 7px 8px;
+      border-left: 3px solid var(--tone); border-radius: 7px; background: var(--bg, transparent); }
+    .cb .card.pop { animation: cb-pop .3s ease-out both; }
+    .cb .t { min-width: min(100%, 150px); flex: 1; margin: 0; font-size: 12px; font-weight: 600; color: var(--c-strong); overflow-wrap: anywhere; }
+    .cb .pill { flex: none; border-radius: 999px; padding: 1px 7px; font-size: 10px; font-weight: 650; color: var(--tone);
+      border: 1px solid var(--tone); white-space: nowrap; }
+    .cb .sub { width: 100%; color: var(--c-mute); font-size: 11px; overflow-wrap: anywhere; }
+    .cb .ask .sub { display: -webkit-box; margin: 0; overflow: hidden; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+    .cb .help { margin: 5px 0 0; color: var(--c-mute); font-size: 11px; }
+    .cb .tone-ok { --tone: var(--c-ok); } .cb .tone-run { --tone: var(--c-info); }
+    .cb .tone-test { --tone: var(--c-acc); }
+    .cb .tone-wait, .cb .tone-other { --tone: var(--c-mute); }
+    .cb .tone-you { --tone: var(--c-warn); } .cb .tone-bad { --tone: var(--c-bad); }
     .cb .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--tone); animation: cb-blink 1.1s ease-in-out 6; }
-    .cb .sub { font-size: 11.5px; color: var(--c-mute); overflow-wrap: anywhere; }
-    .cb .tone-ok { --tone: var(--c-ok); }
-    .cb .tone-run { --tone: var(--c-info); }
-    .cb .tone-test { --tone: var(--c-mute); }
-    .cb .tone-test .pill { border-style: dashed; }
-    .cb button.reply { margin-top: 6px; font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
-      border: 1px solid var(--c-warn); background: var(--c-card); color: var(--c-strong); font-weight: 600; }
-    .cb #cb-more button.reply, .cb #cb-more .hint { display: block; width: fit-content; }
-    .cb button.reply:focus-visible { outline: 2px solid var(--c-acc); outline-offset: 1px; }
-    .cb .tone-wait { --tone: var(--c-mute); }
-    .cb .tone-you { --tone: var(--c-warn); }
-    .cb .tone-bad { --tone: var(--c-bad); }
-    .cb .tone-other { --tone: var(--c-mute); }
+    .cb button.reply { min-height: 40px; flex: none; font: inherit; font-size: 11px; padding: 3px 10px; border-radius: 6px; cursor: pointer;
+      border: 1px solid var(--c-warn); background: var(--c-card); color: var(--c-strong); font-weight: 650; }
+    .cb #cb-more { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; color: var(--c-mute); font-size: 11px; }
+    .cb #cb-more[hidden] { display: none; }
+    .cb #cb-more button.reply { border-color: var(--c-edge); }
     .cb .empty { margin: 0; color: var(--c-mute); font-size: 12px; }
-    @keyframes cb-pop { from { opacity: 0; transform: translateY(6px) scale(.96); } to { opacity: 1; transform: none; } }
+    @keyframes cb-pop { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
     @keyframes cb-blink { 0%, 100% { opacity: 1; } 50% { opacity: .2; } }
-    @keyframes cb-glow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 4px var(--warn-subtle, rgba(251, 191, 36, .22)); } }
-    /* Every animation above is decoration: with motion off the page reads the same. */
+    @keyframes cb-glow { 0%, 100% { box-shadow: 0 0 0 0 transparent; } 50% { box-shadow: 0 0 0 3px var(--warn-subtle, rgba(251, 191, 36, .22)); } }
     @media (prefers-reduced-motion: reduce) {
       .cb *, .cb *::before, .cb *::after { animation: none !important; transition: none !important; }
     }
   </style>
 
-  <header class="ghost">
-    <p class="k0" data-i18n="title">Task board</p>
+  <section id="cb-you" aria-live="polite" data-i18n-aria="needs_you"></section>
+  <section class="overview" aria-labelledby="cb-goal-label">
+    <p class="eyebrow" id="cb-goal-label" data-i18n="goal">Goal</p>
     <h1 data-dashboard-field="goal">-</h1>
-    <div class="meta">
-      <span id="cb-round"><span data-i18n="round">conductor round</span> <span data-dashboard-field="round">-</span></span>
-      <span id="cb-updated"><span data-i18n="updated">updated</span> <span data-dashboard-field="last_entry_at">-</span></span>
+    <div class="meter" id="cb-meter"></div>
+  </section>
+  <details id="cb-details">
+    <summary><span class="count" id="cb-details-label"></span></summary>
+    <div class="inside">
+      <div class="meta">
+        <span id="cb-round"><span data-i18n="round">Round</span> <span data-dashboard-field="round">-</span></span>
+        <span id="cb-updated"><span data-i18n="updated">Updated</span> <span data-dashboard-field="last_entry_at">-</span></span>
+      </div>
+      <ul class="grid" id="cb-tasks" data-i18n-aria="tasks"></ul>
+      <div id="cb-more"><span data-dashboard-field="omitted">-</span> <span data-i18n="hidden">hidden</span></div>
     </div>
-  </header>
-
-  <section id="cb-you" aria-live="polite"></section>
-  <div class="meter" id="cb-meter"></div>
-  <section id="cb-note"></section>
-
-  <h2 data-i18n="tasks">Tasks</h2>
-  <ul class="grid" id="cb-tasks"></ul>
-  <p class="sub">
-    <span id="cb-more"><span data-dashboard-field="omitted">-</span> <span data-i18n="more">more not shown (list truncated)</span></span>
-    <span data-dashboard-field="items" hidden></span>
-    <span data-dashboard-field="forgotten" hidden></span>
-    <span data-dashboard-field="needs_you" hidden></span>
-    <span data-dashboard-field="note" hidden></span>
-    <span data-dashboard-field="note_at" hidden></span>
-  </p>
+  </details>
+  <span data-dashboard-field="items" hidden></span>
+  <span data-dashboard-field="forgotten" hidden></span>
+  <span data-dashboard-field="needs_you" hidden></span>
+  <span data-dashboard-field="note" hidden></span>
+  <span data-dashboard-field="note_at" hidden></span>
 
   <script>
     (function () {
       var DASH = '\u2014';
-
-      // The page's own words, one table per UI language. A key a language lacks
-      // falls back to English. Values the ledger or a crewmate wrote are never
-      // looked up here. The zh-CN strings are \u-escaped so the source stays ASCII.
       var I18N = {
         en: {
-          title: 'Task board', round: 'conductor round', updated: 'updated', tasks: 'Tasks',
-          more: 'more tasks not shown', ask_all: '\u270e Ask in chat for all tasks', ask_all_say: 'Show me the full task list.',
-          needs_you: 'Needs you', calm: 'Nothing needs you right now.', wrote: 'your crewmate wrote this',
-          done_of: '{d} of {n} accepted by the conductor', running: '{n} working', next: 'Next', note: 'Last note',
-          note_at: 'sent {t}', empty: 'No tasks on this board yet.', untitled: 'Untitled task',
-          t_done: 'accepted', t_working: 'working', t_reported: 'conductor checking', t_you: 'needs you',
-          t_waiting: 'not started', t_rejected: 'rejected', t_abandoned: 'abandoned',
-          status_question: 'has a question', status_blocked: 'is stuck',
-          reason_approval: 'approval', reason_needs_human: 'needs a person', pr: 'PR #{n}',
-          how: 'The button fills your chat box. Nothing sends until you press send.', reply: '\u270e Reply in chat',
-          reply_title: 'Puts a line in your chat box to finish and send',
-          about: 'About "{t}": ', reviewing: '{n} conductor checking', no_goal: 'No goal yet. Give this crewmate one in chat.'
+          goal: 'Goal', round: 'conductor round', updated: 'Updated', tasks: 'Tasks', hidden: 'older updates are in chat',
+          show_tasks: 'Show tasks', hide_tasks: 'Hide tasks', ask_older: 'Ask in chat', ask_older_say: 'Show me the older updates omitted from this dashboard.',
+          needs_you: 'Needs you', calm: 'No action needed', how: 'Adds a reply draft to chat. Nothing is sent until you send it.',
+          accepted: '{d} of {n} accepted by the conductor', active: '{n} working', review: '{n} conductor checking',
+          empty: 'No tasks yet', untitled: 'Untitled task',
+          t_done: 'Accepted', t_working: 'Working', t_reported: 'Conductor checking', t_you: 'Needs you',
+          t_waiting: 'Not started', t_rejected: 'Rejected', t_abandoned: 'Abandoned', action_above: 'Action above',
+          answer_needed: 'Needs your answer', approval_needed: 'Approval needed', help_needed: 'Help needed', wrote: 'From · Your crewmate', from_record: 'From · Work record',
+          pr: 'PR #{n}', reply: '\u270e Reply in chat', reply_title: 'Fills chat. You choose when to send.',
+          about: 'About "{t}": ', no_goal: 'No goal yet. Give this crewmate one in chat.'
         },
         'zh-CN': {
-          title: '\u4efb\u52a1\u770b\u677f', round: '\u6307\u6325\u8f6e\u6b21', updated: '\u66f4\u65b0\u4e8e', tasks: '\u4efb\u52a1',
-          more: '\u9879\u4efb\u52a1\u672a\u663e\u793a', ask_all: '\u270e \u5728\u804a\u5929\u91cc\u8981\u5168\u90e8\u4efb\u52a1', ask_all_say: '\u8bf7\u7ed9\u6211\u5b8c\u6574\u7684\u4efb\u52a1\u5217\u8868\u3002',
-          needs_you: '\u9700\u8981\u4f60', calm: '\u73b0\u5728\u6ca1\u6709\u9700\u8981\u4f60\u5904\u7406\u7684\u4e8b\u3002',
-          wrote: '\u961f\u53cb\u5199\u7684',
-          done_of: '{d} / {n} \u5df2\u7531\u6307\u6325\u63a5\u53d7', running: '{n} \u5de5\u4f5c\u4e2d', next: '\u4e0b\u4e00\u6b65',
-          note: '\u6700\u65b0\u7559\u8a00', note_at: '\u53d1\u9001\u4e8e {t}',
-          empty: '\u770b\u677f\u4e0a\u8fd8\u6ca1\u6709\u4efb\u52a1\u3002', untitled: '\u672a\u547d\u540d\u4efb\u52a1',
-          t_done: '\u5df2\u63a5\u53d7', t_working: '\u5de5\u4f5c\u4e2d', t_reported: '\u6307\u6325\u6b63\u5728\u68c0\u67e5',
-          t_you: '\u9700\u8981\u4f60', t_waiting: '\u5c1a\u672a\u5f00\u59cb', t_rejected: '\u5df2\u62d2\u7edd',
-          t_abandoned: '\u5df2\u653e\u5f03', status_question: '\u6709\u95ee\u9898', status_blocked: '\u88ab\u5361\u4f4f',
-          reason_approval: '\u7b49\u5f85\u6279\u51c6', reason_needs_human: '\u9700\u8981\u4eba\u5de5',
-          how: '\u6309\u94ae\u53ea\u4f1a\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\u3002\u4f60\u6309\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002', reply: '\u270e \u5728\u804a\u5929\u91cc\u56de\u590d',
-          reply_title: '\u586b\u5165\u4f60\u7684\u804a\u5929\u6846\uff0c\u5199\u5b8c\u540e\u518d\u53d1\u9001',
-          about: '\u5173\u4e8e\u201c{t}\u201d\uff1a', reviewing: '{n} \u6307\u6325\u6b63\u5728\u68c0\u67e5',
-          no_goal: '\u8fd8\u6ca1\u6709\u76ee\u6807\u3002\u8bf7\u5728\u804a\u5929\u91cc\u7ed9\u8fd9\u4f4d\u961f\u53cb\u4e00\u4e2a\u3002'
+          goal: '\u76ee\u6807', round: '\u6307\u6325\u8f6e\u6b21', updated: '\u66f4\u65b0', tasks: '\u4efb\u52a1', hidden: '\u6761\u8f83\u65e9\u66f4\u65b0\u53ef\u5728\u804a\u5929\u4e2d\u67e5\u770b',
+          show_tasks: '\u663e\u793a\u4efb\u52a1', hide_tasks: '\u6536\u8d77\u4efb\u52a1', ask_older: '\u5728\u804a\u5929\u4e2d\u8be2\u95ee', ask_older_say: '\u8bf7\u663e\u793a\u6b64\u770b\u677f\u7701\u7565\u7684\u8f83\u65e9\u66f4\u65b0\u3002',
+          needs_you: '\u9700\u8981\u4f60', calm: '\u65e0\u9700\u64cd\u4f5c', how: '\u4f1a\u5411\u804a\u5929\u6846\u6dfb\u52a0\u56de\u590d\u8349\u7a3f\u3002\u4f60\u53d1\u9001\u524d\u4e0d\u4f1a\u53d1\u51fa\u3002',
+          accepted: '{d} / {n} \u5df2\u7531\u6307\u6325\u63a5\u53d7', active: '{n} \u5de5\u4f5c\u4e2d', review: '{n} \u6307\u6325\u6b63\u5728\u68c0\u67e5',
+          empty: '\u8fd8\u6ca1\u6709\u4efb\u52a1', untitled: '\u672a\u547d\u540d\u4efb\u52a1',
+          t_done: '\u5df2\u63a5\u53d7', t_working: '\u5de5\u4f5c\u4e2d', t_reported: '\u6307\u6325\u6b63\u5728\u68c0\u67e5', t_you: '\u9700\u8981\u4f60',
+          t_waiting: '\u5c1a\u672a\u5f00\u59cb', t_rejected: '\u5df2\u62d2\u7edd', t_abandoned: '\u5df2\u653e\u5f03', action_above: '\u64cd\u4f5c\u89c1\u4e0a\u65b9',
+          answer_needed: '\u9700\u8981\u4f60\u56de\u7b54', approval_needed: '\u9700\u8981\u6279\u51c6', help_needed: '\u9700\u8981\u5e2e\u52a9', wrote: '\u6765\u81ea \u00b7 \u4f60\u7684\u961f\u53cb', from_record: '\u6765\u81ea \u00b7 \u5de5\u4f5c\u8bb0\u5f55',
+          pr: 'PR #{n}', reply: '\u270e \u5728\u804a\u5929\u91cc\u56de\u590d', reply_title: '\u586b\u5165\u804a\u5929\u6846\uff0c\u7531\u4f60\u53d1\u9001\u3002',
+          about: '\u5173\u4e8e\u201c{t}\u201d\uff1a', no_goal: '\u8fd8\u6ca1\u6709\u76ee\u6807\u3002\u8bf7\u5728\u804a\u5929\u91cc\u7ed9\u8fd9\u4f4d\u961f\u53cb\u4e00\u4e2a\u3002'
         }
       };
       function locale() {
@@ -141,58 +134,46 @@
         return typeof l === 'string' && Object.prototype.hasOwnProperty.call(I18N, l) ? l : 'en';
       }
       function has(key) { return Object.prototype.hasOwnProperty.call(I18N.en, key); }
+      function display(value) {
+        if (typeof value !== 'number') return String(value);
+        try { return new Intl.NumberFormat(locale()).format(value); } catch (e) { return String(value); }
+      }
       function i18n(key, vars) {
         var table = I18N[locale()];
         var s = Object.prototype.hasOwnProperty.call(table, key) ? table[key] : I18N.en[key];
         if (s === undefined) s = key;
-        if (vars) {
-          s = s.replace(/\{(\w+)\}/g, function (m, k) {
-            return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m;
-          });
-        }
+        if (vars) s = s.replace(/\{(\w+)\}/g, function (m, k) {
+          return Object.prototype.hasOwnProperty.call(vars, k) ? display(vars[k]) : m;
+        });
         return s;
       }
       function applyStatic() {
         var nodes = document.querySelectorAll('[data-i18n]');
         for (var i = 0; i < nodes.length; i++) nodes[i].textContent = i18n(nodes[i].getAttribute('data-i18n'));
+        var labels = document.querySelectorAll('[data-i18n-aria]');
+        for (var j = 0; j < labels.length; j++) labels[j].setAttribute('aria-label', i18n(labels[j].getAttribute('data-i18n-aria')));
       }
-
       function text(v) { return typeof v === 'string' && v.trim() ? v.trim() : null; }
       function num(v) { return typeof v === 'number' && isFinite(v) ? v : null; }
       function el(tag, cls, words) {
-        var n = document.createElement(tag);
-        if (cls) n.className = cls;
-        if (words) n.textContent = words;
-        return n;
+        var n = document.createElement(tag); if (cls) n.className = cls; if (words) n.textContent = words; return n;
       }
       function bag() { return (window.kirocrew || {}).fields || {}; }
       function act(say) {
-        try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: say }, '*'); }
-        catch (e) { /* no host: the button simply does nothing */ }
+        try { parent.postMessage({ type: 'kirocrew-dashboard:act', text: say }, '*'); } catch (e) { /* no host */ }
       }
-      // A stamp in the reader's language, or as recorded when it does not parse.
       function when(v) {
-        var t = text(v);
-        var ms = t ? Date.parse(t) : NaN;
+        var t = text(v), ms = t ? Date.parse(t) : NaN;
         if (!isFinite(ms)) return t || DASH;
-        try {
-          return new Date(ms).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' });
-        } catch (e) { return t; }
+        try { return new Date(ms).toLocaleString(locale(), { dateStyle: 'medium', timeStyle: 'short' }); } catch (e) { return t; }
       }
-      // The host's own list of which fields a crewmate wrote. A LIST, so read with
-      // indexOf: a value arriving some other way cannot borrow the label.
       function written(name) {
-        var a = (window.kirocrew || {}).agentic;
-        return Array.isArray(a) && a.indexOf(name) !== -1;
+        var a = (window.kirocrew || {}).agentic; return Array.isArray(a) && a.indexOf(name) !== -1;
       }
       function items() {
-        var f = bag();
-        return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
+        var f = bag(); return Array.isArray(f.items) ? f.items.filter(function (i) { return i && typeof i === 'object'; }) : [];
       }
-
-      // One tone per reading of a task. The ledger's STATE first, then, for an open
-      // task, the worker's own last word. A worker's `done` is a claim the conductor
-      // has not ruled on yet, so it is its own tone and not "done".
+      // A worker's done report is still only a claim; accepted is the conductor's ruling.
       function tone(it) {
         var state = text(it.state);
         if (state === 'accepted') return ['ok', 't_done'];
@@ -205,207 +186,121 @@
         return ['wait', 't_waiting'];
       }
       function label(key) { return has(key) ? i18n(key) : key; }
-
-      // THE CHAT BOX, never the wire: the host fills the person's composer with a line
-      // naming this one request, and the person presses send. The same bridge
-      // goal-board's Reply button uses.
       function replyFor(subject) {
         var b = el('button', 'reply', i18n('reply'));
-        b.type = 'button';
-        b.title = i18n('reply_title');
+        b.type = 'button'; b.title = i18n('reply_title');
         var say = i18n('about', { t: subject.length > 80 ? subject.slice(0, 79) + '\u2026' : subject });
-        b.addEventListener('click', function () { act(say); });
-        return b;
+        b.addEventListener('click', function () { act(say); }); return b;
       }
-
+      function requestNeed(item) {
+        if (item.status === 'question') return i18n('answer_needed');
+        if (item.reason === 'approval') return i18n('approval_needed');
+        return i18n('help_needed');
+      }
       function drawYou(list) {
-        var host = document.getElementById('cb-you');
-        if (!host) return;
-        host.textContent = '';
+        var host = document.getElementById('cb-you'); if (!host) return; host.textContent = '';
         var said = Array.isArray(bag().needs_you) ? bag().needs_you.filter(function (x) { return !!text(x); }) : [];
-        // A task the conductor already wrote a line about is not listed again.
         var asking = list.filter(function (it) {
           if (tone(it)[0] !== 'you') return false;
-          var title = text(it.title);
-          return !(title && said.some(function (s) { return s.indexOf(title) !== -1; }));
+          var title = text(it.title); return !(title && said.some(function (s) { return s.indexOf(title) !== -1; }));
         });
         if (!said.length && !asking.length) { host.appendChild(el('p', 'calm', i18n('calm'))); return; }
-        var band = el('div', 'band');
-        var k = el('span', 'k', i18n('needs_you'));
-        if (said.length && written('needs_you')) k.appendChild(el('span', 'tag', i18n('wrote')));
-        band.appendChild(k);
+        var band = el('div', 'band'), head = el('div', 'band-head');
+        head.appendChild(el('span', 'k', i18n('needs_you'))); band.appendChild(head);
+        band.appendChild(el('p', 'help', i18n('how')));
         for (var i = 0; i < said.length && i < 12; i++) {
-          band.appendChild(el('p', 'v', text(said[i])));
-          band.appendChild(replyFor(text(said[i])));
+          var own = el('div', 'ask'), ownCopy = el('div', 'ask-copy');
+          ownCopy.appendChild(el('p', 'v', text(said[i]))); own.appendChild(ownCopy);
+          own.appendChild(el('span', 'why', written('needs_you') ? i18n('wrote') : i18n('answer_needed')));
+          own.appendChild(replyFor(text(said[i]))); band.appendChild(own);
         }
         for (var j = 0; j < asking.length; j++) {
-          var it = asking[j];
-          var why = text(it.reason);
-          var line = (text(it.title) || text(it.item_id) || DASH) + ' \u2014 ' + label('status_' + it.status) +
-            (why ? ' (' + label('reason_' + why) + ')' : '');
-          band.appendChild(el('p', 'v', line));
-          var summary = text(it.summary);
-          if (summary) band.appendChild(el('p', 'sub', summary));
-          band.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
+          var it = asking[j], row = el('div', 'ask'), copy = el('div', 'ask-copy');
+          copy.appendChild(el('p', 'v', text(it.title) || text(it.item_id) || DASH));
+          var summary = text(it.summary); if (summary) copy.appendChild(el('p', 'sub', summary));
+          row.appendChild(copy); row.appendChild(el('span', 'why', i18n('from_record') + ' · ' + requestNeed(it)));
+          row.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH)); band.appendChild(row);
         }
-        band.appendChild(el('p', 'sub', i18n('how')));
         host.appendChild(band);
       }
-
-      // The closed items the fold no longer lists, counted per closing state. The
-      // fold keeps only open items and the newest closed ones, so every whole-board
-      // number adds these to what `items` holds. Missing or odd reads as zeros.
+      // Closed tasks outside the fold window still count toward honest progress totals.
       function forgotten() {
-        var f = bag().forgotten;
-        var g = f && typeof f === 'object' && !Array.isArray(f) ? f : {};
+        var f = bag().forgotten, g = f && typeof f === 'object' && !Array.isArray(f) ? f : {};
         function n(k) { var v = num(g[k]); return v && v > 0 ? Math.floor(v) : 0; }
         return { items: n('items'), accepted: n('accepted') };
       }
-
       function drawMeter(list) {
-        var host = document.getElementById('cb-meter');
-        if (!host) return;
-        host.textContent = '';
+        var host = document.getElementById('cb-meter'); if (!host) return; host.textContent = '';
         var done = 0, run = 0, review = 0;
         for (var i = 0; i < list.length; i++) {
-          var t = tone(list[i])[0];
-          if (t === 'ok') done += 1;
-          if (t === 'run') run += 1;
-          if (t === 'test') review += 1;
+          var t = tone(list[i])[0]; if (t === 'ok') done += 1; if (t === 'run') run += 1; if (t === 'test') review += 1;
         }
-        var gone = forgotten();
-        done += gone.accepted;
-        // Every task on the board: the listed ones plus the closed ones the fold
-        // forgot, the way goal-board counts them. `omitted` counts dropped log
-        // ENTRIES, not tasks, so it is not added.
-        var total = list.length + gone.items;
-        var row = el('div', 'row');
-        row.appendChild(el('b', null, i18n('done_of', { d: done, n: total })));
-        row.appendChild(el('span', null, i18n('running', { n: run }) +
-          (review ? ' \u00b7 ' + i18n('reviewing', { n: review }) : '')));
-        host.appendChild(row);
+        var gone = forgotten(); done += gone.accepted;
+        var total = list.length + gone.items, row = el('div', 'row');
+        row.appendChild(el('b', null, i18n('accepted', { d: done, n: total })));
+        var moving = i18n('active', { n: run }); if (review) moving += ' \u00b7 ' + i18n('review', { n: review });
+        row.appendChild(el('span', null, moving)); host.appendChild(row);
         if (!total) return;
-        var track = el('div', 'track');
-        track.setAttribute('role', 'progressbar');
-        track.setAttribute('aria-label', i18n('done_of', { d: done, n: total }));
-        track.setAttribute('aria-valuemin', '0');
-        track.setAttribute('aria-valuemax', String(total));
-        track.setAttribute('aria-valuenow', String(done));
-        var fill = el('div', 'fill');
-        track.appendChild(fill);
-        host.appendChild(track);
+        var track = el('div', 'track'); track.setAttribute('role', 'progressbar');
+        track.setAttribute('aria-label', i18n('accepted', { d: done, n: total })); track.setAttribute('aria-valuemin', '0');
+        track.setAttribute('aria-valuemax', String(total)); track.setAttribute('aria-valuenow', String(done));
+        var fill = el('div', 'fill'); track.appendChild(fill); host.appendChild(track);
         var pct = (done / total * 100).toFixed(2) + '%';
-        // Set after first paint so the width eases in; reduced motion jumps there.
         requestAnimationFrame(function () { requestAnimationFrame(function () { fill.style.width = pct; }); });
       }
-
-      // The conductor's last panel_publish, from its OWN record. A page that shows
-      // it says who wrote it.
-      function drawNote() {
-        var host = document.getElementById('cb-note');
-        if (!host) return;
-        host.textContent = '';
-        var note = bag().note;
-        if (!note || typeof note !== 'object' || Array.isArray(note)) return;
-        var next = text(note.next);
-        // Only `next`. Needs-you has one home, the band above, so the note's own
-        // needs_you line is never drawn beside it.
-        if (!next) return;
-        var box = el('div', 'note');
-        var k = el('span', 'k', i18n('note'));
-        k.appendChild(el('span', 'tag', i18n('wrote')));
-        box.appendChild(k);
-        if (next) {
-          var np = el('p');
-          np.appendChild(el('span', 'lbl', i18n('next') + ': '));
-          np.appendChild(document.createTextNode(next));
-          box.appendChild(np);
-        }
-        var at = text(bag().note_at);
-        if (at) box.appendChild(el('p', 'sub', i18n('note_at', { t: when(at) })));
-        host.appendChild(box);
-      }
-
-      // Ids already drawn once, so a host refill does not replay the pop-in.
       var seen = {};
-
       function drawTasks(list) {
-        var host = document.getElementById('cb-tasks');
-        if (!host) return;
-        host.textContent = '';
-        // Tasks that need the reader come first; the rest keep the ledger's order.
+        var host = document.getElementById('cb-tasks'); if (!host) return; host.textContent = '';
         list = list.filter(function (it) { return tone(it)[0] === 'you'; })
           .concat(list.filter(function (it) { return tone(it)[0] !== 'you'; }));
         for (var i = 0; i < list.length; i++) {
-          var it = list[i];
-          var id = text(it.item_id) || String(i);
-          var reading = tone(it);
+          var it = list[i], id = text(it.item_id) || String(i), reading = tone(it);
           var card = el('li', 'card tone-' + reading[0] + (seen[id] ? '' : ' pop'));
-          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 45) + 'ms';
-          seen[id] = true;
-          var top = el('div', 'top');
-          top.appendChild(el('p', 't', text(it.title) || i18n('untitled')));
+          if (!seen[id]) card.style.animationDelay = (Math.min(i, 12) * 35) + 'ms'; seen[id] = true;
+          card.appendChild(el('p', 't', text(it.title) || i18n('untitled')));
           var pill = el('span', 'pill');
-          if (reading[0] === 'run') {
-            var dot = el('span', 'dot');
-            dot.setAttribute('aria-hidden', 'true');
-            pill.appendChild(dot);
-          }
-          pill.appendChild(document.createTextNode(label(reading[1])));
-          top.appendChild(pill);
-          card.appendChild(top);
-          var pr = num(it.pr);
-          if (pr) card.appendChild(el('span', 'sub', i18n('pr', { n: pr })));
-          var summary = text(it.summary);
-          if (summary) card.appendChild(el('span', 'sub', summary));
-          // The same Reply the band gives this task, so either copy can be acted on.
-          if (reading[0] === 'you') card.appendChild(replyFor(text(it.title) || text(it.item_id) || DASH));
+          if (reading[0] === 'run') { var dot = el('span', 'dot'); dot.setAttribute('aria-hidden', 'true'); pill.appendChild(dot); }
+          pill.appendChild(document.createTextNode(reading[0] === 'you' ? i18n('action_above') : label(reading[1])));
+          card.appendChild(pill);
+          var pr = num(it.pr); if (pr) card.appendChild(el('span', 'sub', i18n('pr', { n: String(pr) })));
+          var summary = text(it.summary); if (reading[0] === 'bad' && summary) card.appendChild(el('span', 'sub', summary));
           host.appendChild(card);
         }
         if (!list.length) host.appendChild(el('li', 'empty', i18n('empty')));
       }
-
+      function drawDetailsLabel() {
+        var details = document.getElementById('cb-details'), label = document.getElementById('cb-details-label');
+        if (!details || !label) return;
+        label.textContent = details.open ? i18n('hide_tasks') : i18n('show_tasks');
+      }
       function render() {
-        var list = items();
-        applyStatic();
-        // A conductor that opened no board leaves the goal and stamps empty, which
-        // reads as a page that failed to load, so each becomes a dash.
+        var list = items(); applyStatic();
         var cells = document.body.querySelectorAll('[data-dashboard-field]');
-        for (var c = 0; c < cells.length; c++) {
-          if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
-        }
-        // Round 0 means no round has started, which the number alone does not say.
-        var round = document.getElementById('cb-round');
-        if (round) round.hidden = !(num(bag().round) > 0);
-        var updated = document.getElementById('cb-updated');
-        if (updated) updated.hidden = !text(bag().last_entry_at);
-        var goal = document.querySelector('[data-dashboard-field="goal"]');
-        if (goal && !text(bag().goal)) goal.textContent = i18n('no_goal');
+        for (var c = 0; c < cells.length; c++) if (!cells[c].textContent.trim()) cells[c].textContent = DASH;
+        var round = document.getElementById('cb-round'); if (round) round.hidden = !(num(bag().round) > 0 && list.length > 0);
+        var updated = document.getElementById('cb-updated'); if (updated) updated.hidden = !text(bag().last_entry_at);
+        var goal = document.querySelector('[data-dashboard-field="goal"]'); if (goal && !text(bag().goal)) goal.textContent = i18n('no_goal');
         var stamp = document.querySelector('[data-dashboard-field="last_entry_at"]');
         if (stamp && text(bag().last_entry_at)) stamp.textContent = when(bag().last_entry_at);
-        drawYou(list);
-        drawMeter(list);
-        drawNote();
-        drawTasks(list);
-        // A list the fold did not cut needs no line saying so.
+        drawYou(list); drawMeter(list); drawTasks(list); drawDetailsLabel();
+        // Omitted counts dropped work-log updates, never missing task rows.
         var more = document.getElementById('cb-more');
         if (more) {
           more.hidden = !(num(bag().omitted) > 0);
           var old = more.querySelectorAll('button.reply, .hint');
           for (var o = 0; o < old.length; o++) old[o].remove();
           if (!more.hidden) {
-            var ask = el('button', 'reply', i18n('ask_all'));
-            ask.type = 'button';
-            ask.title = i18n('reply_title');
-            ask.addEventListener('click', function () { act(i18n('ask_all_say')); });
-            more.appendChild(ask);
-            more.appendChild(el('span', 'sub hint', ' ' + i18n('how')));
+            var askOlder = el('button', 'reply', i18n('ask_older'));
+            askOlder.type = 'button'; askOlder.title = i18n('reply_title');
+            askOlder.addEventListener('click', function () { act(i18n('ask_older_say')); });
+            more.appendChild(askOlder);
+            more.appendChild(el('span', 'sub hint', i18n('how')));
           }
         }
       }
-
-      render();
-      window.addEventListener('load', render);
+      render(); window.addEventListener('load', render);
+      var details = document.getElementById('cb-details');
+      if (details) details.addEventListener('toggle', function () { drawDetailsLabel(); });
       window.addEventListener('message', function () { setTimeout(render, 0); });
     }());
   </script>

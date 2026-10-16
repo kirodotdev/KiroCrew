@@ -346,10 +346,19 @@ panel's rule that a template named after a crew is that crew's view, so a crewma
 named like a shipped page gets that page. No page here may be named `default`: a
 crewmate can be.
 
-`kirocrew-conductor` is the conductor's task board. Its tasks, states, goal and round
-come from the `work` fold, bound the way `goal-board` binds them, so the board is
-current even when the conductor publishes nothing. `needs_you` is the conductor's own
-list of lines the person must act on; tasks whose worker asked or is stuck join it from
-the record. `note` is the conductor's last `panel_publish`, read from its own record in
-the `panel` fold, and its `next` line is drawn under a tag that says
-the crewmate wrote it.
+`kirocrew-conductor` is the conductor's at-a-glance task board. Its task titles,
+states, goal and round come from the `work` fold, bound the way `goal-board` binds
+them, so the board is current even when the conductor publishes nothing. `needs_you`
+is the conductor's own list of lines the person must act on; tasks whose worker asked
+or is stuck join it from the record. That action list comes first. The goal and compact
+accepted/working counts stay visible; task rows, round and update time start inside a
+closed disclosure. That list keeps every task title, state and PR, including tasks named
+in Needs you, so its total still matches progress while the first view stays concise. A
+worker question or blocker's short summary appears only on its Needs-you row, where the
+person needs the context. A crewmate-written row says **From · Your crewmate**; a
+work-record row labels its recorded **Reason** as Needs your answer, Approval needed or
+Help needed. A rejected task also keeps its short summary with the rejected state. Other
+task summaries and the `panel` fold's `note` remain bound but are not drawn: their detail
+stays in chat instead of being copied into the board. **Reply in chat** fills that chat's
+composer and sends nothing; one visible line directly under Needs you says so. The
+omitted count says only that older updates are not shown and offers no unrelated action.

@@ -330,8 +330,9 @@ _MEMBER_DASHBOARD_ITEM = """
    fills the fields that are yours. Anything a person must ACT on goes into
    `panel_publish` and those fields, not only into your reply — the Dashboard tab is
    what they read when they are not reading this thread. `panel_publish` shows only on
-   a page that reads it, such as `kirocrew-conductor`; a needs-you item there goes into
-   the page's agentic field. To change the PAGE itself, load the
+   a page that presents it. On `kirocrew-conductor`, put each action in `needs_you`;
+   that page reads work evidence from the ledger and does not draw the panel note. To
+   change the PAGE itself, load the
    `dashboard` skill and follow it: `dashboard_templates` to search, `dashboard_preview`
    to stage one, `dashboard_apply` once they say yes, `dashboard_rollback` to go back.
    ALWAYS show the preview link and ask first — the page is the reader's to approve, and
