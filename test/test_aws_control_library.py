@@ -256,7 +256,7 @@ class TestPushArtifact:
         # The account console's Drive lists the `library` prefix and treats its
         # top level as one FOLDER PER SLUG: the folder name IS the slug, which is
         # what lets a card recover the artifact's name, kind and preview from the
-        # local library (website/src/apps/aws-control/DrivePage.tsx). If a push
+        # local library (website/src/apps/aws-control/DrivePageLibrary.tsx). If a push
         # ever wrote a flat key, a differently-nested one, or a different first
         # path segment, every card would silently degrade to "In the cloud only"
         # and no test would go red. Hence: assert the SHAPE, not one literal pair.

@@ -57,7 +57,7 @@ account's job state as `jobs` (`backend/routes.py`, `_handle_backup_status`).
 (`backend/backup_parts/uploads.py`, `_STOP` and `_authorize_upload`).
 
 The backup UI's `busy` indicator comes from the server-owned job state, not
-only from the mutation (`website/src/apps/aws-control/DrivePage.tsx`,
+only from the mutation (`website/src/apps/aws-control/DrivePageBackup.tsx`,
 `BackupSection`: `job?.active != null || runMut.isPending`). The API client
 posts directly to the backup route (`website/src/apps/aws-control/api.ts`,
 `backupRun`). A fresh mount adopts an in-flight backup through the status
@@ -167,7 +167,7 @@ contract itself.
 `useAppViewState` (`website/src/app-sdk/viewState.ts`) persists view state in
 host-namespaced storage under `kc:app:<appId>:view`. It is not exported from the
 App SDK barrel. AWS Control's drive view uses it, scoped by account
-(`website/src/apps/aws-control/DrivePage.tsx`). The selected account is still
+(`website/src/apps/aws-control/useDrivePageFiles.ts`). The selected account is still
 local component state (`website/src/apps/aws-control/AwsControlPage.tsx`,
 `AwsControlPage`). Neither is encoded in the URL, so they cannot identify an
 account or drive in a shareable link. This local-state boundary is load-bearing: a URL can only

@@ -16,10 +16,10 @@
  * rendered-column assertion would pass vacuously under either mechanism.
  */
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { readPageFamily } from './pageFamily'
 import { join } from 'node:path'
 
-const src = () => readFileSync(join(__dirname, '..', 'apps', 'aws-control', 'DrivePage.tsx'), 'utf8')
+const src = () => readPageFamily('DrivePage', join(__dirname, '..', 'apps', 'aws-control'))
 
 /** The exact template the root grid uses; the other three must match it
  *  byte-for-byte (same 258px min, same 1fr max) so all four resolve

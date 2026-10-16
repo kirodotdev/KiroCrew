@@ -1426,7 +1426,7 @@ function ChatInput({
                       disabled={uploading}
                       /* Deferred one macrotask, which is this repo's established
                          remedy for opening a dialog from a menu item (see
-                         `DrivePage.tsx`'s `openShare`/`openMove`): Radix dispatches
+                         `useDrivePageFiles.ts`'s `openShare`/`openMove`): Radix dispatches
                          item select with `flushSync`, so a dialog opened inline
                          mounts in a commit where the menu is STILL trapping focus.
                          The dialog focuses itself, the menu's trap yanks focus back,

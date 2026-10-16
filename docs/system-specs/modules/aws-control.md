@@ -1771,6 +1771,31 @@ art declared in `app.json` (`heroImage`, `heroImageDark`, `heroImageDetail`,
 `heroImageDetailDark`), authored in the same palette and restraint as the other
 builtins' art.
 
+### Drive page composition and ownership
+
+`website/src/apps/aws-control/DrivePage.tsx` is the drive page's only import path:
+`AwsControlPage.tsx`, `ConsoleView.tsx` and the specs import its panes from it, and it
+re-exports each pane from the owner that defines it. It keeps the page's own section
+map (`SECTION_TILES`, `SECTION_LABEL_ON_PAGE`), the Usage pane's `StorageMeter`, and
+the share ledger `AccessSection`, which reads that map. Owners never import the
+facade, and nothing outside the page but a spec imports an owner
+(`DrivePage.owners.test.tsx`).
+
+| Owner | Holds |
+|---|---|
+| `DrivePageControls.tsx` | what more than one pane draws: the `</>` CLI drawer (`CliDrawer`), the grid/list toggle and the per-section choice it persists (`ViewModeToggle`, `useViewMode`), and the inline confirm strip `TileConfirm` |
+| `DrivePageLibrary.tsx` | the Library pane (`LibrarySection`): the `artifacts/` listing, its cards and rows, removal, and the Add from Artifacts picker (`AddFromArtifactsDialog`) |
+| `useDrivePageFiles.ts` | the Files pane's state (`useDrivePageFiles`): the restored folder (`DRIVE_VIEW`), the paged listing, search, the upload, delete, folder, move, rename and download requests, drag and drop, and the menu-to-dialog focus hand-back |
+| `DrivePageFiles.tsx` | the Files pane (`DriveSectionView`): its toolbar, notices, breadcrumb, empty state and dialogs, around one view |
+| `DrivePageFilesViews.tsx` | the Files pane's three views: search hits, the folder grid and the folder table |
+| `DrivePageFileDialogs.tsx` | the preview (`PreviewDialog`), Move (`MoveDialog`) and share-link (`ShareDialog`) dialogs; the preview fetches its own URL or text and the share dialog mints the link |
+| `DrivePageBackup.tsx` | the Backup pane (`BackupSection`): one row per kind, both nightly switches, the install label, and the stored-archive list with restore |
+
+`DriveSectionView` calls `useDrivePageFiles` as its one hook and the Files pane's views
+call none, so the pane registers its hooks in one fixed order. New work for a
+responsibility in the table goes to its owner; work that belongs to none of them
+starts in the facade.
+
 ## HTTP surface
 
 `routes.register_routes` exposes owner-gated reads for accounts, available
