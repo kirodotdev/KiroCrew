@@ -1706,6 +1706,10 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         set_open_channels set_orch_cfg set_owner_id set_tracking_channels set_yolo_mode
         slack_cfg track_background_task
         """.split()),
+    "agent_names": tuple("""
+        _discover_project_agents _list_all_agent_names _resolve_agent_name
+        _resolve_cc_agent_name
+        """.split()),
     "approvals": tuple("""
         _LinkedApproval _LinkedApprovalEvent _PendingApproval _build_approval_blocks
         _grant_linked_trust _linked_slots_for _linked_trust_grantable post_linked_approval
@@ -1714,6 +1718,12 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "commands": tuple("""
         _handle_compact_command _handle_cron_command _handle_run_command
         _handle_slash_command _handle_spawn_command _is_sessions_keyword
+        """.split()),
+    "delivery": tuple("""
+
+        """.split()),
+    "dispatch": tuple("""
+        _handle_sessions_command maybe_handle_keyword_command
         """.split()),
     "finalize": tuple("""
         _append_footer_actions _maybe_auto_title_slack _review_drafts_get
@@ -1725,6 +1735,10 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
         _read_thread_overrides _set_default_agent maybe_apply_privacy_modifiers
         maybe_route_linked_thread
         """.split()),
+    "permission_ladder": tuple("""
+        _reject_orphaned_tool _request_approval _should_auto_approve_spawn _steer_host_deny
+        handle_interaction
+        """.split()),
     "reactions": tuple("""
         StatusReactionController _add_phase_reaction _tool_to_phase phase_emojis
         refresh_phase_emojis
@@ -1732,6 +1746,9 @@ _BASE_OWNERS: dict[str, tuple[str, ...]] = {
     "stream": tuple("""
         _at_tag_line_start _comment_hold_is_protocol _filter_options_brackets
         _resolve_comment_hold _safe_final_update _safe_update
+        """.split()),
+    "turn": tuple("""
+
         """.split()),
     "turn_context": tuple("""
 
@@ -1745,9 +1762,12 @@ _MOVED = frozenset(name for names in _BASE_OWNERS.values() for name in names)
 
 #: Functions and classes the split introduced: phases of ``handle_message``,
 #: ``handle_interaction`` and ``_handle_slash_command`` that each moved out as one
-#: piece, each with the owner it lives in.
+#: piece, and the turn object ``handle_message``'s phases share, each with the owner it
+#: lives in.
 _SPLIT_HELPERS: dict[str, str] = {
     "_AnswerStream": "stream",
+    "_SlackTurn": "turn",
+    "_answer_permission_request": "permission_ladder",
     "_bang_agent": "commands",
     "_bang_allowlist": "commands",
     "_bang_channel": "commands",
@@ -1759,43 +1779,36 @@ _SPLIT_HELPERS: dict[str, str] = {
     "_bang_title": "commands",
     "_bang_voice": "commands",
     "_bang_yolo": "commands",
+    "_deliver_answer": "delivery",
+    "_dispatch_before_turn": "dispatch",
     "_grant_late_trust": "approvals",
     "_mirror_to_dashboard": "finalize",
     "_post_review_draft": "finalize",
     "_reply_by_voice": "voice",
     "_resolve_linked_click": "approvals",
     "_route_bang_command": "commands",
+    "_run_turn": "turn",
+    "_screen_tool_call": "permission_ladder",
     "_thread_context": "turn_context",
     "_thread_meta_fallback": "turn_context",
 }
 
 #: SHA-256 of the sorted ``"<name> <kind> <signature>"`` lines of every moved name,
 #: captured from the one-module file before the split.
-_BASE_SHAPE_DIGEST = "d0818fced3d594d181317b548004673b7eaf31a24ad071cd96433bcc3f43b666"
+_BASE_SHAPE_DIGEST = "6c782deaca93e4395ca8d4f47f8b25ce32071d2cd1a36e7828a746e227ab45f7"
 
 #: Definitions that stay in the facade file, each because a repository guard, a
 #: contract or the import-time body reads it there. The reason per entry is in
 #: ``docs/system-specs/modules/slack-gateway.md`` ("Native handler composition").
 _FACADE_DEFS = (
     "_display_redactor",
-    "_should_auto_approve_spawn",
     "_condense_thinking",
     "_build_phase_emojis",
     "_VoiceConfig",
     "_CompactionReplay",
-    "_discover_project_agents",
-    "_resolve_agent_name",
     "_iter_cc_agent_names",
-    "_resolve_cc_agent_name",
-    "_list_all_agent_names",
     "MessageContext",
-    "maybe_handle_keyword_command",
     "handle_message",
-    "_reject_orphaned_tool",
-    "_steer_host_deny",
-    "_request_approval",
-    "handle_interaction",
-    "_handle_sessions_command",
 )
 
 
@@ -2010,7 +2023,7 @@ def test_every_moved_name_is_one_object_in_its_owner() -> None:
     ]
     assert strays == []
     names = [name for group in _BASE_OWNERS.values() for name in group]
-    assert len(names) == len(set(names)) == 70
+    assert len(names) == len(set(names)) == 81
     assert not set(_SPLIT_HELPERS) & set(names)
 
 
@@ -2530,10 +2543,11 @@ def test_no_owner_binds_a_name_the_tests_patch_on_the_facade() -> None:
 # ── the placement guards ──────────────────────────────────────────────────────
 
 
-def _calls_in(function: str, attr: str) -> int:
-    """``.attr(...)`` calls directly in *function*'s own body, nested defs excluded --
-    the shape ``test_transport_permission_floor`` counts per enclosing function."""
-    tree = ast.parse(_FACADE_PATH.read_text(encoding="utf-8"))
+def _calls_in(source: str, function: str, attr: str) -> int:
+    """``.attr(...)`` calls directly in *function*'s own body in *source*, nested defs
+    excluded -- the shape ``test_transport_permission_floor`` counts per enclosing
+    function."""
+    tree = ast.parse(source)
     node = next(
         n
         for n in tree.body
@@ -2551,95 +2565,111 @@ def _calls_in(function: str, attr: str) -> int:
     return count
 
 
-def test_the_facade_still_carries_what_the_source_guards_read() -> None:
-    """Repository guards read these constructs in ``slack/handler.py`` by path, AST,
-    text or ``inspect.getsource``, so they constrain WHERE the turn's decisions live.
-    Each needle names the guard that reads it; moving one fails here first, with the
-    reason, rather than as an unexplained red in that guard."""
-    source = _FACADE_PATH.read_text(encoding="utf-8")
-    handle = inspect.getsource(handler.handle_message)
-    assert _calls_in("handle_message", "approve_tool") == 4  # test_transport_permission_floor
-    assert _calls_in("handle_interaction", "approve_tool") == 1  # test_transport_permission_floor
-    assert source.count(".reject_tool(") == 4  # test_messaging_deny_notice
-    assert source.count("await _steer_host_deny(") == 2  # test_messaging_deny_notice
-    gate_calls = re.findall(
-        r"await run_in_tool_gate_pool\(\s*context_builder\.hooks\.on_tool_call,", source
-    )
-    assert len(gate_calls) == 2  # test_hooks
-    assert "**hook_gate_kwargs(event)" in source  # test_hooks
-    for needle in (
-        "turn_ceiling.gate(",  # test_turn_ceiling
-        "except TurnCeilingExceeded",  # test_turn_ceiling
-        "_working_ts = await",  # test_turn_ceiling
-        "sessions.begin_turn(session_key)",  # test_turn_ceiling
-        "sessions.check_context_usage(session_key, client)",  # test_reinjection_gate
-        "consume_reinjection(",  # test_reinjection_gate
-        "rearm_reinjection(",  # test_reinjection_gate
-        "runtime_death.caused_by_this_session(client)",  # test_runtime_death_is_a_process_event
-        "runtime_death.note_shared_death(",  # test_runtime_death_is_a_process_event
-        "_memory_store = await session_store_for_turn(context_builder, candidate_key)",
-        "memory_store=_memory_store",  # test_memory_v2_isolation
-        "StreamRedactor",  # test_security_posture (the "Slack messages" sink row)
-        "introduced by reply decorator",  # test_security_posture (baseline log census)
-        'logger.warning("Credential redacted in response: %s", w)',  # SAST baseline
-        'logger.warning("Credential redacted in thinking: %s", w)',  # SAST baseline
-        "auto_title.pin_record(conversation_log, session_key)",  # test_messaging_auto_title
-        "auto_title.try_claim(session_key)",  # test_messaging_auto_title
-        "_options_verdict_deferred = bool(",  # test_messaging_auto_title
-        "_turn_row_ts = await save_conversation_turn_off_loop(",  # test_messaging_auto_title
-        "if thread_owner_key is None and not route_pinned:",  # test_options_click_validation
-        "project_agent_files(",  # test_agent_spec_hardened_reads
-        "read_agent_spec_strict(",  # test_agent_spec_hardened_reads
-    ):
-        assert needle in source, needle
-    assert source.count("save_conversation_turn_off_loop(") >= 7  # test_persist_off_loop
-    for needle in (
-        "admit_inbound_callback(",  # test_update_check_install_aware_background_work
-        "mint_options_token(",  # test_options_click_validation
-        "_options_owner =",  # test_slack_options_lifecycle
-        "maybe_handle_keyword_command",  # test_slack_options_lifecycle
-        "await expire_slack_options(",  # test_slack_options_lifecycle
-    ):
-        assert needle in handle, needle
-    tree = ast.parse(source)
-    assert "_build_phase_emojis" in {
-        n.name for n in tree.body if isinstance(n, ast.FunctionDef)
-    }  # import-time table: the facade body runs before compose
+#: Constructs repository guards read by path, AST, text or ``inspect.getsource``, each
+#: mapped to the files that hold it -- the facade (``handler``) or an owner stem --
+#: which are the files those guards read. A holder that grew one, or lost one, would
+#: move it out of such a guard's sight without failing it, so each set is exact (an
+#: empty set means no file may hold it); a set changes in the commit that points the
+#: token's guards at its new home (``slack-gateway.md``, "Native handler composition").
+_GUARDED_TOKEN_HOMES: dict[str, frozenset[str]] = {
+    # test_turn_ceiling: the gate, its refusal branch and the Working block it deletes.
+    "turn_ceiling.gate(": frozenset({"turn"}),
+    "except TurnCeilingExceeded": frozenset({"turn"}),
+    "_working_ts = await": frozenset({"turn"}),
+    "sessions.begin_turn(session_key)": frozenset({"turn"}),
+    "begin_turn(": frozenset({"turn"}),
+    # test_reinjection_gate: the trigger beside its consume and rearm.
+    "sessions.check_context_usage(session_key, client)": frozenset({"turn"}),
+    "check_context_usage(": frozenset({"turn"}),
+    "compact_if_needed(": frozenset(),
+    "consume_reinjection(": frozenset({"turn"}),
+    "rearm_reinjection(": frozenset({"turn"}),
+    # test_runtime_death_is_a_process_event: the except arms' attribution and streak.
+    "runtime_death.caused_by_this_session(client)": frozenset({"turn"}),
+    "runtime_death.note_shared_death(": frozenset({"turn"}),
+    "caused_by_this_session": frozenset({"turn"}),
+    "note_shared_death": frozenset({"turn"}),
+    # test_memory_v2_isolation: the store resolved for the routed key, handed to the build.
+    "_memory_store = await session_store_for_turn(context_builder, candidate_key)": frozenset(
+        {"turn"}
+    ),
+    "memory_store=_memory_store": frozenset({"turn"}),
+    "session_store_for_turn(": frozenset({"turn"}),
+    # test_options_click_validation: the thread claim a pinned answer never takes.
+    "if thread_owner_key is None and not route_pinned:": frozenset({"turn"}),
+    # test_security_posture (the "Slack messages" sink row and the baseline log census).
+    "StreamRedactor": frozenset({"delivery", "handler", "stream"}),
+    "introduced by reply decorator": frozenset({"delivery"}),
+    # the SAST baseline: the two credential log lines.
+    'logger.warning("Credential redacted in response: %s", w)': frozenset({"delivery"}),
+    'logger.warning("Credential redacted in thinking: %s", w)': frozenset({"delivery"}),
+    # test_messaging_auto_title: pin, deferred verdict, persist and claim in one file.
+    "auto_title.pin_record(conversation_log, session_key)": frozenset({"delivery"}),
+    "auto_title.try_claim(session_key)": frozenset({"delivery"}),
+    "try_claim(": frozenset({"delivery"}),
+    "_options_verdict_deferred = bool(": frozenset({"delivery"}),
+    "_turn_row_ts = await save_conversation_turn_off_loop(": frozenset({"delivery"}),
+    # test_persist_off_loop: every persistence site.
+    "save_conversation_turn_off_loop(": frozenset({"delivery", "dispatch"}),
+    # test_options_click_validation / test_slack_options_lifecycle.
+    "mint_options_token(": frozenset({"delivery"}),
+    "_options_owner =": frozenset({"delivery"}),
+    "maybe_handle_keyword_command": frozenset({"commands", "dispatch", "handler"}),
+    "await expire_slack_options(": frozenset({"delivery", "dispatch", "turn"}),
+    # test_update_check_install_aware_background_work: inbound admission, in handle_message.
+    "admit_inbound_callback(": frozenset({"handler"}),
+    # test_hooks / test_transport_permission_floor / test_messaging_deny_notice.
+    "**hook_gate_kwargs(event)": frozenset({"permission_ladder"}),
+    ".approve_tool(": frozenset({"permission_ladder"}),
+    ".reject_tool(": frozenset({"permission_ladder"}),
+    ".on_tool_call(": frozenset({"permission_ladder"}),
+    "await _steer_host_deny(": frozenset({"permission_ladder"}),
+    # test_name_grant_surfaces: the one off-loop entry point, the event-identity rung.
+    "asyncio.to_thread(name_grant": frozenset(),
+    'title == "spawn_run"': frozenset(),
+    # test_agent_spec_hardened_reads: the labelled call sites.
+    "project_agent_files(": frozenset({"agent_names"}),
+    "read_agent_spec_strict(": frozenset({"agent_names"}),
+    "_CC_AGENT_NAME_RE": frozenset({"handler"}),
+    # the internal content scan: the companion-plugin agent home is named in the facade.
+    '/ "cc-plugins"': frozenset({"handler"}),
+    # test_safety_override / test_messaging_privacy_mode: shapes no file may hold.
+    "remaining // 60": frozenset(),
+    "resolve_pre_turn(": frozenset(),
+    "mark_temporary(": frozenset(),
+    "mark_incognito(": frozenset(),
+}
 
 
-def test_no_owner_holds_a_construct_a_handler_guard_counts() -> None:
-    """The other half: a guard that counts a construct in ``handler.py`` would lose
-    it silently if it moved into an owner, so no owner may hold one."""
-    needles = (
-        ".approve_tool(",
-        ".reject_tool(",
-        ".on_tool_call(",
-        "begin_turn(",
-        "check_context_usage(",
-        "compact_if_needed(",
-        "consume_reinjection(",
-        "rearm_reinjection(",
-        "caused_by_this_session",
-        "note_shared_death",
-        "session_store_for_turn(",
-        "save_conversation_turn_off_loop(",
-        "mint_options_token(",
-        "try_claim(",
-        "resolve_pre_turn(",
-        "mark_temporary(",
-        "mark_incognito(",
-        "remaining // 60",
-        "asyncio.to_thread(name_grant",
-        'title == "spawn_run"',
-        "project_agent_files(",
-        "read_agent_spec_strict(",
-        "_CC_AGENT_NAME_RE",
-    )
-    held = {
-        stem: [needle for needle in needles if needle in source]
-        for stem, source in _owner_sources().items()
-    }
-    assert {stem: hits for stem, hits in held.items() if hits} == {}
+def _holder_sources() -> dict[str, str]:
+    """The facade's and every owner's source, keyed by stem."""
+    return {"handler": _FACADE_PATH.read_text(encoding="utf-8"), **_owner_sources()}
+
+
+@pytest.mark.parametrize("token", sorted(_GUARDED_TOKEN_HOMES))
+def test_a_construct_a_guard_reads_stays_where_the_guard_reads_it(token: str) -> None:
+    holders = {stem for stem, source in _holder_sources().items() if token in source}
+    assert holders == _GUARDED_TOKEN_HOMES[token]
+
+
+def test_a_counted_construct_keeps_its_count_in_its_home() -> None:
+    """The guards that COUNT a construct count it in the file its home names."""
+    ladder = _owner_sources()["permission_ladder"]
+    assert _calls_in(ladder, "_answer_permission_request", "approve_tool") == 4
+    assert _calls_in(ladder, "handle_interaction", "approve_tool") == 1  # permission floor
+    assert ladder.count(".reject_tool(") == 4  # test_messaging_deny_notice
+    assert ladder.count("await _steer_host_deny(") == 2  # test_messaging_deny_notice
+    hook_gates = r"await run_in_tool_gate_pool\(\s*context_builder\.hooks\.on_tool_call,"
+    assert len(re.findall(hook_gates, ladder)) == 2  # test_hooks
+    persists = [s.count("save_conversation_turn_off_loop(") for s in _holder_sources().values()]
+    assert sum(persists) >= 7  # test_persist_off_loop
+
+
+def test_the_import_time_phase_table_is_built_in_the_facade() -> None:
+    """The facade's body runs before ``compose``, so the function that builds its
+    import-time phase table is defined there."""
+    tree = ast.parse(_FACADE_PATH.read_text(encoding="utf-8"))
+    assert "_build_phase_emojis" in {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
 
 
 def test_a_frame_in_an_owner_is_attributed_to_slack() -> None:

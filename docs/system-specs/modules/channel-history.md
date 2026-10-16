@@ -77,7 +77,7 @@ thread whose fenced thread-replies block is present, that block replaces this
 channel-history leg, so the same messages are not shown twice. The thread-context
 block is emitted whenever `channel_id` and `thread_ts` are both set.
 
-### Handler (`slack/handler.py`)
+### Handler (`slack/handler_runtime/turn.py`)
 
 Passes `channel_id=channel` and `thread_ts=thread_ts or msg_ts` to `build_message()`.
 

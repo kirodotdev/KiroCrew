@@ -18,6 +18,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_state, drain_background_tasks
+from test_handler_turn import SLACK_TURN_FUNCTIONS, TURN_ENTRY_FUNCTIONS
 from turn_harness import SlotSpec, TurnContext, TurnScript, run_turn
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, AcpEvent
@@ -763,7 +764,8 @@ class TestTurnEntryWiring:
         import inspect
 
         module = importlib.import_module(module_name)
-        source = inspect.getsource(getattr(module, func_name))
+        names = TURN_ENTRY_FUNCTIONS.get((module_name, func_name), (func_name,))
+        source = "".join(inspect.getsource(getattr(module, name)) for name in names)
 
         acquire = source.find("get_or_create(")
         assert acquire != -1, f"{func_name} no longer calls get_or_create"
@@ -1643,7 +1645,7 @@ class TestControlPostedAfterTheWindowIsSpent:
             "the record must consume the resolved owner, not a re-derived key"
         )
 
-        footer = inspect.getsource(handler.handle_message)
+        footer = "".join(inspect.getsource(getattr(handler, n)) for n in SLACK_TURN_FUNCTIONS)
         owner = footer.find("_options_owner =")
         assert owner != -1, "the footer path must resolve the owner once, into a variable"
         assert "get_session_for_thread(reply_ts) or session_key" in footer[owner : owner + 200]
@@ -1681,7 +1683,7 @@ class TestControlPostedAfterTheWindowIsSpent:
             ),
             (
                 "handler",
-                inspect.getsource(handler.handle_message),
+                "".join(inspect.getsource(getattr(handler, n)) for n in SLACK_TURN_FUNCTIONS),
                 ('.lower() == "status"', "if _only_modifier:", "_Permission denied._"),
             ),
         ):

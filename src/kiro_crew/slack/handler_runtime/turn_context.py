@@ -4,7 +4,7 @@ The thread's first message when a new Slack-born session opens in a thread it di
 start (``slack/thread_parent.py``, which also records it as the transcript's first row),
 the replies posted since this conversation's last turn in the thread
 (``slack/thread_replies.py``), and the ``conversations.replies`` fallback line that
-stands in for the parent when its fetch found nothing. ``handle_message`` passes each
+stands in for the parent when its fetch found nothing. ``_run_turn`` passes each
 result to ``ContextBuilder.build_message``.
 
 Composed onto :mod:`kiro_crew.slack.handler`; see

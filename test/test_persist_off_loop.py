@@ -313,6 +313,8 @@ def test_every_slack_persist_site_goes_through_the_choke_point() -> None:
     ]
     # The gateway facade's composed owners hold part of its persist sites.
     paths += sorted((root / "slack" / "gateway_runtime").glob("*.py"))
+    # So do the handler facade's.
+    paths += sorted((root / "slack" / "handler_runtime").glob("*.py"))
     for path in paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):

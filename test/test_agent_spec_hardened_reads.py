@@ -1219,7 +1219,7 @@ _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/member_essential_context.py": [("member_essentials", "context")],
     # Slack's shared discovery helper forwards the operation its two routes name
     # (the listing, the name resolution); the channel is fixed, so it is a literal.
-    "kiro_crew/slack/handler.py": [("forward:operation", "slack")],
+    "kiro_crew/slack/handler_runtime/agent_names.py": [("forward:operation", "slack")],
 }
 
 
@@ -1379,7 +1379,7 @@ _EXPECTED_STRICT_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     ],
     "kiro_crew/doctor_deadpath.py": [("doctor", "cli")],
     "kiro_crew/mcp_gateway/rewriter.py": [("mcp_overlay_rewrite", "unknown")],
-    "kiro_crew/slack/handler.py": [("slack_resolve_agent", "slack")],
+    "kiro_crew/slack/handler_runtime/agent_names.py": [("slack_resolve_agent", "slack")],
 }
 
 

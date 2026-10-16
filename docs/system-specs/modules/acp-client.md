@@ -2269,7 +2269,7 @@ whose transport behaviour this module owns.
   the retry ladder nor the throttle fallback chain re-sends a history every model
   refuses, and the formatter words it with the cause and the fix (start a fresh
   session).
-- `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
+- `AcpPromptBusy` — a prompt is already in progress on the session, classified from kiro-cli's "already in progress" text via `_PROMPT_BUSY_RE` and raised at prompt-dispatch sites. `slack/handler_runtime/turn.py` catches it and auto-resets the wedged session (`sessions.reset`) before recording the failure, so the next message cold-starts cleanly.
 
 ### `AcpProcessDied` on a stalled stdin write
 

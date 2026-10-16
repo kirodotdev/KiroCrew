@@ -1931,7 +1931,7 @@ class DashboardContributor(Protocol):
     def decorate_reply(self, text: str, *, channel: str, user_id: str) -> str:
         """Transform an outbound Slack reply just before it is sent (Default: identity).
 
-        WIRED: ``slack/handler.py`` calls this on the finalized reply text on the
+        WIRED: ``slack/handler_runtime/delivery.py`` calls this on the finalized reply text on the
         outbound path, inside a fail-safe guard (a raising decorator falls back to
         the undecorated text). The public Default returns ``text`` unchanged.
 

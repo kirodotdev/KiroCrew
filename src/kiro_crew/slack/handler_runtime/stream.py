@@ -269,15 +269,16 @@ def _blocks_with_run(blocks: Any, run: str) -> list[dict[str, Any]] | None:
 class _AnswerStream:
     """The Slack wire one native turn's answer is written to.
 
-    ``handle_message`` builds one per turn, before its prompt opens. It holds every
+    ``_run_turn`` (``turn.py``) builds one per turn, before its prompt opens. It holds every
     piece of per-turn state the Slack projection of the answer reads and writes: the
     stream message (``stream_ts``) and whether streaming is live, the reasoning
     placeholder posted above it, the answer and reasoning text accumulated so far, the
     unsent buffer and the OPTIONS / control-tag hold, the rolling credential redactor,
     the redaction and delivery-debt flags the end of the turn reads, and the task card
     of the tool that is running. The turn loop hands each event to the matching
-    ``on_*`` method; the verdict, the approval ladder and the persistence stay in
-    ``handle_message``, which reads this object's flags.
+    ``on_*`` method; the approval ladder is ``_answer_permission_request``'s
+    (``permission_ladder.py``), and the verdict and the persistence are
+    ``_deliver_answer``'s (``delivery.py``), which reads this object's flags.
     """
 
     def __init__(
@@ -452,7 +453,7 @@ class _AnswerStream:
         # Best-effort: MUST NOT raise. A raising append is the same event as a refused
         # append — the text is not on the stream — and the refusal path below (rotate,
         # then retry once) already handles it. Letting it raise would escape into the
-        # turn loop's generic catch-all in ``handle_message`` and fake a terminal error
+        # turn loop's generic catch-all in ``_run_turn`` and fake a terminal error
         # on a live turn.
         try:
             ok = await self.slack.append_stream(self.channel, self.stream_ts, safe)
@@ -584,7 +585,7 @@ class _AnswerStream:
         # its own API errors and returns False, but a client that does not (or a
         # transport that raises before that guard) would send the exception up
         # into the streaming loop, where nothing catches a non-ACP error: the
-        # typed ``except`` arms of the turn loop in ``handle_message`` are all
+        # typed ``except`` arms of the turn loop in ``_run_turn`` are all
         # ``kiro_crew.acp.client`` errors, so it reaches the generic
         # ``except Exception`` catch-all, which
         # renders the terminal "🔧 Something went wrong" message and records a
@@ -687,7 +688,7 @@ class _AnswerStream:
             # ``post_message``, which raises (``resp["ts"]``) on a Slack refusal.
             # A raise here escapes the streaming loop while the ACP turn is still
             # live and reaches the turn loop's generic ``except Exception`` catch-all in
-            # ``handle_message`` (the typed arms are all ``kiro_crew.acp.client`` errors),
+            # ``_run_turn`` (the typed arms are all ``kiro_crew.acp.client`` errors),
             # rendering the terminal "🔧 Something went wrong" message on a run
             # that is still succeeding. Keep it best-effort. On failure leave
             # ``stream_ts`` as ``None``: there is no placeholder to update, and
@@ -735,7 +736,7 @@ class _AnswerStream:
         if self.status_dirty and self.use_slack_stream:
             # Best-effort: MUST NOT raise. The thread
             # status is decoration, and a raise here escapes into the
-            # turn loop's generic ``except Exception`` catch-all in ``handle_message``,
+            # turn loop's generic ``except Exception`` catch-all in ``_run_turn``,
             # faking a terminal error on a live turn.
             try:
                 await self.slack.set_thread_status(self.channel, self.reply_ts, _STATUS_WORKING)

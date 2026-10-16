@@ -106,7 +106,6 @@
 6051 src/kiro_crew/session_pid.py
 5246 src/kiro_crew/session_storage.py
 3685 src/kiro_crew/slack/events.py
-3789 src/kiro_crew/slack/handler.py
 3892 src/kiro_crew/slack/interactions.py
 2115 src/kiro_crew/snapshot.py
 4774 src/kiro_crew/subagent_manager/run.py

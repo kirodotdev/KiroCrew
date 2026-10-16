@@ -779,7 +779,7 @@ Wired sites:
 - `agent.py` — `current_context().mcp_tooling.extra_mcp_servers()` merged
   additively into the agent config build; the dynamic refresh also re-pins an
   existing entry's `command`/`args` and keeps its other keys.
-- `slack/events.py` / `slack/handler.py` / `dashboard/handlers_system.py` —
+- `slack/events.py` / `slack/handler_runtime/dispatch.py` / `dashboard/handlers_system.py` —
   Slack enterprise gate + SSO status route through `slack_gate` / `identity`.
 - `mcp_gateway/manager.py` — `GatewayManager._spawn_once` resolves
   `current_context().identity.credential_watch_paths()` (v1 method addition to
@@ -811,7 +811,7 @@ Wired sites:
 - `apps/registry_pipeline/sources.py` / `apps/routes.py` — clone-sandbox-mode decision routes
   through `current_context().registry` (`_context_clone_sandbox_mode`).
 - Telemetry `record_event` sites — `dashboard/server_runtime/diagnostics.py` records `gateway_start`
-  at boot; `dashboard/chat_runner.py` and `slack/handler.py` record one
+  at boot; `dashboard/chat_runner.py` and `slack/handler_runtime/turn.py` record one
   `interaction` event per successful chat turn (immediately after the
   `record_success` call, non-cancelled / non-retrying branch only; cancelled
   turns emit nothing). **The interaction payload is strictly metadata —
@@ -1428,7 +1428,7 @@ representative rather than exhaustive.
     the invariant).
   - `DashboardContributor.decorate_reply(text, *, channel, user_id) -> str` —
     outbound-reply transform, AFTER the redaction passes. Default identity. Wired
-    on BOTH Slack reply paths: native `slack/handler.py::handle_message` AND the
+    on BOTH Slack reply paths: native `slack/handler_runtime/delivery.py::_deliver_answer` AND the
     default `slack/renderer.py::SlackRenderer.on_done` (the `handle_message_transport`
     path that normal non-review traffic uses — `SlackRenderer` takes a `user_id`
     kwarg for it). Decorator-introduced text is re-scanned (`redact_exfiltration_urls`
