@@ -311,7 +311,6 @@
 2479 test/test_messaging_privacy_mode.py
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
-5067 test/test_native_skill_projection.py
 5822 test/test_onboarding_import.py
 3135 test/test_onboarding_import_coverage.py
 2190 test/test_onboarding_import_refactor_contract.py

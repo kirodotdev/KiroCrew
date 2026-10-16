@@ -33,7 +33,7 @@ def _fresh_view_memory(monkeypatch, tmp_path):
     monkeypatch.setattr(projection, "data_home", lambda: tmp_path / "crew", raising=False)
     # These tests build pre-ledger backlogs by dropping projections; the eager
     # prune a dropped projection runs would retire them before the drain under
-    # test does. Pinned by test_native_skill_projection.
+    # test does. Pinned by test_native_skill_projection_rewrites.
     monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
 
 

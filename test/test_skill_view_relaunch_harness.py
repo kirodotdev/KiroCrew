@@ -269,7 +269,7 @@ def host_tree(tmp_path, monkeypatch):
     monkeypatch.setattr(runtime_mod, "_PROJECTED_MODE_RETRY_DELAYS_SECS", (0.0, 0.0), raising=False)
     # The harness measures what each spawn's own prune leaves between spawns; a
     # dropped projection's eager prune (which runs on a thread off the event
-    # loop) would race those counts. Pinned by test_native_skill_projection.
+    # loop) would race those counts. Pinned by test_native_skill_projection_rewrites.
     monkeypatch.setattr(projection, "_eager_prune", lambda directory, crew_home_id: None)
     for name in AGENTS:
         resources = [] if name == "plain" else [f"skill://catalog/{name}/*/SKILL.md"]
