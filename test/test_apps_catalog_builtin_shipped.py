@@ -110,6 +110,25 @@ class TestCatalogBuiltinRowsIntersectShippedBuiltins:
         assert [r["displayName"] for r in rows] == ["Catalog"]
 
     @pytest.mark.asyncio
+    async def test_the_first_of_two_edition_rows_sharing_a_name_is_listed(self, monkeypatch):
+        """Edition rows dedupe by name as ``_load_registry_file`` does: the first wins."""
+        _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
+        monkeypatch.setattr(
+            registry,
+            "_edition_registry_rows",
+            lambda: [
+                {"name": "edition-app", "displayName": "First", "source": {"type": "builtin"}},
+                {"name": "edition-app", "displayName": "Second", "source": {"type": "builtin"}},
+            ],
+        )
+        monkeypatch.setattr(
+            registry, "shipped_builtin_names", lambda: {"shipped-app", "edition-app"}
+        )
+
+        rows = [r for r in await registry.list_catalog_apps() if r["name"] == "edition-app"]
+        assert [r["displayName"] for r in rows] == ["First"]
+
+    @pytest.mark.asyncio
     async def test_edition_builtin_row_this_build_does_not_ship_is_dropped(self, monkeypatch):
         """Edition rows pass the same shipped-builtin filter as catalog rows."""
         _catalog(monkeypatch, [{"name": "shipped-app", "source": {"type": "builtin"}}])
