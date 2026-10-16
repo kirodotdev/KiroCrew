@@ -3553,5 +3553,156 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
         _CLAIMED_SEL_ROOTS.add(root)
 
 
+class TestAStoodDownLoopStaysDown(unittest.IsolatedAsyncioTestCase):
+    """A crew loop that stood down on its own failures is not revived by the watchdog.
+
+    Driven against the REAL ``AutoNudgeService``: the defect is the interaction
+    between the watchdog's ``update(active=True)`` and the service's revival, which
+    zeroes the failure streak, so a fake that only records calls cannot show it.
+    The loop is armed by the watchdog itself (no loop yet -> ``launch_crew``), as on
+    a gateway that just started.
+    """
+
+    async def asyncSetUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        reset_singleton()
+        self.addCleanup(reset_singleton)
+        from kiro_crew.autonudge import AutoNudgeService
+
+        self.svc = AutoNudgeService(base_dir=self.root / "autonudge")
+        await self.svc.start()
+        self.state = _FakeState()
+        self.crew = _crew(self.root, unattended=True)
+        self.slot_key = f"crew-{self.crew['id']}"
+        patcher = mock.patch.object(cr, "_autonudge_instance", lambda: self.svc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        await self._watchdog()
+        self.loop_id = self.svc.get_by_slot(self.slot_key).id
+
+    async def asyncTearDown(self):
+        # Settle every task that can still write under the temporary store before
+        # the directory is removed. A detached persist (``_persist_soon``) writes
+        # from a worker thread that cancelling its task does not stop, so those are
+        # awaited, not cancelled. Timers and the reconciler are cancelled by
+        # ``stop()`` and awaited until they have actually finished.
+        await asyncio.gather(*list(self.svc._inflight_adds), return_exceptions=True)
+        tasks = list(self.svc._timers.values())
+        if self.svc._reconciler is not None:
+            tasks.append(self.svc._reconciler)
+        self.svc.stop()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await asyncio.gather(*list(self.svc._inflight_adds), return_exceptions=True)
+
+    async def _watchdog(self) -> None:
+        record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
+        await cr.watchdog_cycle(self.state, OWNER, REPO, [record], self.root)
+
+    async def _stand_down(self, failures_field: str) -> None:
+        """Five failed cycles, then the tick that stands the loop down."""
+        setattr(self.svc._loops[self.loop_id], failures_field, 5)
+        self.svc._cancel_timer(self.loop_id)
+        self.svc._arm_timer(self.svc._loops[self.loop_id], delay=0)
+        await self.svc._timers[self.loop_id]
+        self.assertFalse(self.svc._loops[self.loop_id].active)
+
+    async def test_a_failure_stand_down_pauses_the_crew_instead_of_reviving(self):
+        from kiro_crew.autonudge import CONSECUTIVE_FAILURE_REASON
+
+        await self._stand_down("consecutive_failed_cycles")
+        self.assertEqual(
+            self.svc._loops[self.loop_id].stopped_reason, CONSECUTIVE_FAILURE_REASON
+        )
+
+        await self._watchdog()
+
+        # The loop is NOT running again with a fresh streak -- that revival is what
+        # turned five failed turns into an endless series of five.
+        self.assertIsNone(self.svc.get_by_slot(self.slot_key))
+        record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
+        self.assertFalse(cr.is_live(record))
+        self.assertEqual(record["paused_reason"], cr.STOOD_DOWN_PAUSE_REASON)
+        # Paused means paused: the unattended grant is gone too.
+        self.assertFalse(_effectively_trusted(self.state.slots[self.slot_key]))
+
+        # And later passes leave it that way.
+        await self._watchdog()
+        self.assertIsNone(self.svc.get_by_slot(self.slot_key))
+
+    async def test_a_start_failure_stand_down_pauses_the_crew_too(self):
+        from kiro_crew.autonudge import SESSION_START_FAILURE_REASON
+
+        await self._stand_down("consecutive_start_failures")
+        self.assertEqual(
+            self.svc._loops[self.loop_id].stopped_reason, SESSION_START_FAILURE_REASON
+        )
+
+        await self._watchdog()
+
+        self.assertIsNone(self.svc.get_by_slot(self.slot_key))
+        record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
+        self.assertEqual(record["paused_reason"], cr.STOOD_DOWN_PAUSE_REASON)
+
+    async def test_resuming_the_crew_relaunches_a_fresh_loop(self):
+        await self._stand_down("consecutive_failed_cycles")
+        await self._watchdog()
+        off_loop(cs.set_crew_paused, OWNER, REPO, self.crew["id"], False, "", self.root)
+
+        await self._watchdog()
+
+        relaunched = self.svc.get_by_slot(self.slot_key)
+        self.assertIsNotNone(relaunched)
+        self.assertTrue(relaunched.active)
+        self.assertNotEqual(relaunched.id, self.loop_id)
+        self.assertEqual(relaunched.consecutive_failed_cycles, 0)
+        self.assertTrue(_effectively_trusted(self.state.slots[self.slot_key]))
+
+    async def test_a_crew_paused_by_hand_after_the_stand_down_resumes_fresh(self):
+        """The person got there first: the crew was paused before any pass saw the
+        stand-down. Its Resume must relaunch the crew, not meet the spent loop and
+        be paused again."""
+        await self._stand_down("consecutive_failed_cycles")
+        off_loop(cs.set_crew_paused, OWNER, REPO, self.crew["id"], True, "lunch", self.root)
+        await self._watchdog()
+        self.assertIsNone(self.svc.get_by_slot(self.slot_key))
+
+        off_loop(cs.set_crew_paused, OWNER, REPO, self.crew["id"], False, "", self.root)
+        await self._watchdog()
+
+        record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
+        self.assertTrue(cr.is_live(record))
+        relaunched = self.svc.get_by_slot(self.slot_key)
+        self.assertIsNotNone(relaunched)
+        self.assertTrue(relaunched.active)
+
+    async def test_any_other_deactivation_is_still_switched_back_on(self):
+        """The unchanged half: a loop deactivated for any other reason (a crew that
+        was paused and then resumed, a stop from the loop popover) is re-armed, which is what
+        makes "enabled" mean enabled."""
+        await self.svc.update(self.loop_id, active=False)
+        self.assertFalse(self.svc._loops[self.loop_id].active)
+
+        await self._watchdog()
+
+        self.assertTrue(self.svc._loops[self.loop_id].active)
+        record = cs.read_crew(OWNER, REPO, self.crew["id"], self.root)
+        self.assertTrue(cr.is_live(record))
+
+    async def test_an_unwritable_record_leaves_the_loop_stopped(self):
+        """Fail closed: when the pause cannot be written the loop is neither revived
+        nor removed. Removing it would let the next pass relaunch a crew whose
+        record still reads live."""
+        await self._stand_down("consecutive_failed_cycles")
+        with mock.patch.object(cs, "set_crew_paused", side_effect=OSError("disk full")):
+            await self._watchdog()
+
+        loop = self.svc.get_by_slot(self.slot_key)
+        self.assertIsNotNone(loop)
+        self.assertEqual(loop.id, self.loop_id)
+        self.assertFalse(loop.active)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
