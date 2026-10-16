@@ -897,16 +897,6 @@ const ARBITRARY_BG_CLASS_RE = new RegExp(
   'gi',
 )
 
-/** Test-only: the light-canvas detector's composed regexes, so a parity test
- * can pin each `.source` and `.flags` to the hand-written literals they
- * replaced. Not used at runtime. */
-export const __lightCanvasRegexesForTests = {
-  LIGHT_TAILWIND_BG_RE,
-  DARK_TAILWIND_BG_RE,
-  DARK_VARIANT_RE,
-  ARBITRARY_BG_CLASS_RE,
-} as const
-
 /** Relative luminance (0..1) of a CSS `#hex` / `rgb()` / `white` literal, or
  * null when it cannot be parsed. `parseCssColor` (the favicon-contrast parser)
  * already reads every form the regexes above capture except the `white`
