@@ -14,6 +14,7 @@ import re
 import time
 from pathlib import Path
 
+from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
 from skill_script_helpers import load_skill_script
 
 from conftest import make_dir_link
@@ -31,7 +32,7 @@ class FleetProbeHarness:
     """The fleet-probe script run over fixtures, shared by the ``TestFleetProbe*`` classes."""
 
     def _mod(self):
-        return load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        return load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
 
     def _session(self, sessions_dir: Path, key: str, text: str, *, age_secs: int = 0) -> None:
         path = sessions_dir / f"{key}.jsonl"

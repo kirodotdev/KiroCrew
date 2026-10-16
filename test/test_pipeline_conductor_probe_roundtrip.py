@@ -33,6 +33,7 @@ import json
 import re
 from pathlib import Path
 
+from pipeline_conductor_fleet_probe_helpers import LOAD_NAME
 from skill_script_helpers import load_skill_script
 
 from kiro_crew.acp.types import TurnUsage
@@ -57,7 +58,7 @@ def _probe(tmp_path: Path, monkeypatch, sessions: list[str]):
     monkeypatch.setenv("KIROCREW_PROBE_PROC_ROOT", str(tmp_path / "no-proc"))
     cfg_path = tmp_path / "probe-config.json"
     cfg_path.write_text(json.dumps({"sessions": sessions}), encoding="utf-8")
-    mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+    mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
     return mod, cfg_path
 
 
@@ -101,7 +102,7 @@ class TestDeliveryPatternRoundTrip:
             TOOL_STALL_RECOVERY_PREFIX,
         )
 
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         patterns = [re.compile(rx) for rx in mod.DEFAULT_WATCHDOG_RES]
         for emitted in (
             f"{TOOL_STALL_RECOVERY_PREFIX} resume from your last committed step",
@@ -117,7 +118,7 @@ class TestDeliveryPatternRoundTrip:
         separator would understate the index and make a talking session read as
         deadlocked."""
         monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "crew"))
-        mod = load_skill_script("fleet_probe", SKILL_DIR / "scripts" / "fleet_probe.py")
+        mod = load_skill_script(LOAD_NAME, SKILL_DIR / "scripts" / "fleet_probe.py")
         log = ConversationLog(base_dir=tmp_path / "crew" / "sessions")
         log.append("s-needle", "user", "seed")  # inbound: must NOT count
         log.append("s-needle", "assistant", "WORKING: one")
