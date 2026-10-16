@@ -3712,8 +3712,10 @@ is announced once, and that a tier intersect is audited once per pair),
 `test_governance_self_protection.py` (keystone), `test_governance_profiles.py`
 (resolution + binding + hot-reload + fail-closed reload dispositions),
 `test_governance_gate.py` (Plane A enforcement + audit),
-`test_governance_chokepoints.py` (sandbox/cron/spawn/helpers + egress-reserved +
-the per-transport inbound gates), `test_governance_channels_endpoint.py`
+`test_governance_chokepoints_scope_gates.py` (sandbox/cron/spawn/helpers + the
+per-transport inbound gates + the capability, app and publish chokepoints),
+`test_governance_chokepoints.py` (filesystem/egress at the host gate + the
+degraded and fail-closed chokepoints), `test_governance_channels_endpoint.py`
 (`/api/governance/channels`, incl. the eval-error→`null` distinction),
 `test_governance_policy_viewer.py` (`/api/governance/policy` posture-only, incl.
 `test_detail_never_leaks_rule_contents` and `TestScopeAttribution` — that a

@@ -1348,6 +1348,7 @@ integration test — nothing in the tree runs the full loop against a live repos
 - Repo-level handler and coverage tests under `test/`: `test_ai_backend_routes_coverage.py`,
   `test_ai_agent_runner_coverage.py`, `test_ai_runner_coverage.py`,
   `test_ai_pr_watchers_coverage.py`, `test_ai_spine_driver_coverage.py`,
+  `test_ai_spine_driver_coverage_cycle.py`,
   `test_driver_owner_bindings.py`,
   `test_ai_github_profile_coverage.py`, `test_ai_runner_purpose_not_identity.py`,
   `test_auto_improvement_owner_gate.py`, `test_auto_improvement_members.py` and

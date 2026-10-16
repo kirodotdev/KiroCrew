@@ -161,7 +161,6 @@
 9493 test/test_agent.py
 2896 test/test_agent_home_isolation.py
 3538 test/test_agent_panel_routes.py
-2359 test/test_ai_spine_driver_coverage.py
 2200 test/test_app_backend_composition_contract.py
 4051 test/test_app_manager.py
 2324 test/test_app_manifest.py
@@ -203,7 +202,6 @@
 3125 test/test_cron_script.py
 2247 test/test_cron_secret_env.py
 3175 test/test_dashboard_approval.py
-2347 test/test_dashboard_chat_pins.py
 2718 test/test_dashboard_server_composition_contract.py
 3002 test/test_dashboard_source_link_unlink.py
 2430 test/test_dashboard_state_ws.py
@@ -222,7 +220,6 @@
 2872 test/test_file_change_snapshots.py
 4162 test/test_gateway_appkit_endpoints.py
 4437 test/test_github_pull_request_monitor.py
-2349 test/test_governance_chokepoints.py
 5410 test/test_governance_distribution.py
 2539 test/test_governance_policy.py
 3102 test/test_handlers_memory_coverage.py
@@ -279,7 +276,6 @@
 2147 test/test_recovery_l1_chat_runner.py
 5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
-2356 test/test_sandbox_governance_mask.py
 12647 test/test_security.py
 3048 test/test_security_conductor_ledger.py
 2501 test/test_security_conductor_scripts.py
