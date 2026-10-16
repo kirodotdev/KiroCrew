@@ -446,6 +446,90 @@ class TestArchiveInventoryBound:
         assert doc_parser._extract_pptx(str(path)) == ""
 
 
+# ── DOCX paragraph walk ──
+
+
+def _docx_from_body(body: str) -> str:
+    """A minimal .docx whose ``<w:body>`` is *body*, returned as a temp path."""
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+        f"<w:body>{body}</w:body></w:document>"
+    )
+    fd, path = tempfile.mkstemp(suffix=".docx")
+    os.close(fd)
+    with zipfile.ZipFile(path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("word/document.xml", xml)
+    return path
+
+
+class _CountingNode:
+    """An element-shaped node that counts how often its children are iterated."""
+
+    visits = 0
+
+    def __init__(self, tag: str, children=(), text: str | None = None):
+        self.tag, self.text, self._children = tag, text, list(children)
+
+    def __iter__(self):
+        for child in self._children:
+            _CountingNode.visits += 1
+            yield child
+
+
+class TestDocxParagraphWalk:
+    _P = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"
+    _T = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"
+    _R = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}r"
+
+    def test_each_text_is_credited_once_to_its_innermost_paragraph(self):
+        path = _docx_from_body(
+            "<w:p><w:r><w:t>outer</w:t></w:r>"
+            "<w:p><w:r><w:t>inner</w:t></w:r></w:p>"
+            "<w:r><w:t>-tail</w:t></w:r></w:p>"
+            "<w:p><w:r><w:t>next</w:t></w:r></w:p>"
+        )
+        try:
+            assert extract_text(path, filename="n.docx") == "inner\nouter-tail\nnext"
+        finally:
+            os.unlink(path)
+
+    def test_text_outside_any_paragraph_is_ignored(self):
+        path = _docx_from_body("<w:r><w:t>stray</w:t></w:r><w:p><w:r><w:t>kept</w:t></w:r></w:p>")
+        try:
+            assert extract_text(path, filename="s.docx") == "kept"
+        finally:
+            os.unlink(path)
+
+    def test_nesting_deeper_than_the_recursion_limit_is_walked(self):
+        depth = 100_000
+        path = _docx_from_body(
+            "<w:p>" * depth + "<w:r><w:t>deepest</w:t></w:r>" + "</w:p>" * depth
+        )
+        try:
+            assert extract_text(path, filename="deep.docx") == "deepest"
+        finally:
+            os.unlink(path)
+
+    def test_the_walk_visits_each_element_once(self):
+        """Linear by count, not by clock: N nested paragraphs, each with a run and
+        a text, cost exactly one visit per element."""
+        from kiro_crew.doc_parser import _docx_paragraph_texts
+
+        depth = 2000
+        node = None
+        for i in range(depth):
+            run = _CountingNode(self._R, [_CountingNode(self._T, text=f"t{i}")])
+            node = _CountingNode(self._P, [run] + ([node] if node else []))
+        root = _CountingNode("body", [node])
+        _CountingNode.visits = 0
+
+        texts = list(_docx_paragraph_texts(root))
+
+        assert len(texts) == depth
+        assert _CountingNode.visits == 3 * depth  # one (p, r, t) per level
+
+
 # ── Aggregate extraction budget (max_chars) ──
 
 

@@ -23,7 +23,7 @@ import re
 import zipfile
 import zlib
 from pathlib import Path
-from typing import IO
+from typing import IO, Any, Iterator
 
 # Optional so a stale install (git pull without `pip install -e .`) degrades
 # to "docx/pptx parsing unavailable" instead of killing every CLI entry at
@@ -289,26 +289,55 @@ def _extract_docx(
         if data is None:
             return ""
         root = _xml_fromstring(data)
-        for para in root.iter(f"{_W_NS}p"):
-            texts: list[str] = []
-            for t_elem in para.iter(f"{_W_NS}t"):
-                if t_elem.text:
-                    texts.append(t_elem.text)
-            if texts:
-                joined = "".join(texts)
-                if paragraphs:
-                    # Count the "\n" separator only BETWEEN paragraphs, so
-                    # `collected` tracks len("\n".join(paragraphs)) exactly.
-                    # Charging the first paragraph a separator too let a
-                    # cap-sized opening paragraph stop extraction while the
-                    # caller's length check read the result as un-truncated,
-                    # silently dropping the rest of the document.
-                    collected += 1
-                paragraphs.append(joined)
-                collected += len(joined)
-                if max_chars is not None and collected >= max_chars:
-                    break
+        for joined in _docx_paragraph_texts(root):
+            if paragraphs:
+                # Count the "\n" separator only BETWEEN paragraphs, so
+                # `collected` tracks len("\n".join(paragraphs)) exactly. A
+                # separator charged to the first paragraph would let a
+                # cap-sized opening paragraph stop extraction while the
+                # caller's length check reads the result as un-truncated.
+                collected += 1
+            paragraphs.append(joined)
+            collected += len(joined)
+            if max_chars is not None and collected >= max_chars:
+                break
     return "\n".join(paragraphs)
+
+
+def _docx_paragraph_texts(root: Any) -> Iterator[str]:
+    """The non-empty text of each ``<w:p>`` under *root*, one pass over the tree.
+
+    Each ``<w:t>`` is credited to its innermost enclosing paragraph, so every
+    element is visited once and the cost is linear in the size of the tree,
+    including for paragraphs nested inside paragraphs. A paragraph is yielded
+    when it closes, which for non-nested paragraphs is document order. ``<w:t>``
+    outside any paragraph is ignored. The walk uses an explicit stack, so tree
+    depth is not limited by the interpreter's recursion limit.
+    """
+    para_tag, text_tag = f"{_W_NS}p", f"{_W_NS}t"
+    # Each frame: (children still to visit, text parts if this node is a <w:p>).
+    stack: list[tuple[Iterator[Any], list[str] | None]] = [(iter(root), None)]
+    open_paras: list[list[str]] = []
+    while stack:
+        children, parts = stack[-1]
+        child = next(children, None)
+        if child is None:
+            stack.pop()
+            if parts is not None:
+                open_paras.pop()
+                if parts:
+                    yield "".join(parts)
+            continue
+        if child.tag == text_tag:
+            if child.text and open_paras:
+                open_paras[-1].append(child.text)
+            continue
+        if child.tag == para_tag:
+            child_parts: list[str] = []
+            open_paras.append(child_parts)
+            stack.append((iter(child), child_parts))
+        else:
+            stack.append((iter(child), None))
 
 
 # ── PPTX parser (Office Open XML) ──
