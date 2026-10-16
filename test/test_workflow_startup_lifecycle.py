@@ -11,6 +11,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard import server
 from kiro_crew.taskrunner import TaskRunner, WorkflowInitializing
+from kiro_crew.testing.wait import await_until, finished
 from kiro_crew.workflows.service import WorkflowService
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -90,7 +91,7 @@ async def test_listener_serves_during_full_restore_then_publishes(monkeypatch, t
         task = state.workflow_startup_task
         server._kick_workflow_initialization(state)
         assert state.workflow_startup_task is task
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered, what="entered")
         headers = {"X-Test-Auth": "yes"}
         assert (await client.get("/api/health", headers=headers)).status == 200
         assert (await client.get("/api/workflows/runs")).status == 401
@@ -103,7 +104,7 @@ async def test_listener_serves_during_full_restore_then_publishes(monkeypatch, t
         assert state.task_runner._runs == {} and state.task_runner._tasks == {}
         assert not state.task_runner._start_ids_in_flight
         release.set()
-        await asyncio.wait_for(task, 3)
+        await await_until(task, what="startup task")
         assert state.workflow_startup_status == "ready"
         assert state.task_runner._workflow_service is state.workflow_service
         response = await client.get("/api/workflows/runs", headers=headers)
@@ -190,8 +191,8 @@ async def test_shutdown_cancels_recovery_and_prevents_late_publication(
     runner = web.AppRunner(app)
     await runner.setup()
     server._kick_workflow_initialization(state)
-    await asyncio.wait_for(entered.wait(), 3)
-    await asyncio.wait_for(runner.cleanup(), 3)
+    await await_until(entered, what="entered")
+    await finished(runner.cleanup(), "runner cleanup")
     assert state.workflow_startup_task.done()
     assert state.workflow_startup_stopping
     assert state.workflow_startup_status == "stopped"
@@ -376,7 +377,7 @@ async def test_canonical_gate_preserves_reads_and_cancel_and_reports_failure(
     server._register_workflow_lifecycle(app, state)
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
         server._kick_workflow_initialization(state)
-        await asyncio.wait_for(entered.wait(), 3)
+        await await_until(entered, what="entered")
         assert state.workflow_startup_task.get_name() == "workflow-initialization"
         assert (await client.get("/api/taskrunner")).status == 200
         assert (await client.post("/api/taskrunner/cancel", json={})).status == 200

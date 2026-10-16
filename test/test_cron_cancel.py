@@ -41,6 +41,7 @@ from kiro_crew.cron_script import (
     run_command_sandboxed,
 )
 from kiro_crew.dashboard.handlers.cron import api_cron_cancel
+from kiro_crew.testing.wait import LoopHop, await_until, finished, wait_until
 
 
 @pytest.fixture(autouse=True)
@@ -48,7 +49,9 @@ def _kill_seam(monkeypatch: pytest.MonkeyPatch) -> None:
     """POSIX-shaped kill path unless a test pins ``IS_WINDOWS``; every kill primitive refuses unless the test pins it (see cron_reaper_helpers.py)."""
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
     for name in _KILL_PRIMITIVES:
-        guard = _refuse_unpinned_signal_async if name.endswith("_async") else _refuse_unpinned_signal
+        guard = (
+            _refuse_unpinned_signal_async if name.endswith("_async") else _refuse_unpinned_signal
+        )
         monkeypatch.setattr(platform_compat, name, guard)
 
 
@@ -119,14 +122,10 @@ class TestCronServiceCancel:
         assert runs[0]["status"] == "cancelled"
         assert runs[0]["trigger"] == "manual"
         mock_sel().log_tool_invocation.assert_called_once()
-        assert (
-            mock_sel().log_tool_invocation.call_args.kwargs["tool_name"] == "cron_cancel"
-        )
+        assert mock_sel().log_tool_invocation.call_args.kwargs["tool_name"] == "cron_cancel"
 
     @pytest.mark.asyncio
-    async def test_cancel_script_job_kills_subprocess_not_session(
-        self, tmp_path: object
-    ) -> None:
+    async def test_cancel_script_job_kills_subprocess_not_session(self, tmp_path: object) -> None:
         """Script crons: subprocess is killed; no kiro-cli session reset -- and the audit lists no session as ended."""
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
@@ -141,9 +140,11 @@ class TestCronServiceCancel:
             task=MagicMock(done=MagicMock(return_value=False)),
         )
 
-        with patch(
-            "kiro_crew.cron_script.kill_running_process", return_value=True
-        ) as mock_kill, patch("kiro_crew.sel.sel") as mock_sel, patch.object(svc, "_save"):
+        with (
+            patch("kiro_crew.cron_script.kill_running_process", return_value=True) as mock_kill,
+            patch("kiro_crew.sel.sel") as mock_sel,
+            patch.object(svc, "_save"),
+        ):
             assert await svc.cancel("script1") is True
 
         mock_kill.assert_called_once_with("script1")
@@ -156,9 +157,7 @@ class TestCronServiceCancel:
         )
 
     @pytest.mark.asyncio
-    async def test_cancel_does_not_touch_consecutive_failures(
-        self, tmp_path: object
-    ) -> None:
+    async def test_cancel_does_not_touch_consecutive_failures(self, tmp_path: object) -> None:
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
         svc._sessions = _mock_sessions()
@@ -262,7 +261,9 @@ class TestCronServiceCancel:
         job = _make_job("popped")
         svc._jobs = [job]
         claim = svc._claims["popped"] = _RunClaim(
-            trigger="manual", claimed_at=time.time() - 42, task=MagicMock(done=MagicMock(return_value=False))
+            trigger="manual",
+            claimed_at=time.time() - 42,
+            task=MagicMock(done=MagicMock(return_value=False)),
         )
 
         with (
@@ -272,9 +273,7 @@ class TestCronServiceCancel:
             patch("kiro_crew.platform_compat.get_process_start_id", return_value="4821903"),
             _isolated_leader(),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", return_value=True
-            ) as group_kill,
+            patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             assert await svc.cancel("popped") is True
 
@@ -309,7 +308,9 @@ class TestCronServiceCancel:
         job = _make_job("survived")
         svc._jobs = [job]
         svc._claims["survived"] = _RunClaim(
-            trigger="manual", claimed_at=time.time() - 42, task=MagicMock(done=MagicMock(return_value=False))
+            trigger="manual",
+            claimed_at=time.time() - 42,
+            task=MagicMock(done=MagicMock(return_value=False)),
         )
 
         with (
@@ -322,9 +323,7 @@ class TestCronServiceCancel:
             # the verdict does not depend on what the host runs under a made-up pid.
             patch("kiro_crew.platform_compat.pid_exists", return_value=True),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", return_value=True
-            ) as group_kill,
+            patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             assert await svc.cancel("survived") is True
 
@@ -359,7 +358,9 @@ class TestCronServiceCancel:
         job = _make_job("torn")
         svc._jobs = [job]
         svc._claims["torn"] = _RunClaim(
-            trigger="manual", claimed_at=time.time() - 42, task=MagicMock(done=MagicMock(return_value=False))
+            trigger="manual",
+            claimed_at=time.time() - 42,
+            task=MagicMock(done=MagicMock(return_value=False)),
         )
 
         with (
@@ -370,9 +371,7 @@ class TestCronServiceCancel:
             _isolated_leader(),
             patch("kiro_crew.platform_compat.pid_exists", return_value=True),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", return_value=True
-            ) as group_kill,
+            patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             assert await svc.cancel("torn") is True
 
@@ -436,12 +435,15 @@ class TestCronServiceCancel:
         svc._sessions.ending_key = _fence
         svc._sessions.reset = AsyncMock(side_effect=_reset)
         svc._sessions._spawn_in_flight = MagicMock(
-            side_effect=lambda key: events.append(f"spawn in flight? {key}") or "refused at registration, its provider hard-killed there"
+            side_effect=lambda key: events.append(f"spawn in flight? {key}")
+            or "refused at registration, its provider hard-killed there"
         )
         job = _make_job("fenced")
         svc._jobs = [job]
         svc._claims["fenced"] = _RunClaim(
-            trigger="manual", claimed_at=time.time() - 42, task=MagicMock(done=MagicMock(return_value=False))
+            trigger="manual",
+            claimed_at=time.time() - 42,
+            task=MagicMock(done=MagicMock(return_value=False)),
         )
 
         with (
@@ -508,7 +510,9 @@ class TestCronServiceCancel:
         job = _make_job("late")
         svc._jobs = [job]
         svc._claims["late"] = _RunClaim(
-            trigger="manual", claimed_at=time.time() - 42, task=MagicMock(done=MagicMock(return_value=False))
+            trigger="manual",
+            claimed_at=time.time() - 42,
+            task=MagicMock(done=MagicMock(return_value=False)),
         )
 
         with (
@@ -520,9 +524,7 @@ class TestCronServiceCancel:
             patch("kiro_crew.platform_compat.pid_exists", return_value=True),
             patch("kiro_crew.platform_compat.pgroup_exists", return_value=False),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", return_value=True
-            ) as group_kill,
+            patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
             caplog.at_level("WARNING", logger="kiro_crew.cron"),
         ):
             assert await svc.cancel("late") is True
@@ -539,15 +541,13 @@ class TestCronServiceCancel:
             "; kill failed: a session registered under the key after the reset's pop (pid 5656); "
             "not reset, not signalled"
         ) in (job.last_error or "")
-        assert mock_sel().log_tool_invocation.call_args.kwargs["outcome"] == "failed", (
-            "cancel recorded cancelled over a process it never answered"
-        )
+        assert (
+            mock_sel().log_tool_invocation.call_args.kwargs["outcome"] == "failed"
+        ), "cancel recorded cancelled over a process it never answered"
         assert 5656 in {s.provider._client._pid for s in svc._sessions._sessions.values()}
 
     @pytest.mark.asyncio
-    async def test_run_job_isolated_skips_history_when_cancelled(
-        self, tmp_path: object
-    ) -> None:
+    async def test_run_job_isolated_skips_history_when_cancelled(self, tmp_path: object) -> None:
         """The normal completion path must not double-record after cancel()."""
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
@@ -776,9 +776,7 @@ class TestCronServiceCancel:
             patch("kiro_crew.platform_compat.pgroup_exists", return_value=False),
             _isolated_leader(),
             patch("kiro_crew.acp.client._kill_escaped_children"),
-            patch(
-                "kiro_crew.platform_compat.kill_process_group", return_value=True
-            ) as group_kill,
+            patch("kiro_crew.platform_compat.kill_process_group", return_value=True) as group_kill,
         ):
             assert await svc.cancel("seq1") is True
 
@@ -818,11 +816,15 @@ class TestSubprocessRegistry:
         sessions._sessions = {"cron:guard": session}
         svc._sessions = sessions
 
-        with patch("kiro_crew.acp.client._get_child_pids", return_value=[]), \
-             patch("kiro_crew.platform_compat.get_process_start_id", return_value="12345"), \
-             patch("kiro_crew.acp.client._kill_escaped_children"), \
-             patch("os.getpgid", return_value=1, create=True), \
-             patch("kiro_crew.platform_compat.kill_pid_async", AsyncMock(return_value=True)) as pid_kill:
+        with (
+            patch("kiro_crew.acp.client._get_child_pids", return_value=[]),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value="12345"),
+            patch("kiro_crew.acp.client._kill_escaped_children"),
+            patch("os.getpgid", return_value=1, create=True),
+            patch(
+                "kiro_crew.platform_compat.kill_pid_async", AsyncMock(return_value=True)
+            ) as pid_kill,
+        ):
             handles = svc._session_process_handles("cron:guard")
             assert handles and handles[0].pgid is None, "a foreign group was captured"
             handle = handles[0]
@@ -854,29 +856,33 @@ class TestSubprocessRegistry:
         def _run() -> None:
             result.update(run_command_sandboxed("sleep 30", timeout=60, job_id="cancelme"))
 
-        with patch(
-            "kiro_crew.cron_script.wrap_argv",
-            # ``**k``, not a fixed ``mode``: this passthrough stands in for whatever
-            # keyword set the caller uses, so it pins the identity behaviour under test
-            # and not the wrap's signature.
-            side_effect=lambda argv, **k: (argv, None),
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
-        ), patch(
-            # The shell probe (_resolve_command_shell) also calls wrap_argv to
-            # sandbox-route its POSIX-strict test. On macOS where /bin/sh is bash
-            # the probe fails (SandboxUnavailableError or brace-expansion detected)
-            # and returns None, aborting before the subprocess is spawned. Patch
-            # the resolver to return a known-good shell so the registry/cancel
-            # mechanics under test can actually run.
-            "kiro_crew.cron_script._resolve_command_shell", return_value="/bin/sh"
+        with (
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                # ``**k``, not a fixed ``mode``: this passthrough stands in for whatever
+                # keyword set the caller uses, so it pins the identity behaviour under test
+                # and not the wrap's signature.
+                side_effect=lambda argv, **k: (argv, None),
+            ),
+            patch("kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv),
+            patch(
+                # The shell probe (_resolve_command_shell) also calls wrap_argv to
+                # sandbox-route its POSIX-strict test. On macOS where /bin/sh is bash
+                # the probe fails (SandboxUnavailableError or brace-expansion detected)
+                # and returns None, aborting before the subprocess is spawned. Patch
+                # the resolver to return a known-good shell so the registry/cancel
+                # mechanics under test can actually run.
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value="/bin/sh",
+            ),
         ):
             t = threading.Thread(target=_run)
             t.start()
             # Wait for the subprocess to register.
-            deadline = time.time() + 10
-            while time.time() < deadline and "cancelme" not in _RUNNING_PROCS:
-                time.sleep(0.05)
+            wait_until(
+                lambda: "cancelme" in _RUNNING_PROCS,
+                describe=lambda: f"running={list(_RUNNING_PROCS)}",
+            )
             assert "cancelme" in _RUNNING_PROCS
             started = time.time()
             assert kill_running_process("cancelme") is True
@@ -907,17 +913,20 @@ class TestSubprocessRegistry:
         # that a job_id-less run is NOT added to the registry — mechanics that
         # don't need the sandbox.
         monkeypatch.chdir(tmp_path)  # the spawn inherits CWD; see the test above
-        with patch(
-            "kiro_crew.cron_script.wrap_argv",
-            # ``**k`` for the reason the test above gives: a passthrough pins the
-            # identity behaviour, not the keyword set the caller passes.
-            side_effect=lambda argv, **k: (argv, None),
-        ), patch(
-            "kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv
-        ), patch(
-            # Bypass the runtime shell probe (which itself spawns a child) — the
-            # test is about the registry, not shell fingerprinting.
-            "kiro_crew.cron_script._resolve_command_shell", return_value=posix_test_shell
+        with (
+            patch(
+                "kiro_crew.cron_script.wrap_argv",
+                # ``**k`` for the reason the test above gives: a passthrough pins the
+                # identity behaviour, not the keyword set the caller passes.
+                side_effect=lambda argv, **k: (argv, None),
+            ),
+            patch("kiro_crew.cron_script.cgroup_scope_argv", side_effect=lambda argv: argv),
+            patch(
+                # Bypass the runtime shell probe (which itself spawns a child) — the
+                # test is about the registry, not shell fingerprinting.
+                "kiro_crew.cron_script._resolve_command_shell",
+                return_value=posix_test_shell,
+            ),
         ):
             result = run_command_sandboxed("echo hi", timeout=10)
         assert result["status"] == "ok"
@@ -1000,7 +1009,7 @@ async def _start_without_timer(svc: CronService) -> None:
     if task is not None:
         task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5.0)
+            await await_until(task, what="timer task")
 
 
 async def _cancel_mid_run_then_tick(svc: CronService, job_id: str, started: asyncio.Event) -> None:
@@ -1011,7 +1020,7 @@ async def _cancel_mid_run_then_tick(svc: CronService, job_id: str, started: asyn
     """
     with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
         await svc._on_timer()
-        await asyncio.wait_for(started.wait(), timeout=5.0)
+        await await_until(started, what="started")
         assert await svc.cancel(job_id) is True
         assert job_id not in svc._claims, "cancel left the first run's claim in place"
         await svc._on_timer()  # the next tick
@@ -1154,7 +1163,7 @@ class TestCancelledOneShotIsParked:
         async def on_job(job: CronJob) -> None:
             runs.append(job.id)
             started.set()
-            await asyncio.wait_for(release.wait(), timeout=5.0)
+            await await_until(release, what="release")
 
         svc = CronService(base_dir=tmp_path, on_job=on_job)
         await _start_without_timer(svc)
@@ -1225,7 +1234,7 @@ class TestCancelledOneShotIsParked:
         async def on_job(job: CronJob) -> None:
             runs.append(job.id)
             started.set()
-            await asyncio.wait_for(release.wait(), timeout=5.0)
+            await await_until(release, what="release")
 
         svc = CronService(base_dir=tmp_path, on_job=on_job)
         await _start_without_timer(svc)
@@ -1235,10 +1244,10 @@ class TestCancelledOneShotIsParked:
         try:
             with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
                 await svc._on_timer()
-                await asyncio.wait_for(started.wait(), timeout=5.0)
+                await await_until(started, what="started")
                 busy_calls[0], timeouts[:] = -1, []
                 with pytest.raises(cron_module.CronPauseNotSaved, match="may run again"):
-                    await asyncio.wait_for(svc.cancel(job.id), timeout=10.0)
+                    await finished(svc.cancel(job.id), "svc.cancel")
                 one_try = [cron_module._FILE_LOCK_TIMEOUT_SECS]
                 assert timeouts == one_try, f"one save at the standard lock wait, not {timeouts}"
                 assert job.id not in svc._claims, "cancel left the first run's claim in place"
@@ -1308,7 +1317,7 @@ class TestCancelledOneShotIsParked:
             calls.append(job.id)
             if len(calls) == 1:  # the run the test cancels; a manual Run returns at once
                 started.set()
-                await asyncio.wait_for(release.wait(), timeout=5.0)
+                await await_until(release, what="release")
 
         svc = CronService(base_dir=tmp_path, on_job=on_job)
         await _start_without_timer(svc)
@@ -1352,7 +1361,7 @@ class TestCancelledOneShotIsParked:
             elif change == "manual_run":
                 # A manual Run in this process, accepted once the cancel released
                 # the claim, completes and merges its record first.
-                assert asyncio.run_coroutine_threadsafe(manual(), loop).result(timeout=10)
+                assert LoopHop(loop).run(manual(), "manual run")
             elif change == "newer_run_here":
                 # A newer terminal record merged by this process, as its reaper writes.
                 real_merge(
@@ -1433,12 +1442,12 @@ class TestCancelledOneShotIsParked:
         try:
             with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
                 await svc._on_timer()
-                await asyncio.wait_for(started.wait(), timeout=5.0)
+                await await_until(started, what="started")
                 if message is None:
-                    assert await asyncio.wait_for(svc.cancel(job.id), timeout=10.0) is True
+                    assert await finished(svc.cancel(job.id), "svc.cancel") is True
                 else:
                     with pytest.raises(cron_module.CronPauseNotSaved) as raised:
-                        await asyncio.wait_for(svc.cancel(job.id), timeout=10.0)
+                        await finished(svc.cancel(job.id), "svc.cancel")
                     assert str(raised.value) == message
             live = svc.get_job(job.id)
             history, _total = await svc._history.get_job_history(job.id)
@@ -1472,7 +1481,7 @@ class TestCancelledOneShotIsParked:
 
         async def on_job(job: CronJob) -> None:
             started.set()
-            await asyncio.wait_for(release.wait(), timeout=5.0)
+            await await_until(release, what="release")
 
         svc = CronService(base_dir=tmp_path, on_job=on_job)
         await _start_without_timer(svc)
@@ -1482,11 +1491,11 @@ class TestCancelledOneShotIsParked:
         try:
             with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
                 await svc._on_timer()
-                await asyncio.wait_for(started.wait(), timeout=5.0)
+                await await_until(started, what="started")
                 busy_calls[0] = -1
                 # Test B checks the report; this one checks only what the store keeps.
                 with contextlib.suppress(RuntimeError):
-                    await asyncio.wait_for(svc.cancel(job.id), timeout=10.0)
+                    await finished(svc.cancel(job.id), "svc.cancel")
                 busy_calls[0] = 0
                 cli = CronService(base_dir=tmp_path)
                 cli._load()
@@ -1506,7 +1515,7 @@ class TestCancelledOneShotIsParked:
 
         async def on_job(job: CronJob) -> None:
             started.set()
-            await asyncio.wait_for(release.wait(), timeout=5.0)
+            await await_until(release, what="release")
 
         svc = CronService(base_dir=tmp_path, on_job=on_job)
         await _start_without_timer(svc)
@@ -1517,7 +1526,7 @@ class TestCancelledOneShotIsParked:
         try:
             with patch("kiro_crew.cron.admission_check", return_value=_ADMITTED):
                 await svc._on_timer()
-                await asyncio.wait_for(started.wait(), timeout=5.0)
+                await await_until(started, what="started")
                 assert await svc.cancel(job.id) is True
         finally:
             release.set()

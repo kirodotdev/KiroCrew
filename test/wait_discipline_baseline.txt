@@ -113,18 +113,15 @@
  1 test_crew_log_real_crash.py
  4 test_crew_main_contract.py
  3 test_crewmate_prune_migration.py
-17 test_cron_cancel.py
  4 test_cron_chat_folder.py
  1 test_cron_gateway_integration_llm.py
  2 test_cron_jitter.py
  3 test_cron_locking_regression.py
  1 test_cron_loop_stall_breaker.py
  1 test_cron_merge_result_busy_store.py
- 7 test_cron_merge_result_reload.py
  2 test_cron_reaper_ending_fence.py
  2 test_cron_reaper_failed_kill.py
  2 test_cron_refused_one_shot_retry_floor.py
- 5 test_cron_run_claim.py
  1 test_cron_thread_routing.py
  2 test_cron_undispatched_one_shot.py
  1 test_cron_wake_budget.py
@@ -178,10 +175,8 @@
  1 test_hang_resilience_metrics.py
  2 test_headless_memory_recognition.py
  3 test_heartbeat_cov80.py
-17 test_history_consolidation_retry.py
  3 test_history_coverage.py
  3 test_history_index_worker.py
- 7 test_history_locking_remediation.py
  1 test_history_pagination_projection.py
  1 test_hook_gate_off_loop.py
  8 test_hook_reconcile.py
@@ -423,17 +418,11 @@
  1 test_workflow_agent_spawn_governance.py
  2 test_workflow_execution_capture_async.py
  4 test_workflow_memory_backend_reset.py
- 5 test_workflow_startup_lifecycle.py
- 5 test_workflow_taskq_retention.py
  1 test_workflows_agent_pool.py
  1 test_workflows_dsl.py
-16 test_workflows_lifecycle_evidence.py
  4 test_workflows_nudge_wiring.py
  1 test_workflows_private_paths.py
  3 test_workflows_registry.py
- 7 test_workflows_resume.py
  4 test_workflows_runner.py
- 6 test_workflows_service.py
- 7 test_workflows_snapshot_commit.py
  2 test_workflows_startup_recovery.py
  1 test_ws_offload.py

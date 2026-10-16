@@ -402,7 +402,6 @@ test/test_cron.py
 test/test_cron_acp_retry.py
 test/test_cron_approval_mode.py
 test/test_cron_arbiter_items.py
-test/test_cron_cancel.py
 test/test_cron_context_meter_seed.py
 test/test_cron_count_from_disk.py
 test/test_cron_dedup.py
@@ -538,7 +537,6 @@ test/test_heartbeat_retention.py
 test/test_heartbeat_sel_prune_offload.py
 test/test_history.py
 test/test_history_atomic_rewrite.py
-test/test_history_locking_remediation.py
 test/test_history_race.py
 test/test_hook_matcher_modes.py
 test/test_hooks_json_shared_file.py

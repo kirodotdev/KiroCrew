@@ -9,6 +9,7 @@ import pytest
 from kiro_crew.taskq import model
 from kiro_crew.taskq.adapters.runner import RunnerAdmission, RunnerLane
 from kiro_crew.taskq.store import TaskStore
+from kiro_crew.testing.wait import async_wait_until, await_until
 from kiro_crew.workflows import service
 
 CANARY = "TRANSIENT_WORKFLOW_BODY"
@@ -77,20 +78,20 @@ async def test_restricted_workflow_keeps_pressure_and_adaptive_cap(tmp_path, mon
     try:
         runner = _runner(monkeypatch, admission, mode, agent)
         task = asyncio.create_task(runner._agent_fn(CANARY, {}))
-        await asyncio.wait_for(deferred.wait(), timeout=2)
+        await await_until(deferred, what="deferred")
         agent.assert_not_awaited()
         assert store.list_rows() == []
         admission.lane.set_effective_cap(0)
         decision.admitted = True
         released.set()
-        for _ in range(100):
-            if admission.lane.waiting:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: admission.lane.waiting,
+            describe=lambda: f"waiting={admission.lane.waiting}",
+        )
         assert admission.lane.waiting == 1
         agent.assert_not_awaited()
         admission.lane.set_effective_cap(1)
-        assert await asyncio.wait_for(task, timeout=2) == "complete"
+        assert await await_until(task, what="agent task") == "complete"
         agent.assert_awaited_once()
         assert store.list_rows() == []
         assert admission.lane.running == 0
@@ -170,12 +171,12 @@ async def test_restricted_workflow_shares_live_lane_and_releases_cancelled_wait(
         persistent = _runner(monkeypatch, admission, "persistent", agent, "persistent")
         transient = _runner(monkeypatch, admission, mode, agent, "transient")
         running = asyncio.create_task(persistent._agent_fn("persistent", {}))
-        await asyncio.wait_for(entered.wait(), timeout=2)
+        await await_until(entered, what="entered")
         waiting = asyncio.create_task(transient._agent_fn(CANARY, {}))
-        for _ in range(100):
-            if admission.lane.waiting:
-                break
-            await asyncio.sleep(0.01)
+        await async_wait_until(
+            lambda: admission.lane.waiting,
+            describe=lambda: f"waiting={admission.lane.waiting}",
+        )
         assert admission.lane.running == admission.lane.waiting == 1
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):

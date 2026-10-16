@@ -29,6 +29,7 @@ from datetime import datetime
 
 import pytest
 
+from kiro_crew.testing.wait import await_until, finished
 from kiro_crew.workflows.registry import (
     STATUS_CANCELLED,
     STATUS_FAILED,
@@ -262,9 +263,9 @@ async def test_cancel_drains_sync_finally_before_terminal() -> None:
     )
     runner = _runner(agent_fn=agent_fn, timeout_secs=3600)
     task = asyncio.ensure_future(runner.run(script, run_id="wf_cd", now=NOW_SENTINEL))
-    await asyncio.wait_for(started.wait(), 5)
+    await await_until(started, what="started")
     task.cancel()
-    res = await asyncio.wait_for(task, 5)  # run() swallows cancel, returns a result
+    res = await await_until(task, what="runner task")  # run() swallows cancel, returns a result
 
     _assert_terminal_after_cleanup(res)
     assert res.agent_results.get(0) == "ok:first"
@@ -294,9 +295,9 @@ async def test_cancel_while_agent_waiting_for_slot_drains_cleanly() -> None:
     )
     runner = _runner(agent_fn=agent_fn, timeout_secs=3600, concurrency=1)
     task = asyncio.ensure_future(runner.run(script, run_id="wf_slot", now=NOW_SENTINEL))
-    await asyncio.wait_for(started.wait(), 5)
+    await await_until(started, what="started")
     task.cancel()
-    res = await asyncio.wait_for(task, 5)
+    res = await await_until(task, what="runner task")
 
     _assert_terminal_after_cleanup(res)
 
@@ -332,9 +333,9 @@ async def test_cancel_drains_async_cleanup_that_raises_without_unhandled_error()
 
     runner = _runner(agent_fn=agent_fn, timeout_secs=3600)
     task = asyncio.ensure_future(runner.run(script, run_id="wf_acr", now=NOW_SENTINEL))
-    await asyncio.wait_for(started.wait(), 5)
+    await await_until(started, what="started")
     task.cancel()
-    res = await asyncio.wait_for(task, 5)
+    res = await await_until(task, what="runner task")
 
     _assert_terminal_after_cleanup(res)
     # The async cleanup call ran to completion during the drain (call_index 1)...
@@ -435,13 +436,13 @@ async def test_concurrency_two_one_held_call_does_not_block_later_fast_calls() -
     runner = _runner(agent_fn=agent_fn, concurrency=2, timeout_secs=3600)
     task = asyncio.ensure_future(runner.run(script, run_id="wf_hs", now=NOW_SENTINEL))
 
-    await asyncio.wait_for(started_slow.wait(), 5)
-    await asyncio.wait_for(all_fast.wait(), 5)  # fast calls settle while slow is held
+    await await_until(started_slow, what="started_slow")
+    await await_until(all_fast, what="all_fast")  # fast calls settle while slow is held
     assert not release_slow.is_set()
     assert not task.done()  # the run cannot finish while the held call blocks
 
     release_slow.set()
-    res = await asyncio.wait_for(task, 5)
+    res = await await_until(task, what="runner task")
     assert res.ok, res.error
     assert res.result[0] == "slow-done"
     assert res.result[1:] == ["fast:f0", "fast:f1", "fast:f2", "fast:f3", "fast:f4"]
@@ -612,10 +613,10 @@ async def test_repeated_registry_cancel_preserves_ordinary_cleanup(timeout, phas
     )
     handle = registry.get(rid)
     try:
-        await asyncio.wait_for(started.wait(), 5)
+        await await_until(started, what="started")
         if not timeout:
             assert await registry.cancel(rid)
-        await asyncio.wait_for(cleanup_started.wait(), 5)
+        await await_until(cleanup_started, what="cleanup_started")
         for _ in range(2):
             assert await registry.cancel(rid) is (phase != "on_complete")
             if phase == "on_complete":
@@ -630,7 +631,7 @@ async def test_repeated_registry_cancel_preserves_ordinary_cleanup(timeout, phas
                 e.type.startswith("run_") and e.type != "run_started" for e in handle.events
             )
         release.set()
-        await asyncio.wait_for(handle.task, 5)
+        await await_until(handle.task, what="handle.task")
         assert settled.is_set() and not cleanup_cancelled
         assert len(completed) == 1
         terminal = "run_failed" if timeout else "run_cancelled"
@@ -645,7 +646,7 @@ async def test_repeated_registry_cancel_preserves_ordinary_cleanup(timeout, phas
         release.set()
         if not handle.task.done():
             handle.task.cancel()
-        await asyncio.wait_for(asyncio.gather(handle.task, return_exceptions=True), 5)
+        await finished(asyncio.gather(handle.task, return_exceptions=True), "task cleanup")
 
 
 @pytest.mark.asyncio
@@ -674,7 +675,7 @@ async def test_success_cancellation_respects_terminal_boundary(phase, cleanup_ra
     )
     handle = registry.get(rid)
     try:
-        await asyncio.wait_for(entered.wait(), 5)
+        await await_until(entered, what="entered")
         for _ in range(2):
             accepted = await registry.cancel(rid)
             assert accepted is (phase == "pre_terminal")
@@ -684,7 +685,7 @@ async def test_success_cancellation_respects_terminal_boundary(phase, cleanup_ra
         assert not handle.task.done() and not settled.is_set()
         assert calls == ["entered"] and completed == []
         release.set()
-        await asyncio.wait_for(handle.task, 5)
+        await await_until(handle.task, what="handle.task")
         assert settled.is_set() and calls == ["entered"]
         assert len(completed) == 1
         terminal = "run_cancelled" if phase == "pre_terminal" else "run_finished"
@@ -698,7 +699,7 @@ async def test_success_cancellation_respects_terminal_boundary(phase, cleanup_ra
         assert handle.agent_results == {0: "echo:hello"}
     finally:
         release.set()
-        await asyncio.wait_for(asyncio.gather(handle.task, return_exceptions=True), 5)
+        await finished(asyncio.gather(handle.task, return_exceptions=True), "task cleanup")
 
 
 @pytest.mark.asyncio
