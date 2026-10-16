@@ -13,11 +13,18 @@ import { SETTINGS_REGISTRY } from '../components/commandPalette/settingsRegistry
 vi.mock('../pages/settings/DecisionsCard', () => ({ DecisionsCard: () => null }))
 
 const profile = { id: 'dev', name: 'Development', template: 'python-dev', workdir: '/workspace/repo' }
+const fargate = {
+  id: 'aws-dev', name: 'AWS development', aws_profile: 'sandbox', region: 'us-east-1', cluster: 'dev',
+  task_definition: 'session-dev:1', subnets: ['subnet-12345678'], security_groups: ['sg-12345678'],
+  assign_public_ip: false, workdir: '/workspace',
+}
 interface Section {
   coder_url: string
   profiles: typeof profile[]
+  fargate_profiles?: typeof fargate[]
   default_profile?: string
   archived_retention_days?: number
+  stop_on_shutdown?: boolean
 }
 let stored: { session_environments?: Section }
 let reads: number
@@ -413,5 +420,119 @@ describe('Session Environments readiness and workspaces', () => {
     const link = screen.getByRole('link', { name: 'Open Coder' })
     expect(link).toHaveAttribute('href', 'https://coder.example.test')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
+  })
+})
+
+describe('Session Environments AWS Fargate profiles', () => {
+  it('offers no provider choice on a gateway without Fargate profiles', async () => {
+    mount()
+    await screen.findByLabelText('Coder URL')
+    expect(screen.queryByRole('radio', { name: 'AWS Fargate' })).toBeNull()
+  })
+
+  it('opens on Fargate when only Fargate is saved, and checks it without a Coder URL', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }] } }
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: false, error: 'no Coder URL is saved' },
+      profiles: [],
+      fargate: [{ id: 'aws-dev', ok: true }],
+      git: {},
+    })))
+    mount()
+    expect(await screen.findByRole('radio', { name: 'AWS Fargate' })).toBeChecked()
+    expect(screen.getByText(/different from Deploy my crew/)).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Check configuration' }))
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(results).toHaveTextContent('AWS development: task definition session-dev:1 is ready')
+    // A Fargate-only setup reports no Coder line.
+    expect(results).not.toHaveTextContent('Coder')
+  })
+
+  it('adds a private-network Fargate profile and saves it with the section', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [] } }
+    mount()
+    fireEvent.click(await screen.findByRole('radio', { name: 'AWS Fargate' }))
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add profile' }).find(b => b.closest('[hidden]') === null)!)
+    fireEvent.change(screen.getByLabelText('AWS CLI profile'), { target: { value: 'sandbox' } })
+    fireEvent.change(screen.getByLabelText('AWS region'), { target: { value: 'us-east-1' } })
+    fireEvent.change(screen.getByLabelText('ECS cluster name or ARN'), { target: { value: 'dev' } })
+    fireEvent.change(screen.getByLabelText('Task definition name:revision or ARN'), { target: { value: 'session-dev:1' } })
+    fireEvent.change(screen.getByLabelText('Subnet IDs, comma-separated'), { target: { value: 'subnet-12345678, subnet-87654321,' } })
+    fireEvent.change(screen.getByLabelText('Security group IDs, comma-separated'), { target: { value: 'sg-12345678' } })
+    expect(screen.getByRole('switch', { name: 'Assign public IP' })).not.toBeChecked()
+    fireEvent.click(save())
+    await screen.findByText('Configuration saved. No compute was started.')
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], fargate_profiles: [{
+        id: 'fargate-1', name: '', aws_profile: 'sandbox', region: 'us-east-1', cluster: 'dev',
+        task_definition: 'session-dev:1', subnets: ['subnet-12345678', 'subnet-87654321'],
+        security_groups: ['sg-12345678'], assign_public_ip: false, workdir: '/workspace',
+      }],
+    } }])
+  })
+
+  it('reports a failed Fargate check through the error notice', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }] } }
+    server.use(http.post('*/api/session-environments/check', () => HttpResponse.json({
+      coder: { ok: false, error: 'no Coder URL is saved' },
+      profiles: [],
+      fargate: [{ id: 'aws-dev', ok: false, error: 'the task definition sets an entryPoint' }],
+      git: {},
+    })))
+    mount()
+    await screen.findByRole('radio', { name: 'AWS Fargate' })
+    fireEvent.click(screen.getByRole('button', { name: 'Check configuration' }))
+    const results = await screen.findByRole('list', { name: 'Check results' })
+    expect(within(results).getByRole('alert')).toHaveTextContent('AWS development: the task definition sets an entryPoint')
+  })
+
+  it('lists only the chosen provider\'s environments', async () => {
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], fargate_profiles: [{ ...fargate }] } }
+    server.use(http.get('*/api/session-environments/workspaces', () => HttpResponse.json({
+      workspaces: [
+        { workspace: 'crewenv-devuser-aaaa', slot: 'chat-1', state: 'running', template: 't', created_at: '2026-10-09T10:00:00Z', deletion_due_at: '' },
+        { workspace: 'abc123def456', provider: 'fargate', slot: 'chat-2', state: 'running', template: 'aws-dev', created_at: '', deletion_due_at: '' },
+      ],
+    })))
+    mount()
+    const coderList = await screen.findByRole('list', { name: 'Session environments' })
+    expect(coderList).toHaveTextContent('crewenv-devuser-aaaa')
+    expect(coderList).not.toHaveTextContent('abc123def456')
+    fireEvent.click(screen.getByRole('radio', { name: 'AWS Fargate' }))
+    const fargateList = await screen.findByRole('list', { name: 'Session environments' })
+    expect(fargateList).toHaveTextContent('abc123def456')
+    expect(fargateList).toHaveTextContent('Fargate session task')
+    expect(screen.queryByRole('link', { name: 'Open Coder' })).toBeNull()
+  })
+
+  it('offers a Fargate profile as the default and drops it with the profile', async () => {
+    stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }], default_profile: 'aws-dev' } }
+    mount()
+    await screen.findByRole('radio', { name: 'AWS Fargate' })
+    expect(screen.getByRole('switch', { name: 'Start new chats in a session environment' })).toBeChecked()
+    expand('AWS development')
+    const remove = screen.getAllByRole('button', { name: 'Remove profile' }).find(b => b.closest('[hidden]') === null)!
+    fireEvent.click(remove)
+    fireEvent.click(save())
+    await screen.findByText('Configuration saved. No compute was started.')
+    expect(writes).toEqual([{ path: 'session_environments', value: {
+      coder_url: '', profiles: [], fargate_profiles: [], default_profile: '',
+    } }])
+  })
+
+  it('says under the shutdown switch that Fargate tasks are not stopped and idle-exit instead', async () => {
+    const note = /Fargate tasks are not stopped at shutdown; each one ends on its own about 15 minutes/
+    stored = { session_environments: { coder_url: '', profiles: [], fargate_profiles: [{ ...fargate }], stop_on_shutdown: true } }
+    mount()
+    const shutdown = await screen.findByRole('switch', { name: 'Stop session environments when the gateway shuts down' })
+    const text = screen.getByText(note)
+    expect(text).toBeVisible()
+    expect(shutdown.getAttribute('aria-describedby')?.split(' ')).toContain(text.id)
+    cleanup(); qc.clear()
+    // A gateway without Fargate profiles has no Fargate tasks to explain.
+    stored = { session_environments: { coder_url: 'https://coder.example.test', profiles: [{ ...profile }], stop_on_shutdown: true } }
+    mount()
+    expect(await screen.findByRole('switch', { name: 'Stop session environments when the gateway shuts down' })).toBeVisible()
+    expect(screen.queryByText(note)).toBeNull()
   })
 })

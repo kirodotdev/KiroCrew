@@ -3361,6 +3361,10 @@ _EDITABLE_CONFIG: dict[str, dict] = {
         "type": "normalized",
         "normalize": _session_environments.validate_profiles,
     },
+    "session_environments.fargate_profiles": {
+        "type": "normalized",
+        "normalize": _session_environments.validate_fargate_profiles,
+    },
     "session_environments.default_profile": {
         "type": "normalized",
         "normalize": _session_environments.validate_default_profile,
@@ -3859,6 +3863,8 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 section[parts[-1]] = merged
             else:
                 section[parts[-1]] = value
+            if path_key == "session_environments" or path_key.startswith("session_environments."):
+                _session_environments.validate_unique_profile_ids(data["session_environments"])
             # Saving the old default of an auto-adopting superseded-default row
             # (a 7200 turn limit) is an explicit choice. Ack it here, under the
             # config lock and before the write, so the reload this write triggers
@@ -3880,6 +3886,11 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
             _log_sel("denied", f"{path_key}=write_refused")
             return web.json_response(
                 {"error": str(exc), "code": "config_write_refused"}, status=400
+            )
+        except _session_environments.SessionEnvironmentsError as exc:
+            _log_sel("denied", f"{path_key}=invalid_session_environments")
+            return web.json_response(
+                {"error": str(exc), "code": "invalid_session_environments"}, status=400
             )
         except ValueError as exc:
             _log_sel("error", f"{path_key}=section_not_dict")

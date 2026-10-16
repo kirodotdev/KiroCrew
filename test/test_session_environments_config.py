@@ -198,6 +198,7 @@ class TestLoader:
         assert cfg.to_dict()["session_environments"] == {
             "coder_url": "",
             "profiles": [],
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -209,6 +210,7 @@ class TestLoader:
         section = {
             "coder_url": "https://c.example.com",
             "profiles": [_profile("a")],
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 2,
@@ -273,6 +275,7 @@ class TestApi:
             assert (await resp.json())["session_environments"] == {
                 "coder_url": "",
                 "profiles": [],
+                "fargate_profiles": [],
                 "default_profile": "",
                 "stop_on_shutdown": True,
                 "archived_retention_days": 7,
@@ -295,6 +298,7 @@ class TestApi:
         # The read shows the retention default; the file holds only what was sent.
         assert body["session_environments"] == {
             **expected,
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -317,6 +321,7 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [_profile()],
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -368,6 +373,7 @@ class TestApi:
         assert got == {
             "coder_url": "https://c.example.com",
             "profiles": [],
+            "fargate_profiles": [],
             "default_profile": "",
             "stop_on_shutdown": True,
             "archived_retention_days": 7,
@@ -398,3 +404,64 @@ class TestApi:
             resp = await _patch(client, "session_environments.archived_retention_days", value)
             assert resp.status == 400
         assert config_file.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("form", ["coder_leaf", "fargate_leaf", "whole", "whole_omitted"])
+async def test_provider_id_collision_is_refused_after_locked_merge(config_file, form):
+    from test_fargate_session import PROFILE
+
+    coder = _profile(PROFILE["id"])
+    section = {"coder_url": "https://coder.example.com", "profiles": [], "fargate_profiles": []}
+    if form == "fargate_leaf":
+        section["profiles"] = [coder]
+        key, value = "session_environments.fargate_profiles", [PROFILE]
+    else:
+        section["fargate_profiles"] = [PROFILE]
+        if form == "coder_leaf":
+            key, value = "session_environments.profiles", [coder]
+        else:
+            key = "session_environments"
+            value = {"coder_url": "https://coder.example.com", "profiles": [coder]}
+            if form == "whole":
+                value["fargate_profiles"] = [PROFILE]
+    config_file.write_text(
+        json.dumps({**_BASE_CONFIG, "session_environments": section}), encoding="utf-8"
+    )
+    before = config_file.read_bytes()
+    async with TestClient(TestServer(_app())) as client:
+        response = await _patch(client, key, value)
+        assert response.status == 400, await response.text()
+        assert "both a" in (await response.json())["error"]
+    assert config_file.read_bytes() == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("key", ["profiles", "fargate_profiles"])
+@pytest.mark.parametrize("malformed", [None, 7, "invalid", [None, "invalid", {}, {"id": []}]])
+@pytest.mark.parametrize("whole", [False, True])
+async def test_unrelated_save_tolerates_malformed_stored_profiles(
+    config_file, key, malformed, whole
+):
+    section = {"coder_url": "", "profiles": [], key: malformed}
+    config_file.write_text(
+        json.dumps({**_BASE_CONFIG, "session_environments": section}), encoding="utf-8"
+    )
+    path, value = "session_environments.stop_on_shutdown", False
+    if whole:
+        path, value = "session_environments", {"coder_url": "", "profiles": []}
+    async with TestClient(TestServer(_app())) as client:
+        response = await _patch(client, path, value)
+        assert response.status == 200, await response.text()
+    saved = _stored(config_file)
+    assert saved["an_edition_section"] == _BASE_CONFIG["an_edition_section"]
+    if not whole or key == "fargate_profiles":
+        assert saved["session_environments"][key] == malformed
+
+
+def test_cross_provider_check_ignores_duplicates_within_one_stored_list():
+    section = {"profiles": [_profile(), _profile()], "fargate_profiles": []}
+    assert se.validate_unique_profile_ids(section) == {"dev": "Coder"}
+    section["fargate_profiles"] = [{"id": "dev"}]
+    with pytest.raises(se.SessionEnvironmentsError, match="both a Coder and a Fargate"):
+        se.validate_unique_profile_ids(section)

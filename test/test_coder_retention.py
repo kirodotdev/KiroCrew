@@ -288,7 +288,7 @@ async def test_shutdown_stops_the_workspace_without_scheduling_deletion(tmp_path
 
     counts = await retention.stop_for_shutdown()
 
-    assert counts == {"coder": 1, "skipped": 0}
+    assert counts == {"coder": 1, "fargate": 0, "skipped": 0}
     assert f"stop {binding.workspace_name}" in fake.calls
     # A restart resumes the same workspace: nothing was stamped for deletion.
     assert envs.registry.get_by_session(KEY).deletion_due_at == ""
@@ -300,7 +300,7 @@ async def test_shutdown_never_raises_when_coder_fails(monkeypatch):
         raise RuntimeError("provider unreachable")
 
     monkeypatch.setattr(retention, "_environments", boom)
-    assert (await retention.stop_for_shutdown())["coder"] == 0
+    assert await retention.stop_for_shutdown() == {"coder": 0, "fargate": 0, "skipped": 0}
 
 
 @sync
@@ -442,7 +442,7 @@ async def test_deployment_change_preserves_rows_without_touching_compute(
     elif operation == "sweep":
         assert await retention.sweep_due(envs) == 0
     else:
-        assert (await retention.stop_for_shutdown())["coder"] == 0
+        assert await retention.stop_for_shutdown() == {"coder": 0, "fargate": 0, "skipped": 0}
     assert other.calls == []
     assert envs.registry.get_by_session(KEY) == before
     assert fake.workspaces[row.workspace_name].status == "running"
@@ -479,7 +479,7 @@ async def test_shutdown_leaves_a_stop_destroys_compute_workspace_running(tmp_pat
         return envs
 
     monkeypatch.setattr(retention, "_environments", coder_envs)
-    assert await retention.stop_for_shutdown() == {"coder": 0, "skipped": 1}
+    assert await retention.stop_for_shutdown() == {"coder": 0, "fargate": 0, "skipped": 1}
     assert "stop" not in fake.verbs()
     assert fake.workspaces[binding.workspace_name].status == "running"
 
@@ -553,18 +553,18 @@ async def test_archive_warns_with_the_bound_profile_storage(tmp_path, monkeypatc
     fake = FakeCoder()
     envs, _ = await _started(tmp_path, fake)
     envs._config.profiles[0].compute_survives_stop = False
-    seen: list[bool] = []
+    seen: list[tuple[bool, bool]] = []
 
     async def coder_envs():
         return envs
 
-    async def warn(keys, notify, *, survives_stop=True):
-        seen.append(survives_stop)
+    async def warn(keys, notify, *, survives_stop=True, ephemeral=False):
+        seen.append((survives_stop, ephemeral))
 
     monkeypatch.setattr(retention, "_environments", coder_envs)
     monkeypatch.setattr(retention, "warn_unsaved_work", warn)
     await retention._archive(((KEY, retention.session_lifecycle(KEY), 0),))
-    assert seen == [False]
+    assert seen == [(False, False)]
     assert "stop" not in fake.verbs()[-1:]
 
 

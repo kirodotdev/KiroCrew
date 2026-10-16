@@ -214,9 +214,13 @@ def _start_kas_cli_floor(cfg: KiroCrewConfig) -> "asyncio.Task[None]":
 
 
 def _start_coder_retention(cfg: KiroCrewConfig) -> None:
-    """Activate the optional Coder subsystem only after readiness/configuration."""
+    """Start the session-environment sweeper once any provider is configured.
+
+    Called after readiness and on a later configuration save, so a gateway with
+    no Coder URL and no provider profile never imports the subsystem."""
     global _CODER_RETENTION_TASK
-    if not cfg.session_environments.coder_url:
+    section = cfg.session_environments
+    if not (section.coder_url or getattr(section, "fargate_profiles", None)):
         return
     if _CODER_RETENTION_TASK is not None and not _CODER_RETENTION_TASK.done():
         return

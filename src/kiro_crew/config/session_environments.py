@@ -4,9 +4,9 @@ The ONE source both the loader (``SessionEnvironmentsConfig.from_raw``) and the
 dashboard write gate (``PATCH /api/config/kirocrew``) use, so what a save accepts
 and what a load keeps cannot drift apart.
 
-The section stores CONFIGURATION ONLY -- a Coder deployment URL and workspace
-profiles. Nothing here registers a provider,
-contacts a provider, or provisions anything. It carries no credentials.
+The section stores CONFIGURATION ONLY -- a Coder deployment URL, workspace
+profiles and AWS Fargate task and network references. Nothing here registers a
+provider, contacts a provider, or provisions anything. It carries no credentials.
 
 Two entry points per shape:
 
@@ -46,6 +46,7 @@ SECTION_KEYS: tuple[str, ...] = ("coder_url", "profiles")
 #: Optional section keys. An older dashboard that omits one keeps the saved
 #: value: the locked writer in ``dashboard/handlers/core.py`` preserves it.
 SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
+    "fargate_profiles",
     "archived_retention_days",
     "default_profile",
     "stop_on_shutdown",
@@ -54,6 +55,13 @@ SECTION_OPTIONAL_KEYS: tuple[str, ...] = (
 #: A stopped workspace still holds its disk, so the ceiling is a week.
 ARCHIVED_RETENTION_DAYS_MAX = 7
 ARCHIVED_RETENTION_DAYS_DEFAULT = 7
+#: Every provider's profile list, with the provider's name for messages. A
+#: session's choice records only a profile id, and that id decides the provider,
+#: so no id may name profiles in two of these lists at once.
+PROVIDER_PROFILE_LISTS: tuple[tuple[str, str], ...] = (
+    ("profiles", "Coder"),
+    ("fargate_profiles", "Fargate"),
+)
 
 _PROFILE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,%d}" % (PROFILE_ID_MAX_LEN - 1))
 # ASCII control characters: never meaningful in a label, template name or path,
@@ -243,6 +251,43 @@ def validate_profiles(value: object) -> list[dict[str, Any]]:
     return out
 
 
+def provider_for_profile(section: Any, profile_id: str) -> str | None:
+    """Resolve a saved id once for the picker and launch; ambiguity fails closed."""
+    from kiro_crew.session_environment import SessionEnvironmentUnavailable
+
+    matches = []
+    for key, provider in PROVIDER_PROFILE_LISTS:
+        for entry in getattr(section, key, None) or []:
+            identity = entry.get("id") if isinstance(entry, dict) else getattr(entry, "id", None)
+            if identity == profile_id:
+                matches.append(provider.lower())
+    if len(matches) > 1:
+        raise SessionEnvironmentUnavailable(
+            f"session environment profile {profile_id!r} is ambiguous across provider lists"
+        )
+    return matches[0] if matches else None
+
+
+def validate_unique_profile_ids(section: dict[str, Any]) -> dict[str, str]:
+    """Validate ids on the final merged section, including preserved provider lists."""
+    saved: dict[str, str] = {}
+    for key, provider in PROVIDER_PROFILE_LISTS:
+        profiles = section.get(key)
+        if not isinstance(profiles, list):
+            continue
+        for profile in profiles:
+            if not isinstance(profile, dict) or not isinstance(profile.get("id"), str):
+                continue
+            identity = profile["id"]
+            if identity in saved and saved[identity] != provider:
+                raise SessionEnvironmentsError(
+                    f"profile id {identity!r} is used by both a {saved[identity]} and a "
+                    f"{provider} profile"
+                )
+            saved[identity] = provider
+    return saved
+
+
 def validate_session_environments(value: object) -> dict[str, Any]:
     """Return the normalized whole section, or raise :class:`SessionEnvironmentsError`.
 
@@ -262,7 +307,9 @@ def validate_session_environments(value: object) -> dict[str, Any]:
         "coder_url": validate_coder_url(value["coder_url"]),
         "profiles": validate_profiles(value["profiles"]),
     }
-    saved_ids = {profile["id"] for profile in result["profiles"]}
+    if "fargate_profiles" in value:
+        result["fargate_profiles"] = validate_fargate_profiles(value["fargate_profiles"])
+    saved_ids = validate_unique_profile_ids(result)
     if "archived_retention_days" in value:
         result["archived_retention_days"] = validate_archived_retention_days(
             value["archived_retention_days"]
@@ -325,3 +372,142 @@ def load_session_environments(raw: object) -> tuple[str, list[dict[str, Any]]]:
         seen.add(profile["id"])
         profiles.append(profile)
     return coder_url, profiles
+
+
+FARGATE_PROFILE_KEYS: tuple[str, ...] = (
+    "id",
+    "name",
+    "aws_profile",
+    "region",
+    "cluster",
+    "task_definition",
+    "subnets",
+    "security_groups",
+    "assign_public_ip",
+    "workdir",
+)
+#: Most subnets and security groups one awsvpc network configuration takes.
+FARGATE_SUBNETS_MAX = 16
+FARGATE_SECURITY_GROUPS_MAX = 5
+_AWS_PROFILE_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+_AWS_REGION_RE = re.compile(r"[a-z]{2}(?:-[a-z]+)+-\d+")
+#: An ECS name or ARN: never a CLI flag, URL or command fragment.
+_ECS_REF_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_:/.-]{0,2047}")
+
+
+def _aws_ids(value: object, field: str, prefix: str, maximum: int) -> list[str]:
+    if not isinstance(value, list) or not 1 <= len(value) <= maximum:
+        raise SessionEnvironmentsError(f"{field} must hold 1-{maximum} IDs")
+    pattern = re.compile(rf"{prefix}-(?:[a-f0-9]{{8}}|[a-f0-9]{{17}})")
+    if any(not isinstance(item, str) or not pattern.fullmatch(item) for item in value):
+        raise SessionEnvironmentsError(f"{field} contains an invalid ID")
+    if len(set(value)) != len(value):
+        raise SessionEnvironmentsError(f"{field} contains duplicate IDs")
+    return list(value)
+
+
+def validate_fargate_profile(value: object, index: int = 0) -> dict[str, Any]:
+    """One normalized AWS Fargate profile, or raise :class:`SessionEnvironmentsError`.
+
+    Exactly :data:`FARGATE_PROFILE_KEYS`. References are checked syntactically
+    only: a save makes no AWS call, reads no credential and changes no
+    infrastructure. ``aws_profile`` names a profile of the gateway's own AWS CLI
+    configuration, never a key.
+    """
+    where = f"fargate_profiles[{index}]"
+    if not isinstance(value, dict):
+        raise SessionEnvironmentsError(f"{where} must be an object")
+    unknown = sorted(str(k) for k in value if k not in FARGATE_PROFILE_KEYS)
+    if unknown:
+        raise SessionEnvironmentsError(f"{where} has unknown key(s): {unknown}")
+    missing = [k for k in FARGATE_PROFILE_KEYS if k not in value]
+    if missing:
+        raise SessionEnvironmentsError(f"{where} is missing key(s): {missing}")
+    common = validate_profile(
+        {
+            "id": value["id"],
+            "name": value["name"],
+            "template": "fargate",
+            "workdir": value["workdir"],
+        },
+        index,
+        where=where,
+    )
+    result: dict[str, Any] = {key: common[key] for key in ("id", "name")}
+    aws_profile = _bounded_text(value["aws_profile"], f"{where}.aws_profile", 128)
+    if not _AWS_PROFILE_RE.fullmatch(aws_profile):
+        raise SessionEnvironmentsError(f"{where}.aws_profile must be an AWS profile name")
+    region = _bounded_text(value["region"], f"{where}.region", 64)
+    if not _AWS_REGION_RE.fullmatch(region):
+        raise SessionEnvironmentsError(f"{where}.region must be an AWS region name")
+    result["aws_profile"] = aws_profile
+    result["region"] = region
+    for key in ("cluster", "task_definition"):
+        ref = _bounded_text(value[key], f"{where}.{key}", 2048)
+        if not _ECS_REF_RE.fullmatch(ref):
+            raise SessionEnvironmentsError(f"{where}.{key} must be an ECS name or ARN")
+        result[key] = ref
+    result["subnets"] = _aws_ids(
+        value["subnets"], f"{where}.subnets", "subnet", FARGATE_SUBNETS_MAX
+    )
+    result["security_groups"] = _aws_ids(
+        value["security_groups"], f"{where}.security_groups", "sg", FARGATE_SECURITY_GROUPS_MAX
+    )
+    if not isinstance(value["assign_public_ip"], bool):
+        raise SessionEnvironmentsError(f"{where}.assign_public_ip must be true or false")
+    result["assign_public_ip"] = value["assign_public_ip"]
+    result["workdir"] = common["workdir"]
+    return result
+
+
+def validate_fargate_profiles(value: object) -> list[dict[str, Any]]:
+    """The normalized Fargate profile list, or raise :class:`SessionEnvironmentsError`."""
+    if not isinstance(value, list):
+        raise SessionEnvironmentsError("fargate_profiles must be a list")
+    if len(value) > MAX_PROFILES:
+        raise SessionEnvironmentsError(f"fargate_profiles must hold at most {MAX_PROFILES} entries")
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, entry in enumerate(value):
+        profile = validate_fargate_profile(entry, index)
+        if profile["id"] in seen:
+            raise SessionEnvironmentsError(
+                f"fargate_profiles[{index}].id {profile['id']!r} is a duplicate"
+            )
+        seen.add(profile["id"])
+        out.append(profile)
+    return out
+
+
+def load_fargate_profiles(raw: object) -> list[dict[str, Any]]:
+    """Lenient load: every valid, unique Fargate profile; never raises.
+
+    A dropped entry is logged by index only. A hand-edited entry may hold
+    values the schema never asked for, so none of them reach the log.
+    """
+    if not isinstance(raw, dict):
+        return []
+    items = raw.get("fargate_profiles", [])
+    if not isinstance(items, list):
+        logger.warning("session_environments: fargate_profiles must be a list; ignoring it")
+        return []
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(items):
+        if len(out) >= MAX_PROFILES:
+            logger.warning(
+                "session_environments: more than %d Fargate profiles; ignoring the rest",
+                MAX_PROFILES,
+            )
+            break
+        try:
+            profile = validate_fargate_profile(item, index)
+        except SessionEnvironmentsError:
+            logger.warning("session_environments: dropping invalid Fargate profile %d", index)
+            continue
+        if profile["id"] in seen:
+            logger.warning("session_environments: dropping duplicate Fargate profile %d", index)
+            continue
+        seen.add(profile["id"])
+        out.append(profile)
+    return out

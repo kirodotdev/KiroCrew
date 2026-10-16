@@ -2,6 +2,7 @@ import type { CSSProperties } from 'react'
 import githubMarkUrl from '../assets/github-mark.svg'
 import discordMarkUrl from '../assets/discord-mark.svg'
 import coderMarkUrl from '../assets/coder-mark.svg'
+import fargateLogoUrl from '../assets/aws-fargate-logo.svg'
 
 /**
  * Monochrome brand marks (GitHub, Discord, the Kiro ghost) tinted via CSS
@@ -66,4 +67,11 @@ export function DiscordIcon({ size = 16 }: { size?: number }) {
  * theme's currentColor in light and dark. The art is about 2.17:1 wide. */
 export function CoderIcon({ size = 16 }: { size?: number }) {
   return <BrandGlyph url={coderMarkUrl} size={Math.round(size * 2.17)} height={size} />
+}
+
+/** AWS Fargate service tile. Its brand colors are part of the mark, so it
+ * renders as an image rather than a currentColor mask. Decorative: callers
+ * always pair it with a visible text label. */
+export function FargateIcon({ size = 16 }: { size?: number }) {
+  return <img src={fargateLogoUrl} width={size} height={size} alt="" aria-hidden="true" className="inline-block shrink-0 rounded-[3px]" />
 }

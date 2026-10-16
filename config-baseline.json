@@ -3298,6 +3298,7 @@
       "defaultValue": {
         "coder_url": "",
         "profiles": [],
+        "fargate_profiles": [],
         "archived_retention_days": 7,
         "default_profile": "",
         "stop_on_shutdown": true
@@ -3414,6 +3415,34 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": true
+    },
+    {
+      "path": "session_environments.fargate_profiles",
+      "kind": "core",
+      "type": "array",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Fargate Profiles",
+      "help": "Named AWS Fargate profiles (at most 20), each {id, name, aws_profile, region, cluster, task_definition, subnets, security_groups, assign_public_ip, workdir}. References only: aws_profile names a profile of the gateway's AWS CLI, and no credential is stored.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": []
+    },
+    {
+      "path": "session_environments.fargate_profiles.*",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "*",
+      "help": "",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": null
     },
     {
       "path": "session_environments.archived_retention_days",

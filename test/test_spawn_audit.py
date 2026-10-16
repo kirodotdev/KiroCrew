@@ -282,6 +282,10 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "remote_session/worker.py::run",
         "remote_session/workspace_tools.py::run_command",
         "remote_session/workspace_tools.py::run",
+        # The Fargate container command runs this stdlib-only bootstrap as guest
+        # PID 1. Its authenticated shell requests execute only inside that task;
+        # the disposable guest, not the gateway sandbox, supplies isolation.
+        "remote_session/fargate_bootstrap.py::_run",
         # Gateway credential reads: the callers supply fixed CLI verbs and a
         # host from HOSTS, not guest argv. Git helper discovery uses trusted git,
         # its install cwd, a discovery ceiling and a scrubbed GIT_* environment;
@@ -1420,6 +1424,12 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         "cloud/ssm.py::_kill_tree_windows",
         "cloud/ssm.py::_run_install_command",
         "cloud/ssm.py::open_port_forward",
+        # A Fargate session task's SSM port forward: the argv comes from
+        # `ssm.build_port_forward_argv` (the same builder `open_port_forward`
+        # uses), filled from the operator's saved profile (AWS CLI profile name,
+        # region) and the task this gateway launched; no shell, stdin DEVNULL.
+        # Not sandbox-routed for the same reason as `open_port_forward`.
+        "fargate_session/forward.py::_spawn_ssm",
         # Local identity probe: `<resolved kiro-cli> whoami --format json`, a
         # fixed argv with no shell and no agent-reachable input — the binary
         # comes from `kiro_cli.resolve_kiro_cli` (the same resolution every

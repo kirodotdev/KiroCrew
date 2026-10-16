@@ -1842,7 +1842,7 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "id": "developer.session-environments",
     "label": "Session Environments",
     "labelKey": "sessionEnvironments.title",
-    "description": "Preview Coder configuration for development sessions. This switch only shows settings on this device.",
+    "description": "Preview Coder and AWS Fargate configuration for development sessions. This switch only shows settings on this device.",
     "tab": "developer",
     "type": "toggle",
     "occurrence": 1

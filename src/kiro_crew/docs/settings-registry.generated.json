@@ -1087,7 +1087,7 @@
       "label": "Session Environments",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.session-environments",
-      "description": "Preview Coder configuration for development sessions. This switch only shows settings on this device."
+      "description": "Preview Coder and AWS Fargate configuration for development sessions. This switch only shows settings on this device."
     },
     {
       "id": "developer.webhooks",

@@ -65,6 +65,16 @@ class SessionEnvironmentChoices:
         self.path = Path(path)
         self.lock_path = self.path.with_suffix(".lock")
 
+    @staticmethod
+    def _provider(profile_id: str) -> str:
+        from kiro_crew.config import live
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.session_environments import provider_for_profile
+
+        config = live.snapshot() or KiroCrewConfig.load()
+        # An unavailable profile may still be recorded; launch reports its absence.
+        return provider_for_profile(config.session_environments, profile_id) or PROVIDER_ID
+
     def _read(self) -> dict[str, dict[str, str]]:
         try:
             text = self.path.read_text(encoding="utf-8")
@@ -103,7 +113,7 @@ class SessionEnvironmentChoices:
         or for a subagent, the parent it inherited the environment from.
         """
         entry = self._read().get(session_key)
-        if not isinstance(entry, dict) or entry.get("provider") != PROVIDER_ID:
+        if not isinstance(entry, dict) or entry.get("provider") not in (PROVIDER_ID, "fargate"):
             return None
         profile = entry.get("configuration")
         if not isinstance(profile, str) or not _PROFILE_ID_RE.match(profile):
@@ -135,7 +145,7 @@ class SessionEnvironmentChoices:
                     return None
                 profile, owner = parent
                 sessions[child_key] = {
-                    "provider": PROVIDER_ID,
+                    "provider": self._provider(profile),
                     "configuration": profile,
                     "parent": owner,
                 }
@@ -187,7 +197,10 @@ class SessionEnvironmentChoices:
                 if profile_id is None:
                     sessions.pop(session_key, None)
                 else:
-                    sessions[session_key] = {"provider": PROVIDER_ID, "configuration": profile_id}
+                    sessions[session_key] = {
+                        "provider": self._provider(profile_id),
+                        "configuration": profile_id,
+                    }
                 self._write(sessions)
 
 
@@ -439,6 +452,13 @@ async def prepare_for_session(
     if config is None:
         config = await asyncio.to_thread(KiroCrewConfig.load)
     section = config.session_environments
+    from kiro_crew.fargate_session import fargate_profile
+
+    if fargate_profile(section, profile_id) is not None:
+        from kiro_crew.fargate_session.launch import FargateSessionEnvironments
+
+        # Keyed by the owner like Coder's, so a subagent shares the parent's task.
+        return await FargateSessionEnvironments(section, home).prepare(owner_key, profile_id)
     environments = CoderSessionEnvironments(section, home)
     # An inherited (subagent) session works in its owner's workspace: the
     # registry row is keyed by the owner, so this reuses that workspace and never

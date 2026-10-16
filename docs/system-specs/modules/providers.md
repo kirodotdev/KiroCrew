@@ -80,14 +80,18 @@ runtime and development tools execute. Its shared helpers live in
 the local-only tool fence and `SessionEnvironmentUnavailable`), separately from
 the LLM provider and harness selector, so execution placement does not add an
 `agent.provider` value or select a model. Gateway hosting, whole-Crew
-deployment, and application deployment are outside this contract. Coder is the
-workspace provider.
+deployment, and application deployment are outside this contract. Coder and
+AWS Fargate are the workspace providers.
 
-Coder configuration lives in Settings > Session Environments, revealed by the
+Their configuration lives in Settings > Session Environments, revealed by the
 per-device toggle under Settings > Developer > Feature Previews. The Settings
 navigation updates immediately when the flag changes, and the configuration deep
 link and search results are unavailable while it is off. The panel contains a
-Coder URL and named profiles persisted through the existing config API. Setup
+Coder URL and named profiles persisted through the existing config API, and,
+when the gateway reports `fargate_profiles`, a provider choice that keeps Coder
+workspace profiles apart from Fargate task-definition and network references
+(a gateway without that key shows Coder alone). The Fargate side says that
+Deploy my crew is a different feature. Setup
 instructions explain deployment prerequisites, CLI sign-in on the gateway
 machine, and provider-owned storage behavior. Credentials are never collected in
 this form. Save
@@ -114,6 +118,10 @@ why the whole-Crew Fargate lane (`cloud/fargate_engine.py`, Deploy my crew) is
 not a session host even though it already runs ECS tasks: that task runs a full
 headless backend with its own data home, model credential and approvals, and
 exposes only a turn API, so memory written there never reaches the gateway.
+The Fargate session provider reuses that lane's placement builder
+(`cloud/fargate/runtask.network_configuration`) and ARN parser
+(`fargate_engine.split_task_arn`), never its crew container or its
+`kirocrew:managed` tags, so neither lane's teardown can claim the other's tasks.
 
 No model credential ever reaches a session environment. The engine runs on
 the gateway under its normal sign-in, and the guest runs
@@ -331,7 +339,11 @@ boundary. Those
 stdlib-only files cannot import the gateway sandbox. A provider CLI running on
 the gateway does not qualify merely because it reaches a guest. The two `main`
 entries are separately justified as in-process `asyncio.run`, not subprocesses.
-No directory-wide exemption suppresses future spawn sites.
+No directory-wide exemption suppresses future spawn sites. Fargate's
+`remote_session/fargate_bootstrap.py::_run` is likewise enumerated individually:
+the task's container command runs this stdlib-only bootstrap as guest PID 1,
+and authenticated shell requests execute inside that disposable task, never
+as gateway subprocesses.
 
 Guest file writers share a persistent empty lock sidecar. The Windows branch
 polls the non-blocking byte-range lock until acquired or the bounded ceiling
@@ -365,10 +377,14 @@ template list) per profile, and `git_gateway.login_status` per proxied git
 host, which runs only status commands (`gh auth status`, `glab auth status`,
 `az account show`) and reads their exit codes with output discarded. A host
 that falls back to git's credential helper reports `unchecked` rather than
-asking the helper, since asking would hand the gateway the secret. No
-workspace is created, started or touched. The "Manage" step lists
+asking the helper, since asking would hand the gateway the secret. Each saved
+Fargate profile is checked under the `fargate` key, with or without a Coder
+URL, by reading its task definition (`tasks.task_container`, which also refuses
+an `entryPoint`) and confirming the Session Manager plugin is installed. No
+workspace or task is created, started or touched. The "Manage" step lists
 `GET /api/session-environments/workspaces` (owner-only, registry-only, no Coder
-command): each session's workspace with an archived session's deletion date,
+or AWS command): each session's Coder workspace or Fargate task, with a
+`provider` field the card filters on and an archived session's deletion date,
 polled every 15 seconds, beside a link to the Coder
 deployment when one is saved (`safeHttpUrl`, new tab, `noopener noreferrer`).
 
@@ -433,7 +449,7 @@ about files from earlier turns. Every worker id carries the gateway process's
 process started, so a worker a crashed gateway left running does not keep
 working beside the resumed session's.
 
-Remote environments stop with the gateway that drives them, unless
+Remote environments stop with the gateway when doing so preserves their files, unless
 `session_environments.stop_on_shutdown` (default true, a Global defaults
 toggle) is off, which keeps compute running while the gateway is down in
 exchange for a warm restart. Kiro Crew itself stops a Coder workspace only on
@@ -451,9 +467,103 @@ restart reconnects first) with no authenticated gateway, the one value the
 gateway's launch default and the worker's own defaults read, and the relay
 retires a never-attached spare at `wire.SPARE_MAX_AGE_SECONDS` (four fifths of
 it) so it never dials an exited worker; a Coder workspace stops at its deadline,
-which only the gateway extends. Deletion of an archived session's workspace
+which only the gateway extends, and the Fargate bootstrap exits, stopping its
+task, after `KIROCREW_BOOTSTRAP_IDLE_SECS` (900 s) with no authenticated use, no
+open pipe and no running command. Every retention sweep sends an authenticated
+`true` through `shell_for` to enrolled tasks without an authenticated stop intent,
+including tasks without a worker pipe or a remaining saved profile. At most four
+probes run concurrently, each bounded to 30 seconds including its lifecycle-lock
+wait; registry and vault reads run off-loop, and one failed probe does not stop
+later probes. Thus resetting an idle runtime does not destroy its task's files
+while the gateway can still reach it. Deletion of an archived session's workspace
 after its retention needs the gateway: a stopped Coder workspace keeps billing
-for storage while no gateway runs.
+for storage while no gateway runs. A graceful shutdown leaves Fargate tasks
+running and counts them under `skipped`: stopping a task destroys its files.
+Their rows and secrets remain so a gateway restart can reconnect; the bootstrap's
+900-second idle exit bounds billing if the gateway stays down. An archive or
+failed launch persists stop intent first and drops the row only after ECS
+accepts the stop or confirms the task is absent. Failure or cancellation retains
+the row for the next retention sweep, even with no Coder URL configured. A
+task's DescribeTasks or StopTask failure does not prevent later pending stops
+from being retried. A pending stop blocks task
+reuse and browsing, and resume must finish stopping it before replacing it.
+
+AWS Fargate profiles (`session_environments.fargate_profiles`: AWS CLI profile
+name, region, cluster, task definition, subnets, security groups, public IP,
+workdir) run a session in an ECS task built from the owner's own task
+definition. `prepare_for_session` dispatches by profile id
+(`fargate_session.fargate_profile`) to
+`fargate_session.launch.FargateSessionEnvironments.prepare`, the same seam as
+Coder, keyed by the owner so a subagent shares its parent's task, under the
+same per-session lifecycle lock and generation as Coder's prepare. The task is
+the workspace and keeps nothing once stopped: archiving stops it at once
+(`retention._archive_fargate`, under that lock, with no retention window and an
+unsaved-work notice saying the files go with the stop), and a session reopened
+after its task is gone gets a fresh one with the chat, memory and approvals
+intact (`PreparedRemoteSession.created`). The image must provide python3 3.9+
+and git and set no container `entryPoint`, because `RunTask` overrides only the
+command, which is `remote_session/fargate_bootstrap.py` compressed into a
+`python3 -c` (well under the 8 KiB override limit). The request goes as
+`--cli-input-json` through the `cloud.aws` chokepoint with
+`enableExecuteCommand` (which starts the SSM agent the forward needs),
+`startedBy: kirocrew-session` and the tag `kirocrew:session` = a SHA-256 prefix
+of the session key, so the key itself never reaches AWS; no role or size
+override is sent. The task role needs the `ssmmessages` permissions. The
+gateway's AWS identity needs `ecs:RunTask`, `ecs:StopTask`, `ecs:DescribeTasks`,
+`ecs:DescribeTaskDefinition`, `iam:PassRole` for the task roles and
+`ssm:StartSession`, and the gateway needs the Session Manager plugin. ECS Exec is
+not the transport, since it is a terminal path (above). The bootstrap, as PID 1
+(it reaps orphans and sets `HOME` if unset), listens on task loopback port
+47821, which the gateway reaches through one `AWS-StartPortForwardingSession`
+forward per task (`fargate_session/forward.py`, target
+`ecs:<cluster name>_<taskId>_<runtimeId>`, the cluster name taken from the task
+ARN). Its protocol is line-based and accepts LF or CR as a terminator. The
+bootstrap greets with `KCB1 <nonce>`. Before sending any key, the gateway
+resolves the accepted connection's exact TCP four-tuple to its kernel owner and
+proves that process belongs to the pinned AWS child or its descendants (the
+Session Manager plugin), rechecking start identities. Unknown ownership refuses
+enrollment; an alive child and listening port are insufficient. It then sends
+`ENROLL <secret hex>`, which is answered `ENROLLED` with an HMAC and
+refused ever after, so a task whose enrolment the gateway did not win is
+stopped and never used. Every later request is `REQ <base64 JSON> <HMAC>` over
+the nonce, with the op `run` (a shell command and stdin, output capped at 4 MB)
+or `pipe` (a splice to a guest worker's loopback port, which is how the worker
+and its `wire` link run), answered `RES` or `OK` with an HMAC. A `run` whose
+reply is garbled or fails its MAC is sent again, up to three attempts, and every
+caller tolerates a repeat (the install rewrites the same files, a repeated worker
+start leaves a duplicate that exits on its orphan timeout, browse reads are
+idempotent, and the one write is compare-and-set). The HMAC on every answer is
+the live identity proof: only the task this gateway enrolled can answer. The
+32-byte secret never appears in the task definition, an override, an environment
+variable or a log; the gateway stores it in the existing encrypted `SecretVault`
+under `<data home>/.vault`, which is fenced from file tools and OS-masked for
+agent processes at both default and relocated data homes. A gateway restart
+loads that key to reach the same task. Each task is recorded in `<data home>/fargate/session-tasks.json`
+before the gateway waits for it, so a failure or an archive can stop it. A
+purpose-scoped vault subkey, never shared with the guest, MACs the session key,
+profile id, task ARN/id, cluster, runtime id and launch AWS profile name. A
+nonempty stop reason extends that MAC's payload; an authorized lifecycle
+transition verifies its input, signs the stop reason and replaces the exact
+verified snapshot under the registry lock. Retries verify that same snapshot
+before consuming its reason and never re-sign unchecked disk contents. Active
+rows use the identity-only encoding. A reason injected onto an authenticated
+active row cannot authorize stop or replacement, nor suppress its heartbeat:
+non-destructive access may verify the original active identity with an empty
+reason without changing the stored row. Unsigned pending stops are not migrated.
+The registry key must equal the authenticated session key. An unsigned, tampered
+or unreadable identity fails closed: it cannot authorize reuse, browsing or StopTask.
+The authenticated launch AWS profile and ARN region are used even if the saved
+profile is edited or removed. Reuse requires a `RUNNING` task, its enrolled
+secret and its live session tag. StopTask requires the authenticated binding and
+a fresh description with the matching ARN and session tag; a foreign or
+retagged task is never stopped: its row and secret are forgotten, a warning names
+its ARN, and resume can launch fresh. A task ECS has purged
+is already stopped: its row and secret are dropped and resume can launch fresh.
+A failed StopTask only clears its row if a second description confirms absence;
+other errors keep the pending stop for retry. Fargate sessions have no terminal
+(`remote_terminal_argv` refuses), and the Files and Git views run through the
+bootstrap's `run` op (`session_browse._resolve_fargate`, no AWS call, never
+launching a task).
 
 Dashboard views that read the gateway's project describe the wrong machine for a
 remote session, so they switch on `useSlotRemoteEnvironment`: the composer drops

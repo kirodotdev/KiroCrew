@@ -1001,7 +1001,9 @@ export default defineConfig({
     chunkSizeWarningLimit: 3810,
     // The Slack brand mark must remain a physical file. The gateway serves
     // /assets, while an inline SVG would also conflict with security review.
-    assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') ? false : undefined),
+    // The AWS Fargate tile stays a file too, so its bytes never land in the
+    // chat chunk the session-environment chip ships in.
+    assetsInlineLimit: (filePath) => (filePath.endsWith('slack-logo.svg') || filePath.endsWith('discord-logo.svg') || filePath.endsWith('telegram-logo.svg') || filePath.endsWith('aws-fargate-logo.svg') ? false : undefined),
     rollupOptions: {
       // Multi-entry: the dashboard SPA plus every app window entry
       // discovered under src/apps/<app>/<name>.html (see appWindowEntries —

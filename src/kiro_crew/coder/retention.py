@@ -7,6 +7,10 @@ workspace, files intact. Once the stamp is due, :func:`sweep_due` (run by the
 gateway's :func:`run_sweeper` loop every minute) deletes the workspace and drops
 the row, so a session reopened after that gets a fresh workspace.
 
+An AWS Fargate session's task is the workspace itself and keeps nothing once
+stopped, so archiving stops it at once instead (:func:`_archive_fargate`), with
+no retention window and no sweep.
+
 Safety properties:
 
 * A deletion is decided under the registry lock (``begin_deletion``), the same
@@ -27,7 +31,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Awaitable, Callable, Iterable, Optional
 from weakref import WeakValueDictionary
 
 from kiro_crew.coder.client import CoderClientError
@@ -126,6 +130,21 @@ async def _binding_survives_stop(environments: Any, session_key: str) -> bool:
     return await asyncio.to_thread(compute_survives_stop, environments, binding)
 
 
+async def _fargate_environments() -> Any:
+    """The live Fargate environments. Constructing them makes no AWS call."""
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.fargate_session.launch import FargateSessionEnvironments
+
+    config = live.snapshot()
+    if config is None:
+        config = await asyncio.to_thread(KiroCrewConfig.load)
+    return FargateSessionEnvironments(
+        config.session_environments, await asyncio.to_thread(data_home)
+    )
+
+
 #: Bound on the unsaved-work check that runs before an archive stops anything:
 #: it must never hold up the stop for long, and a slow machine just skips it.
 UNSAVED_CHECK_SECS = 20.0
@@ -174,7 +193,11 @@ def feed_notifier(state: Any) -> Optional[Notify]:
 
 
 async def warn_unsaved_work(
-    session_keys: tuple[str, ...], notify: Optional[Notify], *, survives_stop: bool = True
+    session_keys: tuple[str, ...],
+    notify: Optional[Notify],
+    *,
+    survives_stop: bool = True,
+    ephemeral: bool = False,
 ) -> None:
     """Tell the person when an archived session's workspace holds unsaved work.
 
@@ -182,7 +205,8 @@ async def warn_unsaved_work(
     never wakes stopped compute), and bounded: files, uncommitted changes and
     unpushed commits on the remote machine exist nowhere else, and they go when
     its retention runs out -- or, when ``survives_stop`` is False, as soon as its
-    compute stops. Never raises.
+    compute stops, and with the stop itself for an ``ephemeral`` (AWS Fargate)
+    workspace. Never raises.
     """
     if notify is None:
         return
@@ -198,7 +222,12 @@ async def warn_unsaved_work(
             logger.debug("Unsaved-work check failed for %s", key, exc_info=True)
             continue
         if summary:
-            try:
+            if ephemeral:
+                body = (
+                    f"Its AWS Fargate task held {summary}, which existed only in that task. "
+                    "Archiving stops the task, and its files go with it."
+                )
+            else:
                 if survives_stop:
                     advice = "Reopen the session and commit or push before its retention runs out."
                 else:
@@ -207,10 +236,9 @@ async def warn_unsaved_work(
                         "own stop deadline or the retention deletion), so reopen the session "
                         "and commit or push now."
                     )
-                notify(
-                    "Archived session has unsaved remote work",
-                    f"Its workspace holds {summary}, which exists only on that machine. {advice}",
-                )
+                body = f"Its workspace holds {summary}, which exists only on that machine. {advice}"
+            try:
+                notify("Archived session has unsaved remote work", body)
             except Exception:  # noqa: BLE001 -- a failed notice never fails the archive
                 logger.warning("Could not publish the unsaved-work notice", exc_info=True)
 
@@ -220,24 +248,47 @@ async def _archive(
 ) -> None:
     try:
         environments = await _environments()
-        if environments is None:
-            return
+        fargate = await _fargate_environments()
         for key, lifecycle, generation in requests:
             async with lifecycle.lock:
                 if generation != lifecycle.generation:
                     continue
-                survives = await _binding_survives_stop(environments, key)
-                await warn_unsaved_work((key,), notify, survives_stop=survives)
+                has_task = await fargate.has_task(key)
+                if environments is None and not has_task:
+                    continue
+                survives = (
+                    await _binding_survives_stop(environments, key)
+                    if environments is not None
+                    else True
+                )
+                await warn_unsaved_work((key,), notify, survives_stop=survives, ephemeral=has_task)
                 # A resume requested during the remote probe supersedes this close.
-                if generation == lifecycle.generation:
+                if generation != lifecycle.generation:
+                    continue
+                if has_task:
+                    await _archive_fargate(fargate, key)
+                if environments is not None:
                     await _archive_session(environments, key)
     except Exception:  # noqa: BLE001 -- never surfaces into a close that already succeeded
         logger.warning("Archived session workspace: could not schedule its release", exc_info=True)
 
 
+async def _archive_fargate(fargate: Any, session_key: str) -> None:
+    """Stop an archived session's Fargate task now. The caller holds its lifecycle lock.
+
+    A stopped task is gone with its files, so there is no retention window to
+    honour; keeping it running would only bill for nothing. Never raises.
+    """
+    try:
+        await fargate.archive_session(session_key)
+    except Exception:  # noqa: BLE001 -- the bootstrap's idle exit still stops the task
+        logger.warning("Archived session task: could not stop it", exc_info=True)
+
+
 #: Ceiling on the whole shutdown stop: it runs beside the gateway's own graceful
 #: shutdown and must never hold the exit. Whatever it does not reach in time is
-#: stopped by the guest itself (the worker's orphan timeout, Coder's deadline).
+#: stopped by the guest itself (the worker's orphan timeout, the Fargate
+#: bootstrap's idle exit, Coder's deadline).
 SHUTDOWN_STOP_SECS = 20.0
 
 
@@ -258,13 +309,16 @@ async def stop_on_shutdown_enabled() -> bool:
 async def stop_for_shutdown() -> dict[str, int]:
     """Stop every remote environment this gateway owns, because it is going away.
 
-    Nothing is scheduled for deletion and no registry row is dropped, so a
-    session reopened after the next start resumes the same Coder workspace.
-    A workspace whose stop would destroy its files (:func:`compute_survives_stop`)
-    is left running and counted under ``skipped``. Best effort per workspace,
-    and never raises.
+    Nothing is scheduled for deletion and no Coder registry row is dropped, so a
+    session reopened after the next start resumes the same Coder workspace. A
+    Coder workspace whose stop would destroy its files
+    (:func:`compute_survives_stop`) is left running and counted under
+    ``skipped``. Fargate tasks are also skipped: stopping them destroys their
+    files. Their rows and secrets survive for reconnect, and the bootstrap's
+    idle exit bounds billing if the gateway stays down. Best effort per
+    resource, and never raises.
     """
-    counts = {"coder": 0, "skipped": 0}
+    counts = {"coder": 0, "fargate": 0, "skipped": 0}
 
     async def coder() -> None:
         environments = await _environments()
@@ -292,17 +346,28 @@ async def stop_for_shutdown() -> dict[str, int]:
             except CoderClientError as exc:
                 logger.info("Shutdown: Coder workspace stop failed (%s); auto-stop applies", exc)
 
-    try:
-        await coder()
-    except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
-        logger.warning("Shutdown: could not stop Coder session environments", exc_info=True)
+    async def fargate() -> None:
+        environments = await _fargate_environments()
+        # The task IS the workspace: shutdown must not destroy its files.
+        live_tasks = len(await asyncio.to_thread(environments.registry.all))
+        # Read before adding: "+=" would load the count before the await and
+        # lose a concurrent provider's increment.
+        counts["skipped"] += live_tasks
+
+    async def guarded(name: str, step: Callable[[], Awaitable[None]]) -> None:
+        try:
+            await step()
+        except Exception:  # noqa: BLE001 -- shutdown must not fail on one provider
+            logger.warning("Shutdown: could not stop %s session environments", name, exc_info=True)
+
+    await asyncio.gather(guarded("Coder", coder), guarded("Fargate", fargate))
     if counts["skipped"]:
         logger.info(
             "Shutdown: left %d session environment(s) running: stopping their compute "
             "would destroy their files",
             counts["skipped"],
         )
-    if counts["coder"]:
+    if counts["coder"] or counts["fargate"]:
         logger.info("Shutdown: stopped session environments %s", counts)
     return counts
 
@@ -412,14 +477,12 @@ def request_sweep() -> None:
 
 
 async def sweep_once() -> int:
-    """One sweep against the live config; 0 when Coder is not configured.
-
-    Registry-only unless a row is due, so an idle gateway issues no Coder command.
-    """
+    """Keep live Fargate tasks alive, retry their stops and sweep expired workspaces."""
+    fargate = await _fargate_environments()
+    await fargate.keep_alive()
+    stopped = await fargate.retry_stops()
     environments = await _environments()
-    if environments is None:
-        return 0
-    return await sweep_due(environments)
+    return stopped + (await sweep_due(environments) if environments is not None else 0)
 
 
 async def run_sweeper(

@@ -3383,6 +3383,7 @@ nothing else:
     "profiles": [
       {"id": "dev", "name": "Dev box", "template": "python-dev", "workdir": "/workspace/repo"}
     ],
+    "fargate_profiles": [],
     "archived_retention_days": 7,
     "default_profile": "",
     "stop_on_shutdown": true
@@ -3412,15 +3413,38 @@ same value with a 400, writing nothing. An absent or non-object section loads as
 unmodelled key inside the section is preserved by `save()` like any other section
 key and omitted from the GET.
 
+`fargate_profiles` is a separate list of at most 20 AWS Fargate records, each
+exactly `{id, name, aws_profile, region, cluster, task_definition, subnets,
+security_groups, assign_public_ip, workdir}` (`validate_fargate_profile`). `id`,
+`name` and `workdir` follow the Coder profile bounds. `aws_profile` is the NAME
+of an AWS CLI profile configured on the gateway machine, never a key; `region`
+uses AWS region syntax; `cluster` and `task_definition` are ECS names or ARNs
+(no leading `-`, so neither can read as a CLI flag); `subnets` holds 1-16 and
+`security_groups` 1-5 distinct `subnet-`/`sg-` IDs; `assign_public_ip` is a
+boolean, and new UI profiles default it to false. A save checks syntax only: no
+AWS call is made and nothing is created. The task definition owns the image,
+size, storage and IAM roles. `PROVIDER_PROFILE_LISTS` names every provider's
+list, and every leaf or whole-section save checks their ids after merging under
+the config write lock, including lists omitted by an older client. Collisions
+are refused with a 400 and no write. This cross-provider check skips malformed
+stored lists and entries without string ids, and ignores repeats within one
+list, so an unrelated save can preserve hand-edited data the loader drops.
+The lenient loader drops malformed entries by index (never logging a value),
+but retains cross-provider collisions so the
+shared launch resolver can refuse an ambiguous id rather than pick a provider.
+The picker excludes ambiguous ids even when no Coder URL is configured. Choice
+rows record the resolved provider for inspection; dispatch derives it from the
+profile id, including when reading a row written with a different provider label.
+
 `default_profile` is a saved profile id or `""` (this machine), and a
 whole-section save refuses a default the same save drops. `stop_on_shutdown` is
 a boolean, default `true`. Unknown keys, including credentials, are refused.
 
-`PATCH /api/config/kirocrew` accepts six paths, all through the handler's
+`PATCH /api/config/kirocrew` accepts seven paths, all through the handler's
 `"normalized"` spec type (a shared normalizer that raises `ValueError` and returns the
 value to store): `session_environments` (the whole record),
 `session_environments.coder_url`, `session_environments.profiles`,
-`session_environments.default_profile`, `session_environments.stop_on_shutdown`, and
+`session_environments.fargate_profiles`, `session_environments.default_profile`, `session_environments.stop_on_shutdown`, and
 `session_environments.archived_retention_days` (an int 0-7, default 7: days an
 archived session's stopped workspace is kept before it is deleted, see
 [providers](providers.md)). Whole-section saves require the Coder

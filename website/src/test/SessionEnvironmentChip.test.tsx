@@ -82,8 +82,9 @@ describe('SessionEnvironmentChip', () => {
   })
 
   it("shows each profile's provider mark, and the chosen one on the chip", async () => {
+    const aws = { id: 'aws', name: 'AWS task', provider: 'fargate', workdir: '/workspace' }
     const old = { id: 'old', name: 'Older gateway', provider: '', workdir: '/w' }
-    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('dev', [DEV, old]))
+    vi.spyOn(api, 'chatSlotEnvironment').mockResolvedValue(envResponse('dev', [DEV, aws, old]))
     const u = userEvent.setup()
     wrap(<SessionEnvironmentChip slot="chat-1" />)
     const chip = await screen.findByRole('button', { name: 'Runs on Coder MicroVM' })
@@ -92,6 +93,7 @@ describe('SessionEnvironmentChip', () => {
     const item = (name: RegExp) => screen.getByRole('menuitemradio', { name })
     await screen.findByRole('menuitemradio', { name: /Older gateway/ })
     expect(item(/Coder MicroVM/).querySelector('[data-testid="provider-mark-coder"]')).not.toBeNull()
+    expect(item(/AWS task/).querySelector('[data-testid="provider-mark-fargate"]')).not.toBeNull()
     // An unknown provider keeps the generic cloud rather than guessing a brand.
     expect(item(/Older gateway/).querySelector('[data-testid^="provider-mark-"]')).toBeNull()
   })

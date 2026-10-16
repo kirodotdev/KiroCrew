@@ -954,11 +954,15 @@ export type GitLoginStatus = 'signed_in' | 'not_signed_in' | 'unchecked'
 export interface SessionEnvironmentsCheck {
   coder: { ok: boolean; owner?: string; error?: string }
   profiles: { id: string; ok: boolean; error?: string }[]
+  /** Per saved AWS Fargate profile: task definition readable and usable. Older gateways omit it. */
+  fargate?: { id: string; ok: boolean; error?: string }[]
   git: Record<string, GitLoginStatus>
 }
 
 export interface SessionEnvironmentWorkspace {
   workspace: string
+  /** Older gateways omit it; those rows are Coder workspaces. */
+  provider?: 'coder' | 'fargate'
   slot: string
   state: string
   template: string
