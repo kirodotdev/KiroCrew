@@ -81,6 +81,7 @@ Object.defineProperty(window, 'matchMedia', {
 })
 
 import ChatSidebar from '../pages/ChatSidebar'
+import { columnDropMark } from '../pages/chat-sidebar/columnDragFeedback'
 
 const base = { title: 'S', created: '', last_ts: '', tags: [] as string[] }
 const approvalSlot = { ...base, key: 'chat-approval', title: 'Owed', running: true, pending_approval: true }
@@ -369,5 +370,88 @@ describe('board state lanes: queued children', () => {
     await waitFor(() => expect(container.querySelector('[data-testid="session-subagents-waiting"]')).toBeNull())
     expect(store.getState().chat.subagentQueued?.['chat-queued']).toBeUndefined()
     expect(slotKeysIn(container, 'lane-idle')).toEqual(['chat-queued'])
+  })
+})
+
+describe('board column reorder feedback', () => {
+  function column(container: HTMLElement, id: string): HTMLElement {
+    const col = container.querySelector(`[data-testid="column-${id}"]`) as HTMLElement
+    expect(col, `column ${id} missing`).toBeTruthy()
+    return col
+  }
+  function startColumnDrag(container: HTMLElement, id: string) {
+    const grip = column(container, id).querySelector('span[draggable]') as HTMLElement
+    expect(grip, `no reorder grip on ${id}`).toBeTruthy()
+    fireEvent.dragStart(grip, { dataTransfer: { setData: vi.fn(), types: [] } })
+    return grip
+  }
+  const overColumn = (el: HTMLElement) =>
+    fireEvent.dragOver(el, { dataTransfer: { types: ['application/mc-column'] } })
+
+  it('dims the dragged column', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-waiting')
+    expect(column(container, 'lane-waiting').dataset.colDrag).toBe('source')
+    expect(column(container, 'lane-idle').dataset.colDrag).toBeUndefined()
+  })
+
+  it('marks the side a release would land on, toward either end', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-waiting')
+    overColumn(column(container, 'lane-idle'))
+    expect(columnDropMark(column(container, 'lane-idle'))).toBe('after')
+    overColumn(column(container, 'lane-approval'))
+    expect(columnDropMark(column(container, 'lane-approval'))).toBe('before')
+  })
+
+  it('marks nothing over the dragged column itself', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-working')
+    overColumn(column(container, 'lane-working'))
+    expect(columnDropMark(column(container, 'lane-working'))).toBeNull()
+  })
+
+  it('drops the mark when the pointer leaves the column', () => {
+    const { container } = renderSidebar()
+    startColumnDrag(container, 'lane-approval')
+    const idle = column(container, 'lane-idle')
+    overColumn(idle)
+    fireEvent.dragLeave(idle, { relatedTarget: document.body })
+    expect(columnDropMark(idle)).toBeNull()
+  })
+
+  it('clears every mark when the drag ends without a drop', () => {
+    const { container } = renderSidebar()
+    const grip = startColumnDrag(container, 'lane-approval')
+    overColumn(column(container, 'lane-working'))
+    fireEvent.dragEnd(grip)
+    expect(container.querySelectorAll('[data-col-drag], [data-col-drop-before], [data-col-drop-after], [data-col-dragging]')).toHaveLength(0)
+  })
+
+  it('drops the mark while the pointer is over a folder that swallows the drop', async () => {
+    // A folder block stops a column drag's dragover and drop, so a release
+    // there reorders nothing and the column must not promise a landing side.
+    const filed = { ...idleSlot, key: 'chat-filed', title: 'Filed', folder_id: 'f-1' }
+    const { container, qc } = renderSidebar([idleSlot, filed])
+    const folderSel = '[data-testid="col-lane-idle-folder-f-1"]'
+    await waitFor(async () => {
+      await act(async () => { qc.setQueryData(['chat-folders'], [{ id: 'f-1', name: 'Folder', collapsed: false, order: 0 }]) })
+      expect(container.querySelector(folderSel)).toBeTruthy()
+    })
+    startColumnDrag(container, 'lane-approval')
+    const idle = column(container, 'lane-idle')
+    overColumn(idle)
+    expect(columnDropMark(idle)).not.toBeNull()
+    overColumn(container.querySelector(folderSel) as HTMLElement)
+    expect(columnDropMark(idle)).toBeNull()
+    overColumn(idle)
+    expect(columnDropMark(idle)).not.toBeNull()
+  })
+
+  it('shows no column marks while a session card is dragged', () => {
+    const { container } = renderSidebar()
+    startCardDrag(container, 'chat-idle')
+    overColumn(column(container, 'lane-working'))
+    expect(columnDropMark(column(container, 'lane-working'))).toBeNull()
   })
 })

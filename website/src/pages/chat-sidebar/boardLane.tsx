@@ -23,6 +23,7 @@ import { SessionRowWindowScroller } from '../chat/sessionRowWindow'
 import { i18nT } from '../../i18n/t'
 import { sidebarCollision } from './dnd/collision'
 import { BoardUnfileDropStrip, SortableColumnFolder, FolderDragGhost } from './dnd/targets'
+import { COLUMN_DRAG_CLASSES, columnDropSide, draggedColumnId, endColumnDrag, markColumnDropSide, startColumnDrag } from './columnDragFeedback'
 import type { Slot } from './types'
 import { FOLDERS_SHELVED_LS_KEY } from './persistence'
 import { sessionRowIdentity } from './rowIdentity'
@@ -438,16 +439,24 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                 // Board column is a drag-and-drop drop zone (column reorder + session
                 // card drop); mouse-only drag handlers, so scope-disable the rule.
                 // eslint-disable-next-line jsx-a11y/no-static-element-interactions
-                <div key={col.id} data-testid={`column-${col.id}`} className="flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden" style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
+                <div key={col.id} data-testid={`column-${col.id}`} data-board-column={col.id} className={`flex flex-col flex-1 min-w-0 bg-card border border-border rounded-md overflow-hidden ${COLUMN_DRAG_CLASSES}`} style={{ minWidth: orderedColumns.length > 1 ? '220px' : undefined }}
                   // Clear first, on the way down: a folder block or unfile strip
                   // inside the lane takes the card and stops the dragover, so only
                   // a dragover that reaches the lane itself shows the hint again.
-                  onDragOverCapture={laneDef ? () => setDerivedHintCol(c => (c === col.id ? null : c)) : undefined}
+                  // The column-reorder landing mark follows the same rule: a folder
+                  // block stops a column drag's dragover and drop, so a release there
+                  // reorders nothing and must not show where the column would land.
+                  onDragOverCapture={e => {
+                    markColumnDropSide(e.currentTarget, null)
+                    if (laneDef) setDerivedHintCol(c => (c === col.id ? null : c))
+                  }}
                   onDragOver={e => {
                     const types = e.dataTransfer.types
                     // Accept column reorder on the entire column surface
                     if (types.includes('application/mc-column')) {
                       e.preventDefault()
+                      const dragged = draggedColumnId(e.currentTarget)
+                      markColumnDropSide(e.currentTarget, dragged ? columnDropSide(orderedColumns.map(c => c.id), dragged, col.id) : null)
                       return
                     }
                     // A derived lane leaves the drop refused (no preventDefault)
@@ -465,11 +474,15 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                   onDragLeave={e => {
                     e.currentTarget.classList.remove('ring-1', 'ring-accent')
                     // Moving onto a child also fires dragleave; only leaving the lane clears.
-                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setDerivedHintCol(c => (c === col.id ? null : c))
+                    if (!e.currentTarget.contains(e.relatedTarget as Node | null)) {
+                      setDerivedHintCol(c => (c === col.id ? null : c))
+                      markColumnDropSide(e.currentTarget, null)
+                    }
                   }}
                   onDrop={e => {
                     e.currentTarget.classList.remove('ring-1', 'ring-accent')
                     setDerivedHintCol(null)
+                    endColumnDrag(e.currentTarget)
                     // Column reorder takes priority
                     const draggedCol = e.dataTransfer.getData('application/mc-column')
                     if (draggedCol && draggedCol !== col.id) {
@@ -489,7 +502,12 @@ export function createBoardLane(shell: SidebarScope & LaneRows & FolderBlocks) {
                     {/* eslint-disable-next-line jsx-a11y/no-static-element-interactions */}
                     <span draggable
                       className="cursor-grab text-muted hover:text-text shrink-0"
-                      onDragStart={e => { e.dataTransfer.setData('application/mc-column', col.id); e.dataTransfer.effectAllowed = 'move' }}
+                      onDragStart={e => {
+                        e.dataTransfer.setData('application/mc-column', col.id)
+                        e.dataTransfer.effectAllowed = 'move'
+                        startColumnDrag(e, e.currentTarget.closest<HTMLElement>('[data-board-column]'), col.id)
+                      }}
+                      onDragEnd={e => endColumnDrag(e.currentTarget.closest<HTMLElement>('[data-board-column]'))}
                       title={i18nT('pages.chatSidebar.drag_to_reorder')}>
                       <GripVertical size={12} />
                     </span>
