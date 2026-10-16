@@ -3984,6 +3984,8 @@ the body is read; an app token is not affected by that gate. The routes:
   data}]}`, the last `_EVENTS_TAIL` (200) events oldest-first. 404
   `not_found`; 404 `unavailable` with no store; 503 `unavailable` on a store
   read error.
+- `GET /api/tasks/{task_id}/timeline` — owner-only merged history; see
+  taskq.md § Task timeline
 
 **Store prose is redacted on the way out, on every route above.** A row's wait
 `reason` and an event's `data` carry a failing tool's, subagent's or dependency

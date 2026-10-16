@@ -33,6 +33,7 @@ from kiro_crew.execution_context import (
     tighten_live_session_execution,
 )
 from kiro_crew.history import is_incognito_transcript, transcript_lock_stems, transcript_stems
+from kiro_crew.history_files import transcript_stem
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.link import is_channel_session_key
@@ -197,6 +198,38 @@ def subagent_event_slot(parent_session_key: str) -> str:
     external WS consumers and log lines).
     """
     return dashboard_slot_key(parent_session_key) or parent_session_key.removeprefix("dashboard:")
+
+
+def crew_log_slots_for(session_key: str) -> tuple[str, ...]:
+    """Every slot name a crew-log writer may have filed *session_key*'s work under.
+
+    The writers do not agree on one name, and none of them needs a tab to be open
+    when it writes. A dashboard turn records ``slot.key`` (``turn_admission``): the
+    tab's own name, which for a cron tab is :func:`cron_tab_name` (``cron-<job>``,
+    or ``cron-<job>-<run>`` for a per-run tab) or the transcript stem of a
+    per-run key, and for a channel-born tab the transcript stem. The channel
+    dispatcher records ``transcript_stem(session_key)`` (``dispatch_crew_log``),
+    so ``slack:<ts>`` is filed under ``slack_<ts>``. A job's own tab is
+    ``cron-<job_id>`` whatever the run key says.
+
+    :func:`subagent_event_slot` answers only for the tab that is open now, so a
+    reader that must find a conversation's log after its tab has closed tries
+    these names in order: the live answer first, then each name above. Names
+    repeat across rules and are listed once; an empty name is dropped.
+    """
+    names = [subagent_event_slot(session_key)]
+    if is_channel_session_key(session_key):
+        names.append(transcript_stem(session_key))
+    elif session_key.startswith("cron:"):
+        job_id = session_key.removeprefix("cron:").split(":", 1)[0]
+        names += [
+            _normalize_slot_key(cron_tab_name(session_key)),
+            _normalize_slot_key(transcript_stem(session_key)),
+            _normalize_slot_key(f"cron-{job_id}"),
+        ]
+    else:
+        names.append(_normalize_slot_key(session_key))
+    return tuple(dict.fromkeys(name for name in names if name))
 
 
 def slot_transcript_key(slot_key: str) -> str:
