@@ -1573,6 +1573,17 @@ class InFlightToolTracker:
         return self._current_id
 
     @property
+    def current_is_idless(self) -> bool:
+        """Whether the judged call is the id-less slot — a backend that omits a
+        toolCallId, or (for a sub-agent) a native-child call whose terminal
+        frame never reaches this loop. Such a snapshot is never retired by a
+        result, so a verdict read against it can outlive the command it
+        described; a terminating caller must not trust it. ``True`` only while an
+        id-less call is the judged one.
+        """
+        return self._current_id == "" and self._idless is not None
+
+    @property
     def any_active(self) -> bool:
         """Whether any dispatched call is still open.
 

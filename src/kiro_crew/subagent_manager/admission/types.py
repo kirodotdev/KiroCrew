@@ -119,6 +119,10 @@ def tombstone_terminal_state(cause: str, outcome: str = "") -> str | None:
         "reaped": taskq.FAILED,
         "startup_timeout": taskq.FAILED,
         "start_queue_saturated": taskq.FAILED,
+        # A wedged wave member reaped early (confirmed DEAD/STUCK_INPUT): killed
+        # because it produced no result and was stranding its wave, so FAILED,
+        # same as the wall-clock ``reaped``/``timeout``.
+        "wedged": taskq.FAILED,
     }.get(cause)
 
 

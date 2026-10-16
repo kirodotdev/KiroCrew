@@ -1345,9 +1345,10 @@ class OrphanStallMonitor(ManagerComponent):
                 # Idle-stall detection (see _maybe_flag_stall). The main-agent
                 # watchdog stack does not govern subagents; this is their
                 # equivalent — surface a "stalled" UI signal well before the
-                # 30-min ceiling. Surface-only: it never terminates the agent
-                # (users close it from the UX), so we always fall through to
-                # the wall-clock check below.
+                # 30-min ceiling. The flag itself is surface-only (it never
+                # terminates the agent; users close it from the UX). The
+                # separate wave-reap below is the ONE case that may terminate on
+                # a wedge, and only for a wave member stranding a pending wave.
                 await self._manager._maybe_flag_stall(agent_id, info, now)
                 exec_started = info._exec_started_mono
                 if exec_started is None:
@@ -1366,6 +1367,19 @@ class OrphanStallMonitor(ManagerComponent):
                 else:
                     elapsed = mono_now - exec_started
                 deadline = info.timeout_secs or self._manager._default_timeout
+                # Terminating backstop for a wave: a RUNNING member confirmed
+                # wedged (DEAD/STUCK_INPUT) that is holding up a wave pending on
+                # it is reaped early, well before the wall-clock deadline, so
+                # the wave closes promptly instead of hanging the orchestrator
+                # for the whole timeout. Guarded hard (positive wedge only,
+                # never session_sharing, two-sweep confirmed, respects user
+                # stops, only when it genuinely strands the wave) so a healthy
+                # slow run is never touched — see _maybe_reap_wedged_member.
+                try:
+                    if await self._manager._maybe_reap_wedged_member(agent_id, info, now):
+                        continue
+                except Exception:
+                    logger.exception("Reaper: wedged-member reap failed for %s", agent_id)
                 if elapsed <= deadline:
                     continue
                 logger.warning(
@@ -1620,9 +1634,14 @@ class OrphanStallMonitor(ManagerComponent):
         Still deliberately *surface-only*: it emits a ``subagent_stalled`` UI
         signal and records the slow command, but NEVER terminates the agent, so
         a slow-but-healthy command can only ever produce a self-clearing badge.
-        Escalating a ``DEAD`` verdict to an early reap would be a change to kill
-        semantics and is intentionally NOT part of this; the wall-clock reaper at
-        ``_TIMEOUT_SECS`` remains the only automatic terminator.
+        Terminating a wedged run is a SEPARATE, hard-guarded path
+        (:meth:`_maybe_reap_wedged_member`), not this flag: it reaps a RUNNING
+        wave member only on a *trusted* DEAD/STUCK_INPUT verdict (the
+        ``_wedge_verdict`` this method stamps), confirmed across two sweeps and
+        only when the wedge genuinely strands a pending wave. This method itself
+        still never kills, so a slow silent command outside a wave — or inside
+        one with healthy siblings — is untouched by it; the wall-clock reaper at
+        ``_TIMEOUT_SECS`` remains the backstop terminator for everything else.
         """
         if not (info.turns > 0 or info._pid is not None):
             return
@@ -1702,6 +1721,14 @@ class OrphanStallMonitor(ManagerComponent):
                 info._stall_suspect_at = now
                 return
             info.stalled = True
+            # Record a TRUSTED positive wedge for the running-member reaper
+            # (``_maybe_reap_wedged_member``). ``wedged`` is only still True here
+            # when the verdict was DEAD/STUCK_INPUT AND attribution was trusted
+            # (``session_sharing`` already withdrew it above), so this never
+            # stamps an idle-time (UNKNOWN) flag or a shared-runtime guess. A
+            # surface-only idle flag leaves ``_wedge_verdict`` empty, so the
+            # terminating path below never acts on it.
+            info._wedge_verdict = verdict if wedged else ""
             logger.warning(
                 "Reaper: subagent %s idle %.0fs (verdict=%s; %s) — marking stalled",
                 agent_id,
@@ -1730,6 +1757,200 @@ class OrphanStallMonitor(ManagerComponent):
                 logger.debug(
                     "Reaper: failed to emit subagent_stalled for %s", agent_id, exc_info=True
                 )
+
+    async def _maybe_reap_wedged_member_impl(
+        self, agent_id: str, info: SubagentInfo, now: float
+    ) -> bool:
+        """Reap a RUNNING wave member confirmed wedged, so a wave pending on it
+        closes promptly instead of waiting out ``subagent_timeout_secs``.
+
+        ``_maybe_flag_stall`` is surface-only by design — a slow but silent
+        command must never be killed — so a running member judged DEAD/STUCK
+        keeps its concurrency slot until the wall-clock reaper fires hours
+        later. The stuck-wave reconciler cannot help: it skips any wave with a
+        non-done member (``waves.py``), so when the wedged slot-holder is itself
+        a member of the pending wave, ``batch_members_pending`` stays True and
+        the orchestrator hangs for the whole timeout. This settles the running
+        member instead, which is the only thing that releases such a wave.
+
+        It acts only when EVERY guard holds, so a healthy slow run is never
+        touched:
+
+        * **Positive wedge, not idle time.** ``_wedge_verdict`` is set only when
+          ``_maybe_flag_stall`` flagged on a trusted DEAD/STUCK_INPUT verdict —
+          ``/proc`` evidence about this agent's OWN child. An idle-time
+          (``UNKNOWN``) flag leaves it empty and is never reaped here.
+        * **Never on a ``session_sharing`` runtime.** The cmdline match can land
+          on a sibling's or the parent's child there, so the flag path already
+          withholds the wedge verdict; this is a belt-and-braces second check so
+          a terminating action can never rest on a misattributable match.
+        * **Two-sweep confirmation with a live re-consult.** The flag may trip
+          on a single sweep; a *terminating* path must not, and it must not
+          trust a cached verdict either. The first sweep only marks a suspect
+          (``_wedge_reap_suspect_at``); the second RE-CONSULTS ``_stall_verdict``
+          and reaps only if the oracle STILL reads DEAD/STUCK_INPUT. A run that
+          was fed input and silently resumed between sweeps reads WORKING on the
+          re-consult and is spared (its suspicion is dropped); fresh stream
+          activity also clears the markers via ``_touch_activity``.
+        * **Respect the user's own stop controls.** A run already stopping, or
+          parked at a human approval prompt, is left alone.
+        * **Only when the wedge genuinely holds up the gate pending work waits
+          on.** The member must belong to a wave that is still pending, and that
+          wave must have no non-done member that is NOT itself wedged — i.e. no
+          healthy sibling whose own completion would close the wave, and no
+          healthy slot still draining the queue. A lone ``STUCK_INPUT`` member
+          beside three healthy slots that are still making progress is not
+          reaped: those slots close the wave on their own.
+
+        Returns True when it reaped (the caller then skips the wall-clock check
+        for this agent), False otherwise.
+        """
+        if not info.stalled or not info._wedge_verdict:
+            return False  # not a positively-wedged, flagged run
+        if info._session_sharing:
+            # Attribution is not trustworthy on a shared runtime; never
+            # terminate on it. (The flag path already withholds the verdict, so
+            # this is normally unreachable — kept as a hard floor.)
+            return False
+        if (
+            info.done
+            or info.user_stopped
+            or info._reap_started
+            or info._awaiting_approval
+            or info._slot_released
+        ):
+            # user stop / already ending / parked on approval, OR a member that
+            # has intentionally given up its lane slot while keeping its process
+            # (``lane_wait_for_status`` under ``interactive_command_policy="wait"``):
+            # it holds no slot that gates the wave, and force-reaping it would
+            # destroy the process state it is deliberately preserving.
+            return False
+        if not info.batch_id:
+            # Only a wave can hang the orchestrator on a count that never
+            # completes. A standalone wedged run harms only itself and is left
+            # to the wall-clock reaper, unchanged.
+            return False
+        if len(info._active_tool_calls) > 1:
+            # The verdict attributes to ONE call — ``_inflight_tool``'s subtree.
+            # With more than one call outstanding (a silent build running beside
+            # a later stdin-blocked command), a confirmed wedge on the latest
+            # says nothing about the others, and ``_force_reap`` resets the whole
+            # session — so a reap here would kill a sibling call still making
+            # progress and lose its work. Reap only when the wedged call is the
+            # single outstanding one; otherwise leave the member to the
+            # wall-clock reaper.
+            return False
+        # First confirming sweep: mark the suspect and wait for the next one.
+        # The terminating path never acts on a single sweep.
+        if info._wedge_reap_suspect_at <= 0.0:
+            info._wedge_reap_suspect_at = now
+            return False
+        if not self._wedge_holds_up_wave(info):
+            return False
+        # Second sweep: RE-CONSULT the liveness oracle live rather than trusting
+        # the cached ``_wedge_verdict``. The flag's own verdict is a reading from
+        # one moment and ``_maybe_flag_stall`` never re-consults once ``stalled``
+        # is set, so without this the confirming sweep would prove only that no
+        # stream activity arrived in the interval — a ``STUCK_INPUT`` child fed
+        # input (by a writer outside its subtree) and silently resuming work
+        # would still be killed. A terminating action must rest on CURRENT
+        # positive evidence, so reap only if the oracle STILL reads wedged.
+        verdict, evidence = await self._manager._stall_verdict(info)
+        wedged_now = verdict in (VERDICT_DEAD, VERDICT_STUCK_INPUT)
+        # Never terminate on an id-less NATIVE-CHILD snapshot. Its terminal frame
+        # never reaches this loop, so the judged tool stays pointing at a child
+        # that may have exited while the member itself keeps thinking — the exit
+        # reads DEAD on a healthy run. Decline, and drop the suspicion so a fresh
+        # genuine wedge (with its own attributable tool) earns its two sweeps.
+        if wedged_now and info._inflight_is_native_child:
+            info._wedge_verdict = ""
+            info._wedge_reap_suspect_at = 0.0
+            logger.debug(
+                "Reaper: subagent %s wedge verdict is from a native-child snapshot"
+                " — not reaping",
+                agent_id,
+            )
+            return False
+        # The consult awaits; re-check every stop/activity guard that could have
+        # flipped under it before killing (a stream event resuming the run would
+        # also have cleared ``stalled``/``_wedge_verdict`` via ``_touch_activity``).
+        # ``_active_tool_calls`` is re-counted too: a second call can be
+        # dispatched while the walk is in flight, and the verdict attributes to
+        # only one subtree, so a reap would then strand the new call's work.
+        if (
+            not wedged_now
+            or not info.stalled
+            or not info._wedge_verdict
+            or info.done
+            or info.user_stopped
+            or info._reap_started
+            or info._awaiting_approval
+            or info._slot_released
+            or len(info._active_tool_calls) > 1
+        ):
+            if verdict == VERDICT_WORKING:
+                # The run resumed: it is progressing. Clear the stall state
+                # entirely (``stalled``, ``_stall_suspect_at``) as well as the
+                # wedge markers, so ``_maybe_flag_stall`` can stamp a fresh
+                # verdict if it wedges again later — leaving ``stalled`` set
+                # would wedge the flag path (it only consults ``if not stalled``)
+                # and this member would read as a healthy sibling forever.
+                info.stalled = False
+                info._stall_suspect_at = 0.0
+                info._wedge_verdict = ""
+                info._wedge_reap_suspect_at = 0.0
+            elif not wedged_now:
+                # UNKNOWN: not positive proof, but not proof the wedge cleared
+                # either (a consult still in flight, an offload error, a child
+                # that resumed then blocked again). KEEP ``_wedge_verdict`` and
+                # reset only the confirming-sweep clock so the NEXT sweep retries
+                # confirmation rather than demoting the member to a healthy
+                # sibling (which would stop the whole wave being reaped).
+                info._wedge_reap_suspect_at = 0.0
+            if not wedged_now:
+                logger.debug(
+                    "Reaper: subagent %s wedge not confirmed on re-consult (%s; %s)"
+                    " — not reaping",
+                    agent_id,
+                    verdict,
+                    evidence,
+                )
+            return False
+        logger.warning(
+            "Reaper: subagent %s wedged (%s) and holding up wave %s — reaping early "
+            "to release the wave (ran %.0fs)",
+            agent_id,
+            verdict,
+            info.batch_id,
+            now - info.started,
+        )
+        await self._manager._force_reap(agent_id, info, now - info.started, reason="wedged")
+        return True
+
+    def _wedge_holds_up_wave(self, info: SubagentInfo) -> bool:
+        """True when *info*'s wave is still pending AND no non-done sibling is a
+        healthy slot that would close the wave on its own.
+
+        This is the gate-saturation guard: a wedged member only strands its
+        wave if there is no healthy member still running (whose own completion
+        would release the wave) and no healthy member draining a queued tail. We
+        read it directly off the wave's own members: if every non-done member of
+        the wave is itself confirmed-wedged, nothing but a reap will ever close
+        it; if any non-done member is still healthy, that member closes the wave
+        and we must not disturb anything.
+        """
+        batch_id = info.batch_id
+        if not self._manager.batch_members_pending(batch_id):
+            return False  # the wave is already closing on its own
+        for a in self._manager._agents.values():
+            if a.batch_id != batch_id or a.done or a is info:
+                continue
+            # A non-done sibling that is NOT itself a trusted wedge is a healthy
+            # slot: it will either finish or drain the queue and close the wave,
+            # so this wedge is not what is holding it up.
+            if not (a.stalled and a._wedge_verdict and not a._session_sharing):
+                return False
+        return True
 
     def task_memory_rows_impl(self) -> list[dict[str, object]]:
         """Per-running-task memory/CPU rows for the session-memory surface.

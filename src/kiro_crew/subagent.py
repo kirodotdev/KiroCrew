@@ -654,6 +654,19 @@ class SubagentInfo:
     # flight now. Without it the ``/proc`` walk's own latency is enough to flag a
     # subagent that resumed work while the walk was still running.
     _stall_gen: int = 0
+    # Positive-wedge markers for the running-member reaper (see
+    # ``_maybe_reap_wedged_member``). ``_wedge_verdict`` holds the last
+    # ``DEAD``/``STUCK_INPUT`` verdict ``_maybe_flag_stall`` trusted enough to
+    # flag on — i.e. positive ``/proc`` evidence about THIS agent's own child,
+    # never an idle-time (``UNKNOWN``) guess and never a ``session_sharing``
+    # verdict (where the cmdline match is withdrawn). Empty when the current
+    # suspicion is not a positive wedge. ``_wedge_reap_suspect_at`` is the first
+    # reaper sweep the reap path confirmed that wedge: the terminating path
+    # applies its OWN two-sweep confirmation on top of the flag, so a wedge is
+    # never reaped on a single sweep. Both are cleared by ``_touch_activity``
+    # the instant the agent proves it is working again.
+    _wedge_verdict: str = ""
+    _wedge_reap_suspect_at: float = 0.0
     # Batch/wave identity: set when this spawn is part of a multi-task wave
     # (spawn_run tasks=[...]) so scale plumbing can digest completions and
     # emit batch lifecycle events. Empty for standalone spawns.
@@ -737,6 +750,18 @@ class SubagentInfo:
             self._tool_tracker.clear()
         else:
             self._tool_tracker.dispatch("", value)
+
+    @property
+    def _inflight_is_native_child(self) -> bool:
+        """Whether the judged tool call is an id-less native-child snapshot.
+
+        A native child's call is judged on arrival but its terminal frame never
+        reaches the sub-agent's loop, so the tracker never retires it: the
+        snapshot (and a verdict read against it) can outlive the command. The
+        running-member reaper must not terminate on it — the child exiting reads
+        ``DEAD`` while the member itself is healthy and still working.
+        """
+        return self._tool_tracker.current_is_idless
 
     @property
     def _active_tool_calls(self) -> MutableMapping[str, Any]:
@@ -2529,6 +2554,11 @@ class SubagentManager:
 
     async def _maybe_flag_stall(self, agent_id: str, info: SubagentInfo, now: float) -> None:
         return await self._monitor._maybe_flag_stall_impl(agent_id, info, now)
+
+    async def _maybe_reap_wedged_member(
+        self, agent_id: str, info: SubagentInfo, now: float
+    ) -> bool:
+        return await self._monitor._maybe_reap_wedged_member_impl(agent_id, info, now)
 
     @staticmethod
     def _record_slow_command(info: SubagentInfo, idle: float) -> None:

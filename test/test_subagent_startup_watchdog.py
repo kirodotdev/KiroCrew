@@ -256,6 +256,22 @@ async def test_force_reap_start_queue_saturated_error_and_tombstone_cause():
 
 
 @pytest.mark.asyncio
+async def test_force_reap_wedged_error_and_tombstone_cause():
+    """A wedged-wave-member reap records the wedge, not a false deadline, and
+    tombstones under the ``wedged`` cause."""
+    mgr = _make_manager()
+    _neuter_force_reap_collaborators(mgr)
+    info = _info(_exec_started=1.0, _pid=4242, turns=1, batch_id="w1")
+
+    await mgr._force_reap("a1b2c3d4", info, 400.0, reason="wedged")
+
+    assert info.done is True
+    assert "exceeded" not in info.error  # NOT framed as a wall-clock deadline
+    assert "wedged tool call with no result" in info.error
+    assert mgr._write_tombstone.call_args.args[1] == "wedged"
+
+
+@pytest.mark.asyncio
 async def test_startup_reap_names_the_co_tenant_frames_it_received():
     """A start that received only another tenant's fanned-out traffic reads
     apart, in its reap record, from one whose stream stayed silent."""

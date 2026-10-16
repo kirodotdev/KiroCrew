@@ -1084,6 +1084,12 @@ class TerminalCoordinator(ManagerComponent):
                         info.error = f"Runtime launched but its first prompt got no answer within {int(_FIRST_PROMPT_SILENT_SECS)}s (no turn produced) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     elif reason == "startup_timeout":
                         info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced; {info._startup_cotenant_frames} co-tenant frame(s) received, none addressed to this session) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                    elif reason == "wedged":
+                        # Reaped early on a confirmed liveness wedge (DEAD/STUCK
+                        # child), NOT for exceeding the wall clock — framing it as
+                        # a deadline would misreport why it ended. Reaped so a
+                        # wave pending on this member could close promptly.
+                        info.error = f"Reaped after {int(elapsed)}s: no live progress (a wedged tool call with no result) while holding up a wave of sibling tasks [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     else:
                         # The deadline the reaper enforced (monitoring.py): the
                         # run's own captured timeout, or the manager default for a

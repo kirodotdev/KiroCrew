@@ -1388,6 +1388,10 @@ class RunEventCoordinator(ManagerComponent):
         info.last_activity = time.time()
         info._last_activity_mono = time.monotonic()
         info._stall_suspect_at = 0.0  # activity resets the 2-sweep confirmation
+        # Fresh activity withdraws any positive-wedge suspicion too: the agent
+        # has demonstrably moved, so the running-member reaper must start over.
+        info._wedge_verdict = ""
+        info._wedge_reap_suspect_at = 0.0
         # Retire the oracle so the next suspicion samples a fresh baseline rather
         # than differencing against counters from before this activity, and bump
         # the generation so a consult submitted before this moment cannot land a
