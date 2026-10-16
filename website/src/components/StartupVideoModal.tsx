@@ -391,7 +391,7 @@ function OpenStartupVideoModal({ video, remote, shareEnabled, onClose, sessionKe
       >
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border bg-bg-elevated">
           <span className="text-sm font-semibold text-text">
-            {i18nT('components.startupVideoModal.feature_intro')}
+            {i18nT('pages.settings.chatPanel.feature_videos')}
           </span>
           <button
             type="button"

@@ -8632,7 +8632,6 @@
     },
     "startupVideoModal": {
       "close": "닫기",
-      "feature_intro": "기능 소개",
       "got_it": "확인",
       "media_failed": "기능 소개 동영상을 불러올 수 없습니다",
       "share": "공유",

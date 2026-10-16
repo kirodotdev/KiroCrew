@@ -98,7 +98,9 @@ const mockedApi = vi.mocked(api)
 const clip = {
   id: 'vid-1',
   feature: 'startup-videos',
-  title: 'Feature videos',
+  // A per-clip title, as the catalog ships one. It must differ from the
+  // feature's own name, which the dialog header shows beside it.
+  title: 'Let one session watch a pull request',
   description: 'A short clip introduces each new feature.',
   src: '/app-assets/feature-videos/placeholder.mp4',
   poster: '/app-assets/feature-videos/placeholder.jpg',
