@@ -34,7 +34,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from slack_events_coverage_helpers import _event  # noqa: F401 -- test_compaction_stop_declined
+from slack_events_coverage_helpers import _event  # noqa: F401 -- compaction_stop_declined_helpers
 from slack_events_coverage_helpers import _fresh_trusted_bot_turn_ledger  # noqa: F401
 from slack_events_coverage_helpers import _isolated_home_fixture  # noqa: F401
 from slack_events_coverage_helpers import _mock_sel_fixture  # noqa: F401

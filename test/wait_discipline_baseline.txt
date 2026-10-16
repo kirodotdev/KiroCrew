@@ -87,7 +87,7 @@
  1 test_chat_runner_folder_steering.py
  2 test_chat_send_client_meta_survival.py
  4 test_chat_send_echo_scope.py
- 1 test_chat_slot_switch_atomicity.py
+ 1 test_chat_slot_switch_atomicity_alias_and_bulk.py
  1 test_chat_title.py
  1 test_ci_pytest_progress.py
  1 test_cli.py
@@ -241,7 +241,7 @@
  8 test_meetings_routes.py
  4 test_meetings_routes_lifecycle.py
  3 test_member_memory_mcp_routing.py
- 1 test_members_eventlog_wiring.py
+ 1 test_members_eventlog_wiring_append_ordering.py
  1 test_memory_admission_queue.py
  4 test_memory_backup.py
  3 test_memory_multistore_stress.py

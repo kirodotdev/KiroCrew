@@ -182,12 +182,10 @@
 2267 test/test_chat_mode_security.py
 2058 test/test_chat_regenerate_cov80.py
 6983 test/test_chat_runner_coverage.py
-2683 test/test_chat_slot_switch_atomicity.py
 10498 test/test_cli.py
 2744 test/test_cli_server_more_coverage.py
 2182 test/test_cloud_microvm_engine.py
 2288 test/test_cloud_source.py
-2685 test/test_compaction_stop_declined.py
 2106 test/test_computer_use_api.py
 2166 test/test_computer_use_snapshot_macos.py
 2074 test/test_conductor_wake.py
@@ -259,7 +257,6 @@
 5390 test/test_md_notebook.py
 3249 test/test_member_essential_context.py
 2044 test/test_member_session_control.py
-2705 test/test_members_eventlog_wiring.py
 2479 test/test_messaging_privacy_mode.py
 2405 test/test_monitor_controller.py
 2096 test/test_monitor_directive_apply.py
@@ -312,7 +309,6 @@
 11572 test/test_source_providers.py
 2641 test/test_spawn_audit.py
 4536 test/test_spec_builder_routes_coverage.py
-2702 test/test_split_credential_boundary.py
 2008 test/test_steer_requeue.py
 2045 test/test_stop_clears_only_its_own_sender.py
 2211 test/test_stt_engine.py
