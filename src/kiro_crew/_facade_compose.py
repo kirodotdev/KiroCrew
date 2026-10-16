@@ -18,11 +18,12 @@ owner's imports may do, and where the facade's state lives. Every owner package'
 composition-contract test forbids importing that package from outside its facade, which
 is why the helper lives here, in a module no facade owns, rather than in any one of them.
 
-``kiro_crew.dashboard.chat_runner`` is the one facade that does not call it: its
-package ``kiro_crew.dashboard.chat_turn`` keeps its own ``compose``, which also finds
-the owners itself (``chat_turn.owner_modules()``) and binds on the runner every name
-an owner defines that the runner lacks. Those two behaviours are the runner's
-contract alone, so they stay in its package rather than in this shared helper.
+``kiro_crew.dashboard.chat_runner`` is the one composed facade that does not call it
+directly: it calls ``kiro_crew.dashboard.chat_turn.compose``, which binds on the runner
+every name an owner defines that the runner lacks and then calls this one, and its
+package finds the owners itself (``chat_turn.owner_modules()``). Those two behaviours
+are the runner's contract alone, so they stay in its package rather than in this
+shared helper.
 
 This is not the write fan-out of :mod:`kiro_crew._facade_mirror` or of ``apps/backend.py``,
 which copy a name written through the facade into every module that holds its own

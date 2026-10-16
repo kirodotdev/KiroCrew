@@ -2050,11 +2050,11 @@ names:
 | `chat_runner.py` | `/workflow` and `/goal`: the redactor calls in `_handle_workflow_command` and `_handle_goal_command` |
 | `chat_runner.py` | the poisoned-conversation canary: `test_start_priority.py` reads its `run_bg_oneliner` call, with the turn's `start_priority`, in `_run_chat` |
 
-`chat_turn.compose` (its own, not the shared
-`_facade_compose.compose` the other facades call) composes the package's modules (`chat_turn.owner_modules()`):
+`chat_turn.compose` composes the package's modules (`chat_turn.owner_modules()`):
 it binds on `chat_runner` every name an owner binds that the runner lacks, so
 `chat_runner.<name>` resolves for each owner function, class and constant without a
-by-name re-export, and it runs every owner function on `chat_runner`'s globals. A
+by-name re-export, and then runs every owner function on `chat_runner`'s globals
+through the shared `_facade_compose.compose` the other composed facades call. A
 name the runner and an owner both bind must be the same object, or the runner fails
 to import. A patch of `kiro_crew.dashboard.chat_runner.<name>` therefore reaches
 moved code, log records keep the `kiro_crew.dashboard.chat_runner` logger, and
