@@ -739,7 +739,7 @@ def _fake_venv_python(app_root: Path) -> Path:
     interpreter under the OS sandbox) is stubbed for this module by the
     ``_stub_venv_probe`` autouse fixture - these tests pin the command-rewrite
     plumbing, and the probe itself is pinned by
-    ``test_apps_backend_coverage.TestInterpreterResolution``.
+    ``test_apps_backend_coverage_dispatch.TestInterpreterResolution``.
     """
     if platform_compat.IS_WINDOWS:
         py = app_root / ".venv" / "Scripts" / "python.exe"
