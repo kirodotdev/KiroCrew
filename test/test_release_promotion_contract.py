@@ -320,6 +320,13 @@ def test_prerelease_candidate_runs_same_sha_test_gate() -> None:
     gate = jobs["release-candidate-tests"]
     assert gate["if"] == "needs.version.outputs.channel == 'insider'"
     assert gate["needs"] == "version"
+    assert gate["timeout-minutes"] == 60
+    assert gate["strategy"] == {
+        "max-parallel": 4,
+        "fail-fast": False,
+        "matrix": {"group": list(range(1, 9))},
+    }
+    assert gate["env"]["SHARD_COUNT"] == 8
 
     checkout = next(
         step for step in gate["steps"] if str(step.get("uses", "")).startswith("actions/checkout@")
@@ -331,7 +338,10 @@ def test_prerelease_candidate_runs_same_sha_test_gate() -> None:
     assert "GITHUB_SHA" in verify["run"]
 
     tests = _step(RELEASE, "release-candidate-tests", "Run release candidate tests")
-    assert "pytest" in tests["run"]
+    assert "python -m pytest" in tests["run"]
+    assert "-p scripts.ci_file_shards" in tests["run"]
+    assert '--file-shards "$SHARD_COUNT"' in tests["run"]
+    assert "--file-shard ${{ matrix.group }}" in tests["run"]
     assert "--no-cov" in tests["run"]
 
 

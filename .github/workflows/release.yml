@@ -124,6 +124,16 @@ jobs:
     if: needs.version.outputs.channel == 'insider'
     needs: version
     runs-on: ubuntu-latest
+    # Match ci.yml's whole-file split so every runner carries a bounded part of
+    # the exact-SHA gate while the matrix still covers the full test population.
+    timeout-minutes: 60
+    strategy:
+      max-parallel: 4
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
+    env:
+      SHARD_COUNT: 8
     permissions:
       contents: read
     steps:
@@ -172,7 +182,9 @@ jobs:
           # including one printed inside a pytest warning, and never matches a
           # pytest failure. conftest.py emits the real annotations instead.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=120 --no-cov
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --no-cov
 
   resolve-promotion:
     name: Resolve Tested Candidate

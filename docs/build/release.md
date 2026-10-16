@@ -47,7 +47,8 @@ mechanism:
 
 - **A successful prerelease run clears the candidate commit.** After every
   publish lane succeeds, and after the insider-only `release-candidate-tests`
-  job has run the test suite on the exact tagged SHA, `record-promotion` assembles the wheel/sdist, all six
+  matrix has run all eight whole-file shards on the exact tagged SHA,
+  `record-promotion` assembles the wheel/sdist, all six
   Linux artifacts, all three notarized macOS zip/DMG pairs (universal,
   arm64-only, x86_64-only), the optional Windows installer pair, and
   the attested OCI manifest digest into a
