@@ -82,11 +82,17 @@ def _child(state, name: str, creator):
     return slot
 
 
-def _recorded(slot: str, parent: str) -> None:
-    """Put *slot* under *parent* in the fold, as its opening entry would have."""
+def _recorded(slot: str, parent: str, *, created_at: int = 2) -> None:
+    """Put *slot* under *parent* in the fold, as its opening entry would have.
+
+    ``created_at`` is the log's header stamp, set rather than slept for, so a test of
+    which children are newest decides the order itself.
+    """
     proj = stp.projection()
     proj.apply(OpenedRecord(sid=f"sid-{parent}", slot=parent, created_at=1))
-    proj.apply(OpenedRecord(sid=f"sid-{slot}", slot=slot, created_at=2, parent_slot=parent))
+    proj.apply(
+        OpenedRecord(sid=f"sid-{slot}", slot=slot, created_at=created_at, parent_slot=parent)
+    )
 
 
 def _emitted(
@@ -657,6 +663,35 @@ class TestTheMcpQualityCaveats:
         assert "may be missing" in rendered
         assert "without a readable count" in rendered
 
+    def test_an_ended_cut_is_caveated_with_its_count_under_its_own_name(self, monkeypatch):
+        """A patrol reading only the rows would take the newest ended workers for all
+        of them, so the cut is said with its size and its own reason."""
+        payload = self._one_row("idle")
+        payload["gone_omitted"] = 5
+
+        rendered = self._render(monkeypatch, payload)
+
+        assert "5 older closed or lost session(s)" in rendered
+        assert "more session(s)" not in rendered, "not the union cut's sentence"
+
+    @pytest.mark.parametrize("count", [0, None])
+    def test_no_ended_cut_is_not_caveated(self, monkeypatch, count):
+        """Zero says nothing was cut, and an older backend's absent field says nothing
+        at all; neither is a cut."""
+        payload = self._one_row("idle")
+        if count is not None:
+            payload["gone_omitted"] = count
+
+        assert "closed or lost session" not in self._render(monkeypatch, payload)
+
+    def test_a_published_but_unreadable_ended_count_is_not_silently_a_no_cut(self, monkeypatch):
+        payload = self._one_row("idle")
+        payload["gone_omitted"] = "several"
+
+        rendered = self._render(monkeypatch, payload)
+
+        assert "Older closed or lost sessions you created may be missing" in rendered
+
 
 # ── The fence applies to the rows ────────────────────────────────────────────
 
@@ -987,6 +1022,229 @@ class TestRosterRetentionBounds:
 
         assert row["title"] == "attacker-con"
         assert len(row["title"]) == title_cap
+
+
+def _status_folds(monkeypatch) -> list[str]:
+    """The slots whose ``status`` fold the roster reads, in call order.
+
+    The fold is the per-row disk cost the ended-row bound exists to cap, so counting
+    calls to it counts that cost without timing anything.
+    """
+    from kiro_crew.crew_log import projection
+
+    folded: list[str] = []
+    real = projection.read_slot_projection
+
+    def _counting(slot, name, **kwargs):
+        if name == "status":
+            folded.append(slot)
+        return real(slot, name, **kwargs)
+
+    monkeypatch.setattr("kiro_crew.crew_log.projection.read_slot_projection", _counting)
+    return folded
+
+
+class TestTheEndedRowBound:
+    """Only the newest ended children are folded and listed.
+
+    Every ``closed``/``lost`` row costs one status fold of that child's crew log, read
+    off disk on the gateway's shared default executor, and a conductor's ended children
+    only accumulate. Unbounded, the roster's cost grows with every worker the caller
+    ever dispatched, which is how a busy conductor's patrol read came to outlast its
+    client's budget. The bound keeps the newest -- the ones a patrol re-dispatches --
+    and COUNTS the rest, because listing an unread row as ``lost`` would send the
+    patrol after finished work and listing it as ``closed`` could hide a lost one.
+    """
+
+    def test_only_the_newest_ended_children_are_folded_and_listed(self, tmp_path, monkeypatch):
+        """Stamps out of order on purpose: the bound keeps the NEWEST, not the first
+        recorded and not the first by key.
+
+        Mutation guards: drop the bound and all five are folded and listed; keep the
+        oldest instead and the rows are chat-2 and chat-6; fold the newest but leave
+        the older ones in the roster and they come back as unread ``lost`` rows.
+        """
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_GONE_ROWS", 2, raising=False)
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        for index, created in enumerate((10, 50, 30, 40, 20)):
+            _recorded(f"chat-{index + 2}", caller.key, created_at=created)
+        folded = _status_folds(monkeypatch)
+
+        out = _status(state, caller)
+
+        assert sorted(folded) == ["chat-3", "chat-5"], "only the two newest are folded"
+        assert set(_rows(out)) == {"chat-3", "chat-5"}
+        assert out["gone_omitted"] == 3
+        assert out["roster_omitted"] == 0, "the ended cut is not the union's cut"
+
+    def test_a_recent_closed_and_lost_child_keep_their_split_past_older_ones(
+        self, tmp_path, monkeypatch
+    ):
+        """The bound must cost the classification nothing for the rows it keeps.
+
+        The two recent children have real logs: one closed its tab after a clean
+        finish, one was recycled. Their headers carry the wall clock, which is far
+        past the small stamps set on the older children, so they are the newest.
+        """
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_GONE_ROWS", 2, raising=False)
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        for index in range(4):
+            _recorded(f"chat-{index + 10}", caller.key, created_at=index + 2)
+        _emitted("chat-7", caller.key, closed=True, completed_stop_reason="end_turn")
+        _emitted("chat-8", caller.key, closed=True, reason="reset")
+
+        out = _status(state, caller)
+        rows = _rows(out)
+
+        assert set(rows) == {"chat-7", "chat-8"}
+        assert rows["chat-7"]["status"] == "closed"
+        assert rows["chat-7"]["closed_at"] is not None
+        assert rows["chat-8"]["status"] == "lost"
+        assert "closed_at" not in rows["chat-8"]
+        assert out["gone_omitted"] == 4
+
+    def test_a_live_child_is_never_cut_by_the_ended_bound(self, tmp_path, monkeypatch):
+        """Live tree children are the NEWEST here, so a bound counted over every tree
+        child rather than over the ended ones would spend itself on them and cut the
+        one ended row this caller should see."""
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_GONE_ROWS", 1, raising=False)
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        for name, created in (("chat-2", 100), ("chat-3", 90)):
+            _child(state, name, caller)
+            _recorded(name, caller.key, created_at=created)
+        for name, created in (("chat-4", 80), ("chat-5", 70), ("chat-6", 60)):
+            _recorded(name, caller.key, created_at=created)
+
+        out = _status(state, caller)
+        rows = _rows(out)
+
+        assert set(rows) == {"chat-2", "chat-3", "chat-4"}
+        assert rows["chat-2"]["status"] == rows["chat-3"]["status"] == "idle"
+        assert rows["chat-4"]["status"] == "lost"
+        assert out["gone_omitted"] == 2
+
+    def test_an_older_ended_child_with_a_transcript_does_not_return_as_unknown(
+        self, tmp_path, monkeypatch
+    ):
+        """An ended child usually has a persisted transcript too. Cutting it from the
+        tree's half alone would let the history half list it as ``unknown``, a row the
+        caller cannot act on and the cut was meant to remove."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_GONE_ROWS", 1, raising=False)
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        monkeypatch.setattr(sc, "_workspace_name_for_dir", lambda cfg, ws_dir: caller.workspace)
+        created = asyncio.run(
+            sc.create_session(state, caller_session_key=_key(caller), title="old worker")
+        )
+        old = state.get_slot(created["target"])
+        assert _save_slot_to_history(state, old, closed=True, force=True)
+        state._slots.pop(old.key)
+        _recorded(old.key, caller.key, created_at=5)
+        _recorded("chat-9", caller.key, created_at=50)
+
+        out = _status(state, caller)
+
+        assert set(_rows(out)) == {"chat-9"}
+        assert out["gone_omitted"] == 1
+        assert out["history"] == "readable", "the transcript read completed"
+
+    def test_a_conductor_past_the_bound_pays_a_bounded_fold(self, tmp_path, monkeypatch):
+        """At the shipped bound, with a transcript for every child: a conductor that
+        dispatched more workers than the bound reads exactly the bound's folds, and
+        the transcripts of the older ones do not bring them back as rows."""
+        from kiro_crew.dashboard.session_control import MAX_SESSION_STATUS_GONE_ROWS
+
+        extra = 16
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        children = [f"chat-{index + 100}" for index in range(MAX_SESSION_STATUS_GONE_ROWS + extra)]
+        for created, name in enumerate(children, start=2):
+            _recorded(name, caller.key, created_at=created)
+            history_key = f"dashboard:{name}"
+            state.conversation_log.append(history_key, "user", "work")
+            state.conversation_log.update_metadata(
+                history_key, {"created_by": caller.key, "workspace": caller.workspace}
+            )
+        folded = _status_folds(monkeypatch)
+
+        out = _status(state, caller)
+
+        newest = set(children[extra:])
+        assert len(folded) == MAX_SESSION_STATUS_GONE_ROWS
+        assert set(folded) == newest
+        assert set(_rows(out)) == newest
+        assert out["gone_omitted"] == extra
+        assert out["history"] == "readable"
+
+    def test_the_tree_roster_keeps_its_newest_children_past_its_row_cap(
+        self, tmp_path, monkeypatch
+    ):
+        """The row cap on the tree's own read keeps the same end the ended-row bound
+        does; a cap that kept whichever children the fold met first would hand that
+        bound a population missing the newest workers."""
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_ROWS", 2, raising=False)
+        caller = "chat-1"
+        for index, created in enumerate((5, 1, 4, 2)):
+            _recorded(f"chat-{index + 2}", caller, created_at=created)
+
+        children, quality = sc._created_tree_roster(caller)
+
+        assert children == ["chat-2", "chat-4"], "newest first, and only the newest"
+        assert quality == "incomplete", "a cut tree roster is still a floor"
+
+    def test_a_worker_recycled_onto_a_fresh_log_counts_as_recent(self, monkeypatch):
+        """A reset, a model switch or a provider swap opens a NEW log for the same
+        slot, so a worker's recency is its newest log's stamp. Read off its first
+        log instead, a worker recycled a minute ago would rank as old as the day it
+        was dispatched."""
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_ROWS", 1, raising=False)
+        proj = stp.projection()
+        caller = "chat-1"
+        proj.apply(OpenedRecord(sid="sid-chat-1", slot=caller, created_at=1))
+        proj.apply(OpenedRecord(sid="sid-a-1", slot="chat-2", created_at=10, parent_slot=caller))
+        proj.apply(OpenedRecord(sid="sid-b-1", slot="chat-3", created_at=50, parent_slot=caller))
+        proj.apply(
+            OpenedRecord(
+                sid="sid-a-2",
+                slot="chat-2",
+                created_at=100,
+                parent_slot=caller,
+                previous_sid="sid-a-1",
+            )
+        )
+
+        children, _quality = sc._created_tree_roster(caller)
+
+        assert children == ["chat-2"]
+
+    def test_the_ended_cut_is_audited_with_its_own_count(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(sc, "MAX_SESSION_STATUS_GONE_ROWS", 1, raising=False)
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _recorded("chat-2", caller.key, created_at=20)
+        _recorded("chat-3", caller.key, created_at=10)
+        audits: list[dict] = []
+
+        with patch.object(sc, "_audit", side_effect=lambda **kw: audits.append(kw)):
+            _status(state, caller)
+
+        detail = next(a["detail"] for a in audits if a["operation"] == "status")
+        assert detail["gone_omitted"] == 1
+        assert detail["roster_omitted"] == 0
+
+    def test_a_roster_with_nothing_ended_cut_reports_zero(self, tmp_path):
+        """Zero, not absent, for the reason the union count gives: a reader has to
+        tell "nothing was cut" from "this answer does not say"."""
+        state = _make_state(tmp_path)
+        caller = _slot(state, "chat-1")
+        _recorded("chat-2", caller.key)
+
+        assert _status(state, caller)["gone_omitted"] == 0
 
 
 class TestTheCallerSurfaceIsRecheckedAfterTheScan:

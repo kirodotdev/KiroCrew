@@ -233,6 +233,7 @@ if TYPE_CHECKING:  # every owner-defined name this module forwards, for type che
         MAX_PENDING_APPROVAL_TOOL_CHARS,
         MAX_READ_CONTENT_CHARS,
         MAX_READ_MESSAGES,
+        MAX_SESSION_STATUS_GONE_ROWS,
         MAX_SUMMARY_CHARS,
         MAX_SUMMARY_INTENTS,
         MAX_SUMMARY_ITEMS,

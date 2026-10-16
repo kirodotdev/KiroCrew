@@ -1445,8 +1445,9 @@ def _session_tools() -> tuple[Tool, ...]:
                 "durable source was unavailable. `roster_omitted` is separate "
                 "again: it counts rows this reply dropped because the three "
                 "sources' union exceeded the row bound, which no source's quality "
-                "field describes. The result caveats each gap "
-                "under its own source name. READ-only."
+                "field describes. Only the newest `closed` and `lost` sessions are "
+                "listed, and `gone_omitted` counts the older ones. The result "
+                "caveats each gap under its own source name. READ-only."
             ),
             schema={"type": "object", "properties": {}},
             run=_run_session_status,
@@ -3432,9 +3433,35 @@ def _run_session_broadcast(args: dict[str, Any], ctx: ToolContext) -> str:
     return redact("\n".join(lines))
 
 
+#: Seconds the client gives ONE ``session_status`` read. Its GET does real work: the
+#: route scans the transcript catalog and folds each ended child's crew log on the
+#: gateway's shared default executor, where a busy gateway makes every hop wait its
+#: turn. ``mcp_core._get``'s 10 s default is sized for a telemetry read and its
+#: docstring asks a route like this one to raise it. The value is the write path's:
+#: ``session_send`` reaches the same gateway through ``mcp_core._post``, whose default
+#: is 30 s, so a patrol's roster read is not the call that fails first while its sends
+#: still land.
+SESSION_STATUS_READ_TIMEOUT_SECS = 30.0
+
+
+def _reported_cut(resp: dict[str, Any], field: str) -> int | None:
+    """A roster cut count as published: ``None`` absent, ``-1`` unreadable, else the count."""
+    raw = resp.get(field)
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return -1
+
+
 def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     try:
-        resp = ctx.client.get("/api/session-control/status", session_key=ctx.caller_key)
+        resp = ctx.client.get(
+            "/api/session-control/status",
+            session_key=ctx.caller_key,
+            timeout=SESSION_STATUS_READ_TIMEOUT_SECS,
+        )
     except DashboardError as refused:
         return f"Error: could not read your session roster: {refused.error}"
     rows = resp.get("sessions") or []
@@ -3467,23 +3494,32 @@ def _run_session_status(args: dict[str, Any], ctx: ToolContext) -> str:
     # must not claim a cut, zero says the union was retained whole, and a
     # published value that will not read as a number is a cut whose size is
     # unknown -- which is not the same as no cut and gets its own sentence.
-    omitted_raw = resp.get("roster_omitted")
-    if omitted_raw is not None:
-        try:
-            roster_cut = int(omitted_raw)
-        except (TypeError, ValueError):
-            roster_cut = -1
-        if roster_cut > 0:
-            quality_notes.append(
-                f"{roster_cut} more session(s) you created are NOT listed: the "
-                "three rosters' union exceeded this reply's row bound. Name a "
-                "session directly to read it."
-            )
-        elif roster_cut < 0:
-            quality_notes.append(
-                "Sessions you created may be missing: this reply reported a "
-                "roster overflow without a readable count."
-            )
+    roster_cut = _reported_cut(resp, "roster_omitted")
+    if roster_cut is not None and roster_cut > 0:
+        quality_notes.append(
+            f"{roster_cut} more session(s) you created are NOT listed: the "
+            "three rosters' union exceeded this reply's row bound. Name a "
+            "session directly to read it."
+        )
+    elif roster_cut is not None and roster_cut < 0:
+        quality_notes.append(
+            "Sessions you created may be missing: this reply reported a "
+            "roster overflow without a readable count."
+        )
+    # The ended-row cut, the same three states. Its own sentence because it is a
+    # different cut: by age, of closed or lost sessions only, taken before the
+    # union bound.
+    gone_cut = _reported_cut(resp, "gone_omitted")
+    if gone_cut is not None and gone_cut > 0:
+        quality_notes.append(
+            f"{gone_cut} older closed or lost session(s) you created are NOT "
+            "listed: this reply reads only the newest ones that have ended."
+        )
+    elif gone_cut is not None and gone_cut < 0:
+        quality_notes.append(
+            "Older closed or lost sessions you created may be missing: this "
+            "reply reported a cut without a readable count."
+        )
     if not rows:
         empty = "\U0001f4cb You have no sessions open or on record."
         if quality_notes:

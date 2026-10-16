@@ -187,7 +187,14 @@ field: when the three sources together exceed `MAX_SESSION_STATUS_ROWS`,
 `roster_omitted` carries the exact number of rows dropped, and it is zero when the
 union was retained whole. It must never be reported by degrading a source's
 quality instead — that blames a read which completed and, since no source omitted
-anything, reports nothing cut while rows are missing. The ownership fence applies to all rows and not merely to
+anything, reports nothing cut while rows are missing. Ended rows have a fourth
+cut, taken before the union's: a `closed`/`lost` row costs one status fold of that
+session's crew log, and a caller's ended children only accumulate, so only the
+newest `MAX_SESSION_STATUS_GONE_ROWS` (64) are folded and listed. The tree roster
+is ordered newest first by the newest `createdAt` among each slot's logs, and its
+own row cap keeps that end too. `gone_omitted` counts the older ended sessions,
+which get no row at all: listed as `lost` they would send a patrol to re-dispatch
+finished work, and listed as `closed` they could hide a lost one. The ownership fence applies to all rows and not merely to
 the verb: a history candidate is admitted only when its persisted `created_by`
 exactly equals the caller, and the workspace boundary is re-applied before its
 title is exposed. A session created by another caller is absent.

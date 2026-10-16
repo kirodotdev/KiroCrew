@@ -335,3 +335,23 @@ def test_the_documented_limits_match_their_constants(doc_text: str) -> None:
     assert (
         f"A broadcast reaches at most {MAX_BROADCAST_TARGETS} sessions" in doc_text
     ), "the refusal table's cap must be validation.MAX_BROADCAST_TARGETS"
+
+
+def test_the_documented_roster_bounds_match_their_constants(doc_text: str) -> None:
+    """``session_status``'s two row bounds and the three counts that report their cuts.
+
+    Read from the one paragraph that states them, so a number borrowed from another
+    section cannot satisfy the pin. The ended-row bound is a number a patrol plans
+    around -- how many finished or lost workers it can still see -- so a stale page
+    misleads it as surely as a wrong cap would.
+    """
+    from kiro_crew.dashboard.session_control import MAX_SESSION_STATUS_GONE_ROWS
+    from kiro_crew.validation import MAX_SESSION_STATUS_ROWS
+
+    roster = doc_text.split("The roster holds at most", 1)[1].split("Read-only:", 1)[0]
+    assert f"**{MAX_SESSION_STATUS_ROWS}** rows" in roster
+    assert f"the {MAX_SESSION_STATUS_ROWS}-row cap" in roster
+    assert f"newest **{MAX_SESSION_STATUS_GONE_ROWS}** `closed`" in roster
+    assert f"only the newest {MAX_SESSION_STATUS_GONE_ROWS} are read" in roster
+    for count in ("roster_omitted", "history_omitted", "gone_omitted"):
+        assert f"`{count}`" in roster, f"the page must name {count}"
