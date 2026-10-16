@@ -71,7 +71,10 @@ _ENTRY_OVERHEAD = 384
 _MAX_ENTRY_BYTES = RENDER_MEMO_MAX_BYTES // 16
 
 _KEY: bytes = secrets.token_bytes(32)
-_memo: OrderedDict[tuple[bytes, bytes, str], tuple[str, int]] = OrderedDict()
+# key -> (fragment, charged bytes, the page scope that last stored or read it).
+_memo: OrderedDict[tuple[bytes, bytes, str], tuple[str, int, tuple[object, ...] | None]] = (
+    OrderedDict()
+)
 _memo_bytes = 0
 _memo_lock = Lock()
 
@@ -110,13 +113,24 @@ def _make_dumps() -> Callable[[object], str]:
 
 _dumps = _make_dumps()
 
-# The pages a reader has opened, oldest first, each either waiting for its
-# background fill or filled. A scope is a session's page shape, so this holds a
-# few tuples per session a reader has opened.
+# The pages a reader has opened, oldest first. A scope is a session's page
+# shape, so this holds a few tuples per session a reader has opened. A page is
+# one of:
+#   pending      -- waiting for its background fill;
+#   spoiled      -- the cap evicted one of its rows while its fill ran;
+#   filled       -- whole in the memo; ``served`` once a read has used it;
+#   plain (n)    -- read without the memo for n more reads, then filled again.
+# A page becomes plain when a fill was wasted: it lost a row before its fill
+# finished (it does not fit), or the cap evicted it before any read used it (the
+# reader cycles through more pages than the memo holds). Filling it again at
+# once would only be evicted again, so it waits out a few reads first.
 _SCOPES_MAX = 4096
+_PLAIN_READS = 8
 _PENDING = "pending"
+_SPOILED = "spoiled"
 _FILLED = "filled"
-_scopes: OrderedDict[tuple[object, ...], str] = OrderedDict()
+_PLAIN = "plain"
+_scopes: OrderedDict[tuple[object, ...], tuple[str, int]] = OrderedDict()
 
 
 def plan_read(scope: tuple[object, ...]) -> tuple[bool, bool]:
@@ -124,28 +138,67 @@ def plan_read(scope: tuple[object, ...]) -> tuple[bool, bool]:
 
     A page is served from the memo only once its background fill has finished.
     Until then every read of it is the unmemoized render, so no read pays for
-    filling; the first one also asks for the fill (``fill``).
+    filling; the first one also asks for the fill (``fill``). The cap evicting
+    any row of a filled page forgets the page, so its next read is the
+    unmemoized render again and asks for a fresh fill, instead of missing row
+    by row through a memo that has dropped some of it.
     """
     with _memo_lock:
         state = _scopes.get(scope)
         if state is None:
-            _scopes[scope] = _PENDING
+            _scopes[scope] = (_PENDING, 0)
             while len(_scopes) > _SCOPES_MAX:
                 _scopes.popitem(last=False)
             return False, True
         _scopes.move_to_end(scope)
-        return state == _FILLED, False
+        kind, n = state
+        if kind == _FILLED:
+            _scopes[scope] = (_FILLED, 1)
+            return True, False
+        if kind == _PLAIN:
+            if n <= 1:
+                _scopes[scope] = (_PENDING, 0)
+                return False, True
+            _scopes[scope] = (_PLAIN, n - 1)
+        return False, False
 
 
 def _settle_scope(scope: tuple[object, ...], filled: bool) -> None:
-    """Mark *scope* filled, or forget it so its next read asks for a fill again."""
+    """Mark *scope* filled, or forget it so its next read asks for a fill again.
+
+    A fill that lost one of its own rows to the cap before it finished marks the
+    page plain instead: the page does not fit, and filling it again at once
+    would evict it again.
+    """
     with _memo_lock:
-        if scope not in _scopes:
+        state = _scopes.get(scope)
+        if state is None:
             return
-        if filled:
-            _scopes[scope] = _FILLED
+        if state[0] == _SPOILED:
+            _scopes[scope] = (_PLAIN, _PLAIN_READS)
+        elif filled:
+            _scopes[scope] = (_FILLED, 0)
         else:
             del _scopes[scope]
+
+
+def _evicted_from(owner: tuple[object, ...] | None) -> None:
+    """The cap evicted a row *owner* stored or read. Caller holds ``_memo_lock``.
+
+    A filled page some read used is forgotten, so its next read is plain and
+    asks for a fresh fill. One no read used was a wasted fill and turns plain.
+    """
+    if owner is None:
+        return
+    state = _scopes.get(owner)
+    if state is None:
+        return
+    if state == (_FILLED, 1):
+        del _scopes[owner]
+    elif state[0] == _FILLED:
+        _scopes[owner] = (_PLAIN, _PLAIN_READS)
+    elif state[0] == _PENDING:
+        _scopes[owner] = (_SPOILED, 0)
 
 
 def _context_digest() -> bytes:
@@ -163,20 +216,26 @@ def _context_digest() -> bytes:
     return hashlib.blake2b(redaction_context + restored_hosts, key=_KEY, digest_size=16).digest()
 
 
-def _remember(key: tuple[bytes, bytes, str], fragment: str) -> None:
+def _remember(
+    key: tuple[bytes, bytes, str], fragment: str, scope: tuple[object, ...] | None
+) -> None:
     global _memo_bytes
     cost = len(fragment) + _ENTRY_OVERHEAD
     if cost > _MAX_ENTRY_BYTES:
         return
     with _memo_lock:
-        if key in _memo:
+        held = _memo.get(key)
+        if held is not None:
+            if scope is not None:
+                _memo[key] = (held[0], held[1], scope)
             _memo.move_to_end(key)
             return
-        _memo[key] = (fragment, cost)
+        _memo[key] = (fragment, cost, scope)
         _memo_bytes += cost
         while len(_memo) > RENDER_MEMO_MAX_ENTRIES or _memo_bytes > RENDER_MEMO_MAX_BYTES:
-            _, (_, evicted) = _memo.popitem(last=False)
+            _, (_, evicted, owner) = _memo.popitem(last=False)
             _memo_bytes -= evicted
+            _evicted_from(owner)
 
 
 def _render_row(m: dict, running: bool, live_child: str) -> str | None:
@@ -191,13 +250,17 @@ def prepare_messages_json(
     *,
     live_child: str,
     workspace: str | None = None,
+    scope: tuple[object, ...] | None = None,
 ) -> str:
     """``json.dumps(_prepare_messages(messages, ...))``, reusing unchanged rows.
 
     Same arguments and the same contract as ``chat_utils._prepare_messages``;
-    the result is the JSON array text instead of the list.
+    the result is the JSON array text instead of the list. *scope* is the page
+    (:func:`plan_read`) the rows belong to.
     """
-    parts, _ = prepare_message_rows(messages, running, live_child=live_child, workspace=workspace)
+    parts, _ = prepare_message_rows(
+        messages, running, live_child=live_child, workspace=workspace, scope=scope
+    )
     return "[" + ", ".join(f for f in parts if f is not None) + "]"
 
 
@@ -208,6 +271,7 @@ def prepare_message_rows(
     live_child: str,
     workspace: str | None = None,
     use_memo: bool = True,
+    scope: tuple[object, ...] | None = None,
 ) -> tuple[list[str | None], list[bytes | None]]:
     """``(fragments, identities)``: each collapsed row's render and what it was rendered from.
 
@@ -215,7 +279,8 @@ def prepare_message_rows(
     lists is a position in the page. ``fragments[i]`` is row *i*'s serialized
     render, ``None`` where it renders as nothing; the joined non-``None`` entries
     are the text :func:`prepare_messages_json` returns. ``use_memo=False`` renders
-    every row afresh.
+    every row afresh. Rows this read stores or reads are filed under *scope*, so
+    the cap evicting one of them forgets that page's fill.
 
     ``identities[i]`` is a keyed digest of the exact source row the fragment was
     rendered from, plus the redaction context and the running flag, so two rows
@@ -232,6 +297,11 @@ def prepare_message_rows(
         context = b"" if bypassed else _context_digest()
         parts: list[str | None] = []
         identities: list[bytes | None] = []
+        # Misses rendered by this read, stored only once the context is known
+        # not to have moved while they were rendered.
+        fresh: list[tuple[tuple[bytes, bytes, str], str]] = []
+        # (position, source) of every row the memo could have answered.
+        looked_up: list[tuple[int, str]] = []
         for m in _cu._collapse_wire_rows(messages):
             # Streaming changes every delta. OAuth URLs depend on revocable
             # endpoint approvals, so neither role is safe or useful to memoize.
@@ -247,12 +317,24 @@ def prepare_message_rows(
                 identities.append(None)
                 continue
             source, digest = snap
+            if memo:
+                looked_up.append((len(parts), source))
             parts.append(
-                _memo_render(source, digest, running, live_child, context)
+                _memo_render(source, digest, running, live_child, context, fresh, scope)
                 if memo
                 else _render_row(json.loads(source), running, live_child)
             )
             identities.append(digest + context + (b"r" if running else b"-"))
+        if not bypassed and _context_digest() != context:
+            # The exempt sets changed while the rows were rendered: no identity
+            # can say which context a fragment was rendered under. A hit was
+            # filed under the context from before the change, so every row the
+            # memo answered is rendered again against the live one.
+            for i, source in looked_up:
+                parts[i] = _render_row(json.loads(source), running, live_child)
+            return parts, [None] * len(identities)
+    for key, fragment in fresh:
+        _remember(key, fragment, scope)
     return parts, identities
 
 
@@ -301,6 +383,7 @@ def schedule_fill(
                 running,
                 live_child=live_child,
                 workspace=workspace,
+                scope=scope,
             )
             filled = True
         except Exception:
@@ -326,23 +409,29 @@ def _memo_render(
     running: bool,
     live_child: str,
     context: bytes,
+    fresh: list[tuple[tuple[bytes, bytes, str], str]],
+    scope: tuple[object, ...] | None,
 ) -> str | None:
     """The memoized render of the row serialized as *source* (its digest *digest*).
 
-    The key's third slot names a live child only for OAuth rows, which never
-    reach the memo, so it is always empty here.
+    A miss is rendered and appended to *fresh* for the caller to store. A hit is
+    filed under *scope*, the page that read it last. The key's third slot names
+    a live child only for OAuth rows, which never reach the memo, so it is
+    always empty here.
     """
     key = (digest, context, "")
     with _memo_lock:
         hit = _memo.get(key)
         if hit is not None:
+            if scope is not None:
+                _memo[key] = (hit[0], hit[1], scope)
             _memo.move_to_end(key)
             return hit[0]
     fragment = _render_row(json.loads(source), running, live_child)
     if fragment is None:
         # Only a chunk row renders as nothing, and chunk rows never reach here.
         return None
-    _remember(key, fragment)
+    fresh.append((key, fragment))
     return fragment
 
 

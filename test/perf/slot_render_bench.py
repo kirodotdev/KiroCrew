@@ -1,178 +1,181 @@
-"""Compare slot-detail render CPU work, not HTTP or browser opening latency.
+"""Compare slot-detail render CPU per read: main's row memo against this branch.
 
-Run with the worktree venv, PYTHONPATH=src and an isolated HOME/KIROCREW_HOME.
-The reference is the unchanged chat_utils renderer followed by json.dumps.
-The hoisted arm computes the existing string-key suffix once per render.
-All three arms use the same corpus and alternate order within each round.
+Run with the worktree venv, PYTHONPATH=src and an isolated HOME/KIROCREW_HOME,
+passing main's ``wire_render.py`` (for example ``git show origin/main:...``):
+
+    PYTHONPATH=src .venv/bin/python test/perf/slot_render_bench.py \\
+        --main-wire-render main_wire_render.py --output out.json
+
+Each read is driven the way the slot-detail handler drives it: ``plan_read``
+decides between the memo and the plain render, and a first read's fill runs
+right after it (synchronously here, in a worker thread in the gateway). The
+figure is render-thread CPU, which is the time the GIL is held, split into the
+request path and the fill. Three cases, at 100 and 3000 rows:
+
+* ``in_memo``   -- one session re-read with its page filled and whole.
+* ``evicted``   -- a filled page after another page's fill pushed part of it
+  out of the memo (cap of 1.5 pages).
+* ``switching`` -- six sessions read in turn with a cap of about four pages,
+  the reader cycling through more history than the memo holds.
+
+The arms alternate within every round so host load drifts across both alike,
+and every output is checked byte for byte against the plain render.
 """
 
 import argparse
-import gc
-import hashlib
-import hmac
+import importlib.util
 import json
 import os
 import statistics
 import time
-import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
 from kiro_crew.dashboard import chat_utils as cu
-from kiro_crew.dashboard import wire_render as wr
+from kiro_crew.dashboard import wire_render as branch
 
 
-def corpus(count):
+def corpus(count, tag):
     secret = "ghp_" + "k7qmz2x9wv4tb8ncr6yd3fj5hs1gpl0aeuo2"
     prose = "A stable message with Unicode: 中文, café, Δ. " * 18
     return [
         {
             "role": "user" if i % 4 == 0 else "assistant",
-            "content": f"{i}: {prose}" + (secret if i % 9 == 0 else "```py\nx = 1\n```"),
-            "ts": f"row-{i}",
-            "meta": {"mid": f"m{i}", "tool": {"name": "read", "status": "ok"}},
+            "content": f"{tag} {i}: {prose}" + (secret if i % 9 == 0 else "```py\nx = 1\n```"),
+            "ts": f"{tag}-row-{i}",
+            "meta": {"mid": f"{tag}-m{i}", "tool": {"name": "read", "status": "ok"}},
         }
         for i in range(count)
     ]
 
 
-def reference(rows):
+def plain(rows):
     return json.dumps(cu._prepare_messages(rows, False, live_child=""))
 
 
-def memo(rows):
-    return wr.prepare_messages_json(rows, False, live_child="")
+class Arm:
+    def __init__(self, module, scoped):
+        self.wr = module
+        self.scoped = scoped
+
+    def render(self, rows, scope):
+        extra = {"scope": scope} if self.scoped else {}
+        return self.wr.prepare_messages_json(rows, False, live_child="", **extra)
+
+    def read(self, scope, rows):
+        """One handler read: ``(output, request_cpu_ms, fill_cpu_ms)``."""
+        use_memo, fill = self.wr.plan_read(scope)
+        start = time.thread_time_ns()
+        out = self.render(rows, scope) if use_memo else plain(rows)
+        request = (time.thread_time_ns() - start) / 1e6
+        fill_ms = 0.0
+        if fill:
+            start = time.thread_time_ns()
+            self.render(rows, scope)
+            self.wr._settle_scope(scope, True)
+            fill_ms = (time.thread_time_ns() - start) / 1e6
+        return out, request, fill_ms
+
+    def page_bytes(self, rows):
+        self.wr.clear_render_memo()
+        self.render(rows, None)
+        _, charged = self.wr.render_memo_info()
+        self.wr.clear_render_memo()
+        return charged
 
 
-def suffix():
-    hosts = "\0".join(sorted(cu._exempt_exact_hosts() | cu.current_scoped_exempt_hosts()))
-    value = b"\0" + hosts.encode("utf-8", errors="surrogatepass")
-    prefixes = cu._token_param_exempt_prefixes()
-    if prefixes:
-        value += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
-    return value
+def case_in_memo(arm, rows, expected, repeats):
+    arm.wr.clear_render_memo()
+    arm.read(("s",), rows)  # first read: plain, then the fill
+    assert arm.wr.plan_read(("s",)) == (True, False)
+    samples = []
+    for _ in range(repeats):
+        out, request, fill = arm.read(("s",), rows)
+        assert out == expected
+        samples.append((request, fill))
+    return samples
 
 
-def rss_kib():
-    for line in Path("/proc/self/status").read_text().splitlines():
-        if line.startswith("VmRSS:"):
-            return int(line.split()[1])
-    raise RuntimeError("RSS unavailable")
+def case_evicted(arm, rows, expected, other, repeats):
+    samples = []
+    cap = int(arm.page_bytes(rows) * 1.5)
+    with patch.object(arm.wr, "RENDER_MEMO_MAX_BYTES", cap):
+        for _ in range(repeats):
+            arm.wr.clear_render_memo()
+            for scope, page in ((("a",), rows), (("b",), other)):
+                arm.read(scope, page)  # first read: plain, then the fill
+            out, request, fill = arm.read(("a",), rows)
+            assert out == expected
+            samples.append((request, fill))
+    return samples
+
+
+def case_switching(arm, pages, expected, cycles):
+    samples = []
+    cap = int(arm.page_bytes(pages[0]) * 4)
+    with patch.object(arm.wr, "RENDER_MEMO_MAX_BYTES", cap):
+        arm.wr.clear_render_memo()
+        for cycle in range(cycles + 2):
+            for i, page in enumerate(pages):
+                out, request, fill = arm.read((f"s{i}",), page)
+                assert out == expected[i]
+                if cycle >= 2:  # two warm-up cycles reach the steady state
+                    samples.append((request, fill))
+    return samples
+
+
+def summary(samples):
+    request = [r for r, _ in samples]
+    total = [r + f for r, f in samples]
+    return {
+        "n": len(samples),
+        "request_p50": round(statistics.median(request), 2),
+        "request_p95": round(sorted(request)[int((len(request) - 1) * 0.95)], 2),
+        "fill_mean": round(statistics.fmean(f for _, f in samples), 2),
+        "total_mean": round(statistics.fmean(total), 2),
+    }
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--main-wire-render", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--rounds", type=int, default=9)
-    parser.add_argument("--repeats", type=int, default=20)
+    parser.add_argument("--rounds", type=int, default=5)
+    parser.add_argument("--repeats", type=int, default=6)
+    parser.add_argument("--rows", type=int, nargs="+", default=[100, 3000])
     args = parser.parse_args()
-    results = {"unit": "one render plus JSON serialization, milliseconds", "cases": []}
-    original_key = cu._display_redaction_cache_key
-    current_suffix = b""
-
-    def hoisted_key(text):
-        raw = text.encode("utf-8", errors="surrogatepass")
-        digest = hmac.new(cu._DISPLAY_REDACTION_SALT, raw + current_suffix, hashlib.sha256).digest()
-        return (digest, len(raw)), len(raw)
-
-    def hoisted(rows):
-        nonlocal current_suffix
-        with cu.scoped_exempt_hosts(cu.allowed_hosts_for(None)):
-            current_suffix = suffix()
-            return json.dumps(cu._prepare_messages_scoped(rows, False, live_child=""))
-
-    for count in (100, 3000):
-        rows = corpus(count)
-        expected = reference(rows)
-        assert memo(rows) == expected
-        with patch.object(cu, "_display_redaction_cache_key", hoisted_key):
-            assert hoisted(rows) == expected
-        samples = {name: [] for name in ("reference", "hoisted", "memo")}
-        rounds = []
-        arms = {"reference": reference, "hoisted": hoisted, "memo": memo}
+    spec = importlib.util.spec_from_file_location("wire_render_main", args.main_wire_render)
+    main_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main_module)
+    arms = {"main": Arm(main_module, scoped=False), "branch": Arm(branch, scoped=True)}
+    results = {"unit": "render thread CPU per read, milliseconds", "cases": []}
+    for count in args.rows:
+        pages = [corpus(count, f"s{i}") for i in range(6)]
+        expected = [plain(p) for p in pages]
+        data = {(c, a): [] for c in ("in_memo", "evicted", "switching") for a in arms}
+        loads = []
         for round_id in range(args.rounds):
-            order = list(arms)
-            order = order[round_id % 3 :] + order[: round_id % 3]
-            if round_id % 2:
-                order.reverse()
-            for name in order:
-                key = hoisted_key if name == "hoisted" else original_key
-                with patch.object(cu, "_display_redaction_cache_key", key):
-                    for _ in range(3):
-                        assert arms[name](rows) == expected
-                    load_start = os.getloadavg()
-                    values = []
-                    for _ in range(args.repeats):
-                        start = time.perf_counter_ns()
-                        output = arms[name](rows)
-                        values.append((time.perf_counter_ns() - start) / 1e6)
-                        assert output == expected
-                    samples[name].extend(values)
-                    rounds.append(
-                        {
-                            "round": round_id,
-                            "arm": name,
-                            "p50": statistics.median(values),
-                            "load_start": load_start,
-                            "load_end": os.getloadavg(),
-                        }
-                    )
+            names = list(arms) if round_id % 2 == 0 else list(arms)[::-1]
+            for name in names:
+                arm = arms[name]
+                loads.append(os.getloadavg()[0])
+                data[("in_memo", name)] += case_in_memo(arm, pages[0], expected[0], args.repeats)
+                data[("evicted", name)] += case_evicted(
+                    arm, pages[0], expected[0], pages[1], args.repeats
+                )
+                data[("switching", name)] += case_switching(arm, pages, expected, 12)
+                arm.wr.clear_render_memo()
         results["cases"].append(
             {
                 "rows": count,
-                "wire_bytes": len(expected.encode()),
+                "load_min": round(min(loads), 1),
+                "load_max": round(max(loads), 1),
                 "oracle_differences": 0,
-                "summary": {
-                    name: {
-                        "n": len(v),
-                        "p50": statistics.median(v),
-                        "p95": sorted(v)[int((len(v) - 1) * 0.95)],
-                    }
-                    for name, v in samples.items()
-                },
-                "rounds": rounds,
-                "samples": samples,
+                "summary": {f"{c}/{a}": summary(v) for (c, a), v in data.items()},
             }
         )
-    rows = corpus(18000)
-    reference(rows)
-    wr.clear_render_memo()
-    gc.collect()
-    before_rss = rss_kib()
-    tracemalloc.start()
-    memo(rows)
-    gc.collect()
-    traced, peak = tracemalloc.get_traced_memory()
-    after_rss = rss_kib()
-    entries, charged = wr.render_memo_info()
-    wr.clear_render_memo()
-    gc.collect()
-    cleared, _ = tracemalloc.get_traced_memory()
-    tracemalloc.stop()
-    results["memory"] = {
-        "entries": entries,
-        "charged_bytes": charged,
-        "traced_before_clear": traced,
-        "traced_after_clear": cleared,
-        "traced_released": traced - cleared,
-        "traced_peak": peak,
-        "rss_before_kib": before_rss,
-        "rss_after_kib": after_rss,
-        "rss_after_clear_kib": rss_kib(),
-    }
     args.output.write_text(json.dumps(results, indent=2) + "\n")
-    print(
-        json.dumps(
-            {
-                "cases": [
-                    {k: v for k, v in case.items() if k not in ("rounds", "samples")}
-                    for case in results["cases"]
-                ],
-                "memory": results["memory"],
-            },
-            indent=2,
-        )
-    )
+    print(json.dumps(results, indent=2))
 
 
 if __name__ == "__main__":
