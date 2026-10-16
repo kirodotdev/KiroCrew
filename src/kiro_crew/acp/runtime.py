@@ -8444,6 +8444,9 @@ class AcpRuntime:
         # Mirrors create_session: the resumed session's own stub token.
         handle.stub_session_token = stub_token
         handle.member_dispatch_mounted = member_mounted
+        # A fresh handle has no baseline for the restored ledger, whose counter
+        # already carries the session's earlier spend.
+        handle.last_prompt_stats.restore_cost_session(resume_sid)
         # Mirrors create_session: the resumed session re-declares the array, so it
         # re-derives the deny set that array came with and re-checks the generation.
         handle.spec_denied_tools = denied_tools

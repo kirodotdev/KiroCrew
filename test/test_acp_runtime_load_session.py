@@ -434,6 +434,25 @@ class TestAcpRuntimeLoadSession:
         assert handle.model == ""
 
     @pytest.mark.asyncio
+    async def test_load_session_does_not_bill_the_restored_ledger(self, monkeypatch):
+        """A resumed session's first cumulative cost carries its lifetime spend."""
+        rt, _, _ = _make_runtime()
+        rt._can_load_session = True
+
+        async def _fake_send(method, params, timeout=None):
+            if method == METHOD_SESSION_LOAD:
+                return {"modes": {"currentModeId": "kirocrew"}, "models": []}
+            return {}
+
+        monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+        handle = await rt.load_session("/f.json", "sid-cost", agent="kirocrew")
+
+        handle.last_prompt_stats.apply_cost_cumulative(5.00)
+        assert handle.last_prompt_stats.cost_usd == 0.0
+        handle.last_prompt_stats.apply_cost_cumulative(5.04)
+        assert handle.last_prompt_stats.cost_usd == pytest.approx(0.04)
+
+    @pytest.mark.asyncio
     async def test_load_session_raises_when_capability_absent(self):
         rt, _, _ = _make_runtime()
         rt._can_load_session = False

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re as _re
 from dataclasses import dataclass, field
 from typing import Any
@@ -84,6 +85,8 @@ from kiro_crew.agent_sdk.host_auth import (  # noqa: E402,F401 - re-exported for
 from kiro_crew.recovery.ladder import (  # noqa: E402 - see the re-export note above
     SESSION_RECOVERY_MAX_ATTEMPTS,
 )
+
+logger = logging.getLogger(__name__)
 
 # ── ACP Event Kinds ──
 
@@ -1259,6 +1262,14 @@ class AcpPromptStats:
     # delta'd against. SESSION state: survives ``carry_over()`` like the
     # context fields, or every turn would re-bill the whole session's spend.
     cost_session_usd: float = 0.0
+    # The ACP session ``cost_session_usd`` was measured on. Lets a restore of
+    # that SAME session keep the baseline (see ``restore_cost_session``).
+    cost_baseline_sid: str = ""
+    # True while the adapter's counter holds spend Crew never saw: a restored
+    # session's ledger is brought back from the harness's own transcript, so
+    # its first reading includes everything billed before this process. The
+    # next reading is adopted as the baseline and bills nothing.
+    cost_baseline_unknown: bool = False
     # True while ``context_pct`` reads 0.0 only because a compaction dropped the
     # counts and no fresh telemetry has re-derived them. Distinguishes "the
     # transcript is empty" from "the transcript's size is unknown" — the two are
@@ -1289,6 +1300,8 @@ class AcpPromptStats:
             context_tokens_from_usage=self.context_tokens_from_usage,
             context_pct_unknown=self.context_pct_unknown,
             cost_session_usd=self.cost_session_usd,
+            cost_baseline_sid=self.cost_baseline_sid,
+            cost_baseline_unknown=self.cost_baseline_unknown,
         )
 
     def reset_context_state(self) -> None:
@@ -1322,6 +1335,7 @@ class AcpPromptStats:
         # under-count the first turns (any new reading below the stale baseline
         # only survives via the monotonic reset guard).
         self.cost_session_usd = 0.0
+        self.cost_baseline_unknown = False
 
     def note_pct_reported(self) -> None:
         """Mark ``context_pct`` as backed by real telemetry.
@@ -1349,20 +1363,71 @@ class AcpPromptStats:
             return STOP_REASON_REFUSAL, self.refusal
         return stop_reason, None
 
+    def begin_cost_session(self, session_id: str) -> None:
+        """Start the cost baseline for a session this process just created.
+
+        A ``session/new`` opens a fresh ledger in the adapter, so its counter
+        starts at zero and every later reading is spend Crew can see.
+        """
+        self.cost_session_usd = 0.0
+        self.cost_baseline_sid = session_id or ""
+        self.cost_baseline_unknown = False
+
+    def restore_cost_session(self, session_id: str) -> None:
+        """Set the cost baseline for a session restored by load or resume.
+
+        The claude harness restores a resumed session's cost ledger from its
+        own transcript, so the counter does NOT restart at zero: it carries the
+        session's whole lifetime spend. A baseline measured on this same session
+        (the adapter process restarted under a live client) still describes
+        that ledger and is kept. Any other baseline -- a fresh client after a
+        gateway restart, or one measured on a different session -- cannot, so
+        the next reading is adopted as the baseline instead of billed.
+        """
+        sid = session_id or ""
+        if sid and sid == self.cost_baseline_sid and not self.cost_baseline_unknown:
+            return
+        self.cost_session_usd = 0.0
+        self.cost_baseline_sid = sid
+        self.cost_baseline_unknown = True
+
     def apply_cost_cumulative(self, cumulative: float) -> None:
         """Fold a session-cumulative cost reading into the per-turn delta.
 
         The adapter reports cost as a running session total, so the per-turn
-        figure is the movement since the last reading. Monotonic guard: a
-        reading BELOW the stored baseline means the adapter's counter reset
-        (process restart) — the new total is then entirely spend since the
-        reset, so it is taken whole rather than producing a negative delta.
-        The caller validates the value (finite, non-negative) at the
+        figure is the movement since the last reading. Two readings carry spend
+        Crew cannot attribute, and both bill nothing and rebase:
+
+        - the first reading after ``restore_cost_session`` found no usable
+          baseline: it includes spend billed before this process;
+        - a reading BELOW the stored baseline: the ledger was restored to a
+          total Crew never saw, so taking it whole would re-bill the lifetime.
+
+        Under-counting one turn is bounded; re-billing a session's lifetime is
+        not. Each case logs a WARNING so a gap in the usage rows explains
+        itself. The caller validates the value (finite, non-negative) at the
         ``parse_usage_cost`` chokepoint.
         """
+        if self.cost_baseline_unknown:
+            logger.warning(
+                "cost baseline unknown for restored session %s: adopting "
+                "cumulative $%.6f as the baseline; this reading bills $0",
+                self.cost_baseline_sid or "(unknown)",
+                cumulative,
+            )
+            self.cost_baseline_unknown = False
+            self.cost_session_usd = cumulative
+            return
         delta = cumulative - self.cost_session_usd
         if delta < 0:
-            delta = cumulative
+            logger.warning(
+                "cost cumulative for session %s fell from $%.6f to $%.6f: "
+                "rebasing; this reading bills $0",
+                self.cost_baseline_sid or "(unknown)",
+                self.cost_session_usd,
+                cumulative,
+            )
+            delta = 0.0
         self.cost_usd += delta
         self.cost_session_usd = cumulative
 

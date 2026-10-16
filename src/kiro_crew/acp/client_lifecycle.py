@@ -691,13 +691,12 @@ def _reset_state(self: AcpClient) -> None:
     # grace — on behalf of work that is already dead. "Never reset per
     # turn" (see __init__) is a statement about turns, not processes.
     self._background_launches = BackgroundLaunchRecord()
-    # The adapter's cumulative cost counter is in-process: a replacement
-    # process restarts it at zero, so the delta baseline must restart with
-    # it or spend up to the old total is silently dropped — the monotonic
-    # guard only catches a counter that has NOT yet caught back up to the
-    # stale baseline. The current turn's already-billed delta is kept;
-    # carry_over() zeroes it at the next turn boundary.
-    self.last_prompt_stats.cost_session_usd = 0.0
+    # The cost baseline is deliberately left as it is. What the replacement
+    # process's counter starts from depends on how its session opens:
+    # session/new starts a fresh ledger at zero (begin_cost_session), while a
+    # restore of this same session brings the old ledger back from the
+    # harness transcript (restore_cost_session keeps the baseline). Zeroing
+    # here re-billed the whole lifetime on the first turn after every resume.
     self._buffer.clear()
     self._stderr_lines.clear()
     # A fresh process opens a fresh registration window: cleared WITH the

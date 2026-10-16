@@ -19,7 +19,7 @@ Instance fields written: ``_activated_model``, ``_agent_accepts_image``,
 Instance fields read: ``_agent``, ``_available_mode_ids``, ``_channel_id``,
 ``_extra_env``, ``_modes_advertised``, ``_sandbox_mode``, ``_scratch_dir``,
 ``_session_key``, ``_session_mcp_snapshot``, ``_shared_scratch``, ``_side_read_only``,
-``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``.
+``_stdin_stalled``, ``_windows_tree_cleanup_failed``, ``_work_dir``, ``last_prompt_stats``.
 """
 
 from __future__ import annotations
@@ -930,6 +930,7 @@ async def _initialize_session(self: AcpClient) -> None:
                 if "modes" in load_resp or self.backend in ACP_BACKENDS_LOAD_WITHOUT_MODES:
                     self._session_id = resume_sid
                     self._resumed = True
+                    self.last_prompt_stats.restore_cost_session(resume_sid)
                     self._capture_available_models(load_resp)
                     sent_snapshot = self._session_mcp_snapshot
                     if self._uses_advertised_model_selection:
@@ -976,6 +977,7 @@ async def _initialize_session(self: AcpClient) -> None:
         session_resp = await self._new_session_following_substitution()
         sent_snapshot = self._session_mcp_snapshot
         self._session_id = session_resp.get("sessionId")
+        self.last_prompt_stats.begin_cost_session(self._session_id or "")
         self._capture_available_models(session_resp)
         if self._uses_advertised_model_selection:
             await self._persist_advertised_models_if_changed()
