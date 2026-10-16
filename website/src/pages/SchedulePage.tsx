@@ -70,11 +70,11 @@ const SCHEDULE_COLUMNS = 10
 
 /**
  * The jobs table's declared min-width in px: the number in its
- * `min-w-[1176px]` class. It exists as a constant only so a user's column
+ * `min-w-[1194px]` class. It exists as a constant only so a user's column
  * resize can move it (`JOBS_TABLE_MIN_WIDTH + jobCols.extra`); the class stays
  * the default, and `SchedulePage.columnContract.test.ts` holds the two equal.
  */
-const JOBS_TABLE_MIN_WIDTH = 1176
+const JOBS_TABLE_MIN_WIDTH = 1194
 
 /**
  * The user-resizable jobs columns. Each `base` restates that column's
@@ -95,7 +95,7 @@ const JOB_COLUMNS = {
   name: { base: 160, min: 80, max: 640 },
   type: { base: 116, min: 64, max: 480 },
   schedule: { base: 180, min: 80, max: 480 },
-  status: { base: 86, min: 60, max: 240 },
+  status: { base: 104, min: 72, max: 240 },
   lastRun: { base: 82, min: 56, max: 240 },
   nextRun: { base: 92, min: 56, max: 240 },
 } satisfies Record<string, TableColumnSpec>
@@ -816,7 +816,7 @@ export default function SchedulePage() {
                   it overlaps the next cell. That is what put the Message chevron
                   and preview on top of the Status badge at phone widths, and on a
                   1280px desktop with the nav rail open (measured 0px there too).
-                - `min-w` covers the nine px columns (996px, border-box, so the
+                - `min-w` covers the nine px columns (1014px, border-box, so the
                   `p-2`/`px-2` is inside each) PLUS a 180px floor for Message —
                   enough for the 14px chevron and a one-line preview. A narrower
                   container scrolls the table, which is honest; voiding a column
@@ -835,7 +835,7 @@ export default function SchedulePage() {
                 column, and restates the rule above mechanically: the px
                 columns moved by `extra`, so min-width moves by the same
                 amount and Message keeps its floor. */}
-            <Table className="table-fixed min-w-[1176px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
+            <Table className="table-fixed min-w-[1194px]" style={jobCols.extra ? { minWidth: JOBS_TABLE_MIN_WIDTH + jobCols.extra } : undefined} aria-label={i18nT('pages.schedulePage.jobs_table')} {...uiLocation('schedule.job-list', attachJobsTable)}>
               <TableHeader>
                 <TableRow className="hover:bg-transparent">
                   <TableHead className="w-[36px] px-2 text-center">
@@ -860,7 +860,7 @@ export default function SchedulePage() {
                       NOT out of Message, which keeps its floor. */}
                   <SortableTableHead label={i18nT('pages.schedulePage.schedule')} sortKey="schedule" sort={schedSort} onToggle={toggleSchedSort} className="w-[180px] relative" style={jobCols.style('schedule')} resizer={jobCols.resizer('schedule')} />
                   <TableHead>{i18nT('pages.schedulePage.message')}</TableHead>
-                  <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[86px] relative" style={jobCols.style('status')} resizer={jobCols.resizer('status')} />
+                  <SortableTableHead label={i18nT('pages.schedulePage.status')} sortKey="status" sort={schedSort} onToggle={toggleSchedSort} className="w-[104px] relative" style={jobCols.style('status')} resizer={jobCols.resizer('status')} />
                   <SortableTableHead label={i18nT('pages.schedulePage.last_run')} sortKey="lastRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[82px] relative" style={jobCols.style('lastRun')} resizer={jobCols.resizer('lastRun')} />
                   <SortableTableHead label={i18nT('pages.schedulePage.next_run')} sortKey="nextRun" sort={schedSort} onToggle={toggleSchedSort} className="w-[92px] relative" style={jobCols.style('nextRun')} resizer={jobCols.resizer('nextRun')} />
                   {/* 176px, not 164: under `table-fixed` a column width is a
