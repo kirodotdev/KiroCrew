@@ -348,13 +348,13 @@ def _select_effort_level(requested: str, supported: list[str]) -> Optional[str]:
 def _repair_agent_spec() -> bool:
     """Rewrite the installed :data:`AGENT_NAME` spec from its template if it drifted.
 
-    True when the file was rewritten. The installer's module is imported here, not
-    at the top, because it pulls in ``kiro_crew.agent``, which nothing else in this
-    module needs. Blocking: callers run it with ``asyncio.to_thread``.
+    True when the file was rewritten. ``kiro_crew.agent`` is imported here, not at
+    the top, because nothing else in this module needs it. Blocking: callers run it
+    with ``asyncio.to_thread``.
     """
-    from kiro_crew.agent_materialization.service_agents import repair_knowledge_agent_spec
+    from kiro_crew import agent as agent_mod
 
-    return repair_knowledge_agent_spec()
+    return agent_mod.repair_knowledge_agent_spec()
 
 
 class Worker(ABC):
