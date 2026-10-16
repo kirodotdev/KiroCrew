@@ -77,6 +77,8 @@ def head_blocks(
     from kiro_crew.context_assembly import agent_spec as _agent_spec
     from kiro_crew.context_assembly.sections import _resolve_runtime_source
     from kiro_crew.context_assembly.tool_names import tool_names_block
+    from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.memory_stores import UnknownMemoryStore
 
     prompt = spec.get("prompt")
     if agent != HEAD_AGENT or not isinstance(prompt, str) or not is_managed_prompt(prompt):
@@ -97,7 +99,17 @@ def head_blocks(
         # No head is the safe direction: every block then rides in the message.
         logger.warning("session head not rendered for %s", session_key, exc_info=True)
         return ()
-    rules = ctx._critical_rules_for(session_key, None)
+    # Session start picks the dashboard rules by the slot's execution (an App Kit
+    # slot never learns the goal marker), so the head reads the SAME carrier it does:
+    # read_session_execution falls back to the session's durable record, which the
+    # turn binds before the session is created, where read_live_session_execution saw
+    # only the in-memory map and missed a persistent App Kit slot. An unreadable record
+    # yields no head, so every block then rides in the message as session start builds it.
+    try:
+        execution = read_session_execution(session_key)
+    except UnknownMemoryStore:
+        return ()
+    rules = ctx._critical_rules_for(session_key, None, execution_context=execution)
     tools = tool_names_block(provider_label)
     if not (contract and rules and tools):
         return ()

@@ -237,7 +237,7 @@ describe('two markers on ONE line', () => {
 
   it('still refuses a marker followed by ordinary prose on the same line', () => {
     const raw = 'See [OPTIONS: A | B] for details'
-    expect(parseOptions(raw)).toEqual({ text: raw, options: [], multi: true })
+    expect(parseOptions(raw)).toEqual({ text: raw, options: [], goalSuggestion: null, multi: true })
   })
 
   it.each([
@@ -255,7 +255,7 @@ describe('two markers on ONE line', () => {
     expect(OPTION_MARKER_PATTERN_SOURCE).not.toContain('(?=\\[')
     const line = '[OPTIONS: A] '.repeat(255) + '[OPTIONS: B]'
     expect(findOptionMarkers(line)).toHaveLength(256)
-    expect(parseOptions(line)).toEqual({ text: '', options: ['B'], multi: true })
+    expect(parseOptions(line)).toEqual({ text: '', options: ['B'], goalSuggestion: null, multi: true })
   })
 
 })
