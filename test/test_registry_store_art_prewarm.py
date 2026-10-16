@@ -980,7 +980,7 @@ def _grammar_identities_in_a_fresh_interpreter(tmp_path: Path) -> dict[str, bool
     """Which consumers share the store-art compiled grammars, read in a child interpreter.
 
     The sharing is an import-time binding, and this worker's own modules are not a
-    reliable witness of it: ``test_external_registry.py`` reloads the registry facade,
+    reliable witness of it: ``test_external_registry_clone_diagnostics.py`` reloads the registry facade,
     which re-executes ``store_art`` but not ``routes``, and once ``re``'s cache has
     dropped the pattern the reload compiles a NEW object, so an in-process identity
     check reads whichever tests ran before it. A child imports each module once.

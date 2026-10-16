@@ -251,7 +251,6 @@
 2240 test/test_eager_spawn.py
 2861 test/test_embeddings.py
 2417 test/test_ephemeral_sessions.py
-9026 test/test_external_registry.py
 2765 test/test_fargate_launch_engine.py
 2680 test/test_feature_videos_hosted.py
 2872 test/test_file_change_snapshots.py

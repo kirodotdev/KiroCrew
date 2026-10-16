@@ -1191,7 +1191,7 @@ print(json.dumps(report))
 
 def test_a_reload_of_the_facade_reloads_every_owner(tmp_path: Path) -> None:
     # The one-module registry re-evaluated every module-level value on
-    # ``importlib.reload``; ``test_external_registry.py`` reloads it to re-derive the
+    # ``importlib.reload``; ``test_external_registry_clone_diagnostics.py`` reloads it to re-derive the
     # platform clone locale. Run in a child interpreter, so the reload's new objects
     # never reach this worker's other tests.
     import os
