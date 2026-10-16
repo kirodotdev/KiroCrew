@@ -919,14 +919,14 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "Slack messages",
-        "slack/handler.py",
+        "slack/handler_runtime/delivery.py",
         "StreamRedactor on the live edit stream plus a full pass on the final posted " "message.",
     ),
     (
         "Ops Mission Control Slack board",
         "apps/builtins/ops_mission_control/backend/slack_out.py",
         "Incident titles, resources, and diagnoses mirrored to an ops channel. A "
-        "separate egress boundary from slack/handler.py: this text originates in a "
+        "separate egress boundary from the Slack messages sink: this text originates in a "
         "third-party provider's alarm payload (not a model turn) and lands in a "
         "channel whose audience is usually wider than the dashboard's.",
     ),
@@ -2002,8 +2002,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # title ONCE, centrally, before the notice is steered back into the
         # model's own turn (not to a person). It owns no egress — the steer goes
         # to the ACP subprocess through the provider, and the display rows a
-        # human sees are appended by dashboard/chat_runner.py and slack/handler.py,
-        # the registered sinks for those surfaces.
+        # human sees are appended by dashboard/chat_runner.py and the native Slack turn,
+        # the registered sinks for those surfaces (Slack's is handler_runtime/delivery.py).
         "deny_notice.py",
         # The app-facing seam: it OWNS no output. It hands the redaction pass to
         # an installed app so the app can scrub content at its own boundary, and
@@ -2532,15 +2532,19 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "slack/interactions.py",
         "slack/renderer.py",
         "slack/sessions_view.py",
-        # The owners composed into slack/handler.py, in the same class as that
-        # facade: they redact the answer stream, the approval prompts, the command
-        # replies and the thread context the native turn posts or reads, and
-        # slack/handler.py stays the registered "Slack messages" sink for all of
-        # it, so the split adds no egress path of its own.
+        # The Slack handler facade and the owners composed into it: the facade defines
+        # the canonical-order pair delivery.py's fallback egress uses (_display_redactor),
+        # and the owners redact the answer stream, the approval prompts and tool titles,
+        # the command and keyword replies, the turn's error text and the thread context;
+        # handler_runtime/delivery.py is the registered "Slack messages" sink for them all.
+        "slack/handler.py",
         "slack/handler_runtime/approvals.py",
         "slack/handler_runtime/commands.py",
+        "slack/handler_runtime/dispatch.py",
         "slack/handler_runtime/inbound.py",
+        "slack/handler_runtime/permission_ladder.py",
         "slack/handler_runtime/stream.py",
+        "slack/handler_runtime/turn.py",
         "slack/handler_runtime/turn_context.py",
         # The owners composed into slack/gateway.py, in the same class as that
         # facade: they redact the install-repair, update and boot logs, the

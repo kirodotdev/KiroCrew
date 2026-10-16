@@ -1,6 +1,6 @@
 """The native Slack path's command surface: ``_handle_slash_command``'s dispatch over one
 ``_bang_<name>`` coroutine per owner and allowed-user ``!`` command, the sender gate and
-``!compact`` routing ``handle_message`` calls, ``!compact`` itself, the ``sessions``
+``!compact`` routing ``_dispatch_before_turn`` calls, ``!compact`` itself, the ``sessions``
 keyword predicate, and the ``spawn`` / ``run`` / ``cron`` keyword replies (whose text
 lives in ``messaging.commands``).
 
@@ -1320,7 +1320,7 @@ def _is_sessions_keyword(text: str) -> bool:
     """True when the whole stripped, lower-cased message is the ``sessions``
     keyword, on its own or with its one argument.
 
-    The ONE predicate shared by the native ``handle_message`` branch, the
+    The ONE predicate shared by the native ``_dispatch_before_turn`` branch, the
     transport ``maybe_handle_keyword_command`` branch, and the linked-thread
     fall-through in ``maybe_route_linked_thread`` — keeping all three sites on
     one helper guarantees the intercept matches exactly what the keyword
@@ -1409,7 +1409,7 @@ async def _route_bang_command(
     *cmd_text* is the message with any leading bot mention and privacy modifier
     already stripped. Returns ``True`` when the message was a command the caller must
     not hand to the model -- run, denied, or answered -- and ``False`` when it falls
-    through to the rest of ``handle_message`` (no ``!`` prefix, or a command the
+    through to the rest of ``_dispatch_before_turn`` (no ``!`` prefix, or a command the
     dispatcher did not claim).
     """
     if cmd_text.strip().lower() == "!compact":

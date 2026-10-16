@@ -362,7 +362,7 @@ _SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 # exactly what an AST can answer and a mock cannot.
 _GUARDED_CHARGES = [
     ("dashboard/chat_runner.py", "_acp_pipe_death_retries", 3),
-    ("slack/handler.py", "record_failure", 1),
+    ("slack/handler_runtime/turn.py", "record_failure", 1),
     ("slack/gateway_runtime/runtime_charge.py", "reset", 2),
     ("task_executor.py", "recoveries", 1),
 ]
@@ -1179,6 +1179,11 @@ def test_an_attribution_flag_is_bound_on_every_path_that_reads_it():
         ),
         Path("dashboard") / "chat_runner.py",
         Path("task_executor.py"),
+        *sorted(
+            owner
+            for owner in (_SRC / "slack" / "handler_runtime").glob("*.py")
+            if owner.name != "__init__.py"
+        ),
         Path("slack") / "handler.py",
         *_GATEWAY_UNIT,
     ):
@@ -1428,9 +1433,11 @@ def test_a_substitute_bound_hands_over_at_its_limit_rather_than_charging_once():
       the branch hands the streak's value to the counter and lets the one charge
       below land ON the threshold.
     """
-    handler = ast.parse((_SRC / "slack" / "handler.py").read_text(encoding="utf-8"))
+    handler = ast.parse(
+        (_SRC / "slack" / "handler_runtime" / "turn.py").read_text(encoding="utf-8")
+    )
     branches = _branch_bodies_under_threshold_compare(handler, "_CIRCUIT_BREAKER_THRESHOLD")
-    assert branches, "no breaker-threshold branch in handler.py -- scan is broken"
+    assert branches, "no breaker-threshold branch in handler_runtime/turn.py -- scan is broken"
     for branch in branches:
         calls = _calls_in(branch.body)
         assert "reset" in calls, (
@@ -1547,7 +1554,7 @@ def test_a_hand_over_forgets_the_streak_it_transferred():
     that was already there, which is exactly how this was missed.
     """
     sites = {
-        "slack/handler.py": ("reset", None),
+        "slack/handler_runtime/turn.py": ("reset", None),
         "messaging/dispatch.py": ("reset", None),
         "slack/gateway_runtime/runtime_charge.py": (None, "consecutive_failures"),
     }

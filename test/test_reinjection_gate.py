@@ -159,7 +159,9 @@ def _compacting_modules() -> dict[str, ast.Module]:
 def test_every_compacting_turn_loop_consumes_needs_reinjection():
     modules = _compacting_modules()
     # A positive control: a renamed trigger must not quietly empty the gate.
-    assert {"dashboard/chat_runner.py", "task_executor.py", "slack/handler.py"} <= set(modules)
+    assert {"dashboard/chat_runner.py", "task_executor.py", "slack/handler_runtime/turn.py"} <= set(
+        modules
+    )
     offenders = []
     for name, tree in modules.items():
         if name in _IMPLEMENTERS or _delegates(tree):

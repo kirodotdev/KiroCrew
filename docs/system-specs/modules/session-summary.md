@@ -502,7 +502,7 @@ than "not the dashboard":
 
 | Surface | Where its turn is driven instead |
 |---|---|
-| Slack | `slack/handler.py` (native ACP loop) or `messaging/driver.py` (`TurnDriver`) |
+| Slack | `slack/handler_runtime/turn.py` (native ACP loop, run by `slack/handler.py`) or `messaging/driver.py` (`TurnDriver`) |
 | Discord, Telegram, Teams, Webex, WeCom, WeChat | `messaging/driver.py` (`TurnDriver`), one shared loop |
 | Task runner | `task_executor.py`, streaming an ACP client directly |
 | Cron wake | `slack/gateway_runtime/cron_turn.py` and `cron_delivery.py`; the result is *appended* into a `cron-<id>` slot by `dashboard/cron_inject.py` — a bare append with no turn lifecycle |

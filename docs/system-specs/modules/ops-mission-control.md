@@ -2573,7 +2573,7 @@ be tested without a gateway.
   cosmetic, a missing alarm is not.
 - **Redacted.** Titles, resources, and diagnoses pass through both `security.redact`
   and `secrets.redact_tokens`, plus mrkdwn escaping (`slack_out._safe`, with link
-  targets through `_safe_link_target`), before leaving. This is a separate egress boundary from `slack/handler.py`: the
+  targets through `_safe_link_target`), before leaving. This is a separate egress boundary from the Slack messages sink (`slack/handler_runtime/delivery.py`): the
   text originates in a third-party alarm payload rather than a model turn, and the
   channel audience is usually wider than the dashboard's. Registered in
   `security_posture._REDACTION_SINKS`.

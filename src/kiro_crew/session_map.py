@@ -1702,7 +1702,7 @@ class SessionMap:
         REBIND (different ts or channel). Identical coordinates are the SAME
         binding and keep the mute, because this method is not only called by an
         explicit connect: the Slack inbound path re-writes the same ts/channel on
-        every turn as its thread registry (``slack/handler.py``,
+        every turn as its thread registry (``slack/handler_runtime/turn.py``,
         ``slack/transport_dispatch.py``), so clearing here unconditionally let a
         single inbound message — or a cold start's ``set_channel`` — silently
         un-disconnect a thread the user had muted, and later dashboard turns

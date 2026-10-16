@@ -720,11 +720,11 @@ class _Surface:
 
 _SURFACES = {
     "slack": _Surface(
-        path="slack/handler.py",
+        path="slack/handler_runtime/permission_ladder.py",
         steer=r"^\s*await _steer_host_deny\(",
         audit=r"^\s*sel\(\)\.log_tool_invocation\(",
         sites=(
-            # handle_message: the PreToolUse hook said deny -- a host verdict.
+            # _answer_permission_request: the PreToolUse hook said deny -- a host verdict.
             _Site('error="hook_deny"', "host"),
             # _reject_orphaned_tool: teardown answers a wire the fallback arms
             # re-raised past; not a decision of its own.

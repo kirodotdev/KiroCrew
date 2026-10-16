@@ -157,7 +157,7 @@ Slack Socket Mode → events.py (dispatch) → handler.py → SessionManager →
 | `slack/client.py` | `SlackClientOps` ABC + `RealSlackClient` (slack-sdk wrapper) |
 | `slack/files.py` | Slack adapter over shared attachment ingestion — authenticated downloads, inlineable images/text/documents, and byte-identical opaque files with local path + metadata; caller-owned cleanup and SEL audit |
 | `slack/format.py` | Markdown → Slack mrkdwn conversion (headings, links, strike, tables, mermaid, ANSI strip, truncation). `render_for_slack` is the one way text reaches Slack: `strip_ansi` → redact → pre-split → convert → redact → display-settle → redact → split, with each converted block, split piece and truncation settled under the Slack mrkdwn reading |
-| `slack/handler.py` | The native turn path's composition facade: `handle_message()` — orchestrates one turn and streams the ACP response, `handle_interaction()` — button clicks (with None provider guard), and every name the module exported. See [Native handler composition](#native-handler-composition) |
+| `slack/handler.py` | The native turn path's composition facade: `handle_message()` — admits a message and runs its turn through the phase owners, `handle_interaction()` — button clicks (with None provider guard, in `handler_runtime/permission_ladder.py`), and every name the module exported. See [Native handler composition](#native-handler-composition) |
 | `slack/handler_runtime/` | Private owners the handler facade composes, one responsibility each (see [Native handler composition](#native-handler-composition)); nothing else imports them |
 | `slack/gateway.py` | `GatewayOrchestrator` — the composition facade: the class declares the orchestrator's fields and binds the methods its owners define. Entry point: `run_gateway()`, defined in `gateway_runtime/process_entry.py` and importable from here. See [Composition](#composition) |
 | `slack/gateway_runtime/` | Private owners the facade composes, one responsibility each (see [Composition](#composition)); nothing else imports them |
@@ -298,21 +298,28 @@ rebound namespace leaves one binding to patch.
 
 `slack/handler.py` is the native Slack turn path's composition facade.
 `handle_message`, `handle_interaction` and every name the module exported stay
-importable and patchable there, and `handle_message` stays DEFINED there as the
-orchestrator of a turn. The responsibilities below live in private owners under
-`slack/handler_runtime/`; nothing but the facade imports an owner.
+importable and patchable there, and `handle_message` stays DEFINED there: it counts the
+message, derives its thread keys, runs the channels-governance gate, the override
+hydration and inbound admission, then builds the turn and runs its phases. The
+responsibilities below live in private owners under `slack/handler_runtime/`; nothing but
+the facade imports an owner.
 
 | Owner | Responsibility |
 |---|---|
 | `slack/handler_runtime/access.py` | Who may drive the bot and the live references the handler reads: the owner, allowlist and tracked-channel predicates and their setters, per-session Trust and YOLO (kept by `messaging.session_trust` and `safety_override`), the orchestrator config and dashboard state the gateway installs after import, the background-task set shutdown cancels |
 | `slack/handler_runtime/inbound.py` | What an inbound message resolves to before a turn: the `!temporary` / `!incognito` modifiers, the thread agent and project overrides and their off-loop hydration, the default agent and the channel-config writes, the hand-off of a linked thread's message to its dashboard slot |
-| `slack/handler_runtime/commands.py` | The command surface: `_handle_slash_command`'s deprecation notice and dispatch, one coroutine per `!` command (`_bang_<name>`), the sender gate and `!compact` routing `handle_message` calls (`_route_bang_command`), `_handle_compact_command`, the `sessions` keyword predicate, the `spawn` / `run` / `cron` keyword wrappers |
+| `slack/handler_runtime/agent_names.py` | Which kiro agent a thread can name: the project agents a working tree defines, the resolution of a typed name against those, the user-level specs, kiro-cli's built-in agents and the companion-plugin agents (whose walk, `_iter_cc_agent_names`, is the facade's), and the list `!agent` / `!ta` print |
+| `slack/handler_runtime/dispatch.py` | What a message does before a turn opens (`_dispatch_before_turn`): the linked-thread hand-off, a hook's canned reply, the `status` and `sessions` keywords, the privacy modifiers, the `!` commands and the keyword commands, then the first OPTIONS expiry; `maybe_handle_keyword_command` (shared with the transport path) and `_handle_sessions_command` |
+| `slack/handler_runtime/commands.py` | The command surface: `_handle_slash_command`'s deprecation notice and dispatch, one coroutine per `!` command (`_bang_<name>`), the sender gate and `!compact` routing the dispatch calls (`_route_bang_command`), `_handle_compact_command`, the `sessions` keyword predicate, the `spawn` / `run` / `cron` keyword wrappers |
+| `slack/handler_runtime/turn.py` | One turn: `_SlackTurn`, the state its phases share, which also owns the session permit and the turn's single verdict (`release_permit`, `book_success`, `book_failure`); and `_run_turn`, the turn body -- the Working block and answer stream, the route to the thread's owner and the session claim, the prompt and its context, the gates before the prompt opens (cancelled message, stopped replay, turn ceiling, shutdown), the stream loop, the stop reasons, the compaction and lost-session replays, the except arms and the `finally` |
 | `slack/handler_runtime/turn_context.py` | The Slack thread context a turn's prompt carries: the thread parent for a fresh Slack-born session, the replies since the last turn, the `conversations.replies` fallback line |
+| `slack/handler_runtime/permission_ladder.py` | How a tool call and a permission request are answered: the informational hook screen of a running tool call (`_screen_tool_call`), the enforcing ladder (`_answer_permission_request`: hook verdict, spawn rung, approval mode, Trust and YOLO, the interactive prompt), `_request_approval` and the click that answers it (`handle_interaction`'s claimed region), and every `approve_tool` / `reject_tool` site with its steer (`_steer_host_deny`) and the fallback reject (`_reject_orphaned_tool`) |
 | `slack/handler_runtime/stream.py` | The answer's Slack wire: `_AnswerStream` (the stream message and its rotation, the rolling credential redactor, delivery debt, task cards and their elapsed-time timer, the text / reasoning / tool-call projections, the approval pause, the final flush and seal) and the OPTIONS / control-tag holds and bounded edits it uses |
+| `slack/handler_runtime/delivery.py` | How the turn delivers its answer and books its verdict (`_deliver_answer`): the render and redaction passes, the reply decorator and its re-redaction, the review-mode draft, the answer-carrying sends and the one verdict they decide, then the reasoning post, the redaction notice, the persisted turn row, the timing footer and its OPTIONS control (whose delivery books a deferred verdict), the voice reply, consolidation, the dashboard mirror and the auto-title task |
 | `slack/handler_runtime/approvals.py` | Approval prompts and what a click means: the Block Kit prompt, the pending and linked registry entry classes, the linked-slot Trust proof and grant, the mirrored dashboard prompt, and `handle_interaction`'s linked-click and late-Trust branches |
 | `slack/handler_runtime/reactions.py` | Status reactions: `StatusReactionController`, the tool-to-phase mapping, the live phase-table accessors, the one-shot reactions the commands add |
 | `slack/handler_runtime/voice.py` | Voice replies: loading `voice_reply` into the live voice state, and the reply a finished turn starts |
-| `slack/handler_runtime/finalize.py` | What a finished turn leaves in the thread: the timing footer and its OPTIONS / Link-to-Dashboard controls, the review-mode draft post and store, the dashboard mirror, the auto-title task |
+| `slack/handler_runtime/finalize.py` | The pieces a finished turn leaves in the thread: the timing footer and its OPTIONS / Link-to-Dashboard controls, the review-mode draft post and store, the dashboard mirror, the auto-title task |
 
 **One namespace.** `kiro_crew._facade_compose.compose` (the one helper every
 composition facade shares), called once at the foot of `slack/handler.py`, rebinds every
@@ -320,63 +327,92 @@ function an owner defines -- its module functions and the methods of its classes
 onto the facade's module globals. A patch of `kiro_crew.slack.handler.<name>`
 therefore reaches owner code exactly as it reached the one-module file, and an owner
 function's `__module__` still reads `kiro_crew.slack.handler`; an owner's classes keep
-their own module. The facade is the only holder of state: the approval registries, the
-per-thread maps, the voice state, the phase table and the privacy, trust and auto-title
-tracker aliases are facade globals, and no owner keeps one. An owner imports the facade
-only under `TYPE_CHECKING`. `test/test_slack_handler_composition_contract.py` pins the
-base surface, sweeps every owner function's bytecode for globals the facade does not
-bind, and replays recorded Slack / SEL / session-manager transcripts captured from the
-one-module file.
+their own module. The facade is the only holder of module state: the approval
+registries, the per-thread maps, the voice state, the phase table and the privacy, trust
+and auto-title tracker aliases are facade globals, and no owner keeps one. An owner
+imports the facade only under `TYPE_CHECKING`, and the standard-library modules its
+moved code uses by their own `import`, so `scripts/check_sync_io_in_async.py` still reads
+its coroutines. `test/test_slack_handler_composition_contract.py` pins the base surface,
+sweeps every owner function's bytecode for globals the facade does not bind, and replays
+recorded Slack / SEL / session-manager transcripts captured from the one-module file.
+Because owners read the facade's imports as their globals, `setup.cfg` turns flake8's
+F401 off for `slack/handler.py`; `test/test_handler_turn.py` asserts what it stood for --
+every facade import is read by the facade or an owner, or is an owner name the facade
+re-exports, and a function-local import is read in its own function.
 
-**What stays in the facade, and why.** Repository guards read these constructs in
-`slack/handler.py` by path, AST, text or `inspect.getsource`, so they live there:
+**One turn, three phases.** `handle_message` builds one `_SlackTurn` per call and runs
+`_dispatch_before_turn`, then `_run_turn`, then `_deliver_answer`; each returns whether
+the next runs. The turn carries the call's inputs and the values one phase hands the
+next, declared on the class, so reading one before it is set raises
+`UnboundLocalError` as reading the unbound local did. Each phase body is the turn's
+code as written: it opens with read-only aliases of the turn values it reads and ends
+by copying onto the turn what the next phase reads, and `_run_turn` copies the routed
+key, agent, status controller, answer stream and task onto the turn before the prompt
+opens, which is where the stream loop hands each tool call and permission request to
+`permission_ladder.py`. `test/test_handler_turn.py` checks every such read follows its
+write and every copy has a reader, and pins the permit and verdict methods' order.
 
-- `handle_message`'s turn decisions: the early dispatch order and the first OPTIONS
-  expiry (`test_slack_options_lifecycle`), inbound admission
-  (`test_update_check_install_aware_background_work`), session acquisition and the thread claim
-  (`test_options_click_validation`), the memory-store resolution
-  (`test_memory_v2_isolation`), the re-injection consume / rearm beside
-  `check_context_usage` (`test_reinjection_gate`), the turn-ceiling gate
-  (`test_turn_ceiling`), both hook consultations and the four approve sites of the
-  permission ladder (`test_hooks`, `test_transport_permission_floor`), the except arms
-  (`test_runtime_death_is_a_process_event`), the verdict and permit region, the
-  decorator re-redaction and the two credential log lines (`test_security_posture`'s
-  log census, the SAST baseline), every persistence site (`test_persist_off_loop`), the
-  OPTIONS token and footer record, and the auto-title pin and claim
-  (`test_messaging_auto_title`);
-- `_request_approval`, `_reject_orphaned_tool`, `_steer_host_deny` and
-  `handle_interaction`'s claimed region: every `reject_tool` site and its steer window
-  (`test_messaging_deny_notice`), and the click's approve site;
-- `_handle_sessions_command` (the log census), `maybe_handle_keyword_command` (the
-  persistence-site count), `_should_auto_approve_spawn` (`test_name_grant_surfaces`
-  reads the module's source), and `_resolve_agent_name` / `_discover_project_agents`
-  with the companion-plugin agent discovery beside them (`test_agent_spec_hardened_reads`'s
-  call-site tables);
+**What stays in the facade, and why.**
+
+- `handle_message`'s signature, docstring and entry: inbound admission is checked there
+  by `test_update_check_install_aware_background_work`, which reads the dispatcher's
+  `handle_message`;
 - `_build_phase_emojis` and the import-time phase table, because the facade's body runs
   before `compose`; `_VoiceConfig`, `MessageContext` and `_condense_thinking`, whose
-  defaults read facade constants; `_display_redactor`, the canonical-order redactor
-  that `handle_message`'s fallback egress passes to `redact_for_display`, kept beside
-  the registered "Slack messages" sink it serves; `_CompactionReplay`, the type of
-  `handle_message`'s own `_compaction_replay` parameter, constructed only by its
-  compaction-replay arm;
-- the ACP and provider import lines the agent-SDK boundary baseline counts.
+  defaults read facade constants; `_display_redactor`, the canonical-order redactor the
+  delivery's fallback egress passes to `redact_for_display` (so `security_posture` lists
+  the facade as non-egress); `_CompactionReplay`, the type of `handle_message`'s
+  own `_compaction_replay` parameter; `_iter_cc_agent_names`, the companion-plugin agent
+  walk, below the `_CC_AGENT_NAME_RE` matcher it reads: the plugin home path it names is
+  a line the internal content scan judges whenever a change adds it;
+- the module state, and the ACP and provider import lines the agent-SDK boundary
+  baseline counts, which the owners read as facade globals.
 
-Two path-keyed guards whose scanned code moved scan the owners as well, each with a floor
-that fails if that code leaves the scan: `test_run_config_write` (the `!agent` /
-`!channel` config writes) and `test_safety_override` (the `!yolo` grant-lifetime copy).
-`stall_attribution` names `slack/handler_runtime/` beside `slack/handler.py` for the
-Slack surface, and `security_posture.NON_EGRESS_REDACTION_MODULES` lists the redacting
-owners in the facade's class: `slack/handler.py` stays the registered "Slack messages"
-sink.
+**Guards that read the turn's code by path.** Repository guards read these constructs
+by path, AST, text or `inspect.getsource`, and each points at the file that holds them;
+the contract test maps each construct to the exact files that hold it
+(`_GUARDED_TOKEN_HOMES`) and fails when a holder gains or loses one:
+
+- `turn.py`: the turn-ceiling gate and the Working block it deletes (`test_turn_ceiling`),
+  the session claim (`test_options_click_validation`), the memory-store resolution
+  (`test_memory_v2_isolation`), the re-injection consume / rearm beside
+  `check_context_usage` (`test_reinjection_gate`), and the except arms with the success
+  clear of the shared-death streak (`test_runtime_death_is_a_process_event`);
+- `permission_ladder.py`: both hook consultations (`test_hooks`), the four ladder approve
+  sites and the click's (`test_transport_permission_floor`), and every `reject_tool` site
+  with its steer window in one file (`test_messaging_deny_notice`);
+- `delivery.py`: the registered "Slack messages" sink (`security_posture`), the verdict
+  and permit region, the decorator re-redaction and the two
+  credential log lines (`test_security_posture`'s log census, the SAST baseline), the
+  OPTIONS token and footer record (`test_options_click_validation`,
+  `test_slack_options_lifecycle`), and the auto-title pin and claim in textual order
+  (`test_messaging_auto_title`);
+- `agent_names.py`: the labelled agent-spec reads (`test_agent_spec_hardened_reads`'s
+  call-site tables);
+- the persistence sites in `dispatch.py` and `delivery.py` (`test_persist_off_loop`), and
+  the sessions keyword's collector-failure audit in `dispatch.py` beside the delivery's
+  two decorator log lines (`test_security_posture`'s log census, keyed by path).
+
+Guards whose rule spans code by path read the facade and every owner:
+`test_run_config_write` (the `!agent` / `!channel` config writes), `test_safety_override`
+(the `!yolo` grant-lifetime copy), `test_name_grant_surfaces`, `test_slack_status_keyword`
+and the guards above that read `handle_message`'s source read it with its phases as one
+text. `stall_attribution` names `slack/handler_runtime/` beside `slack/handler.py` for the
+Slack surface. `security_posture` registers `slack/handler_runtime/delivery.py`, which
+runs the final redaction pass on the posted answer and reasoning, as the "Slack messages"
+sink, and `NON_EGRESS_REDACTION_MODULES` lists the facade and the other redacting owners.
 
 **Where new code goes.** A new `!` command is a `_bang_<name>` coroutine in
-`commands.py` plus its entry in `_handle_slash_command`'s table. New per-turn Slack
-presentation of the answer is an `_AnswerStream` method; new prompt context gathered
-from Slack goes in `turn_context.py`; an access predicate or grant in `access.py`; the
-approval prompt's shape and click handling in `approvals.py`; reactions in
-`reactions.py`; voice in `voice.py`; what a finished turn posts after its answer in
-`finalize.py`. A new turn decision that a repository guard reads by path stays in
-`handle_message`.
+`commands.py` plus its entry in `_handle_slash_command`'s table. A new short-circuit that
+answers a message without a turn goes in `_dispatch_before_turn`, above the OPTIONS
+expiry. A new turn decision goes in `_run_turn`, a new permission rung in
+`_answer_permission_request`, and what a finished turn posts after its answer in
+`_deliver_answer` (building blocks in `finalize.py`); a value one phase hands the next is
+declared on `_SlackTurn`. New per-turn Slack presentation of the answer is an
+`_AnswerStream` method; new prompt context gathered from Slack goes in `turn_context.py`;
+an access predicate or grant in `access.py`; the approval prompt's shape and click
+handling in `approvals.py`; reactions in `reactions.py`; voice in `voice.py`. A construct
+a repository guard reads by path moves only together with that guard.
 
 ## APIs
 
@@ -797,9 +833,11 @@ The gateway runs a single asyncio loop, so any blocking call on the loop thread 
 
 ### `handle_message(slack, sessions, channel, text, thread_ts, msg_ts, user_id, approval_mode, ..., subagent_manager) -> None`
 Processes a single incoming message with streaming. It stays in `slack/handler.py` as
-the turn's orchestrator; the phases it delegates run in the
-[owners](#native-handler-composition) -- the `!` routing (`_route_bang_command`), the
-thread context (`turn_context.py`), the Slack wire of the answer (`_AnswerStream`), the
+the turn's orchestrator; the phases it runs live in the
+[owners](#native-handler-composition) -- the pre-turn dispatch (`dispatch.py`), the turn
+body (`turn.py`), the permission ladder (`permission_ladder.py`), the delivery and its
+verdict (`delivery.py`) -- and use the `!` routing (`_route_bang_command`), the thread
+context (`turn_context.py`), the Slack wire of the answer (`_AnswerStream`), the
 review-mode draft and the dashboard mirror (`finalize.py`) and the voice reply
 (`voice.py`):
 
@@ -911,7 +949,7 @@ Routes Block Kit button clicks to pending tool approvals:
 
 A click on a linked dashboard slot's prompt (`_resolve_linked_click`) and a Trust click
 whose approval already resolved (`_grant_late_trust`) are `slack/handler_runtime/approvals.py`;
-the claimed region that answers the wire stays in `slack/handler.py`.
+the claimed region that answers the wire is `slack/handler_runtime/permission_ladder.py`.
 
 ### `SlackClientOps` (ABC)
 Testable interface for the Slack Web API. `slack/client.py` owns the method list
@@ -981,7 +1019,7 @@ Only the owner may use the bot over Slack. Restricted to `KIROCREW_OWNER_ID`.
 Processed before keyword commands. Each `!` command is one coroutine in
 `slack/handler_runtime/commands.py` (`_bang_<name>`), dispatched by
 `_handle_slash_command`; the sender gate in front of it is `_route_bang_command`,
-which `handle_message` calls.
+which `_dispatch_before_turn` (`handler_runtime/dispatch.py`) calls.
 
 | Command | Purpose |
 |---------|---------|
@@ -1007,13 +1045,13 @@ disabled).
 | `!title` | Set or generate the Slack thread title |
 | `!stop` | Force-halt the active agent execution in the current thread. Sends cooperative `session/cancel`; falls back to hard kill if not acked within `agent.soft_stop_budget_secs`. Posts ephemeral Block Kit stopping message with Kill Now button. If no execution is running, replies "Nothing running." |
 
-#### Keyword Commands (`handler.py`)
+#### Keyword Commands (`handler_runtime/dispatch.py`)
 
 Available to all allowed users.
 
 | Command | Handler | Purpose |
 |---------|---------|---------|
-| `status` | `handle_message` | Runtime stats summary |
+| `status` | `_dispatch_before_turn` | Runtime stats summary |
 | `sessions` | `maybe_handle_keyword_command` | Same as the `sessions` slash command |
 | `spawn <task>` / `bg <task>` | `_handle_spawn_command` | Run subagent (blocking / async) |
 | `spawn list` / `spawn status` | `_handle_spawn_command` | List active subagents |
@@ -1085,7 +1123,7 @@ Slack `file_share` messages are processed in `_route_message()` after dedup + au
 - A top-level reply in a flat DM is not streamed (`chat.startStream` streams only into a thread); it falls back to `chat.update` edits
 - The transport stream holds back a trailing partial word of up to `_WORD_HOLD_MAX` (32) characters until the next chunk or the end (`release_held_word`), so a word is never split across two edits
 - When part of a reply could not be delivered to Slack and not restored, the turn appends a "Part of this reply did not reach Slack…" delivery-debt notice
-- The per-turn wire state -- the stream message and its rotation, the rolling redactor, the delivery debt and the task cards -- is one `_AnswerStream` (`slack/handler_runtime/stream.py`) per turn; the delivery verdict that reads its flags stays in `handle_message`
+- The per-turn wire state -- the stream message and its rotation, the rolling redactor, the delivery debt and the task cards -- is one `_AnswerStream` (`slack/handler_runtime/stream.py`) per turn; the delivery verdict that reads its flags is `_deliver_answer` (`slack/handler_runtime/delivery.py`)
 - **The run the native stream's `StreamRedactor` still holds** is settled where its message ends. At the seal (`settle_tail`) it is sent when the final text is clean and dropped when the final copy replaces the message. Before a tool card it stays held. At a `wait` it is carried (`carried`), so the filter sees it joined to the next text. When that joined text comes out of the filter whole and unchanged, `_give_back` reads the closed message back and edits it with `chat.update` on its own blocks (`markdown` or `rich_text`, plus any `plan` / `task_card` / `divider` after it) with the run added, and the next message, its final copy and the saved answer start after the run. Otherwise -- the filter changed the joined text, the blocks are another shape, or the read or edit fails -- the run opens the next message. A closed message is edited only this way
 - **Redaction notice** — when the delivered text (answer or thinking) still carries a `security.CREDENTIAL_REDACTION_TAGS` placeholder or a `security.EXFILTRATION_REDACTION_TAG_PREFIX` (suspicious-URL) placeholder, one `messaging.renderer.redaction_notice` message is posted in the thread after the answer is committed, so the reader knows a command or link they copy will not run as pasted. Worded by kind (credential → re-enter the secret; URL → re-check the link), and byte-identical to the prior `credential_redaction_notice` sentence when only credentials were rewritten. Redaction is NOT relaxed — Slack is an egress path. Counted from the tag in the sent text rather than the redactor's warnings list, which is empty on the streaming path because each chunk was already redacted upstream. **One notice per turn**: answer and thinking share a single tally. Approving a review-mode draft (`interactions.py`) posts the same notice for the same reason, since that publishes to the whole channel. Both posts are best-effort — a failed notice must never turn a delivered answer into a failed turn. The transport-path renderer (`slack/renderer.py`, the default `messaging.use_transport` delivery) posts the same one-per-turn notice: the final display-safe answer body and the posted 💭 reasoning share a single tally, counted with `messaging.renderer.count_redaction_tags` over the form the reader is left with — which can carry placeholders the driver's byte-level stream scan never wrote, because `_display_safe` re-redacts against what Slack renders
 
@@ -1117,7 +1155,7 @@ Bidirectional message mirroring between dashboard chat sessions and Slack thread
 Shared data-collection and Block Kit rendering for recent sessions, used by three surfaces:
 
 - **`/<command> sessions` slash command** — `_handle_sessions` in `events.py`
-- **`sessions` keyword in DMs** — `_handle_sessions_command` in `handler.py`
+- **`sessions` keyword in DMs** — `_handle_sessions_command` in `handler_runtime/dispatch.py`
 - **App Home Tab** — 🧵 Sessions section in `_publish_home_tab` (split into "Main chat" and "Task runner" sub-lists)
 
 The channel-neutral collection lives in `messaging/sessions_view.py`; `kiro_crew/slack/sessions_view.py` wraps it and renders the Block Kit, so both `events.py` and `handler.py` can import it at module top-level without forming a circular import. `sessions_view.py` depends only on `kiro_crew.slack.blocks` and `kiro_crew.security` — it knows nothing about `events` or `handler`, which is what keeps the import graph acyclic.
@@ -1175,7 +1213,7 @@ Triggers in-place ACP `/compact` on the current thread's session (`_handle_compa
 
 ## Wedged-Session Recovery (`AcpPromptBusy`)
 
-When kiro-cli reports a prompt is still in flight ("already in progress" — a tool stall, timeout, or message race), `AcpClient` raises `AcpPromptBusy` (`acp/transport_errors.py`, re-exported by `acp/client.py`) with a friendly "I'm still processing a previous request… it clears on its own once the stale turn expires" message. `handle_message` catches it and auto-resets the wedged session via `sessions.reset(session_key)` so the next message cold-starts cleanly, then records the failure (the reset itself is best-effort — a reset failure is logged, not raised). The message deliberately names no command: the auto-reset above is what recovers the session, so the text has nothing to ask the user for (`!restart` would be wrong here: it is Slack-only, owner-gated, and restarts the gateway rather than the session -- see `common/error-handling.md`).
+When kiro-cli reports a prompt is still in flight ("already in progress" — a tool stall, timeout, or message race), `AcpClient` raises `AcpPromptBusy` (`acp/transport_errors.py`, re-exported by `acp/client.py`) with a friendly "I'm still processing a previous request… it clears on its own once the stale turn expires" message. `handle_message`'s turn body (`_run_turn`) catches it and auto-resets the wedged session via `sessions.reset(session_key)` so the next message cold-starts cleanly, then records the failure (the reset itself is best-effort — a reset failure is logged, not raised). The message deliberately names no command: the auto-reset above is what recovers the session, so the text has nothing to ask the user for (`!restart` would be wrong here: it is Slack-only, owner-gated, and restarts the gateway rather than the session -- see `common/error-handling.md`).
 
 ## OPTIONS Buttons (`format.py`)
 
@@ -1190,7 +1228,7 @@ LLM responses ending with `[OPTIONS: choice1 | choice2 | choice3]` are rendered 
 
 Action IDs: `options_checkboxes` (toggle), `options_submit` (send). Checkbox `value` contains the choice text.
 
-Beyond the reply-finalization path in `handler.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway_runtime/result_egress.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
+Beyond the reply-finalization path in `handler_runtime/delivery.py`, two other Slack delivery paths also render `[OPTIONS: ...]` as buttons: the dashboard `send_message` MCP tool (`api_send_message` in `dashboard/handlers/messaging.py`) and cron subagent delivery (`_deliver_cron_response` in `gateway_runtime/result_egress.py`). Both call `extract_options()` / `build_options_blocks()`, skip the tag parse when the caller supplies explicit `blocks` (those own their own layout), and wrap the follow-up options post in `try/except` so a failed options post never fails the primary message.
 
 ### Inline action values (`action::`)
 
@@ -1227,7 +1265,7 @@ A channel-neutral dispatch path that replaces the native `handle_message` stream
 
 1. ACP sends `permission_request` event during streaming
 2. `events.py:_resolve_approval_mode()` evaluates runtime YOLO, then the CLI `--approval` override, then `agent.approval_mode`; only an explicit auto policy yields `APPROVAL_AUTO`, otherwise it yields `APPROVAL_INTERACTIVE`. Native and transport dispatch both use this chokepoint, preventing an operator policy from being silently bypassed.
-3. Handler posts a Block Kit message with ✅ Approve / 🤝 Trust session / 🚫 Reject buttons in a DM, and ✅ Approve / 🚫 Reject in a group channel; there is no YOLO button (YOLO is owner-only via `!yolo on`) (`_request_approval` in `slack/handler.py`; the blocks are `_build_approval_blocks`, `slack/handler_runtime/approvals.py`)
+3. Handler posts a Block Kit message with ✅ Approve / 🤝 Trust session / 🚫 Reject buttons in a DM, and ✅ Approve / 🚫 Reject in a group channel; there is no YOLO button (YOLO is owner-only via `!yolo on`) (`_request_approval` in `slack/handler_runtime/permission_ladder.py`; the blocks are `_build_approval_blocks`, `slack/handler_runtime/approvals.py`)
 4. `events.py` routes `interactive` Socket Mode event to `interactions.dispatch()`
 5. Approval/rejection sent to ACP, streaming resumes or stops
 6. Approval button message replaced with outcome text
@@ -1265,7 +1303,7 @@ Exactly one side ever answers a given `request_id`: a second answer lands in
 the ACP client's popped-options cancelled-outcome fallback, which cancels the
 whole turn. Every fallback rejection that reaches the wire is recorded in the
 SEL audit trail by `_reject_orphaned_tool`. Editors of either function (both in
-`slack/handler.py`) must preserve this contract.
+`slack/handler_runtime/permission_ladder.py`) must preserve this contract.
 
 ## Session Management
 

@@ -929,7 +929,7 @@ class TestTheNoticeDoesNotAnswerItsOwnReflection:
 GATED = {
     "messaging/dispatch.py",
     "slack/transport_dispatch.py",
-    "slack/handler.py",
+    "slack/handler_runtime/turn.py",
     "telegram/dispatch/turn_engine.py",
 }
 
