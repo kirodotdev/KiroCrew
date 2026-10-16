@@ -163,6 +163,12 @@ function FavoriteStar({ path, on, busy, onToggle, testId, labelled = false, clas
   )
 }
 
+// `change` as well as `input`: React's onChange covers both, and a select or file input never
+// reports `input` at all. `wheel` rather than `scroll`: the list highlight calls scrollIntoView,
+// and a scroll the picker made itself is not the user engaging.
+const ENGAGE_EVENTS = ['pointerdown', 'mousedown', 'click', 'keydown', 'input', 'change', 'wheel'] as const
+const ENGAGE_LISTEN = { capture: true, passive: true } as const
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -267,6 +273,19 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // retired by a newer recents read (for example, after close/reopen), never by
   // borrowing the ticket from an unrelated directory or drive-list request.
   const recentSeq = useRef(0)
+  // Set by any engagement with the open picker, so a read that answers late cannot move the
+  // user off the pane they are already working in. A ref, not state: `settle` reads it at
+  // callback time, where a closed-over state value would be the one captured when the open began.
+  const holdTab = useRef(false)
+  // One detector on the root rather than a flag set per control: enumerating the affordances
+  // left the arrow keys on two panes, the favourite star and the native chooser unprotected,
+  // and which control the user reached for is not a fact about whether they engaged. Capture
+  // phase so a handler inside that stops propagation cannot hide the interaction from it. The
+  // two list panes are the one thing the root cannot see: `useListKeyboardNav` navigates from
+  // a DOCUMENT capture listener that stops propagation, which runs before the event descends
+  // this far, so each nav reports its own arrows through `onMove` below, and its Alt+Enter from
+  // inside `toggleFavorite`.
+  const engage = useCallback(() => { holdTab.current = true }, [])
   // Read by the open effect only, so a caller whose field changes while the picker is up does
   // not re-run the open (which would also re-read recents and reset the tab).
   const startPathRef = useRef(startPath)
@@ -283,7 +302,17 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   // and the second one to arrive picks the tab. Reset on every open, keyed to the open's ticket.
   const landing = useRef<{ ticket: number; favorites?: string[] | null; recent?: string[] | null }>({ ticket: 0 })
   const btnRef = anchorRef
-  const dropRef = useRef<HTMLDivElement>(null)
+  const dropRef = useRef<HTMLDivElement | null>(null)
+  // Attached to the node, not written as JSX capture props: a `<div>` carrying an onClick-family
+  // prop is a blocking a11y rule whose remedy is `<Clickable>`, which would give this container
+  // role="button" and Enter/Space activation that the fields and rows inside it own. The detach
+  // rides on React 18 calling a ref callback with null on unmount.
+  const bindDrop = useCallback((el: HTMLDivElement | null) => {
+    const prev = dropRef.current
+    if (prev) for (const kind of ENGAGE_EVENTS) prev.removeEventListener(kind, engage, ENGAGE_LISTEN)
+    dropRef.current = el
+    if (el) for (const kind of ENGAGE_EVENTS) el.addEventListener(kind, engage, ENGAGE_LISTEN)
+  }, [engage])
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
   const favoriteSearchRef = useRef<HTMLInputElement>(null)
@@ -440,6 +469,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     const ticket = ++recentSeq.current
     const favTicket = ++favoriteSeq.current
     landing.current = { ticket }
+    holdTab.current = false
     // This open retires any retry still out, so its handlers return without clearing the flag.
     setRetryingRecent(false)
     // The tab is chosen once BOTH reads have settled, by whichever settles second. Favourites
@@ -451,6 +481,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
       landing.current[which] = dirs
       const { favorites, recent } = landing.current
       if (favorites === undefined || recent === undefined) return
+      if (holdTab.current) return
       setTab(favorites?.length ? 'favorites' : recent?.length ? 'recent' : 'browse')
     }
     const start = startPathRef.current.trim()
@@ -577,6 +608,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
    * they are. A toggle never commits the project: `select` is the row's own job.
    */
   const toggleFavorite = (path: string) => {
+    // The nav hook stops propagation inside its own Enter branch before calling this, so
+    // Alt+Enter on a row never reaches the root detector. Above the early return: the
+    // keypress is the engagement whatever the write then does.
+    engage()
     const clean = stripTrailingSeparator(path.trim())
     if (!clean || favoriteBusy) return
     setFavoriteBusy(clean)
@@ -605,6 +640,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     // sanctioned second action on the highlighted row, and it is what gives the toggle a
     // keyboard path at all.
     onAltEnter: i => { const d = filteredRecent[i]; if (!d) return false; toggleFavorite(d); return true },
+    onMove: engage,
     onClose: () => onOpenChange(false),
   })
 
@@ -615,6 +651,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     count: filteredFavorites.length,
     onChoose: i => { const d = filteredFavorites[i]; if (d) select(d) },
     onAltEnter: i => { const d = filteredFavorites[i]; if (!d) return false; toggleFavorite(d); return true },
+    onMove: engage,
     onClose: () => onOpenChange(false),
   })
 
@@ -746,7 +783,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
 
   return <OverlayPortal>{
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- keyboard-isolation barrier (see above), not an activatable control; there is no behaviour for a keyboard to be given, and every control inside here is a real input or button. Adding a role/tab stop would advertise an interaction this element does not have.
-    <div ref={dropRef} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
+    <div ref={bindDrop} onKeyDown={isolateKeys} className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl w-[400px] max-w-[calc(100vw-16px)] flex flex-col overflow-hidden animate-slide-up" style={(() => {
       const dropMinH = 200
       const spaceBelow = window.innerHeight - anchorR.bottom - 8
       const flipUp = spaceBelow < dropMinH || anchorR.bottom > window.innerHeight / 2
