@@ -63,6 +63,7 @@ from kiro_crew.config.memory_sections import (
     _read_auto_add_documents,
 )
 from kiro_crew.config.sections import (
+    CODE_CHANNEL_DEFAULT_MAX,
     DEDUP_EVERY_N_SWEEPS_MAX,
     EMBED_RATE_LIMIT_MAX,
     EXTRACTION_POOL_SIZE_MAX,
@@ -70,6 +71,7 @@ from kiro_crew.config.sections import (
     FOLDER_INGEST_CHUNK_BUDGET_MAX,
     IMPORT_CHUNK_BUDGET_MAX,
     SWEEP_CHUNK_BUDGET_MAX,
+    CodeChannelDefaultsConfig,
     DiscordConfig,
     FeishuConfig,
     IMessageConfig,
@@ -103,6 +105,7 @@ from kiro_crew.config.service_sections import (
     TaskRunnerConfig,
     WatchdogConfig,
 )
+from kiro_crew.effort import is_valid_effort
 from kiro_crew.instances.constants import DEFAULT_CONNECT_TIMEOUT_SECS as _DEFAULT_CONNECT_TIMEOUT
 from kiro_crew.instances.constants import DEFAULT_MINT_TIMEOUT_SECS as _DEFAULT_MINT_TIMEOUT
 
@@ -575,6 +578,43 @@ def _build_slack_config(slack_data: dict) -> SlackConfig:
         # Default False: a missing or unparseable value must mean "open no
         # thread", never the reverse.
         auto_link_sessions=section.read("auto_link_sessions", _safe_bool),
+        # Default False for both: an unparseable value must never declare the app
+        # an agent or open code channels.
+        agent_sessions=section.read("agent_sessions", _safe_bool),
+        code_channels=section.read("code_channels", _safe_bool),
+        code_channel_defaults=_build_code_channel_defaults(slack_data.get("code_channel_defaults")),
+    )
+
+
+def _code_channel_default_str(raw: object) -> str | None:
+    """A stored default as a trimmed string, or ``None`` for unset/invalid.
+
+    ``None`` is the one "no default" spelling: an empty string, a non-string and
+    an over-long value all read as unset rather than as a value that would then
+    fail every lookup downstream.
+    """
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip()
+    if not value or len(value) > CODE_CHANNEL_DEFAULT_MAX:
+        return None
+    return value
+
+
+def _build_code_channel_defaults(raw: object) -> CodeChannelDefaultsConfig:
+    """``slack.code_channel_defaults`` with every field normalized.
+
+    A non-object reads as all-unset. An effort outside the shared level ladder is
+    dropped (``None``) rather than kept: the session layer would refuse it anyway,
+    and keeping it would make the settings page show a level nothing applies.
+    """
+    data = _safe_dict(raw)
+    effort = _code_channel_default_str(data.get("reasoning_effort"))
+    return CodeChannelDefaultsConfig(
+        folder=_code_channel_default_str(data.get("folder")),
+        agent=_code_channel_default_str(data.get("agent")),
+        model=_code_channel_default_str(data.get("model")),
+        reasoning_effort=effort if is_valid_effort(effort) else None,
     )
 
 

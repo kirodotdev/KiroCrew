@@ -26,6 +26,83 @@ export interface SlackConfigData {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  /** Slack Code: threads run as Slack agent sessions (manifest agent_view). */
+  agent_sessions?: boolean
+  /** Slack Code: the agent may open Slack code channels. */
+  code_channels?: boolean
+  /** What a new code-channel session starts with (null = not set here). */
+  code_channel_defaults?: SlackCodeChannelDefaults
+  /** How a new code-channel session resolves right now, from the saved defaults. */
+  code_channel_effective?: SlackCodeChannelEffective
+  /** Saved defaults that no longer resolve: "folder_missing", "agent_missing". */
+  code_channel_warnings?: string[]
+  /** Whether the installed app can use each feature (a toggle runs only when it can). */
+  agent_sessions_capability?: SlackCapability
+  code_channels_capability?: SlackCapability
+}
+
+/** One feature's capability. reason: "" | missing_scope | feature_disabled |
+ *  not_allowed_token_type | scopes_unknown. */
+export interface SlackCapability {
+  available: boolean
+  reason: string
+  /** The bot scope the feature needs (assistant:write, code_channels:manage). */
+  scope: string
+}
+
+/** `slack.code_channel_defaults`. Every field optional; null falls through. */
+export interface SlackCodeChannelDefaults {
+  folder: string | null
+  agent: string | null
+  model: string | null
+  reasoning_effort: string | null
+}
+
+/** The effective start state of a new code-channel session. */
+export interface SlackCodeChannelEffective {
+  folder: { id: string; path: string; project_dir: string; default_agent: string } | null
+  agent: string | null
+  /** "default" | "folder" | "slack" | "" */
+  agent_source: string
+  model: string | null
+  reasoning_effort: string | null
+  project_dir: string | null
+  /** "folder" | "origin" | "" */
+  project_source: string
+  /** The agent Slack uses when nothing else names one. */
+  slack_agent: string
+}
+
+/** One manifest delta: what a switch adds to (or removes from) the Slack app. */
+export interface SlackManifestChange {
+  added_scopes: string[]
+  removed_scopes: string[]
+  added_events: string[]
+  removed_events: string[]
+  added_features: string[]
+  removed_features: string[]
+}
+
+/** GET /api/slack/manifest/status: the installed app vs the manifest the switches need. */
+export interface SlackManifestStatus {
+  features: string[]
+  required_scopes: string[]
+  required_events: string[]
+  required_features: string[]
+  /** Per switch, what turning it on adds to the base manifest. */
+  feature_changes: Record<string, SlackManifestChange>
+  install: {
+    /** up_to_date | needs_update | feature_disabled | unknown | not_configured | token_rejected */
+    status: string
+    missing_scopes: string[]
+    extra_scopes: string[]
+    disabled_features: string[]
+    app_id: string
+    team_id: string
+    reason: string
+  }
+  /** The app's App Manifest page on api.slack.com, when Slack named the app. */
+  app_manifest_url: string | null
 }
 
 /** Writable Slack config fields sent to PUT /api/slack/config. */
@@ -43,6 +120,10 @@ export interface SlackConfigSave {
   session_folder?: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions?: boolean
+  agent_sessions?: boolean
+  code_channels?: boolean
+  /** Keys sent replace the stored value (null clears); omitted keys are kept. */
+  code_channel_defaults?: Partial<SlackCodeChannelDefaults>
 }
 
 /** Discord config as returned by GET /api/discord/config (secret masked). */
@@ -421,7 +502,8 @@ export function createMessagingEndpoints({ get, post, put, j }: ClientTransport)
   const channelConfigs = {
     // Slack integration config
     getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
-    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,
+    getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string; features?: string[] }>,
+    getSlackManifestStatus: (refresh = false) => get(`/api/slack/manifest/status${refresh ? '?refresh=1' : ''}`).then(j) as Promise<SlackManifestStatus>,
     saveSlackConfig: (body: Partial<SlackConfigSave>) => put('/api/slack/config', body).then(j) as Promise<{ ok: boolean; restart_required: boolean; verify_warning: string }>,
     // Discord integration config
     getDiscordConfig: () => get('/api/discord/config').then(j) as Promise<DiscordConfigData>,

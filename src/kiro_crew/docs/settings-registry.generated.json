@@ -36,6 +36,14 @@
       "configKey": "dashboard.use_builtin_browser"
     },
     {
+      "id": "channels.agent-sessions-slack",
+      "label": "Agent sessions (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.agent_sessions",
+      "description": "Declare the app a Slack agent: threads show a live status and title, and Slack's own Stop button cancels a running turn.",
+      "configKey": "slack.agent_sessions"
+    },
+    {
       "id": "channels.allowed-emails-webex",
       "label": "Allowed emails (Webex)",
       "tab": "channels",
@@ -122,6 +130,14 @@
       "tab": "channels",
       "route": "/settings/channels/teams?highlight=channels.app-password-client-secret-teams",
       "description": "Azure Bot client secret. Stored only in .env (never config.json)."
+    },
+    {
+      "id": "channels.code-channels-slack",
+      "label": "Code channels (Slack)",
+      "tab": "channels",
+      "route": "/settings/channels/slack?highlight=key%3Aslack.code_channels",
+      "description": "Let the agent open a Slack code channel for coding work: one channel per task, with a context bar, a diff tab and channel commands. Your workspace must have Slack code channels enabled.",
+      "configKey": "slack.code_channels"
     },
     {
       "id": "channels.connect-new-sessions-to-slack-automatically-slack",

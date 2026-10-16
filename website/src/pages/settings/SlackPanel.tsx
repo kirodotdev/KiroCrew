@@ -13,6 +13,7 @@ import { i18nT } from '../../i18n/t'
 import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
+import { SlackCodeSection, slackCodeDraftFrom, slackCodePayload, type SlackCodeDraft } from './SlackCodePanel'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Slack"
 const SETUP_GUIDE = 'https://github.com/kirodotdev/KiroCrew/blob/main/src/kiro_crew/docs/slack-integration.md'
@@ -29,6 +30,8 @@ type Draft = {
   session_folder: string
   /** Open a Slack thread in the owner's bot DM for every new dashboard session on its first message. */
   auto_link_sessions: boolean
+  /** Slack Code: agent sessions, code channels and the code-channel defaults. */
+  code: SlackCodeDraft
 }
 
 function draftFrom(c: SlackConfigData): Draft {
@@ -43,6 +46,7 @@ function draftFrom(c: SlackConfigData): Draft {
     session_folder_on: !!c.session_folder,
     session_folder: c.session_folder ?? '',
     auto_link_sessions: !!c.auto_link_sessions,
+    code: slackCodeDraftFrom(c),
   }
 }
 
@@ -245,6 +249,10 @@ export function SlackPanel() {
       setFormKey(k => k + 1)
       setTimeout(() => setSaved(false), 6000)
       qc.invalidateQueries({ queryKey: ['slack-config'] })
+      // The manifest renders for the saved Slack Code switches, so a save can
+      // change it and what the installed app is compared against.
+      qc.invalidateQueries({ queryKey: ['slack-manifest'] })
+      qc.invalidateQueries({ queryKey: ['slack-manifest-status'] })
     },
   })
 
@@ -261,13 +269,14 @@ export function SlackPanel() {
       // to "Slack", which is what the toggle's description promises.
       session_folder: draft.session_folder_on ? (draft.session_folder.trim() || CHANNEL_NAME) : '',
       auto_link_sessions: draft.auto_link_sessions,
+      ...(data ? slackCodePayload(draft.code, slackCodeDraftFrom(data)) : {}),
     }
     if (botClear) payload.bot_token_clear = true
     else if (botToken.trim()) payload.bot_token = botToken.trim()
     if (appClear) payload.app_token_clear = true
     else if (appToken.trim()) payload.app_token = appToken.trim()
     saveMut.mutate(payload)
-  }, [draft, botToken, appToken, botClear, appClear, saveMut])
+  }, [draft, data, botToken, appToken, botClear, appClear, saveMut])
 
   if (isLoading) return <p className="text-[13px] text-muted p-4">{i18nT('pages.settings.slackPanel.loading_slack_config')}</p>
   // Nothing to lose here: the form is not mounted in this branch.
@@ -484,6 +493,15 @@ export function SlackPanel() {
           </div>
         </SettingsCard>
       </SettingsSection>
+
+      {/* ── Slack Code: agent sessions, code channels, manifest update ── */}
+      <SlackCodeSection
+        data={data}
+        draft={draft.code}
+        onChange={patch => setDraft(d => (d ? { ...d, code: { ...d.code, ...patch } } : d))}
+        readOnly={ro}
+        manifestText={manifestQ.data?.manifest}
+      />
 
       {/* ── Save (hidden on read-only remote sessions) ── */}
       {!ro && <div className="flex items-center gap-3 mt-1 mb-4">

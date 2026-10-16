@@ -78,6 +78,11 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
     owner = creds.get(CRED_OWNER_ID, "")
     slack = cfg.slack
     state: DashboardState = request.app["state"]
+    # The Slack Code switches, defaults and their effective resolution (with
+    # warnings for a default that has gone stale since it was saved).
+    from kiro_crew.dashboard.slack_code_settings import code_settings_view
+
+    code_view = await code_settings_view(cfg, state)
     return web.json_response(
         {
             # True only when the socket-mode connect succeeded this session —
@@ -105,6 +110,7 @@ async def api_slack_config_get(request: web.Request) -> web.Response:
             "show_thinking": slack.show_thinking,
             "session_folder": slack.session_folder,
             "auto_link_sessions": slack.auto_link_sessions,
+            **code_view,
         }
     )
 
@@ -262,6 +268,23 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             staged["session_folder"] = new_folder
             applied.append("session_folder")
 
+    # Slack Code: the agent-session / code-channel switches (boot-read, staged
+    # only on change) and the code-channel defaults (folder, agent and model are
+    # each checked against what exists now, so a saved default always resolves).
+    from kiro_crew.dashboard.slack_code_settings import (
+        CodeSettingsError,
+        validate_code_settings,
+    )
+
+    try:
+        code_staged, code_applied = await validate_code_settings(
+            body, slack_cfg, state=request.app.get("state"), request=request
+        )
+    except CodeSettingsError as exc:
+        return _deny(str(exc))
+    staged.update(code_staged)
+    applied.extend(code_applied)
+
     # ── Phase 1.5: verify newly pasted tokens against Slack before storing.
     # A token Slack rejects (invalid_auth etc.) fails the save right here,
     # where the user can act on it — instead of being stored and silently
@@ -287,7 +310,9 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
     # file may have gone corrupt between the snapshot and the locked reread),
     # and a refusal must not leave a credential already committed to .env
     # beside config the caller was told did not save. ──
-    _cfg_write = _LockedSectionWrite(path, "slack", staged)
+    _cfg_write = _LockedSectionWrite(
+        path, "slack", staged, merge_nested=("code_channel_defaults",)
+    )
     # Hold the live-config watcher for the whole config+credential transaction:
     # the two files commit separately and a failed .env write rolls the config
     # back, so nothing between here and the end of the block may be applied to
@@ -334,6 +359,11 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
         source="dashboard",
         resources=",".join(applied + list(env_updates.keys())),
     )
+    if code_applied or env_updates:
+        # A switch flip or a new bot token changes what the drift probe compares.
+        from kiro_crew.dashboard.slack_code_settings import reset_status_cache
+
+        reset_status_cache()
     # Only ``slack.command`` still needs a restart: it is registered in the Slack
     # app manifest, so no local reload can make Slack route a new trigger. Every
     # other slack.* field -- including the enterprise allow-list, which the
@@ -352,3 +382,23 @@ async def _slack_config_save_locked(request: web.Request) -> web.Response:
             "verify_warning": verify_warning,
         }
     )
+
+
+async def api_slack_manifest_status(request: web.Request) -> web.Response:
+    """GET /api/slack/manifest/status — is the installed Slack app current?
+
+    Compares the bot scopes Slack reports for the stored bot token
+    (``auth.test``'s ``x-oauth-scopes``) with the manifest the saved Slack Code
+    switches render, and names the app so Settings can link its App Manifest
+    page. ``?refresh=1`` skips the short cache (the "Check again" button after a
+    reinstall). Reads only: no config is written and the token is never echoed.
+    Remote sessions may read it — it is the same status the read-only page shows.
+    """
+    from kiro_crew.config.loader import CRED_SLACK_BOT_TOKEN, KiroCrewConfig  # noqa: F811
+    from kiro_crew.dashboard.slack_code_settings import manifest_status
+
+    cfg = KiroCrewConfig.load()
+    creds = await asyncio.to_thread(cfg.load_credentials)
+    refresh = request.query.get("refresh", "") in ("1", "true")
+    body = await manifest_status(cfg, creds.get(CRED_SLACK_BOT_TOKEN, ""), refresh=refresh)
+    return web.json_response(body)

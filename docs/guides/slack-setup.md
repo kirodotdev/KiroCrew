@@ -322,6 +322,41 @@ A suppressed phase removes any prior reaction but adds nothing new; stall reacti
 
 ---
 
+## Slack Code: Agent Sessions and Code Channels
+
+Settings → Channels → Slack → **Slack Code** has two opt-in switches. Each one changes
+the app manifest, so an app you already installed needs an update and a reinstall. Until
+it has the new permissions, a switch that is on changes nothing: Slack keeps working as
+before, and the line under the switch says what is missing.
+
+| Switch | Manifest additions |
+|---|---|
+| Agent sessions (`slack.agent_sessions`) | `features.agent_view`; bot scope `assistant:write`; events `app_context_changed`, `agent_session_stopped`, `agent_session_title_changed` |
+| Code channels (`slack.code_channels`) | `features.code_channels.enabled: true`; bot scopes `code_channels:manage`, `chat:write.customize`, `canvases:write`, `channels:write.invites`, `groups:write.invites`; event `agent_session_stopped` |
+
+> **Agent view is one-way.** Slack cannot switch an app from `agent_view` back to
+> `assistant_view` once the manifest is saved in Slack.
+
+To update an existing app:
+
+1. Turn the switch on in Settings and **Save**.
+2. In the **Update your Slack app** panel, select **Copy manifest YAML**, then **Open App
+   Manifest** (or **App Config → App Manifest** on <https://api.slack.com/apps>).
+3. Replace the YAML with the copied manifest and select **Save Changes**.
+4. Reinstall when Slack asks (**Install App → Reinstall to Workspace**). The bot token
+   usually stays the same; if Slack issues a new one, paste it in Settings.
+5. Select **Check again**. The panel reads **Up to date**, and the line under the switch
+   reads **Active**. No gateway restart is needed.
+
+`kirocrew manifest` renders the same manifest for the switches saved in `config.json`.
+If the panel reads **Workspace not enabled**, the app has the scopes but Slack has not
+turned code channels on for your workspace; a workspace admin has to enable it.
+
+For code channels you can also set a default folder, agent, model and reasoning effort for
+new code channels; see [Slack integration](../../src/kiro_crew/docs/slack-integration.md#slack-code-agent-sessions-and-code-channels).
+
+---
+
 ## Reusing the App in Another Workspace
 
 To install your app in a different Slack workspace, export the manifest and recreate the app there:

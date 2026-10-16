@@ -13,6 +13,67 @@ from kiro_crew.config.sections_defaults import SectionReader
 
 logger = logging.getLogger("kiro_crew.config.loader")
 
+#: Longest stored value for any ``slack.code_channel_defaults`` string. A folder
+#: path, agent name or model id is far shorter; the cap keeps a hand-edited
+#: config.json from carrying an unbounded string into every code-channel session.
+CODE_CHANNEL_DEFAULT_MAX = 256
+
+
+@dataclass
+class CodeChannelDefaultsConfig:
+    """What a new Slack code-channel session starts with.
+
+    Every field is optional: ``None`` means "no default here, fall through to the
+    next source". Resolution for a new code-channel session (implemented once, in
+    :func:`kiro_crew.slack.features.resolve_code_channel_session`):
+
+    * agent / model / effort: the explicit value here, else the folder's own
+      ``default_agent``, else the agent Slack already uses;
+    * project: the folder's ``project_dir``, else the project bound to the thread
+      the channel was opened from, else none.
+    """
+
+    folder: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Folder",
+            "Sidebar folder (id, or a 'Parent/Child' path) new code-channel "
+            "sessions are filed in. The session inherits that folder's project "
+            "directory, default agent and steering. A folder deleted after it was "
+            "chosen is ignored: sessions are then unfiled and the other defaults "
+            "still apply.",
+            tags=["slack"],
+        ),
+    )
+    agent: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Agent",
+            "Agent new code-channel sessions run. Wins over the folder's default "
+            "agent. Empty uses the folder's agent, else the agent Slack already uses.",
+            tags=["slack"],
+        ),
+    )
+    model: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Model",
+            "Model id new code-channel sessions start on (as listed by the model "
+            "picker). Empty keeps the agent's own model.",
+            tags=["slack"],
+        ),
+    )
+    reasoning_effort: str | None = field(
+        default=None,
+        metadata=_meta(
+            "Default Reasoning Effort",
+            "Reasoning effort new code-channel sessions start with: low, medium, "
+            "high, xhigh or max. Empty keeps the agent's own effort. Ignored on "
+            "models that do not support effort.",
+            tags=["slack"],
+        ),
+    )
+
 
 @dataclass
 class SlackConfig:
@@ -187,6 +248,44 @@ class SlackConfig:
             "this way. The thread always opens in the owner's DM with the bot, "
             "which only the owner can read. Off by default. Takes effect on the "
             "next new session; no restart.",
+            tags=["slack"],
+        ),
+    )
+    agent_sessions: bool = field(
+        default=False,
+        metadata=_meta(
+            "Agent Sessions",
+            "Run Slack threads as Slack agent sessions: threads show a live status "
+            "and title, and Slack's native Stop button cancels the turn. Adds the "
+            "agent view (features.agent_view), the assistant:write scope and the "
+            "agent-session events to the generated app manifest; an installed app "
+            "needs that manifest update and a reinstall before it takes effect, and "
+            "until then Slack behaves as before. Slack cannot switch an app back "
+            "from agent_view to assistant_view. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channels: bool = field(
+        default=False,
+        metadata=_meta(
+            "Code Channels",
+            "Let the agent open a Slack code channel for coding work: a channel "
+            "that is one session, with a context bar, a diff tab and channel "
+            "commands. Adds features.code_channels and the code-channel scopes "
+            "(code_channels:manage, chat:write.customize, canvases:write, "
+            "channels:write.invites, groups:write.invites) to the generated app "
+            "manifest; an installed app needs that update and a reinstall, and the "
+            "workspace must have Slack code channels enabled. Until both hold, "
+            "Slack behaves as before. Off by default; no restart.",
+            tags=["slack"],
+        ),
+    )
+    code_channel_defaults: CodeChannelDefaultsConfig = field(
+        default_factory=CodeChannelDefaultsConfig,
+        metadata=_meta(
+            "Code Channel Defaults",
+            "Folder, agent, model and reasoning effort a new code-channel session "
+            "starts with. Takes effect on the next new code channel; no restart.",
             tags=["slack"],
         ),
     )

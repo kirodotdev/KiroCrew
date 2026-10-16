@@ -206,9 +206,7 @@ class _StopHold:
 
 #: Per orchestrator, the stops in flight on each session key. Overlapping stops share
 #: one hold, so the queue is put back, and drained, only when the LAST one settles.
-_stops_in_flight: weakref.WeakKeyDictionary[Any, dict[str, _StopHold]] = (
-    weakref.WeakKeyDictionary()
-)
+_stops_in_flight: weakref.WeakKeyDictionary[Any, dict[str, _StopHold]] = weakref.WeakKeyDictionary()
 
 
 def _key_busy(orch: GatewayOrchestrator, session_key: str) -> bool:
@@ -657,8 +655,7 @@ async def _handle_yolo(
         if orch.dashboard_state:
             orch.dashboard_state.push_slots_update()
         await respond(
-            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})"
-            f" — all tools auto-approved."
+            f"🟢 YOLO mode *ON* ({describe_grant_lifetime()})" f" — all tools auto-approved."
         )
     elif arg == "off":
         from kiro_crew.slack.handler import (
@@ -964,16 +961,22 @@ async def _handle_restart(
     """Restart the gateway process (owner-only, requires systemd supervisor)."""
     if not is_owner(caller_id):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id}",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id}",
         )
         await respond("⛔ Only the owner can restart the gateway.")
         return
 
     if not os.environ.get("INVOCATION_ID"):
         sel().log_tool_invocation(
-            session_key="", source="slack", tool_name="/kirocrew restart",
-            outcome="denied", resources=f"user={caller_id},reason=no_supervisor",
+            session_key="",
+            source="slack",
+            tool_name="/kirocrew restart",
+            outcome="denied",
+            resources=f"user={caller_id},reason=no_supervisor",
         )
         await respond(
             "⛔ Restart requires a process supervisor (systemd). "
@@ -982,8 +985,11 @@ async def _handle_restart(
         return
 
     sel().log_tool_invocation(
-        session_key="", source="slack", tool_name="/kirocrew restart",
-        outcome="approved", resources=f"user={caller_id}",
+        session_key="",
+        source="slack",
+        tool_name="/kirocrew restart",
+        outcome="approved",
+        resources=f"user={caller_id}",
     )
     try:
         await respond("♻️ Restarting gateway…")
@@ -1023,9 +1029,7 @@ async def _handle_restart(
             # NOT catch CancelledError (propagates to keep this 5s deadline
             # honest); a still-held lock from a pathological overrun is recovered
             # by the orphan reaper on next startup.
-            await asyncio.wait_for(
-                orch.sessions.close_all(drain_timeout=2.0), timeout=5.0
-            )
+            await asyncio.wait_for(orch.sessions.close_all(drain_timeout=2.0), timeout=5.0)
     except Exception:
         logger.debug("Session cleanup before restart failed", exc_info=True)
     # close_all() cut every dashboard turn that was mid-reply, and each one saves
@@ -1067,6 +1071,38 @@ register_slash_command("restart", _handle_restart, "restart the gateway (owner-o
 # ---------------------------------------------------------------------------
 # Socket Mode setup
 # ---------------------------------------------------------------------------
+
+
+def _wire_slack_code_capability_probe(
+    orch: GatewayOrchestrator, web_client: AsyncWebClient
+) -> None:
+    """Re-read the install's Slack Code capability on every socket (re)connect.
+
+    Slack sends ``{"type": "hello"}`` each time a Socket Mode connection opens,
+    so a message listener that answers it covers the first connect and every
+    reconnect. The probe runs as its own task: the listener must not hold the
+    socket's receive loop for an HTTP round trip.
+    """
+    from kiro_crew.slack import features, scope_probe
+
+    state = orch.dashboard_state
+    features.set_capability_notifier(
+        scope_probe.capability_notifier(state.notify if state is not None else None)
+    )
+    tasks: set[asyncio.Task[None]] = set()
+
+    async def _on_message(_client: Any, message: dict, _raw: Any = None) -> None:
+        if not isinstance(message, dict) or message.get("type") != "hello":
+            return
+        task = asyncio.create_task(
+            scope_probe.refresh_capabilities(web_client, probe_code_channels=True)
+        )
+        tasks.add(task)
+        task.add_done_callback(tasks.discard)
+
+    listeners = getattr(orch._socket_client, "message_listeners", None)
+    if isinstance(listeners, list):
+        listeners.append(_on_message)
 
 
 async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
@@ -1129,6 +1165,7 @@ async def init_socket_mode(orch: GatewayOrchestrator, seen: SeenCache) -> None:
         app_token=orch._app_token,
         web_client=web_client,
     )
+    _wire_slack_code_capability_probe(orch, web_client)
 
     async def _on_event(client: WSSocketModeClient, req: SocketModeRequest) -> None:
         # Reserve before the ACK's first suspension. A paused update returns
@@ -1357,9 +1394,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
             # list (e.g. 100+ skills) would overflow and make views.publish fail
             # with invalid_arguments, breaking the whole Home tab. Mirrors the
             # cron block's jobs[:15] guard below.
-            def _capped_names_section(
-                label: str, names: list[str], budget: int = 2900
-            ) -> dict:
+            def _capped_names_section(label: str, names: list[str], budget: int = 2900) -> dict:
                 total = len(names)
                 prefix = f"*{label} ({total}):* "
                 suffix_room = 24  # reserve for "  _…and N more_"
@@ -1379,13 +1414,9 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                 return {"type": "section", "text": {"type": "mrkdwn", "text": line}}
 
             if servers:
-                blocks.append(
-                    _capped_names_section("MCP Integrations", [s.name for s in servers])
-                )
+                blocks.append(_capped_names_section("MCP Integrations", [s.name for s in servers]))
             if skills:
-                blocks.append(
-                    _capped_names_section("Skills", [s["name"] for s in skills])
-                )
+                blocks.append(_capped_names_section("Skills", [s["name"] for s in skills]))
             if not servers and not skills:
                 blocks.append(
                     {
@@ -1526,9 +1557,7 @@ async def _publish_home_tab(orch: GatewayOrchestrator, user_id: str) -> None:
                         blocks.append(
                             {
                                 "type": "context",
-                                "elements": [
-                                    {"type": "mrkdwn", "text": "*Task runner*"}
-                                ],
+                                "elements": [{"type": "mrkdwn", "text": "*Task runner*"}],
                             }
                         )
                         blocks.extend(_build_sessions_blocks(taskrunner_rows, for_home_tab=True))
@@ -1803,7 +1832,9 @@ async def _handle_slash(orch: GatewayOrchestrator, payload: dict) -> None:
     user_match = re.search(r"<@([A-Z0-9]+)(?:\|([^>]+))?>", cmd_text)
     if user_match:
         _spawn(
-            _respond("⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack.")
+            _respond(
+                "⛔ Multi-user access is disabled. Only the owner can use Kiro Crew via Slack."
+            )
         )
         return
 
@@ -1840,9 +1871,7 @@ def _maybe_prompt_owner(orch: GatewayOrchestrator, event: dict) -> None:
 # cannot disagree about what is audio.
 
 
-def _voice_memo_context(
-    text: str, memos: int, transcribed: int, *, available: bool
-) -> str:
+def _voice_memo_context(text: str, memos: int, transcribed: int, *, available: bool) -> str:
     """*text* plus one visible note per voice memo that produced no words.
 
     A memo whose transcription is unavailable or failed would otherwise be dropped
@@ -2435,10 +2464,12 @@ def _table_row_fragments(row: list) -> Iterator[str]:
 # NOTE: These are best-effort, undocumented, English-only Slack placeholder strings.
 # They may change or be localized — recovery is best-effort for non-English workspaces.
 # No fuzzy/structural detection is attempted (out of scope; would change behavior broadly).
-_SLACK_BLOCK_FALLBACKS = frozenset({
-    "This message contains interactive elements.",
-    "This content can't be displayed.",
-})
+_SLACK_BLOCK_FALLBACKS = frozenset(
+    {
+        "This message contains interactive elements.",
+        "This content can't be displayed.",
+    }
+)
 
 #: A Slack user mention, ``<@U123>`` or ``<@U123|name>``; group 1 is the user id.
 _USER_MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
@@ -2597,7 +2628,11 @@ def _extract_table_text(event: dict) -> str:
     blocks = event.get("blocks")
     blocks = list(blocks) if isinstance(blocks, list) else []
     for att in event.get("attachments") or []:
-        if isinstance(att, dict) and not att.get("from_url") and isinstance(att.get("blocks"), list):
+        if (
+            isinstance(att, dict)
+            and not att.get("from_url")
+            and isinstance(att.get("blocks"), list)
+        ):
             blocks.extend(att["blocks"])
     tables = [b for b in blocks if isinstance(b, dict) and b.get("type") == "table"]
     return _extract_blocks_text(tables) if tables else ""
@@ -3212,7 +3247,9 @@ async def _route_message(
                 metadata={"user": sender_id, "channel": channel},
             )
             return
-        note_user_stop(orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key)
+        note_user_stop(
+            orch.sessions, orch.sessions.get_session_for_thread(session_key) or session_key
+        )
         has_session = orch.sessions.has_session(session_key)
         # READ, not popped: the task is removed only once the cancel is known
         # to have gone through, below.
@@ -3399,6 +3436,7 @@ async def _route_message(
     #    (_handle_restart) which owns owner-check + supervisor guard, keeping
     #    a single source of truth for the restart logic. ──
     if clean_text.strip().lower() == "!restart":
+
         async def _restart_respond(text: str, **_kw: Any) -> None:
             if orch.slack:
                 await orch.slack.post_message(channel, text, thread_ts or msg_ts)
