@@ -71,6 +71,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: F401
     slack_options_owner_key,
     subagent_event_slot,
 )
+from kiro_crew.dashboard.cron_inject import queue_cron_notification
 from kiro_crew.dashboard.handlers._shared import (  # noqa: F401
     _pip_install_channel_available,
     guard_owner_surface_routes,
@@ -1091,10 +1092,7 @@ async def api_send_message(request: web.Request) -> web.Response:
                                 "Queue full for slot %s — evicting oldest message", slot_key
                             )
                             _remove_queued_by_id(slot.messages, evicted["id"])
-                        qid = slot.queue_append(wrapped, kind=CRON_NOTIFICATION_KIND)
-                        _cls = json.loads(inject_cls)
-                        _cls["queue_id"] = qid
-                        slot.append("queued", wrapped, json.dumps(_cls))
+                        queue_cron_notification(slot, wrapped, label)
                         state.push_slots_update()
                     else:
                         # circular import: chat_runner imports from
