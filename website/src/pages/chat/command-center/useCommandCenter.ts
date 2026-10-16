@@ -12,6 +12,7 @@ import { restoreToComposer } from '../../../utils/composerRestore'
 import { viewSubagentSlots } from '../../../lib/subagentReplayScope'
 import type { SubagentActivity } from '../../../types'
 import { buildCommandCenter, crewWaitingApprovals, effectiveApprovalMode, scopedSlots, slotKey, type PendingQuestion, type WorkItem } from './model'
+import { COMMAND_CENTER_SOURCE_FRESHNESS } from '../../../utils/commandCenterSourceFreshness'
 
 /** The work board as its route serves it: the folded value plus its revision. */
 // `published_revision` is the read's delta base: the revision of the gateway's last
@@ -88,13 +89,7 @@ export function useCommandCenter(root: string | null, enabled = true, scope: 'ta
     return viewSubagentSlots(scopedKeys.split('\n'))
   }, [enabled, scopedKeys])
   const canRead = enabled && (fleet || !!root && scoped.length > 0)
-  // The app-wide policy is never-stale; a finite staleTime here made every
-  // window focus re-read all of these. Frames and reconnect own freshness; a
-  // failed source also re-reads on focus, since its frame may never come.
-  const sourceOptions = {
-    enabled: canRead, staleTime: 3_000,
-    refetchOnWindowFocus: (query: { state: { status: string } }) => query.state.status === 'error',
-  }
+  const sourceOptions = { enabled: canRead, ...COMMAND_CENTER_SOURCE_FRESHNESS }
   const questions = useQuery({ queryKey: ['command-center', 'questions'], queryFn: api.pendingQuestions, ...sourceOptions })
   // Stateless cards stay visible while blocking drafts restore when authority retires.
   const draftScope = JSON.stringify([scope, root])
