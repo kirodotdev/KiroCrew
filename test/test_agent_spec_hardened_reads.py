@@ -1177,7 +1177,14 @@ _EXPECTED_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 # absent by design: it is a pure in-memory lookup that performs no filesystem
 # work and can never reach the denial log line.
 _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
-    "kiro_crew/agent.py": [("require_fork_governance", "unknown")],
+    # Two in agent.py: the main-spec start gate's project lookup and the fork
+    # shadow check, both reached from ``require_fork_governance``. The no-view
+    # launch bound reads the declaring FILES (it checks their identity), so it
+    # is pinned in the files table below.
+    "kiro_crew/agent.py": [
+        ("require_fork_governance", "unknown"),
+        ("require_fork_governance", "unknown"),
+    ],
     "kiro_crew/agent_discovery.py": [("forward:operation", "forward:source")],
     "kiro_crew/config/loader.py": [("project_declares_agent", "unknown")],
     "kiro_crew/dashboard/handlers/agents.py": [("api_kirocrew_agents", "dashboard")],
@@ -1186,15 +1193,16 @@ _EXPECTED_PROJECT_NAMES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
 
 # The file scan under the name scan: most surfaces want the FILES, so they reach
 # the refusal directly and must name themselves the same way. ``agent.py`` holds
-# two lookups with different user-facing meanings (resolving a markdown spec for
-# an agent, and deciding whether a checkout shadows a managed agent), so they are
-# labelled apart. The in-module hop inside ``project_agent_names`` is pinned as
+# three lookups with different user-facing meanings (resolving a markdown spec for
+# an agent, deciding whether a checkout shadows a managed agent, and the no-view
+# launch bound checking which files declare a name), so they are labelled apart. The in-module hop inside ``project_agent_names`` is pinned as
 # forwarding: a literal there would erase the surface that asked.
 _EXPECTED_PROJECT_FILES_CALL_SITE_LABELS: dict[str, list[tuple[str, str]]] = {
     "kiro_crew/acp/session_mcp.py": [("session_mcp_project_agent", "unknown")],
     "kiro_crew/agent.py": [
         ("agent_project_shadow", "unknown"),
         ("markdown_spec_lookup", "unknown"),
+        ("require_main_spec_launch_bound", "unknown"),
     ],
     # No ``kiro_crew/apps/manager.py`` entry: the app-command guard scans the
     # checkout through ``acp.managed_agent_shadow.project_claims_agent_name``,

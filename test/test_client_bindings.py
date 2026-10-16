@@ -261,7 +261,9 @@ _MEMBERS: dict[str, tuple[str, object, str, str]] = {
     "_withdraw_shared_reader_lease": ("function", False, "af8a01ae1d8e", "client_seed_ownership"),
     "_withhold_is_the_only_deny_channel": ("function", False, "a6632a57e602", "client_mcp_array"),
     "_write_claude_local_settings": ("function", False, "b60c5fea256e", "client_claude_seed"),
-    "_write_request_bounded": ("function", True, "4ea88874f686", "client_transport"),
+    # Gained ``before_write=``: the under-lock hook a held session-open admission
+    # passes (kiro_crew.acp.frame_admission.write_admitted).
+    "_write_request_bounded": ("function", True, "905771de4943", "client_transport"),
     "_write_response_bounded": ("function", True, "1aa0c9bf750c", "client_transport"),
     "_write_steer_cancel": ("function", True, "b60c5fea256e", "client_turn_control"),
     "acp_config_options": ("property", False, "3b4687b0c546", "client"),

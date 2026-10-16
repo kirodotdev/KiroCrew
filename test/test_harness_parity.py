@@ -1018,6 +1018,15 @@ _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
     ): "Only native Kiro loads the alias agent files and workspace resource-inheritance "
     "setting used to bound skill metadata. Other harnesses must keep their own spawn plans.",
     (
+        "src/kiro_crew/acp/session_handle.py",
+        "set_mode",
+    ): "Only native Kiro resolves a bare agent name sent in a mid-session switch against "
+    "the agents directory on its own, after Crew's gate, so only there can a switch the "
+    "skill projection does not decide land on an unprojected main spec. KAS also "
+    "advertises modes it finds on disk, but it skips a profile written for kiro-cli, "
+    "which the main spec and its mirrors are, and its session spec is Crew's own "
+    "bound read. No harness property says 'this host resolves agent names from disk'.",
+    (
         "src/kiro_crew/acp/runtime.py",
         "_unpooled_control_planes",
     ): "Kiro alone loads its native agent spec without a mirror or wire agent. "

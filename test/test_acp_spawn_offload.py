@@ -38,6 +38,7 @@ import pytest
 
 import kiro_crew.acp.client as client_mod
 import kiro_crew.acp.runtime as runtime_mod
+import kiro_crew.agent as agent_mod
 from kiro_crew.acp.client import AcpClient, _resolve_spawn_env
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.kiro_cli import SPEC_PERMISSIONS_MIN_VERSION
@@ -677,6 +678,8 @@ class TestRuntimeProjectedLaunchDocuments:
             lambda work_dir, **kwargs: skill_projection.NativeSkillProjection(
                 {"kirocrew": "kirocrew-skill-view-test"},
                 specs={"kirocrew": view},
+                # A real build records the episode its view was built against.
+                episodes={"kirocrew": agent_mod.main_spec_episode()},
             ),
         )
 

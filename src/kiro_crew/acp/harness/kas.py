@@ -448,7 +448,12 @@ class KasHarness(MembershipHarness):
         if not agent:
             return SessionExtras()
 
-        def _build() -> tuple[list[dict[str, Any]], Any]:
+        def _build() -> tuple[list[dict[str, Any]], Any, tuple[int, bool]]:
+            # Taken before the gate and every read below: the spec this host is
+            # handed is read by name here, after the gate resolved it, so an
+            # unreadable-main-spec episode open at either end, or begun in between,
+            # refuses the session (require_main_spec_launch_bound, below).
+            episode = agent_mod.main_spec_episode()
             agent_mod.require_fork_governance(agent, work_dir)
             try:
                 agent_mod.ensure_agent_materialized(agent)
@@ -486,6 +491,11 @@ class KasHarness(MembershipHarness):
                     raise AcpAgentUnavailable(
                         _missing_agent_reason(agent, session_key), agent=agent
                     ) from exc
+            # The user level outranks the checkout on this host, so no project
+            # spec is exempt: the main spec may be what this read returned.
+            agent_mod.require_main_spec_launch_bound(
+                agent, work_dir, before=episode, project_first=False
+            )
             try:
                 # A session-injected server outranks an agent-declared one, so
                 # declaring both is a double registration. Only the caller holds
@@ -544,11 +554,14 @@ class KasHarness(MembershipHarness):
                     session_key=session_key,
                 ),
                 snapshot,
+                episode,
             )
 
         try:
-            built, built_from = await asyncio.to_thread(_build)
-            return SessionExtras(custom_agents=built, derived_spec_snapshot=built_from)
+            built, built_from, built_on = await asyncio.to_thread(_build)
+            return SessionExtras(
+                custom_agents=built, derived_spec_snapshot=built_from, main_spec_episode=built_on
+            )
         except ForkGovernanceUnresolved as exc:
             raise AcpRuntimeError(str(exc)) from exc
         except KasAgentTranslationError as exc:

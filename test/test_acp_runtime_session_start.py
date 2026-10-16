@@ -5,8 +5,11 @@ launch-agent verification around mode activation, and the session-start timeout
 budget handed to ``session/new``, ``session/load`` and ``set_mode``.
 """
 
+import ast
 import asyncio
 import json
+import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -22,6 +25,7 @@ from acp_runtime_helpers import (
     _stop_reader,
 )
 
+from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.runtime import (
     _REQUEST_TIMEOUT,
     _SESSION_NEW_TIMEOUT,
@@ -674,6 +678,761 @@ async def test_verify_spawn_agent_active_still_fails_closed_when_declared_name_i
             override=None,
         )
     rt.terminate_session.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_mode_switch_refused_by_the_start_gate_ends_the_session_unsent():
+    """An agent switched to on a running backend passes the spawn's start gate.
+
+    The gate runs before the derived-spec snapshot, and its refusal terminates the
+    session that ``session/new`` already created, with no ``set_mode`` sent.
+    """
+    from kiro_crew.agent import ForkGovernanceUnresolved
+
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew-lite"
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    gate = MagicMock(side_effect=ForkGovernanceUnresolved("agent 'custom-main' may not start"))
+    snapshot = MagicMock()
+    with (
+        patch("kiro_crew.agent.require_main_spec_projected", gate),
+        patch("kiro_crew.agent.require_fresh_derived_spec", snapshot),
+        pytest.raises(AcpRuntimeError, match="may not start"),
+    ):
+        await rt._activate_mode_bracketed(
+            "s1", "custom-main", budget=5.0, payload_snapshot=None, wire_registered=False
+        )
+    assert gate.call_args.args == ("custom-main", rt._work_dir)
+    snapshot.assert_not_called()
+    rt.terminate_session.assert_awaited_once_with("s1")
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode_agent", ["helper", "kirocrew"], ids=["switch", "launch-agent"])
+@pytest.mark.parametrize("prepared", [False, True], ids=["no-projection", "no-view"])
+async def test_a_start_kiro_cli_resolves_by_name_is_refused_during_the_episode(
+    unreadable_main_episode, monkeypatch, mode_agent, prepared
+):
+    """A ``set_mode`` the projection does not decide sends the bare name.
+
+    kiro-cli resolves it itself, after the gate, and once read access returns it
+    may be the unprojected main spec that declares it. Whatever the gate admitted
+    (here it admits everything), that start is refused with the shared refusal,
+    the session is ended and nothing is sent. Mutation pin: binding only the
+    projection's views sends ``set_mode``.
+    """
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    agent_mod, audited = unreadable_main_episode
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._native_skill_projection = None
+    rt._send_and_await = AsyncMock()  # type: ignore[method-assign]
+    rt.terminate_session = AsyncMock()  # type: ignore[method-assign]
+    monkeypatch.setattr(agent_mod, "require_main_spec_projected", lambda *a: None)
+    monkeypatch.setattr(agent_mod, "require_fresh_derived_spec", lambda *a: None)
+    if prepared:
+        rt._native_skill_projection = NativeSkillProjection(aliases={})
+    with (
+        patch(
+            "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+            return_value=NativeSkillProjection(aliases={}),
+        ),
+        pytest.raises(AcpRuntimeError, match="may not start"),
+    ):
+        await rt._activate_mode_bracketed(
+            "s1", mode_agent, budget=5.0, payload_snapshot=None, wire_registered=False
+        )
+    assert audited == [mode_agent]
+    rt._send_and_await.assert_not_awaited()
+    rt.terminate_session.assert_awaited_once_with("s1")
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_start_kiro_cli_resolves_by_name_goes_ahead_on_a_healthy_host(
+    unreadable_main_episode, monkeypatch
+):
+    """No episode: the bound check returns at once and ``set_mode`` names the agent."""
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    rt, _, _ = _make_runtime()
+    rt._native_skill_projection = None
+    captured: dict = {}
+
+    async def _send(method, params, **kwargs):
+        captured["params"] = params
+        return {}
+
+    rt._send_and_await = AsyncMock(side_effect=_send)  # type: ignore[method-assign]
+    monkeypatch.setattr(agent_mod, "require_fresh_derived_spec", lambda *a: None)
+    monkeypatch.setattr(agent_mod, "require_unchanged_derived_spec", lambda *a: None)
+    await rt._activate_mode_bracketed(
+        "s1", "helper", budget=5.0, payload_snapshot=None, wire_registered=False
+    )
+    assert captured["params"]["modeId"] == "helper"
+    assert audited == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [None, "helper"], ids=["inherits-launch", "named"])
+async def test_a_session_opened_on_an_unbound_launch_is_refused_before_session_new(
+    unreadable_main_episode, agent
+):
+    """Every session opened on the shared process starts on the launch agent.
+
+    A session that names no agent stays on it and sends no ``set_mode``; a named
+    one runs on it until its ``set_mode``. With no prepared view at the launch
+    (``_launch_unbound``) kiro-cli resolves the launch's bare name again for the
+    new session, so ``create_session`` and the resume (``load_session``) are both
+    checked again, for the launch agent, before anything is written. Mutation
+    pin: checking only ``agent=None`` writes ``session/new`` for a named agent.
+    """
+    _agent_mod, audited = unreadable_main_episode
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = True
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.create_session(cwd="/tmp", agent=agent)
+    assert audited == ["kirocrew"]
+    proc.stdin.write.assert_not_called()
+    rt._can_load_session = True
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.load_session("transcript.jsonl", "sid-1", cwd="/tmp", agent=agent)
+    assert audited == ["kirocrew", "kirocrew"]
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_session_start_takes_no_start_permit(unreadable_main_episode, monkeypatch):
+    """``create_session`` refuses before the admission gate, not inside it.
+
+    The refusal takes no start permit and records no failed start sample, so an
+    unreadable-main-spec episode never reads to the adaptive controller as a run
+    of failed starts. Mutation pin: dropping the early check reaches the gate.
+    """
+    from kiro_crew.acp import runtime_start
+
+    _agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(
+        runtime_start,
+        "session_start_gate",
+        lambda: pytest.fail("a refused start reached the admission gate"),
+    )
+    monkeypatch.setattr(
+        runtime_start,
+        "_record_session_start",
+        lambda *_a, **_k: pytest.fail("a refused start recorded a start sample"),
+    )
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = True
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.create_session(cwd="/tmp", agent=None)
+    assert audited == ["kirocrew"]
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_session_on_a_bound_launch_or_a_healthy_host_is_not_checked_again(
+    unreadable_main_episode, monkeypatch
+):
+    """The check returns at once for a launch with a view, and outside an episode."""
+    agent_mod, audited = unreadable_main_episode
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = False
+    await rt._require_launch_bound_for_session_open()
+    rt._launch_unbound = True
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    await rt._require_launch_bound_for_session_open()
+    assert audited == []
+
+
+@pytest.mark.asyncio
+async def test_the_entitlement_probe_is_refused_on_an_unbound_launch(unreadable_main_episode):
+    """The model probe's throwaway ``session/new`` runs on the launch agent too.
+
+    It is refused before anything is written, returns no models (no evidence),
+    and stamps its attempt clock, so a burst of picker reads inside the probe
+    window writes one SEL denial. Mutation pin: dropping the check in
+    ``_send_session_open`` sends the probe's ``session/new``.
+    """
+    _agent_mod, audited = unreadable_main_episode
+    rt, _, proc = _make_runtime()
+    rt._agent = "code-review-sage-reviewer"
+    rt._launch_unbound = True
+    sent: list[str] = []
+
+    async def _send(method, params, **kwargs):
+        sent.append(method)
+        raise RuntimeError("stop")
+
+    rt._send_and_await = _send  # type: ignore[method-assign]
+    assert await rt.probe_advertised_models() == []
+    assert sent == []
+    assert audited == ["code-review-sage-reviewer"]
+    assert rt._entitlement_probe_attempt_at > 0.0
+    assert await rt.probe_advertised_models() == []
+    assert audited == ["code-review-sage-reviewer"]
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent", [None, "helper"], ids=["inherits-launch", "named"])
+@pytest.mark.parametrize("source", ["main", "mirror", "unknown"])
+async def test_a_session_on_a_retained_main_spec_view_is_refused_during_the_episode(
+    unreadable_main_episode, monkeypatch, tmp_path, agent, source
+):
+    """A warm process launched on a view of the main spec keeps that view for life.
+
+    The reported case: the view was built while the host was healthy, the
+    ceiling then tightened, the rebuild met the unreadable main spec, and a
+    task session opened with ``agent=None`` would run the retained view with no
+    ``set_mode`` and keep grants the ceiling revoked. The session open is
+    refused with the shared refusal before anything is written, and so is one
+    whose launch view source is unknown. Mutation pin: ignoring the launch view
+    source (checking unbound launches only) writes ``session/new``.
+    """
+    agent_mod, audited = unreadable_main_episode
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    view_source = {
+        "main": (agents / "kirocrew.json").as_posix(),
+        "mirror": (agents / "kirocrew-worker.json").as_posix(),
+        "unknown": "",
+    }[source]
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = False
+    rt._launch_view_source = view_source
+    sent: list[str] = []
+
+    async def _send(method, params, **kwargs):
+        sent.append(method)
+        raise RuntimeError("stop")
+
+    rt._send_and_await = _send  # type: ignore[method-assign]
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.create_session(cwd="/tmp", agent=agent)
+    rt._can_load_session = True
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.load_session("transcript.jsonl", "sid-1", cwd="/tmp", agent=agent)
+    assert sent == []
+    assert audited == ["kirocrew", "kirocrew"]
+    proc.stdin.write.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_a_session_on_another_specs_view_or_a_healthy_host_goes_ahead(
+    unreadable_main_episode, monkeypatch, tmp_path
+):
+    """A view built from any other file is bound to that file; a healthy host checks nothing."""
+    agent_mod, audited = unreadable_main_episode
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    rt, _, _ = _make_runtime()
+    rt._agent = "helper"
+    rt._launch_unbound = False
+    rt._launch_view_source = (agents / "helper.json").as_posix()
+    await rt._require_launch_bound_for_session_open()
+    rt._launch_view_source = (agents / "kirocrew.json").as_posix()
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    rt._launch_view_episode = agent_mod.main_spec_episode()
+    await rt._require_launch_bound_for_session_open()
+    assert audited == []
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_records_its_launch_views_source(
+    unreadable_main_episode, monkeypatch, tmp_path
+):
+    """The launch records the source of the view kiro-cli is handed, for every later open.
+
+    Spawned healthy on a view of the main spec; an episode then opens and an
+    inherited session on that process is refused. Mutation pin: not recording
+    the source leaves the open unchecked.
+    """
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    main = (agents / "kirocrew.json").as_posix()
+    rt = AcpRuntime(work_dir=tmp_path / "ws", agent="kirocrew")
+
+    class _NextStep(Exception):
+        pass
+
+    class _StopAtTheLaunchTail:
+        def __init__(self, harness):
+            self._harness = harness
+
+        def __getattr__(self, name):
+            if name == "client_capabilities":
+                raise _NextStep
+            return getattr(self._harness, name)
+
+    plan = MagicMock()
+    plan.argv = ["kiro-cli", "acp", "--agent", "kirocrew"]
+    plan.rss_depth = 0
+    rt._resolve_spawn_plan = AsyncMock(return_value=plan)  # type: ignore[method-assign]
+    rt._harness_resolved = _StopAtTheLaunchTail(rt._harness)
+    rt._member_context = True  # skip the launch steering record
+    view = NativeSkillProjection(
+        aliases={"kirocrew": "kc-view-0123456789abcdef01234567"},
+        sources={"kirocrew": main},
+        episodes={"kirocrew": agent_mod.main_spec_episode()},
+    )
+    with patch("kiro_crew.acp.skill_projection.prepare_native_skill_projection", return_value=view):
+        with pytest.raises(_NextStep):
+            await rt._spawn_admitted()
+    assert rt._launch_unbound is False
+    assert rt._launch_view_source == main
+    # Recorded beside the source: the episode reading the view was built
+    # against. Mutation pin: not recording it refuses this healthy open.
+    assert rt._launch_view_episode == (1, False)
+    await rt._require_launch_bound_for_session_open()
+    assert audited == []
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", True)
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt._require_launch_bound_for_session_open()
+    assert audited == ["kirocrew"]
+
+
+def _launch_on_a_main_spec_view(rt, agent_mod, agents, source):
+    """Run the real launch on a view of *source*, recording what the open checks.
+
+    Returns once the launch has recorded its view; the launch tail after it is
+    replaced by a sentinel. *source* names the file the view was built from:
+    the main spec, a mirror, or none recorded (``unknown``).
+    """
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    class _NextStep(Exception):
+        pass
+
+    class _StopAtTheLaunchTail:
+        def __init__(self, harness):
+            self._harness = harness
+
+        def __getattr__(self, name):
+            if name == "client_capabilities":
+                raise _NextStep
+            return getattr(self._harness, name)
+
+    files = {
+        "main": (agents / "kirocrew.json").as_posix(),
+        "mirror": (agents / "kirocrew-worker.json").as_posix(),
+    }
+    alias = "kc-view-0123456789abcdef01234567"
+    plan = MagicMock()
+    plan.argv = ["kiro-cli", "acp", "--agent", "kirocrew"]
+    plan.rss_depth = 0
+    launcher = AcpRuntime(work_dir=rt._work_dir, agent="kirocrew")
+    launcher._resolve_spawn_plan = AsyncMock(return_value=plan)  # type: ignore[method-assign]
+    launcher._harness_resolved = _StopAtTheLaunchTail(launcher._harness)
+    launcher._member_context = True  # skip the launch steering record
+    view = NativeSkillProjection(
+        aliases={"kirocrew": alias},
+        sources={"kirocrew": files[source]} if source in files else {},
+    )
+    # What the preparation records for the view: the episode reading taken
+    # before its source was read (set as an attribute so this also runs on a
+    # build whose projection does not declare the field).
+    view.episodes = {"kirocrew": agent_mod.main_spec_episode()}  # type: ignore[attr-defined]
+
+    async def _go():
+        with patch(
+            "kiro_crew.acp.skill_projection.prepare_native_skill_projection", return_value=view
+        ):
+            with pytest.raises(_NextStep):
+                await launcher._spawn_admitted()
+
+    return _go, launcher
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("source", ["main", "mirror", "unknown"])
+async def test_a_retained_view_built_before_an_episode_is_refused_after_recovery(
+    unreadable_main_episode, monkeypatch, tmp_path, source
+):
+    """A view built before an episode is refused once recovery closes that episode.
+
+    The reported sequence: a warm process is launched on a view of the main
+    spec (or a mirror, or a view whose source is unknown) while the host is
+    healthy; a governance revocation then meets a transient read failure, which
+    opens an episode; a later rebuild reads and writes the spec, which closes
+    it. The rebuild rewrote the spec, not the view the process keeps for life,
+    so an ``agent=None`` session or a resume on that process would still run
+    the revoked grants. Both are refused with the shared refusal (one SEL
+    denial each, nothing written) and the idle process is recycled, so the
+    next open launches a fresh view.
+
+    Mutation pins: not recording the view's episode reading, not comparing it,
+    comparing it only while an episode is open, or not recycling the process.
+    """
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_main_spec_retry_timer", None)
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    rt, _, proc = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._work_dir = tmp_path / "ws"
+    launch, launcher = _launch_on_a_main_spec_view(rt, agent_mod, agents, source)
+    await launch()
+    for name in ("_launch_unbound", "_launch_view_source", "_launch_view_episode"):
+        if hasattr(launcher, name):
+            setattr(rt, name, getattr(launcher, name))
+
+    # The revocation meets a transient read failure: the rebuild skips and the
+    # episode opens. Then read access returns and a rebuild writes the spec.
+    with agent_mod._main_spec_episode_lock:
+        agent_mod._main_spec_unreadable = True
+        agent_mod._main_spec_episode_revision += 1
+        revision = agent_mod._main_spec_episode_revision
+    agent_mod._note_main_spec_readable(agents / "kirocrew.json", "kirocrew", revision)
+    assert agent_mod.main_spec_episode() == (revision, False)
+
+    sent: list[str] = []
+
+    async def _send(method, params, **kwargs):
+        sent.append(method)
+        raise RuntimeError("stop")
+
+    rt._send_and_await = _send  # type: ignore[method-assign]
+    rt.kill = AsyncMock()  # type: ignore[method-assign]
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.create_session(cwd="/tmp", agent=None)
+    rt._can_load_session = True
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.load_session("transcript.jsonl", "sid-1", cwd="/tmp", agent=None)
+    assert sent == []
+    assert audited == ["kirocrew", "kirocrew"]
+    proc.stdin.write.assert_not_called()
+    # Recycled: an idle runtime is ended, so every holder's liveness check
+    # launches a fresh view; a holder that asks staleness is told why.
+    assert rt.kill.await_count >= 1
+    assert "launch view" in rt.kill.await_args.kwargs["reason"]
+    assert await rt._is_stale() == "launch_view"
+
+
+@pytest.mark.asyncio
+async def test_a_refused_view_with_a_co_tenant_is_marked_not_ended(
+    unreadable_main_episode, monkeypatch, tmp_path
+):
+    """A co-tenant keeps the process; the refusal marks it for displacement.
+
+    Ending a process under a registered session would drop that session's
+    turn, so the refused open only marks the runtime: a holder that asks
+    staleness displaces it, and the first refused open made with no co-tenant
+    ends it. Mutation pin: ending it regardless kills under the co-tenant.
+    """
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = False
+    rt._launch_view_source = (agents / "kirocrew.json").as_posix()
+    rt._launch_view_episode = (0, False)  # built before the episode at revision 1
+    rt.kill = AsyncMock()  # type: ignore[method-assign]
+    rt._spawn_monotonic = time.monotonic()  # young: no age or RSS reason
+    rt._session_queues["sid-co-tenant"] = asyncio.Queue()
+    assert await rt._is_stale() is None
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt._require_launch_bound_for_session_open()
+    rt.kill.assert_not_awaited()
+    assert await rt._is_stale() == "launch_view"
+    del rt._session_queues["sid-co-tenant"]
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt._require_launch_bound_for_session_open()
+    rt.kill.assert_awaited_once()
+    assert audited == ["kirocrew", "kirocrew"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("second", ["create", "load"])
+async def test_a_refused_open_never_ends_a_process_another_open_is_starting_on(
+    unreadable_main_episode, monkeypatch, tmp_path, second
+):
+    """An open still waiting for its ``session/new`` keeps the process.
+
+    The reported sequence: open A passes the launch-bound check while the host
+    is healthy and its ``session/new`` is still unanswered; an episode then
+    opens, and open B on the same process is refused. B's refusal must not end
+    the process under A: A's request would fail as ``AcpRuntimeDead`` on work
+    that was admitted before the episode. B only marks the process, and the
+    first refused open made once A has left ends it.
+
+    Mutation pins: deciding the recycle before the refused open is counted
+    (the early check outside the init scope) ends the process under A; never
+    recycling leaves the idle process alive after A has left.
+    """
+    from kiro_crew.acp.session_handle import AcpRuntimeDead
+
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._can_load_session = True
+    rt._launch_unbound = False
+    rt._launch_view_source = (agents / "kirocrew.json").as_posix()
+    rt._launch_view_episode = (0, False)  # built while the host was healthy
+    rt._spawn_monotonic = time.monotonic()  # young: no age or RSS reason
+
+    answer_a = asyncio.get_running_loop().create_future()
+    a_sent = asyncio.Event()
+
+    async def _send(method, params, **kwargs):
+        if method == METHOD_SESSION_NEW:
+            a_sent.set()
+            return await answer_a
+        return {}
+
+    async def _kill(**kwargs):
+        # What ending the process does to a request still waiting on it.
+        if not answer_a.done():
+            answer_a.set_exception(AcpRuntimeDead("the runtime was ended"))
+
+    rt._send_and_await = _send  # type: ignore[method-assign]
+    rt.kill = AsyncMock(side_effect=_kill)  # type: ignore[method-assign]
+    open_a = asyncio.create_task(rt.create_session(cwd="/tmp", agent=None))
+    await asyncio.wait_for(a_sent.wait(), timeout=default_timeout())
+
+    # The episode opens while A's session/new is in flight.
+    with agent_mod._main_spec_episode_lock:
+        agent_mod._main_spec_unreadable = True
+        agent_mod._main_spec_episode_revision += 1
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        if second == "create":
+            await rt.create_session(cwd="/tmp", agent=None)
+        else:
+            await rt.load_session("transcript.jsonl", "sid-b", cwd="/tmp", agent=None)
+    rt.kill.assert_not_awaited()
+    assert await rt._is_stale() == "launch_view"
+
+    answer_a.set_result({"sessionId": "sid-a"})
+    handle = await asyncio.wait_for(open_a, timeout=default_timeout())
+    assert handle.session_id == "sid-a"
+    assert audited == ["kirocrew"]
+
+    # A leaves: the next refused open finds the process idle and ends it.
+    rt.unregister_session("sid-a")
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt.create_session(cwd="/tmp", agent=None)
+    rt.kill.assert_awaited_once()
+    assert "launch view" in rt.kill.await_args.kwargs["reason"]
+
+
+@pytest.mark.asyncio
+async def test_an_unbound_launch_goes_ahead_once_recovery_closes_the_episode(
+    unreadable_main_episode, monkeypatch
+):
+    """With no view the name is resolved again at every open, from the rewritten spec.
+
+    The bare-name case keeps its episode bound: refused while the episode is
+    open, admitted once a rebuild has written the spec, and never recycled.
+    """
+    agent_mod, audited = unreadable_main_episode
+    rt, _, _ = _make_runtime()
+    rt._agent = "kirocrew"
+    rt._launch_unbound = True
+    rt._spawn_monotonic = time.monotonic()  # young: no age or RSS reason
+    rt.kill = AsyncMock()  # type: ignore[method-assign]
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await rt._require_launch_bound_for_session_open()
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    await rt._require_launch_bound_for_session_open()
+    assert audited == ["kirocrew"]
+    rt.kill.assert_not_awaited()
+    assert await rt._is_stale() is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [METHOD_SESSION_NEW, METHOD_SESSION_LOAD])
+async def test_a_generic_send_path_refuses_a_session_open(method):
+    """``session/new`` and ``session/load`` have one send path, the bound one."""
+    rt, _, proc = _make_runtime()
+    with pytest.raises(ValueError, match="_send_session_open"):
+        await rt.send_request(method, {})
+    with pytest.raises(ValueError, match="_send_session_open"):
+        await rt.send_request_for_answer(method, {})
+    with pytest.raises(ValueError, match="_send_session_open"):
+        await rt.send_notification(method, {})
+    with pytest.raises(ValueError, match="not a session-open method"):
+        await rt._send_session_open(METHOD_SET_MODE, {}, timeout=1.0)
+    proc.stdin.write.assert_not_called()
+
+
+def test_every_session_open_goes_through_the_launch_bound_send_path():
+    """Ratchet: no code in the runtime sends ``session/new`` or ``session/load`` raw.
+
+    Each call in ``acp/runtime.py`` that passes either method (by constant or by
+    literal) to a send function must be ``self._send_session_open``, and that
+    method must run the launch-bound check before it writes, so no session-open
+    site can be added unbound.
+    """
+    src = Path(runtime_mod.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    open_names = {"METHOD_SESSION_NEW", "METHOD_SESSION_LOAD"}
+    open_literals = {"session/new", "session/load"}
+    senders = {
+        "_send_and_await",
+        "send_request",
+        "send_request_for_answer",
+        "send_notification",
+        "_write_request_bounded",
+        "_send_session_open",
+    }
+    raw: list[int] = []
+    bound_sites = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+            continue
+        if node.func.attr not in senders or not node.args:
+            continue
+        first = node.args[0]
+        is_open = (isinstance(first, ast.Name) and first.id in open_names) or (
+            isinstance(first, ast.Constant) and first.value in open_literals
+        )
+        if not is_open:
+            continue
+        if node.func.attr == "_send_session_open":
+            bound_sites += 1
+        else:
+            raw.append(node.lineno)
+    assert raw == [], f"raw session-open sends at runtime.py lines {raw}"
+    # create_session, load_session and the entitlement probe.
+    assert bound_sites == 3
+    chokepoint = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_send_session_open"
+    )
+    # The chokepoint admits through its check, then sends held to that admission
+    # (test_acp_frame_admission holds the write side).
+    first_line: dict[str, int] = {}
+    for n in ast.walk(chokepoint):
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
+            first_line[n.func.attr] = min(first_line.get(n.func.attr, n.lineno), n.lineno)
+    assert first_line["_check_session_open"] < first_line["_send_and_await"]
+    check = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.AsyncFunctionDef) and n.name == "_check_session_open"
+    )
+    assert "_require_launch_bound_for_session_open" in {
+        n.func.attr
+        for n in ast.walk(check)
+        if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
+    }
+    # The check's recycle decision counts the refused open among the inits in
+    # flight, so it runs only where an init scope holds that open: in the
+    # chokepoint's check (every caller opens one) and in the early check's own
+    # scope.
+    checking = sorted(
+        fn.name
+        for fn in ast.walk(tree)
+        if isinstance(fn, ast.AsyncFunctionDef)
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Call)
+        and isinstance(n.func, ast.Attribute)
+        and n.func.attr == "_require_launch_bound_for_session_open"
+    )
+    assert checking == ["_check_session_open", "_require_launch_bound_before_setup"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepared", [False, True], ids=["no-projection", "no-view"])
+async def test_a_spawn_with_no_view_is_refused_during_the_episode(
+    unreadable_main_episode, monkeypatch, tmp_path, prepared
+):
+    """The shared runtime's launch: no view means ``--agent`` carries the bare name.
+
+    Refused before any process exists, and recorded as unbound so a later
+    inherited session is checked again. Mutation pin: dropping the spawn's bound
+    check reaches the next launch step (the sentinel).
+    """
+    from kiro_crew.acp.skill_projection import NativeSkillProjection
+
+    _agent_mod, audited = unreadable_main_episode
+    rt = AcpRuntime(work_dir=tmp_path / "ws", agent="kirocrew")
+
+    class _NextStep(Exception):
+        pass
+
+    plan = MagicMock()
+    plan.argv = ["kiro-cli", "acp", "--agent", "kirocrew"]
+    plan.rss_depth = 0
+    rt._resolve_spawn_plan = AsyncMock(return_value=plan)  # type: ignore[method-assign]
+
+    class _StopAtTheLaunchTail:
+        """The harness, until the step after the projection reads its capabilities."""
+
+        def __init__(self, harness):
+            self._harness = harness
+
+        def __getattr__(self, name):
+            if name == "client_capabilities":
+                raise _NextStep
+            return getattr(self._harness, name)
+
+    rt._harness_resolved = _StopAtTheLaunchTail(rt._harness)
+    view = NativeSkillProjection(aliases={}) if prepared else None
+    with patch("kiro_crew.acp.skill_projection.prepare_native_skill_projection", return_value=view):
+        with pytest.raises(AcpRuntimeError, match="may not start"):
+            await rt._spawn_admitted()
+    assert rt._launch_unbound is True
+    assert audited == ["kirocrew"]
+    assert rt._process is None
+
+
+@pytest.mark.asyncio
+async def test_a_spawn_with_no_view_goes_ahead_on_a_healthy_host(
+    unreadable_main_episode, monkeypatch, tmp_path
+):
+    """No episode: the spawn reaches its launch tail, recorded as unbound."""
+    agent_mod, audited = unreadable_main_episode
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    rt = AcpRuntime(work_dir=tmp_path / "ws", agent="kirocrew")
+
+    class _NextStep(Exception):
+        pass
+
+    class _StopAtTheLaunchTail:
+        def __init__(self, harness):
+            self._harness = harness
+
+        def __getattr__(self, name):
+            if name == "client_capabilities":
+                raise _NextStep
+            return getattr(self._harness, name)
+
+    plan = MagicMock()
+    plan.argv = ["kiro-cli", "acp", "--agent", "kirocrew"]
+    plan.rss_depth = 0
+    rt._resolve_spawn_plan = AsyncMock(return_value=plan)  # type: ignore[method-assign]
+    rt._harness_resolved = _StopAtTheLaunchTail(rt._harness)
+    with patch("kiro_crew.acp.skill_projection.prepare_native_skill_projection", return_value=None):
+        with pytest.raises(_NextStep):
+            await rt._spawn_admitted()
+    assert rt._launch_unbound is True
+    assert audited == []
 
 
 @pytest.mark.asyncio

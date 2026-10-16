@@ -18,6 +18,7 @@ import sys
 
 import pytest
 
+from kiro_crew import agent as agent_mod
 from kiro_crew.acp import session_handle as sh
 from kiro_crew.acp import skill_projection  # bound before a fixture patches its paths
 from kiro_crew.acp.kas_agents import _KAS_FALLBACK_PROMPT
@@ -204,7 +205,9 @@ class TestModeBinding:
                 skill_projection,
                 "prepare_native_skill_projection",
                 lambda work_dir, **_kwargs: skill_projection.NativeSkillProjection(
-                    {"vibe": "vibe"}
+                    {"vibe": "vibe"},
+                    # A real build records the episode its view was built against.
+                    episodes={"vibe": agent_mod.main_spec_episode()},
                 ),
             )
         kas = backend == ACP_BACKEND_KAS

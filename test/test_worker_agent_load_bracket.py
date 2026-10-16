@@ -511,7 +511,9 @@ def test_every_set_mode_send_goes_through_the_one_bracketed_helper():
                     isinstance(arg, ast.Name) and arg.id == "METHOD_SET_MODE" for arg in n.args
                 ):
                     senders.append(node.name)
-    assert senders == [helper.__name__], senders
+    # Two calls, both in the helper: the KAS branch's send and the kiro-cli send
+    # held to its admission (test_acp_frame_admission pins which is which).
+    assert senders == [helper.__name__, helper.__name__], senders
 
 
 def test_the_bracketed_helper_orders_gate_send_and_check_by_consumption_point():

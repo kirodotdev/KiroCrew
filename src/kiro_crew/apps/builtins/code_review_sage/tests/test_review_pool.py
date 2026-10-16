@@ -259,6 +259,92 @@ class TestBatchLifecycle(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(FakeRuntime.instances[-1].killed)
 
 
+# ── Sessions on an unbound launch ───────────────────────────────────────────
+class TestReviewSessionsOnAnUnboundLaunch(unittest.IsolatedAsyncioTestCase):
+    """A review session names no agent, so it inherits the runtime's launch.
+
+    With no prepared skill view kiro-cli resolves the launch name itself, and
+    while the main agent spec is unreadable that name may resolve to it once read
+    access returns. ``send`` passes ``agent=None``, which must not skip the check
+    a named agent's activation takes. A real ``AcpRuntime`` stands behind the
+    pool here, with its process faked and the session start's next step replaced
+    by a sentinel.
+    """
+
+    def _pool_on_a_real_runtime(self):
+        from unittest.mock import AsyncMock, MagicMock
+
+        # The real runtime class the pool itself imported, before any fake.
+        RealRuntime = rp.AcpRuntime
+        made: list = []
+
+        def factory(agent=None, work_dir=None, sandbox_mode="auto", **kw):
+            rt = RealRuntime(agent=agent, work_dir=work_dir, sandbox_mode=sandbox_mode)
+            proc = MagicMock()
+            proc.returncode = None
+            proc.stdin = MagicMock()
+            proc.stdin.drain = AsyncMock()
+            rt._process = proc
+            rt._initialized = True
+            rt._launch_unbound = True  # launched with no prepared view
+
+            async def _spawn(start_priority=None):
+                return None
+
+            async def _session_continues(*args, **kwargs):
+                raise AssertionError("session start continued")
+
+            # The first step after the check: reaching it means the start went on.
+            for name, value in (
+                ("spawn", _spawn),
+                ("kill", AsyncMock()),
+                ("_session_work_dir", _session_continues),
+            ):
+                setattr(rt, name, value)
+            made.append(rt)
+            return rt
+
+        orig = rp.AcpRuntime
+        rp.AcpRuntime = factory  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(rp, "AcpRuntime", orig))
+        return ReviewPool(work_dir=_work_dir(self)), made
+
+    def _episode(self, unreadable):
+        import kiro_crew.agent as agent_mod
+
+        audited: list = []
+        patches = [
+            unittest.mock.patch.object(agent_mod, "_main_spec_unreadable", unreadable),
+            unittest.mock.patch.object(agent_mod, "_audit_main_spec_denial", audited.append),
+            unittest.mock.patch.object(agent_mod, "_schedule_main_spec_early_retry", lambda: None),
+        ]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return audited
+
+    async def test_an_inherited_session_is_refused_while_the_main_spec_is_unreadable(self):
+        """Refused before the session starts, with one SEL denial naming the launch agent.
+
+        Mutation pin: letting ``agent=None`` skip the check reaches the sentinel.
+        """
+        audited = self._episode(True)
+        pool, made = self._pool_on_a_real_runtime()
+        with self.assertRaisesRegex(Exception, "may not start") as refused:
+            await pool.send("review")
+        self.assertEqual(type(refused.exception).__name__, "AcpRuntimeError")
+        self.assertEqual(audited, [made[0]._agent])
+        made[0]._process.stdin.write.assert_not_called()
+
+    async def test_an_inherited_session_on_a_healthy_host_goes_ahead(self):
+        """No episode: the check returns at once and the session start goes on."""
+        audited = self._episode(False)
+        pool, _made = self._pool_on_a_real_runtime()
+        with self.assertRaisesRegex(AssertionError, "session start continued"):
+            await pool.send("review")
+        self.assertEqual(audited, [])
+
+
 # ── Concurrency ─────────────────────────────────────────────────────────────
 class TestConcurrency(unittest.IsolatedAsyncioTestCase):
     async def test_semaphore_caps_concurrent_sessions(self):

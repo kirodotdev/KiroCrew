@@ -889,6 +889,23 @@ class NativeSkillProjection:
     specs: dict[str, dict[str, Any]] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
     search_agents: set[str] = field(default_factory=set)
+    #: Agents whose view would be built from the main spec while its unreadable
+    #: episode is open (:func:`kiro_crew.agent.unprojected_main_spec_source`). Also
+    #: in ``errors``; :meth:`agent` refuses them through the start gate's own
+    #: refusal, so each one writes its SEL denial and schedules the early retry.
+    main_spec_refused: set[str] = field(default_factory=set)
+    #: The spec file each view was built from, agent -> absolute path. A process
+    #: keeps its launch view for life, so the shared runtime records the launch
+    #: view's source here at spawn and checks it at every session open
+    #: (:func:`kiro_crew.agent.require_main_spec_launch_bound`, ``view_source``).
+    sources: dict[str, str] = field(default_factory=dict)
+    #: The unreadable-main-spec episode reading
+    #: (:func:`kiro_crew.agent.main_spec_episode`) taken before each view's source
+    #: was read, agent -> ``(revision, open)``. The launch records it beside the
+    #: source, and a session open on a view built against an older revision
+    #: than the current one is refused (``require_main_spec_launch_bound``), as
+    #: is a start's ``set_mode`` naming that view (``AcpRuntime._admit_mode_frame``).
+    episodes: dict[str, tuple[int, bool]] = field(default_factory=dict)
     #: The agent a DIRECT CLIENT (one process / one session) was launched as,
     #: recorded by that spawn caller after preparation. The process is already
     #: running as it, so its first ``session/set_mode`` activation must be
@@ -979,6 +996,10 @@ class NativeSkillProjection:
                 raise RetiredSkillView(name)
             name = source
         if name not in self.aliases:
+            if name in self.main_spec_refused:
+                from kiro_crew.agent import refuse_unprojected_main_spec_start
+
+                raise ValueError(refuse_unprojected_main_spec_start(name))
             if name in self.errors:
                 raise ValueError(f"Agent {name!r}: {self.errors[name]}")
             raise ValueError(f"Agent {name!r} has no prepared skill discovery view")
@@ -1007,18 +1028,51 @@ class NativeSkillProjection:
         # than aborting a spawn over a skill view it never asked for.
         return name
 
+    def decides(self, name: str) -> bool:
+        """Whether this projection decides *name*'s start itself: a view, or a refusal.
+
+        False is the no-view case :meth:`spawn_agent` gives back unchanged, where
+        kiro-cli resolves the bare name on its own; such a start is bound by
+        :func:`kiro_crew.agent.require_main_spec_launch_bound` instead.
+        """
+        return is_skill_view_name(name) or name in self.aliases or name in self.errors
+
+    def view_source(self, alias: str) -> str:
+        """The spec file the view published as *alias* was built from; ``""`` if unknown."""
+        for agent_name, published in self.aliases.items():
+            if published == alias:
+                return self.sources.get(agent_name, "")
+        return ""
+
+    def view_episode(self, alias: str) -> tuple[int, bool] | None:
+        """The episode reading the view published as *alias* was built against; None if unknown."""
+        for agent_name, published in self.aliases.items():
+            if published == alias:
+                return self.episodes.get(agent_name)
+        return None
+
+    def mode_id(self, name: str) -> str:
+        """The ``modeId`` :meth:`request` would put on a ``set_mode`` naming *name*.
+
+        The same resolution, with no side effect: the launch agent's one-time
+        exemption is read, not consumed. A switch builds its admission on the
+        name this returns before the send translates it.
+        """
+        # The launched agent's own activation is tolerated even with no
+        # prepared view: the process is already running as it, so the initial
+        # ``set_mode`` that activates it must not be refused. ``spawn_agent``
+        # gives that name back unchanged; every other modeId takes the strict
+        # ``agent``, so a mid-session switch to a mode this projection never
+        # prepared is still rejected and an agent cannot escape its scope.
+        if name and name == self.spawn_agent_name:
+            return self.spawn_agent(name)
+        return self.agent(name)
+
     def request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         if method == "session/set_mode":
             mode_id = str(params.get("modeId", ""))
-            # The launched agent's own activation is tolerated even with no
-            # prepared view: the process is already running as it, so the initial
-            # ``set_mode`` that activates it must not be refused. ``spawn_agent``
-            # gives that name back unchanged; every other modeId takes the strict
-            # ``agent``, so a mid-session switch to a mode this projection never
-            # prepared is still rejected and an agent cannot escape its scope.
             tolerated = bool(mode_id) and mode_id == self.spawn_agent_name
-            resolve = self.spawn_agent if tolerated else self.agent
-            translated = {**params, "modeId": resolve(mode_id)}
+            translated = {**params, "modeId": self.mode_id(mode_id)}
             if tolerated:
                 # CONSUME the exemption once spent: it covers only the launched
                 # agent's FIRST activation. Cleared, a later set_mode back to the
@@ -3747,13 +3801,19 @@ def prepare_native_skill_projection(
     aliases: dict[str, str] = {}
     specs: dict[str, dict[str, Any]] = {}
     sources: dict[str, str] = {}
+    episodes: dict[str, tuple[int, bool]] = {}
     errors: dict[str, str] = {}
     search_agents: set[str] = set()
     display_sizes: dict[str, tuple[int, str]] = {}
     # The skill trees an unmapped custom agent inherits. Crew supplies them through
     # its bounded directory, so such an agent needs the same search tool a mapped
-    # one gets -- see agent_discovery.inherited_skill_globs.
+    # one gets -- see agent_discovery.inherited_skill_globs. It reads settings and
+    # skill trees, not an agent spec, so it may precede each agent's episode
+    # reading below; an agent spec read must never move up here.
     inherited_globs = inherited_skill_globs(work_dir, kiro_home_dir=kiro_home())
+    main_spec_refused: set[str] = set()
+    from kiro_crew.agent import main_spec_episode, unprojected_main_spec_source
+
     for agent in list_agents(project_dir=str(work_dir)):
         if not agent.filename:
             continue
@@ -3761,10 +3821,19 @@ def prepare_native_skill_projection(
             project_agents_dir(str(work_dir)) if agent.scope == SCOPE_PROJECT else directory
         )
         source = source_dir / agent.filename
+        episode = main_spec_episode()
         spec = _read_agent_spec(source, operation="native_skill_projection", source="acp")
         if spec is None:
             # A spec ``list_agents`` yielded but the reader refuses here changed
             # between the two reads; skip it, exactly as an absent spec is skipped.
+            continue
+        if unprojected_main_spec_source(source, episode):
+            # The view is what kiro-cli runs, so its source decides, whatever name
+            # the start gate resolved before this read: bytes of the main spec
+            # read during an unreadable episode are not ones a rebuild wrote.
+            # Refused (and audited) only if a start or switch asks for this agent.
+            main_spec_refused.add(agent.name)
+            errors[agent.name] = "its spec is the main agent spec, not yet rebuilt"
             continue
         display_sizes[agent.name] = (_display_text_bytes(spec), source.absolute().as_posix())
         # An iterative copy, not ``copy.deepcopy``: the reader admits a spec
@@ -3866,6 +3935,7 @@ def prepare_native_skill_projection(
                 view["prompt"] = "file://" + (source.parent / path).absolute().as_posix()
         specs[agent.name] = view
         sources[agent.name] = source.absolute().as_posix()
+        episodes[agent.name] = episode
 
     _warn_on_display_text(display_sizes)
     try:
@@ -4001,6 +4071,9 @@ def prepare_native_skill_projection(
                         specs,
                         errors,
                         search_agents,
+                        main_spec_refused=main_spec_refused,
+                        sources={name: sources[name] for name in aliases},
+                        episodes={name: episodes[name] for name in aliases},
                     )
                     _remember_view_sources(aliases)
                     # Releases the lease and prunes this home's unleased views

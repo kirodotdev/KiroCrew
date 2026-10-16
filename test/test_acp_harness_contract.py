@@ -476,6 +476,55 @@ async def test_kas_projection_refuses_ungoverned_fork_grants(monkeypatch, tmp_pa
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("project_declares", [False, True], ids=["user-level", "project-declared"])
+@pytest.mark.parametrize("opens", ["before", "during"])
+async def test_kas_projection_refuses_a_spec_read_around_an_unreadable_episode(
+    kas_projection_stubbed, monkeypatch, tmp_path, opens, project_declares
+):
+    """KAS is handed a spec Crew reads by name after the gate, so the read is bound.
+
+    An unreadable-main-spec episode open before the read, or one that begins
+    while it runs, refuses the session with the shared refusal: the main spec may
+    be what that read returned once access came back. A project spec under the
+    work dir that declares the agent does not exempt it, because KAS resolves the
+    user level first and the main spec may be the file that read returned.
+    Mutation pins: dropping the check after the read projects the spec, and
+    letting KAS take the project exemption (``project_first=True``) projects the
+    project-declared case.
+    """
+    from kiro_crew.acp.session_handle import AcpRuntimeError
+
+    if project_declares:
+        project_agents = tmp_path / ".kiro" / "agents"
+        project_agents.mkdir(parents=True)
+        (project_agents / "a.json").write_text(
+            json.dumps({"name": "a", "tools": []}), encoding="utf-8"
+        )
+
+    audited: list[str] = []
+    monkeypatch.setattr(agent_mod, "_audit_main_spec_denial", audited.append)
+    monkeypatch.setattr(agent_mod, "_schedule_main_spec_early_retry", lambda: None)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", opens == "before")
+    monkeypatch.setattr(
+        kas_agents_mod,
+        "build_kas_custom_agents",
+        lambda *a, **k: pytest.fail("projected a spec read during an episode"),
+    )
+    real_load = kas_agents_mod.load_agent_spec
+
+    def _load(agents_dir, agent):
+        if opens == "during":
+            agent_mod._main_spec_episode_revision += 1
+        return real_load(agents_dir, agent)
+
+    monkeypatch.setattr(kas_agents_mod, "load_agent_spec", _load)
+    with pytest.raises(AcpRuntimeError, match="may not start"):
+        await harness_for(ACP_BACKEND_KAS).session_extras("a", work_dir=str(tmp_path))
+    assert audited == ["a"]
+
+
+@pytest.mark.asyncio
 async def test_kas_projection_refuses_an_untranslatable_spec(
     kas_projection_stubbed, monkeypatch, tmp_path
 ):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import asyncio.proactor_events
+import contextlib
 import errno
 import json
 import os
@@ -1214,6 +1215,45 @@ def _reset_reasoning_effort_globals():
     finally:
         _cp._reasoning_effort_values = saved_values
         _cp._reasoning_effort_ordered = saved_ordered
+
+
+@pytest.fixture(autouse=True)
+def _reset_main_spec_gate_globals():
+    """Clear the main-agent start gate's process globals around each test.
+
+    ``agent._main_spec_unreadable`` arms the gate, the skip generation bounds the
+    episode's sibling pass, and the declared name describes the spec the last
+    rebuild wrote. A test that hits
+    the unreadable-spec skip without monkeypatching them would leave the gate
+    armed for whichever test runs next on the worker. A refused start schedules
+    an early retry on a real timer thread, so the factory is swapped for one that
+    records the request and starts nothing; tests that drive the retry install
+    their own.
+    """
+    import kiro_crew.agent as _agent
+
+    real_factory = _agent._main_spec_retry_timer_factory
+
+    def _clear() -> None:
+        _agent._main_spec_unreadable = False
+        _agent._main_spec_episode_revision = 0
+        _agent._main_spec_skip_generation = None
+        _agent._main_spec_declared_name = None
+        pending, _agent._main_spec_retry_timer = _agent._main_spec_retry_timer, None
+        if pending is not None:
+            with contextlib.suppress(Exception):
+                pending.cancel()
+        _agent._main_spec_retry_attempts = 0
+        _agent._main_spec_retry_stopped = False
+        _agent._main_spec_warned.clear()
+
+    _clear()
+    _agent._main_spec_retry_timer_factory = lambda _delay, _callback: None
+    try:
+        yield
+    finally:
+        _agent._main_spec_retry_timer_factory = real_factory
+        _clear()
 
 
 #: ``_isolation_root`` / ``_isolation_dirs`` / ``_isolate_kirocrew_home`` live in the
@@ -2698,3 +2738,28 @@ def _no_leaked_interleave_hook():
             "earlier test leaked it (this test is the victim, not the cause). "
             "Set it with monkeypatch.setattr so it reverts even on failure."
         )
+
+
+@pytest.fixture
+def unreadable_main_episode(monkeypatch):
+    """An open unreadable-main-spec episode with its audit and retry recorded.
+
+    Shared by the ACP runtime test modules that exercise the session-open
+    chokepoint (``test_acp_runtime.py`` and ``test_acp_runtime_session_start.py``).
+    """
+    import kiro_crew.agent as agent_mod
+
+    audited: list[str] = []
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", True)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 1)
+    monkeypatch.setattr(agent_mod, "_main_spec_declared_name", None)
+    monkeypatch.setattr(agent_mod, "_audit_main_spec_denial", audited.append)
+    monkeypatch.setattr(agent_mod, "_schedule_main_spec_early_retry", lambda: None)
+    # A refused open recycles an idle runtime through its kill; the runtimes
+    # here run on a fake process, whose pid no test may signal.
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.acp.runtime import AcpRuntime
+
+    monkeypatch.setattr(AcpRuntime, "kill", AsyncMock())
+    return agent_mod, audited

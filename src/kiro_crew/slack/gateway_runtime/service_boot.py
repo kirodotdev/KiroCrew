@@ -698,6 +698,13 @@ async def run(self: GatewayOrchestrator) -> None:
     # atexit + excepthook were already installed in cli.py before asyncio.run().
     crash_guard.install_loop_handler(asyncio.get_running_loop())
 
+    # A previous run's shutdown in this same process stopped the early
+    # main-spec retry; this run gets its own. It only clears a flag.
+    with contextlib.suppress(Exception):
+        from kiro_crew.agent import resume_main_spec_early_retry
+
+        resume_main_spec_early_retry()
+
     # Log process identity to the gateway log (D3 of Lorikeets-3929)
     logger.info(
         "=== GATEWAY PID=%d STARTED AT %s ===",

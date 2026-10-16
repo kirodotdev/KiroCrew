@@ -385,6 +385,7 @@ from kiro_crew.agent import (
     ensure_agent_materialized,
     require_fork_governance,
     require_fresh_derived_spec,
+    require_main_spec_launch_bound,
     require_unchanged_derived_spec,
 )
 from kiro_crew.agent_sdk import host_auth
@@ -1873,16 +1874,32 @@ class AcpClient:
                 # start must find the launch agent's mode in availableModes even
                 # with no prepared view (see NativeSkillProjection.frame).
                 self._native_skill_projection.advertised_launch_name = self._agent
-            argv = [
-                kiro_bin,
-                KIRO_CLI_SUBCMD,
-                "--agent",
-                (
-                    self._resolve_spawn_agent_argv()
-                    if self._native_skill_projection is not None
-                    else self._agent
-                ),
-            ]
+            self._launch_unbound = self._native_skill_projection is None or not (
+                self._native_skill_projection.decides(self._agent)
+            )
+            self._launch_view_source = None
+            self._launch_view_episode = None
+            if self._launch_unbound:
+                # No view to hand kiro-cli, so it resolves the bare name itself
+                # after the gate above: bound to the unreadable-main-spec episode.
+                try:
+                    await asyncio.to_thread(
+                        require_main_spec_launch_bound, self._agent, self._work_dir
+                    )
+                except ForkGovernanceUnresolved as exc:
+                    raise AcpError(str(exc)) from exc
+            launch_name = (
+                self._resolve_spawn_agent_argv()
+                if self._native_skill_projection is not None
+                else self._agent
+            )
+            if not self._launch_unbound and self._native_skill_projection is not None:
+                # The process runs this view for life: its source and the episode
+                # revision it was built against bind every session open on it
+                # (_send_request), as on the shared runtime.
+                self._launch_view_source = self._native_skill_projection.view_source(launch_name)
+                self._launch_view_episode = self._native_skill_projection.view_episode(launch_name)
+            argv = [kiro_bin, KIRO_CLI_SUBCMD, "--agent", launch_name]
             spawn_label = f"{KIRO_CLI_BIN} {KIRO_CLI_SUBCMD}"
             stderr_label = KIRO_CLI_BIN
             plan = SpawnPlan(argv=argv, spawn_label=spawn_label, stderr_label=stderr_label)

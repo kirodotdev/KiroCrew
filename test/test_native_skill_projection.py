@@ -277,6 +277,9 @@ def test_set_mode_activates_the_launched_agent_without_a_view_then_consumes_it()
     """
     prepared = projection.NativeSkillProjection({"custom": "native-alias"})
     prepared.spawn_agent_name = "kirocrew"
+    # ``mode_id`` resolves the same name with no side effect: the exemption survives it.
+    assert prepared.mode_id("kirocrew") == "kirocrew"
+    assert prepared.spawn_agent_name == "kirocrew"
     activated = prepared.request("session/set_mode", {"sessionId": "s", "modeId": "kirocrew"})
     assert activated["modeId"] == "kirocrew"
     # The exemption is spent: a second activation of the same agent fails closed.
@@ -550,6 +553,294 @@ def test_spawn_agent_still_raises_an_authored_restriction():
     )
     with pytest.raises(ValueError, match="explicitly excluded"):
         prepared.spawn_agent("custom")
+
+
+@pytest.fixture
+def renamed_main(native_tree, monkeypatch):
+    """A readable ``kirocrew.json`` declaring ``custom-main``, its revoked grant still on it.
+
+    The last rebuild could not read it, so the episode is open and nothing has
+    re-projected it. ``custom-main.json`` declares another agent, so while the
+    main spec was unreadable the start gate resolved ``custom-main`` to that file
+    by stem and admitted it. The lock has now cleared and the projection reads.
+    """
+    import kiro_crew.agent as agent_mod
+
+    _home, agents, project = native_tree
+    (agents / "kirocrew.json").write_text(
+        json.dumps({"name": "custom-main", "allowedTools": ["@revoked/delete"]}),
+        encoding="utf-8",
+    )
+    (agents / "custom-main.json").write_text(
+        json.dumps({"name": "someone-else", "tools": []}), encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        projection,
+        "list_agents",
+        lambda **kw: [
+            SimpleNamespace(name="custom-main", filename="kirocrew.json", scope="global"),
+            SimpleNamespace(name="someone-else", filename="custom-main.json", scope="global"),
+        ],
+    )
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", True)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 1)
+    monkeypatch.setattr(agent_mod, "_main_spec_declared_name", "kirocrew")
+    audited: list[str] = []
+    retries: list[bool] = []
+    monkeypatch.setattr(agent_mod, "_audit_main_spec_denial", audited.append)
+    monkeypatch.setattr(agent_mod, "_schedule_main_spec_early_retry", lambda: retries.append(True))
+    return agent_mod, agents, project, audited, retries
+
+
+def test_a_view_built_from_the_unprojected_main_spec_is_refused(renamed_main):
+    """The projection's own source decides, not the name the gate resolved before it.
+
+    The gate admitted ``custom-main`` on ``custom-main.json``; read again, the
+    name is the main spec, and a view of it would launch the revoked grant. The
+    refusal is the gate's own: one SEL denial and an early retry per refused
+    start, and the other agent's view is unaffected. Mutation pin: building the
+    view without checking its source returns an alias here.
+    """
+    agent_mod, _agents, project, audited, retries = renamed_main
+    prepared = projection.prepare_native_skill_projection(project, per_session_element=False)
+    assert "custom-main" not in prepared.specs
+    with pytest.raises(ValueError, match="may not start: the last rebuild could not read"):
+        prepared.spawn_agent("custom-main")
+    with pytest.raises(ValueError, match="may not start"):
+        prepared.request("session/set_mode", {"modeId": "custom-main"})
+    assert audited == ["custom-main", "custom-main"]
+    assert retries == [True, True]
+    assert prepared.spawn_agent("someone-else") == prepared.aliases["someone-else"]
+
+
+def test_an_episode_that_opens_during_the_read_refuses_the_view(renamed_main, monkeypatch):
+    """A skip that lands while the spec is read is a newer episode the bytes predate.
+
+    The flag is clear when the read starts, a rebuild skips (the revision moves)
+    while it runs and a later one closes the episode before the check: the view
+    is still refused. Mutation pin: checking only the flag after the read admits it.
+    """
+    agent_mod, _agents, project, _audited, _retries = renamed_main
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    real_read = projection._read_agent_spec
+
+    def _read_while_an_episode_comes_and_goes(path, **kwargs):
+        data = real_read(path, **kwargs)
+        if Path(path).name == "kirocrew.json":
+            agent_mod._main_spec_episode_revision += 1
+        return data
+
+    monkeypatch.setattr(projection, "_read_agent_spec", _read_while_an_episode_comes_and_goes)
+    prepared = projection.prepare_native_skill_projection(project, per_session_element=False)
+    with pytest.raises(ValueError, match="may not start"):
+        prepared.spawn_agent("custom-main")
+
+
+def test_a_healthy_host_projects_the_main_spec(renamed_main, monkeypatch):
+    """No episode before, during or after the read: the main spec's view is built."""
+    agent_mod, _agents, project, audited, _retries = renamed_main
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    prepared = projection.prepare_native_skill_projection(project, per_session_element=False)
+    assert prepared.spawn_agent("custom-main") == prepared.aliases["custom-main"]
+    assert audited == []
+    # Each view records the episode reading taken before its source was read,
+    # which a launch keeps beside the source. Mutation pin: not recording it
+    # leaves the launch's reading unknown, so the open is refused on a healthy host.
+    for name, alias in prepared.aliases.items():
+        assert prepared.episodes[name] == (1, False)
+        assert prepared.view_episode(alias) == (1, False)
+    assert prepared.view_episode("kc-view-not-published") is None
+
+
+@pytest.fixture
+def inheriting_main(renamed_main, monkeypatch):
+    """``renamed_main`` with both specs unmapped, in a workspace that inherits skill trees.
+
+    Neither spec has a ``skill://`` entry and both list their tools, so each view
+    is built on the inherited-skill-tree path. ``kirocrew.json`` is still the main spec.
+    """
+    agent_mod, agents, project, audited, retries = renamed_main
+    home = agents.parent
+    skill = home / "skills" / "deploy-helper"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: deploy-helper\n---\nBody\n", encoding="utf-8")
+    monkeypatch.setattr("kiro_crew.config.paths.kiro_home", lambda: home)
+    (agents / "kirocrew.json").write_text(
+        json.dumps({"name": "custom-main", "tools": ["read"]}), encoding="utf-8"
+    )
+    (agents / "custom-main.json").write_text(
+        json.dumps({"name": "someone-else", "tools": ["read"]}), encoding="utf-8"
+    )
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    return agent_mod, project, audited
+
+
+def _assert_inherited(prepared, name):
+    assert projection._SEARCH_TOOL in prepared.specs[name]["tools"]
+    assert name not in prepared.search_agents
+
+
+def test_an_inherited_skill_tree_view_records_its_episode_reading(inheriting_main):
+    """The inherited-skill-tree path records the reading like every other view.
+
+    A healthy host admits each view's launch. Mutation pin: a view on that path
+    with no reading is refused by the launch-bound check on a healthy host.
+    """
+    agent_mod, project, audited = inheriting_main
+    prepared = projection.prepare_native_skill_projection(project, per_session_element=False)
+    for name in ("custom-main", "someone-else"):
+        _assert_inherited(prepared, name)
+        alias = prepared.spawn_agent(name)
+        assert prepared.view_episode(alias) == (1, False)
+        agent_mod.require_main_spec_launch_bound(
+            name,
+            project,
+            before=prepared.view_episode(alias),
+            view_source=prepared.view_source(alias),
+        )
+    assert audited == []
+
+
+def test_an_episode_during_an_inherited_views_read_refuses_it(inheriting_main, monkeypatch):
+    """The reading is taken before the source read on the inherited-skill-tree path too.
+
+    An episode comes and goes while the main spec is read: the main spec's view is
+    refused, and the other spec, read after it, is built against the newer reading.
+    Mutation pin: taking the reading after the read admits the main spec's view.
+    """
+    agent_mod, project, _audited = inheriting_main
+    real_read = projection._read_agent_spec
+
+    def _read_while_an_episode_comes_and_goes(path, **kwargs):
+        data = real_read(path, **kwargs)
+        if Path(path).name == "kirocrew.json":
+            agent_mod._main_spec_episode_revision += 1
+        return data
+
+    monkeypatch.setattr(projection, "_read_agent_spec", _read_while_an_episode_comes_and_goes)
+    prepared = projection.prepare_native_skill_projection(project, per_session_element=False)
+    with pytest.raises(ValueError, match="may not start"):
+        prepared.spawn_agent("custom-main")
+    _assert_inherited(prepared, "someone-else")
+    alias = prepared.spawn_agent("someone-else")
+    assert prepared.view_episode(alias) == (2, False)
+
+
+@pytest.mark.parametrize("view", [None, {}], ids=["no-projection", "no-view"])
+def test_a_direct_client_launch_with_no_view_is_refused_during_the_episode(
+    tmp_path, monkeypatch, view
+):
+    """The direct client's launch, driven through ``AcpClient._spawn`` itself.
+
+    With no view for the launch agent the argv carries the bare name, which
+    kiro-cli resolves after the gate (admitting here). While the main spec is
+    unreadable that launch is refused with the shared refusal and no process is
+    started; on a healthy host it launches. Mutation pin: dropping the direct
+    client's bound check records an argv.
+    """
+    from unittest.mock import patch
+
+    import acp_launch_capture as capture_mod
+
+    import kiro_crew.agent as agent_mod
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+    audited: list[str] = []
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", True)
+    monkeypatch.setattr(agent_mod, "_audit_main_spec_denial", audited.append)
+    monkeypatch.setattr(agent_mod, "_schedule_main_spec_early_retry", lambda: None)
+    prepared = None if view is None else projection.NativeSkillProjection(view)
+
+    def _capture():
+        return capture_mod.capture(
+            ACP_BACKEND_KIRO,
+            tmp_path,
+            extra_patches=[
+                patch(
+                    "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+                    return_value=prepared,
+                )
+            ],
+        )
+
+    with pytest.raises(client_mod.AcpError, match="may not start"):
+        _capture()
+    assert audited == ["kirocrew"]
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    assert "--agent" in _capture()["argv"]
+    assert audited == ["kirocrew"]
+
+
+@pytest.mark.parametrize("source", ["main", "unknown"])
+def test_a_direct_client_open_on_a_view_built_before_an_episode_is_refused(
+    tmp_path, monkeypatch, source
+):
+    """The direct client follows the shared runtime's rule at every session open.
+
+    Launched healthy on a view of the main spec (or of an unknown source), the
+    client records the view's source and the episode reading it was built
+    against. An episode then opens and a rebuild closes it: an open on that
+    process is refused with the shared refusal before anything is written,
+    raised as ``AcpError``, which ``ensure_ready`` answers by ending the child
+    and launching a fresh view. Each open verb is refused, ``session/resume``
+    included. Mutation pin: not checking an open verb in the direct client
+    writes that request.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import acp_launch_capture as capture_mod
+
+    import kiro_crew.agent as agent_mod
+    from kiro_crew.acp import client as client_mod
+    from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW, METHOD_SESSION_RESUME
+    from kiro_crew.agent_sdk.backends import ACP_BACKEND_KIRO
+
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    main = (agents / "kirocrew.json").as_posix()
+    audited: list[str] = []
+    monkeypatch.setattr(agent_mod, "KIRO_AGENTS_DIR", agents)
+    monkeypatch.setattr(agent_mod, "_main_spec_unreadable", False)
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 0)
+    monkeypatch.setattr(agent_mod, "_audit_main_spec_denial", audited.append)
+    monkeypatch.setattr(agent_mod, "_schedule_main_spec_early_retry", lambda: None)
+    prepared = projection.NativeSkillProjection(
+        aliases={"kirocrew": "kc-view-0123456789abcdef01234567"},
+        sources={"kirocrew": main} if source == "main" else {},
+        episodes={"kirocrew": (0, False)} if source == "main" else {},
+    )
+    launched: list = []
+    capture_mod.capture(
+        ACP_BACKEND_KIRO,
+        tmp_path,
+        extra_patches=[
+            patch(
+                "kiro_crew.acp.skill_projection.prepare_native_skill_projection",
+                return_value=prepared,
+            )
+        ],
+        observe=launched.append,
+    )
+    client = launched[0]
+    assert client._launch_unbound is False
+    assert client._launch_view_source == (main if source == "main" else "")
+    process = MagicMock()
+    process.stdin = MagicMock()
+    client._process = process
+    client._write_request_bounded = AsyncMock()
+    if source == "main":
+        asyncio.run(client._send_request(METHOD_SESSION_NEW, {}))
+        assert client._write_request_bounded.await_count == 1
+        client._write_request_bounded.reset_mock()
+    monkeypatch.setattr(agent_mod, "_main_spec_episode_revision", 1)
+    for method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME):
+        with pytest.raises(client_mod.AcpError, match="may not start"):
+            asyncio.run(client._send_request(method, {}))
+    client._write_request_bounded.assert_not_awaited()
+    assert audited == ["kirocrew"] * 3
 
 
 def test_unknown_name_with_no_matching_spec_still_passes_through_on_spawn():
@@ -4374,11 +4665,20 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
     import kiro_crew.agent as agent_module
     from kiro_crew.acp import runtime as runtime_module
 
-    spawn = projection.NativeSkillProjection({"crew": SPAWN_ALIAS})
+    def _view(aliases):
+        # What a preparation records beside each alias: the file it was built
+        # from and the episode reading taken before that read.
+        return projection.NativeSkillProjection(
+            aliases,
+            sources={name: (tmp_path / f"{name}.json").as_posix() for name in aliases},
+            episodes={name: agent_module.main_spec_episode() for name in aliases},
+        )
+
+    spawn = _view({"crew": SPAWN_ALIAS})
     if refreshed_alias == "same":
-        fresh = projection.NativeSkillProjection({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
+        fresh = _view({"crew": SPAWN_ALIAS, "other": OTHER_ALIAS})
     elif refreshed_alias == "changed":
-        fresh = projection.NativeSkillProjection({"crew": CHANGED_ALIAS})
+        fresh = _view({"crew": CHANGED_ALIAS})
     else:
         fresh = None
     monkeypatch.setattr(projection, "prepare_native_skill_projection", lambda *a, **k: fresh)
@@ -4403,6 +4703,7 @@ async def test_set_mode_sends_the_fresh_alias_never_a_changed_spawn_one(
         _adopt_skill_projection = runtime_module.AcpRuntime._adopt_skill_projection
         _resolve_start_alias = runtime_module.AcpRuntime._resolve_start_alias
         _superseding_alias = runtime_module.AcpRuntime._superseding_alias
+        _admit_mode_frame = runtime_module.AcpRuntime._admit_mode_frame
         _refuse_if_view_superseded = runtime_module.AcpRuntime._refuse_if_view_superseded
         _refuse_if_view_unverified = runtime_module.AcpRuntime._refuse_if_view_unverified
         _note_unadopted_skill_projection = (

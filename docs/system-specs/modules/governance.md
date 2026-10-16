@@ -1084,7 +1084,77 @@ wrote and the rebuild reports the hold through its private `_held_out` out-param
 the hook reads beside `wrote`. The hold is deliberately NOT folded into `wrote=False`:
 `kirocrew.json` was written, and the dashboard's default-model applier reads `wrote=False` as
 a change that did not land — a held conductor spec would otherwise announce every model
-change as failed and retry it forever. Either way,
+change as failed and retry it forever. An **unreadable** main spec is the third case:
+`kirocrew.json` is present but a read still fails after `read_bytes_with_retry` (a Windows
+sharing violation that outlasts the retry, `EACCES`/`EPERM`, `EIO`). Writing defaults over it
+would erase the user's spec, so the read raises `_AgentSpecUnreadable` and
+`_skip_unreadable_main_spec` ends the cycle. The rebuild checks the file before its self-heal
+migrations run, and takes the same exit if the load or the alias reconcile inside the write
+lock (`mcp_aliases._durable_tool_aliases`, which reports such a file as present, never as
+missing) fails later. `kirocrew.json` and the heartbeat and worker specs mirrored from it are
+left as they are. The steps that write other files (the service and conductor specs, the fork
+refresh, the hook repair) still run, so a moved ceiling still re-filters the forks and the
+conductor specs, and a fork refresh that cannot finish still records the failure the fork gate
+refuses on. Only a missing file (`FileNotFoundError`) or a read that returns invalid UTF-8 or
+JSON (`ValueError`) rebuilds from defaults, and a clean rebuild is the explicit reset that
+writes over an unreadable file. The skip returns `wrote=False`, reports a hold and sets
+`_conductor_spec_held`, so the memo stays pending, the boot baseline stays unseeded, the hourly
+maintenance wake retries, the default-model applier reports the change as not landed, and
+`kirocrew setup` says the config was left unchanged. It warns once per path and errno, since
+the config watcher retries a failed model change every tick, and logs one INFO when a rebuild
+writes the file again. For the same reason the sibling steps run on the first skip of an
+episode and again only when `governance_answer_generation` has moved since the last pass that
+completed without a held write and with its fork refresh run in-line; a boot rebuild defers that refresh to a thread, so its pass records no generation, and a crew-bound shared template the deferred pass then holds is retried by the next skip. A repeat skip under the same generation only keeps the flags set. Until then `require_fork_governance` also gates the main agent and the
+heartbeat and worker specs mirrored from it (`require_main_spec_projected`). It is keyed on the
+spec file a start resolves to, never on a name, since `kirocrew.json` may declare its own
+(`_governed_by_main_spec`): a start resolving to one of those files, by path or file identity,
+is gated, and one resolving to another readable spec is admitted only when that spec declares
+the name. A file found by its stem alone (a nameless spec, or one declaring another name) loses
+to any spec declaring the name, and the unreadable main spec may be that spec once it reads
+again, so the start is gated for the episode. A name that resolves to no file is gated, since the
+unreadable spec may declare it, and so are the main spec's and the mirrors' own names (their
+stems and the name the last written main spec declared) unless another spec declares them. The gate admits a user agent whose own file declares its name, but that admission does not pin the start to the file: with no prepared view, or on KAS, every start is refused while an episode is open (below). A name the gate admitted on another file can still resolve to the main spec once that reads again, so every start is bound to a file. A start with a prepared view hands kiro-cli the view's alias, and the native skill projection checks the view's own source the same way (`unprojected_main_spec_source`): a view built from the main spec or a mirror while an episode was open before, during or after its read is refused for that start or switch with the gate's refusal, its SEL denial and early retry included. A start with no prepared view (projection disabled or at its ceiling, or an agent the projection has no entry for) hands kiro-cli the bare name, which it resolves itself, and no file can be pinned for it, so while an episode is open it is refused with the same refusal (`require_main_spec_launch_bound`). That covers the shared runtime's launch, the direct client's launch, a session start's and a mid-session `set_mode` that the projection does not decide, and every session opened on a shared launch that had no view. Each `session/new` and `session/load` starts on the launch agent, so kiro-cli resolves the launch's bare name again and starts that spec's MCP server commands, whether the session names no agent (`agent=None`, as the code review pool passes), names one it switches to later, or is the model-entitlement probe. The runtime sends both methods through one path, `AcpRuntime._send_session_open`, which runs the launch's check again immediately before the write (`_require_launch_bound_for_session_open`); its generic send paths refuse either method, and a ratchet test holds that no other code sends them. A process launched on a prepared view keeps that view for its whole life, so the same check also runs at every session open against the file the view was built from and the episode reading taken before that file was read, both recorded at the launch (`NativeSkillProjection.sources` and `NativeSkillProjection.episodes`). A rebuild that closes an episode rewrites the spec, never a view a process already runs, so a session opened on a view of the main spec, a mirror or an unknown source is admitted only when the view was built while no episode was open and at the current revision. A view built before an episode opened is refused, named or not, while that episode is open and after a rebuild closes it, and so is one built while an episode was open or with no recorded reading. A view built from another file is bound to that file and is admitted. The revision only grows, so such a refusal holds for the rest of the process's life, and the refusal recycles the process: with no registered session and no other open in flight it is ended through the attributed kill, so every holder's liveness check launches a fresh view for its next open; with a co-tenant it is only marked, `AcpRuntime._is_stale` answers `launch_view` so the background runtime's holder displaces it, and the first refused open made with no co-tenant ends it. The direct client applies the same rule to its own `session/new`, `session/load` and `session/resume`, and to the `set_mode` that activates its launch agent (`AcpClient._send_request`), raised as `AcpError`, which ends that child and launches a fresh view. A session start's `set_mode` on the shared runtime is checked the same way for each attempt (`AcpRuntime._admit_mode_frame`): one naming a view is bound to that view's source and the episode reading it was built against, as a session open on that view is, and one naming a bare name is bound by name. Each of these checks, and the mid-session by-name `set_mode` check, holds until its frame is written: the episode reading it ran against travels with the frame and is compared again under the transport's stdin lock, right before the write (`kiro_crew.acp.frame_admission`), since a co-tenant can hold that lock for as long as kiro-cli is not reading. A reading that moved writes nothing, releases the lock and runs the check again, which refuses or admits on the new reading, and a reading that keeps moving refuses after three attempts with the same SEL denial; a KAS open is held to the reading its payload was built on. A launch with no view keeps the episode bound only, because kiro-cli resolves the bare name from the rewritten spec at each open. A refused probe returns no models and stamps its attempt clock, so it writes one denial per probe window. The KAS host is handed a spec Crew reads by name after the gate, so that read is bound too: an episode open before it, open after it, or begun in between refuses the session. So with no prepared view, or on KAS, every start is refused while an episode is open, because a bare name cannot be pinned to a file. The one exception is a no-view start on kiro-cli whose name a readable project spec declares, since kiro-cli resolves the checkout first, unless it is one of the main spec's own names or the declaring file is the main spec or a mirror (a symlink or hard link to it). KAS resolves the user level first and admits none. The exemption is checked before kiro-cli resolves the name, so a project spec deleted in between lets the name fall through to the user level; that reaches the main spec only if the main spec was also renamed to that name during the episode and reads again, and both changes are the same user's. A start whose frame was written before the episode opened ran before the rebuild that failed, exactly as a start that runs before any rebuild applies a changed ceiling. A frame checked before the episode opened but written after it is not that case: it is held to the episode reading and refused (above). A name a readable project spec declares
+(`<cwd>/.kiro/agents`, which kiro-cli resolves first) is not gated, unless it is the main spec's
+or a mirror's own name. Every launch reaches `require_fork_governance`. A `set_mode` switch
+reaches only its main-spec part, `require_main_spec_projected`, so outside an episode a switch
+reads no lineage sidecar and waits on no fork refresh; fork gating at `set_mode` is #18646. The
+ratchet `test_agent_start_gate_ratchet.py` fails any switch that reaches neither, and
+`test_agent_admission_paths_ratchet.py` pins each launch. Their
+auto-approvals bypass the PreToolUse gate as a fork's do, so the gate is fail-closed within
+the process: while the episode lasts, every start it covers that this process makes is refused, and the refusal tells the user to restore read
+access and that the next rebuild picks the file up. The first refusal of an episode schedules
+the existing held-spec retry (`retry_held_conductor_specs`) early, off the event loop, at 5, 15
+and 60 s apart, then every 60 s for as long as the episode is open, with one timer pending at
+most. A rebuild that writes the spec cancels it, and so does gateway shutdown, so nothing is
+pending outside an episode; a gateway started again in the same process allows them again. A
+timer whose callback was already firing when it was cancelled finds its slot taken (by the close,
+the shutdown or a newer episode's timer) and does nothing. The episode's warnings are its own state
+under the same lock and the close clears them, so a new episode's first warning is never lost. The
+open episode is itself a hold (`_spec_hold_open`): the retry, the profile watch, the ceiling hook
+and the boot baseline read the unreadable flag beside `_conductor_spec_held`, and the template-only
+skip (`_held_rebuild_would_repeat`) never skips an open episode. Only those two functions read
+`_conductor_spec_held` itself; `test_agent_start_gate_ratchet.py` fails any other reader. A rebuild that wrote the spec never clears the
+hold while an overlapping rebuild's skip has the episode open, both flags being written under one
+lock. A rebuild closes the episode only if no skip landed since it read the spec (an episode revision read before the read and compared when it closes), so an older write never closes a newer episode or cancels its retry. A start is therefore admitted within about a minute of the lock clearing, however long the
+lock lasted. The early retry is a stopgap until recovery moves inside the gate (#18860); that
+change deletes the timer, its delay table and its gateway start and shutdown hooks outright
+instead of adapting them.
+Every refusal, a retried start included, also writes a best-effort governance denial to the
+security event log (`log_governance_decision`, `outcome=denied`, `reason` starting
+`cause=unreadable_main_spec`), because each refusal is a permission decision. A failed write
+is logged at WARNING once per episode, at debug after that, and the start is refused regardless. The volume is therefore one
+denial per refused start for as long as the episode lasts: a persistent `EACCES` or `EIO` writes
+one for every chat start and every heartbeat tick, which is the audit trail the repeated refusals
+need, and it ends when a rebuild reads the file again.
+The hourly retry's own warning gives the same remedy while the episode lasts and never
+suggests `kirocrew setup --agent-only --clean`, which would write defaults over the kept file.
+The gate resolves which spec a start runs on and runs no rebuild. The episode ends only when an existing
+rebuild path writes the spec. Recovery inside the gate itself and admitting a start while the
+file stays unreadable are a follow-up. Every other start, and every start on a host with no unreadable
+episode, is unaffected. The episode is PROCESS-LOCAL: the flag lives in the process whose
+rebuild hit the read failure, so another process that starts `--agent kirocrew` on the same
+agents directory without running a rebuild of its own is not gated by it. Binding every start to
+the verdict across processes is #18646. Either way,
 marking the generation synchronised would lose the retry the next poll gives and leave
 forbidden auto-approvals on disk for the process lifetime; holding the memo means every later
 poll retries and the projection lands the moment the failure or refusal clears. The verdict

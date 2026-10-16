@@ -12,10 +12,11 @@ Instance fields written: ``_activated_model``, ``_last_activity``,
 ``_mode_frame_superseded``, ``_next_id``, ``_oauth_emitted_servers``,
 ``_pending_oauth_requests``, ``_stdin_lock``, ``_stdin_stalled``.
 
-Instance fields read: ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
-``_cancelled``, ``_kill_sent``, ``_mcp_report``, ``_mode_frame_awaited``,
+Instance fields read: ``_agent``, ``_buffer``, ``_cancel_grace_secs``, ``_cancel_ts``,
+``_cancelled``, ``_kill_sent``, ``_launch_unbound``, ``_launch_view_episode``,
+``_launch_view_source``, ``_mcp_report``, ``_mode_frame_awaited``,
 ``_native_skill_projection``, ``_process``, ``_stderr_lines``, ``_stderr_task``,
-``memory_mode``.
+``_work_dir``, ``memory_mode``.
 """
 
 from __future__ import annotations
@@ -36,6 +37,7 @@ from kiro_crew.acp.client_timeouts import (
     _READ_TIMEOUT,
     _WAIT_RESPONSE_MAX_TIMEOUT,
 )
+from kiro_crew.acp.frame_admission import FrameAdmission, admit, write_admitted
 from kiro_crew.acp.runtime_models import (
     _extract_advisory_detail,
     _is_model_substitution_advisory,
@@ -57,11 +59,13 @@ from kiro_crew.acp.types import (
     METHOD_SESSION_NEW,
     METHOD_SESSION_RESUME,
     METHOD_SESSION_UPDATE,
+    METHOD_SET_MODE,
     METHOD_SET_MODEL,
     UPDATE_CONFIG_OPTION,
     JsonRpcMessage,
     JsonRpcRequest,
 )
+from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
 from kiro_crew.json_line import parse_json_object_line
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -70,6 +74,17 @@ if TYPE_CHECKING:
 
 #: The client's own logger: this code logged under that name before the split.
 logger = logging.getLogger("kiro_crew.acp.client")
+
+#: The requests that open a session on the running process. Each is checked
+#: against the launch it runs on before it is written (:func:`_send_request`).
+#: ``session/fork`` is deliberately absent: only claude forks at a message, and a
+#: claude launch has no kiro launch to bind. Add it if a bound launch ever sends it.
+_SESSION_OPEN_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SESSION_RESUME})
+#: The requests :func:`_send_request` holds to the launch bound: the session
+#: opens and the ``set_mode`` that activates the launch agent on one. kiro-cli
+#: resolves that ``set_mode``'s bare name on an unbound launch exactly as it
+#: resolves an open's, so the shared runtime refuses it during an episode too.
+_ADMITTED_METHODS = _SESSION_OPEN_METHODS | {METHOD_SET_MODE}
 
 
 def _is_safe_oauth_url(url: str) -> bool:
@@ -121,6 +136,36 @@ async def _send_request(
     """
     if not self._process or not self._process.stdin:
         raise AcpError("ACP process not running")
+    admission: FrameAdmission | None = None
+    if method in _ADMITTED_METHODS:
+        # The shared runtime's rule (AcpRuntime._require_launch_bound_for_session_open):
+        # a launch with no prepared view is bound by name again, and a view by
+        # the file it was built from and the unreadable-main-spec episode
+        # revision it was built against, so a view of the main spec, a mirror or
+        # an unknown source built before an episode opened is refused while it
+        # is open and after a rebuild closes it. The refusal is the shared one
+        # (one SEL denial and the early retry), raised as AcpError, which
+        # ensure_ready answers by ending this child and launching a fresh view.
+        # Only a kiro-cli launch records a binding; other hosts open unchecked.
+        # The frame is held to the episode reading the check ran against until
+        # it is written, under the stdin lock (frame_admission.write_admitted).
+        unbound = getattr(self, "_launch_unbound", False)
+        view_source = None if unbound else getattr(self, "_launch_view_source", None)
+        if unbound or view_source is not None:
+
+            async def _bound() -> None:
+                try:
+                    await asyncio.to_thread(
+                        require_main_spec_launch_bound,
+                        self._agent,
+                        self._work_dir,
+                        before=getattr(self, "_launch_view_episode", None),
+                        view_source=view_source,
+                    )
+                except ForkGovernanceUnresolved as exc:
+                    raise AcpError(str(exc)) from exc
+
+            admission = await admit(_bound, agent=self._agent)
 
     projection = getattr(self, "_native_skill_projection", None)
     if projection is not None:
@@ -144,7 +189,16 @@ async def _send_request(
         # co-tenant waits behind the lock, but a single session can self-wedge
         # too). A stall raises AcpProcessDied, the same recovery a closed pipe
         # already gets.
-        await self._write_request_bounded(data.encode(), req_id, method)
+        if admission is None:
+            await self._write_request_bounded(data.encode(), req_id, method)
+        else:
+            await write_admitted(
+                lambda check: self._write_request_bounded(
+                    data.encode(), req_id, method, before_write=check
+                ),
+                admission,
+                unsettled=AcpError,
+            )
     except (BrokenPipeError, ConnectionResetError) as exc:
         raise AcpProcessDied(f"ACP process pipe broken: {exc}") from exc
     self._last_activity = time.monotonic()
@@ -152,7 +206,12 @@ async def _send_request(
 
 
 async def _write_request_bounded(
-    self: AcpClient, data: bytes, request_id: int, method: str
+    self: AcpClient,
+    data: bytes,
+    request_id: int,
+    method: str,
+    *,
+    before_write: Callable[[], None] | None = None,
 ) -> None:
     """Write a REQUEST frame under the write lock and the same no-progress bound.
 
@@ -181,6 +240,8 @@ async def _write_request_bounded(
     replay is safe. The phase appears only in the log. Either phase marks
     the client stalled, so nothing reuses it: the next
     ``ensure_ready`` kills the child before spawning its replacement.
+    ``before_write`` runs under the lock right before the frame is written and
+    may raise to abort it with nothing written.
     """
     assert self._process is not None and self._process.stdin is not None
     result = await write_request_frame_bounded(
@@ -188,6 +249,7 @@ async def _write_request_bounded(
         self._stdin_write_lock(),
         data,
         bound_secs=transport_framing._RESPONSE_WRITE_BOUND_SECS,
+        before_write=before_write,
     )
     if result is RequestWriteResult.OK:
         return

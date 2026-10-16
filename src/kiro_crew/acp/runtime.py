@@ -61,6 +61,14 @@ from kiro_crew.acp.client import (
     apply_pod_bundle_spawn,
     finish_suspended_spawn,
 )
+from kiro_crew.acp.frame_admission import (
+    ADMITTED_METHODS,
+    FrameAdmission,
+    admit,
+    held_admission,
+    holding,
+    write_admitted,
+)
 from kiro_crew.acp.harness import (
     HarnessAdapter,
     NotificationAliases,
@@ -116,6 +124,7 @@ from kiro_crew.acp.session_handle import (
     AcpRuntimeProtocol,
     AcpSessionHandle,
     _load_watchdog_settings,
+    admit_mode_frame,
     advertised_models_from_session,
 )
 from kiro_crew.acp.session_mcp import (
@@ -599,6 +608,22 @@ def _capped_names(names: list[str]) -> str:
 # message behind it waits too, including the next session start. A start sent
 # behind one therefore spends its own budget on the earlier request.
 _ONE_AT_A_TIME_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD, METHOD_SET_MODE})
+
+# The requests that open a session on the shared process. Each one is sent only
+# through AcpRuntime._send_session_open, which binds it to an unbound launch.
+# session/fork is deliberately absent: only claude forks at a message, and a
+# claude launch has no kiro launch to bind. Add it if a bound launch ever sends it.
+_SESSION_OPEN_METHODS = frozenset({METHOD_SESSION_NEW, METHOD_SESSION_LOAD})
+
+
+def _refuse_raw_session_open(method: str) -> None:
+    """Refuse a session-open method on a generic send path of the runtime.
+
+    ``session/new`` and ``session/load`` go only through
+    :meth:`AcpRuntime._send_session_open`, which binds them to an unbound launch.
+    """
+    if method in _SESSION_OPEN_METHODS:
+        raise ValueError(f"{method} is sent only through _send_session_open")
 
 
 def _queued_behind_note(ahead: list[tuple[str, float]]) -> str:
@@ -1173,6 +1198,17 @@ class AcpRuntime:
         # whose on-disk total bounds every read of the record.
         self._native_launch_view_alias: str | None = None
         self._native_launch_resources: list[Any] | None = None
+        # The kiro-cli launch's binding, checked at every session open
+        # (_require_launch_bound_for_session_open): True when kiro-cli got the
+        # bare name, else the source file of the view it got ("" if unknown,
+        # None for a backend that takes no view) and the unreadable-main-spec
+        # episode reading that view was built against (None if unknown). Once a
+        # session open is refused on that view, every later one would be too:
+        # _launch_view_superseded then marks the process for recycling.
+        self._launch_unbound = False
+        self._launch_view_source: str | None = None
+        self._launch_view_episode: tuple[int, bool] | None = None
+        self._launch_view_superseded = False
         self._extra_env = extra_env or {}
         self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
         self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
@@ -1297,6 +1333,11 @@ class AcpRuntime:
         # never outlives the init scope whose progress it describes (see
         # _stage_init_frame).
         self._session_inits_in_flight = 0
+        # Opens running the launch-bound check ahead of their init scope
+        # (_require_launch_bound_before_setup). Counted beside the scopes only
+        # by the recycle decision (_recycle_superseded_launch); frame staging
+        # and the busy predicate still read the scopes alone.
+        self._session_open_checks_in_flight = 0
         self._pending_init_notifications: deque[JsonRpcMessage] = deque(
             maxlen=_INIT_NOTIFICATION_BUFFER_LIMIT
         )
@@ -1651,7 +1692,7 @@ class AcpRuntime:
         return (time.monotonic() - self._spawn_monotonic) > self._max_age_secs
 
     async def _is_stale(self) -> str | None:
-        """Return the recycle reason ('age' or 'rss'), or None if not stale.
+        """Return the recycle reason ('launch_view', 'age' or 'rss'), or None if not stale.
 
         Distinct from is_alive(): a runtime can be perfectly healthy (process
         running, protocol responsive) yet still be "stale" — e.g. the
@@ -1680,6 +1721,10 @@ class AcpRuntime:
         """
         if self._pid is None:
             return None
+        if getattr(self, "_launch_view_superseded", False):
+            # A session open on this process's launch view was refused, and
+            # every later one would be (_recycle_superseded_launch).
+            return "launch_view"
 
         if self._spawn_monotonic is not None:
             age = time.monotonic() - self._spawn_monotonic
@@ -2187,6 +2232,26 @@ class AcpRuntime:
                 # (_activate_mode_bracketed), and holding the object keeps its
                 # lease -- and them -- out of the prune.
                 self._spawn_skill_projection = projection
+                # With no view for the launch agent kiro-cli resolves the bare
+                # ``--agent`` name itself, after the start gate: bound to the
+                # unreadable-main-spec episode, such a launch is refused, and
+                # a later session that inherits it (agent=None) is checked again.
+                self._launch_unbound = projection is None or not projection.decides(self._agent)
+                self._launch_view_source = None
+                self._launch_view_episode = None
+                self._launch_view_superseded = False
+                if self._launch_unbound:
+                    from kiro_crew.agent import (
+                        ForkGovernanceUnresolved,
+                        require_main_spec_launch_bound,
+                    )
+
+                    try:
+                        await asyncio.to_thread(
+                            require_main_spec_launch_bound, self._agent, self._work_dir
+                        )
+                    except ForkGovernanceUnresolved as exc:
+                        raise AcpRuntimeError(str(exc)) from exc
                 if projection is not None:
                     # Deliberately do NOT set spawn_agent_name here. The shared
                     # runtime activates the launched agent through
@@ -2224,6 +2289,12 @@ class AcpRuntime:
                         # lands here.
                         raise AcpRuntimeError(str(exc)) from exc
                     argv[agent_position] = launch_view_alias
+                    if not self._launch_unbound:
+                        # The process runs this view for life: its source, and
+                        # the episode revision it was built against, are what
+                        # every later session open is checked against.
+                        self._launch_view_source = projection.view_source(launch_view_alias)
+                        self._launch_view_episode = projection.view_episode(launch_view_alias)
                     if not self._member_context and not self._native_launch_sources:
                         if not await asyncio.to_thread(
                             acp_driver.inherits_default_resources, self._work_dir
@@ -5235,7 +5306,11 @@ class AcpRuntime:
         ``on_reserved`` is called with the id BEFORE the write, whose ``drain()``
         can suspend: the response can reach the session queue during that
         suspension, so a caller that must claim it registers the id by then.
+        A ``set_mode`` sent inside :func:`~kiro_crew.acp.frame_admission.holding`
+        is held to that admission under the stdin lock
+        (:meth:`_write_request_admitted`).
         """
+        _refuse_raw_session_open(method)
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")
         if self._dead:
@@ -5264,7 +5339,7 @@ class AcpRuntime:
             # other session. On a stall _write_request_bounded marks the runtime
             # dead and raises AcpRuntimeStdinStalled (an AcpRuntimeDead) -- caught
             # below so the routing registration is dropped like any other death.
-            await self._write_request_bounded(data.encode(), req_id, method)
+            await self._write_request_admitted(data.encode(), req_id, method)
         except AcpRuntimeDead:
             self._routed_requests.pop(req_id, None)
             raise
@@ -5272,6 +5347,12 @@ class AcpRuntime:
             self._routed_requests.pop(req_id, None)
             self._mark_dead(f"pipe broken: {exc}")
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
+        except BaseException:
+            # A refusal under the lock wrote nothing, and a cancellation (one
+            # during the admission's re-check included) leaves no caller: no
+            # answer is wanted.
+            self._routed_requests.pop(req_id, None)
+            raise
 
         self._last_activity = time.monotonic()
         return req_id
@@ -5283,6 +5364,7 @@ class AcpRuntime:
         so it leaves no _routed_requests entry to leak when the server (per the
         ACP spec) sends no response back (e.g. session/cancel).
         """
+        _refuse_raw_session_open(method)
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")
         if self._dead:
@@ -5487,7 +5569,37 @@ class AcpRuntime:
             f"delivering response to req={safe_id}"
         )
 
-    async def _write_request_bounded(self, data: bytes, request_id: int, method: str) -> None:
+    async def _write_request_admitted(self, data: bytes, request_id: int, method: str) -> None:
+        """Write a request frame, held to the caller's admission under the stdin lock.
+
+        A session open or ``set_mode`` sent inside
+        :func:`~kiro_crew.acp.frame_admission.holding` is written only while the
+        unreadable-main-spec episode reading its check ran against still holds,
+        compared under the lock right before the write
+        (:func:`~kiro_crew.acp.frame_admission.write_admitted`). A moved reading
+        writes nothing, releases the lock and runs the check again; its refusal
+        propagates to the caller, which drops the pending request. Every other
+        frame is written as before.
+        """
+        admission = held_admission(method)
+        if admission is None:
+            await self._write_request_bounded(data, request_id, method)
+            return
+        await write_admitted(
+            lambda check: self._write_request_bounded(data, request_id, method, before_write=check),
+            admission,
+            unsettled=AcpRuntimeError,
+            base=self._refuse_write_if_dead,
+        )
+
+    async def _write_request_bounded(
+        self,
+        data: bytes,
+        request_id: int,
+        method: str,
+        *,
+        before_write: Callable[[], None] | None = None,
+    ) -> None:
         """Write a REQUEST frame under the write lock and the same no-progress bound.
 
         The request twin of :meth:`_write_response_bounded`, for the same
@@ -5520,7 +5632,10 @@ class AcpRuntime:
         the recovery resume from restored state rather than replay the prompt the
         paused backend may have consumed; a ``LOCK_STALL`` wrote no byte, so it is
         not ambiguous and its replay is safe. The method name and request id appear
-        only through ``_loggable_request_id``.
+        only through ``_loggable_request_id``. A caller's ``before_write`` replaces
+        the dead-runtime check under the lock (a session open passes one that runs
+        it first, :func:`kiro_crew.acp.frame_admission.under_lock_check`) and may
+        raise to abort the write with nothing written.
         """
         assert self._process is not None and self._process.stdin is not None
         result = await write_request_frame_bounded(
@@ -5528,7 +5643,7 @@ class AcpRuntime:
             self._stdin_write_lock(),
             data,
             bound_secs=_RESPONSE_WRITE_BOUND_SECS,
-            before_write=self._refuse_write_if_dead,
+            before_write=self._refuse_write_if_dead if before_write is None else before_write,
         )
         if result is RequestWriteResult.OK:
             return
@@ -5604,7 +5719,17 @@ class AcpRuntime:
         ``drain()`` can suspend: the reader may resolve the future during that
         suspension, so a caller that must see the answer in order with the frames
         after it has to hold the future by then.
+
+        It writes through :meth:`_write_request_bounded`, which reads no held
+        admission, so it refuses every admitted method: a session open goes
+        through :meth:`_send_session_open`, and a ``set_mode`` through
+        :meth:`send_request` or :meth:`_send_and_await` inside ``holding``.
         """
+        _refuse_raw_session_open(method)
+        if method in ADMITTED_METHODS:
+            raise ValueError(
+                f"{method} is sent only under holding(), through _write_request_admitted"
+            )
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")
         if self._dead:
@@ -6314,6 +6439,186 @@ class AcpRuntime:
             "started. Start it again; if it keeps failing, restart the gateway."
         )
 
+    async def _require_launch_bound_for_session_open(self) -> None:
+        """Check a session opened on this process against the launch it runs on.
+
+        Every ``session/new`` and ``session/load`` starts on the agent the process
+        was launched as: a session that names no agent stays on it and sends no
+        ``set_mode``, and a named one runs on it until its ``set_mode``. When that
+        launch had no prepared view (``_launch_unbound``), kiro-cli resolves the
+        bare ``--agent`` name again for the new session and starts that spec's
+        MCP server commands, so the check the launch passed is run again
+        (:func:`kiro_crew.agent.require_main_spec_launch_bound`). When it had a
+        view, the session runs that view, which the process keeps for life, so
+        the same check runs against the file the view was built from
+        (``_launch_view_source``) and the episode revision it was built against
+        (``_launch_view_episode``): a view of the main spec, a mirror or an
+        unknown source built before an episode opened is refused while it is
+        open and after a rebuild closes it. A refusal is the shared one: one SEL
+        denial and the early retry.
+
+        A view refused once is refused for the process's life, so the refusal
+        also recycles the process (:meth:`_recycle_superseded_launch`).
+        """
+        if getattr(self, "_launch_unbound", False):
+            view_source = None
+        elif (view_source := getattr(self, "_launch_view_source", None)) is None:
+            return
+        from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+        try:
+            await asyncio.to_thread(
+                require_main_spec_launch_bound,
+                self._agent,
+                self._work_dir,
+                before=getattr(self, "_launch_view_episode", None),
+                view_source=view_source,
+            )
+        except ForkGovernanceUnresolved as exc:
+            if view_source is not None:
+                await self._recycle_superseded_launch()
+            raise AcpRuntimeError(str(exc)) from exc
+
+    async def _require_launch_bound_before_setup(self) -> None:
+        """Run the launch-bound check early, as an open the recycle decision counts.
+
+        ``create_session`` and ``load_session`` check before their setup, ahead
+        of the init scope their request runs in. The refusal decides whether to
+        end the process (:meth:`_recycle_superseded_launch`) from the opens in
+        flight, so the early check is counted for its length
+        (``_session_open_checks_in_flight``): the decision then counts the
+        refused open exactly as it counts one refused in
+        :meth:`_send_session_open`, whose caller holds an init scope, and an
+        open whose request is still unanswered always reads as a co-tenant.
+        Every call of :meth:`_require_launch_bound_for_session_open` is counted
+        one way or the other.
+        """
+        # getattr: a runtime built without __init__ (a test seam) has no count.
+        self._session_open_checks_in_flight = getattr(self, "_session_open_checks_in_flight", 0) + 1
+        try:
+            await self._require_launch_bound_for_session_open()
+        finally:
+            self._session_open_checks_in_flight -= 1
+
+    async def _recycle_superseded_launch(self) -> None:
+        """Retire a process whose launch view a session open was refused on.
+
+        Marked first, so a holder that asks staleness displaces it
+        (:meth:`_is_stale` answers ``"launch_view"``). When the refused open is
+        the only one in flight and no session is registered, the process is
+        ended through the attributed kill, so every holder's liveness check
+        launches a fresh view for its next open. The refused open is always
+        counted, in ``_session_inits_in_flight`` when it was refused in
+        :meth:`_send_session_open` (every caller holds an init scope) or in
+        ``_session_open_checks_in_flight`` when it was refused before its setup
+        (:meth:`_require_launch_bound_before_setup`), so a total above one is
+        another open, one whose request may already be on the wire. A
+        co-tenant keeps the process until it leaves: each later open is
+        refused, and the first one made with no co-tenant ends it.
+
+        One open is not counted. It passed its early check in
+        :meth:`_require_launch_bound_before_setup` and has not yet entered its
+        init scope (``create_session``'s admission step, ``load_session``'s
+        ``_session_start_budget``). A concurrent refusal can end the process
+        under it. That is safe: the open has no request on the wire, and its
+        own check at the chokepoint, :meth:`_send_session_open`, refuses it,
+        because the episode revision only grows and the view is refused for
+        the process's life. Never raises: the refusal is what the caller must
+        see.
+        """
+        self._launch_view_superseded = True
+        opens = self._session_inits_in_flight + getattr(self, "_session_open_checks_in_flight", 0)
+        if self._session_queues or opens > 1 or self._start_collectors:
+            return
+        try:
+            await self.kill(expected=True, reason="launch view predates a main-spec episode")
+        except Exception:
+            logger.warning("could not end a runtime whose launch view was refused", exc_info=True)
+
+    async def _send_session_open(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout: float,
+        built_on: tuple[int, bool] | None = None,
+        built_for: str = "",
+    ) -> dict[str, Any]:
+        """Send a ``session/new`` or ``session/load``: the one path either takes.
+
+        The launch-bound check runs here, and the frame is held to the episode
+        reading it ran against until it is written: compared again under the
+        stdin lock, right before the write, since a co-tenant can hold that lock
+        for as long as kiro-cli is not reading (:meth:`_write_request_admitted`).
+        So no caller can open a session on an unbound launch, or on a view built
+        before an episode, while an unreadable-main-spec episode is open.
+        ``test_acp_runtime`` holds a ratchet that no other code in this module
+        sends either method.
+
+        *built_on* is the episode reading a wire-registered host's payload was
+        built against (:attr:`SessionExtras.main_spec_episode`, KAS), for the
+        agent *built_for*: the open is also held to it, so an episode that opened
+        after the payload was built refuses the open through the host's own
+        launch bound.
+        """
+        if method not in _SESSION_OPEN_METHODS:
+            raise ValueError(f"not a session-open method: {method}")
+        admission = await admit(
+            lambda: self._check_session_open(built_on, built_for), agent=built_for or self._agent
+        )
+        with holding(admission):
+            return await self._send_and_await(method, params, timeout=timeout)
+
+    async def _check_session_open(self, built_on: tuple[int, bool] | None, built_for: str) -> None:
+        """The admission check of :meth:`_send_session_open`, run again when it moved."""
+        await self._require_launch_bound_for_session_open()
+        if built_on is not None:
+            await self._require_payload_built_on_current_episode(built_for, built_on)
+
+    async def _require_payload_built_on_current_episode(
+        self, agent: str, built_on: tuple[int, bool]
+    ) -> None:
+        """Refuse an open whose wire payload was built before the current episode reading.
+
+        The host's own launch bound (``KasHarness.session_extras``), run again
+        against the reading the payload was built on. A healthy host passes at
+        once.
+        """
+        from kiro_crew.agent import ForkGovernanceUnresolved, require_main_spec_launch_bound
+
+        try:
+            await asyncio.to_thread(
+                require_main_spec_launch_bound,
+                agent,
+                self._work_dir,
+                before=built_on,
+                project_first=False,
+            )
+        except ForkGovernanceUnresolved as exc:
+            raise AcpRuntimeError(str(exc)) from exc
+
+    async def _admit_mode_frame(
+        self, mode_agent: str, projection: Any, alias: str | None
+    ) -> FrameAdmission:
+        """The admission one start-bracket ``set_mode`` frame is held to.
+
+        Both checks a session open on the same name or view runs, against the
+        episode reading taken before them: :func:`~kiro_crew.agent.require_main_spec_projected`
+        for *mode_agent*, then the launch bound of what the frame names. A view
+        alias *projection* published is bound to the file that view was built
+        from and the episode reading it was built against, as a session open on
+        a process launched on that view is; so a view of the main spec built
+        before an episode is refused, whether the episode opened before this
+        attempt or while its frame waited for the stdin lock. A bare name, which
+        kiro-cli resolves on its own (no projection, none that decides the
+        agent, or the launch agent with no view), is bound by name. Built for
+        each attempt, so a retry or a newer adopted view is held to the view it
+        actually names. The one mode-frame builder,
+        :func:`~kiro_crew.acp.session_handle.admit_mode_frame`, which a
+        mid-session switch uses too.
+        """
+        return await admit_mode_frame(mode_agent, self._work_dir, projection, alias)
+
     async def _activate_mode_bracketed(
         self,
         session_id: str,
@@ -6354,7 +6659,8 @@ class AcpRuntime:
           payload's OWN snapshot. No gate call on this path: a second snapshot for one
           consumed load is the defect, not a safeguard.
         * otherwise -- the spec is consumed HERE: kiro-cli reads it from disk at
-          ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send,
+          ``set_mode`` and boots that agent's MCP servers. Gated BEFORE the send, by
+          ``require_main_spec_projected`` and then the snapshot,
           because a stale mirror activated here mounts and auto-approves a server the
           default agent does not have.
 
@@ -6366,7 +6672,9 @@ class AcpRuntime:
         """
         from kiro_crew.agent import (
             DerivedSpecStale,
+            ForkGovernanceUnresolved,
             require_fresh_derived_spec,
+            require_main_spec_projected,
             require_unchanged_derived_spec,
         )
 
@@ -6374,10 +6682,16 @@ class AcpRuntime:
             mode_snapshot = payload_snapshot
         else:
             try:
+                # The main-spec part of the spawn's start gate, for the agent
+                # this line activates: the main spec's agent switched to here
+                # passed no spawn gate. Bounded to the unreadable-spec episode.
+                # Before the snapshot, so the snapshot judges whatever the
+                # gate's own rebuild wrote.
+                await asyncio.to_thread(require_main_spec_projected, mode_agent, self._work_dir)
                 mode_snapshot = await asyncio.to_thread(
                     require_fresh_derived_spec, mode_agent, self._work_dir
                 )
-            except DerivedSpecStale as exc:
+            except (DerivedSpecStale, ForkGovernanceUnresolved) as exc:
                 await self.terminate_session(session_id)
                 raise AcpRuntimeError(str(exc)) from exc
         try:
@@ -6488,6 +6802,18 @@ class AcpRuntime:
             # agent (an older alias, or the authored spec kiro-cli cached) is proven
             # to match the spec on disk, so none is activated in its place. Every other
             # error propagates as before.
+            # Every frame this bracket writes on kiro-cli is held to an admission
+            # built right before it is sent (_admit_mode_frame), from the view or
+            # name that attempt names: a frame waiting for the stdin lock while an
+            # episode opens is not written. A wire-registered definition is one
+            # Crew read and sent, bound where the host's harness built it. A name
+            # the projection does not decide is checked once first, before its
+            # alias is resolved, so it gets the episode's refusal (its SEL denial
+            # and early retry) rather than the projection's "no view".
+            if not wire_registered and (
+                projection_now is None or not projection_now.decides(mode_agent)
+            ):
+                await self._admit_mode_frame(mode_agent, projection_now, None)
             params = set_mode_params(session_id, mode_id or mode_agent)
             # Translated from the projection this bracket adopted and sent as
             # fixed wire params -- past the send's own translation, which reads
@@ -6540,9 +6866,21 @@ class AcpRuntime:
                 if sent_alias is not None:
                     self._refuse_if_view_unverified(mode_agent, used_generation)
                 try:
-                    await self._send_and_await(
-                        METHOD_SET_MODE, wire, timeout=budget, **untranslated
-                    )
+                    if wire_registered:
+                        # Unheld: this activates the payload the held session open
+                        # registered (built_on), and kiro-cli is not on this path,
+                        # so the frame names no file the host reads now.
+                        await self._send_and_await(
+                            METHOD_SET_MODE, wire, timeout=budget, **untranslated
+                        )
+                    else:
+                        mode_admission = await self._admit_mode_frame(
+                            mode_agent, projection_now, sent_alias
+                        )
+                        with holding(mode_admission):
+                            await self._send_and_await(
+                                METHOD_SET_MODE, wire, timeout=budget, **untranslated
+                            )
                 except AcpModeNotFound as exc:
                     if sent_alias is None or exc.mode_id != sent_alias:
                         raise
@@ -7296,6 +7634,10 @@ class AcpRuntime:
             self._stderr_lines.clear()
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
+        # Checked here as well as in _send_session_open, so a refusal lands
+        # before the admission gate: it takes no start permit and records no
+        # failed start sample for the adaptive controller.
+        await self._require_launch_bound_before_setup()
 
         # Inject the shared gateway's broker stubs unless the caller supplied an
         # explicit list. A session-injected server outranks the same-named entry
@@ -7513,7 +7855,13 @@ class AcpRuntime:
         # samples for its ``start_latency`` / ``timeouts`` signals.
         start_t0 = time.monotonic()
         try:
-            resp = await self._send_and_await(METHOD_SESSION_NEW, params, timeout=budget)
+            resp = await self._send_session_open(
+                METHOD_SESSION_NEW,
+                params,
+                timeout=budget,
+                built_on=kas_extras.main_spec_episode,
+                built_for=active_agent,
+            )
             session_id = str(resp.get("sessionId") or "")
             permit.release()
             if not session_id:
@@ -8120,7 +8468,11 @@ class AcpRuntime:
             self._session_inits_in_flight += 1
             try:
                 try:
-                    resp = await self._send_and_await(
+                    # A refusal of an unbound launch raises here, before the
+                    # request is written, and takes the failure arm below: the
+                    # attempt clock is stamped, so one probe per TTL writes one
+                    # SEL denial.
+                    resp = await self._send_session_open(
                         METHOD_SESSION_NEW, params, timeout=_ENTITLEMENT_PROBE_TIMEOUT
                     )
                     session_id = str(resp.get("sessionId") or "")
@@ -8209,6 +8561,9 @@ class AcpRuntime:
         if not self._can_load_session:
             raise AcpRuntimeError("Backend does not advertise session/load support")
         agent = await self._source_agent(agent)
+        # Checked before the resume's setup as well as in _send_session_open,
+        # exactly as create_session checks before its admission gate.
+        await self._require_launch_bound_before_setup()
 
         # Re-declare the pooled broker stubs so a resumed session keeps talking
         # to the broker — same injection as create_session() and the AcpClient
@@ -8364,6 +8719,7 @@ class AcpRuntime:
         # compares against it rather than re-reading the file.
         kas_agents = None
         payload_snapshot = None
+        kas_built_on = None
         if self._acp_backend == ACP_BACKEND_KAS:
             kas_extras = await self._kas_custom_agents(
                 active_agent,
@@ -8374,6 +8730,7 @@ class AcpRuntime:
             )
             kas_agents = kas_extras.custom_agents
             payload_snapshot = kas_extras.derived_spec_snapshot
+            kas_built_on = kas_extras.main_spec_episode
             # Same carriage as create_session: a resumed session re-initializes
             # its servers, and the managed ones must win the same-name contest
             # on load exactly as they did on new.
@@ -8400,7 +8757,13 @@ class AcpRuntime:
             # staging in _reader_loop, closed by _finish_session_init; see
             # docs/system-specs/modules/acp-client.md "loading a session
             # triggers MCP re-initialization") — so it gets the same budget.
-            resp = await self._send_and_await(METHOD_SESSION_LOAD, load_params, timeout=budget)
+            resp = await self._send_session_open(
+                METHOD_SESSION_LOAD,
+                load_params,
+                timeout=budget,
+                built_on=kas_built_on,
+                built_for=active_agent,
+            )
 
             # A genuine resume echoes "modes" in the response (same signal AcpClient
             # keys on). Anything else means load did not actually restore state.
@@ -8673,7 +9036,9 @@ class AcpRuntime:
         skill projection's name translation: the one caller is the ``set_mode``
         bracket, which passes params it translated itself and, between attempts,
         re-derives them only from the newest adopted projection
-        (:meth:`_activate_mode_bracketed`).
+        (:meth:`_activate_mode_bracketed`). A session open or ``set_mode`` sent
+        inside :func:`~kiro_crew.acp.frame_admission.holding` is held to that
+        admission under the stdin lock (:meth:`_write_request_admitted`).
         """
         if not self._process or not self._process.stdin:
             raise AcpRuntimeDead("process not running")
@@ -8700,7 +9065,7 @@ class AcpRuntime:
             # drain under the shared write lock and must not park it against
             # a flow-control-paused kiro-cli. A stall raises AcpRuntimeStdinStalled
             # (an AcpRuntimeDead), caught below to retrieve/cancel the future.
-            await self._write_request_bounded(data.encode(), req_id, method)
+            await self._write_request_admitted(data.encode(), req_id, method)
         except AcpRuntimeDead:
             # Reached through _refuse_write_if_dead (a sibling stall marked the
             # runtime dead while this caller held the lock wait) OR through
@@ -8720,6 +9085,13 @@ class AcpRuntime:
             self._pending_requests.pop(req_id, None)
             self._mark_dead(f"pipe broken: {exc}")
             raise AcpRuntimeDead(f"pipe broken: {exc}") from exc
+        except BaseException:
+            # A refusal under the lock wrote nothing, and a cancellation (one
+            # during the admission's re-check included) leaves no caller, so
+            # drop the registration and cancel its future, leaving no orphan.
+            self._pending_requests.pop(req_id, None)
+            future.cancel()
+            raise
 
         self._last_activity = time.monotonic()
 

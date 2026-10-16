@@ -895,7 +895,7 @@ class TestAcpRuntimeLoadSession:
         import kiro_crew.acp.client as client_mod
         import kiro_crew.acp.runtime as rt_mod
 
-        _SEND_FUNCS = {"_send_request", "_send_and_await"}
+        _SEND_FUNCS = {"_send_request", "_send_and_await", "_send_session_open"}
         # All THREE session-creating verbs. ``session/resume`` is the standard
         # alternative to ``session/load`` for an agent that keeps sessions without
         # implementing full loading, and a resumed session re-declares its whole MCP

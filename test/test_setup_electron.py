@@ -192,7 +192,8 @@ class TestSetupDesktopPrompt:
         installs: list[int] = []
         monkeypatch.delenv("KIROCREW_PROJECT_DIR", raising=False)
         monkeypatch.setattr(
-            "kiro_crew.agent.install_agent", lambda clean=False: tmp_path / "agent.json"
+            "kiro_crew.agent.install_agent",
+            lambda clean=False, _wrote_out=None: tmp_path / "agent.json",
         )
         monkeypatch.setattr("kiro_crew.agent.ensure_kirocrew_on_path", lambda *a, **k: None)
         monkeypatch.setattr("kiro_crew.mcp_cleanup.clean_stale_managed_mcp", lambda: [])
