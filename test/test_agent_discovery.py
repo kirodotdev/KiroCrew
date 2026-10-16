@@ -712,11 +712,13 @@ class TestSpecModelCoercion:
         assert info.package == ""
         # to_dict() is the wire shape the dashboard renders. Non-string fields
         # are excluded by NAME, not skipped silently: the lists render as chips
-        # (one element each) and `kirocrew_owned` is the bool provenance flag —
-        # everything else must be a plain string or React error #31 returns.
+        # (one element each), `kirocrew_owned` is the bool provenance flag and
+        # `markdown_only` the bool backend-compatibility flag — everything else
+        # must be a plain string or React error #31 returns.
         assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers", "kirocrew_owned"))
+                   ("skills", "mcp_servers", "kirocrew_owned", "markdown_only"))
         assert isinstance(info.to_dict()["kirocrew_owned"], bool)
+        assert isinstance(info.to_dict()["markdown_only"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
         """`skills` / `mcp_servers` are rendered as chips, one element each.

@@ -7645,6 +7645,10 @@
       "timeout": "Délai dépassé",
       "trace_load_failed": "Impossible de charger la trace de cette exécution."
     },
+    "markdownOnlyBadge": {
+      "label": "{{backends}} uniquement",
+      "tooltip": "Cet agent ne démarrera pas ici. Il est défini en Markdown, et {{current}} n'exécute que des agents JSON. Utilise {{backends}} ou ajoute un fichier JSON pour lui."
+    },
     "markdownPanel": {
       "add_to_artifact_library": "Ajouter à la bibliothèque d'artefacts",
       "add_to_artifacts": "Ajouter aux artefacts",

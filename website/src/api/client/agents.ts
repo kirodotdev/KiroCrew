@@ -287,7 +287,16 @@ export function createAgentsEndpoints({ post, put, del, j, jfetch: fetch, sessio
     agentCatalog: (sessionKey?: string) =>
       fetch('/api/agents/catalog', {
         headers: sessionKey ? { 'X-Session-Key': sessionKey } : { ..._sk },
-      }).then(j) as Promise<{ agents: KiroCrewAgent[]; default_agent: string }>,
+      }).then(j) as Promise<{
+        agents: KiroCrewAgent[]
+        default_agent: string
+        /** The harness this chat (no key: a new session) runs, config spelling. */
+        session_backend?: string
+        /** The harnesses that refuse a markdown-only agent. */
+        markdown_refused_backends?: string[]
+        /** The harnesses that load a markdown agent spec. */
+        markdown_spec_backends?: string[]
+      }>,
     /** `extra` carries per-request headers (a guided create's `X-Guide-*`);
      *  it rides THIS request only, never the shared transport. */
     createKirocrewAgent: (body: object, extra?: Record<string, string>) =>

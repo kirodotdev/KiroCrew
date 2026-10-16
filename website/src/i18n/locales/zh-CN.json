@@ -7397,6 +7397,10 @@
       "timeout": "超时",
       "trace_load_failed": "无法加载此次运行的跟踪记录。"
     },
+    "markdownOnlyBadge": {
+      "label": "仅限 {{backends}}",
+      "tooltip": "此代理在这里无法启动。它用 Markdown 定义，而 {{current}} 只运行 JSON 代理。改用 {{backends}}，或为它添加一个 JSON 文件。"
+    },
     "markdownPanel": {
       "add_to_artifact_library": "添加到产物库",
       "add_to_artifacts": "添加到产物",

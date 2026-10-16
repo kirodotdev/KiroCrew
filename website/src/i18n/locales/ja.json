@@ -7397,6 +7397,10 @@
       "timeout": "タイムアウト",
       "trace_load_failed": "この実行のトレースを読み込めませんでした。"
     },
+    "markdownOnlyBadge": {
+      "label": "{{backends}} 専用",
+      "tooltip": "このエージェントはここでは起動しません。Markdown で定義されていて、{{current}} は JSON エージェントしか実行しないためです。{{backends}} を使うか、JSON ファイルを追加してください。"
+    },
     "markdownPanel": {
       "add_to_artifact_library": "アーティファクトライブラリに追加",
       "add_to_artifacts": "アーティファクトに追加",

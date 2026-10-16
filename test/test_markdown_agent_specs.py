@@ -444,6 +444,91 @@ class TestRoster:
         assert [(a.name, a.description) for a in rows] == [("bot", "json twin")]
         assert any("bot.md is shadowed" in r.getMessage() for r in caplog.records)
 
+    # ── markdown_only: the roster's answer to "can kiro-cli run this?" ──
+    # Same rule as ``agent.markdown_spec_for_agent`` (the activation guard's
+    # refusal branch): only a name no JSON spec claims in either scope is
+    # markdown-only. Each test pins the roster to that helper's answer.
+
+    def test_a_markdown_only_agent_is_flagged_and_a_json_one_is_not(self, agents_dir: Path) -> None:
+        (agents_dir / "mdbot.md").write_text(_md("mdbot"), encoding="utf-8")
+        (agents_dir / "plain.json").write_text(json.dumps({"name": "plain"}), encoding="utf-8")
+
+        rows = {a.name: a for a in list_agents(agents_dir=agents_dir)}
+
+        assert rows["mdbot"].markdown_only is True
+        assert rows["plain"].markdown_only is False
+        assert rows["mdbot"].to_dict()["markdown_only"] is True
+        assert agent_mod.markdown_spec_for_agent("mdbot") == agents_dir / "mdbot.md"
+        assert agent_mod.markdown_spec_for_agent("plain") is None
+
+    def test_a_json_twin_is_not_markdown_only(self, agents_dir: Path) -> None:
+        (agents_dir / "bot.json").write_text(json.dumps({"name": "bot"}), encoding="utf-8")
+        (agents_dir / "bot.md").write_text(_md("bot"), encoding="utf-8")
+
+        [row] = list_agents(agents_dir=agents_dir)
+
+        assert row.markdown_only is False
+
+    def test_a_differently_named_json_declaring_the_name_is_not_markdown_only(
+        self, agents_dir: Path
+    ) -> None:
+        """kiro-cli matches ``--agent`` on the declared name, so ``other.json``
+        declaring ``bot`` runs even though ``bot.md`` is the row's file."""
+        (agents_dir / "bot.md").write_text(_md("bot"), encoding="utf-8")
+        (agents_dir / "other.json").write_text(json.dumps({"name": "bot"}), encoding="utf-8")
+
+        assert [a.markdown_only for a in list_agents(agents_dir=agents_dir)] == [False]
+
+    def test_a_project_markdown_over_a_user_json_is_not_markdown_only(
+        self, agents_dir: Path, tmp_path: Path
+    ) -> None:
+        """The project ``.md`` row shadows in the roster, but kiro-cli skips
+        markdown and runs the user-level JSON, so the row is runnable."""
+        (agents_dir / "bot.json").write_text(json.dumps({"name": "bot"}), encoding="utf-8")
+        proj = tmp_path / "repo"
+        d = proj / ".kiro" / "agents"
+        d.mkdir(parents=True)
+        (d / "bot.md").write_text(_md("bot"), encoding="utf-8")
+
+        [row] = list_agents(agents_dir=agents_dir, project_dir=str(proj))
+
+        assert (row.scope, row.filename, row.markdown_only) == ("project", "bot.md", False)
+        assert agent_mod.markdown_spec_for_agent("bot", proj) is None
+
+    def test_a_user_markdown_under_a_project_json_is_not_markdown_only(
+        self, agents_dir: Path, tmp_path: Path
+    ) -> None:
+        (agents_dir / "bot.md").write_text(_md("bot"), encoding="utf-8")
+        proj = tmp_path / "repo"
+        d = proj / ".kiro" / "agents"
+        d.mkdir(parents=True)
+        (d / "bot.json").write_text(json.dumps({"name": "bot"}), encoding="utf-8")
+
+        [row] = list_agents(agents_dir=agents_dir, project_dir=str(proj))
+
+        assert (row.scope, row.filename, row.markdown_only) == ("project", "bot.json", False)
+
+    def test_markdown_in_both_scopes_is_markdown_only(
+        self, agents_dir: Path, tmp_path: Path
+    ) -> None:
+        (agents_dir / "bot.md").write_text(_md("bot"), encoding="utf-8")
+        proj = tmp_path / "repo"
+        d = proj / ".kiro" / "agents"
+        d.mkdir(parents=True)
+        (d / "bot.md").write_text(_md("bot"), encoding="utf-8")
+
+        [row] = list_agents(agents_dir=agents_dir, project_dir=str(proj))
+
+        assert (row.scope, row.markdown_only) == ("project", True)
+        assert agent_mod.markdown_spec_for_agent("bot", proj) == d / "bot.md"
+
+    def test_markdown_only_is_a_real_bool(self) -> None:
+        """An edition row passing a truthy non-bool must not read as a claim."""
+        info = agent_discovery.AgentInfo(
+            name="a", filename="a.md", description="", model="", markdown_only="yes"  # type: ignore[arg-type]
+        )
+        assert info.markdown_only is False
+
     def test_two_differing_markdown_specs_declaring_one_name_are_ambiguous(
         self, agents_dir: Path
     ) -> None:

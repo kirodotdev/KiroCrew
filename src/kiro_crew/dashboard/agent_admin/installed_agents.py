@@ -86,7 +86,12 @@ async def api_agents_installed(request: web.Request) -> web.Response:
         return agents
 
     agents = await asyncio.get_running_loop().run_in_executor(discovery_executor(), _collect)
-    return web.json_response([a.to_dict() for a in agents])
+    # ``markdown_only`` is withheld: it means "cannot run on this chat's
+    # harness" only beside a harness, and this global listing has none. The
+    # pickers read it from ``/api/agents/catalog``, which carries both.
+    return web.json_response(
+        [{k: v for k, v in a.to_dict().items() if k != "markdown_only"} for a in agents]
+    )
 
 
 async def api_kirocrew_agents_sync(request: web.Request) -> web.Response:

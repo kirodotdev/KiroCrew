@@ -7645,6 +7645,10 @@
       "timeout": "Tiempo agotado",
       "trace_load_failed": "No se pudo cargar el registro de esta ejecución."
     },
+    "markdownOnlyBadge": {
+      "label": "Solo {{backends}}",
+      "tooltip": "Este agente no arrancará aquí. Está definido en Markdown y {{current}} solo ejecuta agentes JSON. Usa {{backends}} o añade un archivo JSON para él."
+    },
     "markdownPanel": {
       "add_to_artifact_library": "Añadir a la biblioteca de artefactos",
       "add_to_artifacts": "Añadir a Artefactos",

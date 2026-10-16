@@ -7521,6 +7521,10 @@
       "timeout": "समय समाप्त",
       "trace_load_failed": "इस रन का ट्रेस लोड नहीं किया जा सका।"
     },
+    "markdownOnlyBadge": {
+      "label": "केवल {{backends}}",
+      "tooltip": "यह एजेंट यहाँ शुरू नहीं होगा। यह Markdown में परिभाषित है, और {{current}} केवल JSON एजेंट चलाता है। {{backends}} इस्तेमाल करो, या इसके लिए एक JSON फ़ाइल जोड़ो।"
+    },
     "markdownPanel": {
       "add_to_artifact_library": "आर्टिफ़ैक्ट लाइब्रेरी में जोड़ें",
       "add_to_artifacts": "आर्टिफ़ैक्ट में जोड़ें",

@@ -8,9 +8,11 @@ import { isTouchDevice } from '../utils/isTouchDevice'
 import { Input, Btn, PanelSectionHeader } from './ui'
 import { SourceBadge } from './SourceBadge'
 import ErrorNotice from './ErrorNotice'
+import { MarkdownOnlyBadge } from './MarkdownOnlyBadge'
 
 import { i18nT } from '../i18n/t'
 import { isAssistantMember } from '../lib/assistantMember'
+import type { MarkdownBlock } from '../lib/markdownAgents'
 export interface KiroCrewAgent {
   name: string
   kiro_agent: string
@@ -45,6 +47,10 @@ export interface KiroCrewAgent {
   selection_kind?: 'member' | 'template'
   /** `global` or `project`; only catalog rows carry it. */
   scope?: string
+  /** Catalog rows only: defined in markdown, with no JSON spec for its name. */
+  markdown_only?: boolean
+  /** Set by `useAgents` when this chat's harness cannot load the markdown spec. */
+  markdown_block?: MarkdownBlock
 }
 
 /** The label a roster surface shows for a crew: its display name when one is
@@ -282,6 +288,7 @@ export default function AgentSelector({ agents, defaultAgent, value, onChange, m
                 {a.source}
               </SourceBadge>
             )}
+            <MarkdownOnlyBadge block={a.markdown_block} />
           </div>
           <span className="text-[11px] text-muted truncate">{a.description || provider.resolveAgentTemplate(a)}</span>
         </div>

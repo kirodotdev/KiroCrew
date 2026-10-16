@@ -7769,6 +7769,10 @@
       "timeout": "Тайм-аут",
       "trace_load_failed": "Не удалось загрузить трассировку этого запуска."
     },
+    "markdownOnlyBadge": {
+      "label": "Только {{backends}}",
+      "tooltip": "Этот агент здесь не запустится. Он задан в Markdown, а {{current}} запускает только JSON-агентов. Используй {{backends}} или добавь для него JSON-файл."
+    },
     "markdownPanel": {
       "add_to_artifact_library": "Добавить в библиотеку артефактов",
       "add_to_artifacts": "Добавить в артефакты",

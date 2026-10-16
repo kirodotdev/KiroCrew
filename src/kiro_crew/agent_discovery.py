@@ -205,6 +205,12 @@ class AgentInfo:
     # standalone template deserving its own agent.
     forked_from: str = ""
     private_to: str = ""
+    # True when the row is a markdown spec AND no JSON spec claims its name in
+    # any scope kiro-cli resolves (``agent.markdown_spec_for_agent``'s rule).
+    # Hosts outside ``ACP_BACKENDS_MARKDOWN_AGENT_SPECS`` cannot load it, so a
+    # picker can say so before a spawn is refused. Display-only: no spawn path
+    # reads it.
+    markdown_only: bool = False
 
     def __post_init__(self) -> None:
         """Make the annotations above TRUE, at every construction site.
@@ -252,6 +258,7 @@ class AgentInfo:
         # The out-of-tree edition seam passes this through from a raw row, and a
         # truthy non-bool would render as a provenance claim nothing verified.
         self.kirocrew_owned = self.kirocrew_owned is True
+        self.markdown_only = self.markdown_only is True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -2409,6 +2416,18 @@ def list_agents(
                     existing.package,
                 )
 
+    # Markdown-only is decided across BOTH scopes, by the rule
+    # ``agent.markdown_spec_for_agent`` applies on the refusal branch: kiro-cli
+    # sees JSON alone, so a markdown row it can still run (a JSON spec for the
+    # name in the other scope, or a differently named JSON file declaring it)
+    # is not markdown-only. Names come off rows already parsed, so no extra
+    # read. A global row that survives has no project row of its name, so the
+    # user-level JSON names decide it here; project rows are marked after their
+    # scan, once that scope's JSON names are known too.
+    json_names = {a.name for a in agents if not is_markdown_spec(a.filename)}
+    for a in seen.values():
+        a.markdown_only = is_markdown_spec(a.filename) and a.name not in json_names
+
     # Project scope LAST so it shadows: kiro-cli resolves --agent against its cwd
     # before the user-level dir, and Kiro Crew spawns it with the session's project
     # dir as cwd, so the project entry is what would actually run. The warning
@@ -2416,6 +2435,7 @@ def list_agents(
     # shadowing is not, because the two configs can differ in tools and permissions.
     project_candidates = 0
     project_parsed = 0
+    project_rows: list[AgentInfo] = []
     for pf in project_files:
         if not pf.name.startswith("._"):
             project_candidates += 1
@@ -2424,6 +2444,7 @@ def list_agents(
             if data is None:
                 continue
             info = _project_agent_info(pf, data)
+            project_rows.append(info)
             shadowed = seen.get(info.name)
             if shadowed is not None and shadowed.scope == SCOPE_GLOBAL:
                 logger.warning(
@@ -2441,6 +2462,9 @@ def list_agents(
         _warn_on_systematic_scan_failure(
             project_agents_dir(scope), project_candidates, project_parsed
         )
+    json_names |= {p.name for p in project_rows if not is_markdown_spec(p.filename)}
+    for p in project_rows:
+        p.markdown_only = is_markdown_spec(p.filename) and p.name not in json_names
 
     result = list(seen.values())
     _LIST_AGENTS_CACHE[cache_key] = (signature, result)

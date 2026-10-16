@@ -4758,6 +4758,10 @@
       "ok": "OK",
       "timeout": "Timeout"
     },
+    "markdownOnlyBadge": {
+      "label": "{{backends}} only",
+      "tooltip": "This agent won't start here. It's defined in markdown, and {{current}} runs JSON agents only. Use {{backends}}, or add a JSON file for it."
+    },
     "markdownPanel": {
       "add_to_artifacts": "Add to artifacts",
       "add_to_knowledge": "Add to Knowledge",
