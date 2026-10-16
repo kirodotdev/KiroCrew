@@ -14,7 +14,7 @@ import { mergePreservedPastes } from '../../utils/pasteTokens'
 import { findReport, parseErrorCode } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import type { HistoryDeleteRefusal } from '../../utils/historyDeleteRefusal'
-import type { ChatState } from './state'
+import { entryActivityOpen, type ChatState } from './state'
 import { filterMessages, safeKey } from './wire'
 import { enterActiveSlot, pushHistory } from './runState'
 import { parkActiveTranscript, setPagingCursor } from './slotCache'
@@ -369,12 +369,12 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
       state.toolLog = []
       state.subagents = {}
       state.activityTab = 'changes'
-      // A brand-new chat starts with the side panel CLOSED, like every other
-      // slot-entry path (switchSlot / resumeFromHistory read `?? false` for a
-      // slot they have no cached bucket for). Without this the panel state of
-      // the chat being left leaked into the new one — and was not persisted
-      // under the new slot's key either, so a reload silently closed it again.
-      state.activityOpen = false
+      // A brand-new chat enters like every other slot-entry path (switchSlot /
+      // resumeFromHistory, which find no cached bucket for it): closed, or open
+      // with Keep side panel open. Without this the panel state of the chat
+      // being left leaked into the new one — and was not persisted under the new
+      // slot's key either, so a reload silently closed it again.
+      state.activityOpen = entryActivityOpen(state, true, undefined)
       state.slotRunning = false
       state.slotStopping = false
       state.slotState = 'idle'
@@ -449,7 +449,7 @@ export function addLifecycleCases(builder: ActionReducerMapBuilder<ChatState>): 
         // Legacy cached 'tools'/'nav'/'files' values fall back to 'changes'
         // (see switchSlot for why 'files' is no longer one of these tabs).
         state.activityTab = (cached?.activityTab && !['tools', 'nav', 'files'].includes(cached.activityTab as string)) ? cached.activityTab : 'changes'
-        state.activityOpen = cached?.activityOpen ?? false
+        state.activityOpen = entryActivityOpen(state, state.activeSlot !== action.payload.key, cached)
         // Same handover switchSlot performs: the floor is per-slot, so entering
         // a slot restores ITS parked floor (undefined when it has none) instead
         // of inheriting the one belonging to the slot being left. Without this a

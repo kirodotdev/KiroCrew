@@ -47,9 +47,10 @@ export type TabKind = ViewKind | 'file' | 'diff' | 'wtdiff' | 'artifact' | 'term
  *
  *  `syncPinned` below is PARAMETERISED and would drop a view left out of the set
  *  it is handed, so the FUNCTION reads as content-gated on its own. It is not:
- *  the one production caller — `SidePanel`'s `syncPinned(PINNED_VIEWS)`,
- *  unconditional in an effect keyed only on the callback — always passes this
- *  whole list, so no pinned view is ever removed. Pinned at the render level by
+ *  the one production caller — `usePinnedViews`'s `syncPinned(PINNED_VIEWS, …)`,
+ *  unconditional in an effect keyed only on the callback and on Pin Summary —
+ *  always passes this whole list, so no pinned view is ever removed. Pin Summary
+ *  only adds Summary ahead of the block. Pinned at the render level by
  *  `sidePanelPinnedAlwaysPresent.test.tsx`. A host that cannot feed a pinned
  *  view (`SidePanel.hiddenViews`, the Members page and `changes`) hides it at
  *  RENDER time and leaves the bucket alone.
@@ -431,14 +432,50 @@ const bucketKey = (slotKey: string | null): string => slotKey ?? NO_SLOT_KEY
 
 /** Apply a transform to one slot's bucket, publish the new store, and persist.
  *  A new top-level object is created only on real change so useSyncExternalStore
- *  consumers re-render exactly when their store reference changes. */
-function mutateSlot(key: string, fn: (b: Bucket) => Bucket): void {
+ *  consumers re-render exactly when their store reference changes. `choice`
+ *  marks a tab that was asked for (see `takePlainPanelShow`); it is counted even
+ *  when it names the tab already shown, since that ask still decides the tab. */
+function mutateSlot(key: string, fn: (b: Bucket) => Bucket, opts?: { choice?: boolean }): void {
+  if (opts?.choice) tabChoices.set(key, (tabChoices.get(key) ?? 0) + 1)
   const prev = store[key] ?? { tabs: [], activeId: null }
   const nextBucket = fn(prev)
   if (nextBucket === prev) return
   store = { ...store, [key]: nextBucket }
   for (const cb of listeners) cb()
   schedulePersist(key)
+}
+
+/* ── Plain opens of the side panel ─────────────────────────────────────────
+ * Pin Summary lands the panel on Summary once per show of a strip, and only
+ * when nothing asked for a tab since the panel last stopped showing it. Each
+ * strip counts its tab CHOICES: an open or a focus a person or a request asked
+ * for (a file chip, a sub-agent card, an app render, a chip click), the tab
+ * already shown included. A write the store makes on its own (the pinned-block
+ * reconcile, a dead terminal's refocus) and an `automatic` open (a tab created
+ * for discovery: Git, or Changes for a new link) are not choices. The chat page
+ * calls `notePanelStoppedShowing` when the panel closes or its chat changes;
+ * the panel calls `takePlainPanelShow` when it shows a strip. A remount (the
+ * find pane closing, a resize across the phone breakpoint, a return to the chat
+ * page) stops nothing, so it lands nothing. In-memory only: a reload is a plain
+ * open. */
+const tabChoices = new Map<string, number>()
+/** The choice count when the panel last stopped showing the strip, or `null`
+ *  once a show has taken its landing. No entry: not shown yet in this page
+ *  session, which is a plain open. */
+const stoppedAt = new Map<string, number | null>()
+/** Called by the chat page when the panel stops showing `slot`'s strip: it
+ *  closed, or the chat changed. */
+export function notePanelStoppedShowing(slot: string | null): void {
+  const key = bucketKey(slot)
+  stoppedAt.set(key, tabChoices.get(key) ?? 0)
+}
+/** Take this show's landing: true once per show, when nothing has asked for a
+ *  tab in `slot`'s strip since the panel last stopped showing it. */
+export function takePlainPanelShow(slot: string | null): boolean {
+  const key = bucketKey(slot)
+  const at = stoppedAt.has(key) ? stoppedAt.get(key) : 0
+  stoppedAt.set(key, null)
+  return at !== null && at === (tabChoices.get(key) ?? 0)
 }
 
 /* Hydrate-time ruling on restored terminal tabs: the dock store's two-look
@@ -501,8 +538,8 @@ function upsertInBucket(b: Bucket, tab: PanelTab, replaceId?: string): Bucket {
  *  a session row's PR chip switches sessions and opens Changes in one gesture.
  *  `usePanelTabs` is bound to whichever slot was active when it rendered, so
  *  going through `openView` there would open the tab on the chat being LEFT. */
-export function openPanelView(slotKey: string | null, kind: ViewKind): void {
-  mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }))
+export function openPanelView(slotKey: string | null, kind: ViewKind, opts?: { automatic?: boolean }): void {
+  mutateSlot(bucketKey(slotKey), b => upsertInBucket(b, { id: kind, kind, title: viewTitle(kind) }), { choice: !opts?.automatic })
 }
 
 /** Drop every document body the panel holds in memory, in EVERY slot, so the
@@ -719,6 +756,8 @@ export function __resetPanelTabs(): void {
   terminalRuling = newTerminalRuling(new Set())
   inlineDrafts.clear()
   autoOpenedApps.clear()
+  tabChoices.clear()
+  stoppedAt.clear()
   clearTimeout(persistTimer)
   dirtySlots.clear()
   if (typeof localStorage !== 'undefined') {
@@ -828,21 +867,23 @@ export function usePanelTabs(
   )
 
   /** Apply a bucket transform to the CURRENT slot's strip. */
-  const update = useCallback((fn: (b: Bucket) => Bucket) => {
-    mutateSlot(key, fn)
+  const update = useCallback((fn: (b: Bucket) => Bucket, opts?: { choice?: boolean }) => {
+    mutateSlot(key, fn, opts)
   }, [key])
 
   /** Add tab if its id is absent, otherwise merge patch into the existing tab;
    *  either way focus it. When `replaceId` is given (e.g. a file opened FROM
    *  the Files tab replaces that Files tab), the new tab takes the replaced
    *  tab's strip position; if the new tab already exists elsewhere, the
-   *  replaced tab is simply closed. */
-  const upsert = useCallback((tab: PanelTab, replaceId?: string) => {
-    update(b => upsertInBucket(b, tab, replaceId))
+   *  replaced tab is simply closed. A tab choice unless `choice` is false. */
+  const upsert = useCallback((tab: PanelTab, replaceId?: string, choice = true) => {
+    update(b => upsertInBucket(b, tab, replaceId), { choice })
   }, [update])
 
-  const openView = useCallback((kind: ViewKind) => {
-    upsert({ id: kind, kind, title: viewTitle(kind) })
+  /** `automatic`: a tab created for discovery, not asked for, so it does not
+   *  stop Pin Summary's landing (see `takePlainPanelShow`). */
+  const openView = useCallback((kind: ViewKind, opts?: { automatic?: boolean }) => {
+    upsert({ id: kind, kind, title: viewTitle(kind) }, undefined, !opts?.automatic)
   }, [upsert])
 
   /** Open an app-contributed body-owning tab (one instance per kind, like a
@@ -860,18 +901,21 @@ export function usePanelTabs(
 
   /** Reconcile the pinned views (Changes / Artifacts / Files) to exactly the
    *  ``available`` set: its members are kept (or created), pinned to the FRONT in
-   *  PINNED_VIEWS order; a pinned view left OUT of it is removed. Dynamic tabs
-   *  (documents / terminal / other views) keep their order after the pinned
+   *  PINNED_VIEWS order; a pinned view left OUT of it is removed. ``leading``
+   *  views are pinned AHEAD of that block (Summary, while Pin Summary is on);
+   *  one that leaves the list stays in the strip as an ordinary tab. Dynamic
+   *  tabs (documents / terminal / other views) keep their order after the pinned
    *  block. No-ops when already in the target shape so it's safe to call from an
-   *  effect that runs on every render.
+   *  effect that runs on every render. Its focus write is not a tab choice
+   *  (see `takePlainPanelShow`).
    *
    *  The removal arm is reachable through the ARGUMENT, not through content: the
    *  one production caller passes PINNED_VIEWS whole, so it does not fire in the
    *  shipped app. See PINNED_VIEWS above. */
-  const syncPinned = useCallback((available: ViewKind[]) => {
+  const syncPinned = useCallback((available: ViewKind[], leading: readonly ViewKind[] = []) => {
     update(b => {
-      const desired = PINNED_VIEWS.filter(k => available.includes(k))
-      const dynamic = b.tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id))
+      const desired = [...leading, ...PINNED_VIEWS.filter(k => available.includes(k))]
+      const dynamic = b.tabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id) && !(leading as readonly string[]).includes(t.id))
       const pinned = desired.map(
         k => b.tabs.find(t => t.id === k) ?? { id: k, kind: k, title: viewTitle(k) },
       )
@@ -955,7 +999,7 @@ export function usePanelTabs(
         revealLine: reveal,
         ...(opts?.diffMode != null ? { diffMode: opts.diffMode } : {}),
       }, opts?.replaceId)
-    })
+    }, { choice: true })
   }, [key])
 
   /** Open (and focus) a file's WORKING-TREE DIFF as its own tab, keyed
@@ -992,7 +1036,7 @@ export function usePanelTabs(
       binary: opts?.binary,
       partial: opts?.partial,
       diffMode: true,
-    }))
+    }), { choice: true })
   }, [key])
 
   const openDiff = useCallback((path: string, modified: string, original = '') => {
@@ -1057,7 +1101,7 @@ export function usePanelTabs(
       }
       const tab: PanelTab = { id, kind: 'app', title, appToolCallId: toolCallId, slot, appActiveAt: now }
       return { tabs: [...kept, tab], activeId: id }
-    })
+    }, { choice: true })
   }, [update])
 
   const openArtifact = useCallback((art: { slug: string; kind: Artifact['kind']; title?: string }, content: string, slot: string | null = null) => {
@@ -1103,7 +1147,7 @@ export function usePanelTabs(
       const next = b.tabs.slice()
       next[i] = { ...next[i], appActiveAt: Date.now() }
       return { tabs: next, activeId: id }
-    })
+    }, { choice: true })
   }, [update])
 
   /** Replace the tab order wholesale (drag-to-reorder in the strip). */

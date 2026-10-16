@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { renderHook, act } from '@testing-library/react'
-import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow } from '../hooks/usePanelTabs'
+import { usePanelTabs, openPanelView, __resetPanelTabs, useAnyLiveAppTab, useAllAppTabs, evictDocumentBodies, purgeDocumentBodiesForRedactionChange, documentBodyEpochNow, takePlainPanelShow, notePanelStoppedShowing } from '../hooks/usePanelTabs'
 import { shouldMountSidePanel, isSidePanelHidden } from '../pages/chat/sidePanelMount'
 
 // App-contributed tab descriptors are an ARGUMENT to `usePanelTabs`, not something
@@ -686,6 +686,44 @@ describe('usePanelTabs — per-slot isolation', () => {
     // Emptying content removes only the pinned view; dynamic tabs untouched.
     act(() => result.current.syncPinned([]))
     expect(result.current.tabs.map(t => t.id)).toEqual(['logs', 'side'])
+  })
+
+  it('syncPinned pins leading views ahead of the block, and keeps one that leaves as an ordinary tab', () => {
+    const { result } = renderHook(() => usePanelTabs(null, mock.descriptors))
+    act(() => result.current.openView('logs'))
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files'], ['summary']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['summary', 'changes', 'artifacts', 'files', 'logs'])
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files']))
+    expect(result.current.tabs.map(t => t.id)).toEqual(['changes', 'artifacts', 'files', 'summary', 'logs'])
+  })
+
+  it('takes a plain show once, and a stop re-arms it', () => {
+    renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
+    // Never shown in this page session: a plain open (a reload).
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // Once per show: a remount of the same show lands nothing.
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+    notePanelStoppedShowing('plain-slot')
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+  })
+
+  it('counts asked-for tabs, the one already shown included, but not store writes or automatic opens', () => {
+    const { result } = renderHook(() => usePanelTabs('plain-slot', mock.descriptors))
+    // syncPinned writes a fresh strip's focus on its own: that is no choice.
+    act(() => result.current.syncPinned(['changes', 'artifacts', 'files']))
+    expect(result.current.activeId).toBe('changes')
+    // A discovery tab (Git, Changes for a new link) is not a choice either.
+    act(() => result.current.openView('git', { automatic: true }))
+    act(() => openPanelView('plain-slot', 'issues', { automatic: true }))
+    expect(takePlainPanelShow('plain-slot')).toBe(true)
+    // Asking again for the tab already shown still decides the tab.
+    notePanelStoppedShowing('plain-slot')
+    act(() => result.current.setActive('issues'))
+    expect(result.current.activeId).toBe('issues')
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
+    notePanelStoppedShowing('plain-slot')
+    act(() => result.current.openView('logs'))
+    expect(takePlainPanelShow('plain-slot')).toBe(false)
   })
 
   it('openView("git") creates a singleton tab titled "Git"', () => {

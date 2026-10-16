@@ -30,6 +30,7 @@ import { api } from '../../api/client'
 import { useTerminalEnabled, useTerminalTitle } from '../../utils/terminalRegistry'
 import type { usePanelTabs, ViewKind, PanelTab, TabKind } from '../../hooks/usePanelTabs'
 import { PINNED_VIEWS, useAllAppTabs, usePanelTerminalsPending } from '../../hooks/usePanelTabs'
+import { usePinnedViews } from './usePinnedViews'
 import { usePanelTabDescriptors, useInstalledApps, panelTabDescriptor, isPanelTabKind, type PanelTabDescriptor } from '../../hooks/panelTabRegistry'
 import AppHost from '../../components/AppHost'
 import { appIcon } from '../../apps/appIcons'
@@ -409,6 +410,8 @@ interface SidePanelProps {
    *  reason: its `AppHost` body holds the app's own unsaved state, which the
    *  re-key's remount would discard. */
   hiddenViews?: ReadonlySet<SidePanelWithholdable>
+  /** Pin Summary (`dashboard.side_panel_pin_summary`); see `usePinnedViews`. */
+  pinSummary?: boolean
   /** Reports the tab the strip actually SHOWS whenever it changes — the stored
    *  focus, or the fallback the panel resolves when that focus is on a withheld
    *  or absent tab (the leading tab, else the first visible one). A host that
@@ -519,9 +522,9 @@ export default function SidePanel({
   pins, pinsLoading, onJumpToPin, onUnpin,
   slotTitle, chatMode,
   expanded, fillWidth, canDockBottom = true,
-  leadingTabs, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange,
+  leadingTabs, extraReserveW = 0, defaultWidth = 460, hiddenViews: hostHiddenViews, onActiveTabChange, pinSummary = false,
 }: SidePanelProps) {
-  const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder, syncPinned } = tabsCtl
+  const { tabs, activeId: storedActiveId, openView, openPanelTab, openTerminal, openFolder, setActive, closeTab, patchTab, setOrder } = tabsCtl
   const hiddenViews = hostHiddenViews
   // A permanent panel has no close control and answers Escape with nothing —
   // the views' `onToggle` still needs a function, so it gets a no-op.
@@ -565,22 +568,19 @@ export default function SidePanel({
     retry: false,
   })
   const summaryEnabled = summaryMeta?.enabled !== false
+  const { pinnedViews, summaryPinned } = usePinnedViews({
+    tabsCtl, slot, panelHidden: !!panelHidden, pinSummary,
+    summaryOn: summaryMeta?.enabled === true, summaryWithheld: !!hiddenViews?.has('summary'),
+  })
   // The + menu / empty-state launcher hide Terminal when the feature is
   // disabled server-side and Context breakdown unless Developer Mode is on, and
-  // never list the permanently pinned views (Changes / Files / Artifacts) —
-  // those are always present in the strip (see the syncPinned reconcile below).
-  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled, hiddenViews })
+  // never list the pinned views (Changes / Files / Artifacts, and Summary while
+  // Pin Summary holds it) — those are always present in the strip.
+  const menuSections = newMenuSections({ devMode, terminalEnabled, summaryEnabled: summaryEnabled && !summaryPinned, hiddenViews })
   // The empty-state launcher shows the same entries flat: its two-column grid
   // has nowhere to put a separator, but it must not disagree with the menu
   // about ORDER, so it reads the groups rather than its own list.
   const menuItems = menuSections.flatMap(section => section.items)
-  // Files / Artifacts / Changes are ALWAYS present — pinned to the front,
-  // non-closable, and never in the + menu — regardless of whether they
-  // currently have content. Always the WHOLE list, whatever the host withholds:
-  // a withdrawal (`hiddenViews`) is a render-time filter over the bucket (see
-  // `visibleTabs` below), never a deletion from it — the bucket is shared with
-  // the chat page, which must find the view again.
-  useEffect(() => { syncPinned(PINNED_VIEWS) }, [syncPinned])
   // Split the strip: pinned (fixed, non-closable) vs. dynamic (draggable).
   // A host withdrawal (`hiddenViews`) also applies to tabs ALREADY in the bucket:
   // the strip is keyed per slot and a member's DM slot can have been opened on the
@@ -661,8 +661,8 @@ export default function SidePanel({
     if (leaving?.onBeforeLeave && !(await leaving.onBeforeLeave())) return
     onClose?.()
   }, [onClose, activeId])
-  const pinnedTabs = useMemo(() => visibleTabs.filter(t => (PINNED_VIEWS as string[]).includes(t.id)), [visibleTabs])
-  const dynamicTabs = useMemo(() => visibleTabs.filter(t => !(PINNED_VIEWS as string[]).includes(t.id)), [visibleTabs])
+  const pinnedTabs = useMemo(() => visibleTabs.filter(t => (pinnedViews as readonly string[]).includes(t.id)), [visibleTabs, pinnedViews])
+  const dynamicTabs = useMemo(() => visibleTabs.filter(t => !(pinnedViews as readonly string[]).includes(t.id)), [visibleTabs, pinnedViews])
   // Edge cues for the dynamic session-tab group — the real overflow site when
   // many sessions are open. It hides its scrollbar, so a gradient is the only
   // signal that tabs continue past the clipped edge. remeasure on the tab
@@ -1099,7 +1099,7 @@ export default function SidePanel({
           frameless Linux paint their caption controls — the panel chrome below
           would sit under them, covered and unclickable. Bottom-docked the strip
           is nowhere near that corner, so it takes no reserve. */}
-      <div className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}`}>
+      <div className={`side-panel-strip side-panel-strip-cq flex items-end gap-1.5 shrink-0 px-2 pt-2 pb-0 min-h-10 rounded-tl-xl bg-bg-elevated border-b border-border${isBottom ? '' : ' focus-caption-reserve'}${summaryPinned ? ' side-panel-strip-summary-pinned' : ''}`}>
         {/* Pinned views (Changes / Files / Artifacts): always present, fixed at
             the front, non-closable, not draggable, compact. The group's 8px gap
             matches the active chip's corner-piece width, so a piece lands in the

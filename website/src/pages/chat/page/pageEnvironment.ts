@@ -189,7 +189,7 @@ export function useChatPageEnvironment({
   // MCP Apps in the side panel (dashboard.mcp_app_panel, opt-in). When on, a new
   // render opens the panel to its own `app` tab instead of drawing inline in the
   // bubble — same auto-open path the web-preview marker uses.
-  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean }>({
+  const { data: appPanelCfg, isError: appPanelCfgError } = useQuery<{ mcp_app_panel?: boolean; auto_open_git_panel?: boolean; side_panel_always_open?: boolean; side_panel_pin_summary?: boolean }>({
     queryKey: ['dashboardConfig'], queryFn: fetchDashboardConfig, staleTime: 30_000,
   })
   const mcpAppPanel = appPanelCfg?.mcp_app_panel === true
@@ -197,6 +197,12 @@ export function useChatPageEnvironment({
   // (dashboard.auto_open_git_panel). See the git-panel effect for why it is off
   // by default.
   const autoOpenGitPanel = appPanelCfg?.auto_open_git_panel === true
+  // Opt-in side panel settings (Settings → Chat → Side panel): open the panel in
+  // every chat, and pin Summary first in it. Strict reads, so a failed or
+  // pending config read leaves both off, which is what an unconfigured install
+  // gets.
+  const sidePanelAlwaysOpen = appPanelCfg?.side_panel_always_open === true
+  const sidePanelPinSummary = appPanelCfg?.side_panel_pin_summary === true
   // Whether that value is KNOWN yet. The git effect consumes a one-shot
   // localStorage marker, so acting while this query is still in flight would
   // burn the marker with the flag reading false and an opted-in user would never
@@ -208,7 +214,7 @@ export function useChatPageEnvironment({
     dispatch, moveSlotToFolder, navigate, navigationType, location, queryClient, provider, deleteTerminalSessionRef, searchParams, setSearchParams, isMobile, isTouch, topbarSlot, topbarTrailSlot,
     mobileNavRail, titleInTopbar, langGen, vv, keyboardInset, slots, switchSlotGone, filteredSlots, filteredSlotsRef, surfaceUnreadSlots, refreshTrigger, connected, creatingSlot, foregroundCreateId,
     foregroundCreateIdRef, lastCreatedActivationRef, unresumableResume, undeletableHistory, activeSlot, boundStore, voiceRecoverySlot, setVoiceRecoverySlot, appToolCallIds, mcpAppPanel,
-    autoOpenGitPanel, autoOpenGitPanelKnown,
+    autoOpenGitPanel, autoOpenGitPanelKnown, sidePanelAlwaysOpen, sidePanelPinSummary,
   }
 }
 

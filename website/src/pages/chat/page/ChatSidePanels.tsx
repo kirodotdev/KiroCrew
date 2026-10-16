@@ -66,6 +66,7 @@ interface ChatSidePanelsProps {
   panelFillWidth: number | undefined
   panelMaximized: boolean
   panelReserve: number | undefined
+  pinSummary: boolean
 }
 
 /**
@@ -76,6 +77,7 @@ export default function ChatSidePanels({
   handleOpenWorkingTreeDiff, hasBrowserTab, hasLiveAppTab, panelIssues, panelSources, reconcileIssueUrl, reconcileSourceUrl, search, selectedIssueUrl, selectedSourceUrl, selectIssueUrl,
   selectSourceUrl, tabsCtl, submitComments, currentSlot, handleAddToContext, sidePanelDock, sidePanelDockAnim, effectiveSidebarWidth, toggleAct, chatNav, chatPins, chatPinsLoading, handleJumpToPin,
   handleUnpinById, jumpToSearchResult, activeSlotTitle, activitySlot, hasTaskDashboard, sidebarOpen, sideOverlayPanelRef, sideOverlayPhase, sideOverlayX, panelFillWidth, panelMaximized, panelReserve,
+  pinSummary,
 }: ChatSidePanelsProps) {
   return (
     <>
@@ -160,7 +162,7 @@ export default function ChatSidePanels({
               onAddSourceToChat={addSourceCommentToChat}
               onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
               pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
-              slotTitle={activeSlotTitle} chatMode={mode}
+              slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
               expanded={panelMaximized}
               fillWidth={panelFillWidth}
               extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}
@@ -202,7 +204,7 @@ export default function ChatSidePanels({
               onAddSourceToChat={addSourceCommentToChat}
                 onSubmitComments={submitComments} connected={connected} onFileSave={handleFileSave} onClose={toggleAct}
                 pins={chatPins} pinsLoading={chatPinsLoading} onJumpToPin={handleJumpToPin} onUnpin={handleUnpinById}
-                slotTitle={activeSlotTitle} chatMode={mode}
+                slotTitle={activeSlotTitle} chatMode={mode} pinSummary={pinSummary}
                 expanded={panelMaximized}
                 fillWidth={panelFillWidth}
                 extraReserveW={!isMobile && sidebarOpen ? effectiveSidebarWidth : 0}

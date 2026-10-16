@@ -422,8 +422,10 @@ export function useChatPageResourcesController({
     const newIssues = recordNewPullRequestLinks(seenSourceUrls, activeSlot, issueLinks)
     if (!newChanges && !newIssues) return
     persistSeenPullRequestLinks(seenSourceUrls)
-    if (newChanges) tabsCtl.openView('changes')
-    if (newIssues) tabsCtl.openView('issues')
+    // Automatic: a discovery focus, not a request, so a panel opened later
+    // with Pin Summary on still lands on Summary.
+    if (newChanges) tabsCtl.openView('changes', { automatic: true })
+    if (newIssues) tabsCtl.openView('issues', { automatic: true })
     // tabsCtl is intentionally not a dependency: this effect reacts only to
     // source discovery, not tab focus or panel visibility changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps

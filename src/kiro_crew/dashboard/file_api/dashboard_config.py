@@ -91,6 +91,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "link_patterns",
             "mcp_app_panel",
             "auto_open_git_panel",
+            "side_panel_always_open",
+            "side_panel_pin_summary",
             "folder_suggestions_enabled",
             "topic_tags_enabled",
             "session_card_source_links",
@@ -437,6 +439,34 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
                     status=400,
                 )
             updates["auto_open_git_panel"] = val
+        if "side_panel_always_open" in body:
+            val = body["side_panel_always_open"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "side_panel_always_open must be a boolean",
+                        "code": "invalid_side_panel_always_open",
+                    },
+                    status=400,
+                )
+            updates["side_panel_always_open"] = val
+        if "side_panel_pin_summary" in body:
+            val = body["side_panel_pin_summary"]
+            if not isinstance(val, bool):
+                _sel().log_tool_invocation(
+                    session_key="dashboard", tool_name="dashboard_config_write", outcome="failure"
+                )
+                return web.json_response(
+                    {
+                        "error": "side_panel_pin_summary must be a boolean",
+                        "code": "invalid_side_panel_pin_summary",
+                    },
+                    status=400,
+                )
+            updates["side_panel_pin_summary"] = val
         if "session_card_source_links" in body:
             val = body["session_card_source_links"]
             if not isinstance(val, bool):
@@ -656,6 +686,8 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             "session_grid": cfg.dashboard.session_grid,
             "mcp_app_panel": cfg.dashboard.mcp_app_panel,
             "auto_open_git_panel": cfg.dashboard.auto_open_git_panel,
+            "side_panel_always_open": cfg.dashboard.side_panel_always_open,
+            "side_panel_pin_summary": cfg.dashboard.side_panel_pin_summary,
             "session_card_source_links": cfg.dashboard.session_card_source_links,
             "session_folder_root": cfg.dashboard.session_folder_root,
             "tail_fork_enabled": cfg.dashboard.tail_fork_enabled,

@@ -613,6 +613,14 @@
       "hint": "Expand history sidebar by default"
     },
     {
+      "id": "chat.keep-side-panel-open",
+      "label": "Keep Side Panel Open",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=key%3Adashboard.side_panel_always_open",
+      "hint": "Opens the side panel in every chat, including new chats and after a reload. Closing it hides it until you switch chats. On a phone it stays closed until you open it.",
+      "configKey": "dashboard.side_panel_always_open"
+    },
+    {
       "id": "chat.link-previews",
       "label": "Link Previews",
       "tab": "chat",
@@ -655,6 +663,14 @@
       "description": "Enter the full path of a folder that already exists. Each new chat gets its own new folder inside it and works there. Leave empty to turn this off.",
       "hint": "Folders are named by date with a short random suffix, and only you can open them. ~ stands for your home folder. A chat started in a chat folder that has its own project keeps that project.",
       "configKey": "dashboard.session_folder_root"
+    },
+    {
+      "id": "chat.pin-summary-in-side-panel",
+      "label": "Pin Summary in Side Panel",
+      "tab": "chat",
+      "route": "/settings/chat/sidepanel?highlight=key%3Adashboard.side_panel_pin_summary",
+      "hint": "Shows Summary as the first side panel tab and opens the panel on it. Opening a file or another item still shows that item. Needs Session summaries on.",
+      "configKey": "dashboard.side_panel_pin_summary"
     },
     {
       "id": "chat.pin-the-latest-turn",

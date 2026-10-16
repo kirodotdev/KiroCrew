@@ -2,8 +2,9 @@ import { useEffect, useState, useRef, useMemo, useCallback, type Dispatch, type 
 import type { HoverIntent } from '../../../hooks/useHoverIntent'
 import type { AppDispatch } from '../../../store'
 import type { ChatSlot, ChatFolder } from '../../../types'
-import { openActivityPanel, createSlot, deleteSlot } from '../../../store/chatSlice'
+import { openActivityPanel, createSlot, deleteSlot, setSidePanelAlwaysOpen } from '../../../store/chatSlice'
 import { safeSetItem } from '../../../utils/safeStorage'
+import { notePanelStoppedShowing } from '../../../hooks/usePanelTabs'
 import type { useChatPageResourcesController } from '../useChatPageResourcesController'
 import type { useComposerChips } from './composerChips'
 import type { MemoryMode } from '../../../components/MemoryModeChip'
@@ -37,6 +38,10 @@ interface PaneLayoutStateOptions {
   _slotProject: string
   projectGit: ReturnType<typeof useComposerChips>['projectGit']
   projectGitError: boolean
+  embedded?: boolean
+  isMobile: boolean
+  sidePanelAlwaysOpen: boolean
+  activityOpen: boolean
 }
 
 /**
@@ -48,8 +53,30 @@ interface PaneLayoutStateOptions {
  * Called from ChatPage at the position its statements held, so React registers its effects in the same order.
  */
 export function usePaneLayoutState({
-  embedMode, dispatch, slots, activeSlot, autoOpenGitPanel, autoOpenGitPanelKnown, setSplitMode, splitMode, setSplitAnchor, tabsCtl, splitFeatureEnabled, _slotProject, projectGit, projectGitError,
+  embedMode, dispatch, slots, activeSlot, autoOpenGitPanel, autoOpenGitPanelKnown, setSplitMode, splitMode, setSplitAnchor, tabsCtl, splitFeatureEnabled, _slotProject, projectGit, projectGitError, embedded, isMobile, sidePanelAlwaysOpen, activityOpen,
 }: PaneLayoutStateOptions) {
+  // Keep side panel open (dashboard.side_panel_always_open). Only the full chat
+  // page turns it on. An embedded chat (an artifact's or an app's companion
+  // column) turns it off, so the chats it enters keep their own saved panel
+  // choice in a column too narrow for the panel. Off on a phone as well, where
+  // the panel covers the chat. The current chat's panel opens only when the
+  // setting itself turns on, not when a phone or embed flip turns it back on.
+  const alwaysOpenSettingRef = useRef(sidePanelAlwaysOpen)
+  useEffect(() => {
+    const settingTurnedOn = sidePanelAlwaysOpen && !alwaysOpenSettingRef.current
+    alwaysOpenSettingRef.current = sidePanelAlwaysOpen
+    dispatch(setSidePanelAlwaysOpen({ on: !embedded && sidePanelAlwaysOpen && !isMobile, openCurrent: settingTurnedOn }))
+  }, [dispatch, embedded, sidePanelAlwaysOpen, isMobile])
+  // A show of the side panel ends when it closes or its chat changes. Noted here
+  // and not on the panel's unmount, so a remount (the find pane closing, a
+  // resize across the phone breakpoint) is not a new show and does not move
+  // Pin Summary's tab (see takePlainPanelShow).
+  const shownPanelSlotRef = useRef<string | null>(null)
+  useEffect(() => {
+    const shown = activityOpen && activeSlot ? activeSlot : null
+    if (shownPanelSlotRef.current !== null && shownPanelSlotRef.current !== shown) notePanelStoppedShowing(shownPanelSlotRef.current)
+    shownPanelSlotRef.current = shown
+  }, [activityOpen, activeSlot])
   // Auto-open the Git panel when the slot has a project dir that is a git repo.
   // OPT-IN (dashboard.auto_open_git_panel, default off) because the marker below
   // cannot make this the once-per-project nudge it reads like: a new slot inherits
@@ -70,7 +97,9 @@ export function usePaneLayoutState({
     // (after reclaiming a disposable tier if the quota was full), so the guard
     // is the return value rather than a caught throw.
     if (!safeSetItem(key, '1')) return
-    tabsCtl.openView('git')
+    // Without the Auto-Open Git setting the tab is only created for discovery,
+    // so it is automatic and does not stop Pin Summary's landing.
+    tabsCtl.openView('git', { automatic: !autoOpenGitPanel })
     if (autoOpenGitPanel) dispatch(openActivityPanel())
   }, [activeSlot, _slotProject, projectGit?.repo, projectGitError, tabsCtl, dispatch, autoOpenGitPanel, autoOpenGitPanelKnown])
 

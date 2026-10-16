@@ -36,6 +36,21 @@ export const persistActivityOpen = (slot: string | null, open: boolean): void =>
   if (!slot) return
   safeSetItem(ACTIVITY_OPEN_PREFIX + slot, String(open))
 }
+/** The panel state a chat is entered with: its own saved choice (closed when it
+ *  has none), or open while Keep side panel open is on and the entry CHANGES the
+ *  chat. Re-entering the chat already shown (a return to the chat page, a switch
+ *  that fell back to it) keeps that state, so a panel the user closed stays
+ *  closed until a chat switch. */
+export const entryActivityOpen = (state: ChatState, changesChat: boolean, cached: { activityOpen?: boolean } | undefined): boolean =>
+  (state.sidePanelAlwaysOpen && changesChat) || (cached?.activityOpen ?? false)
+/** Put every chat's panel back on its own saved choice. Keep side panel open
+ *  saves no choice, but a chat entered while it was on holds `true` in its
+ *  in-memory bucket, and would reopen with it until the next reload. */
+export function restoreSavedActivityOpen(state: ChatState): void {
+  const saved = loadActivityOpenMap()
+  for (const [slot, bucket] of Object.entries(state.slotActivity)) bucket.activityOpen = saved[slot] ?? false
+  if (state.activeSlot) state.activityOpen = saved[state.activeSlot] ?? false
+}
 /** Seed the per-slot activity buckets from the persisted open map so the first
  *  switchSlot on cold load restores each chat's panel open/closed state (the
  *  bucket's toolLog/subagents are runtime-only and start empty). */
@@ -374,6 +389,11 @@ export interface ChatState {
    *  `workflow_run_event` WS broadcasts; consumed by WorkflowProgressBar. */
   workflowRuns: Record<string, WorkflowRunProgress>
   activityOpen: boolean
+  /** Keep side panel open (`dashboard.side_panel_always_open`), as the chat page
+   *  dispatches it: off on a phone, where the panel covers the chat. While true,
+   *  entering a chat opens its panel without saving that as the chat's choice
+   *  (`mc-activity-open:<slot>`), so turning it off brings each choice back. */
+  sidePanelAlwaysOpen: boolean
   activityTab: 'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'
   /** Monotonic counter bumped ONLY by `openActivityToTab` — i.e. only when
    *  something deliberately asks for a view (a slash command, a sub-agent /
@@ -621,6 +641,7 @@ export const initialState: ChatState = {
   toolLog: [],
   workflowRuns: {},
   activityOpen: false,
+  sidePanelAlwaysOpen: false,
   activityTab: 'changes' as const,
   activityTabRequest: 0,
   revealRequest: null,

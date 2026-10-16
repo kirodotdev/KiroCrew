@@ -117,7 +117,7 @@ const LS_KEY = 'mc-chat-config'
 
 function wrap(sub = 'transcript') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(
+  const view = render(
     <MemoryRouter initialEntries={[`/settings?tab=chat&sub=${sub}`]}>
     <Provider store={createTestStore()}>
     <QueryClientProvider client={qc}>
@@ -126,6 +126,7 @@ function wrap(sub = 'transcript') {
     </Provider>
     </MemoryRouter>
   )
+  return Object.assign(view, { qc })
 }
 
 /** The localStorage-backed chat config as the panel last wrote it. */
@@ -418,6 +419,33 @@ describe('ChatPanel — Messages', () => {
     fireEvent.click(await settledSwitch('MCP Apps in Side Panel'))
     await waitFor(() =>
       expect(updateDashboardConfigMock).toHaveBeenCalledWith({ mcp_app_panel: true })
+    )
+  })
+
+  it.each([
+    ['Keep Side Panel Open', 'side_panel_always_open'],
+    ['Pin Summary in Side Panel', 'side_panel_pin_summary'],
+  ])('shows %s off by default and persists turning it on', async (label, key) => {
+    wrap('sidepanel')
+    const sw = await settledSwitch(label)
+    expect(sw).toHaveAttribute('aria-checked', 'false')
+    fireEvent.click(sw)
+    await waitFor(() =>
+      expect(updateDashboardConfigMock).toHaveBeenCalledWith({ [key]: true })
+    )
+  })
+
+  it('refreshes every chat\'s cached summary state when Session summaries saves', async () => {
+    const { qc } = wrap('sessions')
+    // The side panel's + menu row and Pin Summary read this per-chat query,
+    // which never goes stale on its own.
+    qc.setQueryData(['session-summary', 'chat-1'], { enabled: false })
+    fireEvent.click(await settledSwitch('Session summaries'))
+    await waitFor(() =>
+      expect(patchConfigMock).toHaveBeenCalledWith('session_summary.enabled', true)
+    )
+    await waitFor(() =>
+      expect(qc.getQueryState(['session-summary', 'chat-1'])?.isInvalidated).toBe(true)
     )
   })
 

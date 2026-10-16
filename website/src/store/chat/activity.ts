@@ -7,7 +7,7 @@ import type { ChatMessage, ToolActivity } from '../../types'
 import { SPAWN_LAUNCH_MARKER } from '../../pages/chat/types'
 import { isAskAnsweredOutput } from '../../utils/askQuestionAnswers'
 import { ASK_QUESTION_SERVER, isAskQuestionToolName, MAX_TOOL_RESULT_CHARS } from '../../utils/askQuestionTool'
-import { persistActivityOpen, type ChatState } from './state'
+import { entryActivityOpen, persistActivityOpen, restoreSavedActivityOpen, type ChatState } from './state'
 import { clampToolOutput, isUnsafeKey, safeKey } from './wire'
 
 /** Write a clamped payload onto a tool-log entry as its `input`/`input_cut` or
@@ -36,8 +36,12 @@ export function loadSlotActivity(state: ChatState, key: string): void {
   // legacy cached values fall back to 'changes'.
   const legacyTab = (t: unknown) => t === 'tools' || t === 'nav' || t === 'files'
   state.activityTab = (cached?.activityTab && !legacyTab(cached.activityTab)) ? cached.activityTab : 'changes'
-  // Panel open/closed is per-chat; a chat we've never opened defaults to closed.
-  state.activityOpen = cached?.activityOpen ?? false
+  // Panel open/closed is per-chat; a chat we've never opened defaults to closed,
+  // and Keep side panel open opens a chat the switch moves to. Both callers run
+  // this while `activeSlot` still names the chat being left (pending) or already
+  // names the origin it fell back to (rejected), so `key !== activeSlot` is
+  // exactly "the chat changes".
+  state.activityOpen = entryActivityOpen(state, key !== state.activeSlot, cached)
 }
 
 /**
@@ -84,6 +88,20 @@ function applyToolOutputToMessages(
 export const activityReducers = {
   toggleActivity(state: ChatState) { state.activityOpen = !state.activityOpen; if (!state.activityOpen) state.focusToolCallId = null; persistActivityOpen(state.activeSlot, state.activityOpen) },
   openActivityPanel(state: ChatState) { state.activityOpen = true; persistActivityOpen(state.activeSlot, true) },
+  /** Turn Keep side panel open on or off (see `sidePanelAlwaysOpen`). Off puts
+   *  every chat back on its own saved choice. On opens the current chat's panel
+   *  only when `openCurrent` says the user's setting itself just turned on, so a
+   *  phone or embed flip back to on does not reopen a closed panel. A repeat of
+   *  the current value changes nothing. */
+  setSidePanelAlwaysOpen(state: ChatState, action: PayloadAction<{ on: boolean; openCurrent: boolean }>) {
+    const { on, openCurrent } = action.payload
+    // `!!`: a state built without the field (a partial store) is off, so an
+    // off arriving there changes nothing and must not reset any panel.
+    if (on === !!state.sidePanelAlwaysOpen) return
+    state.sidePanelAlwaysOpen = on
+    if (!on) restoreSavedActivityOpen(state)
+    else if (openCurrent && state.activeSlot) state.activityOpen = true
+  },
   openActivityToTab(state: ChatState, action: PayloadAction<'changes' | 'issues' | 'subagents' | 'workflows' | 'logs' | 'links' | 'side' | 'artifacts'>) { state.activityOpen = true; state.activityTab = action.payload; state.activityTabRequest += 1; state.focusToolCallId = null; persistActivityOpen(state.activeSlot, true) },
   /** Tool details expand inline in the chat. This action signals the matching
    *  ToolCallLine pill to auto-expand and scroll into view. */

@@ -8,6 +8,10 @@
  * suppresses it), and on mobile the panel covers the whole content area — where
  * the `fixed` sessions FAB paints over its collapse button and strands the user
  * inside a panel they cannot close.
+ *
+ * Also Keep side panel open (`dashboard.side_panel_always_open`), the other
+ * setting that opens the panel on its own: on for the full chat page only, off
+ * on a phone and in an embedded companion chat.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, renderHook, act, waitFor, screen } from '@testing-library/react'
@@ -16,8 +20,8 @@ import { Provider } from 'react-redux'
 import { MemoryRouter, Routes, Route } from 'react-router-dom'
 import { createTestStore } from './helpers'
 import { ThemeProvider } from '../hooks/useTheme'
-import { __resetPanelTabs, usePanelTabs } from '../hooks/usePanelTabs'
-import { toggleActivity } from '../store/chatSlice'
+import { __resetPanelTabs, usePanelTabs, takePlainPanelShow } from '../hooks/usePanelTabs'
+import { setSidePanelAlwaysOpen, toggleActivity } from '../store/chatSlice'
 import type { RootState } from '../store'
 
 // --- Stub child components (same scaffold as ChatPage.responsivePanel test) ---
@@ -56,6 +60,7 @@ vi.mock('../hooks/useIsMobile', () => ({ useIsMobile: () => mockIsMobile }))
 
 // --- Stub API. `dashboardConfig` and `projectGit` are the two the gate reads. ---
 let autoOpenGitPanel = false
+let sidePanelAlwaysOpen = false
 /** Delay before `dashboardConfig` resolves, so a test can make the git query win
  *  the race and prove the marker is not consumed while the flag is unknown. */
 let dashboardConfigDelayMs = 0
@@ -72,7 +77,7 @@ vi.mock('../api/client', () => ({
       )]),
     ),
     dashboardConfig: vi.fn().mockImplementation(() => new Promise(resolve => {
-      const value = { auto_open_git_panel: autoOpenGitPanel }
+      const value = { auto_open_git_panel: autoOpenGitPanel, side_panel_always_open: sidePanelAlwaysOpen }
       if (dashboardConfigDelayMs) setTimeout(() => resolve(value), dashboardConfigDelayMs)
       else resolve(value)
     })),
@@ -113,14 +118,14 @@ function storeWithGitSlot() {
   })
 }
 
-function renderChat(store = storeWithGitSlot()) {
+function renderChat(store = storeWithGitSlot(), page = <ChatPage />) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
         <ThemeProvider>
           <MemoryRouter initialEntries={['/chat']}>
-            <Routes><Route path="/chat/:slug?" element={<ChatPage />} /></Routes>
+            <Routes><Route path="/chat/:slug?" element={page} /></Routes>
           </MemoryRouter>
         </ThemeProvider>
       </Provider>
@@ -172,6 +177,66 @@ describe('ChatPage — Git panel auto-open is opt-in', () => {
 
     // The Git tab is likewise deferred, not skipped.
     await waitFor(() => { expect(store.getState().chat.activityOpen).toBe(true) })
+  })
+})
+
+describe('ChatPage — Keep side panel open', () => {
+  beforeEach(() => {
+    Object.defineProperty(window, 'innerWidth', { writable: true, configurable: true, value: 1400 })
+    mockIsMobile = false
+    autoOpenGitPanel = false
+    sidePanelAlwaysOpen = true
+    dashboardConfigDelayMs = 0
+    localStorage.clear()
+    __resetPanelTabs()
+  })
+  afterEach(() => {
+    sidePanelAlwaysOpen = false
+    document.getElementById('activity-bar-slot')?.remove()
+  })
+
+  it('opens the panel for the chat on screen, saving nothing as that chat\'s choice', async () => {
+    const { store } = renderChat()
+    await waitFor(() => { expect(store.getState().chat.activityOpen).toBe(true) })
+    expect(store.getState().chat.sidePanelAlwaysOpen).toBe(true)
+    expect(localStorage.getItem(`mc-activity-open:${SLOT}`)).toBeNull()
+  })
+
+  it('stays off on a phone, where the panel covers the chat', async () => {
+    mockIsMobile = true
+    const { store, queryClient } = renderChat()
+    // The config read has landed with the setting ON, so the off below is the
+    // phone guard and not a config that is still unknown.
+    await waitFor(() => {
+      expect(queryClient.getQueryData<{ side_panel_always_open?: boolean }>(['dashboardConfig'])?.side_panel_always_open).toBe(true)
+    })
+    expect(store.getState().chat.sidePanelAlwaysOpen).toBe(false)
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('is turned off by an embedded companion chat', async () => {
+    const store = storeWithGitSlot()
+    store.dispatch(setSidePanelAlwaysOpen({ on: true, openCurrent: false }))
+    renderChat(store, <ChatPage embedded embedMode="chat" />)
+    await waitFor(() => { expect(store.getState().chat.sidePanelAlwaysOpen).toBe(false) })
+    expect(store.getState().chat.activityOpen).toBe(false)
+  })
+
+  it('ends a panel show when the panel closes, which re-arms Pin Summary', async () => {
+    const { store } = renderChat()
+    await waitFor(() => { expect(store.getState().chat.activityOpen).toBe(true) })
+    // The show's landing, as the side panel takes it.
+    expect(takePlainPanelShow(SLOT)).toBe(true)
+    expect(takePlainPanelShow(SLOT)).toBe(false)
+    act(() => { store.dispatch(toggleActivity()) })
+    expect(takePlainPanelShow(SLOT)).toBe(true)
+  })
+
+  it('creates the Git tab as an automatic open, so it does not stop Pin Summary', async () => {
+    const panelTabs = renderHook(() => usePanelTabs(SLOT))
+    renderChat()
+    await waitFor(() => { expect(panelTabs.result.current.tabs.map(t => t.id)).toContain('git') })
+    expect(takePlainPanelShow(SLOT)).toBe(true)
   })
 })
 

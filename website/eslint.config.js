@@ -302,6 +302,9 @@ export default [
           // "Bench" build-mode classes and their drag/drop/target state hooks,
           // all le-prefixed so no generic state name is exempted repo-wide.
           'le-*',
+          // pages/chat/pinnedViews.css (imported by usePinnedViews.ts, outside
+          // index.css's @source graph): the side panel strip's Pin Summary scope.
+          'side-panel-strip-summary-pinned',
         ],
       }],
       'shadcn/require-static-classes': 'error',

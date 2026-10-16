@@ -130,7 +130,12 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
   const summaryEnabled = mcCfg?.session_summary?.enabled ?? false
   const summaryMut = useMutation({
     mutationFn: (v: boolean) => api.patchConfig('session_summary.enabled', v),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['kirocrewConfig'] })
+      // The side panel reads the flag from each chat's summary query (its +
+      // menu row and Pin Summary), which never goes stale on its own.
+      qc.invalidateQueries({ queryKey: ['session-summary'] })
+    },
     onError: () => setSaveError(i18nT('pages.settings.chatPanel.failed_to_save_session_summaries')),
   })
 
@@ -872,6 +877,8 @@ export function ChatPanel({ basePath }: { basePath?: string } = {}) {
         <SettingsCard>
           <SettingsToggle label={i18nT('pages.settings.chatPanel.mcp_apps_in_side_panel')} description={i18nT('pages.settings.chatPanel.render_interactive_mcp_apps_in_the_right_side_pa')} checked={dashCfg.mcp_app_panel} onChange={v => setDash({ mcp_app_panel: v })} disabled={dashDisabled} />
           <SettingsToggle label={i18nT('pages.settings.chatPanel.auto_open_git_panel')} hint={i18nT('pages.settings.chatPanel.expand_the_side_panel_to_the_git_tab_each_time_yo')} checked={dashCfg.auto_open_git_panel} onChange={v => setDash({ auto_open_git_panel: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_always_open')} hint={i18nT('pages.settings.chatPanel.side_panel_always_open_hint')} configKey="dashboard.side_panel_always_open" checked={dashCfg.side_panel_always_open ?? false} onChange={v => setDash({ side_panel_always_open: v })} disabled={dashDisabled} />
+          <SettingsToggle label={i18nT('pages.settings.chatPanel.side_panel_pin_summary')} hint={i18nT('pages.settings.chatPanel.side_panel_pin_summary_hint')} configKey="dashboard.side_panel_pin_summary" checked={dashCfg.side_panel_pin_summary ?? false} onChange={v => setDash({ side_panel_pin_summary: v })} disabled={dashDisabled} />
         </SettingsCard>
           )
 

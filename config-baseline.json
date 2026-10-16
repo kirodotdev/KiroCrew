@@ -7510,6 +7510,8 @@
         "session_grid": false,
         "mcp_app_panel": false,
         "auto_open_git_panel": false,
+        "side_panel_always_open": false,
+        "side_panel_pin_summary": false,
         "session_card_source_links": true,
         "terminal": {
           "enabled": true
@@ -8233,6 +8235,34 @@
       "tags": [],
       "label": "Auto-open Git in the side panel",
       "help": "Expand the chat's right side panel to its Git tab each time a session starts in a project directory that is a git repository. The Git tab itself is always created either way, so it is one click away.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.side_panel_always_open",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Keep the side panel open",
+      "help": "Open the chat's right side panel in every chat you open, new or existing, and after a reload. Closing it hides it until you switch chats. Each chat still remembers its own open or closed panel, and turning this off brings that back. On a phone the panel stays closed until you open it.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": false
+    },
+    {
+      "path": "dashboard.side_panel_pin_summary",
+      "kind": "core",
+      "type": "boolean",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Pin Summary in the side panel",
+      "help": "Show the session Summary as the first side panel tab, which cannot be closed, and show it each time the panel opens. A panel opened for something specific, such as a file, still shows that. Works only while session summaries are on.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": false
