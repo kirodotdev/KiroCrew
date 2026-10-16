@@ -292,6 +292,8 @@
     "withheldManaged": "{{productName}} reconstruit lui-même cette connexion, et la connexion reconstruite ne garde aucune approbation.",
     "withheldUnexplained": "{{productName}} n’enregistrera pas cette approbation, et aucun réglage connu n’explique pourquoi. Signale-le comme un bug.",
     "withheldOpenTab": "Ouvrir l’onglet Serveurs MCP (garde ton brouillon)",
+    "platformOffer": "Ajouter les outils d’objectifs ({{server}})",
+    "platformOfferHelp": "Permet à {{name}} de proposer son objectif, ses jalons et ses points réguliers, et de suivre sa progression. Son modèle parent n’inclut pas ces outils. L’enregistrement ajoute le serveur, ses outils et leurs approbations à la copie propre de {{name}}.",
     "permissionsReview": "Cette page ne peut pas modifier les approbations de {{member}} : son fichier d’agent dans ~/.kiro/agents contient des paramètres de permissions écrits à la main. Retire-les, puis appuie sur Recharger depuis le serveur. Ton brouillon est conservé. Il s’agit d’un bloc permissions modifié à la main, de autoAllowReadonly ou d’une liste allowed ou trusted dans toolsSettings.",
     "unreviewableDrift": "Le fichier d’agent {{file}} de {{member}} a été édité en dehors de cette page dans un paramètre que cette page ne peut pas afficher, donc cette page ne peut pas écrire la correction et Vérifier les modifications reste désactivé. Annule cette édition externe dans ~/.kiro/agents/{{file}}, puis appuie sur Recharger depuis le serveur."
   },

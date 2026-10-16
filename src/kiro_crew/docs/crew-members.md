@@ -214,6 +214,15 @@ A crewmate's **Goals** tab (Profile card) holds what it works toward:
   work, it puts a card in the chat proposing new ones; nothing changes until you
   press it.
 
+The crewmate proposes and records all of this with its goal tools (the
+`kirocrew-mate` server). A new crewmate whose template lacks them gets them when
+it is created. An existing one without them, on a template that lacks them too,
+is offered them on its Capabilities page: tick **Add the goal tools** at the top
+of the MCP Servers tab (after **Follow the parent template**, if that box is not
+ticked yet), review, and save. Its chats load them from their next start.
+Without them it writes its proposals in the chat and points you at this tab
+instead.
+
 The goal is stored in the crewmate's goal record,
 `trust/member-goals/<slug>.json` in Kiro Crew's data folder, apart from its
 rules, with the same protection as its rules: the crewmate's file-editing tools

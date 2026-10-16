@@ -998,7 +998,13 @@ class CapabilityService:
         return snapshot
 
     def get(self, member: str) -> dict:
-        return self._view(self._snapshot(member))
+        from kiro_crew.member_mate_tools import platform_offers
+
+        snap = self._snapshot(member)
+        view = self._view(snap)
+        # The MEMBER_PLATFORM_SERVERS rows the spec lacks, as opt-ins the pane offers.
+        view["platform_offers"] = platform_offers(snap, view)
+        return view
 
     def _project(
         self, snap: dict, request: dict, *, reset_parent: bool = False

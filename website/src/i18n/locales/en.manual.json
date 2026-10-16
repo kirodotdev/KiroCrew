@@ -189,6 +189,8 @@
     "withheldManaged": "{{productName}} rebuilds this connection itself, and the rebuilt connection keeps no approvals.",
     "withheldUnexplained": "{{productName}} will not save this approval, and no known setting explains why. Report this as a bug.",
     "withheldOpenTab": "Open the MCP Servers tab (keeps your draft)",
+    "platformOffer": "Add the goal tools ({{server}})",
+    "platformOfferHelp": "Lets {{name}} propose its goal, milestones and check-ins and track its progress. Its parent template does not include these tools. Saving adds the server, its tools and their approvals to {{name}}'s own copy.",
     "permissionsReview": "This page cannot change approvals for {{member}}: its agent file in ~/.kiro/agents has hand-written permission settings. Remove them, then press Reload from server. Your draft is kept. The settings are a hand-edited permissions block, autoAllowReadonly, or an allowed or trusted list in toolsSettings.",
     "failed": "The capabilities request failed. Your draft is kept. Reload from server and retry.",
     "reload": "Reload from server (keeps your draft)",

@@ -272,6 +272,8 @@
     "withheldManaged": "{{productName}} がこの接続を自動で再構築し、再構築された接続には承認が残りません。",
     "withheldUnexplained": "{{productName}} はこの承認を保存しません。理由を説明する既知の設定はありません。不具合として報告してください。",
     "withheldOpenTab": "MCP サーバータブを開く（下書きは保持されます）",
+    "platformOffer": "目標ツールを追加（{{server}}）",
+    "platformOfferHelp": "{{name}} が自分の目標、マイルストーン、定期チェックを提案し、進捗を記録できるようになります。親テンプレートにはこれらのツールが含まれていません。保存すると、サーバー、そのツール、およびそれらの承認が {{name}} 独自のコピーに追加されます。",
     "permissionsReview": "このページでは {{member}} の承認を変更できません。~/.kiro/agents にあるエージェントファイルに手書きの権限設定があります。それを削除してから「サーバーから再読み込み」を押してください。下書きは保持されています。対象は、手で編集された permissions ブロック、autoAllowReadonly、または toolsSettings 内の allowed / trusted リストです。",
     "unreviewableDrift": "{{member}} のエージェントファイル {{file}} が、このページに表示できない設定でページの外から編集されたため、このページでは修正を書き込めず、「変更を確認」は無効のままです。~/.kiro/agents/{{file}} でその外部での編集を元に戻してから、「サーバーから再読み込み」を押してください。"
   },
