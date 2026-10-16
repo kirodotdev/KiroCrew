@@ -372,7 +372,6 @@
 2460 test/test_taskq_runner_adapter.py
 5921 test/test_taskrunner.py
 2918 test/test_taskrunner_v2_scenarios.py
-9784 test/test_telegram.py
 6082 test/test_telegram_parity.py
 2055 test/test_telegram_sessions.py
 8129 test/test_terminal_handler.py

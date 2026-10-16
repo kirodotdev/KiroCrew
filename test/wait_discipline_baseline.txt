@@ -398,10 +398,10 @@
  2 test_taskrunner_execution_capture_async.py
  2 test_taskrunner_execution_context.py
  7 test_taskrunner_retry_admission.py
- 1 test_telegram.py
  3 test_telegram_album.py
  1 test_telegram_parity.py
  6 test_telegram_sessions.py
+ 1 test_telegram_turn_lifecycle.py
  1 test_terminal_commands.py
  1 test_terminal_ctty_shim.py
  1 test_theme_install.py
