@@ -277,7 +277,8 @@
  1 test_provider_spawn_off_loop_18172.py
  4 test_publish_delete_race.py
  4 test_published_queue_depth.py
- 3 test_push_guard.py
+ 2 test_push_guard_diagnostics.py
+ 1 test_push_guard_squash.py
  1 test_queue_boundary_finalize.py
  4 test_queue_depth_after_deferred_start.py
  3 test_queue_receipt.py

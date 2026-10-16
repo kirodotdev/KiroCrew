@@ -262,7 +262,6 @@
 3225 test/test_portability.py
 2215 test/test_publish_sync.py
 2016 test/test_push_branch_gate.py
-4559 test/test_push_guard.py
 2147 test/test_recovery_l1_chat_runner.py
 5775 test/test_remote_crew_chaining.py
 3193 test/test_sandbox_absent_ceiling_seal.py
@@ -296,7 +295,6 @@
 3265 test/test_snapshot.py
 11572 test/test_source_providers.py
 2641 test/test_spawn_audit.py
-4536 test/test_spec_builder_routes_coverage.py
 2008 test/test_steer_requeue.py
 2045 test/test_stop_clears_only_its_own_sender.py
 2211 test/test_stt_engine.py
