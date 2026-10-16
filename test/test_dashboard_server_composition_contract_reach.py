@@ -826,8 +826,8 @@ _DASHBOARD_BOOT = tuple("""
     load_loop_stall_exit_after register_pre_exec_stop
     _arm_prevent_sleep_poll register_pre_exec_stop safety_override safety_override
     safety_override
-    await_crewmate_prune_settled current_context record_boot_to_ready
-    _dispatch_healthy_boot_marker
+    await_crewmate_prune_settled current_context _dispatch_locator_attestation_preload
+    record_boot_to_ready _dispatch_healthy_boot_marker
     """.split())
 _DASHBOARD_TEARDOWN = tuple("""
     current_context unregister_status_delta_sink stop_hook_reconciler
@@ -836,6 +836,7 @@ _DASHBOARD_TEARDOWN = tuple("""
     """.split())
 _DASHBOARD_ELSEWHERE = tuple("""
     S:_initialize_workflow_service S:_prebuild_memory_after_preparation
+    S:_preload_locator_attestations
     S:_start_remote_puller S:_stt_idle_sweep
     S:_stt_startup_prewarm T:_apply_startup_yolo T:_claimed_dashboard_slots
     T:_live_sibling_port T:_register_deploy_skills
@@ -890,11 +891,13 @@ _API_BOOT = tuple("""
     _kick_connections_warm_scavenge _kick_session_search_index _kick_config_watch
     _kick_local_decision_model _kick_owner_only_sweep _kick_display_verdicts
     _arm_prevent_sleep_poll
-    register_pre_exec_stop record_boot_to_ready _dispatch_healthy_boot_marker
+    register_pre_exec_stop _dispatch_locator_attestation_preload record_boot_to_ready
+    _dispatch_healthy_boot_marker
     """.split())
 _API_TEARDOWN: tuple[str, ...] = ("_release_sleep_block",)
 _API_ELSEWHERE = tuple("""
-    S:_initialize_workflow_service S:_stt_idle_sweep S:_stt_startup_prewarm
+    S:_initialize_workflow_service S:_preload_locator_attestations S:_stt_idle_sweep
+    S:_stt_startup_prewarm
     T:_live_sibling_port T:_write_instance_credentials T:_write_secret_file
     T:_write_secret_file T:_write_secret_file T:record_healthy_boot T:tighten_data_home
     T:warm_own_host_names

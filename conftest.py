@@ -785,6 +785,41 @@ def _join_telemetry_consent_worker() -> "BaseException | None":
     )
 
 
+#: Thread name ``locator_attestations._start_background_load`` gives its registry read.
+_LOCATOR_ATTESTATION_LOAD_THREAD = "locator-attestation-load"
+
+
+def _join_locator_attestation_load() -> "BaseException | None":
+    """Join the SharePoint locator registry's background read before this test's pins lift.
+
+    ``locator_attestations.snapshot()``, which display redaction calls on every render,
+    hands the registry read to a daemon thread, and that read resolves ``data_home()``
+    when it runs, not when it was scheduled. ``config_dir()`` creates the home pinned at
+    that moment, so a read still in flight when this test's pin lifts creates the next
+    test's home. Found by thread name, as :func:`_join_telemetry_consent_worker` finds its
+    worker, because a test may drop the module's handle to a read still running; same
+    place, bound and report.
+    """
+    workers = [
+        t
+        for t in threading.enumerate()
+        if t.name == _LOCATOR_ATTESTATION_LOAD_THREAD and t.is_alive()
+    ]
+    if not workers:
+        return None
+    deadline = time.monotonic() + _EXECUTOR_JOIN_SECS
+    for worker in workers:
+        worker.join(max(0.0, deadline - time.monotonic()))
+    still_alive = [t.name for t in workers if t.is_alive()]
+    if not still_alive:
+        return None
+    return AssertionError(
+        f"a locator registry read {still_alive} is still running "
+        f"{_EXECUTOR_JOIN_SECS:.0f}s after this test ended; it would resolve its path "
+        "under the next test's KIROCREW_HOME. See conftest._join_locator_attestation_load."
+    )
+
+
 # Durations and phases pytest_runtest_logreport has already seen for the item whose
 # runtest protocol is in flight, keyed by node id. The escape guard uses both to
 # preserve one report per phase and to charge only time no logged report covers.
@@ -957,6 +992,8 @@ def pytest_runtest_teardown(item, nextitem):
     # itself call ``get_recorder()`` and schedule a consent re-read, and a worker
     # scheduled by teardown must still be joined under this test's pins.
     wedged_consent_worker = _join_telemetry_consent_worker()
+    # For the same reason: a step above can render or append text, which schedules a read.
+    wedged_locator_load = _join_locator_attestation_load()
     resolved_real_home = (
         _resolved_real_default_home() if item.stash.get(_HOME_PIN_ARMED, False) else None
     )
@@ -977,6 +1014,8 @@ def pytest_runtest_teardown(item, nextitem):
         raise wedged_eager_fold
     if wedged_consent_worker is not None:
         raise wedged_consent_worker
+    if wedged_locator_load is not None:
+        raise wedged_locator_load
     if refused_network is not None:
         raise refused_network
 

@@ -22,6 +22,7 @@ from collections.abc import Callable
 from threading import RLock
 from typing import Any, cast
 
+from kiro_crew import locator_attestations
 from kiro_crew.dashboard import display_verdicts as _display_verdicts
 from kiro_crew.dashboard.chat_utils_slots import effective_session_key
 from kiro_crew.dashboard.display_battery import display_battery
@@ -392,6 +393,7 @@ def _display_redaction_cache_key(
     text: str,
     base: object = _NO_BASE,
     exempt_hosts: frozenset[str] | None = None,
+    locator_snapshot: tuple[int, frozenset[str]] | None = None,
     *,
     token_param_prefixes: tuple[str, ...] | None = None,
 ) -> tuple[_DisplayRedactionKey, int]:
@@ -400,6 +402,9 @@ def _display_redaction_cache_key(
     ``exempt_hosts`` is the caller's one read of the platform set and the scoped
     override, the same snapshot it hands the battery, so the key names the set
     the output is computed under. ``None`` reads the set here.
+    ``locator_snapshot`` is the caller's one read of the attested SharePoint
+    locator view (generation, digests), the same snapshot whose digests it hands
+    the battery's credential pass; ``None`` reads it here.
 
     ``token_param_prefixes`` is the caller's one read of the pass-4 prefix set,
     the same snapshot it hands the battery, so the key names the set the output
@@ -408,7 +413,9 @@ def _display_redaction_cache_key(
     The key is fixed-size: a 32-byte digest and the input byte length. The host set
     is sorted and folded into the MAC input behind a NUL separator (a host never
     contains NUL), so a changed set yields a different key while no per-entry
-    container is retained. A non-empty pass-4 token-parameter prefix set follows
+    container is retained. The locator snapshot's generation follows behind a
+    ``\\x02`` separator (a host never contains one), so a changed attested set
+    yields a different key too. A non-empty pass-4 token-parameter prefix set follows
     behind a ``\\x01`` separator (a host never contains one either); an empty set adds
     nothing, so the MAC input is the host-only form whenever no companion sets one.
     The length component constrains a digest collision.
@@ -422,7 +429,10 @@ def _display_redaction_cache_key(
     prefixes = token_param_prefixes
     if prefixes is None:
         prefixes = _token_param_exempt_prefixes()
+    if locator_snapshot is None:
+        locator_snapshot = locator_attestations.snapshot()
     tail = hosts
+    tail += b"\x02" + str(locator_snapshot[0]).encode("ascii")
     if prefixes:
         tail += b"\x01" + "\0".join(prefixes).encode("utf-8", errors="surrogatepass")
     if base is _NO_BASE:
@@ -584,14 +594,17 @@ def _redact_for_display(text: str) -> str:
     inside the battery (the host set in ``redact_exfiltration_urls``, the prefix
     set in ``redact_credentials``) could see another set -- the platform read
     moves mid-process and degrades a failure to the empty set -- and the cache
-    would store one set's output under another set's key.
+    would store one set's output under another set's key. The
+    attested SharePoint locator view is read once the same way: its generation
+    keys the cache and its digests reach the battery's credential pass.
     """
+    locator_snapshot = locator_attestations.snapshot()
     scoped = _display_scope_changes_battery()
     stored, base = (None, None) if scoped else _display_verdicts.active()
     hosts = _exempt_exact_hosts() | current_scoped_exempt_hosts()
     prefixes = _token_param_exempt_prefixes()
     key, input_bytes = _display_redaction_cache_key(
-        text, base, hosts, token_param_prefixes=prefixes
+        text, base, hosts, locator_snapshot, token_param_prefixes=prefixes
     )
     ck = _clean_verdict_key(key)
     tag = key[0]
@@ -621,7 +634,12 @@ def _redact_for_display(text: str) -> str:
             _remember_redacted(key, input_bytes, verdict)
             return verdict
 
-    redacted = display_battery(text, exempt_hosts=hosts, token_param_prefixes=prefixes)
+    redacted = display_battery(
+        text,
+        exempt_hosts=hosts,
+        token_param_prefixes=prefixes,
+        attested_sharepoint_digests=locator_snapshot[1],
+    )
     if scoped:
         return redacted
     if redacted == text:
